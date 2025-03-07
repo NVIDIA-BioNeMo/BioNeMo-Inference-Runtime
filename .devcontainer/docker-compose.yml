@@ -1,0 +1,33 @@
+version: "3.9"
+services:
+  tensorrt_bionemo-dev:
+    image: <internal-registry-image>:pytorch-25.01-py3-x86_64-ubuntu24.04-trt10.8.0.43-skip-devel-202502131150-8377
+
+    network_mode: host
+    ipc: host
+
+    # For GPU usage and profiling
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+
+    # Delete this section if you don't have a GPU.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    volumes:
+      - ..:/workspaces/tensorrt_bionemo:cached
+
+    environment:
+      - CCACHE_DIR=/workspaces/tensorrt_bionemo/cpp/.ccache
+      - CCACHE_BASEDIR=/workspaces/tensorrt_bionemo
+
+    # Overrides default command so things don't shut down after the process ends.
+    command: /bin/sh -c "while sleep 1000; do :; done"

@@ -16,7 +16,7 @@
         // "workspaceFolder": "/home/coder/${localWorkspaceFolderBasename}",
         // "workspaceMount": "source=${localWorkspaceFolder},target=/home/coder/${localWorkspaceFolderBasename},type=bind,consistency=consistent",
         "mounts": [
-          
+
         ],
         "customizations": {
           "vscode": {
@@ -66,4 +66,3 @@
           }
         }
       }
-  

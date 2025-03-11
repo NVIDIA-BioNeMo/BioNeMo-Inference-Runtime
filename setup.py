@@ -24,7 +24,7 @@ def parse_requirements(filename: os.PathLike):
         requirements = f.read().splitlines()
 
         def extract_url(line):
-            return next(filter(lambda x: x[0] != '-', line.split()))
+            return next(filter(lambda x: x[0] != "-", line.split()))
 
         extra_URLs = []
         deps = []
@@ -55,14 +55,17 @@ def get_version():
 
     return version
 
+
 required_deps, extra_URLs = parse_requirements("requirements.txt")
 devel_deps, _ = parse_requirements("requirements-dev.txt")
 
 setup(
     name="tensorrt_bionemo",
     version=get_version(),
-    description="TensorRT BioNemo: A TensorRT Toolbox for BioNemo structure prediction models",
-    long_description="TensorRT BioNemo: A TensorRT Toolbox for BioNemo structure prediction models",
+    description=
+    "TensorRT BioNemo: A TensorRT Toolbox for BioNemo structure prediction models",
+    long_description=
+    "TensorRT BioNemo: A TensorRT Toolbox for BioNemo structure prediction models",
     author="NVIDIA Corporation",
     # TODO: FIXME
     # url="https://github.com/NVIDIA/TensorRT-BioNemo"

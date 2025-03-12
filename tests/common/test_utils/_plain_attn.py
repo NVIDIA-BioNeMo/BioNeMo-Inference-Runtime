@@ -41,7 +41,9 @@ def plain_triangle_attention(
     a = torch.nn.functional.softmax(a, dim=-1)
 
     a = torch.matmul(a, v)
-    a = a.transpose(1, 2).contiguous().view(a.size(0), -1, no_heads * head_dim)
+    a = a.transpose(1,
+                    2).contiguous().view(a.size(0), -1,
+                                         no_heads * head_dim)  # [B, s_q, H * D]
     return a
 
 
@@ -56,7 +58,6 @@ def plain_pairwise_attention(
     """Simple cross-attention for pairwise attention"""
     q, k, v = _prep_qkv(q, k, v, no_heads, head_dim)
     a = torch.matmul(q, k)  # [B, H, s_q, s_kv]
-    attn_matmul = a.clone().detach()
     a /= math.sqrt(head_dim)
     if biases is not None:
         # Add mask bias
@@ -67,9 +68,9 @@ def plain_pairwise_attention(
         # Add pair bias
         a += biases[1]
     a = torch.nn.functional.softmax(a, dim=-1)
-    attn_softmax = a.clone().detach()
+
     a = torch.matmul(a, v)
     a = a.transpose(1,
                     2).contiguous().view(a.size(0), -1,
                                          no_heads * head_dim)  # [B, s_q, H * D]
-    return a, attn_matmul, attn_softmax
+    return a

@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from typing import Optional
 
 import torch
@@ -19,14 +34,12 @@ class VanillaAttention(AttentionBackend[AttentionMetadata]):
                  num_kv_heads: Optional[int] = None):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
         assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
-        self.num_key_value_groups = 1
 
     def _single_request_forward(self, q, k, v, bias):
         """Forward pass for a single request"""
         q = q.view(q.size(0), -1, self.num_heads, self.head_dim).transpose(1, 2)
         k = k.view(k.size(0), -1, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(v.size(0), -1, self.num_heads, self.head_dim).transpose(1, 2)
-
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             q,
             k,
@@ -49,7 +62,7 @@ class VanillaAttention(AttentionBackend[AttentionMetadata]):
         chunk_dim: int = None,
         offset: int = None,
         biases: Optional[list[torch.Tensor]] = None,
-        attention_biases: Optional[AttentionBiases] = PredefinedAttentionBiases.
+        biases_type: Optional[AttentionBiases] = PredefinedAttentionBiases.
         TRIANGLE,
     ) -> torch.Tensor:
         """Create a bias term with the given chunk size"""
@@ -61,20 +74,20 @@ class VanillaAttention(AttentionBackend[AttentionMetadata]):
             # Triangle bias has two terms:
             # 1. Bias over sequence length: [s, 1, 1, s]
             # 2. Bias for heads: [1, h, s, s]
-            if attention_biases == PredefinedAttentionBiases.TRIANGLE:
+            if biases_type == PredefinedAttentionBiases.TRIANGLE:
                 seq_len = biases[0].size(0)
                 ret = biases[0] + biases[1].expand(seq_len, -1, -1, -1)
             # Pairwise bias has two terms:
             # 1. Bias over batch size: [B, 1, 1, s_kv]
             # 2. Bias with shape equal to the shape of QK^T: [B, h, s_q, s_kv]
-            elif attention_biases == PredefinedAttentionBiases.PAIRWISE:
+            elif biases_type == PredefinedAttentionBiases.PAIRWISE:
                 ret = biases[0] + biases[1]
         else:
-            if attention_biases == PredefinedAttentionBiases.TRIANGLE:
+            if biases_type == PredefinedAttentionBiases.TRIANGLE:
                 ret = self._slice_by_chunk(biases[0], chunk_dim, offset,
                                            chunk) + biases[1].expand(
                                                chunk, -1, -1, -1)
-            elif attention_biases == PredefinedAttentionBiases.PAIRWISE:
+            elif biases_type == PredefinedAttentionBiases.PAIRWISE:
                 ret = self._slice_by_chunk(
                     biases[0], chunk_dim, offset, chunk) + self._slice_by_chunk(
                         biases[1], chunk_dim, offset, chunk)
@@ -87,7 +100,7 @@ class VanillaAttention(AttentionBackend[AttentionMetadata]):
         v: torch.Tensor,
         biases: Optional[list[torch.Tensor]] = None,
         metadata: Optional[AttentionMetadata] = None,
-        attention_biases: Optional[AttentionBiases] = PredefinedAttentionBiases.
+        biases_type: Optional[AttentionBiases] = PredefinedAttentionBiases.
         TRIANGLE,
         **kwargs,
     ) -> torch.Tensor:
@@ -103,15 +116,21 @@ class VanillaAttention(AttentionBackend[AttentionMetadata]):
                 chunk_k = self._slice_by_chunk(k, chunk_dim, offset, chunk)
                 chunk_v = self._slice_by_chunk(v, chunk_dim, offset, chunk)
                 bias = self._create_bias_term_with_chunk(
-                    chunk, offset, biases, attention_biases)
+                    chunk=chunk,
+                    chunk_dim=chunk_dim,
+                    offset=offset,
+                    biases=biases,
+                    biases_type=biases_type)
                 offset += chunk
                 attn_output = self._single_request_forward(
                     chunk_q, chunk_k, chunk_v, bias)
                 attn_outputs.append(attn_output)
             attn_output = torch.cat(attn_outputs, dim=0)
         else:
-            bias = self._create_bias_term_with_chunk(None, 0, biases,
-                                                     attention_biases)
+            bias = self._create_bias_term_with_chunk(None,
+                                                     0,
+                                                     biases=biases,
+                                                     biases_type=biases_type)
             attn_output = self._single_request_forward(q, k, v, bias)
         return (attn_output.transpose(1, 2).contiguous().view(
             q.size(0), -1, self.num_heads * self.head_dim))

@@ -15,7 +15,7 @@
 
 import enum
 from dataclasses import dataclass
-from typing import Generic, Optional, TypeVar, Union
+from typing import Generic, Optional, Type, TypeVar, Union
 
 import torch
 
@@ -51,6 +51,10 @@ AttentionBiases = Union[PredefinedAttentionBiases]
 
 
 class AttentionBackend(Generic[TMetadata]):
+    """
+    Base class for attention backends.
+    """
+    Metadata: Type[TMetadata] = AttentionMetadata
 
     def __init__(self,
                  layer_idx: int,

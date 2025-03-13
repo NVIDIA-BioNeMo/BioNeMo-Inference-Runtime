@@ -6,7 +6,7 @@ from .vanilla import VanillaAttention
 
 def get_attention_backend(backend_name: str) -> Type[AttentionBackend]:
     """Get the attention backend class based on the backend name."""
-    if backend_name == "vanilla":
+    if backend_name == "VANILLA":
         return VanillaAttention
     else:
         raise ValueError(f"Invalid backend name: {backend_name}")

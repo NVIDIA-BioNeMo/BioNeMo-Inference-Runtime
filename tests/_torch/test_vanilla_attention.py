@@ -1,28 +1,24 @@
 import pytest
 import torch
-from test_utils._plain_attn import (
-    plain_pairwise_attention,
-    plain_triangle_attention,
-)
+from test_utils._plain_attn import plain_pairwise_mhca, plain_triangle_mha
 
 from tensorrt_bionemo._torch.attention_backend.interface import (
-    AttentionMetadata,
-    PredefinedAttentionBiases,
-)
+    AttentionMetadata, PredefinedAttentionBiases)
 from tensorrt_bionemo._torch.attention_backend.vanilla import VanillaAttention
 
 
 @pytest.mark.parametrize("seq_len", [16, 128])
 @pytest.mark.parametrize("chunk_size", [None, 16, 32, 64, 96])
 @pytest.mark.parametrize("has_biases", [False, True])
-def test_triangle_attention(seq_len, chunk_size, has_biases):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_vanilla_attention_for_triangle(seq_len, chunk_size, has_biases, dtype):
     num_heads = 8
     head_dim = 32
     layer_idx = 0
 
-    q = torch.randn(seq_len, seq_len, num_heads, head_dim)
-    k = torch.randn(seq_len, seq_len, num_heads, head_dim)
-    v = torch.randn(seq_len, seq_len, num_heads, head_dim)
+    q = torch.randn(seq_len, seq_len, num_heads, head_dim).to(dtype)
+    k = torch.randn(seq_len, seq_len, num_heads, head_dim).to(dtype)
+    v = torch.randn(seq_len, seq_len, num_heads, head_dim).to(dtype)
 
     vanilla_attn = VanillaAttention(layer_idx,
                                     num_heads,
@@ -42,26 +38,30 @@ def test_triangle_attention(seq_len, chunk_size, has_biases):
         biases=biases,
         biases_type=PredefinedAttentionBiases.TRIANGLE,
         metadata=metadata)
-    assert vanilla_out.shape == (seq_len, seq_len, num_heads * head_dim)
-    plain_out = plain_triangle_attention(q, k, v, num_heads, head_dim, biases)
+    assert vanilla_out.shape == (seq_len, seq_len, num_heads, head_dim)
+    plain_out = plain_triangle_mha(q, k, v, num_heads, head_dim, biases)
     assert vanilla_out.shape == plain_out.shape
-
-    torch.testing.assert_close(vanilla_out, plain_out)
+    if dtype == torch.float32:
+        torch.testing.assert_close(vanilla_out, plain_out)
+    elif dtype == torch.bfloat16:
+        torch.testing.assert_close(vanilla_out, plain_out, atol=5e-2, rtol=1e-4)
 
 
 @pytest.mark.parametrize("batch_size", [16, 128])
 @pytest.mark.parametrize("chunk_size", [None, 16, 32, 64, 96])
 @pytest.mark.parametrize("has_biases", [False, True])
-def test_pairwise_attention(batch_size, chunk_size, has_biases):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_vanilla_attention_for_pairwise(batch_size, chunk_size, has_biases,
+                                        dtype):
     num_heads = 8
     head_dim = 32
     layer_idx = 0
     q_size = 32
     kv_size = 128
 
-    q = torch.randn(batch_size, q_size, num_heads, head_dim)
-    k = torch.randn(batch_size, kv_size, num_heads, head_dim)
-    v = torch.randn(batch_size, kv_size, num_heads, head_dim)
+    q = torch.randn(batch_size, q_size, num_heads, head_dim).to(dtype)
+    k = torch.randn(batch_size, kv_size, num_heads, head_dim).to(dtype)
+    v = torch.randn(batch_size, kv_size, num_heads, head_dim).to(dtype)
 
     vanilla_attn = VanillaAttention(layer_idx,
                                     num_heads,
@@ -81,7 +81,11 @@ def test_pairwise_attention(batch_size, chunk_size, has_biases):
         biases=biases,
         biases_type=PredefinedAttentionBiases.PAIRWISE,
         metadata=metadata)
-    assert vanilla_out.shape == (batch_size, q_size, num_heads * head_dim)
-    plain_out = plain_pairwise_attention(q, k, v, num_heads, head_dim, biases)
+    assert vanilla_out.shape == (batch_size, q_size, num_heads, head_dim)
+    plain_out = plain_pairwise_mhca(q, k, v, num_heads, head_dim, biases)
     assert vanilla_out.shape == plain_out.shape
-    torch.testing.assert_close(vanilla_out, plain_out)
+
+    if dtype == torch.float32:
+        torch.testing.assert_close(vanilla_out, plain_out)
+    elif dtype == torch.bfloat16:
+        torch.testing.assert_close(vanilla_out, plain_out, atol=5e-2, rtol=1e-4)

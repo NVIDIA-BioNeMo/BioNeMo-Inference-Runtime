@@ -19,11 +19,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tensorrt_llm._torch.distributed import ParallelConfig, TensorParallelMode
-from tensorrt_llm._torch.modules.linear import (
-    Linear,
-    WeightMode,
-    WeightsLoadingConfig,
-)
+from tensorrt_llm._torch.modules.linear import (Linear, WeightMode,
+                                                WeightsLoadingConfig)
 
 from ..attention_backend import AttentionMetadata, PredefinedAttentionBiases
 from ..attention_backend.utils import create_attention
@@ -41,9 +38,8 @@ class TriangleAttention(nn.Module):
                  num_attention_heads: int,
                  num_key_value_heads: Optional[int] = None,
                  layer_idx: int,
-                 bias: bool,
+                 bias: bool = False,
                  gating: bool = True,
-                 backend_name: str = "vanilla",
                  dtype: torch.dtype = None,
                  config: Optional[ModelConfig] = None):
         super().__init__()
@@ -51,6 +47,8 @@ class TriangleAttention(nn.Module):
         self.hidden_size = hidden_size
         self.num_heads = num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
+        if num_key_value_heads is None:
+            num_key_value_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
 
@@ -125,18 +123,22 @@ class TriangleAttention(nn.Module):
     ) -> torch.Tensor:
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        attn_output = self.attn.forward(
+        mha_o = self.attn.forward(
             q.contiguous(),
             k.contiguous(),
             v.contiguous(),
             biases=biases,
-            attn_metadata=attn_metadata,
+            metadata=attn_metadata,
             biases_type=PredefinedAttentionBiases.TRIANGLE)
         if self.g_proj is not None:
             g = self.g_proj(hidden_states)
             g = F.sigmoid(g)
             # [*, Q, H, C_hidden]
-            g = g.view(g.shape[:-1] + (self.num_heads, -1))
-            attn_output = attn_output * g
+            g = g.view(g.size(0), -1, self.num_heads, self.head_dim)
+            attn_output = mha_o * g
+        else:
+            attn_output = mha_o
+        attn_output = attn_output.view(attn_output.size(0), -1,
+                                       self.num_heads * self.head_dim)
         attn_output = self.o_proj(attn_output)
         return attn_output

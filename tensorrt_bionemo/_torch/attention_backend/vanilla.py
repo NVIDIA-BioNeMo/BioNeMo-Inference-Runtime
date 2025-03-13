@@ -17,15 +17,15 @@ from typing import Optional
 
 import torch
 
-from .interface import (
-    AttentionBackend,
-    AttentionBiases,
-    AttentionMetadata,
-    PredefinedAttentionBiases,
-)
+from .interface import (AttentionBackend, AttentionBiases, AttentionMetadata,
+                        PredefinedAttentionBiases)
 
 
-class VanillaAttention(AttentionBackend[AttentionMetadata]):
+class VanillaAttentionMetadata(AttentionMetadata):
+    pass
+
+
+class VanillaAttention(AttentionBackend[VanillaAttentionMetadata]):
 
     def __init__(self,
                  layer_idx: int,
@@ -132,5 +132,5 @@ class VanillaAttention(AttentionBackend[AttentionMetadata]):
                                                      biases=biases,
                                                      biases_type=biases_type)
             attn_output = self._single_request_forward(q, k, v, bias)
-        return (attn_output.transpose(1, 2).contiguous().view(
-            q.size(0), -1, self.num_heads * self.head_dim))
+        return attn_output.transpose(
+            1, 2).contiguous()  # return shape [B, S, H, D]

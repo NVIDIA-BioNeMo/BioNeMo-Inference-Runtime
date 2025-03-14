@@ -66,6 +66,7 @@ def plain_pairwise_mhca(
         if biases[0].ndim == 2:
             a += biases[0][:, None, None, :]
         else:
+            print(a.shape, biases[0].shape)
             a += biases[0]
         # Add pair bias
         a += biases[1]
@@ -173,7 +174,109 @@ class RefTriangleAttention(nn.Module):
         return o
 
 
-class RefPairwiseAttention(nn.Module):
+class RefPairwiseSelfAttention(nn.Module):
     """ Reference: https://github.com/jwohlwend/boltz/blob/v0.4.1/src/boltz/model/layers/attention.py#L8
-    Testing purposes only
+    Testing purposes only, without model cache for Pairformer module
+    # TODO: Add a ref pairwise attention for diffusion modules (with model cache)
     """
+
+    def __init__(self,
+                 c_s: int,
+                 c_z: int,
+                 num_heads: int,
+                 inf: float = 1e6,
+                 initial_norm: bool = True) -> None:
+        """
+        Args:
+            c_s (int):  The input sequence dimension.
+            c_z (int): The input pairwise dimension.
+            num_heads (int): number of attention heads
+            inf (float): infinity value
+        """
+        super().__init__()
+        assert c_s % num_heads == 0
+
+        self.c_s = c_s
+        self.c_z = c_z
+        self.num_heads = num_heads
+        self.head_dim = c_s // num_heads
+        self.inf = inf
+        self.initial_norm = initial_norm
+
+        if initial_norm:
+            self.norm_s = nn.LayerNorm(c_s)
+
+        self.proj_q = nn.Linear(c_s, c_s)
+        self.proj_k = nn.Linear(c_s, c_s, bias=False)
+        self.proj_v = nn.Linear(c_s, c_s, bias=False)
+        self.proj_g = nn.Linear(c_s, c_s, bias=False)
+
+        self.proj_z = nn.Sequential(
+            nn.LayerNorm(c_z),
+            nn.Linear(c_z, num_heads, bias=False),
+        )
+        self.proj_o = nn.Linear(c_s, c_s, bias=False)
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-1",
+            pairattn_layer_path: str = "pairformer_module.layers.0.attention",
+            num_heads: int = 16) -> 'RefPairwiseSelfAttention':
+        state_dict = load_hf_weights(model)
+        weights_biases_path = [
+            (f"{pairattn_layer_path}.norm_s.weight",
+             f"{pairattn_layer_path}.norm_s.bias"),
+            (f"{pairattn_layer_path}.proj_q.weight",
+             f"{pairattn_layer_path}.proj_q.bias"),
+            (f"{pairattn_layer_path}.proj_k.weight", None),
+            (f"{pairattn_layer_path}.proj_v.weight", None),
+            (f"{pairattn_layer_path}.proj_g.weight", None),
+            (f"{pairattn_layer_path}.proj_z.0.weight",
+             f"{pairattn_layer_path}.proj_z.0.bias"),
+            (f"{pairattn_layer_path}.proj_z.1.weight", None),
+            (f"{pairattn_layer_path}.proj_o.weight", None),
+        ]
+        c_s = state_dict[weights_biases_path[0][0]].shape[0]
+        c_z = state_dict[weights_biases_path[5][0]].shape[0]
+        attn = cls(c_s, c_z, num_heads, initial_norm=True)
+        layers = [
+            attn.norm_s, attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,
+            attn.proj_z[0], attn.proj_z[1], attn.proj_o
+        ]
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return attn
+
+    def forward(self,
+                s: torch.Tensor,
+                z: torch.Tensor,
+                mask: torch.Tensor,
+                multiplicity: int = 1) -> torch.Tensor:
+        """
+        Args:
+            s (torch.Tensor): The input sequence (B, S, D).
+            z (torch.Tensor): The input pairwise. (B, N, N, D)
+            mask (torch.Tensor): The mask. (B, N, N)
+            multiplicity (int): The multiplicity. The diffution batch size, default 1
+        """
+        B = s.size(0)
+        if self.initial_norm:
+            s = self.norm_s(s)
+        q = self.proj_q(s).view(B, -1, self.num_heads, self.head_dim)
+        k = self.proj_k(s).view(B, -1, self.num_heads, self.head_dim)
+        v = self.proj_v(s).view(B, -1, self.num_heads, self.head_dim)
+        z = self.proj_z(z)
+        z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
+        g = self.proj_g(s).sigmoid()
+        mask_bias = (1 - mask[:, None, None].float()) * -self.inf
+        mhca_o = plain_pairwise_mhca(q, k, v, self.num_heads, self.head_dim,
+                                     [mask_bias, z])
+
+        o = mhca_o.reshape(B, -1, self.c_s)
+        o = self.proj_o(g * o)
+
+        return o

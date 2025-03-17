@@ -56,6 +56,7 @@ class TriangleAttention(nn.Module):
         tp_size = config.mapping.tp_size
         tp_rank = config.mapping.tp_rank
         gpus_per_node = config.mapping.gpus_per_node
+        # For data parallelism, we only need to run one GPU
         if config.mapping.enable_attention_dp:
             tp_size = 1
             tp_rank = 0
@@ -82,28 +83,28 @@ class TriangleAttention(nn.Module):
             skip_create_weights=config.skip_create_weights,
         )
         self.o_proj = Linear(
+            tp_size * self.q_size,
             self.hidden_size,
-            self.q_size,
             bias=False,
             dtype=dtype,
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                tensor_parallel_mode=TensorParallelMode.ROW,
                 gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
         self.g_proj = None
         if gating:
             self.g_proj = Linear(
-                self.q_size,
                 self.hidden_size,
+                tp_size * self.q_size,
                 bias=False,
                 dtype=dtype,
                 parallel_config=ParallelConfig(
                     tensor_parallel_rank=tp_rank,
                     tensor_parallel_size=tp_size,
-                    tensor_parallel_mode=TensorParallelMode.ROW,
+                    tensor_parallel_mode=TensorParallelMode.COLUMN,
                     gpus_per_node=gpus_per_node),
                 skip_create_weights=config.skip_create_weights,
             )
@@ -121,6 +122,17 @@ class TriangleAttention(nn.Module):
         biases: Optional[list[torch.Tensor]] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
     ) -> torch.Tensor:
+        if attn_metadata.mapping.tp_size > 1 and not attn_metadata.mapping.enable_attention_dp:
+            new_biases = []
+            new_biases.append(biases[0])
+            bias_1_shape = biases[1].shape
+            scatter_size = bias_1_shape[1] // attn_metadata.mapping.tp_size
+            scatter_bias = biases[1][:, attn_metadata.mapping.tp_rank *
+                                     scatter_size:
+                                     (attn_metadata.mapping.tp_rank + 1) *
+                                     scatter_size, :]
+            new_biases.append(scatter_bias)
+            biases = new_biases
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         mha_o = self.attn.forward(
@@ -130,6 +142,7 @@ class TriangleAttention(nn.Module):
             biases=biases,
             metadata=attn_metadata,
             biases_type=PredefinedAttentionBiases.TRIANGLE)
+
         if self.g_proj is not None:
             g = self.g_proj(hidden_states)
             g = F.sigmoid(g)
@@ -157,6 +170,7 @@ class SelfAttentionPairBias(nn.Module):
                  num_heads: int,
                  initial_norm: bool = True,
                  dtype: torch.dtype = None,
+                 inf: float = 1e6,
                  config: Optional[ModelConfig] = None):
         super().__init__()
         self.layer_idx = layer_idx
@@ -165,6 +179,7 @@ class SelfAttentionPairBias(nn.Module):
         self.num_heads = num_heads
         self.head_dim = c_s // num_heads
         self.initial_norm = initial_norm
+        self.inf = inf
 
         self.num_key_value_heads = num_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
@@ -173,14 +188,15 @@ class SelfAttentionPairBias(nn.Module):
         tp_size = config.mapping.tp_size
         tp_rank = config.mapping.tp_rank
         gpus_per_node = config.mapping.gpus_per_node
+
+        # For data parallelism, we only need to run one GPU
         if config.mapping.enable_attention_dp:
             tp_size = 1
             tp_rank = 0
 
         assert self.num_heads % tp_size == 0
         self.num_heads = self.num_heads // tp_size
-        self.num_key_value_heads = (self.num_key_value_heads + tp_size -
-                                    1) // tp_size
+        self.num_key_value_heads = self.num_key_value_heads // tp_size
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_key_value_heads * self.head_dim
 
@@ -200,35 +216,44 @@ class SelfAttentionPairBias(nn.Module):
                 gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
-        self.proj_kv = Linear(
+        # TODO: Add proj_kv and modify Linear for support kv_proj
+        self.proj_k = Linear(
             self.c_s,
-            2 * tp_size * self.kv_size,
+            tp_size * self.kv_size,
             bias=False,
             dtype=dtype,
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gpus_per_node=gpus_per_node),
+                tensor_parallel_mode=TensorParallelMode.COLUMN),
             skip_create_weights=config.skip_create_weights,
         )
-
-        self.proj_g = Linear(
+        self.proj_v = Linear(
             self.c_s,
-            self.c_s,
+            tp_size * self.kv_size,
             bias=False,
             dtype=dtype,
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.ROW,
-                gpus_per_node=gpus_per_node),
+                tensor_parallel_mode=TensorParallelMode.COLUMN),
+            skip_create_weights=config.skip_create_weights,
+        )
+        self.proj_g = Linear(
+            self.c_s,
+            tp_size * self.q_size,
+            bias=False,
+            dtype=dtype,
+            parallel_config=ParallelConfig(
+                tensor_parallel_rank=tp_rank,
+                tensor_parallel_size=tp_size,
+                tensor_parallel_mode=TensorParallelMode.COLUMN),
             skip_create_weights=config.skip_create_weights,
         )
 
         self.proj_z = nn.Sequential(
-            nn.LayerNorm(c_z),
-            nn.Linear(
+            nn.LayerNorm(c_z, dtype=dtype),
+            Linear(
                 c_z,
                 tp_size * self.num_heads,
                 bias=False,
@@ -236,22 +261,27 @@ class SelfAttentionPairBias(nn.Module):
                 parallel_config=ParallelConfig(
                     tensor_parallel_rank=tp_rank,
                     tensor_parallel_size=tp_size,
-                    tensor_parallel_mode=TensorParallelMode.ROW,
-                    gpus_per_node=gpus_per_node),
+                    tensor_parallel_mode=TensorParallelMode.COLUMN),
                 skip_create_weights=config.skip_create_weights,
             ),
         )
         self.proj_o = Linear(
-            self.c_s,
+            tp_size * self.q_size,
             self.c_s,
             bias=False,
             dtype=dtype,
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.ROW,
-                gpus_per_node=gpus_per_node),
+                tensor_parallel_mode=TensorParallelMode.ROW),
             skip_create_weights=config.skip_create_weights,
+        )
+        self.attn = create_attention(
+            config.attn_backend,
+            self.layer_idx,
+            self.num_heads,
+            self.head_dim,
+            self.num_key_value_heads,
         )
 
     def forward(
@@ -265,13 +295,11 @@ class SelfAttentionPairBias(nn.Module):
         if self.initial_norm:
             s = self.norm_s(s)
         q = self.proj_q(s).view(B, -1, self.num_heads, self.head_dim)
-        kv = self.proj_kv(s)
-        k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
-        k = k.view(B, -1, self.num_key_value_heads, self.head_dim)
-        v = v.view(B, -1, self.num_key_value_heads, self.head_dim)
+        k = self.proj_k(s).view(B, -1, self.num_key_value_heads, self.head_dim)
+        v = self.proj_v(s).view(B, -1, self.num_key_value_heads, self.head_dim)
         z = self.proj_z(z)
         z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
-        g = self.proj_g(s).sigmoid()
+
         mask_bias = (1 - mask[:, None, None].float()) * -self.inf
 
         biases = [mask_bias, z]
@@ -283,5 +311,7 @@ class SelfAttentionPairBias(nn.Module):
             metadata=attn_metadata,
             biases_type=PredefinedAttentionBiases.PAIRWISE)
         o = mha_o.reshape(B, -1, self.c_s)
+
+        g = self.proj_g(s).sigmoid()
         o = self.proj_o(g * o)
         return o

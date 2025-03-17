@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Generic, Optional, Type, TypeVar, Union
 
 import torch
+from tensorrt_llm.mapping import Mapping
 
 
 @dataclass(kw_only=True)
@@ -28,6 +29,7 @@ class AttentionMetadata:
 
     chunk_dim: Optional[int] = None
     chunk_size: Optional[int] = None
+    mapping: Optional[Mapping] = None
 
 
 TMetadata = TypeVar("TMetadata", bound=AttentionMetadata)

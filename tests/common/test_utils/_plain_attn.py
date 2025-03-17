@@ -66,7 +66,6 @@ def plain_pairwise_mhca(
         if biases[0].ndim == 2:
             a += biases[0][:, None, None, :]
         else:
-            print(a.shape, biases[0].shape)
             a += biases[0]
         # Add pair bias
         a += biases[1]
@@ -132,7 +131,7 @@ class RefTriangleAttention(nn.Module):
                      triattn_layer_path:
                      str = "pairformer_module.layers.0.tri_att_start.mha",
                      no_heads: int = 4) -> 'RefTriangleAttention':
-        state_dict = load_hf_weights(model)
+        state_dict = load_hf_weights(model, local_files_only=False)
         weights_path = [
             f"{triattn_layer_path}.linear_q.weight",
             f"{triattn_layer_path}.linear_k.weight",
@@ -223,7 +222,7 @@ class RefPairwiseSelfAttention(nn.Module):
             model: str = "boltz-1",
             pairattn_layer_path: str = "pairformer_module.layers.0.attention",
             num_heads: int = 16) -> 'RefPairwiseSelfAttention':
-        state_dict = load_hf_weights(model)
+        state_dict = load_hf_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{pairattn_layer_path}.norm_s.weight",
              f"{pairattn_layer_path}.norm_s.bias"),
@@ -258,9 +257,9 @@ class RefPairwiseSelfAttention(nn.Module):
                 multiplicity: int = 1) -> torch.Tensor:
         """
         Args:
-            s (torch.Tensor): The input sequence (B, S, D).
-            z (torch.Tensor): The input pairwise. (B, N, N, D)
-            mask (torch.Tensor): The mask. (B, N, N)
+            s (torch.Tensor): The input sequence (B, S, Ds).
+            z (torch.Tensor): The input pairwise. (B, N, N, Dz)
+            mask (torch.Tensor): The mask. (B, N)
             multiplicity (int): The multiplicity. The diffution batch size, default 1
         """
         B = s.size(0)

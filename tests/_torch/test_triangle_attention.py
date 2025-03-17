@@ -37,13 +37,13 @@ class Scenario:
     Scenario(backend="VANILLA", torch_dtype="float16"),
 ])
 def test_triangle_attention_backend(s: Scenario):
+    torch.manual_seed(42)
     metadata_cls = get_attention_backend(s.backend).Metadata
     config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     config_dict["torch_dtype"] = s.torch_dtype
     model_config = ModelConfig(
         pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
         attn_backend=s.backend,
-        skip_create_weights=False,
     )
     dtype = model_config.pretrained_config.torch_dtype
     device = torch.device('cuda')

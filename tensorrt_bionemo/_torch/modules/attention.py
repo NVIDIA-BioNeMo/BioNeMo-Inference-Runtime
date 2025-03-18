@@ -310,7 +310,7 @@ class SelfAttentionPairBias(nn.Module):
             biases=biases,
             metadata=attn_metadata,
             biases_type=PredefinedAttentionBiases.PAIRWISE)
-        o = mha_o.reshape(B, -1, self.c_s)
+        o = mha_o.reshape(B, -1, self.num_heads * self.head_dim)
 
         g = self.proj_g(s).sigmoid()
         o = self.proj_o(g * o)

@@ -99,11 +99,10 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
     single_dev_tri_attn.g_proj.load_weights([dict(weight=g_weights[0])])
     single_dev_tri_attn.cuda()
 
-    torch.cuda.synchronize()
     if tensor_parallel_rank == 0:
         single_dev_output = single_dev_tri_attn.forward(x, biases,
                                                         attn_metadata)
-
+        torch.cuda.synchronize()
         assert multi_dev_output.shape == single_dev_output.shape
         torch.testing.assert_close(multi_dev_output, single_dev_output)
 

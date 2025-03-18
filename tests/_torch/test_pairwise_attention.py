@@ -55,18 +55,14 @@ def test_pairwise_attention_backend(sc: Scenario):
         "weight": ref_attn.proj_q.weight.data.to(dtype),
         "bias": ref_attn.proj_q.bias.data.to(dtype)
     }]
-    k_weights = [
-        {
-            "weight": ref_attn.proj_k.weight.data.to(dtype),
-            "bias": None
-        },
-    ]
-    v_weights = [
-        {
-            "weight": ref_attn.proj_v.weight.data.to(dtype),
-            "bias": None
-        },
-    ]
+    k_weights = [{
+        "weight": ref_attn.proj_k.weight.data.to(dtype),
+        "bias": None
+    }]
+    v_weights = [{
+        "weight": ref_attn.proj_v.weight.data.to(dtype),
+        "bias": None
+    }]
     o_proj_weights = [{
         "weight": ref_attn.proj_o.weight.data.to(dtype),
         "bias": None

@@ -182,7 +182,8 @@ class SelfAttentionPairBias(nn.Module):
         self.inf = inf
 
         self.num_key_value_heads = num_heads
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        # This equal to 1 for self-attention
+        self.num_key_value_groups = num_heads // self.num_key_value_heads
 
         config = config or ModelConfig()
         tp_size = config.mapping.tp_size

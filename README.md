@@ -14,7 +14,7 @@ $ git submodule update --init --recursive
 $ cd 3rdparty/TensorRT-LLM
 # Build TensorRT-LLM from source
 $ git checkout c384d26736acafa8fb9db0b87ab07da12fad8a06
-$ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt
+$ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
 $ pip install -e .
 $ cd ../..
 $ pip install -e .

@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorrt_bionemo.layers as layers
+from enum import IntEnum
 
-from .version import __version__
 
-__all__ = ["layers", "__version__"]
+class AttentionBiasType(IntEnum):
+    triangle = 0
+    pairwise = 1

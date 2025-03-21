@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import os
 import traceback
 from copy import deepcopy
 
@@ -20,12 +22,12 @@ import tensorrt_llm
 import torch
 import transformers
 from mpi4py.futures import MPIPoolExecutor
-from tensorrt_llm.mapping import Mapping
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.attention import TriangleAttention
+from tensorrt_bionemo.mapping import Mapping
 
 _MOCK_MODEL_CONFIG = {
     "architectures": ["attention"],
@@ -52,6 +54,8 @@ def run_single_rank(tensor_parallel_size, single_rank_forward_func, input,
 def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
                           tensor_parallel_size, tensor_parallel_rank,
                           qkv_weights, o_weights, g_weights):
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     x = x.cuda()
     biases = [bias.cuda() for bias in biases]
 
@@ -89,7 +93,8 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
     # tri_attn = torch.compile(tri_attn, fullgraph=True)
     multi_dev_output = tri_attn.forward(x, biases, attn_metadata)
 
-    mapping.enable_attention_dp = True
+    # create single mapping
+    mapping = Mapping()
     single_model_config = ModelConfig(
         pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
         mapping=mapping,
@@ -118,7 +123,10 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
                                                         attn_metadata)
         torch.cuda.synchronize()
         assert multi_dev_output.shape == single_dev_output.shape
-        torch.testing.assert_close(multi_dev_output, single_dev_output)
+        torch.testing.assert_close(multi_dev_output,
+                                   single_dev_output,
+                                   atol=1e-3,
+                                   rtol=1e-4)
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,

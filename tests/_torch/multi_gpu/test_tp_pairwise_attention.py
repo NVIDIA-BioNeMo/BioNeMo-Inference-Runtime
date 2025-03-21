@@ -21,12 +21,12 @@ import tensorrt_llm
 import torch
 import transformers
 from mpi4py.futures import MPIPoolExecutor
-from tensorrt_llm.mapping import Mapping
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.attention import SelfAttentionPairBias
+from tensorrt_bionemo.mapping import Mapping
 
 _MOCK_MODEL_CONFIG = {
     "architectures": ["attention"],
@@ -56,6 +56,7 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
                           q_bias, k_weight, v_weight, o_weight, g_weight,
                           z_weights, z_biases):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     s = s.cuda()
     z = z.cuda()
     mask = mask.cuda()
@@ -94,8 +95,8 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
     pairwise_attn.cuda()
 
     multi_dev_output = pairwise_attn.forward(s, z, mask, attn_metadata)
-
-    mapping.enable_attention_dp = True
+    # create single mapping
+    mapping = Mapping()
     single_model_config = ModelConfig(
         pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
         mapping=mapping,

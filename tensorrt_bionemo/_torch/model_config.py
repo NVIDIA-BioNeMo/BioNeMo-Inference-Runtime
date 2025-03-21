@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from typing import Generic, Optional, TypeVar
 
 import transformers
-from tensorrt_llm.mapping import Mapping
+
+from tensorrt_bionemo.mapping import Mapping
 
 TConfig = TypeVar("TConfig", bound=transformers.PretrainedConfig)
 
@@ -27,7 +28,7 @@ class ModelConfig(Generic[TConfig]):
     pretrained_config: Optional[TConfig] = None
     mapping: Mapping = field(default_factory=Mapping)
     skip_create_weights: bool = False
-
+    triangle_attn_node_chunk_size: int = 0
     attn_backend: str = 'VANILLA'
 
     @classmethod

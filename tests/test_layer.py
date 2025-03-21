@@ -22,8 +22,7 @@ import tensorrt_llm
 import torch
 from tensorrt_llm import Tensor
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils._plain_attn import (RefPairwiseSelfAttention,
-                                    RefTriangleAttention)
+from test_utils.ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
 
 import tensorrt_bionemo
 

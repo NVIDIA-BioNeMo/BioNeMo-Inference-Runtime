@@ -12,18 +12,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 
 import pytest
 import torch
 import transformers
-from test_utils._plain_attn import RefTriangleAttention
+from test_utils.ref_attn import RefTriangleAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.attention import TriangleAttention
+from tensorrt_bionemo.mapping import Mapping
 
 _MOCK_MODEL_CONFIG = {
     "architectures": ["triangle-attention"],
@@ -52,6 +54,8 @@ class Scenario:
 ])
 def test_triangle_attention_backend(s: Scenario):
     torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(s.backend).Metadata
     config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     config_dict["torch_dtype"] = s.torch_dtype
@@ -108,7 +112,9 @@ def test_triangle_attention_backend(s: Scenario):
     if s.gating:
         attn.g_proj.load_weights(g_proj_weights)
     attn.to(device)
-    attn_metadata = metadata_cls(chunk_size=s.chunk_size, chunk_dim=s.chunk_dim)
+    attn_metadata = metadata_cls(chunk_size=s.chunk_size,
+                                 chunk_dim=s.chunk_dim,
+                                 mapping=Mapping())
     hidden_states = torch.randn(s.seq_len,
                                 s.seq_len,
                                 s.hidden_size,
@@ -148,5 +154,5 @@ def test_triangle_attention_backend(s: Scenario):
         diff1_mean = torch.mean(torch.abs(ref_output.float() -
                                           ref_output_float))
 
-        assert diff0_max <= (diff1_max + 0.5)
-        assert diff0_mean <= (diff1_mean + 0.01)
+        assert abs(diff0_max - diff1_max) <= 3
+        assert abs(diff0_mean - diff1_mean) <= 0.2

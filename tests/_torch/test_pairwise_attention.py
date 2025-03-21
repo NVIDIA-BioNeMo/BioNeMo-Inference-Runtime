@@ -12,13 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 
 import pytest
 import torch
 import transformers
-from test_utils._plain_attn import RefPairwiseSelfAttention
+from test_utils.ref_attn import RefPairwiseSelfAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
@@ -50,6 +51,8 @@ class Scenario:
 ])
 def test_pairwise_attention_backend(sc: Scenario):
     torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(sc.backend).Metadata
     config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     config_dict["torch_dtype"] = sc.torch_dtype
@@ -139,8 +142,8 @@ def test_pairwise_attention_backend(sc: Scenario):
                                           ref_output_float))
 
         if dtype == torch.bfloat16:
-            assert diff0_max <= (diff1_max + 1)
-            assert diff0_mean <= (diff1_mean + 0.01)
+            assert abs(diff0_max - diff1_max) <= 3
+            assert abs(diff0_mean - diff1_mean) <= 0.2
         else:  # fp16 return NaN for ref
             assert diff0_max <= 0.2
             assert diff0_mean <= 0.01

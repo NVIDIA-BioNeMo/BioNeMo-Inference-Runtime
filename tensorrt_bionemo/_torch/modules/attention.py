@@ -18,9 +18,11 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm._torch.distributed import ParallelConfig, TensorParallelMode
-from tensorrt_llm._torch.modules.linear import (Linear, WeightMode,
-                                                WeightsLoadingConfig)
+
+from tensorrt_bionemo._torch.distributed import (ParallelConfig,
+                                                 TensorParallelMode)
+from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
+                                                    WeightsLoadingConfig)
 
 from ..attention_backend import AttentionMetadata, PredefinedAttentionBiases
 from ..attention_backend.utils import create_attention
@@ -56,10 +58,6 @@ class TriangleAttention(nn.Module):
         tp_size = config.mapping.tp_size
         tp_rank = config.mapping.tp_rank
         gpus_per_node = config.mapping.gpus_per_node
-        # For data parallelism, we only need to run one GPU
-        if config.mapping.enable_attention_dp:
-            tp_size = 1
-            tp_rank = 0
 
         assert self.num_heads % tp_size == 0
         self.num_heads = self.num_heads // tp_size
@@ -77,6 +75,8 @@ class TriangleAttention(nn.Module):
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
+                data_parallel_size=config.mapping.dp_size,
+                data_parallel_rank=config.mapping.dp_rank,
                 gpus_per_node=gpus_per_node),
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_QKV_LINEAR),
@@ -91,6 +91,8 @@ class TriangleAttention(nn.Module):
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
                 tensor_parallel_mode=TensorParallelMode.ROW,
+                data_parallel_size=config.mapping.dp_size,
+                data_parallel_rank=config.mapping.dp_rank,
                 gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
@@ -105,6 +107,8 @@ class TriangleAttention(nn.Module):
                     tensor_parallel_rank=tp_rank,
                     tensor_parallel_size=tp_size,
                     tensor_parallel_mode=TensorParallelMode.COLUMN,
+                    data_parallel_size=config.mapping.dp_size,
+                    data_parallel_rank=config.mapping.dp_rank,
                     gpus_per_node=gpus_per_node),
                 skip_create_weights=config.skip_create_weights,
             )
@@ -122,7 +126,7 @@ class TriangleAttention(nn.Module):
         biases: Optional[list[torch.Tensor]] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
     ) -> torch.Tensor:
-        if attn_metadata.mapping.tp_size > 1 and not attn_metadata.mapping.enable_attention_dp:
+        if attn_metadata.mapping.tp_size > 1:
             new_biases = []
             new_biases.append(biases[0])
             bias_1_shape = biases[1].shape
@@ -190,11 +194,6 @@ class SelfAttentionPairBias(nn.Module):
         tp_rank = config.mapping.tp_rank
         gpus_per_node = config.mapping.gpus_per_node
 
-        # For data parallelism, we only need to run one GPU
-        if config.mapping.enable_attention_dp:
-            tp_size = 1
-            tp_rank = 0
-
         assert self.num_heads % tp_size == 0
         self.num_heads = self.num_heads // tp_size
         self.num_key_value_heads = self.num_key_value_heads // tp_size
@@ -214,6 +213,8 @@ class SelfAttentionPairBias(nn.Module):
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
+                data_parallel_size=config.mapping.dp_size,
+                data_parallel_rank=config.mapping.dp_rank,
                 gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
@@ -226,7 +227,10 @@ class SelfAttentionPairBias(nn.Module):
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.COLUMN),
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                data_parallel_size=config.mapping.dp_size,
+                data_parallel_rank=config.mapping.dp_rank,
+                gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
         self.proj_v = Linear(
@@ -237,7 +241,10 @@ class SelfAttentionPairBias(nn.Module):
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.COLUMN),
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                data_parallel_size=config.mapping.dp_size,
+                data_parallel_rank=config.mapping.dp_rank,
+                gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
         self.proj_g = Linear(
@@ -248,7 +255,10 @@ class SelfAttentionPairBias(nn.Module):
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.COLUMN),
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                data_parallel_size=config.mapping.dp_size,
+                data_parallel_rank=config.mapping.dp_rank,
+                gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
 
@@ -262,7 +272,10 @@ class SelfAttentionPairBias(nn.Module):
                 parallel_config=ParallelConfig(
                     tensor_parallel_rank=tp_rank,
                     tensor_parallel_size=tp_size,
-                    tensor_parallel_mode=TensorParallelMode.COLUMN),
+                    tensor_parallel_mode=TensorParallelMode.COLUMN,
+                    data_parallel_size=config.mapping.dp_size,
+                    data_parallel_rank=config.mapping.dp_rank,
+                    gpus_per_node=gpus_per_node),
                 skip_create_weights=config.skip_create_weights,
             ),
         )
@@ -274,7 +287,10 @@ class SelfAttentionPairBias(nn.Module):
             parallel_config=ParallelConfig(
                 tensor_parallel_rank=tp_rank,
                 tensor_parallel_size=tp_size,
-                tensor_parallel_mode=TensorParallelMode.ROW),
+                tensor_parallel_mode=TensorParallelMode.ROW,
+                data_parallel_size=config.mapping.dp_size,
+                data_parallel_rank=config.mapping.dp_rank,
+                gpus_per_node=gpus_per_node),
             skip_create_weights=config.skip_create_weights,
         )
         self.attn = create_attention(

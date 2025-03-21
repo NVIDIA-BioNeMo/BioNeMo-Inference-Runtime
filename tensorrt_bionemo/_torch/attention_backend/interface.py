@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from typing import Generic, Optional, Type, TypeVar, Union
 
 import torch
-from tensorrt_llm.mapping import Mapping
+
+from tensorrt_bionemo.mapping import Mapping
 
 
 @dataclass(kw_only=True)

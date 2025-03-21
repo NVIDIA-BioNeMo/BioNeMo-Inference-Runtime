@@ -12,9 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+
 import pytest
 import torch
-from test_utils._plain_attn import plain_pairwise_mhca, plain_triangle_mha
+from test_utils.ref_attn import plain_pairwise_mhca, plain_triangle_mha
 
 from tensorrt_bionemo._torch.attention_backend.interface import (
     AttentionMetadata, PredefinedAttentionBiases)
@@ -67,6 +69,8 @@ def test_vanilla_attention_for_triangle(seq_len, chunk_size, has_biases, dtype):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_vanilla_attention_for_pairwise(batch_size, chunk_size, has_biases,
                                         dtype):
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     num_heads = 8
     head_dim = 32
     layer_idx = 0

@@ -13,8 +13,9 @@ from torch import nn
 from tensorrt_bionemo.mapping import Mapping
 
 # Because the mapping of bionemo is different from tensorrt_llm
-# we need to patch the distributed codes here
-# due to the original code is from tensorrt_llm support only tensor parallel
+# we need to patch the distributed codes here,
+# the original code from tensorrt_llm supports only tensor parallel
+# and the data parallel is not supported
 
 
 class AllGatherMode(str, enum.Enum):
@@ -129,7 +130,7 @@ class AllReduce(nn.Module):
 
     def __init__(self,
                  parallel_config: ParallelConfig,
-                 strategy: AllReduceStrategy = AllReduceStrategy.AUTO):
+                 strategy: AllReduceStrategy = AllReduceStrategy.NCCL):
         super().__init__()
 
         self.parallel_config = parallel_config

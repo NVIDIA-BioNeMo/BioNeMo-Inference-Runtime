@@ -140,12 +140,15 @@ class RefTriangleAttention(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     @classmethod
-    def load_weights(cls,
-                     model: str = "boltz-1",
-                     triattn_layer_path:
-                     str = "pairformer_module.layers.0.tri_att_start.mha",
-                     no_heads: int = 4) -> 'RefTriangleAttention':
-        state_dict = load_hf_weights(model, local_files_only=False)
+    def load_weights(
+            cls,
+            model: str = "boltz-1",
+            triattn_layer_path:
+        str = "pairformer_module.layers.0.tri_att_start.mha",
+            no_heads: int = 4,
+            state_dict: Optional[dict] = None) -> 'RefTriangleAttention':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
         weights_path = [
             f"{triattn_layer_path}.linear_q.weight",
             f"{triattn_layer_path}.linear_k.weight",
@@ -235,8 +238,10 @@ class RefPairwiseSelfAttention(nn.Module):
             cls,
             model: str = "boltz-1",
             pairattn_layer_path: str = "pairformer_module.layers.0.attention",
-            num_heads: int = 16) -> 'RefPairwiseSelfAttention':
-        state_dict = load_hf_weights(model, local_files_only=False)
+            num_heads: int = 16,
+            state_dict: Optional[dict] = None) -> 'RefPairwiseSelfAttention':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{pairattn_layer_path}.norm_s.weight",
              f"{pairattn_layer_path}.norm_s.bias"),

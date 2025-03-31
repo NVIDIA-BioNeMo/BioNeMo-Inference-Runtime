@@ -22,7 +22,7 @@ import tensorrt as trt
 
 from tensorrt_llm._common import precision
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
-                                     concat, expand_dims, matmul, shape,
+                                     concat, expand_dims, matmul, shape, slice,
                                      softmax, split)
 from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
@@ -97,7 +97,8 @@ class TriangleAttention(Module):
                                        bias=False,
                                        dtype=dtype,
                                        tp_group=tp_group,
-                                       tp_size=tp_size)
+                                       tp_size=tp_size,
+                                       gather_output=False)
 
     def forward(self,
                 hidden_states: Tensor,
@@ -106,6 +107,7 @@ class TriangleAttention(Module):
                 attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None):
         qkv = self.qkv_proj(hidden_states, None)
+
         if False:
             # TODO: Call to alpha-fold self-attention plugin, at here
             context = None
@@ -139,14 +141,11 @@ class TriangleAttention(Module):
                 triangle_bias = biases[1]
                 # slice the triangle bias for tp by the head dimension
                 if self.tp_size > 1:
-                    starts = concat([
-                        0, self.num_attention_heads * (self.tp_rank - 1), 0, 0
-                    ])
-                    sizes = concat([
-                        batch_size, self.num_attention_heads, seq_len,
-                        self.attention_head_size
-                    ])
-                    triangle_bias = slice(triangle_bias, starts, sizes)
+                    starts = concat(
+                        [0, self.num_attention_heads * self.tp_rank, 0, 0])
+                    ends = concat(
+                        [1, self.num_attention_heads, seq_len, seq_len])
+                    triangle_bias = slice(triangle_bias, starts, ends)
 
             key = key.permute([0, 1, 3, 2])
             model_type = query.dtype
@@ -174,9 +173,9 @@ class TriangleAttention(Module):
                     shape(attention_probs, 2),
                     shape(value, 2)
                 ]))
+
             context = matmul(attention_probs, value,
                              use_fp32_acc=False).permute([0, 2, 1, 3])
-
             if self.g_proj is not None:
                 g = self.g_proj(hidden_states)
                 g = activation(g, trt.ActivationType.SIGMOID)

@@ -128,15 +128,14 @@ class TriangleAttentionNode(Module):
         seq_len = shape(x, 0)
         if self.dp_size > 1:
             seq_len = floordiv(seq_len, self.dp_size)
-            s_idx = self.dp_rank * seq_len + seq_len
-            e_idx = s_idx + seq_len
+            s_idx = seq_len * self.dp_rank
+            slice_size = seq_len
             starts = concat([s_idx, 0, 0])
-            ends = concat([e_idx, shape(x, 1), shape(x, 2)])
-            x = slice(x, starts, ends)
-
-            starts = concat([s_idx, 0])
-            ends = concat([e_idx, 1, 1, shape(mask_bias, 3)])
-            mask_bias = slice(mask_bias, starts, ends)
+            sizes = concat([slice_size, shape(x, 1), shape(x, 2)])
+            x = slice(x, starts, sizes)
+            starts = concat([s_idx, 0, 0, 0])
+            sizes = concat([slice_size, 1, 1, shape(mask_bias, 3)])
+            mask_bias = slice(mask_bias, starts, sizes)
 
         def _loop_body(sub_chunk):
             sub_x, sub_mask_bias = sub_chunk

@@ -27,34 +27,52 @@ class AttentionBiasType(IntEnum):
     pairwise = 1
 
 
-def chunk_loop(x: Tensor,
+def chunk_loop(tensors: list[Tensor],
                chunk_size: int = 0,
                loop_body: Callable = None,
                reshape_output: bool = True,
                name: str = "chunk_loop_output") -> Tensor:
     if chunk_size == 0 or chunk_size is None:
-        return x
+        if loop_body is not None:
+            return loop_body(tensors)
+        return tensors
+    x = tensors[0]
     bs = shape(x, 0)
     bs = cast(bs, trt.int64)
     chunk_size_tensor = constant(np.array(chunk_size, dtype=np.int64))
     niters = cast(floordiv(bs, chunk_size_tensor), trt.int64)
-    s = []
-    for i in range(1, x.ndim()):
-        s.append(shape(x, i))
-    x = x.view(concat([niters, chunk_size_tensor, *s]))
+
+    # Reshape tensors to have the first dimension be the iteration dimension
+    reshaped_tensors = []
+    for t in tensors:
+        s = []
+        for i in range(1, t.ndim()):
+            s.append(shape(t, i))
+        t = t.view(concat([niters, chunk_size_tensor, *s]))
+        reshaped_tensors.append(t)
     chunk_loop = default_trtnet().add_loop()
     chunk_loop.add_trip_limit(niters.trt_tensor, trt.TripLimit.COUNT)
 
-    iterator = chunk_loop.add_iterator(x.trt_tensor, 0, False)
-    data = _create_tensor(iterator.get_output(0), iterator)
-    if loop_body is not None:
-        data = loop_body(data)
+    data = []
+    for t in reshaped_tensors:
+        # For each tensor, we need to add a loop iterator
+        iterator = chunk_loop.add_iterator(t.trt_tensor, 0, False)
+        data.append(_create_tensor(iterator.get_output(0), iterator))
 
-    trt_output_layer = chunk_loop.add_loop_output(data.trt_tensor,
+    if loop_body is not None:
+        loop_body_output = loop_body(data)
+    else:
+        assert len(data) == 1
+        loop_body_output = data[0]
+
+    trt_output_layer = chunk_loop.add_loop_output(loop_body_output.trt_tensor,
                                                   trt.LoopOutput.CONCATENATE, 0)
     trt_output_layer.name = name
     trt_output_layer.set_input(1, niters.trt_tensor)
     output = _create_tensor(trt_output_layer.get_output(0), trt_output_layer)
     if reshape_output:
+        s = []
+        for i in range(2, output.ndim()):
+            s.append(shape(output, i))
         output = output.view(concat([bs, *s]))
     return output

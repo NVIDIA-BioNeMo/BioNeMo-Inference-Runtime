@@ -140,7 +140,6 @@ def test_triangle_attention_backend(s: Scenario):
         mask = mask.to(dtype)
         ref_node = ref_node.to(dtype)
         ref_output = ref_node(x, mask)
-        print(x.dtype, mask.dtype)
         output = node(x, mask, attn_metadata)
 
     assert output.shape == ref_output.shape

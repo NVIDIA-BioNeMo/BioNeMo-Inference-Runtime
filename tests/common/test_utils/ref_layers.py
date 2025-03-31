@@ -114,11 +114,3 @@ class RefTriangleAttentionNode(nn.Module):
         if not self.starting:
             x = x.transpose(-2, -3)
         return x
-
-
-if __name__ == "__main__":
-    node = RefTriangleAttentionNode.load_weights(
-        model="boltz-1",
-        triattn_layer_path="pairformer_module.layers.0.tri_att_start",
-        no_heads=4,
-        starting=True)

@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import IntEnum
 from typing import Optional
 
 import torch
@@ -22,15 +21,11 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.distributed import (AllGatherMode, ParallelConfig,
                                                  TensorParallelMode, allgather)
 from tensorrt_bionemo._torch.modules.linear import Linear
+from tensorrt_bionemo.layers.triangle_nodes import TriangleAttentionNodeType
 
 from ..attention_backend import AttentionMetadata
 from ..model_config import ModelConfig
 from .attention import TriangleAttention
-
-
-class TriangleAttentionNodeType(IntEnum):
-    STARTING = 0
-    ENDING = 1
 
 
 class TriangleAttentionNode(nn.Module):
@@ -139,7 +134,7 @@ class TriangleAttentionNode(nn.Module):
         triangle_bias = torch.permute(lx,
                                       (2, 0, 1)).unsqueeze(0)  # [1, H, I, J]
 
-        # First if dp_size > 1, we need by dp_size
+        # First if dp_size > 1, we need to split the input by dp_size
         seq_len = x.shape[0]
         if self.dp_size > 1:
             seq_len = seq_len // self.dp_size

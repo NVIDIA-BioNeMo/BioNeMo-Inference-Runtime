@@ -29,6 +29,12 @@ from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
 
 
+class AttentionParams(object):
+
+    def __init__(self, plain_attn_precision: str = 'float32'):
+        self.plain_attn_precision = plain_attn_precision
+
+
 class TriangleAttention(Module):
 
     def __init__(self,
@@ -40,7 +46,7 @@ class TriangleAttention(Module):
                  bias: bool = False,
                  gating: bool = True,
                  dtype: str = None,
-                 tp_group: int = None,
+                 tp_group: list[int] = None,
                  tp_size: int = 1,
                  tp_rank: int = 0):
         super().__init__()
@@ -97,7 +103,7 @@ class TriangleAttention(Module):
                 hidden_states: Tensor,
                 biases: Optional[list[Tensor]] = None,
                 norm_before_bmm1: bool = False,
-                plain_attn_precision: str = 'float32',
+                attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None):
         qkv = self.qkv_proj(hidden_states, None)
         if False:
@@ -146,9 +152,9 @@ class TriangleAttention(Module):
             model_type = query.dtype
 
             # Using attn precision different from model precision to avoid NaN results
-            with precision(plain_attn_precision):
-                query = cast(query, plain_attn_precision)
-                key = cast(key, plain_attn_precision)
+            with precision(attention_params.plain_attn_precision):
+                query = cast(query, attention_params.plain_attn_precision)
+                key = cast(key, attention_params.plain_attn_precision)
                 if norm_before_bmm1:
                     query /= self.norm_factor
                 attention_scores = matmul(query, key)
@@ -200,7 +206,7 @@ class SelfAttentionPairBias(Module):
                  num_heads: int,
                  initial_norm: bool = True,
                  inf: float = 1e6,
-                 eps=1e-05,
+                 eps: float = 1e-05,
                  dtype: str = None,
                  tp_group: int = None,
                  tp_size: int = 1,
@@ -246,6 +252,7 @@ class SelfAttentionPairBias(Module):
                                    tp_group=tp_group,
                                    tp_size=tp_size,
                                    gather_output=False)
+        # TODO: fused k,v at here
         self.proj_k = ColumnLinear(self.c_s,
                                    tp_size * self.kv_size,
                                    bias=False,
@@ -291,7 +298,7 @@ class SelfAttentionPairBias(Module):
                 z: Tensor,
                 mask: Tensor,
                 norm_before_bmm1: bool = False,
-                plain_attn_precision: str = 'float32',
+                attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None):
         if self.norm_s:
             norm_s = self.norm_s(s)
@@ -322,7 +329,7 @@ class SelfAttentionPairBias(Module):
             key = transpose_for_scores(key, is_kv=True)
             value = transpose_for_scores(value, is_kv=True)
             # At here, query has shape [batch_size, num_heads, seq_len, attention_head_size]
-            # key and value have shape [batch_size, num_heads, seq_len, attention_head_size]
+            # key and value have also the same shape
             key = key.permute([0, 1, 3, 2])
             model_type = query.dtype
             pair_bias = self.proj_z(z)
@@ -331,12 +338,14 @@ class SelfAttentionPairBias(Module):
             mask = cast(mask, 'float32')
             mask_bias = (1 - expand_dims(mask, [1, 2])) * (-self.inf)
 
-            with precision(plain_attn_precision):
-                query = cast(query, plain_attn_precision)
-                key = cast(key, plain_attn_precision)
-                value = cast(value, plain_attn_precision)
-                pair_bias = cast(pair_bias, plain_attn_precision)
-                mask_bias = cast(mask_bias, plain_attn_precision)
+            with precision(attention_params.plain_attn_precision):
+                query = cast(query, attention_params.plain_attn_precision)
+                key = cast(key, attention_params.plain_attn_precision)
+                value = cast(value, attention_params.plain_attn_precision)
+                pair_bias = cast(pair_bias,
+                                 attention_params.plain_attn_precision)
+                mask_bias = cast(mask_bias,
+                                 attention_params.plain_attn_precision)
                 if norm_before_bmm1:
                     query /= self.norm_factor
                 attention_scores = matmul(query, key)

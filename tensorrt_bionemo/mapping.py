@@ -36,6 +36,7 @@ class Mapping(object):
             tp_size (int): number of tensor parallel groups
             pp_size (int): number of pipeline parallel groups
         """
+        # pp_size is always 1 for Bionemo
         if tp_size * pp_size * dp_size != world_size:
             raise ValueError(
                 f"tp_size * pp_size * dp_size must be equal to world_size,\
@@ -164,6 +165,20 @@ class Mapping(object):
         p = self.rank + self.tp_size * self.dp_size
         if p >= self.world_size:
             p = p - self.world_size
+        return p
+
+    def prep_dp_rank(self, step: int = 1):
+        """ This function is used to get the previous dp rank for ring reduce """
+        p = self.rank - self.tp_size * step
+        if p < 0:
+            p = p % self.world_size
+        return p
+
+    def next_dp_rank(self, step: int = 1):
+        """ This function is used to get the next dp rank for ring reduce """
+        p = self.rank + self.tp_size * step
+        if p >= self.world_size:
+            p = p % self.world_size
         return p
 
     def pp_layers(self, num_layers: int) -> List[int]:

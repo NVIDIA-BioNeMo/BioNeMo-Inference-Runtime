@@ -143,17 +143,16 @@ class RefTriangleAttention(nn.Module):
     def load_weights(
             cls,
             model: str = "boltz-1",
-            triattn_layer_path:
-        str = "pairformer_module.layers.0.tri_att_start.mha",
+            layer_path: str = "pairformer_module.layers.0.tri_att_start.mha",
             no_heads: int = 4,
             state_dict: Optional[dict] = None) -> 'RefTriangleAttention':
         if state_dict is None:
             state_dict = load_hf_weights(model, local_files_only=False)
         weights_path = [
-            f"{triattn_layer_path}.linear_q.weight",
-            f"{triattn_layer_path}.linear_k.weight",
-            f"{triattn_layer_path}.linear_v.weight",
-            f"{triattn_layer_path}.linear_o.weight",
+            f"{layer_path}.linear_q.weight",
+            f"{layer_path}.linear_k.weight",
+            f"{layer_path}.linear_v.weight",
+            f"{layer_path}.linear_o.weight",
         ]
         w_q = state_dict[weights_path[0]]
         c_q = c_k = c_v = w_q.shape[1]
@@ -161,7 +160,7 @@ class RefTriangleAttention(nn.Module):
         attn = cls(c_q, c_k, c_v, c_hidden, no_heads)
         layers = [attn.linear_q, attn.linear_k, attn.linear_v, attn.linear_o]
         if attn.gating:
-            weights_path.append(f"{triattn_layer_path}.linear_g.weight")
+            weights_path.append(f"{layer_path}.linear_g.weight")
             layers.append(attn.linear_g)
         for weights_path, layer in zip(weights_path, layers):
             layer.weight.data.copy_(state_dict[weights_path])
@@ -237,23 +236,20 @@ class RefPairwiseSelfAttention(nn.Module):
     def load_weights(
             cls,
             model: str = "boltz-1",
-            pairattn_layer_path: str = "pairformer_module.layers.0.attention",
+            layer_path: str = "pairformer_module.layers.0.attention",
             num_heads: int = 16,
             state_dict: Optional[dict] = None) -> 'RefPairwiseSelfAttention':
         if state_dict is None:
             state_dict = load_hf_weights(model, local_files_only=False)
         weights_biases_path = [
-            (f"{pairattn_layer_path}.norm_s.weight",
-             f"{pairattn_layer_path}.norm_s.bias"),
-            (f"{pairattn_layer_path}.proj_q.weight",
-             f"{pairattn_layer_path}.proj_q.bias"),
-            (f"{pairattn_layer_path}.proj_k.weight", None),
-            (f"{pairattn_layer_path}.proj_v.weight", None),
-            (f"{pairattn_layer_path}.proj_g.weight", None),
-            (f"{pairattn_layer_path}.proj_z.0.weight",
-             f"{pairattn_layer_path}.proj_z.0.bias"),
-            (f"{pairattn_layer_path}.proj_z.1.weight", None),
-            (f"{pairattn_layer_path}.proj_o.weight", None),
+            (f"{layer_path}.norm_s.weight", f"{layer_path}.norm_s.bias"),
+            (f"{layer_path}.proj_q.weight", f"{layer_path}.proj_q.bias"),
+            (f"{layer_path}.proj_k.weight", None),
+            (f"{layer_path}.proj_v.weight", None),
+            (f"{layer_path}.proj_g.weight", None),
+            (f"{layer_path}.proj_z.0.weight", f"{layer_path}.proj_z.0.bias"),
+            (f"{layer_path}.proj_z.1.weight", None),
+            (f"{layer_path}.proj_o.weight", None),
         ]
         c_s = state_dict[weights_biases_path[0][0]].shape[0]
         c_z = state_dict[weights_biases_path[5][0]].shape[0]

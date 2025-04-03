@@ -32,6 +32,11 @@ class TriangleAttentionNodeType(IntEnum):
     ENDING = 1
 
 
+class TriangleMultiplicationNodeType(IntEnum):
+    INCOMING = 0
+    OUTGOING = 1
+
+
 class TriangleAttentionNode(Module):
 
     def __init__(

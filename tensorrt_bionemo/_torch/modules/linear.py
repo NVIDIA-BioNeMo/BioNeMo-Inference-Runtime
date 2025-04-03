@@ -151,7 +151,7 @@ class Linear(nn.Module):
         self._weights_created = True
 
     def apply_linear(self, input, weight, bias):
-        output = F.linear(input, self.weight, bias)
+        output = F.linear(input, weight, bias)
         return output
 
     def forward(
@@ -241,6 +241,6 @@ class Linear(nn.Module):
                                            self.tp_rank, self.tp_mode, device)
                 v_bias = load_weight_shard(weights[1]['bias'], self.tp_size,
                                            self.tp_rank, self.tp_mode, device)
-                copy(self.bias, torch.cat((v_bias, k_bias)))
+                copy(self.bias, torch.cat((k_bias, v_bias)))
         else:
             raise ValueError(f'unsupported weight mode: {weight_mode}')

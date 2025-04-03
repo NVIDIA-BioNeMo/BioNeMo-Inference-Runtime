@@ -28,17 +28,18 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.triangle_nodes import (
-    TriangleAttentionNode, TriangleAttentionNodeType)
+    TriangleAttentionNode, TriangleAttentionNodeType,
+    TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
 
 _MOCK_MODEL_CONFIG = {
-    "architectures": ["attention"],
+    "architectures": ["triangle_nodes"],
     "torch_dtype": "float32",
 }
 
 
 @dataclass(kw_only=True, frozen=True)
-class Scenario:
+class AttnNodeScenario:
     c_in: int = 32
     c_hidden: int = 8
     num_heads: int = 4
@@ -50,71 +51,131 @@ class Scenario:
     seq_len: int = 128
 
 
-def _generate_scenarios() -> list[Scenario]:
+@dataclass(kw_only=True, frozen=True)
+class MulNodeScenario:
+    dim: int = 4
+    seq_len: int = 4
+    torch_dtype: str = "float32"
+    node_type: str = TriangleMultiplicationNodeType.OUTGOING
+    tp_size: int = 1
+    dp_size: int = 1
+
+
+def _generate_attn_node_scenarios() -> list[AttnNodeScenario]:
     ret = []
     total_devs = torch.cuda.device_count()
 
     for node_type in [
             TriangleAttentionNodeType.STARTING, TriangleAttentionNodeType.ENDING
     ]:
-        ret.append(Scenario(tp_size=2, dp_size=1, node_type=node_type))
+        ret.append(AttnNodeScenario(tp_size=2, dp_size=1, node_type=node_type))
         ret.append(
-            Scenario(tp_size=2, dp_size=1, chunk_size=16, node_type=node_type))
+            AttnNodeScenario(tp_size=2,
+                             dp_size=1,
+                             chunk_size=16,
+                             node_type=node_type))
         ret.append(
-            Scenario(tp_size=2, dp_size=1, chunk_size=8, node_type=node_type))
+            AttnNodeScenario(tp_size=2,
+                             dp_size=1,
+                             chunk_size=8,
+                             node_type=node_type))
 
-        ret.append(Scenario(tp_size=1, dp_size=2, node_type=node_type))
+        ret.append(AttnNodeScenario(tp_size=1, dp_size=2, node_type=node_type))
         ret.append(
-            Scenario(tp_size=1, dp_size=2, chunk_size=16, node_type=node_type))
+            AttnNodeScenario(tp_size=1,
+                             dp_size=2,
+                             chunk_size=16,
+                             node_type=node_type))
         ret.append(
-            Scenario(tp_size=1, dp_size=2, chunk_size=8, node_type=node_type))
+            AttnNodeScenario(tp_size=1,
+                             dp_size=2,
+                             chunk_size=8,
+                             node_type=node_type))
 
         if total_devs >= 4:
-            ret.append(Scenario(tp_size=1, dp_size=4, node_type=node_type))
-            ret.append(Scenario(tp_size=4, dp_size=1, node_type=node_type))
-            ret.append(Scenario(tp_size=2, dp_size=2, node_type=node_type))
             ret.append(
-                Scenario(tp_size=2,
-                         dp_size=2,
-                         chunk_size=16,
-                         node_type=node_type))
+                AttnNodeScenario(tp_size=1, dp_size=4, node_type=node_type))
             ret.append(
-                Scenario(tp_size=2,
-                         dp_size=2,
-                         chunk_size=8,
-                         node_type=node_type))
+                AttnNodeScenario(tp_size=4, dp_size=1, node_type=node_type))
+            ret.append(
+                AttnNodeScenario(tp_size=2, dp_size=2, node_type=node_type))
+            ret.append(
+                AttnNodeScenario(tp_size=2,
+                                 dp_size=2,
+                                 chunk_size=16,
+                                 node_type=node_type))
+            ret.append(
+                AttnNodeScenario(tp_size=2,
+                                 dp_size=2,
+                                 chunk_size=8,
+                                 node_type=node_type))
 
         if total_devs >= 8:
-            ret.append(Scenario(tp_size=1, dp_size=8, node_type=node_type))
             ret.append(
-                Scenario(tp_size=8,
-                         dp_size=1,
-                         node_type=node_type,
-                         num_heads=8,
-                         c_hidden=4))
-            ret.append(Scenario(tp_size=4, dp_size=2, node_type=node_type))
+                AttnNodeScenario(tp_size=1, dp_size=8, node_type=node_type))
             ret.append(
-                Scenario(tp_size=4,
-                         dp_size=2,
-                         chunk_size=16,
-                         node_type=node_type))
+                AttnNodeScenario(tp_size=8,
+                                 dp_size=1,
+                                 node_type=node_type,
+                                 num_heads=8,
+                                 c_hidden=4))
             ret.append(
-                Scenario(tp_size=4,
-                         dp_size=2,
-                         chunk_size=8,
-                         node_type=node_type))
+                AttnNodeScenario(tp_size=4, dp_size=2, node_type=node_type))
+            ret.append(
+                AttnNodeScenario(tp_size=4,
+                                 dp_size=2,
+                                 chunk_size=16,
+                                 node_type=node_type))
+            ret.append(
+                AttnNodeScenario(tp_size=4,
+                                 dp_size=2,
+                                 chunk_size=8,
+                                 node_type=node_type))
 
-            ret.append(Scenario(tp_size=2, dp_size=4, node_type=node_type))
             ret.append(
-                Scenario(tp_size=2,
-                         dp_size=4,
-                         chunk_size=16,
-                         node_type=node_type))
+                AttnNodeScenario(tp_size=2, dp_size=4, node_type=node_type))
             ret.append(
-                Scenario(tp_size=2,
-                         dp_size=4,
-                         chunk_size=8,
-                         node_type=node_type))
+                AttnNodeScenario(tp_size=2,
+                                 dp_size=4,
+                                 chunk_size=16,
+                                 node_type=node_type))
+            ret.append(
+                AttnNodeScenario(tp_size=2,
+                                 dp_size=4,
+                                 chunk_size=8,
+                                 node_type=node_type))
+
+    return ret
+
+
+def _generate_mul_node_scenarios() -> list[MulNodeScenario]:
+    ret = []
+    total_devs = torch.cuda.device_count()
+
+    for node_type in [
+            TriangleMultiplicationNodeType.OUTGOING,
+            TriangleMultiplicationNodeType.INCOMING
+    ]:
+        ret.append(MulNodeScenario(tp_size=2, dp_size=1, node_type=node_type))
+        ret.append(MulNodeScenario(tp_size=1, dp_size=4, node_type=node_type))
+
+        if total_devs >= 4:
+            ret.append(
+                MulNodeScenario(tp_size=1, dp_size=4, node_type=node_type))
+            ret.append(
+                MulNodeScenario(tp_size=4, dp_size=1, node_type=node_type))
+            ret.append(
+                MulNodeScenario(tp_size=2, dp_size=2, node_type=node_type))
+
+        if total_devs >= 8:
+            ret.append(
+                MulNodeScenario(tp_size=1, dp_size=8, node_type=node_type))
+            ret.append(
+                MulNodeScenario(tp_size=8, dp_size=1, node_type=node_type))
+            ret.append(
+                MulNodeScenario(tp_size=4, dp_size=2, node_type=node_type))
+            ret.append(
+                MulNodeScenario(tp_size=2, dp_size=4, node_type=node_type))
 
     return ret
 
@@ -131,7 +192,20 @@ def run_triangle_attn_node_single_rank(single_rank_forward_func, x, mask,
     return True
 
 
-def _load_weights(m, weights, biases):
+def run_triangle_mul_node_single_rank(single_rank_forward_func, x, mask,
+                                      weights, biases, scenario):
+    import tensorrt_llm
+    rank = tensorrt_llm.mpi_rank()
+    torch.cuda.set_device(rank)
+    try:
+        single_rank_forward_func(x, mask, weights, biases, scenario, rank)
+    except Exception:
+        traceback.print_exc()
+        raise
+    return True
+
+
+def _load_weights_attn_node(m, weights, biases):
     linear_weight = weights["linear"]
     norm_weight = weights["norm"]
     norm_bias = biases["norm"]
@@ -153,6 +227,24 @@ def _load_weights(m, weights, biases):
     ])
     m.mha.o_proj.load_weights([dict(weight=o_weights[0])])
     m.mha.g_proj.load_weights([dict(weight=g_weights[0])])
+
+
+def _load_weights_mul_node(m, weights, biases):
+    m.norm_in.weight.data.copy_(weights["norm_in"])
+    m.norm_in.bias.data.copy_(biases["norm_in"])
+    m.p_in.load_weights([
+        dict(weight=weights["p_in"][0]),
+        dict(weight=weights["p_in"][1]),
+    ])
+    m.g_in.load_weights([
+        dict(weight=weights["g_in"][0]),
+        dict(weight=weights["g_in"][1]),
+    ])
+
+    m.norm_out.weight.data.copy_(weights["norm_out"])
+    m.norm_out.bias.data.copy_(biases["norm_out"])
+    m.p_out.load_weights([dict(weight=weights["p_out"])])
+    m.g_out.load_weights([dict(weight=weights["g_out"])])
 
 
 def _triangle_attn_node_forward(x, mask, weights, biases, scenario, rank):
@@ -192,9 +284,11 @@ def _triangle_attn_node_forward(x, mask, weights, biases, scenario, rank):
     )
     multi_devs_tri_attn_node.cuda()
     multi_devs_tri_attn_node.eval()
-    _load_weights(multi_devs_tri_attn_node, weights, biases)
+    _load_weights_attn_node(multi_devs_tri_attn_node, weights, biases)
 
-    multi_devs_output = multi_devs_tri_attn_node.forward(x, mask, attn_metadata)
+    with torch.inference_mode():
+        multi_devs_output = multi_devs_tri_attn_node.forward(
+            x, mask, attn_metadata)
 
     mapping = Mapping()
     single_model_config = ModelConfig(
@@ -213,12 +307,70 @@ def _triangle_attn_node_forward(x, mask, weights, biases, scenario, rank):
         dtype=dtype,
         config=single_model_config,
     )
-    _load_weights(single_dev_tri_attn_node, weights, biases)
+    _load_weights_attn_node(single_dev_tri_attn_node, weights, biases)
     single_dev_tri_attn_node.cuda()
     single_dev_tri_attn_node.eval()
 
-    single_dev_output = single_dev_tri_attn_node.forward(x, mask, attn_metadata)
+    with torch.inference_mode():
+        single_dev_output = single_dev_tri_attn_node.forward(
+            x, mask, attn_metadata)
     torch.cuda.synchronize()
+    torch.testing.assert_close(multi_devs_output,
+                               single_dev_output,
+                               atol=1e-3,
+                               rtol=1e-2)
+
+
+def _triangle_mul_node_forward(x, mask, weights, biases, scenario, rank):
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    tp_size = scenario.tp_size
+    dp_size = scenario.dp_size
+    dim = scenario.dim
+
+    x = x.cuda()
+    mask = mask.cuda()
+    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
+    mapping = Mapping(world_size=tp_size * dp_size,
+                      tp_size=tp_size,
+                      dp_size=dp_size,
+                      rank=rank)
+    model_config = ModelConfig(
+        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
+        mapping=mapping)
+    dtype = model_config.pretrained_config.torch_dtype
+
+    multi_devs_tri_mul_node = TriangleMultiplicationNode(
+        dim=dim,
+        dtype=dtype,
+        config=model_config,
+        multiplication_type=scenario.node_type,
+    )
+    multi_devs_tri_mul_node.cuda()
+    multi_devs_tri_mul_node.eval()
+    _load_weights_mul_node(multi_devs_tri_mul_node, weights, biases)
+
+    with torch.inference_mode():
+        multi_devs_output = multi_devs_tri_mul_node.forward(x, mask)
+    torch.cuda.synchronize(torch.cuda.current_device())
+    mapping = Mapping()
+    single_model_config = ModelConfig(
+        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
+        mapping=mapping)
+
+    single_dev_tri_mul_node = TriangleMultiplicationNode(
+        dim=dim,
+        dtype=dtype,
+        config=single_model_config,
+        multiplication_type=scenario.node_type,
+    )
+    single_dev_tri_mul_node.cuda()
+    single_dev_tri_mul_node.eval()
+    _load_weights_mul_node(single_dev_tri_mul_node, weights, biases)
+
+    with torch.inference_mode():
+        single_dev_output = single_dev_tri_mul_node.forward(x, mask)
+    torch.cuda.synchronize(torch.cuda.current_device())
     torch.testing.assert_close(multi_devs_output,
                                single_dev_output,
                                atol=1e-3,
@@ -227,8 +379,8 @@ def _triangle_attn_node_forward(x, mask, weights, biases, scenario, rank):
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
                     reason='needs 2 GPUs to run this test')
-@pytest.mark.parametrize("scenario", _generate_scenarios())
-def test_triangle_attn_node_parallelism(scenario: Scenario):
+@pytest.mark.parametrize("scenario", _generate_attn_node_scenarios())
+def test_triangle_attn_node_parallelism(scenario: AttnNodeScenario):
     torch.manual_seed(42)
     x = torch.randn(scenario.seq_len, scenario.seq_len, scenario.c_in)
     mask = torch.randn(scenario.seq_len, scenario.seq_len)
@@ -253,6 +405,45 @@ def test_triangle_attn_node_parallelism(scenario: Scenario):
         results = executor.map(
             run_triangle_attn_node_single_rank,
             *zip(*[(_triangle_attn_node_forward, x, mask, weights, biases,
+                    scenario)] * world_size))
+        for r in results:
+            assert r is True
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2,
+                    reason='needs 2 GPUs to run this test')
+@pytest.mark.parametrize("scenario", _generate_mul_node_scenarios())
+def test_triangle_mul_node_parallelism(scenario: MulNodeScenario):
+    torch.manual_seed(42)
+    x = torch.rand(scenario.seq_len, scenario.seq_len, scenario.dim)
+    mask = torch.randn(scenario.seq_len, scenario.seq_len)
+    weights = {
+        "norm_in":
+        torch.randn(scenario.dim),
+        "p_in": [
+            torch.randn(scenario.dim, scenario.dim),
+            torch.randn(scenario.dim, scenario.dim),
+        ],
+        "g_in": [
+            torch.randn(scenario.dim, scenario.dim),
+            torch.randn(scenario.dim, scenario.dim),
+        ],
+        "norm_out":
+        torch.randn(scenario.dim),
+        "p_out":
+        torch.randn(scenario.dim, scenario.dim),
+        "g_out":
+        torch.randn(scenario.dim, scenario.dim),
+    }
+    biases = {
+        "norm_in": torch.randn(scenario.dim),
+        "norm_out": torch.randn(scenario.dim),
+    }
+    world_size = scenario.tp_size * scenario.dp_size
+    with MPIPoolExecutor(max_workers=world_size) as executor:
+        results = executor.map(
+            run_triangle_mul_node_single_rank,
+            *zip(*[(_triangle_mul_node_forward, x, mask, weights, biases,
                     scenario)] * world_size))
         for r in results:
             assert r is True

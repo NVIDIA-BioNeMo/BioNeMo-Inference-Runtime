@@ -18,10 +18,13 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.distributed import (AllGatherMode, ParallelConfig,
+from tensorrt_bionemo._torch.distributed import (AllGatherMode, DPCommManager,
+                                                 ParallelConfig,
                                                  TensorParallelMode, allgather)
-from tensorrt_bionemo._torch.modules.linear import Linear
-from tensorrt_bionemo.layers.triangle_nodes import TriangleAttentionNodeType
+from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
+                                                    WeightsLoadingConfig)
+from tensorrt_bionemo.layers.triangle_nodes import (
+    TriangleAttentionNodeType, TriangleMultiplicationNodeType)
 
 from ..attention_backend import AttentionMetadata
 from ..model_config import ModelConfig
@@ -181,29 +184,193 @@ class TriangleAttentionNode(nn.Module):
 
 class TriangleAttentionStartingNode(TriangleAttentionNode):
 
-    def __init__(self,
-                 c_in: int,
-                 c_hidden: int,
-                 num_heads: int,
-                 inf: float = 1e9,
-                 layer_idx: int = 0,
-                 dtype: torch.dtype = None,
-                 config: Optional[ModelConfig] = None):
-        super().__init__(c_in, c_hidden, num_heads,
-                         TriangleAttentionNodeType.STARTING, inf, layer_idx,
-                         dtype, config)
+    def __init__(self, *args, **kwargs):
+        kwargs['node_type'] = TriangleAttentionNodeType.STARTING
+        super().__init__(*args, **kwargs)
 
 
 class TriangleAttentionEndingNode(TriangleAttentionNode):
 
+    def __init__(self, *args, **kwargs):
+        kwargs['node_type'] = TriangleAttentionNodeType.ENDING
+        super().__init__(*args, **kwargs)
+
+
+class TriangleMultiplicationNode(nn.Module):
+
     def __init__(self,
-                 c_in: int,
-                 c_hidden: int,
-                 num_heads: int,
-                 inf: float = 1e9,
-                 layer_idx: int = 0,
+                 dim: int = 128,
+                 eps: float = 1e-5,
+                 multiplication_type:
+                 TriangleMultiplicationNodeType = TriangleMultiplicationNodeType
+                 .OUTGOING,
                  dtype: torch.dtype = None,
-                 config: Optional[ModelConfig] = None):
-        super().__init__(c_in, c_hidden, num_heads,
-                         TriangleAttentionNodeType.ENDING, inf, layer_idx,
-                         dtype, config)
+                 config: Optional[ModelConfig] = None) -> None:
+        super().__init__()
+        config = config or ModelConfig()
+        self.dp_size = config.mapping.dp_size
+        self.dp_rank = config.mapping.dp_rank
+        self.tp_size = config.mapping.tp_size
+        self.tp_rank = config.mapping.tp_rank
+        self.gpus_per_node = config.mapping.gpus_per_node
+
+        self.dp_comm = None
+        if self.dp_size > 1:
+            DPCommManager.init_dp_comm(config.mapping)
+            self.dp_comm = DPCommManager()
+        self.dim = dim // self.tp_size
+        self.multiplication_type = multiplication_type
+        self.norm_in = nn.LayerNorm(self.dim * self.tp_size,
+                                    dtype=dtype,
+                                    eps=eps)
+        col_parallel_config = ParallelConfig(
+            tensor_parallel_rank=self.tp_rank,
+            tensor_parallel_size=self.tp_size,
+            data_parallel_size=self.dp_size,
+            data_parallel_rank=self.dp_rank,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gpus_per_node=self.gpus_per_node,
+            gather_output=False)
+        self.p_in = Linear(self.dim * self.tp_size,
+                           2 * self.dim * self.tp_size,
+                           bias=False,
+                           dtype=dtype,
+                           parallel_config=col_parallel_config,
+                           weights_loading_config=WeightsLoadingConfig(
+                               weight_mode=WeightMode.FUSED_KV_LINEAR),
+                           skip_create_weights=config.skip_create_weights)
+        self.g_in = Linear(self.dim * self.tp_size,
+                           2 * self.dim * self.tp_size,
+                           bias=False,
+                           dtype=dtype,
+                           parallel_config=col_parallel_config,
+                           weights_loading_config=WeightsLoadingConfig(
+                               weight_mode=WeightMode.FUSED_KV_LINEAR),
+                           skip_create_weights=config.skip_create_weights)
+        # Use float32 for the output layers
+        self.norm_out = nn.LayerNorm(self.dim * self.tp_size,
+                                     dtype=torch.float32,
+                                     eps=eps)
+        self.p_out = Linear(self.dim * self.tp_size,
+                            self.dim * self.tp_size,
+                            bias=False,
+                            dtype=torch.float32,
+                            parallel_config=ParallelConfig(
+                                tensor_parallel_rank=self.tp_rank,
+                                tensor_parallel_size=self.tp_size,
+                                data_parallel_size=self.dp_size,
+                                data_parallel_rank=self.dp_rank,
+                                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                                gpus_per_node=self.gpus_per_node,
+                                gather_output=True),
+                            skip_create_weights=config.skip_create_weights)
+        self.g_out = Linear(self.dim * self.tp_size,
+                            self.dim * self.tp_size,
+                            bias=False,
+                            dtype=torch.float32,
+                            parallel_config=ParallelConfig(
+                                tensor_parallel_rank=self.tp_rank,
+                                tensor_parallel_size=self.tp_size,
+                                data_parallel_size=self.dp_size,
+                                data_parallel_rank=self.dp_rank,
+                                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                                gpus_per_node=self.gpus_per_node,
+                                gather_output=True),
+                            skip_create_weights=config.skip_create_weights)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): input tensor, shape [1, I, J, c_in]
+            mask (torch.Tensor): mask tensor [1, I, J]
+        """
+        # if self.tp_size > 1 or self.dp_size > 1:
+        parallel_config = ParallelConfig(
+            tensor_parallel_rank=self.tp_rank,
+            tensor_parallel_size=self.tp_size,
+            data_parallel_size=self.dp_size,
+            data_parallel_rank=self.dp_rank,
+            gpus_per_node=self.gpus_per_node,
+            gather_output=True,
+        )
+        if x.ndim == 4:
+            x = x.squeeze(0)
+        if mask.ndim == 3:
+            mask = mask.squeeze(0)
+        x = self.norm_in(x)
+        seq_len = x.shape[0]
+        if self.dp_size > 1:
+            seq_len = seq_len // self.dp_size
+            st = self.dp_rank * seq_len
+            et = (self.dp_rank + 1) * seq_len
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                x = x[st:et, ...]
+                mask = mask[st:et, ...]
+            elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
+                x = x[:, st:et, ...]
+                mask = mask[:, st:et, ...]
+        x_in = x
+        x = self.p_in(x) * self.g_in(x).sigmoid()
+        x = x * mask.unsqueeze(-1)
+
+        a, b = x.float().split([self.dim, self.dim], dim=-1)
+        a = a.contiguous()
+        b = b.contiguous()
+
+        def _enisum_compute(a_, b_):
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                return torch.einsum("ikd,jkd->ijd", a_, b_)
+            else:
+                return torch.einsum("kid,kjd->ijd", a_, b_)
+
+        # Ring reduce-here
+        if self.dp_size > 1:
+            enisum_results = [
+                None,
+            ] * self.dp_size
+            enisum_results[self.dp_rank] = _enisum_compute(a, b)
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                b_recv = torch.zeros_like(b)
+                buffers = [b, b_recv]  # double buffers
+                send_idx = 0
+                recv_idx = 1
+                for i in range(1, self.dp_size):
+                    self.dp_comm.batch_isend_irecv(buffers[send_idx],
+                                                   buffers[recv_idx])
+                    enisum_results[(self.dp_rank - i) %
+                                   self.dp_size] = _enisum_compute(
+                                       a, buffers[recv_idx])
+                    recv_idx = send_idx
+                    send_idx = (send_idx + 1) % 2
+                x = torch.cat(enisum_results, dim=1)
+            else:
+                a_recv = torch.zeros_like(a)
+                buffers = [a, a_recv]  # double buffers
+                send_idx = 0
+                recv_idx = 1
+                for i in range(1, self.dp_size):
+                    self.dp_comm.batch_isend_irecv(buffers[send_idx],
+                                                   buffers[recv_idx])
+                    enisum_results[(self.dp_rank - i) %
+                                   self.dp_size] = _enisum_compute(
+                                       buffers[recv_idx], b)
+                    recv_idx = send_idx
+                    send_idx = (send_idx + 1) % 2
+                x = torch.cat(enisum_results, dim=0)
+        else:
+            x = _enisum_compute(a, b)
+        x = x.contiguous()
+        # need to gather here for LayerNorm
+        if self.tp_size > 1:
+            x = allgather(x, parallel_config, mode=AllGatherMode.TP)
+        pout_x = self.p_out(self.norm_out(x))
+        gout_x = self.g_out(x_in.float()).sigmoid()
+        x = pout_x * gout_x
+        x = x.contiguous()
+        if self.dp_size > 1:
+            gather_dim = 0 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 1
+            x = allgather(x,
+                          parallel_config,
+                          gather_dim=gather_dim,
+                          mode=AllGatherMode.DP)
+        return x

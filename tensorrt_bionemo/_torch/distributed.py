@@ -201,7 +201,7 @@ class DPComm:
                           dest=1,
                           tag=0) -> torch.Tensor:
         dest_rank = self.mapping.next_dp_rank(step=dest)
-        src_rank = self.mapping.prep_dp_rank(step=src)
+        src_rank = self.mapping.prev_dp_rank(step=src)
         send_op = dist.P2POp(dist.isend, send_tensor, dest_rank, tag=tag)
         recv_op = dist.P2POp(dist.irecv, recv_tensor, src_rank, tag=tag)
         reqs = dist.batch_isend_irecv([send_op, recv_op])

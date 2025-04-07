@@ -13,23 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .plugin import _load_plugin_lib
-from .version import __version__
+from .plugin import TRT_BNM_PLUGIN_NAMESPACE, _load_plugin_lib
 
-_inited = False
-
-
-def _init() -> None:
-    global _inited
-    if _inited:
-        return
-    _inited = True
-    # load plugin lib
-    _load_plugin_lib()
-
-
-_init()
-
-import tensorrt_bionemo.layers as layers
-
-__all__ = ["layers", "__version__"]
+__all__ = ['TRT_BNM_PLUGIN_NAMESPACE', '_load_plugin_lib']

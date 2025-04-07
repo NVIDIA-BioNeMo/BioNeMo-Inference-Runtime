@@ -17,6 +17,9 @@ $ git checkout 9b931c0f6305aefa3660e6fb84a76a42c0eef167
 $ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
 $ pip install -e .
 $ cd ../..
+# Build TRT plugins for TensorRT-BioNemo
+$ ./scripts/build_cpp.sh
+# Install as develop mode
 $ pip install -e .
 ```
 

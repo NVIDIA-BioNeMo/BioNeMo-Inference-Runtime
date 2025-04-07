@@ -155,7 +155,7 @@ class Mapping(object):
     def is_first_pp_rank(self):
         return self.pp_rank == 0
 
-    def prep_pp_rank(self):
+    def prev_pp_rank(self):
         p = self.rank - self.tp_size * self.dp_size
         if p < 0:
             p = p + self.world_size
@@ -167,7 +167,7 @@ class Mapping(object):
             p = p - self.world_size
         return p
 
-    def prep_dp_rank(self, step: int = 1):
+    def prev_dp_rank(self, step: int = 1):
         """ This function is used to get the previous dp rank for ring reduce """
         p = self.rank - self.tp_size * step
         if p < 0:

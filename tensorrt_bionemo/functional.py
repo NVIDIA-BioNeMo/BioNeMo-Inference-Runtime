@@ -81,13 +81,17 @@ def chunk_loop(tensors: list[Tensor],
     return output
 
 
-def send_recv(send_tensor: Tensor, src: int, tgt: int) -> Tensor:
+def send_recv(send_tensor: Tensor,
+              src: int,
+              tgt: int,
+              group_stride: int = 1) -> Tensor:
     '''
     Add an operation that performs a send from a rank to another and a recv from another rank to a rank, simunestously.
     Parameters:
         send_tensor (Tensor): The tensor to send.
         src (int): The source rank.
         tgt (int): The target rank.
+        group_stride (int): The stride of the group.
     Returns:
         The received tensor.
     '''
@@ -99,11 +103,14 @@ def send_recv(send_tensor: Tensor, src: int, tgt: int) -> Tensor:
                           trt.PluginFieldType.INT32)
     tgt = trt.PluginField("tgt_rank", np.array(tgt, dtype=np.int32),
                           trt.PluginFieldType.INT32)
+    group_stride = trt.PluginField("group_stride",
+                                   np.array(group_stride, dtype=np.int32),
+                                   trt.PluginFieldType.INT32)
     p_dtype = default_net().plugin_config.nccl_plugin
     pf_type = trt.PluginField(
         "type_id", np.array([int(str_dtype_to_trt(p_dtype))], np.int32),
         trt.PluginFieldType.INT32)
-    pfc = trt.PluginFieldCollection([src, tgt, pf_type])
+    pfc = trt.PluginFieldCollection([src, tgt, group_stride, pf_type])
     send_recv_plug = send_recv_plg_creator.create_plugin("send_recv", pfc)
     plug_inputs = [send_tensor.cast(p_dtype).trt_tensor]
 

@@ -26,13 +26,13 @@ def test_mapping():
                 rank=0,
                 gpus_per_node=8,
                 tp_size=2,
-                dp_size=2,
+                dcp_size=2,
                 pp_size=2)
     assert len(m.tp_groups) == 4
-    assert len(m.dp_groups) == 4
+    assert len(m.dcp_groups) == 4
     assert len(m.pp_groups) == 4
     assert m.tp_group == [0, 1]
-    assert m.dp_group == [0, 2]
+    assert m.dcp_group == [0, 2]
     assert m.pp_group == [0, 4]
     assert m.is_first_pp_rank()
     assert m.prep_pp_rank() == 4
@@ -42,13 +42,13 @@ def test_mapping():
                 rank=5,
                 gpus_per_node=8,
                 tp_size=2,
-                dp_size=4,
+                dcp_size=4,
                 pp_size=1)
     assert len(m.tp_groups) == 4
-    assert len(m.dp_groups) == 2
+    assert len(m.dcp_groups) == 2
     assert len(m.pp_groups) == 8
     assert m.tp_group == [4, 5]
-    assert m.dp_group == [1, 3, 5, 7]
+    assert m.dcp_group == [1, 3, 5, 7]
     assert m.tp_rank == 1
-    assert m.dp_rank == 2
+    assert m.dcp_rank == 2
     assert m.pp_rank == 0

@@ -25,16 +25,22 @@ from test_utils.create_and_load_weights import (
     create_self_pairwise_attention_weights_biases,
     create_triangle_attention_node_weights_and_biases,
     create_triangle_attention_weights,
+    create_triangle_multiplication_node_weights_and_biases,
     load_self_pairwise_attention_weights_torch,
     load_self_pairwise_attention_weights_trt,
     load_triangle_attention_node_weights_torch,
     load_triangle_attention_node_weights_trt,
-    load_triangle_attention_weights_torch, load_triangle_attention_weights_trt)
+    load_triangle_attention_weights_torch, load_triangle_attention_weights_trt,
+    load_triangle_multiplication_node_weights_torch,
+    load_triangle_multiplication_node_weights_trt)
 from test_utils.ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
-from test_utils.ref_layers import RefTriangleAttentionNode
+from test_utils.ref_layers import (RefTriangleAttentionNode,
+                                   RefTriangleMultiplicationNode)
 
 import tensorrt_bionemo
-import tensorrt_bionemo.layers.triangle_nodes
+from tensorrt_bionemo.layers.triangle_nodes import (
+    TriangleAttentionNode, TriangleAttentionNodeType,
+    TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 
 TriAttnTestScenario = namedtuple("TriAttnTestScenario", [
     "batch_size", "seq_len", "hidden_size", "num_attention_heads",
@@ -51,6 +57,10 @@ TriangleAttentionNodeTestScenario = namedtuple(
         "chunk_size", "seq_len", "c_in", "c_hidden", "num_attention_heads",
         "plain_attn_precision", "dtype", "starting"
     ])
+
+TriangleMultiplicationNodeTypeTestScenario = namedtuple(
+    "TriangleMultiplicationNodeTypeTestScenario",
+    ["seq_len", "dim", "dtype", "multiplication_type"])
 
 
 class TestLayer:
@@ -372,9 +382,9 @@ class TestLayer:
                               shape=mask.shape,
                               dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
 
-            node_type=tensorrt_bionemo.layers.triangle_nodes.TriangleAttentionNodeType.STARTING \
-                if sc.starting else tensorrt_bionemo.layers.triangle_nodes.TriangleAttentionNodeType.ENDING
-            tri_attn_node = tensorrt_bionemo.layers.triangle_nodes.TriangleAttentionNode(
+            node_type = TriangleAttentionNodeType.STARTING \
+                if sc.starting else TriangleAttentionNodeType.ENDING
+            tri_attn_node = TriangleAttentionNode(
                 c_in=sc.c_in,
                 c_hidden=sc.c_hidden,
                 num_heads=sc.num_attention_heads,
@@ -417,6 +427,93 @@ class TestLayer:
         ref_node.to("cuda", dtype=torch_dtype)
 
         load_triangle_attention_node_weights_torch(ref_node, weights_and_biases)
+
+        with torch.inference_mode():
+            ref_output = ref_node(hidden_states, mask)
+
+        trt_output = outputs['output']
+        torch.testing.assert_close(trt_output, ref_output, atol=1e-3, rtol=1e-4)
+
+    @pytest.mark.parametrize("sc", [
+        TriangleMultiplicationNodeTypeTestScenario(
+            seq_len=32,
+            dim=128,
+            dtype="float32",
+            multiplication_type=TriangleMultiplicationNodeType.OUTGOING),
+        TriangleMultiplicationNodeTypeTestScenario(
+            seq_len=32,
+            dim=128,
+            dtype="float32",
+            multiplication_type=TriangleMultiplicationNodeType.INCOMING),
+    ])
+    def test_triangle_multiplication_node(
+            self, sc: TriangleMultiplicationNodeTypeTestScenario):
+        self.setUp()
+        mean = 0.0
+        std_dev = 1 if sc.dtype == "float32" else 0.005
+        torch_dtype = str_dtype_to_torch(sc.dtype)
+        hidden_states = torch.empty(size=[sc.seq_len, sc.seq_len, sc.dim],
+                                    dtype=torch_dtype,
+                                    device="cuda",
+                                    requires_grad=False)
+        mask = torch.empty(size=[sc.seq_len, sc.seq_len],
+                           dtype=torch_dtype,
+                           device="cuda",
+                           requires_grad=False)
+        mask.normal_(mean=mean, std=std_dev)
+        weights_and_biases = \
+            create_triangle_multiplication_node_weights_and_biases(sc.dim, torch_dtype)
+        # construct trt network
+        builder = tensorrt_llm.Builder()
+        net = builder.create_network()
+        net.plugin_config.to_legacy_setting()
+
+        with tensorrt_llm.net_guard(net):
+            trt_hidden_states = Tensor(name='input_x',
+                                       shape=hidden_states.shape,
+                                       dtype=tensorrt_llm.str_dtype_to_trt(
+                                           sc.dtype))
+            trt_mask = Tensor(name='mask',
+                              shape=mask.shape,
+                              dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+
+            node = TriangleMultiplicationNode(
+                local_layer_idx=0,
+                dim=sc.dim,
+                dtype=sc.dtype,
+                multiplication_type=sc.multiplication_type,
+            )
+            load_triangle_multiplication_node_weights_trt(
+                node, weights_and_biases)
+
+            output = node(trt_hidden_states, trt_mask)
+            output.mark_output("output",
+                               tensorrt_llm.str_dtype_to_trt(sc.dtype))
+        builder_config = builder.create_builder_config(name="trimul_node",
+                                                       precision=sc.dtype)
+        # Build engine
+        engine_buffer = builder.build_engine(net, builder_config)
+        session = tensorrt_llm.runtime.Session.from_serialized_engine(
+            engine_buffer)
+        inputs = {'input_x': hidden_states, 'mask': mask}
+        outputs = {
+            'output':
+            torch.empty(hidden_states.shape,
+                        dtype=tensorrt_llm._utils.str_dtype_to_torch(sc.dtype),
+                        device="cuda")
+        }
+        stream = torch.cuda.current_stream().cuda_stream
+        session.run(inputs=inputs, outputs=outputs, stream=stream)
+        torch.cuda.synchronize()
+
+        ref_node = RefTriangleMultiplicationNode(
+            dim=sc.dim,
+            outgoing=sc.multiplication_type ==
+            TriangleMultiplicationNodeType.OUTGOING)
+        ref_node.to("cuda", dtype=torch_dtype)
+
+        load_triangle_multiplication_node_weights_torch(ref_node,
+                                                        weights_and_biases)
 
         with torch.inference_mode():
             ref_output = ref_node(hidden_states, mask)

@@ -22,7 +22,7 @@ class Mapping(object):
                  world_size: int = 1,
                  rank: int = 0,
                  gpus_per_node: int = 8,
-                 dp_size: int = 1,
+                 dcp_size: int = 1,
                  tp_size: int = 1,
                  pp_size: int = 1):
         """
@@ -32,44 +32,44 @@ class Mapping(object):
             world_size (int): total number of GPUs
             rank (int): global rank of the current GPU
             gpus_per_node (int): number of GPUs per node
-            dp_size (int): number of data parallel groups
+            dcp_size (int): number of data parallel groups
             tp_size (int): number of tensor parallel groups
             pp_size (int): number of pipeline parallel groups
         """
         # pp_size is always 1 for Bionemo
-        if tp_size * pp_size * dp_size != world_size:
+        if tp_size * pp_size * dcp_size != world_size:
             raise ValueError(
-                f"tp_size * pp_size * dp_size must be equal to world_size,\
-                              but got {tp_size} * {pp_size} * {dp_size} = {tp_size * pp_size * dp_size} != {world_size}"
+                f"tp_size * pp_size * dcp_size must be equal to world_size,\
+                              but got {tp_size} * {pp_size} * {dcp_size} = {tp_size * pp_size * dcp_size} != {world_size}"
             )
         self.tp_size = tp_size
         self.pp_size = pp_size
-        self.dp_size = dp_size
-        self.cp_size = dp_size  # this work-around it to avoid the error for ipc_memory in tensorrt_llm
+        self.dcp_size = dcp_size
+        self.cp_size = dcp_size  # this work-around it to avoid the error for ipc_memory in tensorrt_llm
         self.world_size = world_size
         self.rank = rank
         self.gpus_per_node = gpus_per_node
         self.pp_groups = []
-        self.dp_groups = []
+        self.dcp_groups = []
         self.tp_groups = []
 
         # init pp groups
-        for i in range(tp_size * dp_size):
-            ranks = range(i, world_size, tp_size * dp_size)
+        for i in range(tp_size * dcp_size):
+            ranks = range(i, world_size, tp_size * dcp_size)
             self.pp_groups.append(list(ranks))
 
         # init dp groups
         for i in range(pp_size):
             for j in range(tp_size):
-                ranks = range(i * tp_size * dp_size + j,
-                              (i + 1) * tp_size * dp_size, tp_size)
-                self.dp_groups.append(list(ranks))
+                ranks = range(i * tp_size * dcp_size + j,
+                              (i + 1) * tp_size * dcp_size, tp_size)
+                self.dcp_groups.append(list(ranks))
 
         # init tp groups
         for i in range(pp_size):
-            for j in range(dp_size):
-                ranks = range(i * tp_size * dp_size + j * tp_size,
-                              i * tp_size * dp_size + (j + 1) * tp_size)
+            for j in range(dcp_size):
+                ranks = range(i * tp_size * dcp_size + j * tp_size,
+                              i * tp_size * dcp_size + (j + 1) * tp_size)
                 self.tp_groups.append(list(ranks))
 
     def __eq__(self, other):
@@ -78,13 +78,13 @@ class Mapping(object):
         return (self.world_size == other.world_size and self.rank == other.rank
                 and self.gpus_per_node == other.gpus_per_node
                 and self.tp_size == other.tp_size
-                and self.dp_size == other.dp_size
+                and self.dcp_size == other.dcp_size
                 and self.pp_size == other.pp_size)
 
     def __hash__(self):
         return (hash(self.world_size) ^ hash(self.rank)
                 ^ hash(self.gpus_per_node) ^ hash(self.tp_size)
-                ^ hash(self.dp_size) ^ hash(self.pp_size))
+                ^ hash(self.dcp_size) ^ hash(self.pp_size))
 
     @property
     def rank(self):
@@ -103,28 +103,28 @@ class Mapping(object):
         return self.rank % self.tp_size
 
     @property
-    def dp_rank(self):
-        return self.rank % (self.tp_size * self.dp_size) // self.tp_size
+    def dcp_rank(self):
+        return self.rank % (self.tp_size * self.dcp_size) // self.tp_size
 
     @property
     def cp_rank(self):
-        return self.dp_rank  # this work-around it to avoid the error for ipc_memory in tensorrt_llm
+        return self.dcp_rank  # this work-around it to avoid the error for ipc_memory in tensorrt_llm
 
     @property
     def pp_rank(self):
-        return self.rank // (self.tp_size * self.dp_size)
+        return self.rank // (self.tp_size * self.dcp_size)
 
     @property
     def tp_group(self):
-        return self.tp_groups[self.pp_rank * self.dp_size + self.dp_rank]
+        return self.tp_groups[self.pp_rank * self.dcp_size + self.dcp_rank]
 
     @property
-    def dp_group(self):
-        return self.dp_groups[self.pp_rank * self.tp_size + self.tp_rank]
+    def dcp_group(self):
+        return self.dcp_groups[self.pp_rank * self.tp_size + self.tp_rank]
 
     @property
     def pp_group(self):
-        return self.pp_groups[self.dp_rank * self.tp_size + self.tp_rank]
+        return self.pp_groups[self.dcp_rank * self.tp_size + self.tp_rank]
 
     @property
     def node_rank(self):
@@ -141,7 +141,7 @@ class Mapping(object):
         return rank % self.gpus_per_node
 
     def has_dp(self):
-        return self.dp_size > 1
+        return self.dcp_size > 1
 
     def has_tp(self):
         return self.tp_size > 1
@@ -156,25 +156,25 @@ class Mapping(object):
         return self.pp_rank == 0
 
     def prev_pp_rank(self):
-        p = self.rank - self.tp_size * self.dp_size
+        p = self.rank - self.tp_size * self.dcp_size
         if p < 0:
             p = p + self.world_size
         return p
 
     def next_pp_rank(self):
-        p = self.rank + self.tp_size * self.dp_size
+        p = self.rank + self.tp_size * self.dcp_size
         if p >= self.world_size:
             p = p - self.world_size
         return p
 
-    def prev_dp_rank(self, step: int = 1):
+    def prev_dcp_rank(self, step: int = 1):
         """ This function is used to get the previous dp rank for ring reduce """
         p = self.rank - self.tp_size * step
         if p < 0:
             p = p % self.world_size
         return p
 
-    def next_dp_rank(self, step: int = 1):
+    def next_dcp_rank(self, step: int = 1):
         """ This function is used to get the next dp rank for ring reduce """
         p = self.rank + self.tp_size * step
         if p >= self.world_size:
@@ -196,7 +196,7 @@ class Mapping(object):
             'world_size': self.world_size,
             'rank': self.rank,
             'gpus_per_node': self.gpus_per_node,
-            'dp_size': self.dp_size,
+            'dcp_size': self.dcp_size,
             'tp_size': self.tp_size,
             'pp_size': self.pp_size,
         }

@@ -49,18 +49,18 @@ class Scenario:
     dtype: str = "float32"
     node_type: str = TriangleAttentionNodeType.STARTING
     tp_size: int = 1
-    dp_size: int = 1
+    dcp_size: int = 1
     seq_len: int = 128
     n_optimization_profiles: int = 0
 
 
-class TriangleNodesParallelism:
+class TriangleAttnNodesParallelism:
 
     def __init__(
             self,
             world_size: int,
             rank: int,
-            dp_size: int,
+            dcp_size: int,
             tp_size: int,
             seq_len: int,
             c_in: int,
@@ -78,7 +78,7 @@ class TriangleNodesParallelism:
         tensorrt_llm.logger.set_level('info')
         self.mapping = Mapping(world_size=world_size,
                                rank=rank,
-                               dp_size=dp_size,
+                               dcp_size=dcp_size,
                                tp_size=tp_size,
                                pp_size=1)
         local_rank = rank % self.mapping.gpus_per_node
@@ -167,7 +167,7 @@ class TriangleNodesParallelism:
             timing_cache='model.cache',
             tensor_parallel=self.mapping.tp_size,
             strongly_typed=True,
-            data_parallel=self.mapping.dp_size)
+            data_parallel=self.mapping.dcp_size)
         # Disable TF32 for accuracy in testing.
         builder_config.trt_builder_config.clear_flag(trt.BuilderFlag.TF32)
         network = builder.create_network()
@@ -190,13 +190,7 @@ class TriangleNodesParallelism:
                 dtype=self.dtype,
                 chunk_size=0,
                 node_type=self.node_type,
-                tp_group=self.mapping.tp_group,
-                tp_size=self.mapping.tp_size,
-                tp_rank=self.mapping.tp_rank,
-                dp_group=self.mapping.dp_group,
-                dp_size=self.mapping.dp_size,
-                dp_rank=self.mapping.dp_rank,
-            )
+                mapping=self.mapping)
             load_triangle_attention_node_weights_trt(tri_attn_node,
                                                      self.weights_and_biases,
                                                      self.mapping.tp_size,
@@ -225,13 +219,13 @@ class TriangleNodesParallelism:
             builder_config.add_optimization_profile(profile)
         engine_path = Path(
             self.temp_dir
-        ) / f"rank_{self.mapping.rank}.{self.mapping.tp_rank}.{self.mapping.dp_rank}.plan"
+        ) / f"rank_{self.mapping.rank}.{self.mapping.tp_rank}.{self.mapping.dcp_rank}.plan"
         engine_buffer = builder.build_engine(network, builder_config)
         assert engine_buffer is not None
         with open(engine_path, "wb") as f:
             f.write(engine_buffer)
         tensorrt_llm.logger.info(
-            f"Build engine for rank {self.mapping.rank}, tp_rank {self.mapping.tp_rank}, dp_rank {self.mapping.dp_rank} at {engine_path}"
+            f"Build engine for rank {self.mapping.rank}, tp_rank {self.mapping.tp_rank}, dcp_rank {self.mapping.dcp_rank} at {engine_path}"
         )
         return str(engine_path)
 
@@ -239,10 +233,10 @@ class TriangleNodesParallelism:
 def run_single_rank(scenario: Scenario, engine_paths: list[str], inputs: dict,
                     weights_and_biases: dict):
     rank = tensorrt_llm.mpi_rank()
-    module = TriangleNodesParallelism(
-        world_size=scenario.tp_size * scenario.dp_size,
+    module = TriangleAttnNodesParallelism(
+        world_size=scenario.tp_size * scenario.dcp_size,
         rank=rank,
-        dp_size=scenario.dp_size,
+        dcp_size=scenario.dcp_size,
         tp_size=scenario.tp_size,
         seq_len=scenario.seq_len,
         c_in=scenario.c_in,
@@ -267,44 +261,44 @@ def _generate_scenarios():
     for node_type in [
             TriangleAttentionNodeType.STARTING, TriangleAttentionNodeType.ENDING
     ]:
-        scenarios.append(Scenario(tp_size=2, dp_size=1, node_type=node_type))
-        scenarios.append(Scenario(tp_size=1, dp_size=2, node_type=node_type))
+        scenarios.append(Scenario(tp_size=2, dcp_size=1, node_type=node_type))
+        scenarios.append(Scenario(tp_size=1, dcp_size=2, node_type=node_type))
         if max_world_size >= 4:
-            scenarios.append(Scenario(tp_size=2, dp_size=2,
-                                      node_type=node_type))
+            scenarios.append(
+                Scenario(tp_size=2, dcp_size=2, node_type=node_type))
             scenarios.append(
                 Scenario(tp_size=2,
-                         dp_size=2,
+                         dcp_size=2,
                          node_type=node_type,
                          n_optimization_profiles=1))
 
         if max_world_size >= 8:
-            scenarios.append(Scenario(tp_size=4, dp_size=2,
-                                      node_type=node_type))
+            scenarios.append(
+                Scenario(tp_size=4, dcp_size=2, node_type=node_type))
             scenarios.append(
                 Scenario(tp_size=4,
-                         dp_size=2,
+                         dcp_size=2,
                          node_type=node_type,
                          n_optimization_profiles=1))
-            scenarios.append(Scenario(tp_size=2, dp_size=4,
-                                      node_type=node_type))
+            scenarios.append(
+                Scenario(tp_size=2, dcp_size=4, node_type=node_type))
             scenarios.append(
                 Scenario(tp_size=2,
-                         dp_size=4,
+                         dcp_size=4,
                          node_type=node_type,
                          n_optimization_profiles=1))
-            scenarios.append(Scenario(tp_size=4, dp_size=1,
-                                      node_type=node_type))
+            scenarios.append(
+                Scenario(tp_size=4, dcp_size=1, node_type=node_type))
             scenarios.append(
                 Scenario(tp_size=4,
-                         dp_size=1,
+                         dcp_size=1,
                          node_type=node_type,
                          n_optimization_profiles=1))
-            scenarios.append(Scenario(tp_size=1, dp_size=4,
-                                      node_type=node_type))
+            scenarios.append(
+                Scenario(tp_size=1, dcp_size=4, node_type=node_type))
             scenarios.append(
                 Scenario(tp_size=1,
-                         dp_size=4,
+                         dcp_size=4,
                          node_type=node_type,
                          n_optimization_profiles=1))
 
@@ -318,7 +312,7 @@ def test_triangle_nodes_parallelism(scenario: Scenario):
     torch.manual_seed(42)
     x = torch.randn(scenario.seq_len, scenario.seq_len, scenario.c_in)
     mask = torch.randn(scenario.seq_len, scenario.seq_len)
-    world_size = scenario.tp_size * scenario.dp_size
+    world_size = scenario.tp_size * scenario.dcp_size
     torch_dtype = str_dtype_to_torch(scenario.dtype)
     inputs = {'input_s': x, 'mask': mask}
     weights_and_biases = create_triangle_attention_node_weights_and_biases(
@@ -331,10 +325,10 @@ def test_triangle_nodes_parallelism(scenario: Scenario):
     # Run build engine for each rank first
     engine_paths = []
     for rank in range(world_size):
-        engine_path = TriangleNodesParallelism(
+        engine_path = TriangleAttnNodesParallelism(
             world_size=world_size,
             rank=rank,
-            dp_size=scenario.dp_size,
+            dcp_size=scenario.dcp_size,
             tp_size=scenario.tp_size,
             seq_len=scenario.seq_len,
             c_in=scenario.c_in,

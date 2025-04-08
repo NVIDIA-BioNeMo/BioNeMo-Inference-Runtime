@@ -14,15 +14,17 @@
 # limitations under the License.
 
 from enum import IntEnum
-from typing import Optional
 
-from tensorrt_llm.functional import (Tensor, allgather, concat, expand_dims,
-                                     floordiv, permute, shape, slice, squeeze)
+import tensorrt as trt
+from tensorrt_llm.functional import (Tensor, activation, allgather, cast,
+                                     concat, einsum, expand_dims, floordiv,
+                                     permute, shape, slice, split, squeeze)
 from tensorrt_llm.layers.linear import ColumnLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
 
-from tensorrt_bionemo.functional import chunk_loop
+from tensorrt_bionemo.functional import chunk_loop, send_recv
+from tensorrt_bionemo.mapping import Mapping
 
 from .attention import AttentionParams, TriangleAttention
 
@@ -40,24 +42,19 @@ class TriangleMultiplicationNodeType(IntEnum):
 class TriangleAttentionNode(Module):
 
     def __init__(
-            self,
-            *,
-            local_layer_idx: int,
-            c_in: int,
-            c_hidden: int,
-            num_heads: int,
-            node_type: TriangleAttentionNodeType = TriangleAttentionNodeType.
+        self,
+        *,
+        local_layer_idx: int,
+        c_in: int,
+        c_hidden: int,
+        num_heads: int,
+        node_type: TriangleAttentionNodeType = TriangleAttentionNodeType.
         STARTING,
-            inf: float = 1e9,
-            eps: float = 1e-05,
-            dtype: str = None,
-            chunk_size: int = 0,
-            tp_group: Optional[list[int]] = None,
-            tp_size: int = 1,
-            tp_rank: int = 0,
-            dp_group: Optional[list[int]] = None,
-            dp_size: int = 1,
-            dp_rank: int = 0):
+        inf: float = 1e9,
+        eps: float = 1e-05,
+        dtype: str = None,
+        chunk_size: int = 0,
+        mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.c_in = c_in
@@ -66,13 +63,13 @@ class TriangleAttentionNode(Module):
         self.node_type = node_type
         self.inf = inf
 
-        self.dp_size = dp_size
-        self.dp_rank = dp_rank
-        self.dp_group = dp_group
+        self.dcp_size = mapping.dcp_size
+        self.dcp_rank = mapping.dcp_rank
+        self.dcp_group = mapping.dcp_group
 
-        self.tp_size = tp_size
-        self.tp_rank = tp_rank
-        self.tp_group = tp_group
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
+        self.tp_group = mapping.tp_group
 
         self.chunk_size = chunk_size
 
@@ -80,20 +77,18 @@ class TriangleAttentionNode(Module):
             "num_attention_heads must be divisible by tp_size"
 
         if chunk_size > 0:
-            assert self.chunk_size % self.dp_size == 0, \
-                "chunk_size must be divisible by dp_size"
-            self.chunk_size = chunk_size // self.dp_size
+            assert self.chunk_size % self.dcp_size == 0, \
+                "chunk_size must be divisible by dcp_size"
+            self.chunk_size = chunk_size // self.dcp_size
         self.layer_norm = LayerNorm(normalized_shape=[self.c_in],
                                     eps=eps,
-                                    dtype=dtype,
-                                    tp_size=1,
-                                    tp_dim=0)
+                                    dtype=dtype)
         self.linear = ColumnLinear(self.c_in,
                                    self.num_heads,
                                    bias=False,
                                    dtype=dtype,
-                                   tp_group=tp_group,
-                                   tp_size=tp_size,
+                                   tp_group=self.tp_group,
+                                   tp_size=self.tp_size,
                                    gather_output=True)
         self.mha = TriangleAttention(local_layer_idx=self.local_layer_idx,
                                      hidden_size=self.c_in,
@@ -102,9 +97,9 @@ class TriangleAttentionNode(Module):
                                      dtype=dtype,
                                      bias=False,
                                      gating=True,
-                                     tp_group=tp_group,
-                                     tp_size=tp_size,
-                                     tp_rank=tp_rank)
+                                     tp_group=self.tp_group,
+                                     tp_size=self.tp_size,
+                                     tp_rank=self.tp_rank)
 
     def forward(self, x: Tensor, mask: Tensor,
                 attention_params: AttentionParams):
@@ -129,11 +124,11 @@ class TriangleAttentionNode(Module):
 
         triangle_bias = permute(lx, [2, 0, 1])
         triangle_bias = expand_dims(triangle_bias, 0)  # [1, H, I, J]
-        # First if dp_size > 1, we need to split the input by dp_size
+        # First if dcp_size > 1, we need to split the input by dcp_size
         seq_len = shape(x, 0)
-        if self.dp_size > 1:
-            seq_len = floordiv(seq_len, self.dp_size)
-            s_idx = seq_len * self.dp_rank
+        if self.dcp_size > 1:
+            seq_len = floordiv(seq_len, self.dcp_size)
+            s_idx = seq_len * self.dcp_rank
             slice_size = seq_len
             starts = concat([s_idx, 0, 0])
             sizes = concat([slice_size, shape(x, 1), shape(x, 2)])
@@ -154,10 +149,158 @@ class TriangleAttentionNode(Module):
                             self.chunk_size,
                             _loop_body,
                             reshape_output=False)
-        if self.dp_size > 1:
-            output = allgather(output, self.dp_group, gather_dim=0)
+        if self.dcp_size > 1:
+            output = allgather(output, self.dcp_group, gather_dim=0)
 
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output = output.transpose(1, 0)
 
         return output
+
+
+class TriangleMultiplicationNode(Module):
+
+    def __init__(
+        self,
+        *,
+        local_layer_idx: int,
+        dim: int,
+        eps: float = 1e-5,
+        multiplication_type:
+        TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
+        OUTGOING,
+        dtype: str = None,
+        mapping: Mapping = Mapping()):
+        super().__init__()
+        self.local_layer_idx = local_layer_idx
+        self.dcp_size = mapping.dcp_size
+        self.dcp_rank = mapping.dcp_rank
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
+        self.dcp_group = mapping.dcp_group
+        self.tp_group = mapping.tp_group
+        self.dtype = dtype
+
+        self.dim = dim // self.tp_size
+        self.multiplication_type = multiplication_type
+
+        self.norm_in = LayerNorm(normalized_shape=[self.dim * self.tp_size],
+                                 eps=eps,
+                                 dtype=dtype)
+        self.p_in = ColumnLinear(dim,
+                                 2 * dim,
+                                 bias=False,
+                                 dtype=dtype,
+                                 tp_group=self.tp_group,
+                                 tp_size=self.tp_size,
+                                 gather_output=False)
+        self.g_in = ColumnLinear(dim,
+                                 2 * dim,
+                                 bias=False,
+                                 dtype=dtype,
+                                 tp_group=self.tp_group,
+                                 tp_size=self.tp_size,
+                                 gather_output=False)
+
+        self.norm_out = LayerNorm(normalized_shape=[dim], eps=eps, dtype=dtype)
+        self.p_out = ColumnLinear(dim,
+                                  dim,
+                                  bias=False,
+                                  dtype=dtype,
+                                  tp_group=self.tp_group,
+                                  tp_size=self.tp_size,
+                                  gather_output=True)
+        self.g_out = ColumnLinear(dim,
+                                  dim,
+                                  bias=False,
+                                  dtype=dtype,
+                                  tp_group=self.tp_group,
+                                  tp_size=self.tp_size,
+                                  gather_output=True)
+        self.mapping = mapping
+
+    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+        x = self.norm_in(x)
+        seq_len = shape(x, 0)
+        if self.dcp_size > 1:
+            seq_len = floordiv(seq_len, self.dcp_size)
+            s_idx = seq_len * self.dcp_rank
+            slice_size = seq_len
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                # slice x
+                starts = concat([s_idx, 0, 0])
+                sizes = concat([slice_size, shape(x, 1), shape(x, 2)])
+                x = slice(x, starts, sizes)
+                # slice mask
+                starts = concat([s_idx, 0])
+                sizes = concat([slice_size, shape(mask, 1)])
+                mask = slice(mask, starts, sizes)
+            elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
+                # slice x
+                starts = concat([0, s_idx, 0])
+                sizes = concat([shape(x, 0), slice_size, shape(x, 2)])
+                x = slice(x, starts, sizes)
+                # slice mask
+                starts = concat([0, s_idx])
+                sizes = concat([shape(mask, 0), slice_size])
+                mask = slice(mask, starts, sizes)
+
+        x_in = x
+        x = self.p_in(x) * activation(self.g_in(x), trt.ActivationType.SIGMOID)
+        x = x * mask.unsqueeze(-1)
+
+        x = cast(x, "float32")
+        a, b = split(x, [self.dim, self.dim], dim=-1)
+
+        def _enisum_compute(a_, b_):
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                return einsum("ikd,jkd->ijd", [a_, b_])
+            else:
+                return einsum("kid,kjd->ijd", [a_, b_])
+
+        # Ring communication on the dcp group
+        if self.dcp_size > 1:
+            enisum_results = [
+                None,
+            ] * self.dcp_size
+            enisum_results[self.dcp_rank] = _enisum_compute(a, b)
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                b_recv = b
+                for i in range(1, self.dcp_size):
+                    b_recv = send_recv(b_recv,
+                                       self.mapping.prev_dcp_rank(),
+                                       self.mapping.next_dcp_rank(),
+                                       group_stride=self.tp_size)
+                    enisum_results[(self.dcp_rank - i) %
+                                   self.dcp_size] = _enisum_compute(a, b_recv)
+                x = concat(enisum_results, dim=1)
+            else:
+                a_recv = a
+                for i in range(1, self.dcp_size):
+                    a_recv = send_recv(a_recv,
+                                       self.mapping.prev_dcp_rank(),
+                                       self.mapping.next_dcp_rank(),
+                                       group_stride=self.tp_size)
+                    enisum_results[(self.dcp_rank - i) %
+                                   self.dcp_size] = _enisum_compute(a_recv, b)
+                x = concat(enisum_results, dim=0)
+        else:
+            x = _enisum_compute(a, b)
+
+        if self.tp_size > 1:
+            x = allgather(x, self.tp_group, gather_dim=-1)
+
+        x_in = cast(x_in, "float32")
+        norm_x = self.norm_out(x)
+        pout_x = self.p_out(norm_x)
+        gout_x = activation(self.g_out(x_in), trt.ActivationType.SIGMOID)
+        x = pout_x * gout_x
+
+        # Gather on the dcp group
+        if self.dcp_size > 1:
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                gather_dim = 0
+            else:
+                gather_dim = 1
+            x = allgather(x, self.dcp_group, gather_dim=gather_dim)
+        return x

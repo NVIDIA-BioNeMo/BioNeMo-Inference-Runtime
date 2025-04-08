@@ -204,3 +204,76 @@ def load_triangle_attention_node_weights_torch(module, weights_and_biases):
     module.layer_norm.weight.data.copy_(layer_norm_weight)
     module.layer_norm.bias.data.copy_(layer_norm_bias)
     module.linear.weight.data.copy_(linear_weight.transpose(1, 0))
+
+
+def create_triangle_multiplication_node_weights_and_biases(dim, torch_dtype):
+    norm_in_weight = torch.empty(size=[dim], dtype=torch_dtype)
+    torch.nn.init.uniform_(norm_in_weight)
+    norm_in_bias = torch.empty(size=[dim], dtype=torch_dtype)
+    torch.nn.init.zeros_(norm_in_bias)
+
+    p_in_weight = torch.rand(2 * dim, dim, dtype=torch_dtype)
+    g_in_weight = torch.rand(2 * dim, dim, dtype=torch_dtype)
+
+    norm_out_weight = torch.empty(size=[dim], dtype=torch_dtype)
+    torch.nn.init.uniform_(norm_out_weight)
+    norm_out_bias = torch.empty(size=[dim], dtype=torch_dtype)
+    torch.nn.init.zeros_(norm_out_bias)
+
+    p_out_weight = torch.rand(dim, dim, dtype=torch_dtype)
+    g_out_weight = torch.rand(dim, dim, dtype=torch_dtype)
+
+    return norm_in_weight, norm_in_bias, p_in_weight, g_in_weight, norm_out_weight, norm_out_bias, p_out_weight, g_out_weight
+
+
+def load_triangle_multiplication_node_weights_trt(module,
+                                                  weights_and_biases,
+                                                  tp_size=1,
+                                                  tp_rank=0):
+    norm_in_weight, norm_in_bias, p_in_weight, g_in_weight, norm_out_weight, norm_out_bias, p_out_weight, g_out_weight = weights_and_biases
+    dim = p_in_weight.shape[0] // 2
+    if tp_size > 1:
+        p0_weight = p_in_weight[:dim, :]
+        p1_weight = p_in_weight[dim:, :]
+        g0_weight = g_in_weight[:dim, :]
+        g1_weight = g_in_weight[dim:, :]
+        p0_weight = split(p0_weight, tp_size, tp_rank, 0)
+        p1_weight = split(p1_weight, tp_size, tp_rank, 0)
+        g0_weight = split(g0_weight, tp_size, tp_rank, 0)
+        g1_weight = split(g1_weight, tp_size, tp_rank, 0)
+
+        p_in_weight = torch.cat([p0_weight, p1_weight], dim=0)
+        g_in_weight = torch.cat([g0_weight, g1_weight], dim=0)
+        p_out_weight = split(p_out_weight, tp_size, tp_rank, 0)
+        g_out_weight = split(g_out_weight, tp_size, tp_rank, 0)
+
+    module.norm_in.weight.value = np.ascontiguousarray(
+        norm_in_weight.cpu().numpy())
+    module.norm_in.bias.value = np.ascontiguousarray(norm_in_bias.cpu().numpy())
+    module.p_in.weight.value = np.ascontiguousarray(p_in_weight.cpu().numpy())
+    module.g_in.weight.value = np.ascontiguousarray(g_in_weight.cpu().numpy())
+
+    module.norm_out.weight.value = np.ascontiguousarray(
+        norm_out_weight.cpu().numpy())
+    module.norm_out.bias.value = np.ascontiguousarray(
+        norm_out_bias.cpu().numpy())
+    module.p_out.weight.value = np.ascontiguousarray(p_out_weight.cpu().numpy())
+    module.g_out.weight.value = np.ascontiguousarray(g_out_weight.cpu().numpy())
+
+
+def load_triangle_multiplication_node_weights_torch(module, weights_and_biases):
+    norm_in_weight, norm_in_bias, p_in_weight, g_in_weight, norm_out_weight, norm_out_bias, p_out_weight, g_out_weight = weights_and_biases
+    norm_in_weight.to("cuda")
+    norm_in_bias.to("cuda")
+    p_in_weight.to("cuda")
+    g_in_weight.to("cuda")
+
+    module.norm_in.weight.data.copy_(norm_in_weight)
+    module.norm_in.bias.data.copy_(norm_in_bias)
+    module.p_in.weight.data.copy_(p_in_weight)
+    module.g_in.weight.data.copy_(g_in_weight)
+
+    module.norm_out.weight.data.copy_(norm_out_weight)
+    module.norm_out.bias.data.copy_(norm_out_bias)
+    module.p_out.weight.data.copy_(p_out_weight)
+    module.g_out.weight.data.copy_(g_out_weight)

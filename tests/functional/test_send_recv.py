@@ -36,7 +36,7 @@ def _build_network(mapping: Mapping, input_shape: tuple[int],
         precision=trt_dtype,
         tensor_parallel=mapping.tp_size,
         strongly_typed=True,
-        data_parallel=mapping.dp_size)
+        data_parallel=mapping.dcp_size)
     builder_config.trt_builder_config.clear_flag(trt.BuilderFlag.TF32)
     network = builder.create_network()
     network.plugin_config.to_legacy_setting()
@@ -46,17 +46,19 @@ def _build_network(mapping: Mapping, input_shape: tuple[int],
         chunk = Tensor(name="input", shape=input_shape, dtype=trt_dtype)
         all_chunks = [
             None,
-        ] * mapping.dp_size
+        ] * mapping.dcp_size
         add_one = chunk + 1
         add_one = expand_dims(add_one, 0)
-        all_chunks[mapping.dp_rank] = add_one
+        all_chunks[mapping.dcp_rank] = add_one
         chunk_recv = chunk
-        for i in range(1, mapping.dp_size):
-            chunk_recv = send_recv(chunk_recv, mapping.prev_dp_rank(),
-                                   mapping.next_dp_rank())
+        for i in range(1, mapping.dcp_size):
+            chunk_recv = send_recv(chunk_recv,
+                                   mapping.prev_dcp_rank(),
+                                   mapping.next_dcp_rank(),
+                                   group_stride=mapping.tp_size)
             add_one = chunk_recv + 1
             add_one = expand_dims(add_one, 0)
-            all_chunks[(mapping.dp_rank - i) % mapping.dp_size] = add_one
+            all_chunks[(mapping.dcp_rank - i) % mapping.dcp_size] = add_one
         output = concat(all_chunks)
         output.mark_output("output", trt_dtype)
     engine_buffer = builder.build_engine(network, builder_config)
@@ -73,23 +75,30 @@ def _run(engine_buffer: str, chunk: torch.Tensor, outputs: dict[str,
     torch.cuda.synchronize()
 
 
-def run_single_rank(x: torch.Tensor, world_size: int):
+def run_single_rank(x: torch.Tensor, world_size: int, dcp_size: int,
+                    tp_size: int):
     import tensorrt_llm
 
     rank = tensorrt_llm.mpi_rank()
     mapping = Mapping(world_size=world_size,
                       rank=rank,
-                      dp_size=world_size,
-                      tp_size=1)
+                      dcp_size=dcp_size,
+                      tp_size=tp_size)
     torch.cuda.set_device(rank)
     x = x.cuda()
-    chunk = x[rank]
-    result = torch.zeros_like(x)
+    chunk = torch.chunk(x, mapping.dcp_size, dim=0)[mapping.dcp_rank]
+    result = torch.empty(mapping.dcp_size,
+                         mapping.tp_size,
+                         x.shape[1],
+                         x.shape[2],
+                         dtype=torch.float32,
+                         device="cuda")
     try:
         engine_buffer = _build_network(mapping, chunk.shape, chunk.dtype)
         _run(engine_buffer, chunk, {"output": result})
-        assert result.shape == x.shape
-        torch.testing.assert_close(result, x + 1)
+        torch.testing.assert_close(result, (x + 1).view(mapping.dcp_size,
+                                                        mapping.tp_size,
+                                                        x.shape[1], x.shape[2]))
     except Exception:
         traceback.print_exc()
         raise
@@ -97,25 +106,31 @@ def run_single_rank(x: torch.Tensor, world_size: int):
     return True
 
 
-def _generate_test_cases() -> list[int]:
+def _generate_test_cases() -> list[tuple[int, int]]:
     world_size = torch.cuda.device_count()
     ret = []
-    ret.append(2)
+    ret.append((2, 1))
     if world_size >= 4:
-        ret.append(4)
+        ret.append((4, 1))
+        ret.append((2, 2))
     if world_size >= 8:
-        ret.append(8)
+        ret.append((8, 1))
+        ret.append((4, 2))
+        ret.append((2, 4))
     return ret
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
                     reason='needs 2 GPUs to run this test')
-@pytest.mark.parametrize("world_size", _generate_test_cases())
-def test_send_recv(world_size):
-    x = torch.randn(world_size, 128, 256, dtype=torch.float32)
-    # x = torch.zeros(world_size, 8, dtype=torch.float32)
+@pytest.mark.parametrize("pair", _generate_test_cases())
+def test_send_recv(pair: tuple[int, int] = (2, 2)):
+    dcp_size, tp_size = pair
+    world_size = dcp_size * tp_size
+    x = torch.randn(world_size, 64, 128, dtype=torch.float32)
+
     with MPIPoolExecutor(max_workers=world_size) as executor:
-        results = executor.map(run_single_rank,
-                               *zip(*[(x, world_size)] * world_size))
+        results = executor.map(
+            run_single_rank,
+            *zip(*[(x, world_size, dcp_size, tp_size)] * world_size))
         for r in results:
             assert r is True

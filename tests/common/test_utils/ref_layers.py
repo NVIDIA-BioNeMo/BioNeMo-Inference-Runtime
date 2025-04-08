@@ -60,11 +60,16 @@ class RefTriangleMultiplicationNode(nn.Module):
         a, b = torch.chunk(x.float(), 2, dim=-1)
 
         # Triangular projection
-        if self.outgoing:
-            x = torch.einsum("bikd,bjkd->bijd", a, b)
-        else:
-            x = torch.einsum("bkid,bkjd->bijd", a, b)
-        return x
+        if x.dim() == 4:
+            if self.outgoing:
+                x = torch.einsum("bikd,bjkd->bijd", a, b)
+            else:
+                x = torch.einsum("bkid,bkjd->bijd", a, b)
+        elif x.dim() == 3:
+            if self.outgoing:
+                x = torch.einsum("ikd,jkd->ijd", a, b)
+            else:
+                x = torch.einsum("kid,kjd->ijd", a, b)
         # Output gating
         x = self.p_out(self.norm_out(x)) * self.g_out(x_in.float()).sigmoid()
 

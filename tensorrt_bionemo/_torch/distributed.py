@@ -46,14 +46,14 @@ def allgather(input: torch.Tensor,
         return input
 
     tp_size = parallel_config.tensor_parallel_size
-    dp_size = parallel_config.data_parallel_size
+    dcp_size = parallel_config.data_parallel_size
     tp_rank = parallel_config.tensor_parallel_rank
-    dp_rank = parallel_config.data_parallel_rank
+    dcp_rank = parallel_config.data_parallel_rank
     mapping = Mapping(
-        world_size=tp_size * dp_size,
+        world_size=tp_size * dcp_size,
         tp_size=tp_size,
-        dp_size=dp_size,
-        rank=dp_rank * tp_size + tp_rank,
+        dcp_size=dcp_size,
+        rank=dcp_rank * tp_size + tp_rank,
         gpus_per_node=parallel_config.gpus_per_node,
     )
 
@@ -66,7 +66,7 @@ def allgather(input: torch.Tensor,
     elif mode == AllGatherMode.DP:
         output = torch.ops.trtllm.allgather(
             input,
-            mapping.dp_group,
+            mapping.dcp_group,
         )
         split_size = parallel_config.data_parallel_size
     else:
@@ -97,13 +97,13 @@ def allreduce(
 
     tp_size = parallel_config.tensor_parallel_size
     tp_rank = parallel_config.tensor_parallel_rank
-    dp_size = parallel_config.data_parallel_size
-    dp_rank = parallel_config.data_parallel_rank
+    dcp_size = parallel_config.data_parallel_size
+    dcp_rank = parallel_config.data_parallel_rank
     mapping = Mapping(
-        world_size=tp_size * dp_size,
+        world_size=tp_size * dcp_size,
         tp_size=tp_size,
-        dp_size=dp_size,
-        rank=dp_rank * tp_size + tp_rank,
+        dcp_size=dcp_size,
+        rank=dcp_rank * tp_size + tp_rank,
         gpus_per_node=parallel_config.gpus_per_node,
     )
 
@@ -138,18 +138,18 @@ class AllReduce(nn.Module):
         self.parallel_config = parallel_config
         self.tp_size = self.parallel_config.tensor_parallel_size
         self.tp_rank = self.parallel_config.tensor_parallel_rank
-        self.dp_size = self.parallel_config.data_parallel_size
-        self.dp_rank = self.parallel_config.data_parallel_rank
+        self.dcp_size = self.parallel_config.data_parallel_size
+        self.dcp_rank = self.parallel_config.data_parallel_rank
         self.gpus_per_node = self.parallel_config.gpus_per_node
 
         self.workspace = None
         self.strategy = strategy
         if self.tp_size > 1:
             mapping = Mapping(
-                world_size=self.tp_size * self.dp_size,
+                world_size=self.tp_size * self.dcp_size,
                 tp_size=self.tp_size,
-                dp_size=self.dp_size,
-                rank=self.dp_rank * self.tp_size + self.tp_rank,
+                dcp_size=self.dcp_size,
+                rank=self.dcp_rank * self.tp_size + self.tp_rank,
                 gpus_per_node=self.gpus_per_node,
             )
             if self.strategy != AllReduceStrategy.UB:
@@ -200,8 +200,8 @@ class DPComm:
                           src=1,
                           dest=1,
                           tag=0) -> torch.Tensor:
-        dest_rank = self.mapping.next_dp_rank(step=dest)
-        src_rank = self.mapping.prev_dp_rank(step=src)
+        dest_rank = self.mapping.next_dcp_rank(step=dest)
+        src_rank = self.mapping.prev_dcp_rank(step=src)
         send_op = dist.P2POp(dist.isend, send_tensor, dest_rank, tag=tag)
         recv_op = dist.P2POp(dist.irecv, recv_tensor, src_rank, tag=tag)
         reqs = dist.batch_isend_irecv([send_op, recv_op])

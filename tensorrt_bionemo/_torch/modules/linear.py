@@ -99,8 +99,8 @@ class Linear(nn.Module):
         )
         self.tp_size = self.parallel_config.tensor_parallel_size
         self.tp_rank = self.parallel_config.tensor_parallel_rank
-        self.dp_size = self.parallel_config.data_parallel_size
-        self.dp_rank = self.parallel_config.data_parallel_rank
+        self.dcp_size = self.parallel_config.data_parallel_size
+        self.dcp_rank = self.parallel_config.data_parallel_rank
         self.tp_mode = self.parallel_config.tensor_parallel_mode
 
         local_in_features = in_features

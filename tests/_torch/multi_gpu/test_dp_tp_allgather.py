@@ -24,30 +24,32 @@ from tensorrt_bionemo._torch.distributed import (AllGatherMode, ParallelConfig,
 from tensorrt_bionemo.mapping import Mapping
 
 
-def run_single_rank(x, y, tp_size, dp_size):
+def run_single_rank(x, y, tp_size, dcp_size):
     try:
         rank = tensorrt_llm.mpi_rank()
         torch.cuda.set_device(rank)
-        mapping = Mapping(world_size=tp_size * dp_size,
+        mapping = Mapping(world_size=tp_size * dcp_size,
                           tp_size=tp_size,
-                          dp_size=dp_size,
+                          dcp_size=dcp_size,
                           rank=rank)
         x = x.cuda()
         y = y.cuda()
-        dp_chunk = x.shape[0] // dp_size
+        dp_chunk = x.shape[0] // dcp_size
         tp_chunk = x.shape[1] // tp_size
-        chunk_x = x[mapping.dp_rank * dp_chunk:(mapping.dp_rank + 1) * dp_chunk,
+        chunk_x = x[mapping.dcp_rank * dp_chunk:(mapping.dcp_rank + 1) *
+                    dp_chunk,
                     mapping.tp_rank * tp_chunk:(mapping.tp_rank + 1) * tp_chunk,
                     ...]
-        chunk_y = y[mapping.dp_rank * dp_chunk:(mapping.dp_rank + 1) * dp_chunk,
+        chunk_y = y[mapping.dcp_rank * dp_chunk:(mapping.dcp_rank + 1) *
+                    dp_chunk,
                     mapping.tp_rank * tp_chunk:(mapping.tp_rank + 1) * tp_chunk,
                     ...]
 
         parallel_config = ParallelConfig(tensor_parallel_size=tp_size,
                                          tensor_parallel_rank=mapping.tp_rank,
-                                         data_parallel_size=dp_size,
-                                         data_parallel_rank=mapping.dp_rank,
-                                         gpus_per_node=tp_size * dp_size,
+                                         data_parallel_size=dcp_size,
+                                         data_parallel_rank=mapping.dcp_rank,
+                                         gpus_per_node=tp_size * dcp_size,
                                          gather_output=True)
         chunk = chunk_x + chunk_y
         out_tp = allgather(chunk,
@@ -73,15 +75,15 @@ def run_single_rank(x, y, tp_size, dp_size):
 def test_dp_tp_allgather():
     torch.manual_seed(42)
     tp_size = 2
-    dp_size = 2
-    if torch.cuda.device_count() < tp_size * dp_size:
+    dcp_size = 2
+    if torch.cuda.device_count() < tp_size * dcp_size:
         tp_size = 1
-        dp_size = 2
+        dcp_size = 2
     x = torch.randn(32, 16, 16)
     y = torch.randn(32, 16, 16)
-    world_size = tp_size * dp_size
+    world_size = tp_size * dcp_size
     with MPIPoolExecutor(max_workers=world_size) as executor:
         results = executor.map(run_single_rank,
-                               *zip(*[(x, y, tp_size, dp_size)] * world_size))
+                               *zip(*[(x, y, tp_size, dcp_size)] * world_size))
         for r in results:
             assert r is True

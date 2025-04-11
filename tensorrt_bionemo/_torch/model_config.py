@@ -30,6 +30,8 @@ class ModelConfig(Generic[TConfig]):
     skip_create_weights: bool = False
     triangle_attn_node_chunk_size: int = 0
     attn_backend: str = 'VANILLA'
+    max_transition_tp_size: bool = True
+    max_attention_pairwise_tp_size: bool = True
 
     @classmethod
     def from_pretrained(cls,

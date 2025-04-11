@@ -2,6 +2,7 @@
 import atexit
 import enum
 import os
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
@@ -28,13 +29,18 @@ class AllGatherMode(str, enum.Enum):
 
 @dataclass(kw_only=True)
 class ParallelConfig:
-    tensor_parallel_size: int = 1
-    tensor_parallel_rank: int = 0
-    data_parallel_size: int = 1
-    data_parallel_rank: int = 0
-    gpus_per_node: int = 8
+    mapping: Mapping
     tensor_parallel_mode: Optional[TensorParallelMode] = None
     gather_output: bool = False
+
+
+def create_parallel_config(
+        mapping: Mapping,
+        tensor_parallel_mode: Optional[TensorParallelMode] = None,
+        gather_output: bool = False):
+    return ParallelConfig(mapping=deepcopy(mapping),
+                          tensor_parallel_mode=tensor_parallel_mode,
+                          gather_output=gather_output)
 
 
 def allgather(input: torch.Tensor,
@@ -42,33 +48,21 @@ def allgather(input: torch.Tensor,
               gather_dim: int = -1,
               mode: AllGatherMode = AllGatherMode.TP) -> torch.Tensor:
     """ Support both tensor parallel and data parallel """
-    if parallel_config.tensor_parallel_size == 1 and parallel_config.data_parallel_size == 1:
+    mapping = parallel_config.mapping
+    if mapping.tp_size == 1 and mapping.dcp_size == 1:
         return input
-
-    tp_size = parallel_config.tensor_parallel_size
-    dcp_size = parallel_config.data_parallel_size
-    tp_rank = parallel_config.tensor_parallel_rank
-    dcp_rank = parallel_config.data_parallel_rank
-    mapping = Mapping(
-        world_size=tp_size * dcp_size,
-        tp_size=tp_size,
-        dcp_size=dcp_size,
-        rank=dcp_rank * tp_size + tp_rank,
-        gpus_per_node=parallel_config.gpus_per_node,
-    )
-
     if mode == AllGatherMode.TP:
         output = torch.ops.trtllm.allgather(
             input,
             mapping.tp_group,
         )
-        split_size = parallel_config.tensor_parallel_size
+        split_size = mapping.tp_size
     elif mode == AllGatherMode.DP:
         output = torch.ops.trtllm.allgather(
             input,
             mapping.dcp_group,
         )
-        split_size = parallel_config.data_parallel_size
+        split_size = mapping.dcp_size
     else:
         raise ValueError(f"Invalid allgather mode: {mode}")
 
@@ -90,22 +84,10 @@ def allreduce(
     config: AllReduceConfig = AllReduceConfig(0),
     all_reduce_params: Optional[AllReduceParams] = None
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    if parallel_config.tensor_parallel_size == 1 or (
-            all_reduce_params is not None
-            and all_reduce_params.enable_allreduce == False):
+    mapping = parallel_config.mapping
+    if mapping.tp_size == 1 or (all_reduce_params is not None and
+                                all_reduce_params.enable_allreduce == False):
         return input
-
-    tp_size = parallel_config.tensor_parallel_size
-    tp_rank = parallel_config.tensor_parallel_rank
-    dcp_size = parallel_config.data_parallel_size
-    dcp_rank = parallel_config.data_parallel_rank
-    mapping = Mapping(
-        world_size=tp_size * dcp_size,
-        tp_size=tp_size,
-        dcp_size=dcp_size,
-        rank=dcp_rank * tp_size + tp_rank,
-        gpus_per_node=parallel_config.gpus_per_node,
-    )
 
     if all_reduce_params is None:
         all_reduce_params = AllReduceParams()
@@ -136,24 +118,18 @@ class AllReduce(nn.Module):
         super().__init__()
 
         self.parallel_config = parallel_config
-        self.tp_size = self.parallel_config.tensor_parallel_size
-        self.tp_rank = self.parallel_config.tensor_parallel_rank
-        self.dcp_size = self.parallel_config.data_parallel_size
-        self.dcp_rank = self.parallel_config.data_parallel_rank
-        self.gpus_per_node = self.parallel_config.gpus_per_node
+        self.mapping = self.parallel_config.mapping
+        self.tp_size = self.mapping.tp_size
+        self.tp_rank = self.mapping.tp_rank
+        self.dcp_size = self.mapping.dcp_size
+        self.dcp_rank = self.mapping.dcp_rank
+        self.gpus_per_node = self.mapping.gpus_per_node
 
         self.workspace = None
         self.strategy = strategy
         if self.tp_size > 1:
-            mapping = Mapping(
-                world_size=self.tp_size * self.dcp_size,
-                tp_size=self.tp_size,
-                dcp_size=self.dcp_size,
-                rank=self.dcp_rank * self.tp_size + self.tp_rank,
-                gpus_per_node=self.gpus_per_node,
-            )
             if self.strategy != AllReduceStrategy.UB:
-                self.workspace = get_allreduce_workspace(mapping)
+                self.workspace = get_allreduce_workspace(self.mapping)
 
     def forward(
         self,

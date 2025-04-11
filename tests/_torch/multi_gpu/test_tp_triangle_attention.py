@@ -22,6 +22,8 @@ import tensorrt_llm
 import torch
 import transformers
 from mpi4py.futures import MPIPoolExecutor
+from test_utils.create_and_load_weights import (
+    create_triangle_attention_weights, load_triangle_attention_weights_torch)
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
@@ -35,15 +37,15 @@ _MOCK_MODEL_CONFIG = {
 }
 
 
-def run_single_rank(tensor_parallel_size, single_rank_forward_func, input,
-                    biases, num_attention_heads, qkv_weights, o_weights,
-                    g_weights, hidden_size):
+def run_single_rank(single_rank_forward_func, tensor_parallel_size, input,
+                    biases, hidden_size, num_attention_heads,
+                    weights_and_biases):
     rank = tensorrt_llm.mpi_rank()
     torch.cuda.set_device(rank)
     try:
         single_rank_forward_func(input, biases, hidden_size,
                                  num_attention_heads, tensor_parallel_size,
-                                 rank, qkv_weights, o_weights, g_weights)
+                                 rank, weights_and_biases)
     except Exception:
         traceback.print_exc()
         raise
@@ -53,7 +55,7 @@ def run_single_rank(tensor_parallel_size, single_rank_forward_func, input,
 @torch.inference_mode
 def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
                           tensor_parallel_size, tensor_parallel_rank,
-                          qkv_weights, o_weights, g_weights):
+                          weights_and_biases):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     x = x.cuda()
@@ -80,14 +82,9 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
         dtype=dtype,
         config=model_config,
     )
-    tri_attn.qkv_proj.load_weights([
-        dict(weight=qkv_weights[0]),
-        dict(weight=qkv_weights[1]),
-        dict(weight=qkv_weights[2])
-    ])
-    tri_attn.o_proj.load_weights([dict(weight=o_weights[0])])
-    tri_attn.g_proj.load_weights([dict(weight=g_weights[0])])
-
+    load_triangle_attention_weights_torch(tri_attn,
+                                          weights_and_biases,
+                                          dtype=dtype)
     tri_attn.cuda()
 
     # tri_attn = torch.compile(tri_attn, fullgraph=True)
@@ -109,14 +106,9 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
         dtype=dtype,
         config=single_model_config,
     )
-    single_dev_tri_attn.qkv_proj.load_weights([
-        dict(weight=qkv_weights[0]),
-        dict(weight=qkv_weights[1]),
-        dict(weight=qkv_weights[2])
-    ])
-    single_dev_tri_attn.o_proj.load_weights([dict(weight=o_weights[0])])
-    single_dev_tri_attn.g_proj.load_weights([dict(weight=g_weights[0])])
-    single_dev_tri_attn.cuda()
+    load_triangle_attention_weights_torch(single_dev_tri_attn,
+                                          weights_and_biases,
+                                          dtype=dtype)
 
     if tensor_parallel_rank == 0:
         single_dev_output = single_dev_tri_attn.forward(x, biases,
@@ -146,28 +138,19 @@ def test_triangle_attn_forward(num_attention_heads):
                     seq_len,
                     dtype=torch.float32)
     ]
-    hidden_states = torch.randn(seq_len,
-                                seq_len,
-                                hidden_size,
-                                dtype=torch.float32)
-    qkv_weights = [
-        torch.randn(hidden_size, hidden_size, dtype=torch.float32),
-        torch.randn(hidden_size, hidden_size, dtype=torch.float32),
-        torch.randn(hidden_size, hidden_size, dtype=torch.float32),
-    ]
-    o_weights = [
-        torch.randn(hidden_size, hidden_size, dtype=torch.float32),
-    ]
-    g_weights = [
-        torch.randn(hidden_size, hidden_size, dtype=torch.float32),
-    ]
+    x = torch.randn(seq_len, seq_len, hidden_size, dtype=torch.float32)
+
+    weights_and_biases = create_triangle_attention_weights(
+        c_q=hidden_size,
+        c_k=hidden_size,
+        c_v=hidden_size,
+        torch_dtype=torch.float32)
 
     with MPIPoolExecutor(max_workers=tensor_parallel_size) as executor:
         results = executor.map(
             run_single_rank,
-            *zip(*[(tensor_parallel_size, triangle_attn_forward, hidden_states,
-                    biases, num_attention_heads, qkv_weights, o_weights,
-                    g_weights, hidden_size)] * 2))
+            *zip(*[(triangle_attn_forward, tensor_parallel_size, x, biases,
+                    hidden_size, num_attention_heads, weights_and_biases)] * 2))
         if num_attention_heads % 2 != 0:
             with pytest.raises(AssertionError):
                 for r in results:

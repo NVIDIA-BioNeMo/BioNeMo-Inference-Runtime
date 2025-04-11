@@ -19,6 +19,9 @@ from dataclasses import dataclass
 import pytest
 import torch
 import transformers
+from test_utils.create_and_load_weights import (
+    create_self_pairwise_attention_weights,
+    load_self_pairwise_attention_weights_torch)
 from test_utils.ref_attn import RefPairwiseSelfAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
@@ -38,7 +41,6 @@ class Scenario:
     seq_len: int = 16
     c_s: int = 384
     c_z: int = 128
-    num_attention_heads: int = 16
     chunk_size: int = None
     chunk_dim: int = None
     torch_dtype: str = "float32"
@@ -63,55 +65,22 @@ def test_pairwise_attention_backend(sc: Scenario):
     dtype = model_config.pretrained_config.torch_dtype
     device = torch.device('cuda')
 
-    ref_attn = RefPairwiseSelfAttention.load_weights(
-        num_heads=sc.num_attention_heads)
-    ref_attn.to(device)
-    ref_attn = ref_attn
+    ref_attn = RefPairwiseSelfAttention.load_weights()
+    ref_attn = ref_attn.to(device)
 
-    q_proj_weights = [{
-        "weight": ref_attn.proj_q.weight.data.to(dtype),
-        "bias": ref_attn.proj_q.bias.data.to(dtype)
-    }]
-    k_weights = [{
-        "weight": ref_attn.proj_k.weight.data.to(dtype),
-        "bias": None
-    }]
-    v_weights = [{
-        "weight": ref_attn.proj_v.weight.data.to(dtype),
-        "bias": None
-    }]
-    o_proj_weights = [{
-        "weight": ref_attn.proj_o.weight.data.to(dtype),
-        "bias": None
-    }]
-    g_proj_weights = [{
-        "weight": ref_attn.proj_g.weight.data.to(dtype),
-        "bias": None
-    }]
-
-    z_1_proj_weights = [{
-        "weight": ref_attn.proj_z[1].weight.data.to(dtype),
-        "bias": None
-    }]
+    weights_and_biases = create_self_pairwise_attention_weights(
+        from_ref=ref_attn)
 
     attn = SelfAttentionPairBias(layer_idx=0,
                                  c_s=sc.c_s,
                                  c_z=sc.c_z,
-                                 num_heads=sc.num_attention_heads,
+                                 num_heads=ref_attn.num_heads,
                                  dtype=dtype,
                                  config=model_config,
                                  initial_norm=True)
-    if attn.norm_s:
-        attn.norm_s.weight.data.copy_(ref_attn.norm_s.weight.data)
-        attn.norm_s.bias.data.copy_(ref_attn.norm_s.bias.data)
-    attn.proj_k.load_weights(k_weights)
-    attn.proj_v.load_weights(v_weights)
-    attn.proj_q.load_weights(q_proj_weights)
-    attn.proj_o.load_weights(o_proj_weights)
-    attn.proj_g.load_weights(g_proj_weights)
-    attn.proj_z[0].weight.data.copy_(ref_attn.proj_z[0].weight.data)
-    attn.proj_z[0].bias.data.copy_(ref_attn.proj_z[0].bias.data)
-    attn.proj_z[1].load_weights(z_1_proj_weights)
+    load_self_pairwise_attention_weights_torch(attn,
+                                               weights_and_biases,
+                                               dtype=dtype)
     attn.to(device)
 
     attn_metadata = metadata_cls(chunk_size=sc.chunk_size,

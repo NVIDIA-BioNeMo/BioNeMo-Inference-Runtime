@@ -1,3 +1,4 @@
 --extra-index-url https://pypi.nvidia.com
 
 # tensorrt-llm==0.18.0.dev2025031100
+omegaconf==2.3.0

@@ -17,10 +17,11 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.distributed import (AllGatherMode, DPCommManager,
-                                                 ParallelConfig,
-                                                 TensorParallelMode, allgather)
+                                                 TensorParallelMode, allgather,
+                                                 create_parallel_config)
 from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
                                                     WeightsLoadingConfig)
 from tensorrt_bionemo.layers.triangle_nodes import (
@@ -61,11 +62,12 @@ class TriangleAttentionNode(nn.Module):
         self.node_type = node_type
         self.inf = inf
         config = config or ModelConfig()
-        self.dcp_size = config.mapping.dcp_size
-        self.dcp_rank = config.mapping.dcp_rank
-        self.tp_size = config.mapping.tp_size
-        self.tp_rank = config.mapping.tp_rank
-        self.gpus_per_node = config.mapping.gpus_per_node
+        self.mapping = config.mapping
+        self.dcp_size = self.mapping.dcp_size
+        self.dcp_rank = self.mapping.dcp_rank
+        self.tp_size = self.mapping.tp_size
+        self.tp_rank = self.mapping.tp_rank
+        self.gpus_per_node = self.mapping.gpus_per_node
 
         assert self.num_heads % self.tp_size == 0
         self.num_heads = self.num_heads // self.tp_size
@@ -80,13 +82,9 @@ class TriangleAttentionNode(nn.Module):
             self.tp_size * self.num_heads,
             bias=False,
             dtype=dtype,
-            parallel_config=ParallelConfig(
-                tensor_parallel_rank=self.tp_rank,
-                tensor_parallel_size=self.tp_size,
-                data_parallel_size=self.dcp_size,
-                data_parallel_rank=self.dcp_rank,
+            parallel_config=create_parallel_config(
+                self.mapping,
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gpus_per_node=self.gpus_per_node,
                 gather_output=True),
             skip_create_weights=config.skip_create_weights,
         )
@@ -105,7 +103,9 @@ class TriangleAttentionNode(nn.Module):
             self,
             x: torch.Tensor,
             mask: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+            attn_metadata: Optional[AttentionMetadata] = None,
+            all_reduce_params: Optional[AllReduceParams] = None
+    ) -> torch.Tensor:
         """
         Forward pass for the triangle attention node. If dcp_size > 1 and chunk_size,
         make sure the sequence length is a multiple of chunk_size*dcp_size. Currently,
@@ -119,16 +119,15 @@ class TriangleAttentionNode(nn.Module):
         if x.ndim == 4:
             x = x.squeeze(0)
         assert x.ndim == 3
-        if mask is not None:
-            mask = mask.squeeze(0)
-        else:
+        if mask is None:
             mask = x.new_ones(x.shape[:-1])
+        if mask is not None and mask.ndim == 3:
+            mask = mask.squeeze(0)
 
         if self.node_type == TriangleAttentionNodeType.ENDING:
             x = x.transpose(0, 1)
             mask = mask.transpose(0, 1)
         x = self.layer_norm(x)
-
         # Compute mask bias
         mask_bias = (self.inf * (mask - 1))[:, None, None, :]
 
@@ -144,7 +143,6 @@ class TriangleAttentionNode(nn.Module):
             x = x[self.dcp_rank * seq_len:(self.dcp_rank + 1) * seq_len, ...]
             mask_bias = mask_bias[self.dcp_rank * seq_len:(self.dcp_rank + 1) *
                                   seq_len, ...]
-
         if self.chunk_size > 0:
             niters = seq_len // self.chunk_size
             outputs = []
@@ -156,20 +154,20 @@ class TriangleAttentionNode(nn.Module):
                 biases = [chunk_mask_bias, triangle_bias]
                 chunk_output = self.mha(x_chunk,
                                         biases=biases,
-                                        attn_metadata=attn_metadata)
+                                        attn_metadata=attn_metadata,
+                                        all_reduce_params=all_reduce_params)
                 outputs.append(chunk_output)
             output = torch.cat(outputs, dim=0)
         else:
             biases = [mask_bias, triangle_bias]
-            output = self.mha(x, biases=biases, attn_metadata=attn_metadata)
-
+            output = self.mha(x,
+                              biases=biases,
+                              attn_metadata=attn_metadata,
+                              all_reduce_params=all_reduce_params)
         if self.dcp_size > 1:
-            parallel_config = ParallelConfig(
-                tensor_parallel_rank=self.tp_rank,
-                tensor_parallel_size=self.tp_size,
-                data_parallel_size=self.dcp_size,
-                data_parallel_rank=self.dcp_rank,
-                gpus_per_node=self.gpus_per_node,
+            parallel_config = create_parallel_config(
+                self.mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
                 gather_output=True,
             )
             output = allgather(output,
@@ -199,6 +197,7 @@ class TriangleAttentionEndingNode(TriangleAttentionNode):
 class TriangleMultiplicationNode(nn.Module):
 
     def __init__(self,
+                 layer_idx: int = 0,
                  dim: int = 128,
                  eps: float = 1e-5,
                  multiplication_type:
@@ -208,28 +207,25 @@ class TriangleMultiplicationNode(nn.Module):
                  config: Optional[ModelConfig] = None) -> None:
         super().__init__()
         config = config or ModelConfig()
-        self.dcp_size = config.mapping.dcp_size
-        self.dcp_rank = config.mapping.dcp_rank
-        self.tp_size = config.mapping.tp_size
-        self.tp_rank = config.mapping.tp_rank
-        self.gpus_per_node = config.mapping.gpus_per_node
+        self.mapping = config.mapping
+        self.dcp_size = self.mapping.dcp_size
+        self.dcp_rank = self.mapping.dcp_rank
+        self.tp_size = self.mapping.tp_size
+        self.tp_rank = self.mapping.tp_rank
+        self.gpus_per_node = self.mapping.gpus_per_node
 
         self.dp_comm = None
         if self.dcp_size > 1:
-            DPCommManager.init_dp_comm(config.mapping)
+            DPCommManager.init_dp_comm(self.mapping)
             self.dp_comm = DPCommManager()
         self.dim = dim // self.tp_size
         self.multiplication_type = multiplication_type
         self.norm_in = nn.LayerNorm(self.dim * self.tp_size,
                                     dtype=dtype,
                                     eps=eps)
-        col_parallel_config = ParallelConfig(
-            tensor_parallel_rank=self.tp_rank,
-            tensor_parallel_size=self.tp_size,
-            data_parallel_size=self.dcp_size,
-            data_parallel_rank=self.dcp_rank,
+        col_parallel_config = create_parallel_config(
+            self.mapping,
             tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gpus_per_node=self.gpus_per_node,
             gather_output=False)
         self.p_in = Linear(self.dim * self.tp_size,
                            2 * self.dim * self.tp_size,
@@ -255,26 +251,18 @@ class TriangleMultiplicationNode(nn.Module):
                             self.dim * self.tp_size,
                             bias=False,
                             dtype=torch.float32,
-                            parallel_config=ParallelConfig(
-                                tensor_parallel_rank=self.tp_rank,
-                                tensor_parallel_size=self.tp_size,
-                                data_parallel_size=self.dcp_size,
-                                data_parallel_rank=self.dcp_rank,
+                            parallel_config=create_parallel_config(
+                                self.mapping,
                                 tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gpus_per_node=self.gpus_per_node,
                                 gather_output=True),
                             skip_create_weights=config.skip_create_weights)
         self.g_out = Linear(self.dim * self.tp_size,
                             self.dim * self.tp_size,
                             bias=False,
                             dtype=torch.float32,
-                            parallel_config=ParallelConfig(
-                                tensor_parallel_rank=self.tp_rank,
-                                tensor_parallel_size=self.tp_size,
-                                data_parallel_size=self.dcp_size,
-                                data_parallel_rank=self.dcp_rank,
+                            parallel_config=create_parallel_config(
+                                self.mapping,
                                 tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gpus_per_node=self.gpus_per_node,
                                 gather_output=True),
                             skip_create_weights=config.skip_create_weights)
 
@@ -285,12 +273,9 @@ class TriangleMultiplicationNode(nn.Module):
             mask (torch.Tensor): mask tensor [1, I, J]
         """
         # if self.tp_size > 1 or self.dcp_size > 1:
-        parallel_config = ParallelConfig(
-            tensor_parallel_rank=self.tp_rank,
-            tensor_parallel_size=self.tp_size,
-            data_parallel_size=self.dcp_size,
-            data_parallel_rank=self.dcp_rank,
-            gpus_per_node=self.gpus_per_node,
+        parallel_config = create_parallel_config(
+            self.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
             gather_output=True,
         )
         if x.ndim == 4:
@@ -310,6 +295,7 @@ class TriangleMultiplicationNode(nn.Module):
                 x = x[:, st:et, ...]
                 mask = mask[:, st:et, ...]
         x_in = x
+        # TODO: SwiGLU fused here
         x = self.p_in(x) * self.g_in(x).sigmoid()
         x = x * mask.unsqueeze(-1)
 

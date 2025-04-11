@@ -14,11 +14,13 @@
 # limitations under the License.
 
 from enum import IntEnum
+from typing import Optional
 
 import tensorrt as trt
-from tensorrt_llm.functional import (Tensor, activation, allgather, cast,
-                                     concat, einsum, expand_dims, floordiv,
-                                     permute, shape, slice, split, squeeze)
+from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
+                                     allgather, cast, concat, einsum,
+                                     expand_dims, floordiv, permute, shape,
+                                     slice, split, squeeze)
 from tensorrt_llm.layers.linear import ColumnLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
@@ -97,12 +99,13 @@ class TriangleAttentionNode(Module):
                                      dtype=dtype,
                                      bias=False,
                                      gating=True,
-                                     tp_group=self.tp_group,
-                                     tp_size=self.tp_size,
-                                     tp_rank=self.tp_rank)
+                                     mapping=mapping)
 
-    def forward(self, x: Tensor, mask: Tensor,
-                attention_params: AttentionParams):
+    def forward(self,
+                x: Tensor,
+                mask: Tensor,
+                attention_params: AttentionParams = None,
+                all_reduce_params: Optional[AllReduceParams] = None):
         if x.ndim() > 3:
             x = squeeze(x, 0)
         if mask.ndim() > 2:
@@ -142,7 +145,8 @@ class TriangleAttentionNode(Module):
             biases = [sub_mask_bias, triangle_bias]
             context = self.mha(sub_x,
                                biases=biases,
-                               attention_params=attention_params)
+                               attention_params=attention_params,
+                               all_reduce_params=all_reduce_params)
             return context
 
         output = chunk_loop([x, mask_bias],
@@ -246,6 +250,7 @@ class TriangleMultiplicationNode(Module):
                 mask = slice(mask, starts, sizes)
 
         x_in = x
+        # TODO: SWiGLU, fuse p_in and g_in here
         x = self.p_in(x) * activation(self.g_in(x), trt.ActivationType.SIGMOID)
         x = x * mask.unsqueeze(-1)
 

@@ -19,14 +19,17 @@ from dataclasses import dataclass
 import pytest
 import torch
 import transformers
-from tensorrt_llm.models.convert_utils import split
+from test_utils.create_and_load_weights import (
+    create_triangle_attention_node_weights,
+    create_triangle_multiplication_node_weights,
+    load_triangle_attention_node_weights_torch,
+    load_triangle_multiplication_node_weights_torch)
 from test_utils.ref_layers import (RefTriangleAttentionNode,
                                    RefTriangleMultiplicationNode)
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.model_config import ModelConfig
-from tensorrt_bionemo._torch.modules.attention import TriangleAttention
 from tensorrt_bionemo._torch.modules.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
@@ -36,91 +39,6 @@ _MOCK_MODEL_CONFIG = {
     "architectures": ["triangle-attention-nodes"],
     "torch_dtype": "float32",
 }
-
-
-def _load_attn_node_weights(ref_node: RefTriangleAttentionNode,
-                            node: TriangleAttention,
-                            dtype: torch.dtype,
-                            bias: bool = False):
-    qkv_weights = [
-        {
-            "weight": ref_node.mha.linear_q.weight.data.to(dtype),
-            "bias": ref_node.mha.linear_q.bias.data.to(dtype) if bias else None
-        },
-        {
-            "weight": ref_node.mha.linear_k.weight.data.to(dtype),
-            "bias": ref_node.mha.linear_k.bias.data.to(dtype) if bias else None
-        },
-        {
-            "weight": ref_node.mha.linear_v.weight.data.to(dtype),
-            "bias": ref_node.mha.linear_v.bias.data.to(dtype) if bias else None
-        },
-    ]
-    o_proj_weights = [{
-        "weight":
-        ref_node.mha.linear_o.weight.data.to(dtype),
-        "bias":
-        ref_node.mha.linear_o.bias.data.to(dtype) if bias else None
-    }]
-    g_proj_weights = [{
-        "weight":
-        ref_node.mha.linear_g.weight.data.to(dtype),
-        "bias":
-        ref_node.mha.linear_g.bias.data.to(dtype) if bias else None
-    }]
-
-    node.mha.qkv_proj.load_weights(qkv_weights)
-    node.mha.o_proj.load_weights(o_proj_weights)
-    node.mha.g_proj.load_weights(g_proj_weights)
-
-    node.linear.load_weights([{
-        "weight": ref_node.linear.weight.data.to(dtype),
-    }])
-    node.layer_norm.weight.data.copy_(ref_node.layer_norm.weight.data.to(dtype))
-    node.layer_norm.bias.data.copy_(ref_node.layer_norm.bias.data.to(dtype))
-
-
-def _load_mul_node_weights(ref_node: RefTriangleMultiplicationNode,
-                           node: TriangleMultiplicationNode,
-                           dtype: torch.dtype):
-    node.norm_in.weight.data.copy_(ref_node.norm_in.weight.data.to(dtype))
-    node.norm_in.bias.data.copy_(ref_node.norm_in.bias.data.to(dtype))
-
-    p_in_weights = [
-        {
-            "weight": split(ref_node.p_in.weight.data.to(dtype), 2, 0,
-                            0),  # tp_size=2, tp_rank=0, dim=0
-        },
-        {
-            "weight": split(ref_node.p_in.weight.data.to(dtype), 2, 1,
-                            0),  # tp_size=2, tp_rank=1, dim=0
-        }
-    ]
-    g_in_weights = [
-        {
-            "weight": split(ref_node.g_in.weight.data.to(dtype), 2, 0,
-                            0),  # tp_size=2, tp_rank=0, dim=0
-        },
-        {
-            "weight": split(ref_node.g_in.weight.data.to(dtype), 2, 1,
-                            0),  # tp_size=2, tp_rank=1, dim=0
-        }
-    ]
-    node.p_in.load_weights(p_in_weights)
-    node.g_in.load_weights(g_in_weights)
-
-    node.norm_out.weight.data.copy_(
-        ref_node.norm_out.weight.data.to(torch.float32))
-    node.norm_out.bias.data.copy_(ref_node.norm_out.bias.data.to(torch.float32))
-
-    p_out_weights = [{
-        "weight": ref_node.p_out.weight.data.to(torch.float32),
-    }]
-    g_out_weights = [{
-        "weight": ref_node.g_out.weight.data.to(torch.float32),
-    }]
-    node.p_out.load_weights(p_out_weights)
-    node.g_out.load_weights(g_out_weights)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -170,17 +88,20 @@ def test_triangle_attention_node(s: AttnNodeScenario):
         no_heads=s.num_attention_heads, starting=s.starting)
     ref_node.to(device)
     ref_node.eval()
+
+    weights_and_biases = create_triangle_attention_node_weights(
+        from_ref=ref_node)
     node = TriangleAttentionNode(
         c_in=s.c_in,
         c_hidden=s.c_hidden,
-        num_heads=s.num_attention_heads,
+        num_heads=ref_node.num_heads,
         node_type=TriangleAttentionNodeType.STARTING
         if s.starting else TriangleAttentionNodeType.ENDING,
         dtype=dtype,
         config=model_config,
     )
     node.to(device)
-    _load_attn_node_weights(ref_node, node, dtype, bias=False)
+    load_triangle_attention_node_weights_torch(node, weights_and_biases, dtype)
     attn_metadata = metadata_cls(chunk_size=None,
                                  chunk_dim=None,
                                  mapping=Mapping())
@@ -235,6 +156,8 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
     ref_node.to(device)
     ref_node.eval()
 
+    weights_and_biases = create_triangle_multiplication_node_weights(
+        from_ref=ref_node)
     node = TriangleMultiplicationNode(
         dim=ref_node.dim,
         multiplication_type=s.mul_type,
@@ -242,7 +165,8 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
         config=model_config,
     )
     node.to(device)
-    _load_mul_node_weights(ref_node, node, dtype)
+    load_triangle_multiplication_node_weights_torch(node, weights_and_biases,
+                                                    dtype)
 
     x = torch.randn(1, s.seq_len, s.seq_len, ref_node.dim).cuda()
     mask = torch.randn(1, s.seq_len, s.seq_len).cuda()

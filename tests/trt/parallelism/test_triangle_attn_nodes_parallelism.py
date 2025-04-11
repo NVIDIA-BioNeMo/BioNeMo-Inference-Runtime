@@ -12,10 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
 import tempfile
 import traceback
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -29,8 +30,8 @@ from tensorrt_llm.functional import Tensor
 from tensorrt_llm.plugin.plugin import (CustomAllReduceHelper,
                                         init_all_reduce_helper)
 from test_utils.create_and_load_weights import (
-    create_triangle_attention_node_weights_and_biases,
-    load_triangle_attention_node_weights_torch,
+    create_triangle_attention_node_weights,
+    load_triangle_attention_node_weights_ref_torch,
     load_triangle_attention_node_weights_trt)
 from test_utils.ref_layers import RefTriangleAttentionNode
 
@@ -118,7 +119,7 @@ class TriangleAttnNodesParallelism:
 
         # Disable TF32 for accuracy in testing.
         os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
-        # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+        os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
         with open(engine_path, "rb") as f:
             engine_buffer = f.read()
         session = tensorrt_llm.runtime.Session.from_serialized_engine(
@@ -142,8 +143,8 @@ class TriangleAttnNodesParallelism:
         ref_node = RefTriangleAttentionNode(self.c_in, self.c_hidden,
                                             self.num_attention_heads, starting)
         ref_node.to("cuda", dtype=self.torch_dtype)
-        load_triangle_attention_node_weights_torch(ref_node,
-                                                   self.weights_and_biases)
+        load_triangle_attention_node_weights_ref_torch(ref_node,
+                                                       self.weights_and_biases)
         with torch.inference_mode():
             ref_output = ref_node(inputs['input_s'], inputs['mask'])
             torch.cuda.synchronize()
@@ -154,6 +155,8 @@ class TriangleAttnNodesParallelism:
         return True
 
     def build(self):
+        os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+        os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
         assert self.c_in == self.c_hidden * self.num_attention_heads
 
         hidden_states_shape = [self.seq_len, self.seq_len, self.c_in]
@@ -258,56 +261,32 @@ def run_single_rank(scenario: Scenario, engine_paths: list[str], inputs: dict,
 def _generate_scenarios():
     max_world_size = torch.cuda.device_count()
     scenarios = []
+    ids = []
     for node_type in [
             TriangleAttentionNodeType.STARTING, TriangleAttentionNodeType.ENDING
     ]:
-        scenarios.append(Scenario(tp_size=2, dcp_size=1, node_type=node_type))
-        scenarios.append(Scenario(tp_size=1, dcp_size=2, node_type=node_type))
-        if max_world_size >= 4:
-            scenarios.append(
-                Scenario(tp_size=2, dcp_size=2, node_type=node_type))
-            scenarios.append(
-                Scenario(tp_size=2,
-                         dcp_size=2,
-                         node_type=node_type,
-                         n_optimization_profiles=1))
-
-        if max_world_size >= 8:
-            scenarios.append(
-                Scenario(tp_size=4, dcp_size=2, node_type=node_type))
-            scenarios.append(
-                Scenario(tp_size=4,
-                         dcp_size=2,
-                         node_type=node_type,
-                         n_optimization_profiles=1))
-            scenarios.append(
-                Scenario(tp_size=2, dcp_size=4, node_type=node_type))
-            scenarios.append(
-                Scenario(tp_size=2,
-                         dcp_size=4,
-                         node_type=node_type,
-                         n_optimization_profiles=1))
-            scenarios.append(
-                Scenario(tp_size=4, dcp_size=1, node_type=node_type))
-            scenarios.append(
-                Scenario(tp_size=4,
-                         dcp_size=1,
-                         node_type=node_type,
-                         n_optimization_profiles=1))
-            scenarios.append(
-                Scenario(tp_size=1, dcp_size=4, node_type=node_type))
-            scenarios.append(
-                Scenario(tp_size=1,
-                         dcp_size=4,
-                         node_type=node_type,
-                         n_optimization_profiles=1))
-
-    return scenarios
+        for n_optimization_profiles in [0, 1]:
+            for tp_size, dcp_size in product([1, 2, 4], repeat=2):
+                if tp_size * dcp_size > max_world_size:
+                    continue
+                if tp_size > 4:
+                    continue
+                scenarios.append(
+                    Scenario(tp_size=tp_size,
+                             dcp_size=dcp_size,
+                             node_type=node_type,
+                             n_optimization_profiles=n_optimization_profiles))
+                ids.append(
+                    f"{node_type.name}_{n_optimization_profiles}_{tp_size}_{dcp_size}"
+                )
+    return scenarios, ids
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
                     reason='needs 2 GPUs to run this test')
-@pytest.mark.parametrize("scenario", _generate_scenarios())
+@pytest.mark.parametrize("scenario",
+                         _generate_scenarios()[0],
+                         ids=_generate_scenarios()[1])
 def test_triangle_nodes_parallelism(scenario: Scenario):
     torch.manual_seed(42)
     x = torch.randn(scenario.seq_len, scenario.seq_len, scenario.c_in)
@@ -315,7 +294,7 @@ def test_triangle_nodes_parallelism(scenario: Scenario):
     world_size = scenario.tp_size * scenario.dcp_size
     torch_dtype = str_dtype_to_torch(scenario.dtype)
     inputs = {'input_s': x, 'mask': mask}
-    weights_and_biases = create_triangle_attention_node_weights_and_biases(
+    weights_and_biases = create_triangle_attention_node_weights(
         scenario.c_in, scenario.c_hidden, scenario.num_heads, torch_dtype)
 
     temp_name = next(tempfile._get_candidate_names())

@@ -28,6 +28,8 @@ from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
 
+from tensorrt_bionemo.mapping import Mapping
+
 
 class AttentionParams(object):
 
@@ -46,28 +48,26 @@ class TriangleAttention(Module):
                  bias: bool = False,
                  gating: bool = True,
                  dtype: str = None,
-                 tp_group: list[int] = None,
-                 tp_size: int = 1,
-                 tp_rank: int = 0):
+                 mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
 
         self.attention_head_size = hidden_size // num_attention_heads
         self.num_kv_heads = num_kv_heads
-        assert num_attention_heads % tp_size == 0, \
+        assert num_attention_heads % mapping.tp_size == 0, \
             "num_attention_heads must be divisible by tp_size"
-        self.num_attention_heads = num_attention_heads // tp_size
+        self.num_attention_heads = num_attention_heads // mapping.tp_size
         self.num_attention_kv_heads = (
-            num_kv_heads + tp_size - 1
-        ) // tp_size if num_kv_heads is not None else self.num_attention_heads
+            num_kv_heads + mapping.tp_size - 1
+        ) // mapping.tp_size if num_kv_heads is not None else self.num_attention_heads
         assert self.num_attention_heads == self.num_attention_kv_heads, \
             "num_attention_heads must be equal to num_attention_kv_heads for the triangular attention"
         self.hidden_size = hidden_size
         self.attention_hidden_size = self.attention_head_size * self.num_attention_heads
 
-        self.tp_group = tp_group
-        self.tp_size = tp_size
-        self.tp_rank = tp_rank
+        self.tp_group = mapping.tp_group
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
         self.dtype = dtype
         self.bias = bias
 
@@ -76,28 +76,28 @@ class TriangleAttention(Module):
         self.q_size = self.num_attention_heads * self.attention_head_size
         self.kv_size = self.num_attention_kv_heads * self.attention_head_size
         self.qkv_proj = ColumnLinear(hidden_size,
-                                     tp_size * self.q_size +
-                                     2 * tp_size * self.kv_size,
+                                     mapping.tp_size * self.q_size +
+                                     2 * mapping.tp_size * self.kv_size,
                                      bias=bias,
                                      dtype=dtype,
-                                     tp_group=tp_group,
-                                     tp_size=tp_size,
+                                     tp_group=mapping.tp_group,
+                                     tp_size=mapping.tp_size,
                                      gather_output=False,
                                      is_qkv=True)
-        self.o_proj = RowLinear(tp_size * self.q_size,
+        self.o_proj = RowLinear(mapping.tp_size * self.q_size,
                                 hidden_size,
                                 bias=False,
                                 dtype=dtype,
-                                tp_group=tp_group,
-                                tp_size=tp_size)
+                                tp_group=mapping.tp_group,
+                                tp_size=mapping.tp_size)
         self.g_proj = None
         if gating:
             self.g_proj = ColumnLinear(hidden_size,
-                                       tp_size * self.q_size,
+                                       mapping.tp_size * self.q_size,
                                        bias=False,
                                        dtype=dtype,
-                                       tp_group=tp_group,
-                                       tp_size=tp_size,
+                                       tp_group=mapping.tp_group,
+                                       tp_size=mapping.tp_size,
                                        gather_output=False)
 
     def forward(self,
@@ -207,9 +207,7 @@ class SelfAttentionPairBias(Module):
                  inf: float = 1e6,
                  eps: float = 1e-05,
                  dtype: str = None,
-                 tp_group: int = None,
-                 tp_size: int = 1,
-                 tp_rank: int = 0):
+                 mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.c_s = c_s
@@ -222,15 +220,15 @@ class SelfAttentionPairBias(Module):
         # This equal to 1 for self-attention
         self.num_key_value_groups = num_heads // self.num_attention_kv_heads
 
-        assert num_heads % tp_size == 0
-        self.num_attention_heads = num_heads // tp_size
-        self.num_attention_kv_heads = self.num_attention_kv_heads // tp_size
+        assert num_heads % mapping.tp_size == 0
+        self.num_attention_heads = num_heads // mapping.tp_size
+        self.num_attention_kv_heads = self.num_attention_kv_heads // mapping.tp_size
         self.q_size = self.num_attention_heads * self.attention_head_size
         self.kv_size = self.num_attention_kv_heads * self.attention_head_size
 
-        self.tp_group = tp_group
-        self.tp_size = tp_size
-        self.tp_rank = tp_rank
+        self.tp_group = mapping.tp_group
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
         self.dtype = dtype
 
         self.norm_factor = math.sqrt(self.attention_head_size)
@@ -245,33 +243,26 @@ class SelfAttentionPairBias(Module):
 
         # Couldn't fused q,k,v as one because of the different bias
         self.proj_q = ColumnLinear(self.c_s,
-                                   tp_size * self.q_size,
+                                   mapping.tp_size * self.q_size,
                                    bias=True,
                                    dtype=dtype,
-                                   tp_group=tp_group,
-                                   tp_size=tp_size,
+                                   tp_group=mapping.tp_group,
+                                   tp_size=mapping.tp_size,
                                    gather_output=False)
-        # TODO: fused k,v at here
-        self.proj_k = ColumnLinear(self.c_s,
-                                   tp_size * self.kv_size,
-                                   bias=False,
-                                   dtype=dtype,
-                                   tp_group=tp_group,
-                                   tp_size=tp_size,
-                                   gather_output=False)
-        self.proj_v = ColumnLinear(self.c_s,
-                                   tp_size * self.kv_size,
-                                   bias=False,
-                                   dtype=dtype,
-                                   tp_group=tp_group,
-                                   tp_size=tp_size,
-                                   gather_output=False)
+        # Fused k,v at here
+        self.proj_kv = ColumnLinear(self.c_s,
+                                    2 * mapping.tp_size * self.kv_size,
+                                    bias=False,
+                                    dtype=dtype,
+                                    tp_group=mapping.tp_group,
+                                    tp_size=mapping.tp_size,
+                                    gather_output=False)
         self.proj_g = ColumnLinear(self.c_s,
-                                   tp_size * self.q_size,
+                                   mapping.tp_size * self.q_size,
                                    bias=False,
                                    dtype=dtype,
-                                   tp_group=tp_group,
-                                   tp_size=tp_size,
+                                   tp_group=mapping.tp_group,
+                                   tp_size=mapping.tp_size,
                                    gather_output=False)
         self.proj_z_norm = LayerNorm(normalized_shape=[c_z],
                                      dtype=dtype,
@@ -279,18 +270,18 @@ class SelfAttentionPairBias(Module):
                                      tp_size=1,
                                      tp_dim=0)
         self.proj_z = ColumnLinear(self.c_z,
-                                   tp_size * self.num_attention_heads,
+                                   mapping.tp_size * self.num_attention_heads,
                                    bias=False,
                                    dtype=dtype,
-                                   tp_group=tp_group,
-                                   tp_size=tp_size,
+                                   tp_group=mapping.tp_group,
+                                   tp_size=mapping.tp_size,
                                    gather_output=False)
-        self.proj_o = RowLinear(tp_size * self.q_size,
+        self.proj_o = RowLinear(mapping.tp_size * self.q_size,
                                 self.c_s,
                                 bias=False,
                                 dtype=dtype,
-                                tp_group=tp_group,
-                                tp_size=tp_size)
+                                tp_group=mapping.tp_group,
+                                tp_size=mapping.tp_size)
 
     def forward(self,
                 s: Tensor,
@@ -305,8 +296,8 @@ class SelfAttentionPairBias(Module):
             norm_s = s
 
         query = self.proj_q(norm_s)
-        key = self.proj_k(norm_s)
-        value = self.proj_v(norm_s)
+        kv = self.proj_kv(norm_s)
+        key, value = split(kv, [self.kv_size, self.kv_size], dim=-1)
         res_s = self.proj_g(norm_s)
         res_s = activation(res_s, trt.ActivationType.SIGMOID)
 

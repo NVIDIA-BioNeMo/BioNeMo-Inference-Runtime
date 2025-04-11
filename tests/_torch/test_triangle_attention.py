@@ -19,6 +19,8 @@ from dataclasses import dataclass
 import pytest
 import torch
 import transformers
+from test_utils.create_and_load_weights import (
+    create_triangle_attention_weights, load_triangle_attention_weights_torch)
 from test_utils.ref_attn import RefTriangleAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
@@ -67,35 +69,9 @@ def test_triangle_attention_backend(s: Scenario):
     device = torch.device('cuda')
 
     ref_attn = RefTriangleAttention.load_weights(no_heads=s.num_attention_heads)
-    ref_attn.to(device)
-    ref_attn = ref_attn
+    ref_attn = ref_attn.to(device)
 
-    qkv_weights = [
-        {
-            "weight": ref_attn.linear_q.weight.data.to(dtype),
-            "bias": ref_attn.linear_q.bias.data.to(dtype) if s.bias else None
-        },
-        {
-            "weight": ref_attn.linear_k.weight.data.to(dtype),
-            "bias": ref_attn.linear_k.bias.data.to(dtype) if s.bias else None
-        },
-        {
-            "weight": ref_attn.linear_v.weight.data.to(dtype),
-            "bias": ref_attn.linear_v.bias.data.to(dtype) if s.bias else None
-        },
-    ]
-    o_proj_weights = [{
-        "weight":
-        ref_attn.linear_o.weight.data.to(dtype),
-        "bias":
-        ref_attn.linear_o.bias.data.to(dtype) if s.bias else None
-    }]
-    g_proj_weights = [{
-        "weight":
-        ref_attn.linear_g.weight.data.to(dtype),
-        "bias":
-        ref_attn.linear_g.bias.data.to(dtype) if s.bias else None
-    }]
+    weights_and_biases = create_triangle_attention_weights(from_ref=ref_attn)
 
     attn = TriangleAttention(
         layer_idx=0,
@@ -107,10 +83,7 @@ def test_triangle_attention_backend(s: Scenario):
         dtype=dtype,
         config=model_config,
     )
-    attn.qkv_proj.load_weights(qkv_weights)
-    attn.o_proj.load_weights(o_proj_weights)
-    if s.gating:
-        attn.g_proj.load_weights(g_proj_weights)
+    load_triangle_attention_weights_torch(attn, weights_and_biases, dtype=dtype)
     attn.to(device)
     attn_metadata = metadata_cls(chunk_size=s.chunk_size,
                                  chunk_dim=s.chunk_dim,

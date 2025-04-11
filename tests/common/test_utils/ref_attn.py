@@ -237,7 +237,6 @@ class RefPairwiseSelfAttention(nn.Module):
             cls,
             model: str = "boltz-1",
             layer_path: str = "pairformer_module.layers.0.attention",
-            num_heads: int = 16,
             state_dict: Optional[dict] = None) -> 'RefPairwiseSelfAttention':
         if state_dict is None:
             state_dict = load_hf_weights(model, local_files_only=False)
@@ -252,7 +251,8 @@ class RefPairwiseSelfAttention(nn.Module):
             (f"{layer_path}.proj_o.weight", None),
         ]
         c_s = state_dict[weights_biases_path[0][0]].shape[0]
-        c_z = state_dict[weights_biases_path[5][0]].shape[0]
+        c_z = state_dict[weights_biases_path[6][0]].shape[1]
+        num_heads = state_dict[weights_biases_path[6][0]].shape[0]
         attn = cls(c_s, c_z, num_heads, initial_norm=True)
         layers = [
             attn.norm_s, attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,

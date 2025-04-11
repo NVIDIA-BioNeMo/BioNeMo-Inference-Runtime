@@ -200,3 +200,17 @@ class Mapping(object):
             'tp_size': self.tp_size,
             'pp_size': self.pp_size,
         }
+
+
+def create_max_tp_mapping(mapping: Mapping, dim: int):
+    max_tp_size = min(mapping.world_size, dim)
+    dcp_size = mapping.world_size // max_tp_size
+    while True:
+        if dim % max_tp_size == 0:
+            return Mapping(world_size=mapping.world_size,
+                           rank=mapping.rank,
+                           gpus_per_node=mapping.gpus_per_node,
+                           dcp_size=dcp_size,
+                           tp_size=max_tp_size)
+        max_tp_size //= 2
+        dcp_size *= 2

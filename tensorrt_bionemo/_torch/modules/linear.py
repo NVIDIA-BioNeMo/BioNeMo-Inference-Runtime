@@ -97,10 +97,11 @@ class Linear(nn.Module):
         # could be modified later
         self.weights_loading_config = weights_loading_config or WeightsLoadingConfig(
         )
-        self.tp_size = self.parallel_config.tensor_parallel_size
-        self.tp_rank = self.parallel_config.tensor_parallel_rank
-        self.dcp_size = self.parallel_config.data_parallel_size
-        self.dcp_rank = self.parallel_config.data_parallel_rank
+        self.mapping = self.parallel_config.mapping
+        self.tp_size = self.mapping.tp_size
+        self.tp_rank = self.mapping.tp_rank
+        self.dcp_size = self.mapping.dcp_size
+        self.dcp_rank = self.mapping.dcp_rank
         self.tp_mode = self.parallel_config.tensor_parallel_mode
 
         local_in_features = in_features

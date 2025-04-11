@@ -21,6 +21,9 @@ import tensorrt_llm
 import torch
 import transformers
 from mpi4py.futures import MPIPoolExecutor
+from test_utils.create_and_load_weights import (
+    create_self_pairwise_attention_weights,
+    load_self_pairwise_attention_weights_torch)
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
@@ -35,15 +38,12 @@ _MOCK_MODEL_CONFIG = {
 
 
 def run_single_rank(tensor_parallel_size, single_rank_forward_func, s, z, mask,
-                    num_attention_heads, c_s, c_z, q_weight, q_bias, k_weight,
-                    v_weight, o_weight, g_weight, z_weights, z_biases):
+                    num_attention_heads, c_s, c_z, weights_and_biases):
     rank = tensorrt_llm.mpi_rank()
     torch.cuda.set_device(rank)
     try:
         single_rank_forward_func(s, z, mask, num_attention_heads, c_s, c_z,
-                                 tensor_parallel_size, rank, q_weight, q_bias,
-                                 k_weight, v_weight, o_weight, g_weight,
-                                 z_weights, z_biases)
+                                 tensor_parallel_size, rank, weights_and_biases)
     except Exception:
         traceback.print_exc()
         raise
@@ -52,9 +52,8 @@ def run_single_rank(tensor_parallel_size, single_rank_forward_func, s, z, mask,
 
 @torch.inference_mode
 def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
-                          tensor_parallel_size, tensor_parallel_rank, q_weight,
-                          q_bias, k_weight, v_weight, o_weight, g_weight,
-                          z_weights, z_biases):
+                          tensor_parallel_size, tensor_parallel_rank,
+                          weights_and_biases):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     s = s.cuda()
@@ -70,7 +69,7 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
         pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
         mapping=mapping,
         attn_backend="VANILLA",
-    )
+        max_attention_pairwise_tp_size=False)
     dtype = model_config.pretrained_config.torch_dtype
     metadata_cls = get_attention_backend("VANILLA").Metadata
     attn_metadata = metadata_cls(mapping=mapping)
@@ -83,25 +82,19 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
         dtype=dtype,
         config=model_config,
     )
-    pairwise_attn.proj_q.load_weights([dict(weight=q_weight, bias=q_bias)])
-    pairwise_attn.proj_k.load_weights([dict(weight=k_weight)])
-    pairwise_attn.proj_v.load_weights([dict(weight=v_weight)])
-    pairwise_attn.proj_o.load_weights([dict(weight=o_weight)])
-    pairwise_attn.proj_g.load_weights([dict(weight=g_weight)])
-    pairwise_attn.proj_z[0].weight.data.copy_(z_weights[0])
-    pairwise_attn.proj_z[0].bias.data.copy_(z_biases[0])
-    pairwise_attn.proj_z[1].load_weights([dict(weight=z_weights[1])])
-
+    load_self_pairwise_attention_weights_torch(pairwise_attn,
+                                               weights_and_biases,
+                                               dtype=dtype)
     pairwise_attn.cuda()
 
-    multi_dev_output = pairwise_attn.forward(s, z, mask, attn_metadata)
+    multi_dev_output = pairwise_attn(s, z, mask, attn_metadata)
     # create single mapping
     mapping = Mapping()
     single_model_config = ModelConfig(
         pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
         mapping=mapping,
         attn_backend="VANILLA",
-    )
+        max_attention_pairwise_tp_size=False)
     attn_metadata = metadata_cls(mapping=mapping)
     single_dev_pairwise_attn = SelfAttentionPairBias(
         layer_idx=0,
@@ -111,27 +104,19 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
         dtype=dtype,
         config=single_model_config,
     )
-    single_dev_pairwise_attn.proj_q.load_weights(
-        [dict(weight=q_weight, bias=q_bias)])
-    single_dev_pairwise_attn.proj_k.load_weights([dict(weight=k_weight)])
-    single_dev_pairwise_attn.proj_v.load_weights([dict(weight=v_weight)])
-    single_dev_pairwise_attn.proj_o.load_weights([dict(weight=o_weight)])
-    single_dev_pairwise_attn.proj_g.load_weights([dict(weight=g_weight)])
-    single_dev_pairwise_attn.proj_z[0].weight.data.copy_(z_weights[0])
-    single_dev_pairwise_attn.proj_z[0].bias.data.copy_(z_biases[0])
-    single_dev_pairwise_attn.proj_z[1].load_weights([dict(weight=z_weights[1])])
+    load_self_pairwise_attention_weights_torch(single_dev_pairwise_attn,
+                                               weights_and_biases,
+                                               dtype=dtype)
 
     single_dev_pairwise_attn.cuda()
 
-    if tensor_parallel_rank == 0:
-        single_dev_output = single_dev_pairwise_attn.forward(
-            s, z, mask, attn_metadata)
-        torch.cuda.synchronize()
-        assert multi_dev_output.shape == single_dev_output.shape
-        torch.testing.assert_close(multi_dev_output,
-                                   single_dev_output,
-                                   atol=1e-4,
-                                   rtol=1e-2)
+    single_dev_output = single_dev_pairwise_attn(s, z, mask, attn_metadata)
+    torch.cuda.synchronize()
+    assert multi_dev_output.shape == single_dev_output.shape
+    torch.testing.assert_close(multi_dev_output,
+                               single_dev_output,
+                               atol=1e-4,
+                               rtol=1e-2)
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
@@ -147,32 +132,20 @@ def test_tp_pairwise_attention(num_attention_heads):
     seq_len = 117
     b = 1
 
-    q_weight = torch.randn(c_s, c_s, dtype=torch.float32)
-    q_bias = torch.randn(c_s, dtype=torch.float32)
-    k_weight = torch.randn(c_s, c_s, dtype=torch.float32)
-    v_weight = torch.randn(c_s, c_s, dtype=torch.float32)
-    o_weight = torch.randn(c_s, c_s, dtype=torch.float32)
-    g_weight = torch.randn(c_s, c_s, dtype=torch.float32)
-    z_weights = [
-        torch.randn(c_z, dtype=torch.float32),
-        torch.randn(num_attention_heads, c_z, dtype=torch.float32),
-    ]
-    z_biases = [
-        torch.randn(c_z, dtype=torch.float32),
-        None,
-    ]
     s = torch.randn(b, seq_len, c_s, dtype=torch.float32)
     z = torch.randn(b, seq_len, seq_len, c_z, dtype=torch.float32)
     mask = torch.randn(b, seq_len, dtype=torch.float32)
+
+    weights_and_biases = create_self_pairwise_attention_weights(
+        c_s=c_s, c_z=c_z, num_attention_heads=num_attention_heads)
 
     with MPIPoolExecutor(max_workers=tensor_parallel_size) as executor:
         results = executor.map(
             run_single_rank,
             *zip(*[(tensor_parallel_size, pairwise_attn_forward, s, z, mask,
-                    num_attention_heads, c_s, c_z, q_weight, q_bias, k_weight,
-                    v_weight, o_weight, g_weight, z_weights, z_biases)] * 2))
+                    num_attention_heads, c_s, c_z, weights_and_biases)] * 2))
         if num_attention_heads % 2 != 0:
-            with pytest.raises(AssertionError):
+            with pytest.raises((AssertionError, RuntimeError)):
                 for r in results:
                     assert r is True
         else:

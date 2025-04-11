@@ -15,6 +15,7 @@
 import os
 import traceback
 from dataclasses import dataclass
+from itertools import product
 
 import pytest
 import tensorrt as trt
@@ -27,8 +28,8 @@ from tensorrt_llm.functional import Tensor
 from tensorrt_llm.plugin.plugin import (CustomAllReduceHelper,
                                         init_all_reduce_helper)
 from test_utils.create_and_load_weights import (
-    create_triangle_multiplication_node_weights_and_biases,
-    load_triangle_multiplication_node_weights_torch,
+    create_triangle_multiplication_node_weights,
+    load_triangle_multiplication_node_weights_ref_torch,
     load_triangle_multiplication_node_weights_trt)
 from test_utils.ref_layers import RefTriangleMultiplicationNode
 
@@ -73,6 +74,8 @@ class TriangleMulNodesParallelism:
         self.stream = torch.cuda.current_stream()
 
     def build(self):
+        os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+        os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
         hidden_states_shape = [self.seq_len, self.seq_len, self.dim]
         mask_shape = [self.seq_len, self.seq_len]
         builder = Builder()
@@ -127,7 +130,7 @@ class TriangleMulNodesParallelism:
 
         # Disable TF32 for accuracy in testing.
         os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
-        # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+        os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
         session = tensorrt_llm.runtime.Session.from_serialized_engine(
             engine_buffer)
         trt_inputs = {}
@@ -135,11 +138,9 @@ class TriangleMulNodesParallelism:
             trt_inputs[k] = v.to(self.device, dtype=self.torch_dtype)
         outputs = {
             'output':
-            torch.empty(
-                trt_inputs['input_x'].shape,
-                # [4, 4, 16],
-                dtype=self.torch_dtype,
-                device="cuda")
+            torch.empty(trt_inputs['input_x'].shape,
+                        dtype=self.torch_dtype,
+                        device="cuda")
         }
         session.run(inputs=trt_inputs,
                     outputs=outputs,
@@ -152,15 +153,15 @@ class TriangleMulNodesParallelism:
             outgoing=self.multiplication_type ==
             TriangleMultiplicationNodeType.OUTGOING)
         ref_node.to("cuda", dtype=self.torch_dtype)
-        load_triangle_multiplication_node_weights_torch(ref_node,
-                                                        self.weights_and_biases)
+        load_triangle_multiplication_node_weights_ref_torch(
+            ref_node, self.weights_and_biases)
         with torch.inference_mode():
             ref_output = ref_node(trt_inputs['input_x'], trt_inputs['mask'])
             torch.cuda.synchronize()
             torch.testing.assert_close(trt_output,
                                        ref_output,
-                                       atol=1e-2,
-                                       rtol=1e-3)
+                                       atol=1e-3,
+                                       rtol=1e-4)
 
 
 def run_single_rank(scenario: Scenario, inputs: dict, weights_and_biases: dict):
@@ -187,46 +188,28 @@ def run_single_rank(scenario: Scenario, inputs: dict, weights_and_biases: dict):
 def _generate_scenarios():
     max_world_size = torch.cuda.device_count()
     scenarios = []
+    ids = []
     for multiplication_type in [
             TriangleMultiplicationNodeType.OUTGOING,
             TriangleMultiplicationNodeType.INCOMING
     ]:
-        scenarios.append(
-            Scenario(tp_size=2,
-                     dcp_size=1,
-                     multiplication_type=multiplication_type))
-        scenarios.append(
-            Scenario(tp_size=1,
-                     dcp_size=2,
-                     multiplication_type=multiplication_type))
-        if max_world_size >= 4:
+        for tp_size, dcp_size in product([1, 2, 4], repeat=2):
+            if tp_size * dcp_size > max_world_size:
+                continue
             scenarios.append(
-                Scenario(tp_size=2,
-                         dcp_size=2,
+                Scenario(tp_size=tp_size,
+                         dcp_size=dcp_size,
                          multiplication_type=multiplication_type))
-            scenarios.append(
-                Scenario(tp_size=4,
-                         dcp_size=1,
-                         multiplication_type=multiplication_type))
-            scenarios.append(
-                Scenario(tp_size=1,
-                         dcp_size=4,
-                         multiplication_type=multiplication_type))
-        if max_world_size >= 8:
-            scenarios.append(
-                Scenario(tp_size=2,
-                         dcp_size=4,
-                         multiplication_type=multiplication_type))
-            scenarios.append(
-                Scenario(tp_size=4,
-                         dcp_size=2,
-                         multiplication_type=multiplication_type))
-    return scenarios
+            ids.append(f"{multiplication_type.name}_{tp_size}_{dcp_size}")
+
+    return scenarios, ids
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
                     reason='needs 2 GPUs to run this test')
-@pytest.mark.parametrize("scenario", _generate_scenarios())
+@pytest.mark.parametrize("scenario",
+                         _generate_scenarios()[0],
+                         ids=_generate_scenarios()[1])
 def test_triangle_mul_nodes_parallelism(scenario: Scenario):
     torch.manual_seed(42)
     x = torch.randn(scenario.seq_len, scenario.seq_len, scenario.dim)
@@ -234,7 +217,7 @@ def test_triangle_mul_nodes_parallelism(scenario: Scenario):
     world_size = scenario.tp_size * scenario.dcp_size
     torch_dtype = str_dtype_to_torch(scenario.dtype)
     inputs = {'input_x': x, 'mask': mask}
-    weights_and_biases = create_triangle_multiplication_node_weights_and_biases(
+    weights_and_biases = create_triangle_multiplication_node_weights(
         dim=scenario.dim, torch_dtype=torch_dtype)
 
     # Run inference for each rank

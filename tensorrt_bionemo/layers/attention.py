@@ -33,8 +33,8 @@ from tensorrt_bionemo.mapping import Mapping
 
 class AttentionParams(object):
 
-    def __init__(self, plain_attn_precision: str = 'float32'):
-        self.plain_attn_precision = plain_attn_precision
+    def __init__(self, vanilla_attn_precision: str = 'float32'):
+        self.vanilla_attn_precision = vanilla_attn_precision
 
 
 class TriangleAttention(Module):
@@ -151,9 +151,9 @@ class TriangleAttention(Module):
             model_type = query.dtype
 
             # Using attn precision different from model precision to avoid NaN results
-            with precision(attention_params.plain_attn_precision):
-                query = cast(query, attention_params.plain_attn_precision)
-                key = cast(key, attention_params.plain_attn_precision)
+            with precision(attention_params.vanilla_attn_precision):
+                query = cast(query, attention_params.vanilla_attn_precision)
+                key = cast(key, attention_params.vanilla_attn_precision)
                 if norm_before_bmm1:
                     query /= self.norm_factor
                 attention_scores = matmul(query, key)
@@ -328,14 +328,14 @@ class SelfAttentionPairBias(Module):
             mask = cast(mask, 'float32')
             mask_bias = (1 - expand_dims(mask, [1, 2])) * (-self.inf)
 
-            with precision(attention_params.plain_attn_precision):
-                query = cast(query, attention_params.plain_attn_precision)
-                key = cast(key, attention_params.plain_attn_precision)
-                value = cast(value, attention_params.plain_attn_precision)
+            with precision(attention_params.vanilla_attn_precision):
+                query = cast(query, attention_params.vanilla_attn_precision)
+                key = cast(key, attention_params.vanilla_attn_precision)
+                value = cast(value, attention_params.vanilla_attn_precision)
                 pair_bias = cast(pair_bias,
-                                 attention_params.plain_attn_precision)
+                                 attention_params.vanilla_attn_precision)
                 mask_bias = cast(mask_bias,
-                                 attention_params.plain_attn_precision)
+                                 attention_params.vanilla_attn_precision)
                 if norm_before_bmm1:
                     query /= self.norm_factor
                 attention_scores = matmul(query, key)

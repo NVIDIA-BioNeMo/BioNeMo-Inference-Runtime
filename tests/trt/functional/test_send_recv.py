@@ -55,6 +55,7 @@ def _build_network(mapping: Mapping, input_shape: tuple[int],
             chunk_recv = send_recv(chunk_recv,
                                    mapping.prev_dcp_rank(),
                                    mapping.next_dcp_rank(),
+                                   group=mapping.dcp_group,
                                    group_stride=mapping.tp_size)
             add_one = chunk_recv + 1
             add_one = expand_dims(add_one, 0)
@@ -123,7 +124,7 @@ def _generate_test_cases() -> list[tuple[int, int]]:
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
                     reason='needs 2 GPUs to run this test')
 @pytest.mark.parametrize("pair", _generate_test_cases())
-def test_send_recv(pair: tuple[int, int] = (2, 2)):
+def test_send_recv(pair):
     dcp_size, tp_size = pair
     world_size = dcp_size * tp_size
     x = torch.randn(world_size, 64, 128, dtype=torch.float32)
@@ -134,3 +135,7 @@ def test_send_recv(pair: tuple[int, int] = (2, 2)):
             *zip(*[(x, world_size, dcp_size, tp_size)] * world_size))
         for r in results:
             assert r is True
+
+
+if __name__ == "__main__":
+    test_send_recv((2, 1))

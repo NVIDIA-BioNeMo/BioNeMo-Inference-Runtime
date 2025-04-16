@@ -16,10 +16,13 @@
 from typing import Optional
 
 from tensorrt_llm.functional import AllReduceParams, Tensor
-from tensorrt_llm.module import Module
+from tensorrt_llm.module import Module, ModuleList
 
+from tensorrt_bionemo.confs.modules.transformers import (PairformerBuildConfig,
+                                                         PairformerConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
+from ..models.module_utils import PretrainedModule
 from .attention import AttentionParams, SelfAttentionPairBias
 from .transition import Transition
 from .triangle_nodes import (TriangleAttentionNode, TriangleAttentionNodeType,
@@ -67,6 +70,7 @@ class PairformerLayer(Module):
                 eps=eps,
                 inf=inf,
                 mapping=m)
+
         self.tri_mul_out = TriangleMultiplicationNode(
             local_layer_idx=local_layer_idx,
             dim=token_z,
@@ -74,6 +78,7 @@ class PairformerLayer(Module):
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
             mapping=mapping)
+
         self.tri_mul_in = TriangleMultiplicationNode(
             local_layer_idx=local_layer_idx,
             dim=token_z,
@@ -103,7 +108,6 @@ class PairformerLayer(Module):
             inf=inf,
             chunk_size=chunk_size,
             mapping=mapping)
-
         if not self.no_update_s:
             m = mapping
             if max_transition_tp_size:
@@ -112,7 +116,8 @@ class PairformerLayer(Module):
                                            dim=token_s,
                                            hidden=token_s * 4,
                                            eps=eps,
-                                           mapping=m)
+                                           mapping=m,
+                                           dtype=dtype)
         m = mapping
         if max_transition_tp_size:
             m = create_max_tp_mapping(mapping, token_z * 4)
@@ -120,7 +125,8 @@ class PairformerLayer(Module):
                                        dim=token_z,
                                        hidden=token_z * 4,
                                        eps=eps,
-                                       mapping=m)
+                                       mapping=m,
+                                       dtype=dtype)
 
     def forward(self,
                 s: Tensor,
@@ -148,4 +154,43 @@ class PairformerLayer(Module):
                                    all_reduce_params=all_reduce_params).squeeze(
                                        0, False)
             s = s + self.transition_s(s)
+        return s, z
+
+
+class PairformerModule(PretrainedModule):
+    config_class = PairformerConfig
+    build_config_class = PairformerBuildConfig
+
+    def __init__(self, config: PairformerConfig):
+        super().__init__(config)
+
+        self.layers = ModuleList([
+            PairformerLayer(
+                local_layer_idx=i,
+                token_s=config.token_s,
+                token_z=config.token_z,
+                num_heads=config.num_heads,
+                pairwise_head_width=config.pairwise_head_width,
+                pairwise_num_heads=config.pairwise_num_heads,
+                no_update_s=config.no_update_s,
+                no_update_z=config.no_update_z,
+                dtype=config.dtype,
+                eps=config.norm_epsilon,
+                inf=config.mask_inf,
+                max_transition_tp_size=config.max_transition_tp_size,
+                max_attention_pairwise_tp_size=config.
+                max_attention_pairwise_tp_size,
+                mapping=config.mapping) for i in range(config.num_blocks)
+        ])
+
+    def forward(self,
+                s: Tensor,
+                z: Tensor,
+                mask: Tensor,
+                pair_mask: Tensor,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        for layer in self.layers:
+            s, z = layer(s, z, mask, pair_mask, attention_params,
+                         all_reduce_params)
         return s, z

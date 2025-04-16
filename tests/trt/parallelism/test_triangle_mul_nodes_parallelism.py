@@ -193,7 +193,7 @@ def _generate_scenarios():
             TriangleMultiplicationNodeType.OUTGOING,
             TriangleMultiplicationNodeType.INCOMING
     ]:
-        for tp_size, dcp_size in product([1, 2, 4], repeat=2):
+        for tp_size, dcp_size in product([1, 2, 4, 8], repeat=2):
             if tp_size * dcp_size > max_world_size:
                 continue
             scenarios.append(

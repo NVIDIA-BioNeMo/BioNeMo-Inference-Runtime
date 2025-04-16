@@ -13,26 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from copy import deepcopy
 from dataclasses import dataclass
 
 import pytest
 import torch
-import transformers
+from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import (
     create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
 from test_utils.ref_layers import RefPairformerLayer
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.transformers import PairformerLayer
 from tensorrt_bionemo.mapping import Mapping
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["pairformer-layer"],
-    "torch_dtype": "float32",
-}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -55,13 +48,8 @@ def test_pairformer_layer(sc: Scenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(sc.backend).Metadata
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
-    config_dict["torch_dtype"] = sc.torch_dtype
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        attn_backend=sc.backend,
-    )
-    dtype = model_config.pretrained_config.torch_dtype
+
+    dtype = str_dtype_to_torch(sc.torch_dtype)
     device = torch.device('cuda')
 
     ref_layer = RefPairformerLayer.load_weights()
@@ -77,7 +65,8 @@ def test_pairformer_layer(sc: Scenario):
         pairwise_head_width=ref_layer.pairwise_head_width,
         pairwise_num_heads=ref_layer.pairwise_num_heads,
         dtype=dtype,
-        config=model_config,
+        attn_backend=sc.backend,
+        skip_create_weights=False,
     )
     layer.to(device)
     load_pairformer_layer_weights_torch(layer, weights_and_biases, dtype)

@@ -19,8 +19,10 @@ import torch
 import torch.nn as nn
 from tensorrt_llm.functional import AllReduceParams
 
+from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
+from tensorrt_bionemo.mapping import Mapping
+
 from ..attention_backend import AttentionMetadata
-from ..model_config import ModelConfig
 from .attention import SelfAttentionPairBias
 from .transition import Transition
 from .triangle_nodes import (TriangleAttentionEndingNode,
@@ -43,12 +45,16 @@ class PairformerLayer(nn.Module):
                  dtype: torch.dtype = None,
                  eps: float = 1e-5,
                  inf: float = 1e9,
-                 config: Optional[ModelConfig] = None):
+                 max_transition_tp_size: bool = True,
+                 max_attention_pairwise_tp_size: bool = True,
+                 triangle_attn_node_chunk_size: int = 0,
+                 mapping: Optional[Mapping] = None,
+                 attn_backend: str = "VANILLA",
+                 skip_create_weights: bool = False):
         super().__init__()
-        config = config or ModelConfig()
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
-        self.mapping = config.mapping
+        self.mapping = mapping or Mapping()
 
         if not self.no_update_s:
             self.attention = SelfAttentionPairBias(
@@ -58,7 +64,10 @@ class PairformerLayer(nn.Module):
                 num_heads=num_heads,
                 dtype=dtype,
                 inf=inf,
-                config=config,
+                max_attention_pairwise_tp_size=max_attention_pairwise_tp_size,
+                mapping=mapping,
+                skip_create_weights=skip_create_weights,
+                attn_backend=attn_backend,
             )
         self.tri_mul_out = TriangleMultiplicationNode(
             layer_idx=layer_idx,
@@ -66,7 +75,8 @@ class PairformerLayer(nn.Module):
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
             dtype=dtype,
-            config=config,
+            mapping=mapping,
+            skip_create_weights=skip_create_weights,
         )
         self.tri_mul_in = TriangleMultiplicationNode(
             layer_idx=layer_idx,
@@ -74,7 +84,8 @@ class PairformerLayer(nn.Module):
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.INCOMING,
             dtype=dtype,
-            config=config,
+            mapping=mapping,
+            skip_create_weights=skip_create_weights,
         )
         self.tri_attn_start = TriangleAttentionStartingNode(
             token_z,
@@ -83,7 +94,10 @@ class PairformerLayer(nn.Module):
             inf=inf,
             layer_idx=layer_idx,
             dtype=dtype,
-            config=config,
+            chunk_size=triangle_attn_node_chunk_size,
+            mapping=mapping,
+            skip_create_weights=skip_create_weights,
+            attn_backend=attn_backend,
         )
         self.tri_attn_end = TriangleAttentionEndingNode(
             token_z,
@@ -92,7 +106,10 @@ class PairformerLayer(nn.Module):
             inf=inf,
             layer_idx=layer_idx,
             dtype=dtype,
-            config=config,
+            chunk_size=triangle_attn_node_chunk_size,
+            mapping=mapping,
+            skip_create_weights=skip_create_weights,
+            attn_backend=attn_backend,
         )
         if not self.no_update_s:
             self.transition_s = Transition(
@@ -101,7 +118,9 @@ class PairformerLayer(nn.Module):
                 layer_idx=layer_idx,
                 eps=eps,
                 dtype=dtype,
-                config=config,
+                max_transition_tp_size=max_transition_tp_size,
+                mapping=mapping,
+                skip_create_weights=skip_create_weights,
             )
         self.transition_z = Transition(
             token_z,
@@ -109,7 +128,9 @@ class PairformerLayer(nn.Module):
             layer_idx=layer_idx,
             eps=eps,
             dtype=dtype,
-            config=config,
+            max_transition_tp_size=max_transition_tp_size,
+            mapping=mapping,
+            skip_create_weights=skip_create_weights,
         )
 
     def forward(
@@ -147,4 +168,48 @@ class PairformerLayer(nn.Module):
                 attn_metadata=attn_metadata,
                 all_reduce_params=all_reduce_params).squeeze(0)
             s = s + self.transition_s(s)
+        return s, z
+
+
+class PairformerModule(nn.Module):
+
+    def __init__(self, config: PairformerConfig):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        for i in range(config.num_blocks):
+            self.layers.append(
+                PairformerLayer(
+                    layer_idx=i,
+                    token_s=config.token_s,
+                    token_z=config.token_z,
+                    num_heads=config.num_heads,
+                    pairwise_head_width=config.pairwise_head_width,
+                    pairwise_num_heads=config.pairwise_num_heads,
+                    no_update_s=config.no_update_s,
+                    no_update_z=config.no_update_z,
+                    dtype=config.torch_dtype,
+                    eps=config.eps,
+                    inf=config.inf,
+                    max_transition_tp_size=config.max_transition_tp_size,
+                    max_attention_pairwise_tp_size=config.
+                    max_attention_pairwise_tp_size,
+                    triangle_attn_node_chunk_size=config.
+                    triangle_attn_node_chunk_size,
+                    mapping=config.mapping,
+                    skip_create_weights=config.skip_create_weights,
+                    attn_backend=config.attn_backend,
+                ))
+
+    def forward(
+            self,
+            s: torch.Tensor,
+            z: torch.Tensor,
+            mask: torch.Tensor,
+            pair_mask: torch.Tensor,
+            attn_metadata: Optional[AttentionMetadata] = None,
+            all_reduce_params: Optional[AllReduceParams] = None
+    ) -> torch.Tensor:
+        for layer in self.layers:
+            s, z = layer(s, z, mask, pair_mask, attn_metadata,
+                         all_reduce_params)
         return s, z

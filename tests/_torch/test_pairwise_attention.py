@@ -13,12 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from copy import deepcopy
 from dataclasses import dataclass
 
 import pytest
 import torch
-import transformers
+from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import (
     create_self_pairwise_attention_weights,
     load_self_pairwise_attention_weights_torch)
@@ -26,13 +25,7 @@ from test_utils.ref_attn import RefPairwiseSelfAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.attention import SelfAttentionPairBias
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["self-attention-pair-bias"],
-    "torch_dtype": "float32",
-}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -56,13 +49,8 @@ def test_pairwise_attention_backend(sc: Scenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(sc.backend).Metadata
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
-    config_dict["torch_dtype"] = sc.torch_dtype
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        attn_backend=sc.backend,
-    )
-    dtype = model_config.pretrained_config.torch_dtype
+
+    dtype = str_dtype_to_torch(sc.torch_dtype)
     device = torch.device('cuda')
 
     ref_attn = RefPairwiseSelfAttention.load_weights()
@@ -76,7 +64,6 @@ def test_pairwise_attention_backend(sc: Scenario):
                                  c_z=sc.c_z,
                                  num_heads=ref_attn.num_heads,
                                  dtype=dtype,
-                                 config=model_config,
                                  initial_norm=True)
     load_self_pairwise_attention_weights_torch(attn,
                                                weights_and_biases,

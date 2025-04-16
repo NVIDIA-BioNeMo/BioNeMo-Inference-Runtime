@@ -28,7 +28,7 @@ import tensorrt_bionemo
 
 SelfPairwiseTestScenario = namedtuple("SelfPairwiseTestScenario", [
     "batch_size", "seq_len", "c_s", "c_z", "num_attention_heads",
-    "plain_attn_precision", "dtype"
+    "vanilla_attn_precision", "dtype"
 ])
 
 
@@ -38,21 +38,21 @@ SelfPairwiseTestScenario = namedtuple("SelfPairwiseTestScenario", [
                              c_s=384,
                              c_z=128,
                              num_attention_heads=16,
-                             plain_attn_precision="float32",
+                             vanilla_attn_precision="float32",
                              dtype="float32"),
     SelfPairwiseTestScenario(batch_size=2,
                              seq_len=15,
                              c_s=96,
                              c_z=64,
                              num_attention_heads=8,
-                             plain_attn_precision="float32",
+                             vanilla_attn_precision="float32",
                              dtype="float32"),
     SelfPairwiseTestScenario(batch_size=3,
                              seq_len=30,
                              c_s=384,
                              c_z=128,
                              num_attention_heads=32,
-                             plain_attn_precision="float32",
+                             vanilla_attn_precision="float32",
                              dtype="float32"),
 ])
 def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
@@ -107,7 +107,7 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
         load_self_pairwise_attention_weights_trt(attn_layer, weights_and_biases)
 
         attention_params = tensorrt_bionemo.layers.attention.AttentionParams(
-            plain_attn_precision=sc.plain_attn_precision)
+            vanilla_attn_precision=sc.vanilla_attn_precision)
         output = attn_layer(trt_s,
                             trt_z,
                             mask=trt_mask,

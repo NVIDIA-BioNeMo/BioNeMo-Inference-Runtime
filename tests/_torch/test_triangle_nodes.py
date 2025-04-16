@@ -13,12 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from copy import deepcopy
 from dataclasses import dataclass
 
 import pytest
 import torch
-import transformers
+from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import (
     create_triangle_attention_node_weights,
     create_triangle_multiplication_node_weights,
@@ -29,16 +28,10 @@ from test_utils.ref_layers import (RefTriangleAttentionNode,
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["triangle-attention-nodes"],
-    "torch_dtype": "float32",
-}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -74,14 +67,8 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(s.backend).Metadata
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
-    config_dict["torch_dtype"] = s.torch_dtype
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        attn_backend=s.backend,
-        triangle_attn_node_chunk_size=s.chunk_size,
-    )
-    dtype = model_config.pretrained_config.torch_dtype
+
+    dtype = str_dtype_to_torch(s.torch_dtype)
     device = torch.device('cuda')
 
     ref_node = RefTriangleAttentionNode.load_weights(
@@ -98,7 +85,8 @@ def test_triangle_attention_node(s: AttnNodeScenario):
         node_type=TriangleAttentionNodeType.STARTING
         if s.starting else TriangleAttentionNodeType.ENDING,
         dtype=dtype,
-        config=model_config,
+        attn_backend=s.backend,
+        skip_create_weights=False,
     )
     node.to(device)
     load_triangle_attention_node_weights_torch(node, weights_and_biases, dtype)
@@ -145,12 +133,7 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     device = torch.device('cuda')
-
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
-    config_dict["torch_dtype"] = s.torch_dtype
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict))
-    dtype = model_config.pretrained_config.torch_dtype
+    dtype = str_dtype_to_torch(s.torch_dtype)
     ref_node = RefTriangleMultiplicationNode.load_weights(
         outgoing=s.mul_type == TriangleMultiplicationNodeType.OUTGOING)
     ref_node.to(device)
@@ -162,7 +145,7 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
         dim=ref_node.dim,
         multiplication_type=s.mul_type,
         dtype=dtype,
-        config=model_config,
+        skip_create_weights=False,
     )
     node.to(device)
     load_triangle_multiplication_node_weights_torch(node, weights_and_biases,

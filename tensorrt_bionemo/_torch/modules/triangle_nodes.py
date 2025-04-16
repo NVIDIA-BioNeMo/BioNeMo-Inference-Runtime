@@ -26,9 +26,9 @@ from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
                                                     WeightsLoadingConfig)
 from tensorrt_bionemo.layers.triangle_nodes import (
     TriangleAttentionNodeType, TriangleMultiplicationNodeType)
+from tensorrt_bionemo.mapping import Mapping
 
 from ..attention_backend import AttentionMetadata
-from ..model_config import ModelConfig
 from .attention import TriangleAttention
 
 
@@ -44,7 +44,10 @@ class TriangleAttentionNode(nn.Module):
             inf: float = 1e9,
             layer_idx: int = 0,
             dtype: torch.dtype = None,
-            config: Optional[ModelConfig] = None):
+            chunk_size: int = 0,
+            mapping: Optional[Mapping] = None,
+            skip_create_weights: bool = False,
+            attn_backend: str = "VANILLA"):
         """
         Args:
             c_in (int): input channel dimension
@@ -53,7 +56,10 @@ class TriangleAttentionNode(nn.Module):
             node_type (TriangleAttentionNodeType): whether this is the starting node
             inf (float): infinity value
             dtype (torch.dtype): data type
-            config (ModelConfig): model config
+            chunk_size (int): chunk size
+            mapping (Mapping): mapping
+            skip_create_weights (bool): whether to skip creating weights
+            attn_backend (str): attention backend
         """
         super().__init__()
         self.c_in = c_in
@@ -61,8 +67,7 @@ class TriangleAttentionNode(nn.Module):
         self.num_heads = num_heads
         self.node_type = node_type
         self.inf = inf
-        config = config or ModelConfig()
-        self.mapping = config.mapping
+        self.mapping = mapping or Mapping()
         self.dcp_size = self.mapping.dcp_size
         self.dcp_rank = self.mapping.dcp_rank
         self.tp_size = self.mapping.tp_size
@@ -71,7 +76,7 @@ class TriangleAttentionNode(nn.Module):
 
         assert self.num_heads % self.tp_size == 0
         self.num_heads = self.num_heads // self.tp_size
-        self.chunk_size = config.triangle_attn_node_chunk_size
+        self.chunk_size = chunk_size
 
         if self.chunk_size > 0:
             assert self.chunk_size % self.dcp_size == 0
@@ -86,7 +91,7 @@ class TriangleAttentionNode(nn.Module):
                 self.mapping,
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
                 gather_output=True),
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
         )
 
         self.mha = TriangleAttention(
@@ -97,7 +102,10 @@ class TriangleAttentionNode(nn.Module):
             gating=True,
             bias=False,
             dtype=dtype,
-            config=config)
+            mapping=mapping,
+            skip_create_weights=skip_create_weights,
+            attn_backend=attn_backend,
+        )
 
     def forward(
             self,
@@ -196,18 +204,19 @@ class TriangleAttentionEndingNode(TriangleAttentionNode):
 
 class TriangleMultiplicationNode(nn.Module):
 
-    def __init__(self,
-                 layer_idx: int = 0,
-                 dim: int = 128,
-                 eps: float = 1e-5,
-                 multiplication_type:
-                 TriangleMultiplicationNodeType = TriangleMultiplicationNodeType
-                 .OUTGOING,
-                 dtype: torch.dtype = None,
-                 config: Optional[ModelConfig] = None) -> None:
+    def __init__(
+            self,
+            layer_idx: int = 0,
+            dim: int = 128,
+            eps: float = 1e-5,
+            multiplication_type:
+        TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
+        OUTGOING,
+            dtype: torch.dtype = None,
+            mapping: Optional[Mapping] = None,
+            skip_create_weights: bool = False):
         super().__init__()
-        config = config or ModelConfig()
-        self.mapping = config.mapping
+        self.mapping = mapping or Mapping()
         self.dcp_size = self.mapping.dcp_size
         self.dcp_rank = self.mapping.dcp_rank
         self.tp_size = self.mapping.tp_size
@@ -234,7 +243,7 @@ class TriangleMultiplicationNode(nn.Module):
                            parallel_config=col_parallel_config,
                            weights_loading_config=WeightsLoadingConfig(
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
-                           skip_create_weights=config.skip_create_weights)
+                           skip_create_weights=skip_create_weights)
         self.g_in = Linear(self.dim * self.tp_size,
                            2 * self.dim * self.tp_size,
                            bias=False,
@@ -242,7 +251,7 @@ class TriangleMultiplicationNode(nn.Module):
                            parallel_config=col_parallel_config,
                            weights_loading_config=WeightsLoadingConfig(
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
-                           skip_create_weights=config.skip_create_weights)
+                           skip_create_weights=skip_create_weights)
         # Use float32 for the output layers
         self.norm_out = nn.LayerNorm(self.dim * self.tp_size,
                                      dtype=torch.float32,
@@ -255,7 +264,7 @@ class TriangleMultiplicationNode(nn.Module):
                                 self.mapping,
                                 tensor_parallel_mode=TensorParallelMode.COLUMN,
                                 gather_output=True),
-                            skip_create_weights=config.skip_create_weights)
+                            skip_create_weights=skip_create_weights)
         self.g_out = Linear(self.dim * self.tp_size,
                             self.dim * self.tp_size,
                             bias=False,
@@ -264,7 +273,7 @@ class TriangleMultiplicationNode(nn.Module):
                                 self.mapping,
                                 tensor_parallel_mode=TensorParallelMode.COLUMN,
                                 gather_output=True),
-                            skip_create_weights=config.skip_create_weights)
+                            skip_create_weights=skip_create_weights)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """

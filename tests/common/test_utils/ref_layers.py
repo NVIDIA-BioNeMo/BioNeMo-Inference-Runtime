@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 from test_utils.ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
 
-from tensorrt_bionemo._torch.hf.checkpoints import load_hf_weights
+from tensorrt_bionemo.hf.checkpoints import load_hf_weights
 
 
 class RefTriangleMultiplicationNode(nn.Module):

@@ -24,11 +24,10 @@ from tensorrt_bionemo._torch.distributed import (TensorParallelMode,
                                                  create_parallel_config)
 from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
                                                     WeightsLoadingConfig)
-from tensorrt_bionemo.mapping import create_max_tp_mapping
+from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..attention_backend import AttentionMetadata, PredefinedAttentionBiases
 from ..attention_backend.utils import create_attention
-from ..model_config import ModelConfig
 
 
 class TriangleAttention(nn.Module):
@@ -45,7 +44,9 @@ class TriangleAttention(nn.Module):
                  bias: bool = False,
                  gating: bool = True,
                  dtype: torch.dtype = None,
-                 config: Optional[ModelConfig] = None):
+                 mapping: Optional[Mapping] = None,
+                 skip_create_weights: bool = False,
+                 attn_backend: str = "VANILLA"):
         super().__init__()
         self.layer_idx = layer_idx
         self.hidden_size = hidden_size
@@ -56,8 +57,7 @@ class TriangleAttention(nn.Module):
         self.num_key_value_heads = num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
 
-        config = config or ModelConfig()
-        mapping = config.mapping
+        mapping = mapping or Mapping()
 
         tp_size = mapping.tp_size
         mapping.tp_rank
@@ -79,7 +79,7 @@ class TriangleAttention(nn.Module):
                 mapping, tensor_parallel_mode=TensorParallelMode.COLUMN),
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_QKV_LINEAR),
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
         )
         self.o_proj = Linear(
             tp_size * self.q_size,
@@ -88,7 +88,7 @@ class TriangleAttention(nn.Module):
             dtype=dtype,
             parallel_config=create_parallel_config(
                 mapping, tensor_parallel_mode=TensorParallelMode.ROW),
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
         )
         self.g_proj = None
         if gating:
@@ -99,10 +99,10 @@ class TriangleAttention(nn.Module):
                 dtype=dtype,
                 parallel_config=create_parallel_config(
                     mapping, tensor_parallel_mode=TensorParallelMode.COLUMN),
-                skip_create_weights=config.skip_create_weights,
+                skip_create_weights=skip_create_weights,
             )
         self.attn = create_attention(
-            config.attn_backend,
+            attn_backend,
             self.layer_idx,
             self.num_heads,
             self.head_dim,
@@ -166,7 +166,10 @@ class SelfAttentionPairBias(nn.Module):
                  initial_norm: bool = True,
                  dtype: torch.dtype = None,
                  inf: float = 1e6,
-                 config: Optional[ModelConfig] = None):
+                 max_attention_pairwise_tp_size: bool = True,
+                 mapping: Optional[Mapping] = None,
+                 skip_create_weights: bool = False,
+                 attn_backend: str = "VANILLA"):
         super().__init__()
         self.layer_idx = layer_idx
         self.c_s = c_s
@@ -180,9 +183,8 @@ class SelfAttentionPairBias(nn.Module):
         # This equal to 1 for self-attention
         self.num_key_value_groups = num_heads // self.num_key_value_heads
 
-        config = config or ModelConfig()
-        mapping = config.mapping
-        if config.max_attention_pairwise_tp_size:
+        mapping = mapping or Mapping()
+        if max_attention_pairwise_tp_size:
             mapping = create_max_tp_mapping(mapping, num_heads)
         tp_size = mapping.tp_size
         mapping.tp_rank
@@ -206,7 +208,7 @@ class SelfAttentionPairBias(nn.Module):
             bias=True,
             dtype=dtype,
             parallel_config=column_parallel_config,
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
         )
         self.proj_kv = Linear(
             self.c_s,
@@ -214,7 +216,7 @@ class SelfAttentionPairBias(nn.Module):
             bias=False,
             dtype=dtype,
             parallel_config=column_parallel_config,
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
@@ -224,7 +226,7 @@ class SelfAttentionPairBias(nn.Module):
             bias=False,
             dtype=dtype,
             parallel_config=column_parallel_config,
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
         )
 
         self.proj_z = nn.Sequential(
@@ -235,7 +237,7 @@ class SelfAttentionPairBias(nn.Module):
                 bias=False,
                 dtype=dtype,
                 parallel_config=column_parallel_config,
-                skip_create_weights=config.skip_create_weights,
+                skip_create_weights=skip_create_weights,
             ),
         )
         self.proj_o = Linear(
@@ -245,10 +247,10 @@ class SelfAttentionPairBias(nn.Module):
             dtype=dtype,
             parallel_config=create_parallel_config(
                 mapping, tensor_parallel_mode=TensorParallelMode.ROW),
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
         )
         self.attn = create_attention(
-            config.attn_backend,
+            attn_backend,
             self.layer_idx,
             self.num_heads,
             self.head_dim,

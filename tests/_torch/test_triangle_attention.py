@@ -13,26 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from copy import deepcopy
 from dataclasses import dataclass
 
 import pytest
 import torch
-import transformers
+from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
 from test_utils.ref_attn import RefTriangleAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["triangle-attention"],
-    "torch_dtype": "float32",
-}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -59,13 +52,8 @@ def test_triangle_attention_backend(s: Scenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(s.backend).Metadata
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
-    config_dict["torch_dtype"] = s.torch_dtype
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        attn_backend=s.backend,
-    )
-    dtype = model_config.pretrained_config.torch_dtype
+
+    dtype = str_dtype_to_torch(s.torch_dtype)
     device = torch.device('cuda')
 
     ref_attn = RefTriangleAttention.load_weights(no_heads=s.num_attention_heads)
@@ -73,16 +61,13 @@ def test_triangle_attention_backend(s: Scenario):
 
     weights_and_biases = create_triangle_attention_weights(from_ref=ref_attn)
 
-    attn = TriangleAttention(
-        layer_idx=0,
-        hidden_size=s.hidden_size,
-        num_attention_heads=s.num_attention_heads,
-        num_key_value_heads=s.num_key_value_heads,
-        gating=s.gating,
-        bias=s.bias,
-        dtype=dtype,
-        config=model_config,
-    )
+    attn = TriangleAttention(layer_idx=0,
+                             hidden_size=s.hidden_size,
+                             num_attention_heads=s.num_attention_heads,
+                             num_key_value_heads=s.num_key_value_heads,
+                             gating=s.gating,
+                             bias=s.bias,
+                             dtype=dtype)
     load_triangle_attention_weights_torch(attn, weights_and_biases, dtype=dtype)
     attn.to(device)
     attn_metadata = metadata_cls(chunk_size=s.chunk_size,

@@ -21,10 +21,9 @@ from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.distributed import (TensorParallelMode,
                                                  create_parallel_config)
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
                                                     WeightsLoadingConfig)
-from tensorrt_bionemo.mapping import create_max_tp_mapping
+from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 
 class Transition(nn.Module):
@@ -36,13 +35,15 @@ class Transition(nn.Module):
                  layer_idx: int = 0,
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
-                 config: Optional[ModelConfig] = None):
+                 max_transition_tp_size: bool = True,
+                 mapping: Optional[Mapping] = None,
+                 skip_create_weights: bool = False):
         super().__init__()
         if out_dim is None:
             out_dim = dim
 
-        mapping = config.mapping
-        if config.max_transition_tp_size:
+        mapping = mapping or Mapping()
+        if max_transition_tp_size:
             mapping = create_max_tp_mapping(mapping, hidden)
 
         self.hidden = hidden // mapping.tp_size
@@ -55,7 +56,7 @@ class Transition(nn.Module):
             bias=False,
             parallel_config=create_parallel_config(
                 mapping, tensor_parallel_mode=TensorParallelMode.COLUMN),
-            skip_create_weights=config.skip_create_weights,
+            skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
@@ -67,7 +68,7 @@ class Transition(nn.Module):
                           parallel_config=create_parallel_config(
                               mapping,
                               tensor_parallel_mode=TensorParallelMode.ROW),
-                          skip_create_weights=config.skip_create_weights)
+                          skip_create_weights=skip_create_weights)
 
     def forward(
             self,

@@ -15,28 +15,21 @@
 
 import os
 import traceback
-from copy import deepcopy
 from dataclasses import dataclass
 from itertools import product
 
 import pytest
 import tensorrt_llm
 import torch
-import transformers
 from mpi4py.futures import MPIPoolExecutor
+from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import (
     create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.transformers import PairformerLayer
 from tensorrt_bionemo.mapping import Mapping
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["pairformer"],
-    "torch_dtype": "float32",
-}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -103,28 +96,27 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
     mask = mask.cuda()
     pair_mask = pair_mask.cuda()
 
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     mapping = Mapping(world_size=tp_size * dcp_size,
                       tp_size=tp_size,
                       dcp_size=dcp_size,
                       rank=rank)
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        max_transition_tp_size=scenario.max_transition_tp_size,
-        max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size)
-    dtype = model_config.pretrained_config.torch_dtype
+    dtype = str_dtype_to_torch(scenario.dtype)
     metadata_cls = get_attention_backend("VANILLA").Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
-    pairformer_layer = PairformerLayer(layer_idx=0,
-                                       token_s=token_s,
-                                       token_z=token_z,
-                                       num_heads=num_heads,
-                                       pairwise_head_width=pairwise_head_width,
-                                       pairwise_num_heads=pairwise_num_heads,
-                                       dtype=dtype,
-                                       config=model_config)
+    pairformer_layer = PairformerLayer(
+        layer_idx=0,
+        token_s=token_s,
+        token_z=token_z,
+        num_heads=num_heads,
+        pairwise_head_width=pairwise_head_width,
+        pairwise_num_heads=pairwise_num_heads,
+        dtype=dtype,
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size,
+        max_transition_tp_size=scenario.max_transition_tp_size,
+        mapping=mapping)
     pairformer_layer.cuda()
     pairformer_layer.eval()
 
@@ -136,12 +128,6 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         output = pairformer_layer(s, z, mask, pair_mask, attn_metadata)
 
     mapping = Mapping()
-    single_model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        attn_backend="VANILLA",
-        max_transition_tp_size=False,
-        max_attention_pairwise_tp_size=False)
     attn_metadata = metadata_cls(mapping=mapping)
 
     single_dev_pairformer_layer = PairformerLayer(
@@ -152,7 +138,11 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         pairwise_head_width=pairwise_head_width,
         pairwise_num_heads=pairwise_num_heads,
         dtype=dtype,
-        config=single_model_config)
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size,
+        max_transition_tp_size=scenario.max_transition_tp_size,
+        mapping=mapping)
     load_pairformer_layer_weights_torch(single_dev_pairformer_layer,
                                         weights_and_biases,
                                         dtype=dtype)
@@ -206,18 +196,3 @@ def test_pairformer_parallelism(scenario: PairformerScenario):
                     weights_and_biases, scenario)] * world_size))
         for r in results:
             assert r is True
-
-
-if __name__ == "__main__":
-    scenario = PairformerScenario(tp_size=2, dcp_size=1, seq_len=16)
-    scenario = PairformerScenario(tp_size=1, dcp_size=2, seq_len=16)
-    scenario = PairformerScenario(tp_size=2, dcp_size=2, seq_len=16)
-    scenario = PairformerScenario(tp_size=1, dcp_size=8, seq_len=64)
-    scenario = PairformerScenario(tp_size=2, dcp_size=4, seq_len=64)
-    scenario = PairformerScenario(tp_size=4,
-                                  dcp_size=2,
-                                  seq_len=64,
-                                  max_attention_pairwise_tp_size=True,
-                                  max_transition_tp_size=False)
-    # scenario = PairformerScenario(tp_size=8, dcp_size=1, seq_len=16)
-    test_pairformer_parallelism(scenario)

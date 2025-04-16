@@ -44,7 +44,7 @@ class Scenario:
     num_heads: int = 16
     pairwise_head_width: int = 32
     pairwise_num_heads: int = 4
-    plain_attn_precision: str = "float32"
+    vanilla_attn_precision: str = "float32"
     dtype: str = "float32"
     max_attention_pairwise_tp_size: bool = True
     max_transition_tp_size: bool = True
@@ -69,7 +69,7 @@ class PairformerParallelism:
                  pairwise_num_heads: int,
                  max_attention_pairwise_tp_size: bool = True,
                  max_transition_tp_size: bool = True,
-                 plain_attn_precision: str = "float32",
+                 vanilla_attn_precision: str = "float32",
                  dtype: str = "float32",
                  weights_and_biases: dict = None):
         self.world_size = world_size
@@ -83,7 +83,7 @@ class PairformerParallelism:
         self.num_heads = num_heads
         self.pairwise_head_width = pairwise_head_width
         self.pairwise_num_heads = pairwise_num_heads
-        self.plain_attn_precision = plain_attn_precision
+        self.vanilla_attn_precision = vanilla_attn_precision
         self.max_attention_pairwise_tp_size = max_attention_pairwise_tp_size
         self.max_transition_tp_size = max_transition_tp_size
 
@@ -159,7 +159,7 @@ class PairformerParallelism:
                 self.token_s, self.token_z, self.max_attention_pairwise_tp_size,
                 self.max_transition_tp_size)
             attention_params = AttentionParams(
-                plain_attn_precision=self.plain_attn_precision)
+                vanilla_attn_precision=self.vanilla_attn_precision)
             output_s, output_z = pairformer_layer(
                 trt_s,
                 trt_z,
@@ -241,7 +241,7 @@ def run_single_rank(scenario: Scenario, inputs: dict, weights_and_biases: dict):
         num_heads=scenario.num_heads,
         pairwise_head_width=scenario.pairwise_head_width,
         pairwise_num_heads=scenario.pairwise_num_heads,
-        plain_attn_precision=scenario.plain_attn_precision,
+        vanilla_attn_precision=scenario.vanilla_attn_precision,
         dtype=scenario.dtype,
         max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size,
         max_transition_tp_size=scenario.max_transition_tp_size,

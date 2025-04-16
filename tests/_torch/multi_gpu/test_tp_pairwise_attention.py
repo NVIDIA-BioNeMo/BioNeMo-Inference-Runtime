@@ -14,12 +14,10 @@
 # limitations under the License.
 import os
 import traceback
-from copy import deepcopy
 
 import pytest
 import tensorrt_llm
 import torch
-import transformers
 from mpi4py.futures import MPIPoolExecutor
 from test_utils.create_and_load_weights import (
     create_self_pairwise_attention_weights,
@@ -27,14 +25,8 @@ from test_utils.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.attention import SelfAttentionPairBias
 from tensorrt_bionemo.mapping import Mapping
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["attention"],
-    "torch_dtype": "float32",
-}
 
 
 def run_single_rank(tensor_parallel_size, single_rank_forward_func, s, z, mask,
@@ -60,17 +52,11 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
     z = z.cuda()
     mask = mask.cuda()
 
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     mapping = Mapping(world_size=tensor_parallel_size,
                       tp_size=tensor_parallel_size,
                       rank=tensor_parallel_rank)
 
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        attn_backend="VANILLA",
-        max_attention_pairwise_tp_size=False)
-    dtype = model_config.pretrained_config.torch_dtype
+    dtype = torch.float32
     metadata_cls = get_attention_backend("VANILLA").Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
@@ -80,7 +66,10 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
         c_z=c_z,
         num_heads=num_attention_heads,
         dtype=dtype,
-        config=model_config,
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        max_attention_pairwise_tp_size=False,
+        mapping=mapping,
     )
     load_self_pairwise_attention_weights_torch(pairwise_attn,
                                                weights_and_biases,
@@ -90,11 +79,7 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
     multi_dev_output = pairwise_attn(s, z, mask, attn_metadata)
     # create single mapping
     mapping = Mapping()
-    single_model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        attn_backend="VANILLA",
-        max_attention_pairwise_tp_size=False)
+
     attn_metadata = metadata_cls(mapping=mapping)
     single_dev_pairwise_attn = SelfAttentionPairBias(
         layer_idx=0,
@@ -102,7 +87,10 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
         c_z=c_z,
         num_heads=num_attention_heads,
         dtype=dtype,
-        config=single_model_config,
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        max_attention_pairwise_tp_size=False,
+        mapping=mapping,
     )
     load_self_pairwise_attention_weights_torch(single_dev_pairwise_attn,
                                                weights_and_biases,

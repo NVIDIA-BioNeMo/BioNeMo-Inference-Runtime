@@ -28,7 +28,8 @@ def load_state_dict_from_hf(repo_id: str,
                             weights_only: bool = False,
                             state_dict_key: Optional[str] = None,
                             cache_dir: Optional[Union[str, Path]] = None,
-                            local_files_only: bool = False):
+                            local_files_only: bool = False,
+                            return_raw: bool = False):
     """ Load a state dict from the Hugging Face Hub """
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "hf"
@@ -36,6 +37,8 @@ def load_state_dict_from_hf(repo_id: str,
                                   filename=filename,
                                   cache_dir=cache_dir,
                                   local_files_only=local_files_only)
+    if return_raw:
+        return cached_file
     logger.debug(f"Loading state dict from {cached_file}")
     try:
         state_dict = torch.load(cached_file, weights_only=weights_only)

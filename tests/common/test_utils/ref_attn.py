@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.hf.checkpoints import load_hf_weights
+from tensorrt_bionemo.hf.checkpoints import load_hf_weights
 
 
 def _prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,

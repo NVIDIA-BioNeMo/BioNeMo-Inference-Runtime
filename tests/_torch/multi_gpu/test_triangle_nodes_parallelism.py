@@ -15,14 +15,14 @@
 
 import os
 import traceback
-from copy import deepcopy
 from dataclasses import dataclass
+from itertools import product
 
 import pytest
 import tensorrt_llm
 import torch
-import transformers
 from mpi4py.futures import MPIPoolExecutor
+from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import (
     create_triangle_attention_node_weights,
     create_triangle_multiplication_node_weights,
@@ -31,16 +31,10 @@ from test_utils.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["triangle_nodes"],
-    "torch_dtype": "float32",
-}
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -68,88 +62,26 @@ class MulNodeScenario:
 
 def _generate_attn_node_scenarios() -> list[AttnNodeScenario]:
     ret = []
+    ids = []
     total_devs = torch.cuda.device_count()
 
-    for node_type in [
-            TriangleAttentionNodeType.STARTING, TriangleAttentionNodeType.ENDING
-    ]:
-        ret.append(AttnNodeScenario(tp_size=2, dcp_size=1, node_type=node_type))
-        ret.append(
-            AttnNodeScenario(tp_size=2,
-                             dcp_size=1,
-                             chunk_size=16,
-                             node_type=node_type))
-        ret.append(
-            AttnNodeScenario(tp_size=2,
-                             dcp_size=1,
-                             chunk_size=8,
-                             node_type=node_type))
+    for chunk_size in [0, 8, 16]:
+        for node_type in [
+                TriangleAttentionNodeType.STARTING,
+                TriangleAttentionNodeType.ENDING
+        ]:
+            for tp_size, dcp_size in product([1, 2, 4], repeat=2):
+                if tp_size * dcp_size > total_devs:
+                    continue
+                ret.append(
+                    AttnNodeScenario(tp_size=tp_size,
+                                     dcp_size=dcp_size,
+                                     node_type=node_type,
+                                     chunk_size=chunk_size))
+                ids.append(
+                    f"{node_type.name}_{tp_size}_{dcp_size}_{chunk_size}")
 
-        ret.append(AttnNodeScenario(tp_size=1, dcp_size=2, node_type=node_type))
-        ret.append(
-            AttnNodeScenario(tp_size=1,
-                             dcp_size=2,
-                             chunk_size=16,
-                             node_type=node_type))
-        ret.append(
-            AttnNodeScenario(tp_size=1,
-                             dcp_size=2,
-                             chunk_size=8,
-                             node_type=node_type))
-
-        if total_devs >= 4:
-            ret.append(
-                AttnNodeScenario(tp_size=1, dcp_size=4, node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=4, dcp_size=1, node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=2, dcp_size=2, node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=2,
-                                 dcp_size=2,
-                                 chunk_size=16,
-                                 node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=2,
-                                 dcp_size=2,
-                                 chunk_size=8,
-                                 node_type=node_type))
-
-        if total_devs >= 8:
-            ret.append(
-                AttnNodeScenario(tp_size=1, dcp_size=8, node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=8,
-                                 dcp_size=1,
-                                 node_type=node_type,
-                                 num_heads=8,
-                                 c_hidden=4))
-            ret.append(
-                AttnNodeScenario(tp_size=4, dcp_size=2, node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=4,
-                                 dcp_size=2,
-                                 chunk_size=16,
-                                 node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=4,
-                                 dcp_size=2,
-                                 chunk_size=8,
-                                 node_type=node_type))
-
-            ret.append(
-                AttnNodeScenario(tp_size=2, dcp_size=4, node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=2,
-                                 dcp_size=4,
-                                 chunk_size=16,
-                                 node_type=node_type))
-            ret.append(
-                AttnNodeScenario(tp_size=2,
-                                 dcp_size=4,
-                                 chunk_size=8,
-                                 node_type=node_type))
-    return ret
+    return ret, ids
 
 
 def _generate_mul_node_scenarios() -> list[MulNodeScenario]:
@@ -207,20 +139,15 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
     c_hidden = scenario.c_hidden
     num_heads = scenario.num_heads
     node_type = scenario.node_type
-    chunk_size = scenario.chunk_size
+    scenario.chunk_size
     x = x.cuda()
     mask = mask.cuda()
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     mapping = Mapping(world_size=tp_size * dcp_size,
                       tp_size=tp_size,
                       dcp_size=dcp_size,
                       rank=rank)
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        attn_backend="VANILLA",
-        triangle_attn_node_chunk_size=chunk_size)
-    dtype = model_config.pretrained_config.torch_dtype
+
+    dtype = str_dtype_to_torch(scenario.torch_dtype)
     metadata_cls = get_attention_backend("VANILLA").Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
@@ -231,7 +158,9 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
         node_type=node_type,
         layer_idx=0,
         dtype=dtype,
-        config=model_config,
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        mapping=mapping,
     )
     multi_devs_tri_attn_node.cuda()
     multi_devs_tri_attn_node.eval()
@@ -244,11 +173,6 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
             x, mask, attn_metadata)
 
     mapping = Mapping()
-    single_model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        attn_backend="VANILLA",
-    )
     attn_metadata = metadata_cls(mapping=mapping)
 
     single_dev_tri_attn_node = TriangleAttentionNode(
@@ -258,7 +182,9 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
         node_type=node_type,
         layer_idx=0,
         dtype=dtype,
-        config=single_model_config,
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        mapping=mapping,
     )
     load_triangle_attention_node_weights_torch(single_dev_tri_attn_node,
                                                weights_and_biases,
@@ -285,21 +211,17 @@ def _triangle_mul_node_forward(x, mask, weights_and_biases, scenario, rank):
 
     x = x.cuda()
     mask = mask.cuda()
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     mapping = Mapping(world_size=tp_size * dcp_size,
                       tp_size=tp_size,
                       dcp_size=dcp_size,
                       rank=rank)
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping)
-    dtype = model_config.pretrained_config.torch_dtype
+    dtype = str_dtype_to_torch(scenario.torch_dtype)
 
     multi_devs_tri_mul_node = TriangleMultiplicationNode(
         dim=dim,
         dtype=dtype,
-        config=model_config,
         multiplication_type=scenario.node_type,
+        mapping=mapping,
     )
     multi_devs_tri_mul_node.cuda()
     multi_devs_tri_mul_node.eval()
@@ -311,15 +233,12 @@ def _triangle_mul_node_forward(x, mask, weights_and_biases, scenario, rank):
         multi_devs_output = multi_devs_tri_mul_node.forward(x, mask)
     torch.cuda.synchronize(torch.cuda.current_device())
     mapping = Mapping()
-    single_model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping)
 
     single_dev_tri_mul_node = TriangleMultiplicationNode(
         dim=dim,
         dtype=dtype,
-        config=single_model_config,
         multiplication_type=scenario.node_type,
+        mapping=mapping,
     )
     single_dev_tri_mul_node.cuda()
     single_dev_tri_mul_node.eval()
@@ -363,7 +282,9 @@ def test_triangle_attn_node_parallelism(scenario: AttnNodeScenario):
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
                     reason='needs 2 GPUs to run this test')
-@pytest.mark.parametrize("scenario", _generate_mul_node_scenarios())
+@pytest.mark.parametrize("scenario",
+                         _generate_mul_node_scenarios()[0],
+                         ids=_generate_mul_node_scenarios()[1])
 def test_triangle_mul_node_parallelism(scenario: MulNodeScenario):
     torch.manual_seed(42)
     x = torch.rand(scenario.seq_len, scenario.seq_len, scenario.dim)

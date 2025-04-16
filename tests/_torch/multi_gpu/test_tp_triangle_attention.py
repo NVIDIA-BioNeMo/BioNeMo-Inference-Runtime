@@ -15,26 +15,18 @@
 
 import os
 import traceback
-from copy import deepcopy
 
 import pytest
 import tensorrt_llm
 import torch
-import transformers
 from mpi4py.futures import MPIPoolExecutor
 from test_utils.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.model_config import ModelConfig
 from tensorrt_bionemo._torch.modules.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
-
-_MOCK_MODEL_CONFIG = {
-    "architectures": ["attention"],
-    "torch_dtype": "float32",
-}
 
 
 def run_single_rank(single_rank_forward_func, tensor_parallel_size, input,
@@ -61,16 +53,10 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
     x = x.cuda()
     biases = [bias.cuda() for bias in biases]
 
-    config_dict = deepcopy(_MOCK_MODEL_CONFIG)
     mapping = Mapping(world_size=tensor_parallel_size,
                       tp_size=tensor_parallel_size,
                       rank=tensor_parallel_rank)
-    model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        attn_backend="VANILLA",
-    )
-    dtype = model_config.pretrained_config.torch_dtype
+    dtype = torch.float32
     metadata_cls = get_attention_backend("VANILLA").Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
@@ -80,7 +66,9 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
         num_key_value_heads=num_attention_heads,
         layer_idx=0,
         dtype=dtype,
-        config=model_config,
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        mapping=mapping,
     )
     load_triangle_attention_weights_torch(tri_attn,
                                           weights_and_biases,
@@ -92,11 +80,7 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
 
     # create single mapping
     mapping = Mapping()
-    single_model_config = ModelConfig(
-        pretrained_config=transformers.PretrainedConfig.from_dict(config_dict),
-        mapping=mapping,
-        attn_backend="VANILLA",
-    )
+
     attn_metadata = metadata_cls(mapping=mapping)
     single_dev_tri_attn = TriangleAttention(
         hidden_size=hidden_size,
@@ -104,7 +88,9 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
         num_key_value_heads=num_attention_heads,
         layer_idx=0,
         dtype=dtype,
-        config=single_model_config,
+        attn_backend="VANILLA",
+        skip_create_weights=False,
+        mapping=mapping,
     )
     load_triangle_attention_weights_torch(single_dev_tri_attn,
                                           weights_and_biases,

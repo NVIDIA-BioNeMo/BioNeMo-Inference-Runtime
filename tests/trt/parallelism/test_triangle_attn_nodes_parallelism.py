@@ -67,7 +67,7 @@ class TriangleAttnNodesParallelism:
             c_in: int,
             c_hidden: int,
             num_attention_heads: int,
-            plain_attn_precision: str = "float32",
+            vanilla_attn_precision: str = "float32",
             node_type: TriangleAttentionNodeType = TriangleAttentionNodeType.
         STARTING,
             dtype: str = "float32",
@@ -91,7 +91,7 @@ class TriangleAttnNodesParallelism:
         self.c_in = c_in
         self.c_hidden = c_hidden
         self.num_attention_heads = num_attention_heads
-        self.plain_attn_precision = plain_attn_precision
+        self.vanilla_attn_precision = vanilla_attn_precision
         self.node_type = node_type
         self.dtype = dtype
 
@@ -200,7 +200,7 @@ class TriangleAttnNodesParallelism:
                                                      self.mapping.tp_rank)
 
             attention_params = AttentionParams(
-                plain_attn_precision=self.plain_attn_precision)
+                vanilla_attn_precision=self.vanilla_attn_precision)
             output = tri_attn_node(trt_hidden_states, trt_mask,
                                    attention_params)
             output.mark_output("output",
@@ -266,7 +266,7 @@ def _generate_scenarios():
             TriangleAttentionNodeType.STARTING, TriangleAttentionNodeType.ENDING
     ]:
         for n_optimization_profiles in [0, 1]:
-            for tp_size, dcp_size in product([1, 2, 4], repeat=2):
+            for tp_size, dcp_size in product([1, 2, 4, 8], repeat=2):
                 if tp_size * dcp_size > max_world_size:
                     continue
                 if tp_size > 4:

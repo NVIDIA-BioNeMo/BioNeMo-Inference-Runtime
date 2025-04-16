@@ -28,7 +28,7 @@ from tensorrt_bionemo.layers.transformers import PairformerLayer
 
 PairformerLayerTestScenario = namedtuple("PairformerLayerTestScenario", [
     "seq_len", "token_s", "token_z", "num_heads", "pairwise_head_width",
-    "pairwise_num_heads", "plain_attn_precision", "dtype"
+    "pairwise_num_heads", "vanilla_attn_precision", "dtype"
 ])
 
 
@@ -39,7 +39,7 @@ PairformerLayerTestScenario = namedtuple("PairformerLayerTestScenario", [
                                 num_heads=16,
                                 pairwise_head_width=32,
                                 pairwise_num_heads=4,
-                                plain_attn_precision="float32",
+                                vanilla_attn_precision="float32",
                                 dtype="float32"),
     PairformerLayerTestScenario(seq_len=256,
                                 token_s=32,
@@ -47,7 +47,7 @@ PairformerLayerTestScenario = namedtuple("PairformerLayerTestScenario", [
                                 num_heads=16,
                                 pairwise_head_width=32,
                                 pairwise_num_heads=4,
-                                plain_attn_precision="float32",
+                                vanilla_attn_precision="float32",
                                 dtype="float32")
 ],
                          ids=["63", "256"])
@@ -121,7 +121,7 @@ def test_pairformer_layer(sc: PairformerLayerTestScenario):
             trt_mask,
             trt_pairmask,
             attention_params=AttentionParams(
-                plain_attn_precision=sc.plain_attn_precision))
+                vanilla_attn_precision=sc.vanilla_attn_precision))
 
         output_s.mark_output("output_s",
                              tensorrt_llm.str_dtype_to_trt(sc.dtype))

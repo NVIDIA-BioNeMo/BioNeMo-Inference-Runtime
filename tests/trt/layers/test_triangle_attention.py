@@ -28,7 +28,7 @@ import tensorrt_bionemo
 
 TriAttnTestScenario = namedtuple("TriAttnTestScenario", [
     "batch_size", "seq_len", "hidden_size", "num_attention_heads",
-    "plain_attn_precision", "dtype"
+    "vanilla_attn_precision", "dtype"
 ])
 
 
@@ -37,19 +37,19 @@ TriAttnTestScenario = namedtuple("TriAttnTestScenario", [
                         seq_len=5,
                         hidden_size=32,
                         num_attention_heads=16,
-                        plain_attn_precision="float32",
+                        vanilla_attn_precision="float32",
                         dtype="float32"),
     TriAttnTestScenario(batch_size=2,
                         seq_len=12,
                         hidden_size=48,
                         num_attention_heads=8,
-                        plain_attn_precision="float32",
+                        vanilla_attn_precision="float32",
                         dtype="float32"),
     TriAttnTestScenario(batch_size=12,
                         seq_len=200,
                         hidden_size=64,
                         num_attention_heads=8,
-                        plain_attn_precision="float32",
+                        vanilla_attn_precision="float32",
                         dtype="float32"),
 ])
 def test_triangle_attention(sc: TriAttnTestScenario):
@@ -109,7 +109,7 @@ def test_triangle_attention(sc: TriAttnTestScenario):
 
         input_tensor = trt_hidden_states
         attention_params = tensorrt_bionemo.layers.attention.AttentionParams(
-            plain_attn_precision=sc.plain_attn_precision)
+            vanilla_attn_precision=sc.vanilla_attn_precision)
         output = attn_layer(input_tensor,
                             biases=[trt_mask_bias, trt_triangle_bias],
                             attention_params=attention_params)

@@ -33,7 +33,7 @@ from tensorrt_bionemo.layers.triangle_nodes import (
 TriangleAttentionNodeTestScenario = namedtuple(
     "TriangleAttentionNodeTestScenario", [
         "chunk_size", "seq_len", "c_in", "c_hidden", "num_attention_heads",
-        "plain_attn_precision", "dtype", "starting"
+        "vanilla_attn_precision", "dtype", "starting"
     ])
 
 TriangleMultiplicationNodeTypeTestScenario = namedtuple(
@@ -47,7 +47,7 @@ TriangleMultiplicationNodeTypeTestScenario = namedtuple(
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=0,
-                                      plain_attn_precision="float32",
+                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=True),
     TriangleAttentionNodeTestScenario(seq_len=32,
@@ -55,7 +55,7 @@ TriangleMultiplicationNodeTypeTestScenario = namedtuple(
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=32,
-                                      plain_attn_precision="float32",
+                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=True),
     TriangleAttentionNodeTestScenario(seq_len=32,
@@ -63,7 +63,7 @@ TriangleMultiplicationNodeTypeTestScenario = namedtuple(
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=0,
-                                      plain_attn_precision="float32",
+                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=False),
     TriangleAttentionNodeTestScenario(seq_len=32,
@@ -71,7 +71,7 @@ TriangleMultiplicationNodeTypeTestScenario = namedtuple(
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=32,
-                                      plain_attn_precision="float32",
+                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=False),
 ])
@@ -132,7 +132,7 @@ def test_triangle_attention_node(sc: TriangleAttentionNodeTestScenario):
                                                  weights_and_biases)
 
         attention_params = tensorrt_bionemo.layers.attention.AttentionParams(
-            plain_attn_precision=sc.plain_attn_precision)
+            vanilla_attn_precision=sc.vanilla_attn_precision)
         output = tri_attn_node(trt_hidden_states, trt_mask, attention_params)
         output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
     builder_config = builder.create_builder_config(

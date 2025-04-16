@@ -275,6 +275,7 @@ class TriangleMultiplicationNode(Module):
                     b_recv = send_recv(b_recv,
                                        self.mapping.prev_dcp_rank(),
                                        self.mapping.next_dcp_rank(),
+                                       self.mapping.dcp_group,
                                        group_stride=self.tp_size)
                     enisum_results[(self.dcp_rank - i) %
                                    self.dcp_size] = _enisum_compute(a, b_recv)
@@ -285,6 +286,7 @@ class TriangleMultiplicationNode(Module):
                     a_recv = send_recv(a_recv,
                                        self.mapping.prev_dcp_rank(),
                                        self.mapping.next_dcp_rank(),
+                                       self.mapping.dcp_group,
                                        group_stride=self.tp_size)
                     enisum_results[(self.dcp_rank - i) %
                                    self.dcp_size] = _enisum_compute(a_recv, b)

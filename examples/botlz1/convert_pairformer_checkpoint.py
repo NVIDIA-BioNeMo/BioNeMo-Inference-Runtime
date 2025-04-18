@@ -33,6 +33,10 @@ def parse_arguments():
         type=bool,
         default=True,
         help='Whether to use the max attention pairwise tp size')
+    parser.add_argument('--max_tri_mul_tp_size',
+                        type=bool,
+                        default=True,
+                        help='Whether to use the max tri mul tp size')
     parser.add_argument('--triangle_attn_node_chunk_size',
                         type=int,
                         default=0,
@@ -94,25 +98,44 @@ def main():
         pairformer_config = boltz1_config.confidence_pairformer_backend_config
 
     config = {
-        "max_transition_tp_size": args.max_transition_tp_size,
-        "max_attention_pairwise_tp_size": args.max_attention_pairwise_tp_size,
-        "triangle_attn_node_chunk_size": args.triangle_attn_node_chunk_size,
-        "no_update_s": args.no_update_s,
-        "no_update_z": args.no_update_z,
-        "backend": "trt",
-        "token_s": boltz1_config.token_s,
-        "token_z": boltz1_config.token_z,
-        "pairwise_head_width": pairformer_config.pairwise_head_width,
-        "pairwise_num_heads": pairformer_config.pairwise_num_heads,
-        "num_blocks": pairformer_config.num_blocks,
-        "num_heads": pairformer_config.num_heads,
-        "dtype": args.dtype,
-        "architecture": f"{args.pairformer_type}_pairformer",
+        "max_transition_tp_size":
+        args.max_transition_tp_size,
+        "max_attention_pairwise_tp_size":
+        args.max_attention_pairwise_tp_size,
+        "max_tri_mul_tp_size":
+        args.max_tri_mul_tp_size,
+        "triangle_attn_node_chunk_size":
+        args.triangle_attn_node_chunk_size,
+        "no_update_s":
+        args.no_update_s,
+        "no_update_z":
+        args.no_update_z,
+        "backend":
+        "trt",
+        "token_s":
+        boltz1_config.token_s,
+        "token_z":
+        boltz1_config.token_z,
+        "pairwise_head_width":
+        pairformer_config.pairwise_head_width,
+        "pairwise_num_heads":
+        pairformer_config.pairwise_num_heads,
+        "num_blocks":
+        pairformer_config.num_blocks,
+        "num_heads":
+        pairformer_config.num_heads,
+        "dtype":
+        args.dtype,
+        "architecture":
+        f"{args.pairformer_type}_pairformer",
         'mapping': {
             'world_size': world_size,
             'tp_size': args.tp_size,
             'dcp_size': args.dcp_size,
         },
+        "disable_custom_all_reduce":
+        args.max_transition_tp_size or args.max_attention_pairwise_tp_size
+        or args.max_tri_mul_tp_size
     }
     pairformer_config = PairformerConfig.from_dict(PairformerModule, config)
     config = pairformer_config.to_dict()

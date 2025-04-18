@@ -48,6 +48,7 @@ class PairformerLayer(Module):
                  dtype: str = None,
                  max_transition_tp_size: bool = False,
                  max_attention_pairwise_tp_size: bool = False,
+                 max_tri_mul_tp_size: bool = False,
                  mapping: Mapping = Mapping()):
         super().__init__()
 
@@ -70,22 +71,23 @@ class PairformerLayer(Module):
                 eps=eps,
                 inf=inf,
                 mapping=m)
-
+        m = mapping
+        if max_tri_mul_tp_size:
+            m = create_max_tp_mapping(mapping, token_z)
         self.tri_mul_out = TriangleMultiplicationNode(
             local_layer_idx=local_layer_idx,
             dim=token_z,
             dtype=dtype,
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
-            mapping=mapping)
-
+            mapping=m)
         self.tri_mul_in = TriangleMultiplicationNode(
             local_layer_idx=local_layer_idx,
             dim=token_z,
             dtype=dtype,
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.INCOMING,
-            mapping=mapping)
+            mapping=m)
         self.tri_attn_start = TriangleAttentionNode(
             local_layer_idx=local_layer_idx,
             c_in=token_z,
@@ -180,6 +182,7 @@ class PairformerModule(PretrainedModule):
                 max_transition_tp_size=config.max_transition_tp_size,
                 max_attention_pairwise_tp_size=config.
                 max_attention_pairwise_tp_size,
+                max_tri_mul_tp_size=config.max_tri_mul_tp_size,
                 mapping=config.mapping) for i in range(config.num_blocks)
         ])
 

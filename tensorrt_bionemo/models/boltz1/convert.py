@@ -104,8 +104,11 @@ def get_tri_attn_node_weights(mapping: Mapping, state_dict: dict, prefix: str,
     return ret
 
 
-def get_tri_mul_node_weights(mapping: Mapping, state_dict: dict, prefix: str,
-                             tbm_prefix: str):
+def get_tri_mul_node_weights(mapping: Mapping,
+                             state_dict: dict,
+                             prefix: str,
+                             tbm_prefix: str,
+                             max_tri_mul_tp_size: bool = True):
     norm_in_weight = state_dict[f"{prefix}.norm_in.weight"]
     norm_in_bias = state_dict[f"{prefix}.norm_in.bias"]
     p_in_weight = state_dict[f"{prefix}.p_in.weight"]
@@ -115,6 +118,9 @@ def get_tri_mul_node_weights(mapping: Mapping, state_dict: dict, prefix: str,
     p_out_weight = state_dict[f"{prefix}.p_out.weight"]
     g_out_weight = state_dict[f"{prefix}.g_out.weight"]
 
+    if max_tri_mul_tp_size:
+        mapping = create_max_tp_mapping(mapping=mapping,
+                                        dim=p_in_weight.shape[0])
     tp_size = mapping.tp_size
     tp_rank = mapping.tp_rank
     if tp_size > 1:
@@ -213,11 +219,13 @@ def convert_hf_pairformer(config: PairformerConfig,
         weights.update(
             get_tri_mul_node_weights(mapping, state_dict,
                                      f"{layer_prefix}.tri_mul_out",
-                                     f"{layer_tbm_prefix}.tri_mul_out"))
+                                     f"{layer_tbm_prefix}.tri_mul_out",
+                                     config.max_tri_mul_tp_size))
         weights.update(
             get_tri_mul_node_weights(mapping, state_dict,
                                      f"{layer_prefix}.tri_mul_in",
-                                     f"{layer_tbm_prefix}.tri_mul_in"))
+                                     f"{layer_tbm_prefix}.tri_mul_in",
+                                     config.max_tri_mul_tp_size))
         weights.update(
             get_transition_weights(mapping, state_dict,
                                    f"{layer_prefix}.transition_s",

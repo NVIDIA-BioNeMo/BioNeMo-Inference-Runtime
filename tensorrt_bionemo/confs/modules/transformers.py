@@ -32,6 +32,7 @@ class PairformerConfig(PretrainedModuleConfig):
                  num_heads: int = 16,
                  max_transition_tp_size: bool = True,
                  max_attention_pairwise_tp_size: bool = True,
+                 max_tri_mul_tp_size: bool = True,
                  triangle_attn_node_chunk_size: int = 0,
                  no_update_s: bool = False,
                  no_update_z: bool = False,
@@ -49,6 +50,7 @@ class PairformerConfig(PretrainedModuleConfig):
         self.num_heads = num_heads
         self.max_transition_tp_size = max_transition_tp_size
         self.max_attention_pairwise_tp_size = max_attention_pairwise_tp_size
+        self.max_tri_mul_tp_size = max_tri_mul_tp_size
         self.triangle_attn_node_chunk_size = triangle_attn_node_chunk_size
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z

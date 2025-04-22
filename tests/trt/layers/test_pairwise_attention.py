@@ -140,7 +140,7 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
                                         initial_norm=True)
     ref_attn.to("cuda", dtype=torch_dtype)
 
-    load_self_pairwise_attention_weights_torch(ref_attn, weights_and_biases)
+    load_self_pairwise_attention_weights_ref_torch(ref_attn, weights_and_biases)
 
     with torch.inference_mode():
         ref_output = ref_attn(s, z, mask)

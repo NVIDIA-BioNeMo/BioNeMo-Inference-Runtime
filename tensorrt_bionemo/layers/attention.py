@@ -214,7 +214,7 @@ class SelfAttentionPairBias(Module):
         self.c_z = c_z
         self.attention_head_size = c_s // num_heads
         self.initial_norm = initial_norm
-        self.inf = inf
+        self.inf = 1e6
 
         self.num_attention_kv_heads = num_heads
         # This equal to 1 for self-attention
@@ -322,6 +322,7 @@ class SelfAttentionPairBias(Module):
             # key and value have also the same shape
             key = key.permute([0, 1, 3, 2])
             model_type = query.dtype
+            z = self.proj_z_norm(z)
             pair_bias = self.proj_z(z)
             pair_bias = pair_bias.permute([0, 3, 1,
                                            2])  # [B, N, N, H] -> [B, H, N, N]
@@ -341,8 +342,8 @@ class SelfAttentionPairBias(Module):
                 attention_scores = matmul(query, key)
                 if not norm_before_bmm1:
                     attention_scores /= self.norm_factor
-                attention_scores += mask_bias
                 attention_scores += pair_bias
+                attention_scores += mask_bias
                 attention_probs = softmax(attention_scores, dim=-1)
             attention_probs = cast(attention_probs, model_type)
             context = matmul(attention_probs, value,

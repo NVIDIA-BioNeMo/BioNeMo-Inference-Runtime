@@ -263,8 +263,9 @@ class TriangleMultiplicationNode(Module):
             else:
                 return einsum("kid,kjd->ijd", [a_, b_])
 
-        # Ring communication on the dcp group
         if self.dcp_size > 1:
+            # Ring communication on the dcp group
+            # Experimental: This make TRT engines go large and slow than normal, dont try it
             enisum_results = [
                 None,
             ] * self.dcp_size

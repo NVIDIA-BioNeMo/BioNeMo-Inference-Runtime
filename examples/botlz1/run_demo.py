@@ -21,11 +21,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import boltz.data.const as const
+import pandas as pd
 import tensorrt as trt
 import torch
 import torch.nn as nn
 from boltz.data.feature.pad import pad_dim
 from boltz.model.model import Boltz1
+# isort: on
+from cuda import cudart
 from pytorch_lightning import seed_everything
 from score import kabsch_torch, lddt
 from tensorrt_llm._utils import trt_dtype_to_torch
@@ -46,6 +49,17 @@ NOTE:
 """
 
 
+def CUASSERT(cuda_ret):
+    err = cuda_ret[0]
+    if err != cudart.cudaError_t.cudaSuccess:
+        raise RuntimeError(
+            f"CUDA ERROR: {err}, error code reference: https://nvidia.github.io/cuda-python/module/cudart.html#cuda.cudart.cudaError_t"
+        )
+    if len(cuda_ret) > 1:
+        return cuda_ret[1:]
+    return None
+
+
 class PairformerTRT(nn.Module):
     """ TODO: Move this class to tensorrt_bionemo/runtime/modules and support CUDA graph"""
 
@@ -53,6 +67,8 @@ class PairformerTRT(nn.Module):
                  engines_dir: Path,
                  world_size: int,
                  rank: int,
+                 context_without_device_memory: bool = True,
+                 address=None,
                  stream=None):
         super().__init__()
         self.engines_dir = engines_dir
@@ -90,7 +106,30 @@ class PairformerTRT(nn.Module):
             assert engine_buffer is not None
         logger.info(f"Deserialize engine from {self.serialize_path}")
         # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-        self.session = Session.from_serialized_engine(engine_buffer)
+        self.runtime = trt.Runtime(logger.trt_logger)
+        self.engine = self.runtime.deserialize_cuda_engine(engine_buffer)
+        self.device_memory_size = self.engine.device_memory_size_v2
+        self.address = None
+        if not context_without_device_memory:
+            self.context = self.engine.create_execution_context()
+            with _scoped_stream() as stream:
+                self.context.set_optimization_profile_async(0, stream)
+        else:
+            self.context = self.engine.create_execution_context_without_device_memory(
+            )
+            if address is None:
+                address = CUASSERT(cudart.cudaMalloc(
+                    self.device_memory_size))[0]
+            self.context.set_device_memory(address, self.device_memory_size)
+            self.address = address
+            with _scoped_stream() as stream:
+                self.context.set_optimization_profile_async(0, stream)
+        # Initialize session
+        self.session = Session()
+        self.session._runtime = self.runtime
+        self.session._context = self.context
+        self.session.engine = self.engine
+
         self.session._print_engine_info()
         self.engine = self.session.engine
         logger.info(
@@ -173,16 +212,78 @@ class PairformerTRT(nn.Module):
         return s, z
 
 
-class PairformerTorch(nn.Module):
+class ForceFP32(nn.Module):
 
     def __init__(self, original_module: nn.Module):
         super().__init__()
         self._original_module = original_module
 
+    def forward(self, *args, **kwargs):
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        output = self._original_module(*args, **kwargs)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        return output
+
+
+class MSAModuleTorch(nn.Module):
+
+    def __init__(self, original_module: nn.Module):
+        super().__init__()
+        self._original_module = original_module
+
+        for layer in self._original_module.layers:
+            layer.tri_att_start.layer_norm = ForceFP32(
+                layer.tri_att_start.layer_norm)
+            layer.tri_att_start.linear = ForceFP32(layer.tri_att_start.linear)
+            layer.tri_att_start.mha.linear_q = ForceFP32(
+                layer.tri_att_start.mha.linear_q)
+            layer.tri_att_start.mha.linear_k = ForceFP32(
+                layer.tri_att_start.mha.linear_k)
+            layer.tri_att_start.mha.linear_v = ForceFP32(
+                layer.tri_att_start.mha.linear_v)
+
+            layer.tri_att_end.layer_norm = ForceFP32(
+                layer.tri_att_end.layer_norm)
+            layer.tri_att_end.linear = ForceFP32(layer.tri_att_end.linear)
+            layer.tri_att_end.mha.linear_q = ForceFP32(
+                layer.tri_att_end.mha.linear_q)
+            layer.tri_att_end.mha.linear_k = ForceFP32(
+                layer.tri_att_end.mha.linear_k)
+            layer.tri_att_end.mha.linear_v = ForceFP32(
+                layer.tri_att_end.mha.linear_v)
+
+    def forward(self, *args, **kwargs):
+        return self._original_module(*args, **kwargs)
+
+
+class PairformerTorch(nn.Module):
+
+    def __init__(self, original_module: nn.Module, name="structure"):
+        super().__init__()
+        self._original_module = original_module
+        self._name = name
+
     def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
                 pair_mask: torch.Tensor, **kwargs):
         s, z = self._original_module(s, z, mask, pair_mask, **kwargs)
         return s, z
+
+
+class FP32StructureModule(nn.Module):
+
+    def __init__(self, original_module: nn.Module):
+        super().__init__()
+        self._original_module = original_module
+
+    def sample(self, *args, **kwargs):
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        output = self._original_module.sample(*args, **kwargs)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        return output
 
 
 @dataclass
@@ -305,38 +406,47 @@ def parse_arguments():
                         help='The number of times to repeat the inference')
     parser.add_argument('--max_seq_len',
                         type=int,
-                        default=-1,
+                        default=100000,
                         help='The maximum sequence length to run')
+    parser.add_argument('--min_seq_len',
+                        type=int,
+                        default=-1,
+                        help='The minimum sequence length to run')
+    parser.add_argument('--strategy',
+                        type=str,
+                        default="test",
+                        help='The strategy to run')
     return parser.parse_args()
 
 
 def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
                     dcp_size: int, device: torch.device,
-                    predict_params: BoltzPredictionParams):
+                    predict_params: BoltzPredictionParams, strategy: str):
     # TODO: write docs for sample dir
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
-    logger.set_level("info")
+    # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+
     pdb_ids = [
         ele.split('/feats_')[1][:4]
         for ele in glob.glob(f"{sample_dir.as_posix()}/feats*.pt")
     ]
     seqlens = []
     new_pdb_ids = []
-    for pdb_id in pdb_ids:
-        feats_path = f"{sample_dir.as_posix()}/feats_{pdb_id}.pt"
-        batch = torch.load(feats_path, weights_only=False)
-        for key, val in batch.items():
-            if hasattr(val, "to"):
-                if key in ["msa_mask"]:
-                    seqlen = val.shape[-1]
-                    if seqlen <= args.max_seq_len or args.max_seq_len == -1:
-                        seqlens.append(seqlen)
-                        new_pdb_ids.append(pdb_id)
-                        if rank == 0:
-                            logger.info(
-                                f"Load pdb_id: {pdb_id} with seqlen: {seqlen}")
+    ids = json.load(open("sample/ids.json"))
+
+    # for pdb_id in pdb_ids:
+    for pdb_id, seqlen in ids.items():
+        if seqlen <= args.max_seq_len and seqlen >= args.min_seq_len:
+            seqlens.append(seqlen)
+            new_pdb_ids.append(pdb_id)
+            if rank == 0:
+                logger.info(f"Load pdb_id: {pdb_id} with seqlen: {seqlen}")
+
+    report_df = pd.DataFrame(columns=[
+        "strategy", "pdb_id", "inference_time", "rmsd", "lddt", "seqlen"
+    ])
     pdb_ids = new_pdb_ids
     v = sorted(zip(pdb_ids, seqlens), key=lambda x: x[1])
     pdb_ids = [x[0] for x in v]
@@ -376,14 +486,32 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
                     if key == 'sample_atom_coords':
                         ref_output[key] = val.to(device)
                 rmsd_value = kabsch_torch(
-                    output['sample_atom_coords'].squeeze(0).detach().cpu(),
-                    ref_output['sample_atom_coords'].squeeze(0).detach().cpu())
+                    output['sample_atom_coords'].squeeze(0),
+                    ref_output['sample_atom_coords'].squeeze(0))
                 lddt_value = lddt(output['sample_atom_coords'],
                                   ref_output['sample_atom_coords'],
                                   batch['atom_resolved_mask'])
                 logger.info(
-                    f"Sample {pdb_id} Sequence length: {seqlens[i]} with RMSD: {rmsd_value:.4f} and LDDT: {lddt_value.mean():.4f}"
+                    f"Sample {pdb_id} Sequence length: {seqlens[i]} with RMSD: {rmsd_value:.4f} and LDDT: {lddt_value.mean().cpu().numpy():.4f}"
                 )
+                row = pd.DataFrame([{
+                    "strategy":
+                    strategy,
+                    "pdb_id":
+                    pdb_id,
+                    "inference_time":
+                    round(inference_time, 4),
+                    "rmsd":
+                    round(float(rmsd_value.cpu().numpy()), 4),
+                    "lddt":
+                    round(float(lddt_value.mean().cpu().numpy()), 4),
+                    "seqlen":
+                    seqlens[i],
+                }])
+                report_df = pd.concat([report_df, row], ignore_index=True)
+
+    if rank == 0:
+        report_df.to_csv(f"report_{strategy}.csv", index=False)
 
 
 def main(args):
@@ -393,21 +521,39 @@ def main(args):
     world_size = tensorrt_llm.mpi_world_size()
     torch.cuda.set_device(rank % args.gpu_per_node)
     model, predict_params = create_original_model(device=torch.device("cuda"))
-
+    logger.set_level("info")
     structure_pairformer = None
     confidence_pairformer = None
     if args.structure_pairformer_engines_dir:
         structure_pairformer = PairformerTRT(
-            args.structure_pairformer_engines_dir, world_size, rank)
+            args.structure_pairformer_engines_dir,
+            world_size,
+            rank,
+            context_without_device_memory=True)
         setattr(model, "pairformer_module", structure_pairformer)
     else:
         setattr(model, "pairformer_module",
-                PairformerTorch(model.pairformer_module))
+                PairformerTorch(model.pairformer_module, name="structure"))
     if args.confidence_pairformer_engines_dir:
+        address = None
+        if isinstance(structure_pairformer,
+                      PairformerTRT):  # sharing same device memory
+            address = structure_pairformer.address
         confidence_pairformer = PairformerTRT(
-            args.confidence_pairformer_engines_dir, world_size, rank)
+            args.confidence_pairformer_engines_dir,
+            world_size,
+            rank,
+            context_without_device_memory=True,
+            address=address)
         setattr(model.confidence_module, "pairformer_module",
                 confidence_pairformer)
+    else:
+        setattr(
+            model.confidence_module, "pairformer_module",
+            PairformerTorch(model.confidence_module.pairformer_module,
+                            name="confidence"))
+    setattr(model, "structure_module",
+            FP32StructureModule(model.structure_module))
 
     dcp_size = 1
     if structure_pairformer:
@@ -419,7 +565,8 @@ def main(args):
                     rank=rank,
                     dcp_size=dcp_size,
                     device=torch.device("cuda"),
-                    predict_params=predict_params)
+                    predict_params=predict_params,
+                    strategy=args.strategy)
 
 
 if __name__ == "__main__":

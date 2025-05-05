@@ -33,8 +33,12 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
     build_config.plugin_config.dtype = module.config.dtype
 
     builder = Builder()
+    if build_config.strongly_typed:
+        precision = module.config.dtype
+    else:
+        precision = build_config.weakly_dtype
     builder_config = builder.create_builder_config(
-        precision=module.config.dtype,
+        precision=precision,
         use_refit=False,  # TODO: add refit
         timing_cache=build_config.input_timing_cache,
         strongly_typed=build_config.strongly_typed,
@@ -50,7 +54,13 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
     network = builder.create_network()
     network.trt_network.name = build_config.module_config.architecture
     network.plugin_config = build_config.plugin_config
-    nccl_plugin = module.config.dtype if module.config.mapping.world_size > 1 else None
+
+    nccl_plugin = None
+    if module.config.mapping.world_size > 1:
+        if build_config.plugin_config.nccl_plugin is not None:
+            nccl_plugin = build_config.plugin_config.nccl_plugin
+        else:
+            nccl_plugin = module.config.dtype
     network.plugin_config.set_nccl_plugin(nccl_plugin)
 
     with net_guard(network):
@@ -69,6 +79,12 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
         for output, output_name in zip(outputs, output_names):
             output.mark_output(output_name,
                                str_dtype_to_trt(module.config.dtype))
+
+    if not build_config.strongly_typed:
+        # Modify the network for weakly-typed mode
+        if precision != "float32":
+            builder_config.trt_builder_config.set_flag(trt.BuilderFlag.TF32)
+        network = module.weakly_typed(network, precision)
 
     # Network -> Engine
     logger.info(

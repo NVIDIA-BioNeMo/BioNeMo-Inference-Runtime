@@ -119,7 +119,7 @@ class TriangleAttentionNode(Module):
         x = self.layer_norm(x)
 
         # Compute mask bias
-        mask_bias = (self.inf * (mask - 1))
+        mask_bias = (self.inf * (mask - 1.))
         mask_bias = expand_dims(mask_bias, [1, 2])
 
         # Compute triangle bias

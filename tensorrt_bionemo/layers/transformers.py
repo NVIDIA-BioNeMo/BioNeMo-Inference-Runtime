@@ -16,7 +16,9 @@
 from typing import Optional
 
 from tensorrt_llm.functional import AllReduceParams, Tensor
+from tensorrt_llm.logger import logger
 from tensorrt_llm.module import Module, ModuleList
+from tensorrt_llm.network import Network
 
 from tensorrt_bionemo.confs.modules.transformers import (PairformerBuildConfig,
                                                          PairformerConfig)
@@ -197,3 +199,8 @@ class PairformerModule(PretrainedModule):
             s, z = layer(s, z, mask, pair_mask, attention_params,
                          all_reduce_params)
         return s, z
+
+    @staticmethod
+    def weakly_typed(network: Network, dtype: str = None) -> Network:
+        logger.info("Call weakly_typed on PairformerModule")
+        return network

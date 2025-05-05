@@ -48,6 +48,8 @@ $ python tensorrt_bionemo/commands/build.py \
     --workers 8
 ```
 
+For bfloat32 precision, add
+
 ### Benchmark Pairformer
 
 ```bash
@@ -67,7 +69,7 @@ You have to use `botlz predict` to dump the input dict to model.
 ### Run scripts
 
 ```bash
-$ pip install boltz --no-deps
+$ pip install boltz==0.4.1 --no-deps
 $ pip install pytorch_lightning==2.4.0 fairscale==0.4.13 mashumaro==3.14
 ```
 

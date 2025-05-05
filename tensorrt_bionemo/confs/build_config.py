@@ -27,6 +27,7 @@ from .model_config import PretrainedModuleConfig
 @dataclass
 class BuildModuleConfig:
     strongly_typed: bool = True
+    weakly_dtype: str = None
     force_num_profiles: Optional[int] = None
     profiling_verbosity: str = 'layer_names_only'
     plugin_config: PluginConfig = field(default_factory=PluginConfig)

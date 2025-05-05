@@ -20,7 +20,6 @@ from typing import Optional
 import tensorrt as trt
 # isort: on
 
-from tensorrt_llm._common import precision
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
                                      concat, expand_dims, matmul, shape, slice,
                                      softmax, split)
@@ -151,21 +150,18 @@ class TriangleAttention(Module):
             model_type = query.dtype
 
             # Using attn precision different from model precision to avoid NaN results
-            with precision(attention_params.vanilla_attn_precision):
-                query = cast(query, attention_params.vanilla_attn_precision)
-                key = cast(key, attention_params.vanilla_attn_precision)
-                if norm_before_bmm1:
-                    query /= self.norm_factor
-                attention_scores = matmul(query, key)
-                if not norm_before_bmm1:
-                    attention_scores /= self.norm_factor
-                if mask_bias is not None:
-                    attention_scores += mask_bias
-                if triangle_bias is not None:
-                    attention_scores += triangle_bias
+            if norm_before_bmm1:
+                query /= self.norm_factor
+            attention_scores = matmul(query, key)
+            if not norm_before_bmm1:
+                attention_scores /= self.norm_factor
+            if mask_bias is not None:
+                attention_scores += mask_bias
+            if triangle_bias is not None:
+                attention_scores += triangle_bias
 
-                attention_probs = softmax(attention_scores, dim=-1)
-                attention_probs = cast(attention_probs, model_type)
+            attention_probs = softmax(attention_scores, dim=-1)
+            attention_probs = cast(attention_probs, model_type)
             attention_probs = attention_probs.view(
                 concat([
                     shape(attention_probs, 0),
@@ -327,24 +323,16 @@ class SelfAttentionPairBias(Module):
             pair_bias = pair_bias.permute([0, 3, 1,
                                            2])  # [B, N, N, H] -> [B, H, N, N]
             mask = cast(mask, 'float32')
-            mask_bias = (1 - expand_dims(mask, [1, 2])) * (-self.inf)
+            mask_bias = (1.0 - expand_dims(mask, [1, 2])) * (-self.inf)
 
-            with precision(attention_params.vanilla_attn_precision):
-                query = cast(query, attention_params.vanilla_attn_precision)
-                key = cast(key, attention_params.vanilla_attn_precision)
-                value = cast(value, attention_params.vanilla_attn_precision)
-                pair_bias = cast(pair_bias,
-                                 attention_params.vanilla_attn_precision)
-                mask_bias = cast(mask_bias,
-                                 attention_params.vanilla_attn_precision)
-                if norm_before_bmm1:
-                    query /= self.norm_factor
-                attention_scores = matmul(query, key)
-                if not norm_before_bmm1:
-                    attention_scores /= self.norm_factor
-                attention_scores += pair_bias
-                attention_scores += mask_bias
-                attention_probs = softmax(attention_scores, dim=-1)
+            if norm_before_bmm1:
+                query /= self.norm_factor
+            attention_scores = matmul(query, key)
+            if not norm_before_bmm1:
+                attention_scores /= self.norm_factor
+            attention_scores += pair_bias
+            attention_scores += mask_bias
+            attention_probs = softmax(attention_scores, dim=-1)
             attention_probs = cast(attention_probs, model_type)
             context = matmul(attention_probs, value,
                              use_fp32_acc=False).permute([0, 2, 1, 3])

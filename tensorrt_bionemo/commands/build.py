@@ -134,11 +134,16 @@ def parse_arguments():
         type=float,
         default=1e9,
         help="The value to mask infinity in the attention mask.")
+    parser.add_argument('--weakly_dtype',
+                        type=str,
+                        default=None,
+                        choices=['float16', 'bfloat16', 'float32'],
+                        help="The data type of the model.")
     logits_parser = parser.add_argument_group("Logits arguments")
     logits_parser.add_argument('--logits_dtype',
                                type=str,
                                default=None,
-                               choices=['float16', 'float32'],
+                               choices=['bfloat16', 'float32'],
                                help="The data type of logits.")
 
     plugin_config_parser = parser.add_argument_group("Plugin config arguments")
@@ -152,6 +157,7 @@ def build_module(build_config: BuildModuleConfig,
                  module_config: Union[str, PretrainedModuleConfig] = None,
                  module_cls=None,
                  dry_run: bool = False,
+                 weakly_dtype: str = None,
                  **kwargs) -> Union[Engine, BuildModuleConfig]:
     module_config = copy.deepcopy(module_config)
     module_config.update_from_dict(kwargs)
@@ -290,8 +296,15 @@ def main():
         logger.info(
             f"Disable custom all reduce: {module_config.disable_custom_all_reduce}"
         )
+        strongly_typed = True
+        if args.weakly_dtype is not None and args.weakly_dtype != module_config.dtype:
+            strongly_typed = False
+            logger.info(
+                f"Building weakly-typed engine with dtype {args.weakly_dtype}.")
+
         build_config_dict = {
-            'strongly_typed': True,
+            'strongly_typed': strongly_typed,
+            'weakly_dtype': args.weakly_dtype,
             'force_num_profiles': force_num_profiles_from_env,
             'profiling_verbosity': args.profiling_verbosity,
             'enable_debug_output': args.enable_debug_output,

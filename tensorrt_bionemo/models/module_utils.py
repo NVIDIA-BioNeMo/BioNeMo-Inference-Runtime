@@ -22,6 +22,7 @@ from tensorrt_llm._utils import str_dtype_to_trt
 from tensorrt_llm.functional import Tensor
 from tensorrt_llm.logger import logger
 from tensorrt_llm.module import Module
+from tensorrt_llm.network import Network
 from tensorrt_llm.plugin import (current_all_reduce_helper,
                                  init_all_reduce_helper)
 
@@ -118,6 +119,15 @@ class PretrainedModule(Module):
             weights, os.path.join(output_dir, f'rank{rank}.safetensors'))
         if save_config:
             self.config.to_json_file(os.path.join(output_dir, 'config.json'))
+
+    @staticmethod
+    def weakly_typed(network: Network, dtype: str = None) -> Network:
+        """
+            This method is used in the weakly-typed mode. It is normally used in
+            the sensitive modules which need both float32 and other dtypes.
+            For example, the PairformerModule needs both float32 and bfloat16.
+        """
+        return network
 
     def prepare_inputs(
             self,

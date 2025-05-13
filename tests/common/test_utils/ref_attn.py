@@ -18,6 +18,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
 
 from tensorrt_bionemo.hf.checkpoints import load_hf_weights
 
@@ -25,16 +26,14 @@ from tensorrt_bionemo.hf.checkpoints import load_hf_weights
 def _prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
               head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if q.ndim == 3:
-        q = q.view(q.size(0), -1, no_heads, head_dim)
-    if k.ndim == 3:
-        k = k.view(k.size(0), -1, no_heads, head_dim)
-    if v.ndim == 3:
-        v = v.view(v.size(0), -1, no_heads, head_dim)
-    q = q.transpose(1, 2)  # [B, H, s_q, D]
-    k = k.transpose(1, 2)  # [B, H, s_kv, D]
-    v = v.transpose(1, 2)  # [B, H, s_kv, D]
+        q = rearrange(q, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
+        k = rearrange(k, "b j (h d) -> b h d j", h=no_heads, d=head_dim)
+        v = rearrange(v, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
+    else:
+        q = rearrange(q, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
+        k = rearrange(k, "b i j (h d) -> b i h d j", h=no_heads, d=head_dim)
+        v = rearrange(v, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
 
-    k = torch.permute(k, (0, 1, 3, 2))  # [B, H, D, s_kv]
     return q, k, v
 
 
@@ -46,20 +45,37 @@ def plain_triangle_mha(
     head_dim: int,
     biases: Optional[list[torch.Tensor]] = None,
 ) -> torch.Tensor:
-    """Simple MHA for triangular attention"""
+    """Simple MHA for triangular attention
+    Args:
+        q (torch.Tensor): query tensor, shape [B, I, J, H * D]
+        k (torch.Tensor): key tensor, shape [B, I, J, H * D]
+        v (torch.Tensor): value tensor, shape [B, I, J, H * D]
+        no_heads (int): number of attention heads
+        head_dim (int): dimension of each head
+        biases (Optional[list[torch.Tensor]]): list of bias tensors
+           - Mask: [B, I, 1, 1, J]
+           - Triangle bias: [B, H, J, J]
+    """
+    if q.ndim == 3:
+        q = q.unsqueeze(0)
+        k = k.unsqueeze(0)
+        v = v.unsqueeze(0)
+    mask = biases[0]
+    bias = biases[1]
+    if mask.ndim == 4:
+        mask = mask.unsqueeze(0)
+    bias = bias.unsqueeze(1)
     q, k, v = _prep_qkv(q, k, v, no_heads, head_dim)
 
     a = torch.matmul(q, k)
-    a /= math.sqrt(head_dim)
-
-    if biases is not None:
-        for b in biases:
-            a += b
+    a /= math.sqrt(head_dim)  # [B, I, H, J, J]
+    a += mask
+    a += bias
 
     a = torch.nn.functional.softmax(a, dim=-1)
 
-    a = torch.matmul(a, v)
-    a = a.transpose(1, 2).contiguous()
+    a = torch.matmul(a, v)  # [B, I, H, J, D]
+    a = rearrange(a, "b i h j d -> b i j h d").contiguous()
     return a
 
 
@@ -75,6 +91,7 @@ def plain_pairwise_mhca(
     q, k, v = _prep_qkv(q, k, v, no_heads, head_dim)
     a = torch.matmul(q, k)  # [B, H, s_q, s_kv]
     a /= math.sqrt(head_dim)
+
     if biases is not None:
         # Add mask bias
         if biases[0].ndim == 2:
@@ -170,20 +187,17 @@ class RefTriangleAttention(nn.Module):
                 q_x: torch.Tensor,
                 kv_x: torch.Tensor,
                 biases: Optional[list[torch.Tensor]] = None):
-        proj_q = self.linear_q(q_x)
-        proj_k = self.linear_k(kv_x)
-        proj_v = self.linear_v(kv_x)
-
-        q = proj_q.view(proj_q.size(0), -1, self.no_heads, self.c_hidden)
-        k = proj_k.view(proj_k.size(0), -1, self.no_heads, self.c_hidden)
-        v = proj_v.view(proj_v.size(0), -1, self.no_heads, self.c_hidden)
-        mha_o = plain_triangle_mha(q, k, v, self.no_heads, self.c_hidden,
+        q = self.linear_q(q_x)
+        k = self.linear_k(kv_x)
+        v = self.linear_v(kv_x)
+        mha_o = plain_triangle_mha(q.contiguous(), k.contiguous(),
+                                   v.contiguous(), self.no_heads, self.c_hidden,
                                    biases)
         if self.linear_g is not None:
             g = F.sigmoid(self.linear_g(q_x))
-            g = g.view(g.size(0), -1, self.no_heads, self.c_hidden)
+            g = g.view(g.shape[:-1] + (self.no_heads, self.c_hidden))
             o = mha_o * g
-        o = o.view(o.size(0), -1, self.no_heads * self.c_hidden)
+        o = o.view(o.shape[:-2] + (self.no_heads * self.c_hidden, ))
         o = self.linear_o(o)
 
         return o
@@ -280,16 +294,15 @@ class RefPairwiseSelfAttention(nn.Module):
         B = s.size(0)
         if self.initial_norm:
             s = self.norm_s(s)
-        q = self.proj_q(s).view(B, -1, self.num_heads, self.head_dim)
-        k = self.proj_k(s).view(B, -1, self.num_heads, self.head_dim)
-        v = self.proj_v(s).view(B, -1, self.num_heads, self.head_dim)
+        q = self.proj_q(s)
+        k = self.proj_k(s)
+        v = self.proj_v(s)
         z = self.proj_z(z)
         z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
         g = self.proj_g(s).sigmoid()
-        mask_bias = (1 - mask[:, None, None].float()) * -self.inf
+        mask_bias = (1 - mask[:, None, None, :].float()) * -self.inf
         mhca_o = plain_pairwise_mhca(q, k, v, self.num_heads, self.head_dim,
                                      [mask_bias, z])
-
         o = mhca_o.reshape(B, -1, self.c_s)
         o = self.proj_o(g * o)
 

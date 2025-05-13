@@ -24,7 +24,7 @@ from tensorrt_bionemo.confs.modules.transformers import (PairformerBuildConfig,
                                                          PairformerConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
-from ..models.module_utils import PretrainedModule
+from ..module_utils import PretrainedModule
 from .attention import AttentionParams, SelfAttentionPairBias
 from .transition import Transition
 from .triangle_nodes import (TriangleAttentionNode, TriangleAttentionNodeType,
@@ -50,7 +50,7 @@ class PairformerLayer(Module):
                  dtype: str = None,
                  max_transition_tp_size: bool = False,
                  max_attention_pairwise_tp_size: bool = False,
-                 max_tri_mul_tp_size: bool = False,
+                 max_tri_mul_tp_size: bool = True,
                  mapping: Mapping = Mapping()):
         super().__init__()
 
@@ -151,12 +151,11 @@ class PairformerLayer(Module):
                                   all_reduce_params=all_reduce_params)
         z = z + self.transition_z(z)
         if not self.no_update_s:
-            s = s + self.attention(s.unsqueeze(0),
-                                   z.unsqueeze(0),
-                                   mask.unsqueeze(0),
+            s = s + self.attention(s,
+                                   z,
+                                   mask,
                                    attention_params=attention_params,
-                                   all_reduce_params=all_reduce_params).squeeze(
-                                       0, False)
+                                   all_reduce_params=all_reduce_params)
             s = s + self.transition_s(s)
         return s, z
 

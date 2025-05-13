@@ -20,7 +20,7 @@ import torch
 from mpi4py.futures import MPIPoolExecutor
 from tensorrt_llm.functional import Tensor, concat, expand_dims
 
-from tensorrt_bionemo.functional import send_recv
+from tensorrt_bionemo._trt.functional import send_recv
 from tensorrt_bionemo.mapping import Mapping
 
 

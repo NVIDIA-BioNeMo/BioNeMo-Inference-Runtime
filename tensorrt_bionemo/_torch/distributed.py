@@ -1,18 +1,12 @@
-""" Copy from tensorrt_llm._torch.distributed.py with some modifications"""
 import atexit
 import enum
 import os
-from copy import deepcopy
-from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
-from tensorrt_llm._torch.distributed import (TensorParallelMode,
-                                             get_allreduce_workspace)
-from tensorrt_llm.functional import (AllReduceConfig, AllReduceParams,
-                                     AllReduceStrategy)
-from torch import nn
+import torch.nn as nn
+from tensorrt_llm.functional import AllReduceParams, AllReduceStrategy
 
 from tensorrt_bionemo.mapping import Mapping
 
@@ -27,29 +21,14 @@ class AllGatherMode(str, enum.Enum):
     DP = 'DP'  # data parallel
 
 
-@dataclass(kw_only=True)
-class ParallelConfig:
-    mapping: Mapping
-    tensor_parallel_mode: Optional[TensorParallelMode] = None
-    gather_output: bool = False
-
-
-def create_parallel_config(
-        mapping: Mapping,
-        tensor_parallel_mode: Optional[TensorParallelMode] = None,
-        gather_output: bool = False):
-    return ParallelConfig(mapping=deepcopy(mapping),
-                          tensor_parallel_mode=tensor_parallel_mode,
-                          gather_output=gather_output)
-
-
 def allgather(input: torch.Tensor,
-              parallel_config: ParallelConfig,
+              mapping: Mapping,
               gather_dim: int = -1,
               mode: AllGatherMode = AllGatherMode.TP) -> torch.Tensor:
     """ Support both tensor parallel and data parallel """
-    mapping = parallel_config.mapping
-    if mapping.tp_size == 1 and mapping.dcp_size == 1:
+    if mapping.tp_size == 1 and mode == AllGatherMode.TP:
+        return input
+    if mapping.dcp_size == 1 and mode == AllGatherMode.DP:
         return input
     if mode == AllGatherMode.TP:
         output = torch.ops.trtllm.allgather(
@@ -76,73 +55,50 @@ def allgather(input: torch.Tensor,
     return output
 
 
-def allreduce(
-    input: torch.Tensor,
-    workspace: Optional[torch.LongTensor],
-    parallel_config: ParallelConfig,
-    strategy: AllReduceStrategy = AllReduceStrategy.AUTO,
-    config: AllReduceConfig = AllReduceConfig(0),
-    all_reduce_params: Optional[AllReduceParams] = None
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    mapping = parallel_config.mapping
-    if mapping.tp_size == 1 or (all_reduce_params is not None and
-                                all_reduce_params.enable_allreduce == False):
-        return input
-
-    if all_reduce_params is None:
-        all_reduce_params = AllReduceParams()
-    reduce_fusion_inputs = []
-
-    final_output, _ = torch.ops.trtllm.allreduce(
-        input,
-        workspace,
-        reduce_fusion_inputs,
-        mapping.tp_group,
-        int(strategy),
-        int(config),
-        int(all_reduce_params.fusion_op),
-        float(all_reduce_params.eps),
-        all_reduce_params.has_affine(),
-        all_reduce_params.has_bias(),
-        all_reduce_params.has_scale(),
-    )
-
-    return final_output
-
-
 class AllReduce(nn.Module):
 
     def __init__(self,
-                 parallel_config: ParallelConfig,
-                 strategy: AllReduceStrategy = AllReduceStrategy.AUTO):
+                 mapping: Mapping,
+                 strategy: AllReduceStrategy = AllReduceStrategy.NCCL):
         super().__init__()
+        """
+        AllReduce is a module that performs an all-reduce operation on a tensor.
+        Modified from tensorrt_llm, disable workspace.
+        """
 
-        self.parallel_config = parallel_config
-        self.mapping = self.parallel_config.mapping
-        self.tp_size = self.mapping.tp_size
-        self.tp_rank = self.mapping.tp_rank
-        self.dcp_size = self.mapping.dcp_size
-        self.dcp_rank = self.mapping.dcp_rank
-        self.gpus_per_node = self.mapping.gpus_per_node
-
+        self.mapping = mapping
         self.workspace = None
         self.strategy = strategy
-        if self.tp_size > 1:
-            if self.strategy != AllReduceStrategy.UB:
-                self.workspace = get_allreduce_workspace(self.mapping)
 
     def forward(
         self,
         input: torch.Tensor,
         *,
         all_reduce_params: Optional[AllReduceParams] = None,
-    ) -> torch.Tensor:
-        output = allreduce(input,
-                           self.workspace,
-                           self.parallel_config,
-                           all_reduce_params=all_reduce_params,
-                           strategy=self.strategy)
-        return output
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
+        if self.mapping.tp_size == 1 or (all_reduce_params is not None
+                                         and all_reduce_params.enable_allreduce
+                                         == False):
+            return input
+
+        # Assume using no fusion allreduce here
+        if all_reduce_params is None:
+            all_reduce_params = AllReduceParams()
+
+        output = torch.ops.trtllm.allreduce(
+            input=input,
+            residual=all_reduce_params.residual,
+            norm_weight=all_reduce_params.norm_weight,
+            scale=all_reduce_params.scale,
+            bias=all_reduce_params.bias,
+            workspace=self.workspace,
+            group=self.mapping.tp_group,
+            strategy=self.strategy,
+            op=all_reduce_params.fusion_op,
+            eps=all_reduce_params.eps,
+        )
+
+        return output if len(output) > 1 else output[0]
 
 
 class DPComm:
@@ -159,11 +115,6 @@ class DPComm:
                                     rank=global_mapping.rank)
             atexit.register(self._cleanup)
 
-        # Force NCCL initialization and rank population via PyTorch distributed barrier.
-        # This is necessary for NOW if using dp + tp because our custom nccl allreduce
-        # op for tp groups can interfere with PyTorch's NCCL initialization when PyTorch
-        # distributed performs the first comm. op and kick off nccl init. The barrier here
-        # ensures proper NCCL setup and GPU-procs binding at beginning.
         dist.barrier(device_ids=[torch.cuda.current_device()])
 
     def _cleanup(self):

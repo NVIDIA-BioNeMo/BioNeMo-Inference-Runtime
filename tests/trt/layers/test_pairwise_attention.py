@@ -98,7 +98,7 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
                           shape=mask.shape,
                           dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
 
-        attn_layer = tensorrt_bionemo.layers.SelfAttentionPairBias(
+        attn_layer = tensorrt_bionemo._trt.layers.SelfAttentionPairBias(
             c_s=sc.c_s,
             c_z=sc.c_z,
             num_heads=sc.num_attention_heads,
@@ -106,7 +106,7 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
             local_layer_idx=0)
         load_self_pairwise_attention_weights_trt(attn_layer, weights_and_biases)
 
-        attention_params = tensorrt_bionemo.layers.attention.AttentionParams(
+        attention_params = tensorrt_bionemo._trt.layers.attention.AttentionParams(
             vanilla_attn_precision=sc.vanilla_attn_precision)
         output = attn_layer(trt_s,
                             trt_z,

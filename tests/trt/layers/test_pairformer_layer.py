@@ -23,8 +23,8 @@ from tensorrt_llm import Tensor
 from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import *
 
-from tensorrt_bionemo.layers.attention import AttentionParams
-from tensorrt_bionemo.layers.transformers import PairformerLayer
+from tensorrt_bionemo._trt.layers.attention import AttentionParams
+from tensorrt_bionemo._trt.layers.transformers import PairformerLayer
 
 PairformerLayerTestScenario = namedtuple("PairformerLayerTestScenario", [
     "seq_len", "token_s", "token_z", "num_heads", "pairwise_head_width",
@@ -55,30 +55,30 @@ def test_pairformer_layer(sc: PairformerLayerTestScenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-
+    bs = 1
     mean = 0.0
     std_dev = 1 if sc.dtype == "float32" else 0.05
     torch_dtype = str_dtype_to_torch(sc.dtype)
 
-    s = torch.empty(size=[sc.seq_len, sc.token_s],
+    s = torch.empty(size=[bs, sc.seq_len, sc.token_s],
                     dtype=torch_dtype,
                     device="cuda",
                     requires_grad=False)
     s.normal_(mean=mean, std=std_dev)
 
-    z = torch.empty(size=[sc.seq_len, sc.seq_len, sc.token_z],
+    z = torch.empty(size=[bs, sc.seq_len, sc.seq_len, sc.token_z],
                     dtype=torch_dtype,
                     device="cuda",
                     requires_grad=False)
     z.normal_(mean=mean, std=std_dev)
 
-    mask = torch.empty(size=[sc.seq_len],
+    mask = torch.empty(size=[bs, sc.seq_len],
                        dtype=torch_dtype,
                        device="cuda",
                        requires_grad=False)
     mask.normal_(mean=mean, std=std_dev)
 
-    pairmask = torch.empty(size=[sc.seq_len, sc.seq_len],
+    pairmask = torch.empty(size=[bs, sc.seq_len, sc.seq_len],
                            dtype=torch_dtype,
                            device="cuda",
                            requires_grad=False)

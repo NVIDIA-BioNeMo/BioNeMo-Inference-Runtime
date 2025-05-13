@@ -20,7 +20,7 @@ TRT_BNM_PLUGIN_NAMESPACE = 'tensorrt_bionemo'
 
 
 def plugin_lib_path() -> str:
-    project_dir = Path(__file__).parent.parent.absolute()
+    project_dir = Path(__file__).parent.parent.parent.absolute()
     dyn_lib = "libnvinfer_plugin_tensorrt_bionemo.so"
     return str(project_dir.joinpath("libs", dyn_lib))
 

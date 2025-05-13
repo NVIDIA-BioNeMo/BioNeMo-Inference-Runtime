@@ -23,30 +23,31 @@ from tensorrt_bionemo._torch.attention_backend.interface import (
 from tensorrt_bionemo._torch.attention_backend.vanilla import VanillaAttention
 
 
-@pytest.mark.parametrize("seq_len", [16, 128])
-@pytest.mark.parametrize("chunk_size", [None, 16, 32, 64, 96])
-@pytest.mark.parametrize("has_biases", [False, True])
+@pytest.mark.parametrize("seq_len", [32, 128])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_vanilla_attention_for_triangle(seq_len, chunk_size, has_biases, dtype):
+def test_vanilla_attention_for_triangle(seq_len, dtype):
+    torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     num_heads = 8
     head_dim = 32
     layer_idx = 0
+    bs = 1
 
-    q = torch.randn(seq_len, seq_len, num_heads, head_dim).to(dtype)
-    k = torch.randn(seq_len, seq_len, num_heads, head_dim).to(dtype)
-    v = torch.randn(seq_len, seq_len, num_heads, head_dim).to(dtype)
+    q = torch.randn(bs, seq_len, seq_len, num_heads * head_dim).cuda().to(dtype)
+    k = torch.randn(bs, seq_len, seq_len, num_heads * head_dim).cuda().to(dtype)
+    v = torch.randn(bs, seq_len, seq_len, num_heads * head_dim).cuda().to(dtype)
 
     vanilla_attn = VanillaAttention(layer_idx,
                                     num_heads,
                                     head_dim,
                                     num_kv_heads=num_heads)
-    biases = None
-    if has_biases:
-        biases = [
-            torch.randn(seq_len, 1, 1, seq_len),
-            torch.randn(1, num_heads, seq_len, seq_len)
-        ]
-    metadata = AttentionMetadata(chunk_size=chunk_size, chunk_dim=0)
+
+    biases = [
+        torch.randn(bs, seq_len, 1, 1, seq_len).cuda().to(dtype),
+        torch.randn(bs, num_heads, seq_len, seq_len).cuda().to(dtype)
+    ]
+    metadata = AttentionMetadata()
     vanilla_out = vanilla_attn.forward(
         q,
         k,
@@ -54,7 +55,7 @@ def test_vanilla_attention_for_triangle(seq_len, chunk_size, has_biases, dtype):
         biases=biases,
         biases_type=PredefinedAttentionBiases.TRIANGLE,
         metadata=metadata)
-    assert vanilla_out.shape == (seq_len, seq_len, num_heads, head_dim)
+    assert vanilla_out.shape == (bs, seq_len, seq_len, num_heads, head_dim)
     plain_out = plain_triangle_mha(q, k, v, num_heads, head_dim, biases)
     assert vanilla_out.shape == plain_out.shape
     if dtype == torch.float32:
@@ -64,11 +65,9 @@ def test_vanilla_attention_for_triangle(seq_len, chunk_size, has_biases, dtype):
 
 
 @pytest.mark.parametrize("batch_size", [16, 128])
-@pytest.mark.parametrize("chunk_size", [None, 16, 32, 64, 96])
-@pytest.mark.parametrize("has_biases", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_vanilla_attention_for_pairwise(batch_size, chunk_size, has_biases,
-                                        dtype):
+def test_vanilla_attention_for_pairwise(batch_size, dtype):
+    torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     num_heads = 8
@@ -77,21 +76,20 @@ def test_vanilla_attention_for_pairwise(batch_size, chunk_size, has_biases,
     q_size = 32
     kv_size = 128
 
-    q = torch.randn(batch_size, q_size, num_heads, head_dim).to(dtype)
-    k = torch.randn(batch_size, kv_size, num_heads, head_dim).to(dtype)
-    v = torch.randn(batch_size, kv_size, num_heads, head_dim).to(dtype)
+    q = torch.randn(batch_size, q_size, num_heads * head_dim).to(dtype)
+    k = torch.randn(batch_size, kv_size, num_heads * head_dim).to(dtype)
+    v = torch.randn(batch_size, kv_size, num_heads * head_dim).to(dtype)
 
     vanilla_attn = VanillaAttention(layer_idx,
                                     num_heads,
                                     head_dim,
                                     num_kv_heads=num_heads)
-    biases = None
-    if has_biases:
-        biases = [
-            torch.randn(batch_size, 1, 1, kv_size),
-            torch.randn(batch_size, num_heads, q_size, kv_size)
-        ]
-    metadata = AttentionMetadata(chunk_size=chunk_size, chunk_dim=0)
+
+    biases = [
+        torch.randn(batch_size, 1, 1, kv_size),
+        torch.randn(batch_size, num_heads, q_size, kv_size)
+    ]
+    metadata = AttentionMetadata()
     vanilla_out = vanilla_attn.forward(
         q,
         k,

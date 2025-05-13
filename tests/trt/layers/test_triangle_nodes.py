@@ -26,52 +26,52 @@ from test_utils.ref_layers import (RefTriangleAttentionNode,
                                    RefTriangleMultiplicationNode)
 
 import tensorrt_bionemo
-from tensorrt_bionemo.layers.triangle_nodes import (
+from tensorrt_bionemo._trt.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 
 TriangleAttentionNodeTestScenario = namedtuple(
     "TriangleAttentionNodeTestScenario", [
-        "chunk_size", "seq_len", "c_in", "c_hidden", "num_attention_heads",
-        "vanilla_attn_precision", "dtype", "starting"
+        "chunk_size", "si", "sj", "c_in", "c_hidden", "num_attention_heads",
+        "dtype", "starting"
     ])
 
 TriangleMultiplicationNodeTypeTestScenario = namedtuple(
     "TriangleMultiplicationNodeTypeTestScenario",
-    ["seq_len", "dim", "dtype", "multiplication_type"])
+    ["si", "sj", "dim", "dtype", "multiplication_type"])
 
 
 @pytest.mark.parametrize("sc", [
-    TriangleAttentionNodeTestScenario(seq_len=64,
+    TriangleAttentionNodeTestScenario(si=64,
+                                      sj=64,
                                       c_in=128,
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=0,
-                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=True),
-    TriangleAttentionNodeTestScenario(seq_len=32,
+    TriangleAttentionNodeTestScenario(si=32,
+                                      sj=32,
                                       c_in=128,
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=32,
-                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=True),
-    TriangleAttentionNodeTestScenario(seq_len=32,
+    TriangleAttentionNodeTestScenario(si=32,
+                                      sj=32,
                                       c_in=128,
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=0,
-                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=False),
-    TriangleAttentionNodeTestScenario(seq_len=32,
+    TriangleAttentionNodeTestScenario(si=32,
+                                      sj=32,
                                       c_in=128,
                                       c_hidden=32,
                                       num_attention_heads=4,
                                       chunk_size=32,
-                                      vanilla_attn_precision="float32",
                                       dtype="float32",
                                       starting=False),
 ])
@@ -79,29 +79,29 @@ def test_triangle_attention_node(sc: TriangleAttentionNodeTestScenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    bs = 1
 
     if sc.chunk_size > 0:
         pytest.skip(
             "Chunk size is not error yet. NVBUGS: NVBug 5190992"
         )
-    self.setUp()
     mean = 0.0
     std_dev = 1 if sc.dtype == "float32" else 0.005
     torch_dtype = str_dtype_to_torch(sc.dtype)
-    hidden_states = torch.empty(size=[sc.seq_len, sc.seq_len, sc.c_in],
+    hidden_states = torch.empty(size=[bs, sc.si, sc.sj, sc.c_in],
                                 dtype=torch_dtype,
                                 device="cuda",
                                 requires_grad=False)
     hidden_states.normal_(mean=mean, std=std_dev)
 
-    mask = torch.empty(size=[sc.seq_len, sc.seq_len],
+    mask = torch.empty(size=[bs, sc.si, sc.sj],
                        dtype=torch_dtype,
                        device="cuda",
                        requires_grad=False)
     mask.normal_(mean=mean, std=std_dev)
 
     weights_and_biases = \
-        create_triangle_attention_node_weights_and_biases(sc.c_in, sc.c_hidden, sc.num_attention_heads, torch_dtype)
+        create_triangle_attention_node_weights(sc.c_in, sc.c_hidden, sc.num_attention_heads, torch_dtype)
 
     # construct trt network
     builder = tensorrt_llm.Builder()
@@ -131,8 +131,8 @@ def test_triangle_attention_node(sc: TriangleAttentionNodeTestScenario):
         load_triangle_attention_node_weights_trt(tri_attn_node,
                                                  weights_and_biases)
 
-        attention_params = tensorrt_bionemo.layers.attention.AttentionParams(
-            vanilla_attn_precision=sc.vanilla_attn_precision)
+        attention_params = tensorrt_bionemo._trt.layers.attention.AttentionParams(
+        )
         output = tri_attn_node(trt_hidden_states, trt_mask, attention_params)
         output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
     builder_config = builder.create_builder_config(
@@ -158,7 +158,7 @@ def test_triangle_attention_node(sc: TriangleAttentionNodeTestScenario):
                                         starting=sc.starting)
     ref_node.to("cuda", dtype=torch_dtype)
 
-    load_triangle_attention_node_weights_torch(ref_node, weights_and_biases)
+    load_triangle_attention_node_weights_ref_torch(ref_node, weights_and_biases)
 
     with torch.inference_mode():
         ref_output = ref_node(hidden_states, mask)
@@ -169,12 +169,14 @@ def test_triangle_attention_node(sc: TriangleAttentionNodeTestScenario):
 
 @pytest.mark.parametrize("sc", [
     TriangleMultiplicationNodeTypeTestScenario(
-        seq_len=32,
+        si=32,
+        sj=32,
         dim=128,
         dtype="float32",
         multiplication_type=TriangleMultiplicationNodeType.OUTGOING),
     TriangleMultiplicationNodeTypeTestScenario(
-        seq_len=32,
+        si=32,
+        sj=32,
         dim=128,
         dtype="float32",
         multiplication_type=TriangleMultiplicationNodeType.INCOMING),
@@ -184,15 +186,15 @@ def test_triangle_multiplication_node(
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-
+    bs = 1
     mean = 0.0
     std_dev = 1 if sc.dtype == "float32" else 0.005
     torch_dtype = str_dtype_to_torch(sc.dtype)
-    hidden_states = torch.empty(size=[sc.seq_len, sc.seq_len, sc.dim],
+    hidden_states = torch.empty(size=[bs, sc.si, sc.sj, sc.dim],
                                 dtype=torch_dtype,
                                 device="cuda",
                                 requires_grad=False)
-    mask = torch.empty(size=[sc.seq_len, sc.seq_len],
+    mask = torch.empty(size=[bs, sc.si, sc.sj],
                        dtype=torch_dtype,
                        device="cuda",
                        requires_grad=False)

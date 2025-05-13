@@ -31,8 +31,8 @@ from test_utils.create_and_load_weights import (
     load_pairformer_layer_weights_trt)
 from test_utils.ref_layers import RefPairformerLayer
 
-from tensorrt_bionemo.layers.attention import AttentionParams
-from tensorrt_bionemo.layers.transformers import PairformerLayer
+from tensorrt_bionemo._trt.layers.attention import AttentionParams
+from tensorrt_bionemo._trt.layers.transformers import PairformerLayer
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -48,10 +48,12 @@ class Scenario:
     dtype: str = "float32"
     max_attention_pairwise_tp_size: bool = True
     max_transition_tp_size: bool = True
+    max_tri_mul_tp_size: bool = True
     chunk_size: int = 0
     eps: float = 1e-5
     tp_size: int = 1
     dcp_size: int = 1
+    bs: int = 1
 
 
 class PairformerParallelism:
@@ -61,6 +63,7 @@ class PairformerParallelism:
                  rank: int,
                  dcp_size: int,
                  tp_size: int,
+                 bs: int,
                  seq_len: int,
                  token_s: int,
                  token_z: int,
@@ -69,6 +72,7 @@ class PairformerParallelism:
                  pairwise_num_heads: int,
                  max_attention_pairwise_tp_size: bool = True,
                  max_transition_tp_size: bool = True,
+                 max_tri_mul_tp_size: bool = True,
                  vanilla_attn_precision: str = "float32",
                  dtype: str = "float32",
                  weights_and_biases: dict = None):
@@ -76,6 +80,7 @@ class PairformerParallelism:
         self.rank = rank
         self.dcp_size = dcp_size
         self.tp_size = tp_size
+        self.bs = bs
         self.seq_len = seq_len
         self.token_s = token_s
         self.token_z = token_z
@@ -86,7 +91,7 @@ class PairformerParallelism:
         self.vanilla_attn_precision = vanilla_attn_precision
         self.max_attention_pairwise_tp_size = max_attention_pairwise_tp_size
         self.max_transition_tp_size = max_transition_tp_size
-
+        self.max_tri_mul_tp_size = max_tri_mul_tp_size
         self.mapping = Mapping(world_size=self.world_size,
                                rank=self.rank,
                                dcp_size=self.dcp_size,
@@ -102,10 +107,10 @@ class PairformerParallelism:
     def build(self):
         os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
         os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-        s_shape = [self.seq_len, self.token_s]
-        z_shape = [self.seq_len, self.seq_len, self.token_z]
-        mask_shape = [self.seq_len]
-        pairmask_shape = [self.seq_len, self.seq_len]
+        s_shape = [self.bs, self.seq_len, self.token_s]
+        z_shape = [self.bs, self.seq_len, self.seq_len, self.token_z]
+        mask_shape = [self.bs, self.seq_len]
+        pairmask_shape = [self.bs, self.seq_len, self.seq_len]
 
         builder = Builder()
         model_name = "pairformer"
@@ -152,12 +157,13 @@ class PairformerParallelism:
                 mapping=self.mapping,
                 max_attention_pairwise_tp_size=self.
                 max_attention_pairwise_tp_size,
-                max_transition_tp_size=self.max_transition_tp_size)
+                max_transition_tp_size=self.max_transition_tp_size,
+                max_tri_mul_tp_size=self.max_tri_mul_tp_size)
             load_pairformer_layer_weights_trt(
-                pairformer_layer, self.weights_and_biases, self.mapping.tp_size,
-                self.mapping.tp_rank, self.mapping, self.num_heads,
-                self.token_s, self.token_z, self.max_attention_pairwise_tp_size,
-                self.max_transition_tp_size)
+                pairformer_layer, self.weights_and_biases, self.mapping,
+                self.num_heads, self.token_s, self.token_z,
+                self.max_attention_pairwise_tp_size,
+                self.max_transition_tp_size, self.max_tri_mul_tp_size)
             attention_params = AttentionParams(
                 vanilla_attn_precision=self.vanilla_attn_precision)
             output_s, output_z = pairformer_layer(
@@ -235,6 +241,7 @@ def run_single_rank(scenario: Scenario, inputs: dict, weights_and_biases: dict):
         rank=rank,
         dcp_size=scenario.dcp_size,
         tp_size=scenario.tp_size,
+        bs=scenario.bs,
         seq_len=scenario.seq_len,
         token_s=scenario.token_s,
         token_z=scenario.token_z,
@@ -285,10 +292,11 @@ def _generate_scenarios():
                          ids=_generate_scenarios()[1])
 def test_pairformer_parallelism(scenario: Scenario):
     torch.manual_seed(42)
-    s = torch.randn(scenario.seq_len, scenario.token_s)
-    z = torch.randn(scenario.seq_len, scenario.seq_len, scenario.token_z)
-    mask = torch.randn(scenario.seq_len)
-    pairmask = torch.randn(scenario.seq_len, scenario.seq_len)
+    bs = scenario.bs
+    s = torch.randn(bs, scenario.seq_len, scenario.token_s)
+    z = torch.randn(bs, scenario.seq_len, scenario.seq_len, scenario.token_z)
+    mask = torch.randn(bs, scenario.seq_len)
+    pairmask = torch.randn(bs, scenario.seq_len, scenario.seq_len)
     inputs = {"s": s, "z": z, "mask": mask, "pairmask": pairmask}
     weights_and_biases = create_pairformer_layer_weights(
         scenario.token_s, scenario.token_z, scenario.num_heads,

@@ -16,6 +16,7 @@
 from typing import Optional, Type
 
 from .interface import AttentionBackend
+from .trifast import TrifastAttention
 from .vanilla import VanillaAttention
 
 
@@ -23,6 +24,8 @@ def get_attention_backend(backend_name: str) -> Type[AttentionBackend]:
     """Get the attention backend class based on the backend name."""
     if backend_name == "VANILLA":
         return VanillaAttention
+    elif backend_name == "TRIFAST":
+        return TrifastAttention
     else:
         raise ValueError(f"Invalid backend name: {backend_name}")
 

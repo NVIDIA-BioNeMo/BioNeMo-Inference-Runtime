@@ -13,7 +13,7 @@ Please use the `.devcontainer` for `vscode` or `cursor`. In the devcontainer, ru
 $ git submodule update --init --recursive
 $ cd 3rdparty/TensorRT-LLM
 # Build TensorRT-LLM from source
-$ git checkout 9b931c0f6305aefa3660e6fb84a76a42c0eef167
+$ git checkout d747223
 $ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
 $ pip install -e .
 $ cd ../..

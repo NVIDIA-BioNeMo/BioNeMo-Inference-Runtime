@@ -15,6 +15,7 @@
 import os
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
@@ -28,7 +29,7 @@ from test_utils.ref_layers import (RefTriangleAttentionNode,
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.modules.triangle_nodes import (
+from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
@@ -37,7 +38,7 @@ from tensorrt_bionemo.mapping import Mapping
 @dataclass(kw_only=True, frozen=True)
 class AttnNodeScenario:
     backend: str
-    seq_len: int = 16
+    seq_len: int = 32
     c_in: int = 128
     c_hidden: int = 32
     num_attention_heads: int = 4
@@ -61,12 +62,17 @@ class MulNodeScenario:
     AttnNodeScenario(backend="VANILLA", chunk_size=8),
     AttnNodeScenario(backend="VANILLA", torch_dtype="bfloat16", chunk_size=16),
     AttnNodeScenario(backend="VANILLA", torch_dtype="bfloat16", chunk_size=8),
+    AttnNodeScenario(backend="TRIFAST"),
+    AttnNodeScenario(backend="TRIFAST", torch_dtype="bfloat16"),
+    AttnNodeScenario(backend="TRIFAST", chunk_size=8),
+    AttnNodeScenario(backend="TRIFAST", torch_dtype="bfloat16", chunk_size=8),
 ])
 def test_triangle_attention_node(s: AttnNodeScenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(s.backend).Metadata
+    bs = 1
 
     dtype = str_dtype_to_torch(s.torch_dtype)
     device = torch.device('cuda')
@@ -90,11 +96,12 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     )
     node.to(device)
     load_triangle_attention_node_weights_torch(node, weights_and_biases, dtype)
-    attn_metadata = metadata_cls(chunk_size=None,
-                                 chunk_dim=None,
-                                 mapping=Mapping())
-    x = torch.randn(s.seq_len, s.seq_len, s.c_in).cuda()
-    mask = torch.randn(s.seq_len, s.seq_len).cuda()
+    attn_metadata = metadata_cls(mapping=Mapping())
+    if s.backend == "TRIFAST":
+        attn_metadata.closest_n = 2**int(np.ceil(np.log2(s.seq_len)))
+    x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in).cuda()
+    # Need mask is bool for trifast
+    mask = torch.randint(0, 2, (bs, s.seq_len, s.seq_len)).cuda()
 
     with torch.inference_mode():
         ref_output_float = ref_node(x, mask)
@@ -115,9 +122,9 @@ def test_triangle_attention_node(s: AttnNodeScenario):
         diff1_mean = torch.mean(torch.abs(ref_output.float() -
                                           ref_output_float))
 
-        assert abs(diff0_max - diff1_max) <= 0.3
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
+                                                      diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.05
-    # This go NaN for float16
 
 
 @pytest.mark.parametrize("s", [
@@ -138,6 +145,7 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
         outgoing=s.mul_type == TriangleMultiplicationNodeType.OUTGOING)
     ref_node.to(device)
     ref_node.eval()
+    bs = 1
 
     weights_and_biases = create_triangle_multiplication_node_weights(
         from_ref=ref_node)
@@ -151,16 +159,16 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
     load_triangle_multiplication_node_weights_torch(node, weights_and_biases,
                                                     dtype)
 
-    x = torch.randn(1, s.seq_len, s.seq_len, ref_node.dim).cuda()
-    mask = torch.randn(1, s.seq_len, s.seq_len).cuda()
+    x = torch.randn(bs, s.seq_len, s.seq_len, ref_node.dim).cuda()
+    mask = torch.randn(bs, s.seq_len, s.seq_len).cuda()
 
     with torch.inference_mode():
-        ref_output_float = ref_node(x, mask)[0]
+        ref_output_float = ref_node(x, mask)
         x = x.to(dtype)
         mask = mask.to(dtype)
         ref_node = ref_node.to(dtype)
         ref_node.skip_cast()
-        ref_output = ref_node(x, mask)[0]
+        ref_output = ref_node(x, mask)
         output = node(x, mask)
 
     assert output.shape == ref_output.shape
@@ -173,5 +181,6 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
         diff1_mean = torch.mean(torch.abs(ref_output.float() -
                                           ref_output_float))
 
-        assert abs(diff0_max - diff1_max) <= 0.3
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
+                                                      diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.05

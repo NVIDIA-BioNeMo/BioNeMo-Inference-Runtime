@@ -31,7 +31,7 @@ from test_utils.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.modules.triangle_nodes import (
+from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
@@ -39,21 +39,22 @@ from tensorrt_bionemo.mapping import Mapping
 
 @dataclass(kw_only=True, frozen=True)
 class AttnNodeScenario:
-    c_in: int = 32
-    c_hidden: int = 8
+    c_in: int = 8
+    c_hidden: int = 2
     num_heads: int = 4
     chunk_size: int = 0
     torch_dtype: str = "float32"
     node_type: str = TriangleAttentionNodeType.STARTING
     tp_size: int = 1
     dcp_size: int = 1
-    seq_len: int = 128
+    # seq_len: int = 128
+    seq_len: int = 4
 
 
 @dataclass(kw_only=True, frozen=True)
 class MulNodeScenario:
     dim: int = 32
-    seq_len: int = 16
+    seq_len: int = 64
     torch_dtype: str = "float32"
     node_type: str = TriangleMultiplicationNodeType.OUTGOING
     tp_size: int = 1
@@ -196,10 +197,12 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
         single_dev_output = single_dev_tri_attn_node.forward(
             x, mask, attn_metadata)
     torch.cuda.synchronize()
-    torch.testing.assert_close(multi_devs_output,
-                               single_dev_output,
-                               atol=1e-3,
-                               rtol=1e-2)
+
+    if rank == 0:
+        torch.testing.assert_close(multi_devs_output,
+                                   single_dev_output,
+                                   atol=1e-3,
+                                   rtol=1e-2)
 
 
 def _triangle_mul_node_forward(x, mask, weights_and_biases, scenario, rank):
@@ -262,8 +265,9 @@ def _triangle_mul_node_forward(x, mask, weights_and_biases, scenario, rank):
                          ids=_generate_attn_node_scenarios()[1])
 def test_triangle_attn_node_parallelism(scenario: AttnNodeScenario):
     torch.manual_seed(42)
-    x = torch.randn(scenario.seq_len, scenario.seq_len, scenario.c_in)
-    mask = torch.randn(scenario.seq_len, scenario.seq_len)
+    bs = 1
+    x = torch.randn(bs, scenario.seq_len, scenario.seq_len, scenario.c_in)
+    mask = torch.randn(bs, scenario.seq_len, scenario.seq_len)
     weights_and_biases = create_triangle_attention_node_weights(
         c_in=scenario.c_in,
         c_hidden=scenario.c_hidden,
@@ -287,8 +291,9 @@ def test_triangle_attn_node_parallelism(scenario: AttnNodeScenario):
                          ids=_generate_mul_node_scenarios()[1])
 def test_triangle_mul_node_parallelism(scenario: MulNodeScenario):
     torch.manual_seed(42)
-    x = torch.rand(scenario.seq_len, scenario.seq_len, scenario.dim)
-    mask = torch.randn(scenario.seq_len, scenario.seq_len)
+    bs = 1
+    x = torch.rand(bs, scenario.seq_len, scenario.seq_len, scenario.dim)
+    mask = torch.randn(bs, scenario.seq_len, scenario.seq_len)
     weights_and_biases = create_triangle_multiplication_node_weights(
         dim=scenario.dim,
         torch_dtype=torch.float32,

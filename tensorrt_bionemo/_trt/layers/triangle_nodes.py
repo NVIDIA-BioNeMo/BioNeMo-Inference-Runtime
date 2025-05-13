@@ -20,12 +20,12 @@ import tensorrt as trt
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
                                      allgather, cast, concat, einsum,
                                      expand_dims, floordiv, permute, shape,
-                                     slice, split, squeeze)
+                                     slice, split)
 from tensorrt_llm.layers.linear import ColumnLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
 
-from tensorrt_bionemo.functional import chunk_loop, send_recv
+from tensorrt_bionemo._trt.functional import chunk_loop, send_recv
 from tensorrt_bionemo.mapping import Mapping
 
 from .attention import AttentionParams, TriangleAttention
@@ -106,38 +106,39 @@ class TriangleAttentionNode(Module):
                 mask: Tensor,
                 attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None):
-        if x.ndim() > 3:
-            x = squeeze(x, 0)
-        if mask.ndim() > 2:
-            mask = squeeze(mask, 0)
-        assert x.ndim() == 3
-        assert mask.ndim() == 2
-
+        """
+        Args:
+            x: [B, I, J, F]
+            mask: [B, I, J]
+        """
         if self.node_type == TriangleAttentionNodeType.ENDING:
-            x = x.transpose(0, 1)
-            mask = mask.transpose(0, 1)
+            x = x.transpose(1, 2)
+            mask = mask.transpose(1, 2)
         x = self.layer_norm(x)
 
         # Compute mask bias
         mask_bias = (self.inf * (mask - 1.))
-        mask_bias = expand_dims(mask_bias, [1, 2])
+        mask_bias = expand_dims(mask_bias, [2, 3])
 
         # Compute triangle bias
-        lx = self.linear(x)
+        lx = self.linear(x)  # [B, I, J, H]
 
-        triangle_bias = permute(lx, [2, 0, 1])
-        triangle_bias = expand_dims(triangle_bias, 0)  # [1, H, I, J]
+        triangle_bias = permute(lx, [0, 3, 1, 2])  # [B, H, I, J]
         # First if dcp_size > 1, we need to split the input by dcp_size
-        seq_len = shape(x, 0)
+        bs = shape(x, 0)
+        si = shape(x, 1)
+        sj = shape(x, 2)
         if self.dcp_size > 1:
-            seq_len = floordiv(seq_len, self.dcp_size)
-            s_idx = seq_len * self.dcp_rank
-            slice_size = seq_len
-            starts = concat([s_idx, 0, 0])
-            sizes = concat([slice_size, shape(x, 1), shape(x, 2)])
+            slice_size = floordiv(si, self.dcp_size)
+            s_idx = slice_size * self.dcp_rank
+            # Slice the input
+            starts = concat([0, s_idx, 0, 0])
+            sizes = concat([bs, slice_size, si, self.c_in])
             x = slice(x, starts, sizes)
-            starts = concat([s_idx, 0, 0, 0])
-            sizes = concat([slice_size, 1, 1, shape(mask_bias, 3)])
+
+            # Slice the mask bias
+            starts = concat([0, s_idx, 0, 0, 0])
+            sizes = concat([bs, slice_size, 1, 1, sj])
             mask_bias = slice(mask_bias, starts, sizes)
 
         def _loop_body(sub_chunk):
@@ -154,10 +155,10 @@ class TriangleAttentionNode(Module):
                             _loop_body,
                             reshape_output=False)
         if self.dcp_size > 1:
-            output = allgather(output, self.dcp_group, gather_dim=0)
+            output = allgather(output, self.dcp_group, gather_dim=1)
 
         if self.node_type == TriangleAttentionNodeType.ENDING:
-            output = output = output.transpose(1, 0)
+            output = output.transpose(2, 1)
 
         return output
 
@@ -224,48 +225,56 @@ class TriangleMultiplicationNode(Module):
         self.mapping = mapping
 
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+        """
+        Args:
+            x: [B, I, J, D]
+            mask: [B, I, J]
+        Note: The ring-communication on the dcp group (dcp_size > 1) is experimental and may not work,
+            or make engines go large and slow than normal
+        """
+        bs = shape(x, 0)
+        si = shape(x, 1)
+        sj = shape(x, 2)
+        d = shape(x, 3)
         x = self.norm_in(x)
-        seq_len = shape(x, 0)
         if self.dcp_size > 1:
-            seq_len = floordiv(seq_len, self.dcp_size)
-            s_idx = seq_len * self.dcp_rank
-            slice_size = seq_len
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                slice_size = floordiv(si, self.dcp_size)
+                s_idx = slice_size * self.dcp_rank
                 # slice x
-                starts = concat([s_idx, 0, 0])
-                sizes = concat([slice_size, shape(x, 1), shape(x, 2)])
+                starts = concat([0, s_idx, 0, 0])
+                sizes = concat([bs, slice_size, sj, d])
                 x = slice(x, starts, sizes)
                 # slice mask
-                starts = concat([s_idx, 0])
-                sizes = concat([slice_size, shape(mask, 1)])
+                starts = concat([0, s_idx, 0])
+                sizes = concat([bs, slice_size, sj])
                 mask = slice(mask, starts, sizes)
             elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
+                slice_size = floordiv(sj, self.dcp_size)
+                s_idx = slice_size * self.dcp_rank
                 # slice x
-                starts = concat([0, s_idx, 0])
-                sizes = concat([shape(x, 0), slice_size, shape(x, 2)])
+                starts = concat([0, 0, s_idx, 0])
+                sizes = concat([bs, si, slice_size, d])
                 x = slice(x, starts, sizes)
                 # slice mask
-                starts = concat([0, s_idx])
-                sizes = concat([shape(mask, 0), slice_size])
+                starts = concat([0, 0, s_idx])
+                sizes = concat([bs, si, slice_size])
                 mask = slice(mask, starts, sizes)
 
         x_in = x
         # TODO: SWiGLU, fuse p_in and g_in here
         x = self.p_in(x) * activation(self.g_in(x), trt.ActivationType.SIGMOID)
         x = x * mask.unsqueeze(-1)
-
         x = cast(x, "float32")
         a, b = split(x, [self.dim, self.dim], dim=-1)
 
         def _enisum_compute(a_, b_):
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                return einsum("ikd,jkd->ijd", [a_, b_])
+                return einsum("bikd,bjkd->bijd", [a_, b_])
             else:
-                return einsum("kid,kjd->ijd", [a_, b_])
+                return einsum("bkid,bkjd->bijd", [a_, b_])
 
         if self.dcp_size > 1:
-            # Ring communication on the dcp group
-            # Experimental: This make TRT engines go large and slow than normal, dont try it
             enisum_results = [
                 None,
             ] * self.dcp_size
@@ -280,7 +289,7 @@ class TriangleMultiplicationNode(Module):
                                        group_stride=self.tp_size)
                     enisum_results[(self.dcp_rank - i) %
                                    self.dcp_size] = _enisum_compute(a, b_recv)
-                x = concat(enisum_results, dim=1)
+                x = concat(enisum_results, dim=2)
             else:
                 a_recv = a
                 for i in range(1, self.dcp_size):
@@ -291,7 +300,7 @@ class TriangleMultiplicationNode(Module):
                                        group_stride=self.tp_size)
                     enisum_results[(self.dcp_rank - i) %
                                    self.dcp_size] = _enisum_compute(a_recv, b)
-                x = concat(enisum_results, dim=0)
+                x = concat(enisum_results, dim=1)
         else:
             x = _enisum_compute(a, b)
 
@@ -307,8 +316,8 @@ class TriangleMultiplicationNode(Module):
         # Gather on the dcp group
         if self.dcp_size > 1:
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                gather_dim = 0
-            else:
                 gather_dim = 1
+            else:
+                gather_dim = 2
             x = allgather(x, self.dcp_group, gather_dim=gather_dim)
         return x

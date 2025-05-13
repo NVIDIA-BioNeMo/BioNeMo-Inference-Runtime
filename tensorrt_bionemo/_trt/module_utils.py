@@ -26,25 +26,20 @@ from tensorrt_llm.network import Network
 from tensorrt_llm.plugin import (current_all_reduce_helper,
                                  init_all_reduce_helper)
 
+from tensorrt_bionemo._trt.layers.attention import AttentionParams
 from tensorrt_bionemo.confs.model_config import PretrainedModuleConfig
-from tensorrt_bionemo.layers.attention import AttentionParams
 
 
 class PretrainedModule(Module):
+    """
+    This class aims to construct a TensorRT module's graph from pretrained checkpoint.
+    It is used only in the building engines progress
+    """
 
     def __init__(self, config: PretrainedModuleConfig):
         super().__init__()
-        init_all_reduce_helper()
         self.config = config
-
-    def check_config(self, config):
-        raise NotImplementedError(
-            f"{self.__class__} is an abstract class. Only classes inheriting this class can be called."
-        )
-
-    @classmethod
-    def from_config(cls, config: PretrainedModuleConfig) -> 'PretrainedModule':
-        return cls(config)
+        init_all_reduce_helper()
 
     @classmethod
     def from_checkpoint(
@@ -68,11 +63,11 @@ class PretrainedModule(Module):
         weights = safetensors.torch.load_file(weights_path)
         if preprocess_weights_hook is not None:
             weights = preprocess_weights_hook(weights)
-        model = cls(config)
-        model.load(weights, from_pruned=False)
-        return model
+        module = cls(config)
+        module.load(weights, from_pruned=False)
+        return module
 
-    def load(self, weights, from_pruned=False):
+    def load(self, weights: dict, from_pruned=False):
         required_names = set()
         for name, param in self.named_parameters():
             if param.is_inited():
@@ -102,7 +97,8 @@ class PretrainedModule(Module):
                     param.set_value_or_dummy(weights[name])
 
     def save_checkpoint(self, output_dir, save_config=True):
-        # multiple ranks could share same config.json, so adding a save_config parameter to let user avoiding writing config.json in all ranks
+        # multiple ranks could share same config.json,
+        # so adding a save_config parameter to let user avoiding writing config.json in all ranks
         rank = self.config.mapping.rank
         weights = {
             name: numpy_to_torch(param.raw_value)
@@ -180,6 +176,6 @@ class PretrainedModule(Module):
                                          dim_range=dim_ranges)
 
         if has_attention:
-            basic_inputs["attention_params"] = AttentionParams(
-                vanilla_attn_precision=self.config.vanilla_attn_precision)
+            # TODO: Modify attention params for each module
+            basic_inputs["attention_params"] = AttentionParams()
         return basic_inputs

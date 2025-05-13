@@ -18,6 +18,7 @@ import traceback
 from dataclasses import dataclass
 from itertools import product
 
+import numpy as np
 import pytest
 import tensorrt_llm
 import torch
@@ -28,14 +29,14 @@ from test_utils.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.modules.transformers import PairformerLayer
+from tensorrt_bionemo._torch.layers.transformers import PairformerLayer
 from tensorrt_bionemo.mapping import Mapping
 
 
 @dataclass(kw_only=True, frozen=True)
 class PairformerScenario:
-    token_s: int = 32
-    token_z: int = 16
+    token_s: int = 384
+    token_z: int = 128
     num_heads: int = 16
     pairwise_head_width: int = 32
     pairwise_num_heads: int = 4
@@ -47,6 +48,7 @@ class PairformerScenario:
     seq_len: int = 64
     max_transition_tp_size: bool = True
     max_attention_pairwise_tp_size: bool = True
+    tri_attention_backend: str = "VANILLA"
 
 
 def _generate_scenarios() -> list[PairformerScenario]:
@@ -54,12 +56,17 @@ def _generate_scenarios() -> list[PairformerScenario]:
     ids = []
     total_devs = torch.cuda.device_count()
 
-    for seq_len in [16, 64]:
+    for seq_len, tri_attn_backend, dtype in product([64, 128],
+                                                    ["VANILLA", "TRIFAST"],
+                                                    ["float32", "bfloat16"]):
         for tp_size, dcp_size in product([1, 2, 4, 8], repeat=2):
             if tp_size * dcp_size > total_devs:
                 continue
-            if tp_size >= 4:  # pairwise_num_heads
+            if tp_size > 4:  # pairwise_num_heads
                 continue
+            if tri_attn_backend == "TRIFAST":
+                if seq_len // dcp_size <= 16:
+                    continue
             for max_transition_tp_size, max_attention_pairwise_tp_size in product(
                 [True, False], repeat=2):
                 ret.append(
@@ -69,9 +76,11 @@ def _generate_scenarios() -> list[PairformerScenario]:
                         seq_len=seq_len,
                         max_transition_tp_size=max_transition_tp_size,
                         max_attention_pairwise_tp_size=
-                        max_attention_pairwise_tp_size))
+                        max_attention_pairwise_tp_size,
+                        tri_attention_backend=tri_attn_backend,
+                        dtype=dtype))
                 ids.append(
-                    f"{tp_size}-{dcp_size}-{seq_len}-{max_transition_tp_size}-{max_attention_pairwise_tp_size}"
+                    f"{tp_size}-{dcp_size}-{seq_len}-{max_transition_tp_size}-{max_attention_pairwise_tp_size}-{tri_attn_backend}-{dtype}"
                 )
 
     return ret, ids
@@ -88,21 +97,29 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
     num_heads = scenario.num_heads
     pairwise_head_width = scenario.pairwise_head_width
     pairwise_num_heads = scenario.pairwise_num_heads
-    scenario.no_update_s
-    scenario.no_update_z
 
-    s = s.cuda()
-    z = z.cuda()
-    mask = mask.cuda()
-    pair_mask = pair_mask.cuda()
+    dtype = str_dtype_to_torch(scenario.dtype)
+
+    s = s.cuda().to(dtype)
+    z = z.cuda().to(dtype)
+    mask = mask.cuda().to(dtype)
+    pair_mask = pair_mask.cuda().to(dtype)
 
     mapping = Mapping(world_size=tp_size * dcp_size,
                       tp_size=tp_size,
                       dcp_size=dcp_size,
                       rank=rank)
-    dtype = str_dtype_to_torch(scenario.dtype)
-    metadata_cls = get_attention_backend("VANILLA").Metadata
-    attn_metadata = metadata_cls(mapping=mapping)
+
+    triangle_metadata_cls = get_attention_backend(
+        scenario.tri_attention_backend).Metadata
+    pairwise_metadata_cls = get_attention_backend("VANILLA").Metadata
+    attn_metadatas = {
+        "triangle_attn": triangle_metadata_cls(mapping=mapping),
+        "pairwise_attn": pairwise_metadata_cls(mapping=mapping),
+    }
+    if scenario.tri_attention_backend == "TRIFAST":
+        attn_metadatas["triangle_attn"].closest_n = 2**int(
+            np.ceil(np.log2(scenario.seq_len)))
 
     pairformer_layer = PairformerLayer(
         layer_idx=0,
@@ -112,7 +129,8 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         pairwise_head_width=pairwise_head_width,
         pairwise_num_heads=pairwise_num_heads,
         dtype=dtype,
-        attn_backend="VANILLA",
+        triangle_attn_backend=scenario.tri_attention_backend,
+        pairwise_attn_backend="VANILLA",
         skip_create_weights=False,
         max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size,
         max_transition_tp_size=scenario.max_transition_tp_size,
@@ -125,10 +143,13 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
                                         dtype=dtype)
 
     with torch.inference_mode():
-        output = pairformer_layer(s, z, mask, pair_mask, attn_metadata)
+        output = pairformer_layer(s, z, mask, pair_mask, attn_metadatas)
 
     mapping = Mapping()
-    attn_metadata = metadata_cls(mapping=mapping)
+    attn_metadatas = {
+        "triangle_attn": triangle_metadata_cls(mapping=mapping),
+        "pairwise_attn": pairwise_metadata_cls(mapping=mapping),
+    }
 
     single_dev_pairformer_layer = PairformerLayer(
         layer_idx=0,
@@ -138,7 +159,8 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         pairwise_head_width=pairwise_head_width,
         pairwise_num_heads=pairwise_num_heads,
         dtype=dtype,
-        attn_backend="VANILLA",
+        triangle_attn_backend=scenario.tri_attention_backend,
+        pairwise_attn_backend="VANILLA",
         skip_create_weights=False,
         max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size,
         max_transition_tp_size=scenario.max_transition_tp_size,
@@ -151,9 +173,18 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
 
     with torch.inference_mode():
         single_dev_output = single_dev_pairformer_layer(s, z, mask, pair_mask,
-                                                        attn_metadata)
+                                                        attn_metadatas)
 
-    torch.testing.assert_close(output, single_dev_output, atol=1e-3, rtol=1e-2)
+    if scenario.dtype == "float32":
+        torch.testing.assert_close(output,
+                                   single_dev_output,
+                                   atol=1e-3,
+                                   rtol=1e-4)
+    else:
+        torch.testing.assert_close(output,
+                                   single_dev_output,
+                                   atol=6e-2,
+                                   rtol=8e-3)
 
 
 def run_pairformer_single_rank(single_rank_forward_func, s, z, mask, pair_mask,
@@ -176,10 +207,18 @@ def run_pairformer_single_rank(single_rank_forward_func, s, z, mask, pair_mask,
                          ids=_generate_scenarios()[1])
 def test_pairformer_parallelism(scenario: PairformerScenario):
     torch.manual_seed(42)
-    s = torch.randn(scenario.seq_len, scenario.token_s)
-    z = torch.randn(scenario.seq_len, scenario.seq_len, scenario.token_z)
-    mask = torch.randn(scenario.seq_len)
-    pair_mask = torch.randn(scenario.seq_len, scenario.seq_len)
+    bs = 1
+    s = torch.randn(bs, scenario.seq_len, scenario.token_s, dtype=torch.float32)
+    z = torch.randn(bs,
+                    scenario.seq_len,
+                    scenario.seq_len,
+                    scenario.token_z,
+                    dtype=torch.float32)
+    mask = torch.randint(0, 2, (bs, scenario.seq_len), dtype=torch.float32)
+    pair_mask = torch.randint(0,
+                              2, (bs, scenario.seq_len, scenario.seq_len),
+                              dtype=torch.float32)
+
     weights_and_biases = create_pairformer_layer_weights(
         token_s=scenario.token_s,
         token_z=scenario.token_z,

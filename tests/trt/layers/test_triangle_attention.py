@@ -26,30 +26,29 @@ from test_utils.ref_attn import RefTriangleAttention
 
 import tensorrt_bionemo
 
-TriAttnTestScenario = namedtuple("TriAttnTestScenario", [
-    "batch_size", "seq_len", "hidden_size", "num_attention_heads",
-    "vanilla_attn_precision", "dtype"
-])
+TriAttnTestScenario = namedtuple(
+    "TriAttnTestScenario",
+    ["bs", "si", "sj", "hidden_size", "num_attention_heads", "dtype"])
 
 
 @pytest.mark.parametrize("sc", [
-    TriAttnTestScenario(batch_size=1,
-                        seq_len=5,
+    TriAttnTestScenario(bs=1,
+                        si=5,
+                        sj=5,
                         hidden_size=32,
                         num_attention_heads=16,
-                        vanilla_attn_precision="float32",
                         dtype="float32"),
-    TriAttnTestScenario(batch_size=2,
-                        seq_len=12,
+    TriAttnTestScenario(bs=2,
+                        si=6,
+                        sj=12,
                         hidden_size=48,
                         num_attention_heads=8,
-                        vanilla_attn_precision="float32",
                         dtype="float32"),
-    TriAttnTestScenario(batch_size=12,
-                        seq_len=200,
+    TriAttnTestScenario(bs=3,
+                        si=100,
+                        sj=200,
                         hidden_size=64,
                         num_attention_heads=8,
-                        vanilla_attn_precision="float32",
                         dtype="float32"),
 ])
 def test_triangle_attention(sc: TriAttnTestScenario):
@@ -62,19 +61,19 @@ def test_triangle_attention(sc: TriAttnTestScenario):
     mean = 0.0
     std_dev = 1 if sc.dtype == "float32" else 0.05
     torch_dtype = str_dtype_to_torch(sc.dtype)
-    hidden_states = torch.empty(size=[sc.batch_size, sc.seq_len, c_q],
+    hidden_states = torch.empty(size=[sc.bs, sc.si, sc.sj, c_q],
                                 dtype=torch_dtype,
                                 device="cuda",
                                 requires_grad=False)
     hidden_states.normal_(mean=mean, std=std_dev)
 
-    mask_bias = torch.empty(size=[sc.batch_size, 1, 1, sc.seq_len],
+    mask_bias = torch.empty(size=[sc.bs, sc.si, 1, 1, sc.sj],
                             dtype=torch_dtype,
                             device="cuda",
                             requires_grad=False)
     mask_bias.normal_(mean=mean, std=std_dev)
     triangle_bias = torch.empty(
-        size=[1, sc.num_attention_heads, sc.seq_len, sc.seq_len],
+        size=[sc.bs, sc.num_attention_heads, sc.sj, sc.sj],
         dtype=torch_dtype,
         device="cuda",
         requires_grad=False)
@@ -99,7 +98,7 @@ def test_triangle_attention(sc: TriAttnTestScenario):
                                    shape=triangle_bias.shape,
                                    dtype=tensorrt_llm.str_dtype_to_trt(
                                        sc.dtype))
-        attn_layer = tensorrt_bionemo.layers.TriangleAttention(
+        attn_layer = tensorrt_bionemo._trt.layers.TriangleAttention(
             hidden_size=c_q,
             num_attention_heads=sc.num_attention_heads,
             num_kv_heads=sc.num_attention_heads,
@@ -108,8 +107,8 @@ def test_triangle_attention(sc: TriAttnTestScenario):
         load_triangle_attention_weights_trt(attn_layer, weights_and_biases)
 
         input_tensor = trt_hidden_states
-        attention_params = tensorrt_bionemo.layers.attention.AttentionParams(
-            vanilla_attn_precision=sc.vanilla_attn_precision)
+        attention_params = tensorrt_bionemo._trt.layers.attention.AttentionParams(
+        )
         output = attn_layer(input_tensor,
                             biases=[trt_mask_bias, trt_triangle_bias],
                             attention_params=attention_params)

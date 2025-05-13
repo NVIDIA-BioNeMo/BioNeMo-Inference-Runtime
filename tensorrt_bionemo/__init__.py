@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .plugin import _load_plugin_lib
+from ._trt.plugin import _load_plugin_lib
 from .version import __version__
 
 _inited = False
@@ -30,6 +30,6 @@ def _init() -> None:
 
 _init()
 
-import tensorrt_bionemo.layers as layers
+import tensorrt_bionemo._trt.layers as layers
 
 __all__ = ["layers", "__version__"]

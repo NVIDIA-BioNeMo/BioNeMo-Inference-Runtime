@@ -15,30 +15,28 @@
 import argparse
 import glob
 import json
-import os
+import multiprocessing as mp
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import boltz.data.const as const
 import pandas as pd
-import tensorrt as trt
 import torch
 import torch.nn as nn
 from boltz.data.feature.pad import pad_dim
 from boltz.model.model import Boltz1
 # isort: on
-from cuda import cudart
 from pytorch_lightning import seed_everything
 from score import kabsch_torch, lddt
-from tensorrt_llm._utils import trt_dtype_to_torch
 from tensorrt_llm.logger import logger
-from tensorrt_llm.plugin.plugin import CustomAllReduceHelper
-from tensorrt_llm.runtime import Session, TensorInfo
-from tensorrt_llm.runtime.session import _scoped_stream
 
+from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
 from tensorrt_bionemo.hf.checkpoints import load_hf_weights
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.models.boltz1.convert import (convert_hf_pairformer,
+                                                    torch_pairformer_load_fn)
+from tensorrt_bionemo.modules.pairformer import PairformerBackendBuilder
 
 SEED = 42
 """
@@ -47,169 +45,6 @@ NOTE:
     It is used to verify the correctness of the TensorRT-BNM implementation. The inputs to model is dumped by `botlz predict`.
     For usage TRT-engines in production, please use _torch.backend for models.
 """
-
-
-def CUASSERT(cuda_ret):
-    err = cuda_ret[0]
-    if err != cudart.cudaError_t.cudaSuccess:
-        raise RuntimeError(
-            f"CUDA ERROR: {err}, error code reference: https://nvidia.github.io/cuda-python/module/cudart.html#cuda.cudart.cudaError_t"
-        )
-    if len(cuda_ret) > 1:
-        return cuda_ret[1:]
-    return None
-
-
-class PairformerTRT(nn.Module):
-    """ TODO: Move this class to tensorrt_bionemo/runtime/modules and support CUDA graph"""
-
-    def __init__(self,
-                 engines_dir: Path,
-                 world_size: int,
-                 rank: int,
-                 context_without_device_memory: bool = True,
-                 address=None,
-                 stream=None):
-        super().__init__()
-        self.engines_dir = engines_dir
-        self.world_size = world_size
-        self.runtime_rank = rank
-        config_path = engines_dir / "config.json"
-        with config_path.open("r") as f:
-            self.config = json.load(f)
-        # Sanity checks
-        if 'pretrained_config' in self.config:  # new build api branch
-            config_dtype = self.config['pretrained_config']['dtype']
-            logger.info(f"Engine dtype: {config_dtype}")
-            self.disable_custom_all_reduce = self.config['pretrained_config'][
-                'disable_custom_all_reduce']
-            self.tp_size = self.config['pretrained_config']['mapping'][
-                'tp_size']
-            self.dcp_size = self.config['pretrained_config']['mapping'][
-                'dcp_size']
-            assert world_size == self.world_size, \
-                (f'Engine world size ({world_size}) != Runtime world size ({self.world_size})')
-        self.engine_name = f"rank{self.runtime_rank}.engine"
-        self.runtime_mapping = Mapping(world_size=self.world_size,
-                                       rank=self.runtime_rank,
-                                       tp_size=self.tp_size,
-                                       dcp_size=self.dcp_size)
-        if self.world_size > 1 and not self.disable_custom_all_reduce:
-            # init_all_reduce_helper()
-            _, self.workspace = CustomAllReduceHelper.allocate_workspace(
-                self.runtime_mapping,
-                CustomAllReduceHelper.max_workspace_size_auto(
-                    self.runtime_mapping.tp_size))
-        self.serialize_path = os.path.join(self.engines_dir, self.engine_name)
-        with open(self.serialize_path, 'rb') as f:
-            engine_buffer = f.read()
-            assert engine_buffer is not None
-        logger.info(f"Deserialize engine from {self.serialize_path}")
-        # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-        self.runtime = trt.Runtime(logger.trt_logger)
-        self.engine = self.runtime.deserialize_cuda_engine(engine_buffer)
-        self.device_memory_size = self.engine.device_memory_size_v2
-        self.address = None
-        if not context_without_device_memory:
-            self.context = self.engine.create_execution_context()
-            with _scoped_stream() as stream:
-                self.context.set_optimization_profile_async(0, stream)
-        else:
-            self.context = self.engine.create_execution_context_without_device_memory(
-            )
-            if address is None:
-                address = CUASSERT(cudart.cudaMalloc(
-                    self.device_memory_size))[0]
-            self.context.set_device_memory(address, self.device_memory_size)
-            self.address = address
-            with _scoped_stream() as stream:
-                self.context.set_optimization_profile_async(0, stream)
-        # Initialize session
-        self.session = Session()
-        self.session._runtime = self.runtime
-        self.session._context = self.context
-        self.session.engine = self.engine
-
-        self.session._print_engine_info()
-        self.engine = self.session.engine
-        logger.info(
-            f"The memory required by the largest profile: {self.engine.device_memory_size_v2}"
-        )
-        self.context = self.session.context
-
-        self.op_profile_map = {}
-        num_optimization_profiles = self.engine.num_optimization_profiles
-        for i in range(num_optimization_profiles):
-            mask_dims = self.engine.get_tensor_profile_shape("mask", i)
-            min_opt = mask_dims[0]
-            max_opt = mask_dims[-1]
-            min_s = min_opt[0]
-            max_s = max_opt[0]
-            self.op_profile_map[(min_s, max_s)] = i
-        self.curr_profile = 0
-        self.stream = stream
-        if self.stream is None:
-            self.stream = torch.cuda.current_stream().cuda_stream
-
-    def switch_opt_profile(self, input_length: int):
-        found_profile = -1
-        for k, v in self.op_profile_map.items():
-            if k[0] <= input_length <= k[1]:
-                found_profile = v
-        if found_profile == -1:
-            raise ValueError(
-                f"No suitable optimization profile found for the current rank. "
-                f"Please check the engine configuration.")
-        if found_profile != self.curr_profile:
-            self.curr_profile = found_profile
-            with _scoped_stream() as stream:
-                self.context.set_optimization_profile_async(
-                    self.curr_profile, stream)
-
-    def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        # Ensure the inputs are contiguous
-        if not s.is_contiguous():
-            s = s.contiguous()
-        if not z.is_contiguous():
-            z = z.contiguous()
-        if not mask.is_contiguous():
-            mask = mask.contiguous()
-        if not pair_mask.is_contiguous():
-            pair_mask = pair_mask.contiguous()
-        if s.ndim == 3:
-            s = s.squeeze(0)
-            z = z.squeeze(0)
-            mask = mask.squeeze(0)
-            pair_mask = pair_mask.squeeze(0)
-
-        inputs = {"s": s, "z": z, "mask": mask, "pair_mask": pair_mask}
-        self.switch_opt_profile(s.shape[0])
-        output_info = self.session.infer_shapes([
-            TensorInfo("s", dtype=trt.DataType.FLOAT, shape=s.shape),
-            TensorInfo("z", dtype=trt.DataType.FLOAT, shape=z.shape),
-            TensorInfo("mask", dtype=trt.DataType.FLOAT, shape=mask.shape),
-            TensorInfo(
-                "pair_mask", dtype=trt.DataType.FLOAT, shape=pair_mask.shape),
-        ], self.context)
-        outputs = {
-            t.name:
-            torch.empty(tuple(t.shape),
-                        dtype=trt_dtype_to_torch(t.dtype),
-                        device='cuda')
-            for t in output_info
-        }
-        if self.world_size > 1 and not self.disable_custom_all_reduce:
-            inputs["all_reduce_workspace"] = self.workspace
-        ok = self.session.run(inputs,
-                              outputs,
-                              self.stream,
-                              context=self.context)
-        assert ok, "Runtime execution failed"
-        s = outputs["output_s"].unsqueeze(0)
-        z = outputs["output_z"].unsqueeze(0)
-        return s, z
 
 
 class ForceFP32(nn.Module):
@@ -222,65 +57,6 @@ class ForceFP32(nn.Module):
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         output = self._original_module(*args, **kwargs)
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        return output
-
-
-class MSAModuleTorch(nn.Module):
-
-    def __init__(self, original_module: nn.Module):
-        super().__init__()
-        self._original_module = original_module
-
-        for layer in self._original_module.layers:
-            layer.tri_att_start.layer_norm = ForceFP32(
-                layer.tri_att_start.layer_norm)
-            layer.tri_att_start.linear = ForceFP32(layer.tri_att_start.linear)
-            layer.tri_att_start.mha.linear_q = ForceFP32(
-                layer.tri_att_start.mha.linear_q)
-            layer.tri_att_start.mha.linear_k = ForceFP32(
-                layer.tri_att_start.mha.linear_k)
-            layer.tri_att_start.mha.linear_v = ForceFP32(
-                layer.tri_att_start.mha.linear_v)
-
-            layer.tri_att_end.layer_norm = ForceFP32(
-                layer.tri_att_end.layer_norm)
-            layer.tri_att_end.linear = ForceFP32(layer.tri_att_end.linear)
-            layer.tri_att_end.mha.linear_q = ForceFP32(
-                layer.tri_att_end.mha.linear_q)
-            layer.tri_att_end.mha.linear_k = ForceFP32(
-                layer.tri_att_end.mha.linear_k)
-            layer.tri_att_end.mha.linear_v = ForceFP32(
-                layer.tri_att_end.mha.linear_v)
-
-    def forward(self, *args, **kwargs):
-        return self._original_module(*args, **kwargs)
-
-
-class PairformerTorch(nn.Module):
-
-    def __init__(self, original_module: nn.Module, name="structure"):
-        super().__init__()
-        self._original_module = original_module
-        self._name = name
-
-    def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
-                pair_mask: torch.Tensor, **kwargs):
-        s, z = self._original_module(s, z, mask, pair_mask, **kwargs)
-        return s, z
-
-
-class FP32StructureModule(nn.Module):
-
-    def __init__(self, original_module: nn.Module):
-        super().__init__()
-        self._original_module = original_module
-
-    def sample(self, *args, **kwargs):
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        output = self._original_module.sample(*args, **kwargs)
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         return output
@@ -392,6 +168,13 @@ def parse_arguments():
         help=
         'The path to the directory containing the confidence pairformer engines'
     )
+    parser.add_argument('--original_torch',
+                        action='store_true',
+                        help='Use default torch')
+    parser.add_argument('--torch_backend_config',
+                        type=Path,
+                        default=None,
+                        help='The path to the torch backend config')
     parser.add_argument('--sample_dir',
                         type=Path,
                         default='sample',
@@ -428,6 +211,8 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
     torch.set_float32_matmul_precision("high")
     # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 
+    torch.cuda.set_device(rank)
+
     pdb_ids = [
         ele.split('/feats_')[1][:4]
         for ele in glob.glob(f"{sample_dir.as_posix()}/feats*.pt")
@@ -459,13 +244,12 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
                 batch[key] = val.to(device)
         pad_seqlen = (seqlens[i] + dcp_size - 1) // dcp_size * dcp_size
         batch = pad_batch(batch, pad_seqlen, seqlens[i])
-
         for l in range(args.repeat):
             torch.cuda.empty_cache()
             seed_everything(SEED)
             torch.cuda.synchronize()
             start_time = time.time()
-            with torch.inference_mode():
+            with torch.no_grad():
                 output = model(
                     batch,
                     recycling_steps=predict_params.recycling_steps,
@@ -524,42 +308,69 @@ def main(args):
     logger.set_level("info")
     structure_pairformer = None
     confidence_pairformer = None
+    dcp_size = 1
+    context_address = None  # use only by trt-backend
     if args.structure_pairformer_engines_dir:
-        structure_pairformer = PairformerTRT(
-            args.structure_pairformer_engines_dir,
-            world_size,
-            rank,
+        with open(args.structure_pairformer_engines_dir / "config.json",
+                  "r") as f:
+            config = PairformerConfig.from_dict(
+                json.load(f)["pretrained_config"])
+            dcp_size = config.mapping.dcp_size
+        structure_pairformer = PairformerBackendBuilder.build(
+            config=config,
+            checkpoint_dir=args.structure_pairformer_engines_dir,
+            world_size=world_size,
+            rank=rank,
             context_without_device_memory=True)
         setattr(model, "pairformer_module", structure_pairformer)
-    else:
-        setattr(model, "pairformer_module",
-                PairformerTorch(model.pairformer_module, name="structure"))
-    if args.confidence_pairformer_engines_dir:
-        address = None
-        if isinstance(structure_pairformer,
-                      PairformerTRT):  # sharing same device memory
-            address = structure_pairformer.address
-        confidence_pairformer = PairformerTRT(
-            args.confidence_pairformer_engines_dir,
-            world_size,
-            rank,
+        context_address, _ = structure_pairformer.get_backend_workspace()
+        assert args.confidence_pairformer_engines_dir is not None, "confidence pairformer engines dir is required"
+        with open(args.confidence_pairformer_engines_dir / "config.json",
+                  "r") as f:
+            config = PairformerConfig.from_dict(
+                json.load(f)["pretrained_config"])
+        confidence_pairformer = PairformerBackendBuilder.build(
+            config=config,
+            checkpoint_dir=args.confidence_pairformer_engines_dir,
+            world_size=world_size,
+            rank=rank,
             context_without_device_memory=True,
-            address=address)
+            address=context_address)
         setattr(model.confidence_module, "pairformer_module",
                 confidence_pairformer)
     else:
-        setattr(
-            model.confidence_module, "pairformer_module",
-            PairformerTorch(model.confidence_module.pairformer_module,
-                            name="confidence"))
-    setattr(model, "structure_module",
-            FP32StructureModule(model.structure_module))
+        # Using original torch or torch backend
+        if args.original_torch:
+            assert world_size == 1, "original torch only supports single GPU"
+        else:
+            with open(args.torch_backend_config) as f:
+                config = PairformerConfig.from_dict(
+                    json.load(f)["pretrained_config"])
+            # Override mapping to ensure correct mapping for each rank
+            config.mapping = Mapping(world_size=world_size,
+                                     tp_size=config.mapping.tp_size,
+                                     dcp_size=config.mapping.dcp_size,
+                                     rank=rank)
+            dcp_size = config.mapping.dcp_size
+            structure_weights = convert_hf_pairformer(config, None, "structure")
+            confidence_weights = convert_hf_pairformer(config, None,
+                                                       "confidence")
 
-    dcp_size = 1
-    if structure_pairformer:
-        dcp_size = structure_pairformer.runtime_mapping.dcp_size
-    elif confidence_pairformer:
-        dcp_size = confidence_pairformer.runtime_mapping.dcp_size
+            structure_pairformer = PairformerBackendBuilder.build(
+                config=config,
+                world_size=world_size,
+                rank=rank,
+                weights=structure_weights,
+                load_weights_fn=torch_pairformer_load_fn)
+            confidence_pairformer = PairformerBackendBuilder.build(
+                config=config,
+                world_size=world_size,
+                rank=rank,
+                weights=confidence_weights,
+                load_weights_fn=torch_pairformer_load_fn)
+            setattr(model, "pairformer_module", structure_pairformer)
+            setattr(model.confidence_module, "pairformer_module",
+                    confidence_pairformer)
     run_single_rank(sample_dir=args.sample_dir,
                     model=model,
                     rank=rank,
@@ -570,5 +381,6 @@ def main(args):
 
 
 if __name__ == "__main__":
+    mp.set_start_method('spawn')
     args = parse_arguments()
     main(args)

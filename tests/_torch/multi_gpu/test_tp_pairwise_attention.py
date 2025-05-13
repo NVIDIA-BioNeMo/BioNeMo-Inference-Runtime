@@ -25,7 +25,7 @@ from test_utils.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.modules.attention import SelfAttentionPairBias
+from tensorrt_bionemo._torch.layers.attention import SelfAttentionPairBias
 from tensorrt_bionemo.mapping import Mapping
 
 

@@ -49,16 +49,17 @@ class RefTriangleMultiplicationNode(nn.Module):
         Returns:
             [*, I, J, D]
         """
+        if x.dtype != mask.dtype:
+            x = x.to(mask.dtype)
         x = self.norm_in(x)
         x_in = x
+        a, b = torch.chunk(self.p_in(x), 2, dim=-1)
         x = self.p_in(x) * self.g_in(x).sigmoid()
-
         # Apply mask
         x = x * mask.unsqueeze(-1)
 
         # Split input and cast to float
         a, b = torch.chunk(x.float(), 2, dim=-1)
-
         # Triangular projection
         if x.dim() == 4:
             if self.outgoing:
@@ -154,7 +155,8 @@ class RefTriangleAttentionNode(nn.Module):
                                                 no_heads=no_heads)
         c_hidden = mha.c_hidden
         node = cls(c_in, c_hidden, no_heads, starting)
-        setattr(node, "mha", mha)
+        # setattr(node, "mha", mha)
+        node.mha = mha
 
         biases_path = [
             None,
@@ -172,20 +174,22 @@ class RefTriangleAttentionNode(nn.Module):
         return node
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor):
+        if x.dtype != mask.dtype:
+            x = x.to(mask.dtype)
         if not self.starting:
             x = x.transpose(-2, -3)
-        # [*, I, J, C_in]
+        # [B, I, J, C_in]
+
         x = self.layer_norm(x)
-        # [*, H, I, J]
+        # [B, H, I, J]
         lx = self.linear(x)
         if lx.dim() == 4:
             triangle_bias = torch.permute(
                 lx, (0, 3, 1, 2))  # TA.permute_final_dims(lx, (2, 0, 1))
         elif lx.dim() == 3:
             triangle_bias = torch.permute(
-                lx, (2, 0, 1))  # TA.permute_final_dims(lx, (2, 0, 1))
-        # [*, 1, H, I, J]
-        triangle_bias = triangle_bias.unsqueeze(-4)
+                lx,
+                (2, 0, 1))  # TA.permute_final_dims(lx, (2, 0, 1)), [*, H, I, J]
 
         mask_bias: Optional[torch.Tensor] = None
         if mask is not None:
@@ -346,13 +350,22 @@ class RefPairformerLayer(nn.Module):
                                          layer_path=subm_path)
             if "tri_mul_out" in subm_path:
                 subm.outgoing = True
+                m.tri_mul_out = subm
             elif "tri_mul_in" in subm_path:
                 subm.outgoing = False
+                m.tri_mul_in = subm
             elif "tri_att_start" in subm_path:
                 subm.starting = True
+                m.tri_attn_start = subm
             elif "tri_att_end" in subm_path:
                 subm.starting = False
-
+                m.tri_attn_end = subm
+            elif "transition_s" in subm_path:
+                m.transition_s = subm
+            elif "transition_z" in subm_path:
+                m.transition_z = subm
+            elif "attention" in subm_path:
+                m.attention = subm
             base_path = subm_path.split(".")[-1]
             if base_path == "attention":
                 m.token_z = subm.c_z
@@ -361,21 +374,23 @@ class RefPairformerLayer(nn.Module):
             if base_path == "tri_att_start":
                 m.pairwise_num_heads = subm.num_heads
                 m.pairwise_head_width = subm.c_hidden
-            setattr(m, base_path, subm)
+
         return m
 
     def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
                 pair_mask: torch.Tensor) -> torch.Tensor:
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
+        if z.dtype != pair_mask.dtype:
+            z = z.to(pair_mask.dtype)
         z = z + self.tri_attn_start(z, mask=pair_mask)
         z = z + self.tri_attn_end(z, mask=pair_mask)
+
         z = z + self.transition_z(z)
 
         # Compute sequence stack
         if not self.no_update_s:
-            s = s + self.attention(s.unsqueeze(0), z.unsqueeze(0),
-                                   mask.unsqueeze(0)).squeeze(0)
+            s = s + self.attention(s, z, mask)
             s = s + self.transition_s(s)
 
         return s, z

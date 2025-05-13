@@ -46,6 +46,8 @@ set(CMAKE_CXX_FLAGS "-Wno-deprecated-declarations ${CMAKE_CXX_FLAGS}")
 
 # Append local cmake module path for CMAKE_MODULE_PATH
 list(APPEND CMAKE_MODULE_PATH "${TRT_BIONEMO_CPP_DIR}/cmake/modules")
+list(APPEND CMAKE_MODULE_PATH
+     "${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM/cpp/cmake/modules")
 
 # Append local cmake dependency path CMAKE_PREFIX_PATH
 list(APPEND CMAKE_PREFIX_PATH "${TRT_BIONEMO_CPP_DIR}/cmake/deps")

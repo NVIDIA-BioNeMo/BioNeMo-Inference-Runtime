@@ -21,7 +21,7 @@ import tensorrt_llm
 import torch
 from tensorrt_llm.functional import Tensor, matmul
 
-from tensorrt_bionemo.functional import chunk_loop
+from tensorrt_bionemo._trt.functional import chunk_loop
 
 
 @pytest.mark.parametrize("chunk_size", [2, 4, 8])

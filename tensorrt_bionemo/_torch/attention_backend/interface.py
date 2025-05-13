@@ -27,9 +27,6 @@ class AttentionMetadata:
     """
     Metadata for multi-head attention layer.
     """
-
-    chunk_dim: Optional[int] = None
-    chunk_size: Optional[int] = None
     mapping: Optional[Mapping] = None
 
 

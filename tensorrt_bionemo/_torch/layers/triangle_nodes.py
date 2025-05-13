@@ -20,13 +20,13 @@ import torch.nn as nn
 from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.distributed import (AllGatherMode, DPCommManager,
-                                                 TensorParallelMode, allgather,
-                                                 create_parallel_config)
-from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
-                                                    WeightsLoadingConfig)
-from tensorrt_bionemo.layers.triangle_nodes import (
+                                                 allgather)
+from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
+                                                   WeightMode,
+                                                   WeightsLoadingConfig)
+from tensorrt_bionemo._trt.layers.triangle_nodes import (
     TriangleAttentionNodeType, TriangleMultiplicationNodeType)
-from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..attention_backend import AttentionMetadata
 from .attention import TriangleAttention
@@ -73,6 +73,7 @@ class TriangleAttentionNode(nn.Module):
         self.tp_size = self.mapping.tp_size
         self.tp_rank = self.mapping.tp_rank
         self.gpus_per_node = self.mapping.gpus_per_node
+        self.dtype = dtype
 
         assert self.num_heads % self.tp_size == 0
         self.num_heads = self.num_heads // self.tp_size
@@ -87,10 +88,9 @@ class TriangleAttentionNode(nn.Module):
             self.tp_size * self.num_heads,
             bias=False,
             dtype=dtype,
-            parallel_config=create_parallel_config(
-                self.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True),
+            mapping=self.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
             skip_create_weights=skip_create_weights,
         )
 
@@ -102,7 +102,7 @@ class TriangleAttentionNode(nn.Module):
             gating=True,
             bias=False,
             dtype=dtype,
-            mapping=mapping,
+            mapping=self.mapping,
             skip_create_weights=skip_create_weights,
             attn_backend=attn_backend,
         )
@@ -120,45 +120,48 @@ class TriangleAttentionNode(nn.Module):
         supports only batch_size = 1
 
         Args:
-            x (torch.Tensor): input tensor, shape [1, I, J, c_in]
-            mask (Optional[torch.Tensor]): mask tensor [1, I, J]
+            x (torch.Tensor): input tensor, shape [B, I, J, c_in]
+            mask (Optional[torch.Tensor]): mask tensor [B, I, J]
             attn_metadata (Optional[AttentionMetadata]): attention metadata
         """
-        if x.ndim == 4:
-            x = x.squeeze(0)
-        assert x.ndim == 3
         if mask is None:
             mask = x.new_ones(x.shape[:-1])
-        if mask is not None and mask.ndim == 3:
-            mask = mask.squeeze(0)
-
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+        if mask.dtype != self.dtype:
+            mask = mask.to(self.dtype)
         if self.node_type == TriangleAttentionNodeType.ENDING:
-            x = x.transpose(0, 1)
-            mask = mask.transpose(0, 1)
+            x = x.transpose(1, 2)
+            mask = mask.transpose(1, 2)
+
         x = self.layer_norm(x)
         # Compute mask bias
-        mask_bias = (self.inf * (mask - 1))[:, None, None, :]
+        mask_bias = (self.inf * (mask - 1))[..., :, None, None, :]
 
         # Compute triangle bias
-        lx = self.linear(x)
-        triangle_bias = torch.permute(lx,
-                                      (2, 0, 1)).unsqueeze(0)  # [1, H, I, J]
+        lx = self.linear(x)  # [B, I, J, H]
+        triangle_bias = torch.permute(lx, (0, 3, 1, 2))
 
         # First if dcp_size > 1, we need to split the input by dcp_size
-        seq_len = x.shape[0]
+        seq_len = x.shape[1]
         if self.dcp_size > 1:
             seq_len = seq_len // self.dcp_size
-            x = x[self.dcp_rank * seq_len:(self.dcp_rank + 1) * seq_len, ...]
-            mask_bias = mask_bias[self.dcp_rank * seq_len:(self.dcp_rank + 1) *
-                                  seq_len, ...]
+            start = self.dcp_rank * seq_len
+            end = (self.dcp_rank + 1) * seq_len
+            x = x[:, start:end, ...]
+            mask_bias = mask_bias[:, start:end, ...]
+        if not x.is_contiguous():
+            x = x.contiguous()
+        if not mask_bias.is_contiguous():
+            mask_bias = mask_bias.contiguous()
         if self.chunk_size > 0:
             niters = seq_len // self.chunk_size
             outputs = []
             for i in range(niters):
                 start = i * self.chunk_size
                 end = start + self.chunk_size
-                x_chunk = x[start:end, ...]
-                chunk_mask_bias = mask_bias[start:end, ...]
+                x_chunk = x[:, start:end, ...]
+                chunk_mask_bias = mask_bias[:, start:end, ...]
                 biases = [chunk_mask_bias, triangle_bias]
                 chunk_output = self.mha(x_chunk,
                                         biases=biases,
@@ -173,18 +176,13 @@ class TriangleAttentionNode(nn.Module):
                               attn_metadata=attn_metadata,
                               all_reduce_params=all_reduce_params)
         if self.dcp_size > 1:
-            parallel_config = create_parallel_config(
-                self.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
-            )
             output = allgather(output,
-                               parallel_config,
-                               gather_dim=0,
+                               self.mapping,
+                               gather_dim=1,
                                mode=AllGatherMode.DP)
 
         if self.node_type == TriangleAttentionNodeType.ENDING:
-            output = output.transpose(1, 0)
+            output = output.transpose(2, 1)
         return output
 
 
@@ -214,14 +212,18 @@ class TriangleMultiplicationNode(nn.Module):
         OUTGOING,
             dtype: torch.dtype = None,
             mapping: Optional[Mapping] = None,
-            skip_create_weights: bool = False):
+            skip_create_weights: bool = False,
+            max_tri_mul_tp_size: bool = True):
         super().__init__()
         self.mapping = mapping or Mapping()
+        if max_tri_mul_tp_size:
+            self.mapping = create_max_tp_mapping(self.mapping, dim)
         self.dcp_size = self.mapping.dcp_size
         self.dcp_rank = self.mapping.dcp_rank
         self.tp_size = self.mapping.tp_size
         self.tp_rank = self.mapping.tp_rank
         self.gpus_per_node = self.mapping.gpus_per_node
+        self.dtype = dtype
 
         self.dp_comm = None
         if self.dcp_size > 1:
@@ -232,15 +234,13 @@ class TriangleMultiplicationNode(nn.Module):
         self.norm_in = nn.LayerNorm(self.dim * self.tp_size,
                                     dtype=dtype,
                                     eps=eps)
-        col_parallel_config = create_parallel_config(
-            self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False)
         self.p_in = Linear(self.dim * self.tp_size,
                            2 * self.dim * self.tp_size,
                            bias=False,
                            dtype=dtype,
-                           parallel_config=col_parallel_config,
+                           mapping=self.mapping,
+                           tensor_parallel_mode=TensorParallelMode.COLUMN,
+                           gather_output=False,
                            weights_loading_config=WeightsLoadingConfig(
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
                            skip_create_weights=skip_create_weights)
@@ -248,7 +248,9 @@ class TriangleMultiplicationNode(nn.Module):
                            2 * self.dim * self.tp_size,
                            bias=False,
                            dtype=dtype,
-                           parallel_config=col_parallel_config,
+                           mapping=self.mapping,
+                           tensor_parallel_mode=TensorParallelMode.COLUMN,
+                           gather_output=False,
                            weights_loading_config=WeightsLoadingConfig(
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
                            skip_create_weights=skip_create_weights)
@@ -260,63 +262,52 @@ class TriangleMultiplicationNode(nn.Module):
                             self.dim * self.tp_size,
                             bias=False,
                             dtype=torch.float32,
-                            parallel_config=create_parallel_config(
-                                self.mapping,
-                                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gather_output=True),
+                            mapping=self.mapping,
+                            tensor_parallel_mode=TensorParallelMode.COLUMN,
+                            gather_output=True,
                             skip_create_weights=skip_create_weights)
         self.g_out = Linear(self.dim * self.tp_size,
                             self.dim * self.tp_size,
                             bias=False,
                             dtype=torch.float32,
-                            parallel_config=create_parallel_config(
-                                self.mapping,
-                                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gather_output=True),
+                            mapping=self.mapping,
+                            tensor_parallel_mode=TensorParallelMode.COLUMN,
+                            gather_output=True,
                             skip_create_weights=skip_create_weights)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x (torch.Tensor): input tensor, shape [1, I, J, c_in]
-            mask (torch.Tensor): mask tensor [1, I, J]
+            x (torch.Tensor): input tensor, shape [B, I, J, c_in]
+            mask (torch.Tensor): mask tensor [B, I, J]
         """
-        # if self.tp_size > 1 or self.dcp_size > 1:
-        parallel_config = create_parallel_config(
-            self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-        )
-        if x.ndim == 4:
-            x = x.squeeze(0)
-        if mask.ndim == 3:
-            mask = mask.squeeze(0)
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
         x = self.norm_in(x)
-        seq_len = x.shape[0]
+        seq_len = x.shape[1]
         if self.dcp_size > 1:
             seq_len = seq_len // self.dcp_size
             st = self.dcp_rank * seq_len
             et = (self.dcp_rank + 1) * seq_len
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                x = x[st:et, ...]
-                mask = mask[st:et, ...]
-            elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
                 x = x[:, st:et, ...]
                 mask = mask[:, st:et, ...]
+            elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
+                x = x[:, :, st:et, ...]
+                mask = mask[:, :, st:et]
         x_in = x
         # TODO: SwiGLU fused here
         x = self.p_in(x) * self.g_in(x).sigmoid()
         x = x * mask.unsqueeze(-1)
-
         a, b = x.float().split([self.dim, self.dim], dim=-1)
         a = a.contiguous()
         b = b.contiguous()
 
         def _enisum_compute(a_, b_):
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                return torch.einsum("ikd,jkd->ijd", a_, b_)
+                return torch.einsum("bikd,bjkd->bijd", a_, b_)
             else:
-                return torch.einsum("kid,kjd->ijd", a_, b_)
+                return torch.einsum("bkid,bkjd->bijd", a_, b_)
 
         # Ring communication
         if self.dcp_size > 1:
@@ -337,7 +328,7 @@ class TriangleMultiplicationNode(nn.Module):
                                        a, buffers[recv_idx])
                     recv_idx = send_idx
                     send_idx = (send_idx + 1) % 2
-                x = torch.cat(enisum_results, dim=1)
+                x = torch.cat(enisum_results, dim=2)
             else:
                 a_recv = torch.zeros_like(a)
                 buffers = [a, a_recv]  # double buffers
@@ -351,21 +342,21 @@ class TriangleMultiplicationNode(nn.Module):
                                        buffers[recv_idx], b)
                     recv_idx = send_idx
                     send_idx = (send_idx + 1) % 2
-                x = torch.cat(enisum_results, dim=0)
+                x = torch.cat(enisum_results, dim=1)
         else:
             x = _enisum_compute(a, b)
         x = x.contiguous()
         # need to gather here for LayerNorm
         if self.tp_size > 1:
-            x = allgather(x, parallel_config, mode=AllGatherMode.TP)
+            x = allgather(x, self.mapping, mode=AllGatherMode.TP)
         pout_x = self.p_out(self.norm_out(x))
         gout_x = self.g_out(x_in.float()).sigmoid()
         x = pout_x * gout_x
         x = x.contiguous()
         if self.dcp_size > 1:
-            gather_dim = 0 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 1
+            gather_dim = 1 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 2
             x = allgather(x,
-                          parallel_config,
+                          self.mapping,
                           gather_dim=gather_dim,
                           mode=AllGatherMode.DP)
         return x

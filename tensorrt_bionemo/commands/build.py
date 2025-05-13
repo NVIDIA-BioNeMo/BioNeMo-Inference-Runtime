@@ -27,11 +27,11 @@ from tensorrt_llm._utils import (OMPI_COMM_TYPE_HOST, mpi_barrier, mpi_comm,
 from tensorrt_llm.logger import logger, severity_map
 from tensorrt_llm.plugin import PluginConfig, add_plugin_argument
 
-from tensorrt_bionemo.builder import Engine, build
+from tensorrt_bionemo._trt.builder import Engine, build
+# TODO: Make mapping of model name to module class and config class
+from tensorrt_bionemo._trt.layers.transformers import PairformerModule
 from tensorrt_bionemo.confs.build_config import BuildModuleConfig
 from tensorrt_bionemo.confs.model_config import PretrainedModuleConfig
-# TODO: Make mapping of model name to module class and config class
-from tensorrt_bionemo.layers.transformers import PairformerModule
 
 MODULES_MAPPING = {
     "boltz-1": {

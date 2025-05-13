@@ -21,8 +21,8 @@ from tensorrt_llm.builder import Builder, Engine, EngineConfig
 from tensorrt_llm.logger import logger
 from tensorrt_llm.network import net_guard
 
+from tensorrt_bionemo._trt.module_utils import PretrainedModule
 from tensorrt_bionemo.confs.build_config import BuildModuleConfig
-from tensorrt_bionemo.models.module_utils import PretrainedModule
 from tensorrt_bionemo.version import __version__
 
 

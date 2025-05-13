@@ -13,9 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from typing import Optional
 
 import torch
+from einops import rearrange
 
 from .interface import (AttentionBackend, AttentionBiases, AttentionMetadata,
                         PredefinedAttentionBiases)
@@ -35,63 +37,74 @@ class VanillaAttention(AttentionBackend[VanillaAttentionMetadata]):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
         assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
 
-    def _single_request_forward(self, q, k, v, bias):
-        """Forward pass for a single request"""
-        q = q.view(q.size(0), -1, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(k.size(0), -1, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(v.size(0), -1, self.num_heads, self.head_dim).transpose(1, 2)
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            is_causal=False,
-            attn_mask=bias,
-        )
+    def _pairwise_attn_forward(self, q, k, v, biases):
+        """Forward pass for pairwise attention
+        Pairwise bias has two terms:
+            1. Mask over batch size: [B, 1, 1, s_kv]
+            2. Bias with shape equal to the shape of QK^T: [B, h, s_q, s_kv]
+        """
+        q = rearrange(q,
+                      "b j (h d) -> b h j d",
+                      h=self.num_heads,
+                      d=self.head_dim)
+        k = rearrange(k,
+                      "b j (h d) -> b h d j",
+                      h=self.num_heads,
+                      d=self.head_dim)
+        v = rearrange(v,
+                      "b j (h d) -> b h j d",
+                      h=self.num_heads,
+                      d=self.head_dim)
+
+        a = torch.matmul(q, k)  # [B, H, s_q, s_kv]
+        a /= math.sqrt(self.head_dim)
+
+        if biases is not None:
+            # Add mask bias
+            if biases[0].ndim == 2:
+                a += biases[0][:, None, None, :]
+            else:
+                a += biases[0]
+            # Add pair bias
+            a += biases[1]
+        a = torch.nn.functional.softmax(a, dim=-1)
+
+        a = torch.matmul(a, v)
+        return a.transpose(1, 2).contiguous()
+
+    def _triangle_attn_forward(self, q, k, v, biases):
+        """Forward pass for triangle attention
+        Triangle bias has two terms:
+            1. Mask over sequence length: [B, I, 1, 1, J]
+            2. Bias for heads: [B, H, J, J]
+        To avoid memory allocation, we use a vanilla implementation here.
+        """
+        mask = biases[0]
+        bias = biases[1]
+        bias = bias.unsqueeze(1)
+        q = rearrange(q,
+                      "b i j (h d) -> b i h j d",
+                      h=self.num_heads,
+                      d=self.head_dim)
+        k = rearrange(k,
+                      "b i j (h d) -> b i h d j",
+                      h=self.num_heads,
+                      d=self.head_dim)
+        v = rearrange(v,
+                      "b i j (h d) -> b i h j d",
+                      h=self.num_heads,
+                      d=self.head_dim)
+        a = torch.matmul(q, k)
+        a /= math.sqrt(self.head_dim)
+
+        a += mask
+        a += bias
+
+        a = torch.nn.functional.softmax(a, dim=-1)
+
+        a = torch.matmul(a, v)  # [B, I, H, J, D]
+        attn_output = rearrange(a, "b i h j d -> b i j h d").contiguous()
         return attn_output
-
-    def _slice_by_chunk(self, tensor: torch.Tensor, chunk_dim: int, offset: int,
-                        chunk: int) -> torch.Tensor:
-        """Slice the tensor by the given chunk size"""
-        slice_obj = [slice(None)] * tensor.ndim
-        slice_obj[chunk_dim] = slice(offset, offset + chunk)
-        return tensor[tuple(slice_obj)]
-
-    def _create_bias_term_with_chunk(
-        self,
-        chunk: int = None,
-        chunk_dim: int = None,
-        offset: int = None,
-        biases: Optional[list[torch.Tensor]] = None,
-        biases_type: Optional[AttentionBiases] = PredefinedAttentionBiases.
-        TRIANGLE,
-    ) -> torch.Tensor:
-        """Create a bias term with the given chunk size"""
-        ret = None
-        if biases is None:
-            return ret
-
-        if chunk is None:
-            # Triangle bias has two terms:
-            # 1. Bias over sequence length: [s, 1, 1, s]
-            # 2. Bias for heads: [1, h, s, s]
-            if biases_type == PredefinedAttentionBiases.TRIANGLE:
-                seq_len = biases[0].size(0)
-                ret = biases[0] + biases[1].expand(seq_len, -1, -1, -1)
-            # Pairwise bias has two terms:
-            # 1. Bias over batch size: [B, 1, 1, s_kv]
-            # 2. Bias with shape equal to the shape of QK^T: [B, h, s_q, s_kv]
-            elif biases_type == PredefinedAttentionBiases.PAIRWISE:
-                ret = biases[0] + biases[1]
-        else:
-            if biases_type == PredefinedAttentionBiases.TRIANGLE:
-                ret = self._slice_by_chunk(biases[0], chunk_dim, offset,
-                                           chunk) + biases[1].expand(
-                                               chunk, -1, -1, -1)
-            elif biases_type == PredefinedAttentionBiases.PAIRWISE:
-                ret = self._slice_by_chunk(
-                    biases[0], chunk_dim, offset, chunk) + self._slice_by_chunk(
-                        biases[1], chunk_dim, offset, chunk)
-        return ret
 
     def forward(
         self,
@@ -104,33 +117,33 @@ class VanillaAttention(AttentionBackend[VanillaAttentionMetadata]):
         TRIANGLE,
         **kwargs,
     ) -> torch.Tensor:
-        """Implementation of vanilla attention for triangle attention and pairwise attention."""
-        if metadata.chunk_size is not None:
-            offset = 0
-            attn_outputs = []
-            chunk_dim = metadata.chunk_dim
-            total_size = q.size(chunk_dim)
-            while offset < total_size:
-                chunk = min(metadata.chunk_size, total_size - offset)
-                chunk_q = self._slice_by_chunk(q, chunk_dim, offset, chunk)
-                chunk_k = self._slice_by_chunk(k, chunk_dim, offset, chunk)
-                chunk_v = self._slice_by_chunk(v, chunk_dim, offset, chunk)
-                bias = self._create_bias_term_with_chunk(
-                    chunk=chunk,
-                    chunk_dim=chunk_dim,
-                    offset=offset,
-                    biases=biases,
-                    biases_type=biases_type)
-                offset += chunk
-                attn_output = self._single_request_forward(
-                    chunk_q, chunk_k, chunk_v, bias)
-                attn_outputs.append(attn_output)
-            attn_output = torch.cat(attn_outputs, dim=0)
-        else:
-            bias = self._create_bias_term_with_chunk(None,
-                                                     0,
-                                                     biases=biases,
-                                                     biases_type=biases_type)
-            attn_output = self._single_request_forward(q, k, v, bias)
-        return attn_output.transpose(
-            1, 2).contiguous()  # return shape [B, S, H, D]
+        """Implementation of vanilla attention for triangle attention and pairwise attention.
+        Args:
+            q (torch.Tensor):
+                Triangle attention:
+                    query tensor, shape [B, I, J, H * D]
+                Pairwise attention:
+                    query tensor, shape [B, S_Q, H * D]
+            k (torch.Tensor):
+                Triangle attention:
+                    key tensor, shape [B, I, J, H * D]
+                Pairwise attention:
+                    key tensor, shape [B, S_KV, H * D]
+            v (torch.Tensor):
+                Triangle attention:
+                    value tensor, shape [B, I, J, H * D]
+                Pairwise attention:
+                    value tensor, shape [B, S_KV, H * D]
+            biases (Optional[list[torch.Tensor]]): list of bias tensors
+                - Triangle bias: [B, I, 1, 1, J], [B, H, J, J]
+                - Pairwise bias: [B, 1, 1, S_KV], [B, H, S_Q, S_KV]
+            metadata (Optional[AttentionMetadata]): attention metadata
+            biases_type (Optional[AttentionBiases]): type of bias
+        """
+
+        if biases_type == PredefinedAttentionBiases.TRIANGLE:
+            return self._triangle_attn_forward(q, k, v, biases)
+        elif biases_type == PredefinedAttentionBiases.PAIRWISE:
+            return self._pairwise_attn_forward(q, k, v, biases)
+
+        raise ValueError(f"Unsupported bias type: {biases_type}")

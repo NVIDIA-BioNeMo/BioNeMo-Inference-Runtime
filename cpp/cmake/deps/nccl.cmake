@@ -13,8 +13,5 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-include(
-  ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM/cpp/cmake/modules/set_ifndef.cmake)
-set_ifndef(NCCL_LIB_DIR /usr/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/)
-set_ifndef(NCCL_INCLUDE_DIR /usr/include/)
-find_library(NCCL_LIB nccl HINTS ${NCCL_LIB_DIR})
+find_package(NCCL 2 REQUIRED)
+set(NCCL_LIB NCCL::nccl)

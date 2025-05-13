@@ -15,6 +15,7 @@
 import os
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
@@ -24,7 +25,7 @@ from test_utils.ref_attn import RefTriangleAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.modules.attention import TriangleAttention
+from tensorrt_bionemo._torch.layers.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -45,7 +46,8 @@ class Scenario:
 @pytest.mark.parametrize("s", [
     Scenario(backend="VANILLA"),
     Scenario(backend="VANILLA", torch_dtype="bfloat16"),
-    Scenario(backend="VANILLA", torch_dtype="float16"),
+    Scenario(backend="TRIFAST"),
+    Scenario(backend="TRIFAST", torch_dtype="bfloat16"),
 ])
 def test_triangle_attention_backend(s: Scenario):
     torch.manual_seed(42)
@@ -73,6 +75,8 @@ def test_triangle_attention_backend(s: Scenario):
     attn_metadata = metadata_cls(chunk_size=s.chunk_size,
                                  chunk_dim=s.chunk_dim,
                                  mapping=Mapping())
+    if s.backend == "TRIFAST":
+        attn_metadata.closest_n = 2**int(np.ceil(np.log2(s.seq_len)))
     hidden_states = torch.randn(s.seq_len,
                                 s.seq_len,
                                 s.hidden_size,
@@ -111,6 +115,6 @@ def test_triangle_attention_backend(s: Scenario):
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
         diff1_mean = torch.mean(torch.abs(ref_output.float() -
                                           ref_output_float))
-
-        assert abs(diff0_max - diff1_max) <= 3
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
+                                                      diff1_max) <= 0.6
         assert abs(diff0_mean - diff1_mean) <= 0.2

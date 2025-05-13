@@ -20,10 +20,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensorrt_llm.functional import AllReduceParams
 
-from tensorrt_bionemo._torch.distributed import (TensorParallelMode,
-                                                 create_parallel_config)
-from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
-                                                    WeightsLoadingConfig)
+from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
+                                                   WeightMode,
+                                                   WeightsLoadingConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..attention_backend import AttentionMetadata, PredefinedAttentionBiases
@@ -57,11 +56,9 @@ class TriangleAttention(nn.Module):
         self.num_key_value_heads = num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
 
-        mapping = mapping or Mapping()
+        self.mapping = mapping or Mapping()
 
-        tp_size = mapping.tp_size
-        mapping.tp_rank
-        mapping.gpus_per_node
+        tp_size = self.mapping.tp_size
 
         assert self.num_heads % tp_size == 0
         self.num_heads = self.num_heads // tp_size
@@ -75,8 +72,9 @@ class TriangleAttention(nn.Module):
             tp_size * self.q_size + 2 * tp_size * self.kv_size,
             bias=bias,
             dtype=dtype,
-            parallel_config=create_parallel_config(
-                mapping, tensor_parallel_mode=TensorParallelMode.COLUMN),
+            mapping=self.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=False,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_QKV_LINEAR),
             skip_create_weights=skip_create_weights,
@@ -86,8 +84,9 @@ class TriangleAttention(nn.Module):
             self.hidden_size,
             bias=False,
             dtype=dtype,
-            parallel_config=create_parallel_config(
-                mapping, tensor_parallel_mode=TensorParallelMode.ROW),
+            mapping=self.mapping,
+            tensor_parallel_mode=TensorParallelMode.ROW,
+            reduce_output=True,
             skip_create_weights=skip_create_weights,
         )
         self.g_proj = None
@@ -97,8 +96,9 @@ class TriangleAttention(nn.Module):
                 tp_size * self.q_size,
                 bias=False,
                 dtype=dtype,
-                parallel_config=create_parallel_config(
-                    mapping, tensor_parallel_mode=TensorParallelMode.COLUMN),
+                mapping=self.mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=False,
                 skip_create_weights=skip_create_weights,
             )
         self.attn = create_attention(
@@ -116,17 +116,18 @@ class TriangleAttention(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
-        if attn_metadata.mapping.tp_size > 1:
+        if self.mapping.tp_size > 1:
             new_biases = []
             new_biases.append(biases[0])
             bias_1_shape = biases[1].shape
-            scatter_size = bias_1_shape[1] // attn_metadata.mapping.tp_size
-            scatter_bias = biases[1][:, attn_metadata.mapping.tp_rank *
-                                     scatter_size:
-                                     (attn_metadata.mapping.tp_rank + 1) *
-                                     scatter_size, :]
+            scatter_size = bias_1_shape[1] // self.mapping.tp_size
+            start = self.mapping.tp_rank * scatter_size
+            end = (self.mapping.tp_rank + 1) * scatter_size
+            scatter_bias = biases[1][:, start:end, :]
             new_biases.append(scatter_bias)
             biases = new_biases
+        if not hidden_states.is_contiguous():
+            hidden_states = hidden_states.contiguous()
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         mha_o = self.attn.forward(
@@ -136,17 +137,18 @@ class TriangleAttention(nn.Module):
             biases=biases,
             metadata=attn_metadata,
             biases_type=PredefinedAttentionBiases.TRIANGLE)
-
         if self.g_proj is not None:
             g = self.g_proj(hidden_states)
             g = F.sigmoid(g)
             # [*, Q, H, C_hidden]
-            g = g.view(g.size(0), -1, self.num_heads, self.head_dim)
+            g = g.view(g.shape[:-1] + (self.num_heads, self.head_dim))
             attn_output = mha_o * g
         else:
             attn_output = mha_o
-        attn_output = attn_output.view(attn_output.size(0), -1,
-                                       self.num_heads * self.head_dim)
+        attn_output = attn_output.view(attn_output.shape[:-2] +
+                                       (self.num_heads * self.head_dim, ))
+        if not attn_output.is_contiguous():
+            attn_output = attn_output.contiguous()
         attn_output = self.o_proj(attn_output,
                                   all_reduce_params=all_reduce_params)
         return attn_output
@@ -200,14 +202,14 @@ class SelfAttentionPairBias(nn.Module):
         if initial_norm:
             self.norm_s = nn.LayerNorm(c_s, dtype=dtype)
 
-        column_parallel_config = create_parallel_config(
-            mapping, tensor_parallel_mode=TensorParallelMode.COLUMN)
         self.proj_q = Linear(
             self.c_s,
             tp_size * self.q_size,
             bias=True,
             dtype=dtype,
-            parallel_config=column_parallel_config,
+            mapping=mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=False,
             skip_create_weights=skip_create_weights,
         )
         self.proj_kv = Linear(
@@ -215,7 +217,9 @@ class SelfAttentionPairBias(nn.Module):
             2 * tp_size * self.kv_size,
             bias=False,
             dtype=dtype,
-            parallel_config=column_parallel_config,
+            mapping=mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=False,
             skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
@@ -225,7 +229,9 @@ class SelfAttentionPairBias(nn.Module):
             tp_size * self.q_size,
             bias=False,
             dtype=dtype,
-            parallel_config=column_parallel_config,
+            mapping=mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=False,
             skip_create_weights=skip_create_weights,
         )
 
@@ -236,7 +242,9 @@ class SelfAttentionPairBias(nn.Module):
                 tp_size * self.num_heads,
                 bias=False,
                 dtype=dtype,
-                parallel_config=column_parallel_config,
+                mapping=mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=False,
                 skip_create_weights=skip_create_weights,
             ),
         )
@@ -245,8 +253,9 @@ class SelfAttentionPairBias(nn.Module):
             self.c_s,
             bias=False,
             dtype=dtype,
-            parallel_config=create_parallel_config(
-                mapping, tensor_parallel_mode=TensorParallelMode.ROW),
+            mapping=mapping,
+            reduce_output=True,
+            tensor_parallel_mode=TensorParallelMode.ROW,
             skip_create_weights=skip_create_weights,
         )
         self.attn = create_attention(
@@ -268,14 +277,14 @@ class SelfAttentionPairBias(nn.Module):
         B = s.size(0)
         if self.initial_norm:
             s = self.norm_s(s)
+        if not s.is_contiguous():
+            s = s.contiguous()
         q = self.proj_q(s)
         kv = self.proj_kv(s)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
         z = self.proj_z(z)
         z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
-
         mask_bias = (1 - mask[:, None, None].float()) * -self.inf
-
         biases = [mask_bias, z]
         mha_o = self.attn.forward(
             q.contiguous(),

@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import torch
+import torch.nn as nn
+import tqdm
+from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
 from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
@@ -184,7 +187,7 @@ def get_transition_weights(mapping: Mapping,
 
 def convert_hf_pairformer(config: PairformerConfig,
                           mapping: Mapping,
-                          pairformer_type: str = "prediction"):
+                          pairformer_type: str = "structure"):
     """
     Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
 
@@ -192,6 +195,7 @@ def convert_hf_pairformer(config: PairformerConfig,
         mapping: A mapping object that defines the mapping of the model.
         pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
     """
+    mapping = mapping if mapping is not None else Mapping()
     prefix = "pairformer_module.layers"
     if pairformer_type == "confidence":
         prefix = f"confidence_module.{prefix}"
@@ -239,3 +243,143 @@ def convert_hf_pairformer(config: PairformerConfig,
                                    config.max_transition_tp_size,
                                    config.token_z * 4))
     return weights
+
+
+def torch_pairformer_load_fn(module: nn.Module,
+                             checkpoint_dir: str = None,
+                             world_size: int = 1,
+                             rank: int = 0,
+                             weights: dict = None,
+                             pairformer_type: str = "structure",
+                             **kwargs):
+    """
+    Load a pairformer model from a PyTorch checkpoint.
+
+    Args:
+        module: The module to load the weights into.
+        checkpoint_dir: The directory to load the checkpoint from.
+        world_size: The number of processes to use.
+        rank: The rank of the process.
+        weights: The weights to load into the module.
+        pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
+    """
+    if weights is None:
+        weights = convert_hf_pairformer(config, Mapping(), pairformer_type)
+
+    for name, module in tqdm.tqdm(list(module.named_modules()),
+                                  desc="Loading weights"):
+        if len(module._parameters) > 0:
+            if name.endswith(".attention.proj_z.0"):
+                prefix = ".".join(name.split(".")[:-1])
+                weight = weights[f"{prefix}_norm.weight"]
+                bias = weights[f"{prefix}_norm.bias"]
+                module.bias.data.copy_(bias.to(module.weight.dtype))
+                module.weight.data.copy_(weight.to(module.weight.dtype))
+            elif name.endswith(".attention.proj_z.1"):
+                prefix = ".".join(name.split(".")[:-1])
+                weight = weights[f"{prefix}.weight"]
+                bias = weights.get(f"{prefix}.bias", None)
+                if bias is not None:
+                    bias = bias.to(module.weight.dtype)
+                module.load_weights([{
+                    "weight": weight.to(module.weight.dtype),
+                    "bias": bias
+                }])
+            elif hasattr(module, "load_weights"):
+                weight = weights[f"{name}.weight"]
+                bias = weights.get(f"{name}.bias", None)
+                module_dtype = module.dtype
+                if "qkv_proj" in name:
+                    q_weight, k_weight, v_weight = weight.chunk(3, dim=0)
+                    q_bias, k_bias, v_bias = None, None, None
+                    if bias is not None:
+                        q_bias, k_bias, v_bias = bias.chunk(3, dim=0)
+                    # TODO: Refactor casting dtype
+                    if q_weight.dtype != module_dtype:
+                        q_weight = q_weight.to(module_dtype)
+                        if q_bias is not None:
+                            q_bias = q_bias.to(module_dtype)
+                    if k_weight.dtype != module_dtype:
+                        k_weight = k_weight.to(module_dtype)
+                        if k_bias is not None:
+                            k_bias = k_bias.to(module_dtype)
+                    if v_weight.dtype != module_dtype:
+                        v_weight = v_weight.to(module_dtype)
+                        if v_bias is not None:
+                            v_bias = v_bias.to(module_dtype)
+                    module.load_weights([
+                        {
+                            "weight": q_weight,
+                            "bias": q_bias
+                        },
+                        {
+                            "weight": k_weight,
+                            "bias": k_bias
+                        },
+                        {
+                            "weight": v_weight,
+                            "bias": v_bias
+                        },
+                    ])
+                elif "kv_proj" in name or "proj_kv" in name or "p_in" in name or "g_in" in name:
+                    k_weight, v_weight = weight.chunk(2, dim=0)
+                    k_bias, v_bias = None, None
+                    if bias is not None:
+                        k_bias, v_bias = bias.chunk(2, dim=0)
+                    module_dtype = module.dtype
+                    # TODO: Refactor casting dtype
+                    if k_weight.dtype != module_dtype:
+                        k_weight = k_weight.to(module_dtype)
+                        if k_bias is not None:
+                            k_bias = k_bias.to(module_dtype)
+                    if v_weight.dtype != module_dtype:
+                        v_weight = v_weight.to(module_dtype)
+                        if v_bias is not None:
+                            v_bias = v_bias.to(module_dtype)
+                    module.load_weights([
+                        {
+                            "weight": k_weight.contiguous(),
+                            "bias": k_bias
+                        },
+                        {
+                            "weight": v_weight.contiguous(),
+                            "bias": v_bias
+                        },
+                    ])
+                elif "fused_fc2_fc1" in name:
+                    fc2_weight, fc1_weight = weight.chunk(2, dim=0)
+                    fc2_bias, fc1_bias = None, None
+                    if bias is not None:
+                        fc2_bias, fc1_bias = bias.chunk(2, dim=0)
+                    module_dtype = module.dtype
+                    # TODO: Refactor casting dtype
+                    if fc2_weight.dtype != module_dtype:
+                        fc2_weight = fc2_weight.to(module_dtype)
+                        if fc2_bias is not None:
+                            fc2_bias = fc2_bias.to(module_dtype)
+                    if fc1_weight.dtype != module_dtype:
+                        fc1_weight = fc1_weight.to(module_dtype)
+                        if fc1_bias is not None:
+                            fc1_bias = fc1_bias.to(module_dtype)
+                    module.load_weights([
+                        {
+                            "weight": fc2_weight,
+                            "bias": fc2_bias
+                        },
+                        {
+                            "weight": fc1_weight,
+                            "bias": fc1_bias
+                        },
+                    ])
+                else:
+                    if weight.dtype != module_dtype:
+                        weight = weight.to(module_dtype)
+                        if bias is not None:
+                            bias = bias.to(module_dtype)
+                    module.load_weights([{"weight": weight, "bias": bias}])
+            else:
+                for n, p in module._parameters.items():
+                    if f"{name}.{n}" in weights:
+                        p.data.copy_(weights[f"{name}.{n}"].to(p.dtype))
+                    else:
+                        logger.warning(f"Missing weights for {name}.{n}")

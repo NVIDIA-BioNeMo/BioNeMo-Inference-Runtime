@@ -9,11 +9,12 @@ from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
-from tensorrt_llm.functional import AllReduceParams
+from tensorrt_llm._torch.modules.linear import TensorParallelMode
+from tensorrt_llm.functional import AllReduceParams, AllReduceStrategy
 from torch import nn
 from torch.nn.parameter import Parameter
 
-from ..distributed import ParallelConfig, TensorParallelMode
+from tensorrt_bionemo.mapping import Mapping
 
 
 class WeightMode(str, enum.Enum):
@@ -80,52 +81,56 @@ def load_weight_shard(
 
 class Linear(nn.Module):
 
-    def __init__(self,
-                 in_features: int,
-                 out_features: int,
-                 bias: bool = True,
-                 dtype: torch.dtype = None,
-                 parallel_config: Optional[ParallelConfig] = None,
-                 weights_loading_config: Optional[WeightsLoadingConfig] = None,
-                 skip_create_weights: bool = False):
+    def __init__(
+            self,
+            in_features: int,
+            out_features: int,
+            bias: bool = True,
+            dtype: torch.dtype = None,
+            mapping: Optional[Mapping] = None,
+            tensor_parallel_mode: Optional[TensorParallelMode] = None,
+            gather_output: bool = False,  # COLUMN parallel only
+            reduce_output: bool = True,  # ROW parallel only
+            weights_loading_config: Optional[WeightsLoadingConfig] = None,
+            skip_create_weights: bool = False):
         from tensorrt_bionemo._torch.distributed import AllReduce
 
         super().__init__()
         self.has_bias = bias
         self.dtype = dtype
-        self.parallel_config = parallel_config or ParallelConfig()
+        self.mapping = mapping or Mapping()
         # could be modified later
         self.weights_loading_config = weights_loading_config or WeightsLoadingConfig(
         )
-        self.mapping = self.parallel_config.mapping
         self.tp_size = self.mapping.tp_size
         self.tp_rank = self.mapping.tp_rank
-        self.dcp_size = self.mapping.dcp_size
-        self.dcp_rank = self.mapping.dcp_rank
-        self.tp_mode = self.parallel_config.tensor_parallel_mode
+        self.tp_mode = tensor_parallel_mode
+        self.gather_output = gather_output
+        self.reduce_output = reduce_output
 
         local_in_features = in_features
         local_out_features = out_features
 
-        if self.parallel_config.tensor_parallel_mode == TensorParallelMode.ROW:
+        if self.tp_mode == TensorParallelMode.ROW:
             assert in_features % self.tp_size == 0, (
                 f'in_features {in_features} must be divisible by tp_size {self.tp_size}'
             )
             local_in_features = in_features // self.tp_size
-        elif self.parallel_config.tensor_parallel_mode == TensorParallelMode.COLUMN:
+        elif self.tp_mode == TensorParallelMode.COLUMN:
             assert out_features % self.tp_size == 0, (
                 f'out_features {out_features} must be divisible by tp_size {self.tp_size}'
             )
             local_out_features = out_features // self.tp_size
         else:
-            assert self.parallel_config.tensor_parallel_mode is None, (
-                'unsupported tensor parallel mode: {self.parallel_config.tensor_parallel_mode}'
-            )
+            assert self.tp_mode is None, (
+                'unsupported tensor parallel mode: {self.tp_mode}')
 
         self.in_features = local_in_features
         self.out_features = local_out_features
 
-        self.all_reduce = AllReduce(self.parallel_config)
+        # The default strategy is NCCL, MIN_LATENCY has some errors
+        self.all_reduce = AllReduce(
+            self.mapping, AllReduceStrategy.NCCL) if reduce_output else None
         self._weights_created = False
 
         if not skip_create_weights:
@@ -174,8 +179,8 @@ class Linear(nn.Module):
 
         elif self.tp_mode == TensorParallelMode.COLUMN:
             output = self.apply_linear(input, self.weight, self.bias)
-            if self.parallel_config.gather_output and self.tp_size > 1:
-                output = allgather(output, self.parallel_config)
+            if self.gather_output and self.tp_size > 1:
+                output = allgather(output, self.mapping)
         else:
             output = self.apply_linear(input, self.weight, self.bias)
 

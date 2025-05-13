@@ -35,9 +35,9 @@ from test_utils.create_and_load_weights import (
     load_triangle_attention_node_weights_trt)
 from test_utils.ref_layers import RefTriangleAttentionNode
 
-from tensorrt_bionemo.layers.attention import AttentionParams
-from tensorrt_bionemo.layers.triangle_nodes import (TriangleAttentionNode,
-                                                    TriangleAttentionNodeType)
+from tensorrt_bionemo._trt.layers.attention import AttentionParams
+from tensorrt_bionemo._trt.layers.triangle_nodes import (
+    TriangleAttentionNode, TriangleAttentionNodeType)
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -53,6 +53,7 @@ class Scenario:
     dcp_size: int = 1
     seq_len: int = 128
     n_optimization_profiles: int = 0
+    bs: int = 1
 
 
 class TriangleAttnNodesParallelism:
@@ -61,6 +62,7 @@ class TriangleAttnNodesParallelism:
             self,
             world_size: int,
             rank: int,
+            bs: int,
             dcp_size: int,
             tp_size: int,
             seq_len: int,
@@ -87,6 +89,7 @@ class TriangleAttnNodesParallelism:
         torch.cuda.set_device(self.device)
         self.stream = torch.cuda.current_stream()
 
+        self.bs = bs
         self.seq_len = seq_len
         self.c_in = c_in
         self.c_hidden = c_hidden
@@ -159,8 +162,8 @@ class TriangleAttnNodesParallelism:
         os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
         assert self.c_in == self.c_hidden * self.num_attention_heads
 
-        hidden_states_shape = [self.seq_len, self.seq_len, self.c_in]
-        mask_shape = [self.seq_len, self.seq_len]
+        hidden_states_shape = [self.bs, self.seq_len, self.seq_len, self.c_in]
+        mask_shape = [self.bs, self.seq_len, self.seq_len]
         builder = Builder()
         model_name = "triangle_nodes"
 
@@ -239,6 +242,7 @@ def run_single_rank(scenario: Scenario, engine_paths: list[str], inputs: dict,
     module = TriangleAttnNodesParallelism(
         world_size=scenario.tp_size * scenario.dcp_size,
         rank=rank,
+        bs=scenario.bs,
         dcp_size=scenario.dcp_size,
         tp_size=scenario.tp_size,
         seq_len=scenario.seq_len,
@@ -289,8 +293,9 @@ def _generate_scenarios():
                          ids=_generate_scenarios()[1])
 def test_triangle_nodes_parallelism(scenario: Scenario):
     torch.manual_seed(42)
-    x = torch.randn(scenario.seq_len, scenario.seq_len, scenario.c_in)
-    mask = torch.randn(scenario.seq_len, scenario.seq_len)
+    bs = scenario.bs
+    x = torch.randn(bs, scenario.seq_len, scenario.seq_len, scenario.c_in)
+    mask = torch.randn(bs, scenario.seq_len, scenario.seq_len)
     world_size = scenario.tp_size * scenario.dcp_size
     torch_dtype = str_dtype_to_torch(scenario.dtype)
     inputs = {'input_s': x, 'mask': mask}
@@ -313,6 +318,7 @@ def test_triangle_nodes_parallelism(scenario: Scenario):
             c_in=scenario.c_in,
             c_hidden=scenario.c_hidden,
             num_attention_heads=scenario.num_heads,
+            bs=scenario.bs,
             dtype=scenario.dtype,
             n_optimization_profiles=scenario.n_optimization_profiles,
             inputs={

@@ -33,7 +33,7 @@ from test_utils.create_and_load_weights import (
     load_triangle_multiplication_node_weights_trt)
 from test_utils.ref_layers import RefTriangleMultiplicationNode
 
-from tensorrt_bionemo.layers.triangle_nodes import (
+from tensorrt_bionemo._trt.layers.triangle_nodes import (
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
 
@@ -46,18 +46,20 @@ class Scenario:
     tp_size: int = 1
     dcp_size: int = 1
     seq_len: int = 32
+    bs: int = 1
 
 
 class TriangleMulNodesParallelism:
 
     def __init__(self, world_size: int, rank: int, dcp_size: int, tp_size: int,
-                 seq_len: int, dim: int, dtype: str,
+                 bs: int, seq_len: int, dim: int, dtype: str,
                  multiplication_type: TriangleMultiplicationNodeType,
                  weights_and_biases: dict):
         self.world_size = world_size
         self.rank = rank
         self.dcp_size = dcp_size
         self.tp_size = tp_size
+        self.bs = bs
         self.seq_len = seq_len
         self.dim = dim
         self.dtype = dtype
@@ -76,8 +78,8 @@ class TriangleMulNodesParallelism:
     def build(self):
         os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
         os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-        hidden_states_shape = [self.seq_len, self.seq_len, self.dim]
-        mask_shape = [self.seq_len, self.seq_len]
+        hidden_states_shape = [self.bs, self.seq_len, self.seq_len, self.dim]
+        mask_shape = [self.bs, self.seq_len, self.seq_len]
         builder = Builder()
         builder = Builder()
         model_name = "triangle_nodes"
@@ -126,7 +128,6 @@ class TriangleMulNodesParallelism:
 
     def run(self, engine_buffer, inputs):
         # This import is needed to initialize plugin registry for each rank
-        pass
 
         # Disable TF32 for accuracy in testing.
         os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
@@ -165,12 +166,14 @@ class TriangleMulNodesParallelism:
 
 
 def run_single_rank(scenario: Scenario, inputs: dict, weights_and_biases: dict):
+    import tensorrt_bionemo  # init plugin registry for each rank
     rank = tensorrt_llm.mpi_rank()
     module = TriangleMulNodesParallelism(
         world_size=scenario.tp_size * scenario.dcp_size,
         rank=rank,
         dcp_size=scenario.dcp_size,
         tp_size=scenario.tp_size,
+        bs=scenario.bs,
         seq_len=scenario.seq_len,
         dim=scenario.dim,
         dtype=scenario.dtype,
@@ -212,8 +215,9 @@ def _generate_scenarios():
                          ids=_generate_scenarios()[1])
 def test_triangle_mul_nodes_parallelism(scenario: Scenario):
     torch.manual_seed(42)
-    x = torch.randn(scenario.seq_len, scenario.seq_len, scenario.dim)
-    mask = torch.randn(scenario.seq_len, scenario.seq_len)
+    x = torch.randn(scenario.bs, scenario.seq_len, scenario.seq_len,
+                    scenario.dim)
+    mask = torch.randn(scenario.bs, scenario.seq_len, scenario.seq_len)
     world_size = scenario.tp_size * scenario.dcp_size
     torch_dtype = str_dtype_to_torch(scenario.dtype)
     inputs = {'input_x': x, 'mask': mask}

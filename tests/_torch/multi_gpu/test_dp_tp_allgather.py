@@ -19,8 +19,7 @@ import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
 
-from tensorrt_bionemo._torch.distributed import (AllGatherMode, ParallelConfig,
-                                                 allgather)
+from tensorrt_bionemo._torch.distributed import AllGatherMode, allgather
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -45,21 +44,9 @@ def run_single_rank(x, y, tp_size, dcp_size):
                     mapping.tp_rank * tp_chunk:(mapping.tp_rank + 1) * tp_chunk,
                     ...]
 
-        parallel_config = ParallelConfig(tensor_parallel_size=tp_size,
-                                         tensor_parallel_rank=mapping.tp_rank,
-                                         data_parallel_size=dcp_size,
-                                         data_parallel_rank=mapping.dcp_rank,
-                                         gpus_per_node=tp_size * dcp_size,
-                                         gather_output=True)
         chunk = chunk_x + chunk_y
-        out_tp = allgather(chunk,
-                           parallel_config,
-                           mode=AllGatherMode.TP,
-                           gather_dim=1)
-        out_dp = allgather(out_tp,
-                           parallel_config,
-                           mode=AllGatherMode.DP,
-                           gather_dim=0)
+        out_tp = allgather(chunk, mapping, mode=AllGatherMode.TP, gather_dim=1)
+        out_dp = allgather(out_tp, mapping, mode=AllGatherMode.DP, gather_dim=0)
 
         ref_output = x + y
         torch.cuda.synchronize()

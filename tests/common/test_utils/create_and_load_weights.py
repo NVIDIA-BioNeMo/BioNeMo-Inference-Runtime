@@ -351,13 +351,13 @@ def create_triangle_multiplication_node_weights(
         p_in_weight = torch.rand(2 * dim, dim, dtype=torch_dtype)
         g_in_weight = torch.rand(2 * dim, dim, dtype=torch_dtype)
 
-        norm_out_weight = torch.empty(size=[dim], dtype=torch_dtype)
+        norm_out_weight = torch.empty(size=[dim], dtype=torch.float32)
         torch.nn.init.uniform_(norm_out_weight)
-        norm_out_bias = torch.empty(size=[dim], dtype=torch_dtype)
+        norm_out_bias = torch.empty(size=[dim], dtype=torch.float32)
         torch.nn.init.zeros_(norm_out_bias)
 
-        p_out_weight = torch.rand(dim, dim, dtype=torch_dtype)
-        g_out_weight = torch.rand(dim, dim, dtype=torch_dtype)
+        p_out_weight = torch.rand(dim, dim, dtype=torch.float32)
+        g_out_weight = torch.rand(dim, dim, dtype=torch.float32)
     else:
         norm_in_weight = from_ref.norm_in.weight.data
         norm_in_bias = from_ref.norm_in.bias.data
@@ -473,8 +473,9 @@ def load_triangle_multiplication_node_weights_torch(module,
         "bias":
         None
     }])
-    module.norm_out.weight.data.copy_(norm_out_weight.to(dtype).to("cuda"))
-    module.norm_out.bias.data.copy_(norm_out_bias.to(dtype).to("cuda"))
+    module.norm_out.weight.data.copy_(
+        norm_out_weight.to(torch.float32).to("cuda"))
+    module.norm_out.bias.data.copy_(norm_out_bias.to(torch.float32).to("cuda"))
 
 
 def create_transition_weights(dim=None,
@@ -616,37 +617,44 @@ def create_pairformer_layer_weights(token_s=None,
 def load_pairformer_layer_weights_trt(
         module,
         weights_and_biases,
-        tp_size=1,
-        tp_rank=0,
         mapping: Mapping = None,
         num_heads=None,
         token_s=None,
         token_z=None,
         max_attention_pairwise_tp_size: bool = False,
-        max_transition_tp_size: bool = False):
-    m = mapping
+        max_transition_tp_size: bool = False,
+        max_tri_mul_tp_size: bool = False):
+    m = mapping if mapping else Mapping()  # dynamic mapping
     if max_attention_pairwise_tp_size:
         m = create_max_tp_mapping(mapping, num_heads)
     load_self_pairwise_attention_weights_trt(module.attention,
                                              weights_and_biases["attention"],
                                              m.tp_size, m.tp_rank)
+
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    if max_tri_mul_tp_size:
+        m = create_max_tp_mapping(mapping, token_z)
     load_triangle_multiplication_node_weights_trt(
-        module.tri_mul_out, weights_and_biases["tri_mul_out"], tp_size, tp_rank)
+        module.tri_mul_out, weights_and_biases["tri_mul_out"], m.tp_size,
+        m.tp_rank)
     load_triangle_multiplication_node_weights_trt(
-        module.tri_mul_in, weights_and_biases["tri_mul_in"], tp_size, tp_rank)
+        module.tri_mul_in, weights_and_biases["tri_mul_in"], m.tp_size,
+        m.tp_rank)
+
+    m = mapping if mapping else Mapping()  # dynamic mapping
     load_triangle_attention_node_weights_trt(
-        module.tri_attn_start, weights_and_biases["tri_attn_start"], tp_size,
-        tp_rank)
+        module.tri_attn_start, weights_and_biases["tri_attn_start"], m.tp_size,
+        m.tp_rank)
     load_triangle_attention_node_weights_trt(module.tri_attn_end,
                                              weights_and_biases["tri_attn_end"],
-                                             tp_size, tp_rank)
-    m = mapping
+                                             m.tp_size, m.tp_rank)
+    m = mapping if mapping else Mapping()  # dynamic mapping
     if max_transition_tp_size:
         m = create_max_tp_mapping(mapping, token_s * 4)
     load_transition_weights_trt(module.transition_s,
                                 weights_and_biases["transition_s"], m.tp_size,
                                 m.tp_rank)
-    m = mapping
+    m = mapping if mapping else Mapping()  # dynamic mapping
     if max_transition_tp_size:
         m = create_max_tp_mapping(mapping, token_z * 4)
     load_transition_weights_trt(module.transition_z,

@@ -6,9 +6,9 @@ from pathlib import Path
 import safetensors
 from tensorrt_llm import logger
 
+from tensorrt_bionemo._trt.layers.transformers import PairformerModule
 from tensorrt_bionemo.confs.models.boltz1 import Boltz1Config
 from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
-from tensorrt_bionemo.layers.transformers import PairformerModule
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import convert_hf_pairformer
 
@@ -41,6 +41,10 @@ def parse_arguments():
                         type=int,
                         default=0,
                         help='The chunk size for the triangle attention node')
+    parser.add_argument('--max_batch_size',
+                        type=int,
+                        default=1,
+                        help='The max batch size for the pairformer')
     parser.add_argument('--no_update_s',
                         type=bool,
                         default=False,
@@ -98,6 +102,8 @@ def main():
         pairformer_config = boltz1_config.confidence_pairformer_backend_config
 
     config = {
+        "max_batch_size":
+        args.max_batch_size,
         "max_transition_tp_size":
         args.max_transition_tp_size,
         "max_attention_pairwise_tp_size":

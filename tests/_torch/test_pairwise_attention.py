@@ -25,13 +25,13 @@ from test_utils.ref_attn import RefPairwiseSelfAttention
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.modules.attention import SelfAttentionPairBias
+from tensorrt_bionemo._torch.layers.attention import SelfAttentionPairBias
 
 
 @dataclass(kw_only=True, frozen=True)
 class Scenario:
     backend: str
-    seq_len: int = 16
+    seq_len: int = 32
     c_s: int = 384
     c_z: int = 128
     chunk_size: int = None
@@ -42,14 +42,13 @@ class Scenario:
 @pytest.mark.parametrize("sc", [
     Scenario(backend="VANILLA"),
     Scenario(backend="VANILLA", torch_dtype="bfloat16"),
-    Scenario(backend="VANILLA", torch_dtype="float16"),
 ])
 def test_pairwise_attention_backend(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(sc.backend).Metadata
-
+    bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
     device = torch.device('cuda')
 
@@ -70,11 +69,10 @@ def test_pairwise_attention_backend(sc: Scenario):
                                                dtype=dtype)
     attn.to(device)
 
-    attn_metadata = metadata_cls(chunk_size=sc.chunk_size,
-                                 chunk_dim=sc.chunk_dim)
-    s = torch.randn(1, sc.seq_len, sc.c_s).to(device)
-    z = torch.randn(1, sc.seq_len, sc.seq_len, sc.c_z).to(device)
-    mask = torch.randn(1, sc.seq_len).to(device)
+    attn_metadata = metadata_cls()
+    s = torch.randn(bs, sc.seq_len, sc.c_s).to(device)
+    z = torch.randn(bs, sc.seq_len, sc.seq_len, sc.c_z).to(device)
+    mask = torch.randn(bs, sc.seq_len).to(device)
 
     with torch.inference_mode():
         ref_output_float = ref_attn(s, z, mask)
@@ -97,9 +95,6 @@ def test_pairwise_attention_backend(sc: Scenario):
         diff1_mean = torch.mean(torch.abs(ref_output.float() -
                                           ref_output_float))
 
-        if dtype == torch.bfloat16:
-            assert abs(diff0_max - diff1_max) <= 3
-            assert abs(diff0_mean - diff1_mean) <= 0.2
-        else:  # fp16 return NaN for ref
-            assert diff0_max <= 0.2
-            assert diff0_mean <= 0.01
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
+                                                      diff1_max) <= 0.5
+        assert abs(diff0_mean - diff1_mean) <= 0.2

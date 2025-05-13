@@ -19,10 +19,9 @@ import torch
 import torch.nn as nn
 from tensorrt_llm.functional import AllReduceParams
 
-from tensorrt_bionemo._torch.distributed import (TensorParallelMode,
-                                                 create_parallel_config)
-from tensorrt_bionemo._torch.modules.linear import (Linear, WeightMode,
-                                                    WeightsLoadingConfig)
+from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
+                                                   WeightMode,
+                                                   WeightsLoadingConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 
@@ -45,7 +44,7 @@ class Transition(nn.Module):
         mapping = mapping or Mapping()
         if max_transition_tp_size:
             mapping = create_max_tp_mapping(mapping, hidden)
-
+        self.dtype = dtype
         self.hidden = hidden // mapping.tp_size
         self.norm = nn.LayerNorm(dim, eps=eps, dtype=dtype)
 
@@ -54,8 +53,9 @@ class Transition(nn.Module):
             2 * hidden,
             dtype=dtype,
             bias=False,
-            parallel_config=create_parallel_config(
-                mapping, tensor_parallel_mode=TensorParallelMode.COLUMN),
+            mapping=mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=False,
             skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
@@ -65,9 +65,9 @@ class Transition(nn.Module):
                           out_dim,
                           dtype=dtype,
                           bias=False,
-                          parallel_config=create_parallel_config(
-                              mapping,
-                              tensor_parallel_mode=TensorParallelMode.ROW),
+                          mapping=mapping,
+                          tensor_parallel_mode=TensorParallelMode.ROW,
+                          reduce_output=True,
                           skip_create_weights=skip_create_weights)
 
     def forward(

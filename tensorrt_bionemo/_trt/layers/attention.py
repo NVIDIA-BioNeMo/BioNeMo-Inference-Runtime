@@ -32,8 +32,9 @@ from tensorrt_bionemo.mapping import Mapping
 
 class AttentionParams(object):
 
-    def __init__(self, vanilla_attn_precision: str = 'float32'):
-        self.vanilla_attn_precision = vanilla_attn_precision
+    def __init__(self):
+        # TODO: Add attention params
+        pass
 
 
 class TriangleAttention(Module):
@@ -105,7 +106,19 @@ class TriangleAttention(Module):
                 norm_before_bmm1: bool = False,
                 attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None):
-        qkv = self.qkv_proj(hidden_states, None)
+        """
+        Implementation of the triangle attention in TensorRT.
+
+        Args:
+            hidden_states: [B, I, J, F]
+            biases: Include two biases:
+                - mask_bias: [B, I, 1, 1, J]
+                - triangle_bias: [B, H, J, J]
+        """
+        bs = shape(hidden_states, 0)
+        si = shape(hidden_states, 1)
+        sj = shape(hidden_states, 2)
+        qkv = self.qkv_proj(hidden_states, None)  # [B, I, J, 3*H*D]
 
         if False:
             # TODO: Call to alpha-fold self-attention plugin, at here
@@ -115,25 +128,21 @@ class TriangleAttention(Module):
             def transpose_for_scores(x, is_kv: bool = False):
                 _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
                 new_x_shape = concat([
-                    shape(x, 0),
-                    shape(x, 1), _num_attention_heads, self.attention_head_size
+                    bs, si, sj, _num_attention_heads, self.attention_head_size
                 ])
 
-                return x.view(new_x_shape).permute([0, 2, 1, 3])
+                return x.view(new_x_shape).permute([0, 1, 3, 2, 4])
 
             query, key, value = split(
                 qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
-                dim=2)
+                dim=-1)
 
-            query = transpose_for_scores(query, is_kv=False)
-            key = transpose_for_scores(key, is_kv=True)
-            value = transpose_for_scores(value, is_kv=True)
-            # At here, query has shape [batch_size, num_heads, seq_len, head_dim]
-            # key and value have shape [batch_size, num_heads, seq_len, head_dim]
+            query = transpose_for_scores(query, is_kv=False)  # [B, I, H, J, D]
+            key = transpose_for_scores(key, is_kv=True)  # [B, I, H, J, D]
+            value = transpose_for_scores(value, is_kv=True)  # [B, I, H, J, D]
+
             mask_bias = None
             triangle_bias = None
-            batch_size = shape(query, 0)
-            seq_len = shape(query, 2)
 
             if biases is not None:
                 mask_bias = biases[0]
@@ -142,14 +151,12 @@ class TriangleAttention(Module):
                 if self.tp_size > 1:
                     starts = concat(
                         [0, self.num_attention_heads * self.tp_rank, 0, 0])
-                    ends = concat(
-                        [1, self.num_attention_heads, seq_len, seq_len])
+                    ends = concat([bs, self.num_attention_heads, sj, sj])
                     triangle_bias = slice(triangle_bias, starts, ends)
+                triangle_bias = triangle_bias.unsqueeze(1)
 
-            key = key.permute([0, 1, 3, 2])
-            model_type = query.dtype
+            key = key.permute([0, 1, 2, 4, 3])  # [B, I, H, D, J] # K^T
 
-            # Using attn precision different from model precision to avoid NaN results
             if norm_before_bmm1:
                 query /= self.norm_factor
             attention_scores = matmul(query, key)
@@ -160,34 +167,28 @@ class TriangleAttention(Module):
             if triangle_bias is not None:
                 attention_scores += triangle_bias
 
-            attention_probs = softmax(attention_scores, dim=-1)
-            attention_probs = cast(attention_probs, model_type)
-            attention_probs = attention_probs.view(
-                concat([
-                    shape(attention_probs, 0),
-                    shape(attention_probs, 1),
-                    shape(attention_probs, 2),
-                    shape(value, 2)
-                ]))
+            attention_probs = softmax(attention_scores,
+                                      dim=-1)  # [B, I, H, J, J]
 
             context = matmul(attention_probs, value,
-                             use_fp32_acc=False).permute([0, 2, 1, 3])
+                             use_fp32_acc=False).permute([0, 1, 3, 2,
+                                                          4])  # [B, I, J, H, D]
             if self.g_proj is not None:
-                g = self.g_proj(hidden_states)
+                g = self.g_proj(hidden_states)  # [B, I, J, H*D]
                 g = activation(g, trt.ActivationType.SIGMOID)
                 g = g.view(
                     concat([
-                        batch_size, seq_len, self.num_attention_heads,
+                        bs, si, sj, self.num_attention_heads,
                         self.attention_head_size
-                    ]))
+                    ]))  # [B, I, J, H, D]
                 context *= g
             context = context.view(
                 concat([
-                    shape(context, 0),
-                    shape(context, 1),
+                    bs, si, sj,
                     self.num_attention_heads * self.attention_head_size
-                ]))
-            context = self.o_proj(context, all_reduce_params=all_reduce_params)
+                ]))  # [B, I, J, H*D]
+            context = self.o_proj(
+                context, all_reduce_params=all_reduce_params)  # [B, I, J, F]
         return context
 
 
@@ -286,6 +287,14 @@ class SelfAttentionPairBias(Module):
                 norm_before_bmm1: bool = False,
                 attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None):
+        """
+        Implementation of the self-attention pair bias in TensorRT.
+
+        Args:
+            s: [B, I, C_S]
+            z: [B, I, I, C_Z]
+            mask: [B, I]
+        """
         if self.norm_s:
             norm_s = self.norm_s(s)
         else:
@@ -319,7 +328,7 @@ class SelfAttentionPairBias(Module):
             key = key.permute([0, 1, 3, 2])
             model_type = query.dtype
             z = self.proj_z_norm(z)
-            pair_bias = self.proj_z(z)
+            pair_bias = self.proj_z(z)  # [B, N, N, H]
             pair_bias = pair_bias.permute([0, 3, 1,
                                            2])  # [B, N, N, H] -> [B, H, N, N]
             mask = cast(mask, 'float32')

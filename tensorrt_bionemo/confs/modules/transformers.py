@@ -30,6 +30,7 @@ class PairformerConfig(PretrainedModuleConfig):
                  pairwise_num_heads: int = 4,
                  num_blocks: int = 48,
                  num_heads: int = 16,
+                 max_batch_size: int = 1,
                  max_transition_tp_size: bool = True,
                  max_attention_pairwise_tp_size: bool = True,
                  max_tri_mul_tp_size: bool = True,
@@ -37,8 +38,8 @@ class PairformerConfig(PretrainedModuleConfig):
                  no_update_s: bool = False,
                  no_update_z: bool = False,
                  backend: str = "torch",
-                 attn_backend: str = 'VANILLA',
-                 vanilla_attn_precision: str = "float32",
+                 triangle_attn_backend: str = 'VANILLA',
+                 pairwise_attn_backend: str = 'VANILLA',
                  **kwargs):
         super().__init__(**kwargs)
 
@@ -48,6 +49,7 @@ class PairformerConfig(PretrainedModuleConfig):
         self.pairwise_num_heads = pairwise_num_heads
         self.num_blocks = num_blocks
         self.num_heads = num_heads
+        self.max_batch_size = max_batch_size
         self.max_transition_tp_size = max_transition_tp_size
         self.max_attention_pairwise_tp_size = max_attention_pairwise_tp_size
         self.max_tri_mul_tp_size = max_tri_mul_tp_size
@@ -55,8 +57,8 @@ class PairformerConfig(PretrainedModuleConfig):
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
         self.backend = backend
-        self.attn_backend = attn_backend
-        self.vanilla_attn_precision = vanilla_attn_precision
+        self.triangle_attn_backend = triangle_attn_backend
+        self.pairwise_attn_backend = pairwise_attn_backend
         self.disable_custom_all_reduce = max_transition_tp_size or max_attention_pairwise_tp_size
 
     def get_input_names(self):
@@ -67,20 +69,29 @@ class PairformerConfig(PretrainedModuleConfig):
 
     def get_input_shapes(self):
         seqlen = DimSpec(name="seqlen", dynamic=True)
+        batch_size = DimSpec(name="batch_size", dynamic=True)
         return OrderedDict([
-            ("s", (seqlen, DimSpec(size=self.token_s, name="token_s"))),
-            ("z", (seqlen, seqlen, DimSpec(size=self.token_z, name="token_z"))),
-            ("mask", (seqlen, )),
-            ("pair_mask", (seqlen, seqlen)),
+            ("s", (batch_size, seqlen, DimSpec(size=self.token_s,
+                                               name="token_s"))),
+            ("z", (batch_size, seqlen, seqlen,
+                   DimSpec(size=self.token_z, name="token_z"))),
+            ("mask", (batch_size, seqlen)),
+            ("pair_mask", (batch_size, seqlen, seqlen)),
         ])
 
     def get_output_shapes(self):
         seqlen = DimSpec(name="seqlen", dynamic=True)
+        batch_size = DimSpec(name="batch_size", dynamic=True)
         return OrderedDict([
-            ("output_s", (seqlen, DimSpec(size=self.token_s, name="token_s"))),
-            ("output_z", (seqlen, seqlen,
+            ("output_s", (batch_size, seqlen,
+                          DimSpec(size=self.token_s, name="token_s"))),
+            ("output_z", (batch_size, seqlen, seqlen,
                           DimSpec(size=self.token_z, name="token_z"))),
         ])
+
+    @classmethod
+    def from_dict(cls, config_dict: dict):
+        return cls(**config_dict)
 
 
 @dataclass
@@ -121,6 +132,10 @@ class PairformerBuildConfig(BuildModuleConfig):
                         min_shape.append(rmin)
                         opt_shape.append(rmax)
                         max_shape.append(rmax)
+                    elif spec.name == "batch_size":
+                        min_shape.append(1)
+                        opt_shape.append(1)
+                        max_shape.append(self.module_config.max_batch_size)
                     else:
                         min_shape.append(spec.size)
                         opt_shape.append(spec.size)

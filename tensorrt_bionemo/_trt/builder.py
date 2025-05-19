@@ -48,7 +48,7 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
     )
     # TODO: make to args
     builder_config.trt_builder_config.set_memory_pool_limit(
-        trt.MemoryPoolType.WORKSPACE, 64 * (2**30))
+        trt.MemoryPoolType.WORKSPACE, 16 * (2**30))
     builder_config.trt_builder_config.builder_optimization_level = 5
 
     network = builder.create_network()

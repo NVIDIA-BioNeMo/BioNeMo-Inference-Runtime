@@ -26,9 +26,10 @@ from test_utils.ref_attn import RefTriangleAttention
 
 import tensorrt_bionemo
 
-TriAttnTestScenario = namedtuple(
-    "TriAttnTestScenario",
-    ["bs", "si", "sj", "hidden_size", "num_attention_heads", "dtype"])
+TriAttnTestScenario = namedtuple("TriAttnTestScenario", [
+    "bs", "si", "sj", "hidden_size", "num_attention_heads", "dtype",
+    "triangle_attn_backend"
+])
 
 
 @pytest.mark.parametrize("sc", [
@@ -37,19 +38,43 @@ TriAttnTestScenario = namedtuple(
                         sj=5,
                         hidden_size=32,
                         num_attention_heads=16,
-                        dtype="float32"),
+                        dtype="float32",
+                        triangle_attn_backend="VANILLA"),
     TriAttnTestScenario(bs=2,
                         si=6,
                         sj=12,
                         hidden_size=48,
                         num_attention_heads=8,
-                        dtype="float32"),
+                        dtype="float32",
+                        triangle_attn_backend="VANILLA"),
     TriAttnTestScenario(bs=3,
                         si=100,
                         sj=200,
                         hidden_size=64,
                         num_attention_heads=8,
-                        dtype="float32"),
+                        dtype="float32",
+                        triangle_attn_backend="VANILLA"),
+    TriAttnTestScenario(bs=1,
+                        si=70,
+                        sj=70,
+                        hidden_size=32,
+                        num_attention_heads=4,
+                        dtype="float32",
+                        triangle_attn_backend="TRIFAST"),
+    TriAttnTestScenario(bs=2,
+                        si=64,
+                        sj=96,
+                        hidden_size=32,
+                        num_attention_heads=2,
+                        dtype="float32",
+                        triangle_attn_backend="TRIFAST"),
+    TriAttnTestScenario(bs=3,
+                        si=100,
+                        sj=512,
+                        hidden_size=32,
+                        num_attention_heads=1,
+                        dtype="float32",
+                        triangle_attn_backend="TRIFAST"),
 ])
 def test_triangle_attention(sc: TriAttnTestScenario):
     torch.manual_seed(42)
@@ -72,6 +97,12 @@ def test_triangle_attention(sc: TriAttnTestScenario):
                             device="cuda",
                             requires_grad=False)
     mask_bias.normal_(mean=mean, std=std_dev)
+    if sc.triangle_attn_backend == "TRIFAST":
+        mask_bias = torch.randint(0,
+                                  2, (sc.bs, sc.si, 1, 1, sc.sj),
+                                  dtype=torch_dtype,
+                                  device="cuda",
+                                  requires_grad=False)
     triangle_bias = torch.empty(
         size=[sc.bs, sc.num_attention_heads, sc.sj, sc.sj],
         dtype=torch_dtype,
@@ -103,7 +134,9 @@ def test_triangle_attention(sc: TriAttnTestScenario):
             num_attention_heads=sc.num_attention_heads,
             num_kv_heads=sc.num_attention_heads,
             local_layer_idx=0,
-            gating=True)
+            gating=True,
+            dtype=sc.dtype,
+            triangle_attn_backend=sc.triangle_attn_backend)
         load_triangle_attention_weights_trt(attn_layer, weights_and_biases)
 
         input_tensor = trt_hidden_states
@@ -148,6 +181,8 @@ def test_triangle_attention(sc: TriAttnTestScenario):
     load_triangle_attention_weights_ref_torch(ref_attn, weights_and_biases)
 
     with torch.inference_mode():
+        if sc.triangle_attn_backend == "TRIFAST":
+            mask_bias = mask_bias.to(torch_dtype) * torch.finfo(torch_dtype).min
         ref_output = ref_attn(hidden_states, hidden_states,
                               [mask_bias, triangle_bias])
 

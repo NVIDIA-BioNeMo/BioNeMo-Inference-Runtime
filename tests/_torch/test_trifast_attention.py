@@ -55,8 +55,8 @@ def test_trifast_attention_for_triangle(seq_len, i_factor, dtype):
                                     num_heads,
                                     head_dim,
                                     num_kv_heads=num_heads)
-    metadata = TrifastAttentionMetadata(
-        closest_n=2**int(np.ceil(np.log2(seq_len))))
+    metadata = TrifastAttentionMetadata()
+    metadata.closest_n = 2**int(np.ceil(np.log2(seq_len)))
     trifast_out = trifast_attn.forward(
         q.to(dtype),
         k.to(dtype),

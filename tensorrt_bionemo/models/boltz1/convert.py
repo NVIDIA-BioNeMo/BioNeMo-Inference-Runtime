@@ -15,6 +15,7 @@
 import torch
 import torch.nn as nn
 import tqdm
+from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
@@ -28,7 +29,9 @@ def get_pairwise_attn_weights(mapping: Mapping,
                               prefix: str,
                               tbm_prefix: str,
                               max_attention_pairwise_tp_size: bool = True,
-                              num_heads: int = 16):
+                              num_heads: int = 16,
+                              dtype: str = "float32"):
+    torch_dtype = str_dtype_to_torch(dtype)
     init_norm_weight = state_dict[f"{prefix}.norm_s.weight"]
     init_norm_bias = state_dict[f"{prefix}.norm_s.bias"]
     q_weight = state_dict[f"{prefix}.proj_q.weight"]
@@ -58,22 +61,26 @@ def get_pairwise_attn_weights(mapping: Mapping,
     kv_weights = torch.cat([k_weight, v_weight], dim=0)
 
     ret = {
-        f"{tbm_prefix}.norm_s.weight": init_norm_weight,
-        f"{tbm_prefix}.norm_s.bias": init_norm_bias,
-        f"{tbm_prefix}.proj_q.weight": q_weight,
-        f"{tbm_prefix}.proj_q.bias": q_bias,
-        f"{tbm_prefix}.proj_kv.weight": kv_weights,
-        f"{tbm_prefix}.proj_g.weight": g_weight,
-        f"{tbm_prefix}.proj_z_norm.weight": norm_z_weight,
-        f"{tbm_prefix}.proj_z_norm.bias": norm_z_bias,
-        f"{tbm_prefix}.proj_z.weight": z_weight,
-        f"{tbm_prefix}.proj_o.weight": o_weight,
+        f"{tbm_prefix}.norm_s.weight": init_norm_weight.to(torch_dtype),
+        f"{tbm_prefix}.norm_s.bias": init_norm_bias.to(torch_dtype),
+        f"{tbm_prefix}.proj_q.weight": q_weight.to(torch_dtype),
+        f"{tbm_prefix}.proj_q.bias": q_bias.to(torch_dtype),
+        f"{tbm_prefix}.proj_kv.weight": kv_weights.to(torch_dtype),
+        f"{tbm_prefix}.proj_g.weight": g_weight.to(torch_dtype),
+        f"{tbm_prefix}.proj_z_norm.weight": norm_z_weight.to(torch_dtype),
+        f"{tbm_prefix}.proj_z_norm.bias": norm_z_bias.to(torch_dtype),
+        f"{tbm_prefix}.proj_z.weight": z_weight.to(torch_dtype),
+        f"{tbm_prefix}.proj_o.weight": o_weight.to(torch_dtype),
     }
     return ret
 
 
-def get_tri_attn_node_weights(mapping: Mapping, state_dict: dict, prefix: str,
-                              tbm_prefix: str):
+def get_tri_attn_node_weights(mapping: Mapping,
+                              state_dict: dict,
+                              prefix: str,
+                              tbm_prefix: str,
+                              dtype: str = "float32"):
+    torch_dtype = str_dtype_to_torch(dtype)
     layer_norm_weight = state_dict[f"{prefix}.layer_norm.weight"]
     layer_norm_bias = state_dict[f"{prefix}.layer_norm.bias"]
     linear_weight = state_dict[f"{prefix}.linear.weight"]
@@ -97,12 +104,12 @@ def get_tri_attn_node_weights(mapping: Mapping, state_dict: dict, prefix: str,
                                 dim=0)
 
     ret = {
-        f"{tbm_prefix}.layer_norm.weight": layer_norm_weight,
-        f"{tbm_prefix}.layer_norm.bias": layer_norm_bias,
-        f"{tbm_prefix}.linear.weight": linear_weight,
-        f"{tbm_prefix}.mha.qkv_proj.weight": mha_qkv_weights,
-        f"{tbm_prefix}.mha.o_proj.weight": mha_o_weight,
-        f"{tbm_prefix}.mha.g_proj.weight": mha_g_weight,
+        f"{tbm_prefix}.layer_norm.weight": layer_norm_weight.to(torch_dtype),
+        f"{tbm_prefix}.layer_norm.bias": layer_norm_bias.to(torch_dtype),
+        f"{tbm_prefix}.linear.weight": linear_weight.to(torch_dtype),
+        f"{tbm_prefix}.mha.qkv_proj.weight": mha_qkv_weights.to(torch_dtype),
+        f"{tbm_prefix}.mha.o_proj.weight": mha_o_weight.to(torch_dtype),
+        f"{tbm_prefix}.mha.g_proj.weight": mha_g_weight.to(torch_dtype),
     }
     return ret
 
@@ -111,7 +118,9 @@ def get_tri_mul_node_weights(mapping: Mapping,
                              state_dict: dict,
                              prefix: str,
                              tbm_prefix: str,
-                             max_tri_mul_tp_size: bool = True):
+                             max_tri_mul_tp_size: bool = True,
+                             dtype: str = "float32"):
+    torch_dtype = str_dtype_to_torch(dtype)
     norm_in_weight = state_dict[f"{prefix}.norm_in.weight"]
     norm_in_bias = state_dict[f"{prefix}.norm_in.bias"]
     p_in_weight = state_dict[f"{prefix}.p_in.weight"]
@@ -142,10 +151,10 @@ def get_tri_mul_node_weights(mapping: Mapping,
         p_out_weight = split(p_out_weight, tp_size, tp_rank, 0)
         g_out_weight = split(g_out_weight, tp_size, tp_rank, 0)
     ret = {
-        f"{tbm_prefix}.norm_in.weight": norm_in_weight,
-        f"{tbm_prefix}.norm_in.bias": norm_in_bias,
-        f"{tbm_prefix}.p_in.weight": p_in_weight,
-        f"{tbm_prefix}.g_in.weight": g_in_weight,
+        f"{tbm_prefix}.norm_in.weight": norm_in_weight.to(torch_dtype),
+        f"{tbm_prefix}.norm_in.bias": norm_in_bias.to(torch_dtype),
+        f"{tbm_prefix}.p_in.weight": p_in_weight.to(torch_dtype),
+        f"{tbm_prefix}.g_in.weight": g_in_weight.to(torch_dtype),
         f"{tbm_prefix}.norm_out.weight": norm_out_weight,
         f"{tbm_prefix}.norm_out.bias": norm_out_bias,
         f"{tbm_prefix}.p_out.weight": p_out_weight,
@@ -159,7 +168,9 @@ def get_transition_weights(mapping: Mapping,
                            prefix: str,
                            tbm_prefix: str,
                            max_transition_tp_size: bool = True,
-                           dim: int = 128):
+                           dim: int = 128,
+                           dtype: str = "float32"):
+    torch_dtype = str_dtype_to_torch(dtype)
     norm_weight = state_dict[f"{prefix}.norm.weight"]
     norm_bias = state_dict[f"{prefix}.norm.bias"]
     fc1_weight = state_dict[f"{prefix}.fc1.weight"]
@@ -177,10 +188,11 @@ def get_transition_weights(mapping: Mapping,
     fused_fc2_fc1_weight = torch.cat([fc2_weight, fc1_weight], dim=0)
 
     ret = {
-        f"{tbm_prefix}.norm.weight": norm_weight,
-        f"{tbm_prefix}.norm.bias": norm_bias,
-        f"{tbm_prefix}.fused_fc2_fc1.weight": fused_fc2_fc1_weight,
-        f"{tbm_prefix}.fc3.weight": fc3_weight,
+        f"{tbm_prefix}.norm.weight": norm_weight.to(torch_dtype),
+        f"{tbm_prefix}.norm.bias": norm_bias.to(torch_dtype),
+        f"{tbm_prefix}.fused_fc2_fc1.weight":
+        fused_fc2_fc1_weight.to(torch_dtype),
+        f"{tbm_prefix}.fc3.weight": fc3_weight.to(torch_dtype),
     }
     return ret
 
@@ -202,46 +214,62 @@ def convert_hf_pairformer(config: PairformerConfig,
     tbm_prefix = "layers"
     weights = {}
     state_dict = load_hf_weights(name="boltz-1")
-
+    logger.info(
+        f"Loading weights for {pairformer_type} pairformer, dtype: {config.dtype}"
+    )
     for i in range(config.num_blocks):
         layer_prefix = f"{prefix}.{i}"
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
         weights.update(
-            get_pairwise_attn_weights(mapping, state_dict,
+            get_pairwise_attn_weights(mapping,
+                                      state_dict,
                                       f"{layer_prefix}.attention",
                                       f"{layer_tbm_prefix}.attention",
                                       config.max_attention_pairwise_tp_size,
-                                      config.num_heads))
+                                      config.num_heads,
+                                      dtype=config.dtype))
         weights.update(
-            get_tri_attn_node_weights(mapping, state_dict,
+            get_tri_attn_node_weights(mapping,
+                                      state_dict,
                                       f"{layer_prefix}.tri_att_start",
-                                      f"{layer_tbm_prefix}.tri_attn_start"))
+                                      f"{layer_tbm_prefix}.tri_attn_start",
+                                      dtype=config.dtype))
         weights.update(
-            get_tri_attn_node_weights(mapping, state_dict,
+            get_tri_attn_node_weights(mapping,
+                                      state_dict,
                                       f"{layer_prefix}.tri_att_end",
-                                      f"{layer_tbm_prefix}.tri_attn_end"))
+                                      f"{layer_tbm_prefix}.tri_attn_end",
+                                      dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping, state_dict,
+            get_tri_mul_node_weights(mapping,
+                                     state_dict,
                                      f"{layer_prefix}.tri_mul_out",
                                      f"{layer_tbm_prefix}.tri_mul_out",
-                                     config.max_tri_mul_tp_size))
+                                     config.max_tri_mul_tp_size,
+                                     dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping, state_dict,
+            get_tri_mul_node_weights(mapping,
+                                     state_dict,
                                      f"{layer_prefix}.tri_mul_in",
                                      f"{layer_tbm_prefix}.tri_mul_in",
-                                     config.max_tri_mul_tp_size))
+                                     config.max_tri_mul_tp_size,
+                                     dtype=config.dtype))
         weights.update(
-            get_transition_weights(mapping, state_dict,
+            get_transition_weights(mapping,
+                                   state_dict,
                                    f"{layer_prefix}.transition_s",
                                    f"{layer_tbm_prefix}.transition_s",
                                    config.max_transition_tp_size,
-                                   config.token_s * 4))
+                                   config.token_s * 4,
+                                   dtype=config.dtype))
         weights.update(
-            get_transition_weights(mapping, state_dict,
+            get_transition_weights(mapping,
+                                   state_dict,
                                    f"{layer_prefix}.transition_z",
                                    f"{layer_tbm_prefix}.transition_z",
                                    config.max_transition_tp_size,
-                                   config.token_z * 4))
+                                   config.token_z * 4,
+                                   dtype=config.dtype))
     return weights
 
 

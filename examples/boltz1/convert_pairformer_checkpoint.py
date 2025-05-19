@@ -6,7 +6,6 @@ from pathlib import Path
 import safetensors
 from tensorrt_llm import logger
 
-from tensorrt_bionemo._trt.layers.transformers import PairformerModule
 from tensorrt_bionemo.confs.models.boltz1 import Boltz1Config
 from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
 from tensorrt_bionemo.mapping import Mapping
@@ -68,6 +67,11 @@ def parse_arguments():
                         default='structure',
                         choices=['structure', 'confidence'],
                         help='The type of pairformer to convert')
+    parser.add_argument('--triangle_attn_backend',
+                        type=str,
+                        default='VANILLA',
+                        choices=['VANILLA', 'TRIFAST'],
+                        help='The backend of triangle attention')
     parser.add_argument(
         '--workers',
         type=int,
@@ -141,9 +145,11 @@ def main():
         },
         "disable_custom_all_reduce":
         args.max_transition_tp_size or args.max_attention_pairwise_tp_size
-        or args.max_tri_mul_tp_size
+        or args.max_tri_mul_tp_size,
+        "triangle_attn_backend":
+        args.triangle_attn_backend,
     }
-    pairformer_config = PairformerConfig.from_dict(PairformerModule, config)
+    pairformer_config = PairformerConfig.from_dict(config)
     config = pairformer_config.to_dict()
     with (args.output_dir / 'config.json').open('w') as f:
         json.dump(config, f, indent=4)

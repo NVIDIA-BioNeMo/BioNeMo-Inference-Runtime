@@ -21,7 +21,7 @@ import tensorrt as trt
 import torch
 import torch.nn as nn
 from cuda import cudart
-from tensorrt_llm._utils import trt_dtype_to_torch
+from tensorrt_llm._utils import str_dtype_to_trt, trt_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.plugin.plugin import CustomAllReduceHelper
 from tensorrt_llm.runtime import Session, TensorInfo
@@ -102,7 +102,8 @@ class PairformerTorch(nn.Module):
             mask = mask.to(self.config.torch_dtype)
             pair_mask = pair_mask.to(self.config.torch_dtype)
         if self.config.triangle_attn_backend == "TRIFAST":
-            self.attn_metadatas["triangle_attn"].closest_n = get_closest_n(s)
+            self.attn_metadatas["triangle_attn"].closest_n = get_closest_n(
+                s // self.config.mapping.dcp_size)
         s, z = self._module(s,
                             z,
                             mask,
@@ -121,6 +122,7 @@ class PairformerTRT(nn.Module):
                  load_weights_fn: Optional[Callable] = None):
         super().__init__()
         self.config = config
+        self.trt_dtype = str_dtype_to_trt(config.dtype)
         self._load_weights_fn = load_weights_fn
 
     def load_weights(self,
@@ -210,10 +212,17 @@ class PairformerTRT(nn.Module):
         num_optimization_profiles = self.engine.num_optimization_profiles
         for i in range(num_optimization_profiles):
             mask_dims = self.engine.get_tensor_profile_shape("mask", i)
+            self.engine.get_tensor_profile_shape("s", i)
             min_opt = mask_dims[0]
             max_opt = mask_dims[-1]
-            min_s = min_opt[1]  # 0: batch_size, 1: seqlen
-            max_s = max_opt[1]  # 0: batch_size, 1: seqlen
+
+            if self.config.support_batch:
+                min_s = min_opt[1]  # 0: batch_size, 1: seqlen
+                max_s = max_opt[1]  # 0: batch_size, 1: seqlen
+            else:
+                min_s = min_opt[0]  # 0: seqlen
+                max_s = max_opt[0]  # 0: seqlen
+
             self.opt_profile_map[(min_s, max_s)] = i
         self.curr_profile = 0
 
@@ -240,6 +249,12 @@ class PairformerTRT(nn.Module):
                 pair_mask: torch.Tensor,
                 **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         # Ensure the inputs are contiguous
+        self.switch_opt_profile(s.shape[1])
+        if not self.config.support_batch:
+            s = s.squeeze(0)
+            z = z.squeeze(0)
+            mask = mask.squeeze(0)
+            pair_mask = pair_mask.squeeze(0)
         if not s.is_contiguous():
             s = s.contiguous()
         if not z.is_contiguous():
@@ -248,15 +263,21 @@ class PairformerTRT(nn.Module):
             mask = mask.contiguous()
         if not pair_mask.is_contiguous():
             pair_mask = pair_mask.contiguous()
+        original_dtype = s.dtype
 
-        inputs = {"s": s, "z": z, "mask": mask, "pair_mask": pair_mask}
-        self.switch_opt_profile(s.shape[1])
+        inputs = {
+            "s": s.to(self.config.torch_dtype),
+            "z": z.to(self.config.torch_dtype),
+            "mask": mask.to(self.config.torch_dtype),
+            "pair_mask": pair_mask.to(self.config.torch_dtype)
+        }
+
         output_info = self.session.infer_shapes([
-            TensorInfo("s", dtype=trt.DataType.FLOAT, shape=s.shape),
-            TensorInfo("z", dtype=trt.DataType.FLOAT, shape=z.shape),
-            TensorInfo("mask", dtype=trt.DataType.FLOAT, shape=mask.shape),
-            TensorInfo(
-                "pair_mask", dtype=trt.DataType.FLOAT, shape=pair_mask.shape),
+            TensorInfo("s", dtype=self.trt_dtype, shape=s.shape),
+            TensorInfo("z", dtype=self.trt_dtype, shape=z.shape),
+            TensorInfo("mask", dtype=self.trt_dtype, shape=mask.shape),
+            TensorInfo("pair_mask", dtype=self.trt_dtype,
+                       shape=pair_mask.shape),
         ], self.context)
         outputs = {
             t.name:
@@ -272,8 +293,11 @@ class PairformerTRT(nn.Module):
                               self.stream,
                               context=self.context)
         assert ok, "Runtime execution failed"
-        s = outputs["output_s"]
-        z = outputs["output_z"]
+        s = outputs["output_s"].to(original_dtype)
+        z = outputs["output_z"].to(original_dtype)
+        if not self.config.support_batch:
+            s = s.unsqueeze(0)
+            z = z.unsqueeze(0)
         return s, z
 
 

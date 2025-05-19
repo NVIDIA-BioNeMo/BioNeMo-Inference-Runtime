@@ -51,14 +51,15 @@ class PairformerLayer(Module):
                  max_transition_tp_size: bool = False,
                  max_attention_pairwise_tp_size: bool = False,
                  max_tri_mul_tp_size: bool = True,
+                 triangle_attn_backend: str = 'VANILLA',
+                 support_batch: bool = True,
                  mapping: Mapping = Mapping()):
         super().__init__()
-
         self.token_z = token_z
         self.num_heads = num_heads
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
-
+        self.support_batch = support_batch
         self.attention = None
         if not self.no_update_s:
             m = mapping
@@ -82,6 +83,7 @@ class PairformerLayer(Module):
             dtype=dtype,
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
+            support_batch=support_batch,
             mapping=m)
         self.tri_mul_in = TriangleMultiplicationNode(
             local_layer_idx=local_layer_idx,
@@ -89,6 +91,7 @@ class PairformerLayer(Module):
             dtype=dtype,
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.INCOMING,
+            support_batch=support_batch,
             mapping=m)
         self.tri_attn_start = TriangleAttentionNode(
             local_layer_idx=local_layer_idx,
@@ -100,6 +103,8 @@ class PairformerLayer(Module):
             eps=eps,
             inf=inf,
             chunk_size=chunk_size,
+            triangle_attn_backend=triangle_attn_backend,
+            support_batch=support_batch,
             mapping=mapping)
         self.tri_attn_end = TriangleAttentionNode(
             local_layer_idx=local_layer_idx,
@@ -111,6 +116,8 @@ class PairformerLayer(Module):
             eps=eps,
             inf=inf,
             chunk_size=chunk_size,
+            triangle_attn_backend=triangle_attn_backend,
+            support_batch=support_batch,
             mapping=mapping)
         if not self.no_update_s:
             m = mapping
@@ -151,11 +158,19 @@ class PairformerLayer(Module):
                                   all_reduce_params=all_reduce_params)
         z = z + self.transition_z(z)
         if not self.no_update_s:
-            s = s + self.attention(s,
-                                   z,
-                                   mask,
-                                   attention_params=attention_params,
-                                   all_reduce_params=all_reduce_params)
+            if self.support_batch:
+                s = s + self.attention(s,
+                                       z,
+                                       mask,
+                                       attention_params=attention_params,
+                                       all_reduce_params=all_reduce_params)
+            else:
+                s = s + self.attention(
+                    s.unsqueeze(0),
+                    z.unsqueeze(0),
+                    mask.unsqueeze(0),
+                    attention_params=attention_params,
+                    all_reduce_params=all_reduce_params).squeeze(0, False)
             s = s + self.transition_s(s)
         return s, z
 
@@ -184,6 +199,8 @@ class PairformerModule(PretrainedModule):
                 max_attention_pairwise_tp_size=config.
                 max_attention_pairwise_tp_size,
                 max_tri_mul_tp_size=config.max_tri_mul_tp_size,
+                triangle_attn_backend=config.triangle_attn_backend,
+                support_batch=config.support_batch,
                 mapping=config.mapping) for i in range(config.num_blocks)
         ])
 

@@ -121,3 +121,40 @@ def send_recv(send_tensor: Tensor,
     layer = default_trtnet().add_plugin_v2(plug_inputs, send_recv_plug)
     _add_plugin_info(layer, send_recv_plg_creator, "send_recv", pfc)
     return _create_tensor(layer.get_output(0), layer).cast(send_tensor.dtype)
+
+
+def triangle_attention(q: Tensor,
+                       k: Tensor,
+                       v: Tensor,
+                       bias: Tensor,
+                       mask: Tensor,
+                       num_heads: int,
+                       head_dim: int,
+                       dtype: str = "float32",
+                       use_trifast: bool = True) -> tuple[Tensor, Tensor]:
+    dtype = "float32" if dtype is None else dtype
+    tri_attn_plg_creator = trt.get_plugin_registry().get_plugin_creator(
+        'TriAttn', '1', TRT_BNM_PLUGIN_NAMESPACE)
+    assert tri_attn_plg_creator is not None
+    nheads = trt.PluginField("num_heads", np.array(num_heads, dtype=np.int32),
+                             trt.PluginFieldType.INT32)
+    head_dim = trt.PluginField("head_dim", np.array(head_dim, dtype=np.int32),
+                               trt.PluginFieldType.INT32)
+    use_trifast = trt.PluginField("use_trifast",
+                                  np.array(use_trifast, dtype=np.bool_),
+                                  trt.PluginFieldType.INT8)
+    pf_type = trt.PluginField(
+        "type_id", np.array([int(str_dtype_to_trt(dtype))], np.int32),
+        trt.PluginFieldType.INT32)
+    pfc = trt.PluginFieldCollection([nheads, head_dim, use_trifast, pf_type])
+
+    tri_attn_plug = tri_attn_plg_creator.create_plugin("tri_attn", pfc)
+    plug_inputs = [
+        q.trt_tensor, k.trt_tensor, v.trt_tensor, bias.trt_tensor,
+        mask.trt_tensor
+    ]
+    layer = default_trtnet().add_plugin_v2(plug_inputs, tri_attn_plug)
+    _add_plugin_info(layer, tri_attn_plg_creator, "tri_attn", pfc)
+    output = _create_tensor(layer.get_output(0), layer)
+    lse = _create_tensor(layer.get_output(1), layer)
+    return output, lse

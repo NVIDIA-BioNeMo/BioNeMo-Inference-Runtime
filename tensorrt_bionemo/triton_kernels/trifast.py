@@ -3,149 +3,6 @@ import triton.language as tl
 import triton.testing
 
 
-@triton.autotune(configs=[
-    triton.Config(kwargs={
-        "BLOCK_J": 16,
-        "BLOCK_K": 32
-    },
-                  num_warps=1,
-                  num_stages=2),
-    triton.Config(kwargs={
-        "BLOCK_J": 32,
-        "BLOCK_K": 16
-    },
-                  num_warps=1,
-                  num_stages=2),
-    triton.Config(kwargs={
-        "BLOCK_J": 64,
-        "BLOCK_K": 32
-    },
-                  num_warps=4,
-                  num_stages=2),
-    triton.Config(kwargs={
-        "BLOCK_J": 64,
-        "BLOCK_K": 16
-    },
-                  num_warps=2,
-                  num_stages=3),
-    triton.Config(kwargs={
-        "BLOCK_J": 32,
-        "BLOCK_K": 32
-    },
-                  num_warps=1,
-                  num_stages=1),
-    triton.Config(kwargs={
-        "BLOCK_J": 128,
-        "BLOCK_K": 16
-    },
-                  num_warps=2,
-                  num_stages=2),
-    triton.Config(kwargs={
-        "BLOCK_J": 128,
-        "BLOCK_K": 32
-    },
-                  num_warps=2,
-                  num_stages=2),
-    triton.Config(kwargs={
-        "BLOCK_J": 32,
-        "BLOCK_K": 64
-    },
-                  num_warps=2,
-                  num_stages=2),
-    triton.Config(kwargs={
-        "BLOCK_J": 64,
-        "BLOCK_K": 32
-    },
-                  num_warps=2,
-                  num_stages=3),
-    triton.Config(kwargs={
-        "BLOCK_J": 32,
-        "BLOCK_K": 16
-    },
-                  num_warps=1,
-                  num_stages=4),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 32
-    }, num_warps=1, num_stages=5),
-    triton.Config({
-        "BLOCK_J": 64,
-        "BLOCK_K": 32
-    }, num_warps=4, num_stages=2),
-    triton.Config({
-        "BLOCK_J": 128,
-        "BLOCK_K": 32
-    }, num_warps=4, num_stages=2),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 64
-    }, num_warps=4, num_stages=3),
-    triton.Config({
-        "BLOCK_J": 64,
-        "BLOCK_K": 16
-    }, num_warps=2, num_stages=3),
-    triton.Config({
-        "BLOCK_J": 128,
-        "BLOCK_K": 16
-    }, num_warps=2, num_stages=2),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 16
-    }, num_warps=2, num_stages=4),
-    triton.Config({
-        "BLOCK_J": 16,
-        "BLOCK_K": 32
-    }, num_warps=4, num_stages=2),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 16
-    }, num_warps=4, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 16,
-        "BLOCK_K": 64
-    }, num_warps=4, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 128,
-        "BLOCK_K": 16
-    }, num_warps=4, num_stages=2),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 32
-    }, num_warps=8, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 64,
-        "BLOCK_K": 32
-    }, num_warps=8, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 16
-    }, num_warps=2, num_stages=5),
-    triton.Config({
-        "BLOCK_J": 16,
-        "BLOCK_K": 16
-    }, num_warps=8, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 64
-    }, num_warps=8, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 64,
-        "BLOCK_K": 64
-    }, num_warps=4, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 128,
-        "BLOCK_K": 32
-    }, num_warps=8, num_stages=1),
-    triton.Config({
-        "BLOCK_J": 16,
-        "BLOCK_K": 32
-    }, num_warps=8, num_stages=2),
-    triton.Config({
-        "BLOCK_J": 32,
-        "BLOCK_K": 128
-    }, num_warps=4, num_stages=2),
-],
-                 key=["CLOSEST_N"])
 @triton.jit
 def trifast_attention_kernel_fwd(
         o_ptr, stride_oh, stride_om, stride_on, stride_od, lse_ptr, stride_lseh,
@@ -153,12 +10,12 @@ def trifast_attention_kernel_fwd(
         stride_qd, k_ptr, stride_kh, stride_km, stride_kn, stride_kd, v_ptr,
         stride_vh, stride_vm, stride_vn, stride_vd, b_ptr, stride_bh, stride_bm,
         stride_bn, mask_ptr, stride_maskh, stride_maskm, stride_maskn, sm_scale,
-        neg_inf, seq_len, heads, DIM: tl.constexpr, BLOCK_J: tl.constexpr,
-        BLOCK_K: tl.constexpr, CLOSEST_N: tl.constexpr):
+        neg_inf, batch_size, si, seq_len, heads, DIM: tl.constexpr,
+        BLOCK_J: tl.constexpr, BLOCK_K: tl.constexpr, CLOSEST_N: tl.constexpr):
     """
     This code from trifast repository: https://github.com/latkins/trifast
     But modified to be enable for building with TensorRT plugins and also used in Torch.
-    It disables auto-tuning and keep only DIM to be an constant. And move n, h to be arguments.
+    Disable auto-tunning for TRT and moves bs, si, n and h to be arguments.
     """
 
     input_dtype = q_ptr.dtype.element_ty
@@ -267,3 +124,166 @@ def trifast_attention_kernel_fwd(
     lse = (scores_max * ln2) + tl.log(sm_denom)
 
     tl.store(lse_ptrs, lse, mask=mask_j)
+
+
+def create_autotuner() -> triton.runtime.Autotuner:
+    configs = [
+        triton.Config(kwargs={
+            "BLOCK_J": 16,
+            "BLOCK_K": 32
+        },
+                      num_warps=1,
+                      num_stages=2),
+        triton.Config(kwargs={
+            "BLOCK_J": 32,
+            "BLOCK_K": 16
+        },
+                      num_warps=1,
+                      num_stages=2),
+        triton.Config(kwargs={
+            "BLOCK_J": 64,
+            "BLOCK_K": 32
+        },
+                      num_warps=4,
+                      num_stages=2),
+        triton.Config(kwargs={
+            "BLOCK_J": 64,
+            "BLOCK_K": 16
+        },
+                      num_warps=2,
+                      num_stages=3),
+        triton.Config(kwargs={
+            "BLOCK_J": 32,
+            "BLOCK_K": 32
+        },
+                      num_warps=1,
+                      num_stages=1),
+        triton.Config(kwargs={
+            "BLOCK_J": 128,
+            "BLOCK_K": 16
+        },
+                      num_warps=2,
+                      num_stages=2),
+        triton.Config(kwargs={
+            "BLOCK_J": 128,
+            "BLOCK_K": 32
+        },
+                      num_warps=2,
+                      num_stages=2),
+        triton.Config(kwargs={
+            "BLOCK_J": 32,
+            "BLOCK_K": 64
+        },
+                      num_warps=2,
+                      num_stages=2),
+        triton.Config(kwargs={
+            "BLOCK_J": 64,
+            "BLOCK_K": 32
+        },
+                      num_warps=2,
+                      num_stages=3),
+        triton.Config(kwargs={
+            "BLOCK_J": 32,
+            "BLOCK_K": 16
+        },
+                      num_warps=1,
+                      num_stages=4),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 32
+        }, num_warps=1, num_stages=5),
+        triton.Config({
+            "BLOCK_J": 64,
+            "BLOCK_K": 32
+        }, num_warps=4, num_stages=2),
+        triton.Config({
+            "BLOCK_J": 128,
+            "BLOCK_K": 32
+        },
+                      num_warps=4,
+                      num_stages=2),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 64
+        }, num_warps=4, num_stages=3),
+        triton.Config({
+            "BLOCK_J": 64,
+            "BLOCK_K": 16
+        }, num_warps=2, num_stages=3),
+        triton.Config({
+            "BLOCK_J": 128,
+            "BLOCK_K": 16
+        },
+                      num_warps=2,
+                      num_stages=2),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 16
+        }, num_warps=2, num_stages=4),
+        triton.Config({
+            "BLOCK_J": 16,
+            "BLOCK_K": 32
+        }, num_warps=4, num_stages=2),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 16
+        }, num_warps=4, num_stages=1),
+        triton.Config({
+            "BLOCK_J": 16,
+            "BLOCK_K": 64
+        }, num_warps=4, num_stages=1),
+        triton.Config({
+            "BLOCK_J": 128,
+            "BLOCK_K": 16
+        },
+                      num_warps=4,
+                      num_stages=2),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 32
+        }, num_warps=8, num_stages=1),
+        triton.Config({
+            "BLOCK_J": 64,
+            "BLOCK_K": 32
+        }, num_warps=8, num_stages=1),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 16
+        }, num_warps=2, num_stages=5),
+        triton.Config({
+            "BLOCK_J": 16,
+            "BLOCK_K": 16
+        }, num_warps=8, num_stages=1),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 64
+        }, num_warps=8, num_stages=1),
+        triton.Config({
+            "BLOCK_J": 64,
+            "BLOCK_K": 64
+        }, num_warps=4, num_stages=1),
+        triton.Config({
+            "BLOCK_J": 128,
+            "BLOCK_K": 32
+        },
+                      num_warps=8,
+                      num_stages=1),
+        triton.Config({
+            "BLOCK_J": 16,
+            "BLOCK_K": 32
+        }, num_warps=8, num_stages=2),
+        triton.Config({
+            "BLOCK_J": 32,
+            "BLOCK_K": 128
+        },
+                      num_warps=4,
+                      num_stages=2),
+    ]
+    key = ["CLOSEST_N"]
+    fn = trifast_attention_kernel_fwd
+    return triton.runtime.Autotuner(fn,
+                                    fn.arg_names,
+                                    configs=configs,
+                                    key=key,
+                                    reset_to_zero=None,
+                                    restore_value=None)

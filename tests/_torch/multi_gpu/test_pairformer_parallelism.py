@@ -119,7 +119,7 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
     }
     if scenario.tri_attention_backend == "TRIFAST":
         attn_metadatas["triangle_attn"].closest_n = 2**int(
-            np.ceil(np.log2(scenario.seq_len)))
+            np.ceil(np.log2(scenario.seq_len // scenario.dcp_size)))
 
     pairformer_layer = PairformerLayer(
         layer_idx=0,
@@ -150,6 +150,9 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         "triangle_attn": triangle_metadata_cls(mapping=mapping),
         "pairwise_attn": pairwise_metadata_cls(mapping=mapping),
     }
+    if scenario.tri_attention_backend == "TRIFAST":
+        attn_metadatas["triangle_attn"].closest_n = 2**int(
+            np.ceil(np.log2(scenario.seq_len)))
 
     single_dev_pairformer_layer = PairformerLayer(
         layer_idx=0,

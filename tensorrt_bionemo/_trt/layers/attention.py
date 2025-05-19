@@ -22,11 +22,13 @@ import tensorrt as trt
 
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
                                      concat, expand_dims, matmul, shape, slice,
-                                     softmax, split)
+                                     softmax, split, squeeze)
 from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
+from tensorrt_llm.logger import logger
 from tensorrt_llm.module import Module
 
+from tensorrt_bionemo._trt.functional import triangle_attention
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -48,10 +50,13 @@ class TriangleAttention(Module):
                  bias: bool = False,
                  gating: bool = True,
                  dtype: str = None,
+                 triangle_attn_backend: str = 'VANILLA',
+                 support_batch: bool = False,
                  mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
-
+        self.triangle_attn_backend = triangle_attn_backend
+        self.support_batch = support_batch
         self.attention_head_size = hidden_size // num_attention_heads
         self.num_kv_heads = num_kv_heads
         assert num_attention_heads % mapping.tp_size == 0, \
@@ -110,52 +115,151 @@ class TriangleAttention(Module):
         Implementation of the triangle attention in TensorRT.
 
         Args:
-            hidden_states: [B, I, J, F]
-            biases: Include two biases:
-                - mask_bias: [B, I, 1, 1, J]
-                - triangle_bias: [B, H, J, J]
+            For batch support:
+                hidden_states: [B, I, J, F]
+                biases: Include two biases:
+                    - mask_bias: [B, I, 1, 1, J]
+                    - triangle_bias: [B, H, J, J]
+            Without batch support:
+                hidden_states: [I, J, F]
+                biases: Include two biases:
+                    - mask_bias: [I, 1, 1, J]
+                    - triangle_bias: [B, H, J, J]
         """
-        bs = shape(hidden_states, 0)
-        si = shape(hidden_states, 1)
-        sj = shape(hidden_states, 2)
-        qkv = self.qkv_proj(hidden_states, None)  # [B, I, J, 3*H*D]
+        if self.support_batch:
+            bs = shape(hidden_states, 0)
+            si = shape(hidden_states, 1)
+            sj = shape(hidden_states, 2)
+        else:
+            bs = 1
+            si = shape(hidden_states, 0)
+            sj = shape(hidden_states, 1)
+        qkv = self.qkv_proj(hidden_states,
+                            None)  # [B, I, J, 3*H*D] or [I, J, 3*H*D]
 
-        if False:
-            # TODO: Call to alpha-fold self-attention plugin, at here
+        mask_bias = None
+        triangle_bias = None
+
+        if biases is not None:
+            mask_bias = biases[0]
+            triangle_bias = biases[1]
+            # slice the triangle bias for tp by the head dimension
+            if self.tp_size > 1:
+                if self.support_batch:
+                    starts = concat(
+                        [0, self.num_attention_heads * self.tp_rank, 0, 0])
+                    ends = concat([bs, self.num_attention_heads, sj, sj])
+                else:
+                    starts = concat(
+                        [0, self.num_attention_heads * self.tp_rank, 0, 0])
+                    ends = concat([1, self.num_attention_heads, sj, sj])
+                triangle_bias = slice(triangle_bias, starts, ends)
+            if self.support_batch:
+                triangle_bias = triangle_bias.unsqueeze(1)
+
+        if self.triangle_attn_backend != 'VANILLA':
+            assert self.triangle_attn_backend == "TRIFAST", "Only TRIFAST is supported for now"
+            logger.info(
+                f"Using {self.triangle_attn_backend} triangle attention backend, {self.dtype}"
+            )
             context = None
+
+            query, key, value = split(
+                qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
+                dim=-1)
+            if self.triangle_attn_backend == "TRIFAST":
+
+                def transpose_for_bh(x, is_kv: bool = False):
+                    _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
+                    if self.support_batch:
+                        new_x_shape = concat([
+                            bs, si, sj, _num_attention_heads,
+                            self.attention_head_size
+                        ])
+                        x = x.view(new_x_shape).permute([0, 3, 1, 2, 4])
+                        bh_shape = concat([
+                            bs * _num_attention_heads, si, sj,
+                            self.attention_head_size
+                        ])
+                        return x.view(bh_shape)
+                    else:
+                        new_x_shape = concat([
+                            si, sj, _num_attention_heads,
+                            self.attention_head_size
+                        ])
+                        x = x.view(new_x_shape).permute([2, 0, 1, 3])
+                        return x
+
+                query = transpose_for_bh(query, is_kv=False)  # [B*H, I, J, D]
+                key = transpose_for_bh(key, is_kv=True)  # [B*H, I, J, D]
+                value = transpose_for_bh(value, is_kv=True)  # [B*H, I, J, D]
+                assert triangle_bias is not None, "Triangle bias is required for triangle attention"
+                assert mask_bias is not None, "Mask bias is required for triangle attention"
+
+                if not self.support_batch:
+                    mask_bias = mask_bias.unsqueeze(0)
+                mask_bias = squeeze(mask_bias, (2, 3))
+                mask_bias = cast(mask_bias, "bool")
+                bias_shape = concat([bs * self.num_attention_heads, sj, sj])
+                triangle_bias = triangle_bias.view(bias_shape)
+
+                context, _ = triangle_attention(
+                    query,
+                    key,
+                    value,
+                    triangle_bias,
+                    mask_bias,
+                    self.num_attention_heads,
+                    self.attention_head_size,
+                    dtype=self.dtype,
+                    use_trifast=True)  # [B*H, I, J, D]
+                if self.support_batch:
+                    context = context.view(
+                        concat([
+                            bs, self.num_attention_heads, si, sj,
+                            self.attention_head_size
+                        ]))  # [B, H, I, J, D]
+                    context = context.permute([0, 2, 3, 1,
+                                               4])  # [B, I, J, H, D]
+                else:
+                    context = context.view(
+                        concat([
+                            self.num_attention_heads, si, sj,
+                            self.attention_head_size
+                        ]))  # [H, I, J, D]
+                    context = context.permute([1, 2, 0, 3])  # [I, J, H, D]
         else:
             # plain TensorRT mode
             def transpose_for_scores(x, is_kv: bool = False):
                 _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
-                new_x_shape = concat([
-                    bs, si, sj, _num_attention_heads, self.attention_head_size
-                ])
-
-                return x.view(new_x_shape).permute([0, 1, 3, 2, 4])
+                if self.support_batch:
+                    new_x_shape = concat([
+                        bs, si, sj, _num_attention_heads,
+                        self.attention_head_size
+                    ])
+                    return x.view(new_x_shape).permute([0, 1, 3, 2,
+                                                        4])  # [B, I, H, J, D]
+                else:
+                    new_x_shape = concat([
+                        si, sj, _num_attention_heads, self.attention_head_size
+                    ])
+                    return x.view(new_x_shape).permute([0, 2, 1,
+                                                        3])  # [I, H, J, D]
 
             query, key, value = split(
                 qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
                 dim=-1)
 
-            query = transpose_for_scores(query, is_kv=False)  # [B, I, H, J, D]
-            key = transpose_for_scores(key, is_kv=True)  # [B, I, H, J, D]
-            value = transpose_for_scores(value, is_kv=True)  # [B, I, H, J, D]
-
-            mask_bias = None
-            triangle_bias = None
-
-            if biases is not None:
-                mask_bias = biases[0]
-                triangle_bias = biases[1]
-                # slice the triangle bias for tp by the head dimension
-                if self.tp_size > 1:
-                    starts = concat(
-                        [0, self.num_attention_heads * self.tp_rank, 0, 0])
-                    ends = concat([bs, self.num_attention_heads, sj, sj])
-                    triangle_bias = slice(triangle_bias, starts, ends)
-                triangle_bias = triangle_bias.unsqueeze(1)
-
-            key = key.permute([0, 1, 2, 4, 3])  # [B, I, H, D, J] # K^T
+            query = transpose_for_scores(
+                query, is_kv=False)  # [B, I, H, J, D] or [I, H, J, D]
+            key = transpose_for_scores(
+                key, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
+            value = transpose_for_scores(
+                value, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
+            if self.support_batch:
+                key = key.permute([0, 1, 2, 4, 3])  # [B, I, H, D, J] # K^T
+            else:
+                key = key.permute([0, 1, 3, 2])  # [I, H, D, J] # K^T
 
             if norm_before_bmm1:
                 query /= self.norm_factor
@@ -166,29 +270,47 @@ class TriangleAttention(Module):
                 attention_scores += mask_bias
             if triangle_bias is not None:
                 attention_scores += triangle_bias
-
             attention_probs = softmax(attention_scores,
-                                      dim=-1)  # [B, I, H, J, J]
+                                      dim=-1)  # [B, I, H, J, J] or [I, H, J, J]
+            if self.support_batch:
+                context = matmul(attention_probs, value,
+                                 use_fp32_acc=False).permute(
+                                     [0, 1, 3, 2, 4])  # [B, I, J, H, D]
+            else:
+                context = matmul(attention_probs, value,
+                                 use_fp32_acc=False).permute([0, 2, 1, 3
+                                                              ])  # [I, J, H, D]
 
-            context = matmul(attention_probs, value,
-                             use_fp32_acc=False).permute([0, 1, 3, 2,
-                                                          4])  # [B, I, J, H, D]
-            if self.g_proj is not None:
-                g = self.g_proj(hidden_states)  # [B, I, J, H*D]
-                g = activation(g, trt.ActivationType.SIGMOID)
+        if self.g_proj is not None:
+            g = self.g_proj(hidden_states)  # [B, I, J, H*D] or [I, J, H*D]
+            g = activation(g, trt.ActivationType.SIGMOID)
+            if self.support_batch:
                 g = g.view(
                     concat([
                         bs, si, sj, self.num_attention_heads,
                         self.attention_head_size
                     ]))  # [B, I, J, H, D]
-                context *= g
+            else:
+                g = g.view(
+                    concat([
+                        si, sj, self.num_attention_heads,
+                        self.attention_head_size
+                    ]))  # [I, J, H, D]
+            context *= g
+        if self.support_batch:
             context = context.view(
                 concat([
                     bs, si, sj,
                     self.num_attention_heads * self.attention_head_size
                 ]))  # [B, I, J, H*D]
-            context = self.o_proj(
-                context, all_reduce_params=all_reduce_params)  # [B, I, J, F]
+        else:
+            context = context.view(
+                concat([
+                    si, sj, self.num_attention_heads * self.attention_head_size
+                ]))  # [I, J, H*D]
+        context = self.o_proj(
+            context,
+            all_reduce_params=all_reduce_params)  # [B, I, J, F] or [I, J, F]
         return context
 
 
@@ -331,7 +453,7 @@ class SelfAttentionPairBias(Module):
             pair_bias = self.proj_z(z)  # [B, N, N, H]
             pair_bias = pair_bias.permute([0, 3, 1,
                                            2])  # [B, N, N, H] -> [B, H, N, N]
-            mask = cast(mask, 'float32')
+            mask = cast(mask, model_type)
             mask_bias = (1.0 - expand_dims(mask, [1, 2])) * (-self.inf)
 
             if norm_before_bmm1:

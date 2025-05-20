@@ -37,6 +37,10 @@ MODULES_MAPPING = {
     "boltz-1": {
         "structure_pairformer": PairformerModule,
         "confidence_pairformer": PairformerModule,
+    },
+    "boltz-2": {
+        "structure_pairformer": PairformerModule,
+        "confidence_pairformer": PairformerModule,
     }
 }
 

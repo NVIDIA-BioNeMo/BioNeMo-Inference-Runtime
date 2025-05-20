@@ -6,10 +6,10 @@ from pathlib import Path
 import safetensors
 from tensorrt_llm import logger
 
-from tensorrt_bionemo.confs.models.boltz1 import Boltz1Config
+from tensorrt_bionemo.confs.models.boltz2 import Boltz2Config
 from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.convert import convert_hf_pairformer
+from tensorrt_bionemo.models.boltz2.convert import convert_hf_pairformer
 
 
 def parse_arguments():
@@ -44,14 +44,6 @@ def parse_arguments():
                         type=int,
                         default=1,
                         help='The max batch size for the pairformer')
-    parser.add_argument('--no_update_s',
-                        type=bool,
-                        default=False,
-                        help='Whether to not update the s')
-    parser.add_argument('--no_update_z',
-                        type=bool,
-                        default=False,
-                        help='Whether to not update the z')
     parser.add_argument('--dtype',
                         type=str,
                         default='float32',
@@ -72,6 +64,10 @@ def parse_arguments():
                         default='VANILLA',
                         choices=['VANILLA', 'TRIFAST'],
                         help='The backend of triangle attention')
+    parser.add_argument('--local_checkpoint',
+                        type=Path,
+                        default=None,
+                        help='The path to the local checkpoint')
     parser.add_argument(
         '--workers',
         type=int,
@@ -88,7 +84,8 @@ def convert(worker_rank, world_size, config, args):
                           tp_size=args.tp_size,
                           dcp_size=args.dcp_size,
                           rank=rank)
-        weights = convert_hf_pairformer(config, mapping, args.pairformer_type)
+        weights = convert_hf_pairformer(config, mapping, args.pairformer_type,
+                                        args.local_checkpoint)
         safetensors.torch.save_file(weights,
                                     args.output_dir / f'rank{rank}.safetensors')
 
@@ -100,10 +97,11 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz1_config = Boltz1Config.from_pretrained()
-    pairformer_config = boltz1_config.structure_pairformer_backend_config
+    boltz2_config = Boltz2Config.from_pretrained(
+        checkpoint_dir=args.local_checkpoint)
+    pairformer_config = boltz2_config.structure_pairformer_backend_config
     if args.pairformer_type == "confidence":
-        pairformer_config = boltz1_config.confidence_pairformer_backend_config
+        pairformer_config = boltz2_config.confidence_pairformer_backend_config
 
     config = {
         "max_batch_size":
@@ -117,15 +115,15 @@ def main():
         "triangle_attn_node_chunk_size":
         args.triangle_attn_node_chunk_size,
         "no_update_s":
-        args.no_update_s,
+        False,
         "no_update_z":
-        args.no_update_z,
+        False,
         "backend":
         "trt",
         "token_s":
-        boltz1_config.token_s,
+        boltz2_config.token_s,
         "token_z":
-        boltz1_config.token_z,
+        boltz2_config.token_z,
         "pairwise_head_width":
         pairformer_config.pairwise_head_width,
         "pairwise_num_heads":
@@ -148,8 +146,10 @@ def main():
         or args.max_tri_mul_tp_size,
         "triangle_attn_backend":
         args.triangle_attn_backend,
+        "post_layer_norm":
+        pairformer_config.post_layer_norm,
         "version":
-        "v1"
+        "v2",
     }
     pairformer_config = PairformerConfig.from_dict(config)
     config = pairformer_config.to_dict()

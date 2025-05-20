@@ -52,6 +52,7 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
         monitor_memory=build_config.monitor_memory,
     )
     # TODO: make to args
+    # builder_config.trt_builder_config.max_aux_streams = 0
     builder_config.trt_builder_config.set_memory_pool_limit(
         trt.MemoryPoolType.WORKSPACE, 64 * (2**30))
     builder_config.trt_builder_config.builder_optimization_level = 5

@@ -81,6 +81,7 @@ class TriangleAttention(Module):
 
         self.q_size = self.num_attention_heads * self.attention_head_size
         self.kv_size = self.num_attention_kv_heads * self.attention_head_size
+
         self.qkv_proj = ColumnLinear(hidden_size,
                                      mapping.tp_size * self.q_size +
                                      2 * mapping.tp_size * self.kv_size,

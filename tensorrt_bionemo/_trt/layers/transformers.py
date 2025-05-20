@@ -15,7 +15,8 @@
 
 from typing import Optional
 
-from tensorrt_llm.functional import AllReduceParams, Tensor
+from tensorrt_llm.functional import AllReduceParams, Tensor, cast
+from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.logger import logger
 from tensorrt_llm.module import Module, ModuleList
 from tensorrt_llm.network import Network
@@ -32,7 +33,7 @@ from .triangle_nodes import (TriangleAttentionNode, TriangleAttentionNodeType,
                              TriangleMultiplicationNodeType)
 
 
-class PairformerLayer(Module):
+class PairformerLayerV1(Module):
 
     def __init__(self,
                  *,
@@ -53,13 +54,23 @@ class PairformerLayer(Module):
                  max_tri_mul_tp_size: bool = True,
                  triangle_attn_backend: str = 'VANILLA',
                  support_batch: bool = True,
-                 mapping: Mapping = Mapping()):
+                 s_path_dtype: str = None,
+                 attention_initial_norm: bool = True,
+                 mapping: Mapping = Mapping(),
+                 **kwargs):
         super().__init__()
         self.token_z = token_z
+        self.token_s = token_s
         self.num_heads = num_heads
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
         self.support_batch = support_batch
+        self.eps = eps
+        self.inf = inf
+        self.dtype = dtype
+        if s_path_dtype is None:
+            s_path_dtype = dtype
+
         self.attention = None
         if not self.no_update_s:
             m = mapping
@@ -70,9 +81,10 @@ class PairformerLayer(Module):
                 c_s=token_s,
                 c_z=token_z,
                 num_heads=num_heads,
-                dtype=dtype,
+                dtype=s_path_dtype,
                 eps=eps,
                 inf=inf,
+                initial_norm=attention_initial_norm,
                 mapping=m)
         m = mapping
         if max_tri_mul_tp_size:
@@ -128,7 +140,7 @@ class PairformerLayer(Module):
                                            hidden=token_s * 4,
                                            eps=eps,
                                            mapping=m,
-                                           dtype=dtype)
+                                           dtype=s_path_dtype)
         m = mapping
         if max_transition_tp_size:
             m = create_max_tp_mapping(mapping, token_z * 4)
@@ -139,13 +151,12 @@ class PairformerLayer(Module):
                                        mapping=m,
                                        dtype=dtype)
 
-    def forward(self,
-                s: Tensor,
-                z: Tensor,
-                mask: Tensor,
-                pairmask: Tensor,
-                attention_params: AttentionParams = None,
-                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+    def _transform_z(
+            self,
+            z: Tensor,
+            pairmask: Tensor,
+            attention_params: AttentionParams = None,
+            all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
         z = z + self.tri_mul_out(z, mask=pairmask)
         z = z + self.tri_mul_in(z, mask=pairmask)
         z = z + self.tri_attn_start(z,
@@ -157,6 +168,17 @@ class PairformerLayer(Module):
                                   attention_params=attention_params,
                                   all_reduce_params=all_reduce_params)
         z = z + self.transition_z(z)
+        return z
+
+    def forward(self,
+                s: Tensor,
+                z: Tensor,
+                mask: Tensor,
+                pairmask: Tensor,
+                attention_params: AttentionParams = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        original_dtype = z.dtype
+        z = self._transform_z(z, pairmask, attention_params, all_reduce_params)
         if not self.no_update_s:
             if self.support_batch:
                 s = s + self.attention(s,
@@ -172,6 +194,62 @@ class PairformerLayer(Module):
                     attention_params=attention_params,
                     all_reduce_params=all_reduce_params).squeeze(0, False)
             s = s + self.transition_s(s)
+        if s.dtype != original_dtype:
+            s = cast(s, original_dtype)
+        if z.dtype != original_dtype:
+            z = cast(z, original_dtype)
+        return s, z
+
+
+class PairformerLayerV2(PairformerLayerV1):
+    config_class = PairformerConfig
+    build_config_class = PairformerBuildConfig
+
+    def __init__(self, post_layer_norm: bool = False, **kwargs):
+        kwargs["s_path_dtype"] = "float32"
+        super().__init__(**kwargs)
+        self.post_layer_norm = post_layer_norm
+
+        self.pre_norm_s = LayerNorm(normalized_shape=[self.token_s],
+                                    eps=self.eps,
+                                    dtype="float32",
+                                    tp_size=1,
+                                    tp_dim=0)
+
+        self.post_norm_s = None
+        if self.post_layer_norm:
+            self.post_norm_s = LayerNorm(normalized_shape=[self.token_s],
+                                         eps=self.eps,
+                                         dtype="float32",
+                                         tp_size=1,
+                                         tp_dim=0)
+
+    def forward(self,
+                s: Tensor,
+                z: Tensor,
+                mask: Tensor,
+                pair_mask: Tensor,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        z = self._transform_z(z, pair_mask, attention_params, all_reduce_params)
+        original_dtype = s.dtype
+        z = cast(z, "float32")
+        s = cast(s, "float32")
+        s_normed = self.pre_norm_s(s)
+        if self.support_batch:
+            s = s + self.attention(s_normed, z, mask, attention_params,
+                                   all_reduce_params)
+        else:
+            s = s + self.attention(s_normed.unsqueeze(0), z.unsqueeze(0),
+                                   mask.unsqueeze(0), attention_params,
+                                   all_reduce_params).squeeze(0, False)
+        s = s + self.transition_s(s)
+        if self.post_layer_norm:
+            s = self.post_norm_s(s)
+        if s.dtype != original_dtype:
+            s = cast(s, original_dtype)
+        if z.dtype != original_dtype:
+            z = cast(z, original_dtype)
         return s, z
 
 
@@ -181,27 +259,29 @@ class PairformerModule(PretrainedModule):
 
     def __init__(self, config: PairformerConfig):
         super().__init__(config)
-
+        layer_cls = PairformerLayerV1 if config.version == "v1" else PairformerLayerV2
         self.layers = ModuleList([
-            PairformerLayer(
-                local_layer_idx=i,
-                token_s=config.token_s,
-                token_z=config.token_z,
-                num_heads=config.num_heads,
-                pairwise_head_width=config.pairwise_head_width,
-                pairwise_num_heads=config.pairwise_num_heads,
-                no_update_s=config.no_update_s,
-                no_update_z=config.no_update_z,
-                dtype=config.dtype,
-                eps=config.norm_epsilon,
-                inf=config.mask_inf,
-                max_transition_tp_size=config.max_transition_tp_size,
-                max_attention_pairwise_tp_size=config.
-                max_attention_pairwise_tp_size,
-                max_tri_mul_tp_size=config.max_tri_mul_tp_size,
-                triangle_attn_backend=config.triangle_attn_backend,
-                support_batch=config.support_batch,
-                mapping=config.mapping) for i in range(config.num_blocks)
+            layer_cls(local_layer_idx=i,
+                      token_s=config.token_s,
+                      token_z=config.token_z,
+                      num_heads=config.num_heads,
+                      pairwise_head_width=config.pairwise_head_width,
+                      pairwise_num_heads=config.pairwise_num_heads,
+                      no_update_s=config.no_update_s,
+                      no_update_z=config.no_update_z,
+                      dtype=config.dtype,
+                      eps=config.norm_epsilon,
+                      inf=config.mask_inf,
+                      max_transition_tp_size=config.max_transition_tp_size,
+                      max_attention_pairwise_tp_size=config.
+                      max_attention_pairwise_tp_size,
+                      max_tri_mul_tp_size=config.max_tri_mul_tp_size,
+                      triangle_attn_backend=config.triangle_attn_backend,
+                      support_batch=config.support_batch,
+                      mapping=config.mapping,
+                      post_layer_norm=config.post_layer_norm,
+                      attention_initial_norm=config.attention_initial_norm)
+            for i in range(config.num_blocks)
         ])
 
     def forward(self,

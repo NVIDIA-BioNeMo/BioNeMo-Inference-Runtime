@@ -30,10 +30,10 @@ def get_pairwise_attn_weights(mapping: Mapping,
                               tbm_prefix: str,
                               max_attention_pairwise_tp_size: bool = True,
                               num_heads: int = 16,
+                              attention_initial_norm: bool = True,
                               dtype: str = "float32"):
     torch_dtype = str_dtype_to_torch(dtype)
-    init_norm_weight = state_dict[f"{prefix}.norm_s.weight"]
-    init_norm_bias = state_dict[f"{prefix}.norm_s.bias"]
+
     q_weight = state_dict[f"{prefix}.proj_q.weight"]
     q_bias = state_dict[f"{prefix}.proj_q.bias"]
     k_weight = state_dict[f"{prefix}.proj_k.weight"]
@@ -61,8 +61,6 @@ def get_pairwise_attn_weights(mapping: Mapping,
     kv_weights = torch.cat([k_weight, v_weight], dim=0)
 
     ret = {
-        f"{tbm_prefix}.norm_s.weight": init_norm_weight.to(torch_dtype),
-        f"{tbm_prefix}.norm_s.bias": init_norm_bias.to(torch_dtype),
         f"{tbm_prefix}.proj_q.weight": q_weight.to(torch_dtype),
         f"{tbm_prefix}.proj_q.bias": q_bias.to(torch_dtype),
         f"{tbm_prefix}.proj_kv.weight": kv_weights.to(torch_dtype),
@@ -72,6 +70,11 @@ def get_pairwise_attn_weights(mapping: Mapping,
         f"{tbm_prefix}.proj_z.weight": z_weight.to(torch_dtype),
         f"{tbm_prefix}.proj_o.weight": o_weight.to(torch_dtype),
     }
+    if attention_initial_norm:
+        init_norm_weight = state_dict[f"{prefix}.norm_s.weight"]
+        init_norm_bias = state_dict[f"{prefix}.norm_s.bias"]
+        ret[f"{tbm_prefix}.norm_s.weight"] = init_norm_weight.to(torch_dtype)
+        ret[f"{tbm_prefix}.norm_s.bias"] = init_norm_bias.to(torch_dtype)
     return ret
 
 

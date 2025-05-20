@@ -168,7 +168,8 @@ class PretrainedModule(Module):
                             count += 1
                     dim_ranges[dim.name + "_" + str(count)] = dim_range
                     shape.append(dim.size)
-                logger.info(f"Dynamic input {k} with shape: {shape}")
+                logger.info(
+                    f"Dynamic input {k} with shape: {shape}, dtype: {dtype}")
                 logger.info(f"  And dim ranges: {dim_ranges}")
                 basic_inputs[k] = Tensor(name=k,
                                          dtype=dtype,

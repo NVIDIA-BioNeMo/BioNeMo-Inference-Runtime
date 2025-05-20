@@ -41,6 +41,9 @@ class PairformerConfig(PretrainedModuleConfig):
                  triangle_attn_backend: str = 'VANILLA',
                  pairwise_attn_backend: str = 'VANILLA',
                  support_batch: bool = True,
+                 s_path_dtype: str = None,
+                 post_layer_norm: bool = False,
+                 version: str = "v1",
                  **kwargs):
         super().__init__(**kwargs)
 
@@ -62,6 +65,13 @@ class PairformerConfig(PretrainedModuleConfig):
         self.pairwise_attn_backend = pairwise_attn_backend
         self.disable_custom_all_reduce = max_transition_tp_size or max_attention_pairwise_tp_size
         self.support_batch = support_batch
+        self.s_path_dtype = s_path_dtype
+        self.post_layer_norm = post_layer_norm
+        self.version = version
+        if self.version == "v1":
+            self.attention_initial_norm = True
+        else:
+            self.attention_initial_norm = False
 
     def get_input_names(self):
         return list(self.get_input_shapes().keys())

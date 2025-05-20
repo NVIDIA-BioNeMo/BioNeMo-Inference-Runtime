@@ -21,8 +21,9 @@ import tensorrt as trt
 # isort: on
 
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
-                                     concat, expand_dims, matmul, shape, slice,
-                                     softmax, split, squeeze)
+                                     concat, constant_to_tensor_, expand_dims,
+                                     matmul, shape, slice, softmax, split,
+                                     squeeze)
 from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.logger import logger
@@ -136,7 +137,6 @@ class TriangleAttention(Module):
             sj = shape(hidden_states, 1)
         qkv = self.qkv_proj(hidden_states,
                             None)  # [B, I, J, 3*H*D] or [I, J, 3*H*D]
-
         mask_bias = None
         triangle_bias = None
 
@@ -159,7 +159,7 @@ class TriangleAttention(Module):
 
         if self.triangle_attn_backend != 'VANILLA':
             assert self.triangle_attn_backend == "TRIFAST", "Only TRIFAST is supported for now"
-            logger.info(
+            logger.debug(
                 f"Using {self.triangle_attn_backend} triangle attention backend, {self.dtype}"
             )
             context = None
@@ -211,7 +211,7 @@ class TriangleAttention(Module):
                     mask_bias,
                     self.num_attention_heads,
                     self.attention_head_size,
-                    dtype=self.dtype,
+                    dtype=query.dtype,
                     use_trifast=True)  # [B*H, I, J, D]
                 if self.support_batch:
                     context = context.view(
@@ -260,12 +260,14 @@ class TriangleAttention(Module):
                 key = key.permute([0, 1, 2, 4, 3])  # [B, I, H, D, J] # K^T
             else:
                 key = key.permute([0, 1, 3, 2])  # [I, H, D, J] # K^T
-
+            norm_factor_const = constant_to_tensor_(self.norm_factor,
+                                                    dtype=query.dtype,
+                                                    to_array=False)
             if norm_before_bmm1:
-                query /= self.norm_factor
+                query /= norm_factor_const
             attention_scores = matmul(query, key)
             if not norm_before_bmm1:
-                attention_scores /= self.norm_factor
+                attention_scores /= norm_factor_const
             if mask_bias is not None:
                 attention_scores += mask_bias
             if triangle_bias is not None:
@@ -454,13 +456,21 @@ class SelfAttentionPairBias(Module):
             pair_bias = pair_bias.permute([0, 3, 1,
                                            2])  # [B, N, N, H] -> [B, H, N, N]
             mask = cast(mask, model_type)
-            mask_bias = (1.0 - expand_dims(mask, [1, 2])) * (-self.inf)
-
+            inf_const = constant_to_tensor_(-self.inf,
+                                            dtype=model_type,
+                                            to_array=False)
+            one_const = constant_to_tensor_(1.0,
+                                            dtype=model_type,
+                                            to_array=False)
+            mask_bias = (one_const - expand_dims(mask, [1, 2])) * inf_const
+            norm_factor_const = constant_to_tensor_(self.norm_factor,
+                                                    dtype=model_type,
+                                                    to_array=False)
             if norm_before_bmm1:
-                query /= self.norm_factor
+                query /= norm_factor_const
             attention_scores = matmul(query, key)
             if not norm_before_bmm1:
-                attention_scores /= self.norm_factor
+                attention_scores /= norm_factor_const
             attention_scores += pair_bias
             attention_scores += mask_bias
             attention_probs = softmax(attention_scores, dim=-1)

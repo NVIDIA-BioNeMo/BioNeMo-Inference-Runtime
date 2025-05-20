@@ -18,9 +18,9 @@ from typing import Optional
 
 import tensorrt as trt
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
-                                     allgather, cast, concat, einsum,
-                                     expand_dims, floordiv, permute, shape,
-                                     slice, split)
+                                     allgather, cast, concat,
+                                     constant_to_tensor_, einsum, expand_dims,
+                                     floordiv, permute, shape, slice, split)
 from tensorrt_llm.layers.linear import ColumnLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
@@ -124,9 +124,10 @@ class TriangleAttentionNode(Module):
                 x = x.transpose(0, 1)
                 mask = mask.transpose(0, 1)
         x = self.layer_norm(x)
-
+        inf_const = constant_to_tensor_(self.inf, dtype=x.dtype, to_array=False)
+        one_const = constant_to_tensor_(1.0, dtype=x.dtype, to_array=False)
         # Compute mask bias
-        mask_bias = (self.inf * (mask - 1.))
+        mask_bias = ((mask - one_const) * inf_const)
         if self.support_batch:
             mask_bias = expand_dims(mask_bias, [2, 3])
         else:
@@ -269,6 +270,7 @@ class TriangleMultiplicationNode(Module):
         Note: The ring-communication on the dcp group (dcp_size > 1) is experimental and may not work,
             or make engines go large and slow than normal
         """
+        original_dtype = mask.dtype
         if self.support_batch:
             bs = shape(x, 0)
             si = shape(x, 1)
@@ -391,6 +393,6 @@ class TriangleMultiplicationNode(Module):
             else:
                 gather_dim = 2 if self.support_batch else 1
             x = allgather(x, self.dcp_group, gather_dim=gather_dim)
-        if x.dtype != self.dtype:
-            x = cast(x, self.dtype)
+        if x.dtype != original_dtype:
+            x = cast(x, original_dtype)
         return x

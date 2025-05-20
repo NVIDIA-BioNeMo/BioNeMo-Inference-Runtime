@@ -143,9 +143,12 @@ def triangle_attention(q: Tensor,
     use_trifast = trt.PluginField("use_trifast",
                                   np.array(use_trifast, dtype=np.bool_),
                                   trt.PluginFieldType.INT8)
-    pf_type = trt.PluginField(
-        "type_id", np.array([int(str_dtype_to_trt(dtype))], np.int32),
-        trt.PluginFieldType.INT32)
+    if isinstance(dtype, str):
+        type_id = int(str_dtype_to_trt(dtype))
+    else:
+        type_id = int(dtype)
+    pf_type = trt.PluginField("type_id", np.array([type_id], np.int32),
+                              trt.PluginFieldType.INT32)
     pfc = trt.PluginFieldCollection([nheads, head_dim, use_trifast, pf_type])
 
     tri_attn_plug = tri_attn_plg_creator.create_plugin("tri_attn", pfc)

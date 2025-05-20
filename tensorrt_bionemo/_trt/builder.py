@@ -32,11 +32,16 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
     build_config = copy.deepcopy(build_config)
     build_config.plugin_config.dtype = module.config.dtype
 
+    module_config = build_config.module_config
     builder = Builder()
     if build_config.strongly_typed:
         precision = module.config.dtype
     else:
         precision = build_config.weakly_dtype
+        # TODO: Refactor here
+        module.config.dtype = precision  # change precision for weakly-typed mode
+        module_config.dtype = precision
+
     builder_config = builder.create_builder_config(
         precision=precision,
         use_refit=False,  # TODO: add refit
@@ -48,11 +53,11 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
     )
     # TODO: make to args
     builder_config.trt_builder_config.set_memory_pool_limit(
-        trt.MemoryPoolType.WORKSPACE, 16 * (2**30))
+        trt.MemoryPoolType.WORKSPACE, 64 * (2**30))
     builder_config.trt_builder_config.builder_optimization_level = 5
 
     network = builder.create_network()
-    network.trt_network.name = build_config.module_config.architecture
+    network.trt_network.name = module_config.architecture
     network.plugin_config = build_config.plugin_config
 
     nccl_plugin = None
@@ -65,12 +70,9 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
 
     with net_guard(network):
         prepare_input_args = {
-            "opt_profiles":
-            build_config.optimization_profiles,
-            "has_attention":
-            build_config.has_attention,
-            "disable_custom_all_reduce":
-            build_config.module_config.disable_custom_all_reduce
+            "opt_profiles": build_config.optimization_profiles,
+            "has_attention": build_config.has_attention,
+            "disable_custom_all_reduce": module_config.disable_custom_all_reduce
         }
         inputs = module.prepare_inputs(**prepare_input_args)
         outputs = module(**inputs)
@@ -90,16 +92,14 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
     logger.info(
         f"Total time of constructing network from module object {time.time()-tic} seconds"
     )
-    logger.info(
-        f"Building Engine for rank {build_config.module_config.mapping.rank}")
+    logger.info(f"Building Engine for rank {module_config.mapping.rank}")
     managed_weights = {} if network.plugin_config.manage_weights else None
     engine = None if build_config.dry_run else builder.build_engine(
         network, builder_config, managed_weights)
 
-    engine_config = EngineConfig(build_config.module_config, build_config,
-                                 __version__)
+    engine_config = EngineConfig(module_config, build_config, __version__)
 
-    if build_config.output_timing_cache is not None and build_config.module_config.mapping.rank == 0:
+    if build_config.output_timing_cache is not None and module_config.mapping.rank == 0:
         ok = builder.save_timing_cache(builder_config,
                                        build_config.output_timing_cache)
         assert ok, "Failed to save timing cache."

@@ -24,7 +24,6 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import *
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
-from tensorrt_bionemo._trt.layers.transformers import PairformerLayer
 
 PairformerLayerTestScenario = namedtuple("PairformerLayerTestScenario", [
     "seq_len", "token_s", "token_z", "num_heads", "pairwise_head_width",

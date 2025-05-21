@@ -298,6 +298,8 @@ class PairformerTRT(nn.Module):
         if not self.config.support_batch:
             s = s.unsqueeze(0)
             z = z.unsqueeze(0)
+        torch.save(s, "trt_s.pt")
+        torch.save(z, "trt_z.pt")
         return s, z
 
 

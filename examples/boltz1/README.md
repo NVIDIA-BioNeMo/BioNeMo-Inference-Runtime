@@ -81,7 +81,22 @@ $ mpirun -n ${WORLD_SIZE} python benchmark.py \
 
 ### Preparing data
 
-You have to use `botlz predict` to dump the input dict to model.
+First you need to patch the `forward()` function of the model (https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/model.py#L261).
+
+```python
+def forward(...):
+    torch.save(feats, "feats_sample_id.pt")
+    ...
+    torch.save(dict_out, "pred_dict_sample_id.pt")
+```
+
+Then, you have to use `botlz predict` to dump the input dict to model. Finally, make the `ids.json`:
+
+```json
+{
+    "sample_id": _sample_seqlen
+}
+```
 
 ### Run scripts
 

@@ -68,6 +68,10 @@ def parse_arguments():
                         type=Path,
                         default=None,
                         help='The path to the local checkpoint')
+    parser.add_argument('--support_batch',
+                        type=bool,
+                        default=False,
+                        help='Whether to support batch')
     parser.add_argument(
         '--workers',
         type=int,
@@ -150,6 +154,8 @@ def main():
         pairformer_config.post_layer_norm,
         "version":
         "v2",
+        "support_batch":
+        args.support_batch,
     }
     pairformer_config = PairformerConfig.from_dict(config)
     config = pairformer_config.to_dict()

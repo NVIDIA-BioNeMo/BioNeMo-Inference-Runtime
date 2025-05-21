@@ -15,6 +15,7 @@
 
 from typing import Optional
 
+import tensorrt as trt
 from tensorrt_llm.functional import AllReduceParams, Tensor, cast
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.logger import logger
@@ -159,6 +160,7 @@ class PairformerLayerV1(Module):
             all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
         z = z + self.tri_mul_out(z, mask=pairmask)
         z = z + self.tri_mul_in(z, mask=pairmask)
+
         z = z + self.tri_attn_start(z,
                                     mask=pairmask,
                                     attention_params=attention_params,
@@ -299,4 +301,9 @@ class PairformerModule(PretrainedModule):
     @staticmethod
     def weakly_typed(network: Network, dtype: str = None) -> Network:
         logger.info("Call weakly_typed on PairformerModule")
+        for layer in network.get_layers():
+            if "layer_norm_" in layer.name and "NORMALIZATION_0" in layer.name:
+                layer.trt_layer.precision = trt.float32
+            if "softmax" in layer.name and "SOFTMAX_0" in layer.name:
+                layer.trt_layer.precision = trt.float32
         return network

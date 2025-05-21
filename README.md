@@ -28,3 +28,11 @@ $ pip install -e .
 ```bash
 $ pytest -s $(pwd)/tests
 ```
+
+## Troubleshoots
+
+```
++ TensorRT bug on chunking loop (fixed for version 10.11): NVBug 5190992
+
++ TRT activation's memory are not reused for the trifast custom kernel: an internal discussion
+```

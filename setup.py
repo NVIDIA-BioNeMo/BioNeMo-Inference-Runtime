@@ -88,4 +88,7 @@ setup(
     },
     python_requires=">=3.8",
     zip_safe=True,
+    entry_points={
+        "console_scripts": ["trtbnm-build=tensorrt_bionemo.commands.build:main"]
+    }
 )

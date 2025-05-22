@@ -14,4 +14,3 @@
 # the License.
 
 find_package(NCCL 2 REQUIRED)
-set(NCCL_LIB NCCL::nccl)

@@ -1,6 +1,6 @@
 #!/bin/bash
 CPU_COUNT=$(nproc --all)
-cd cpp/build && \
+mkdir -p cpp/build && cd cpp/build && \
 cmake \
     -DCMAKE_BUILD_TYPE=Debug \
     -DTRT_LIB_DIR=/usr/local/tensorrt/lib \

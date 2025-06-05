@@ -2,4 +2,4 @@
 
 # tensorrt-llm==0.18.0.dev2025031100
 omegaconf==2.3.0
-triton==3.3.0
+# triton==3.3.0

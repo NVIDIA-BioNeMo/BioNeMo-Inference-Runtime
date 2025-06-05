@@ -27,10 +27,11 @@ from test_utils.ref_attn import plain_triangle_mha
 from tensorrt_bionemo._trt.functional import triangle_attention
 
 
+@pytest.mark.parametrize("use_trifast", [False])
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
 @pytest.mark.parametrize("si", [64, 128, 256, 512])
 @pytest.mark.parametrize("sj", [64, 128, 256, 768, 1056])
-def test_triangle_attention(dtype, si, sj):
+def test_triangle_attention(use_trifast, dtype, si, sj):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
@@ -64,7 +65,7 @@ def test_triangle_attention(dtype, si, sj):
     bias = torch.randn(bs * num_heads,
                        sj,
                        sj,
-                       dtype=str_dtype_to_torch(dtype),
+                       dtype=str_dtype_to_torch(dtype) if use_trifast else torch.float32,
                        device="cuda",
                        requires_grad=False)
     # construct trt network
@@ -86,13 +87,13 @@ def test_triangle_attention(dtype, si, sj):
                                          num_heads,
                                          head_dim,
                                          dtype=dtype,
-                                         use_trifast=True)
+                                         use_trifast=use_trifast)
 
         output.mark_output("output", trt_dtype)
         lse.mark_output("lse", trt_dtype)
     # Build engine
     builder_config = builder.create_builder_config(name="tri_attn",
-                                                   precision="float32")
+                                                   precision=dtype)
     engine_buffer = builder.build_engine(net, builder_config)
     session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream

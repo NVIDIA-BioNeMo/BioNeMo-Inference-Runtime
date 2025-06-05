@@ -161,7 +161,7 @@ def triangle_attention(q: Tensor,
                        num_heads: int,
                        head_dim: int,
                        dtype: str = "float32",
-                       use_trifast: bool = True) -> tuple[Tensor, Tensor]:
+                       use_trifast: bool = False) -> tuple[Tensor, Tensor]:
     dtype = "float32" if dtype is None else dtype
     tri_attn_plg_creator = trt.get_plugin_registry().get_plugin_creator(
         'TriAttn', '1', TRT_BNM_PLUGIN_NAMESPACE)

@@ -21,7 +21,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(tensorrt_bionemo LANGUAGES CXX)
 
 set(TRT_ROOT_DIR
-    "/usr/local/tensorrt"
+    "/usr"
     CACHE PATH "Path to TensorRT installation")
 
 get_filename_component(TRT_BIONEMO_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR} PATH)

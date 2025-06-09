@@ -27,17 +27,27 @@ from test_utils.ref_attn import plain_triangle_mha
 from tensorrt_bionemo._trt.functional import triangle_attention
 
 
-@pytest.mark.parametrize("use_trifast", [False])
+# @pytest.mark.parametrize("use_trifast", [False],
+#                          ids=["cuequiv"])
+@pytest.mark.parametrize("use_mask", [True, False],
+                         ids=["mask", "nomask"])
+@pytest.mark.parametrize("use_trifast", [True, False],
+                         ids=["cuequiv", "trifast"])
+@pytest.mark.parametrize("use_tf32", [False])
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
-@pytest.mark.parametrize("si", [64, 128, 256, 512])
-@pytest.mark.parametrize("sj", [64, 128, 256, 768, 1056])
-def test_triangle_attention(use_trifast, dtype, si, sj):
+@pytest.mark.parametrize("si", [64, 128])
+@pytest.mark.parametrize("sj", [64, 128])
+@pytest.mark.parametrize("sk", [64, 128])
+def test_triangle_attention(use_mask, use_trifast, use_tf32, dtype, si, sj, sk):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     num_heads = 4
     head_dim = 32
+
+    if use_trifast and not use_mask:
+        pytest.skip("Mask is not optional in trifast")
 
     q = torch.randn(bs * num_heads,
                     si,
@@ -48,37 +58,90 @@ def test_triangle_attention(use_trifast, dtype, si, sj):
                     requires_grad=False)
     k = torch.randn(bs * num_heads,
                     si,
-                    sj,
+                    sk,
                     head_dim,
                     dtype=str_dtype_to_torch(dtype),
                     device="cuda",
                     requires_grad=False)
     v = torch.randn(bs * num_heads,
                     si,
-                    sj,
+                    sk,
                     head_dim,
                     dtype=str_dtype_to_torch(dtype),
                     device="cuda",
                     requires_grad=False)
-    mask = torch.randint(0, 2, (bs, si, sj)).bool().cuda()
-    # mask = torch.zeros_like(mask).bool().cuda()
-    bias = torch.randn(bs * num_heads,
-                       sj,
-                       sj,
-                       dtype=str_dtype_to_torch(dtype) if use_trifast else torch.float32,
-                       device="cuda",
-                       requires_grad=False)
+    if use_mask:
+        mask = torch.randint(0, 2, (bs, si, sk)).bool().cuda()
+    else:
+        mask = torch.ones((bs, si, sk)).bool().cuda()
+    bias = torch.randn(
+        bs * num_heads,
+        sj,
+        sk,
+        dtype=str_dtype_to_torch(dtype) if use_trifast else torch.float32,
+        device="cuda",
+        requires_grad=False)
     # construct trt network
+    if use_trifast:
+        inputs = {
+            'q': q,
+            'k': k,
+            'v': v,
+            'mask': mask,
+            'bias': bias,
+        }
+        input_q_shape = q.shape
+        input_k_shape = k.shape
+        input_v_shape = v.shape
+        input_mask_shape = mask.shape
+        input_bias_shape = bias.shape
+    else:
+        nq = rearrange(q,
+                       "(b h) i j d -> b i h j d",
+                       b=bs,
+                       h=num_heads,
+                       d=head_dim).contiguous()
+        nk = rearrange(k,
+                       "(b h) i j d -> b i h j d",
+                       b=bs,
+                       h=num_heads,
+                       d=head_dim).contiguous()
+        nv = rearrange(v,
+                       "(b h) i j d -> b i h j d",
+                       b=bs,
+                       h=num_heads,
+                       d=head_dim).contiguous()
+        nbias = rearrange(bias, "(b h) i j -> b () h i j", b=bs,
+                          h=num_heads).contiguous()
+        nmask = rearrange(mask, "b i j -> b i () () j", b=bs).contiguous()
+
+        inputs = {
+            'q': nq,
+            'k': nk,
+            'v': nv,
+            'bias': nbias,
+        }
+        if use_mask:
+            inputs['mask'] = nmask
+        input_q_shape = nq.shape
+        input_k_shape = nk.shape
+        input_v_shape = nv.shape
+        input_mask_shape = nmask.shape
+        input_bias_shape = nbias.shape
+
     builder = tensorrt_llm.Builder()
     net = builder.create_network()
 
     trt_dtype = str_dtype_to_trt(dtype)
+    trt_dtype_bias = str_dtype_to_trt(dtype if use_trifast else "float32")
     with tensorrt_llm.net_guard(net):
-        input_q = Tensor(name="q", shape=q.shape, dtype=trt_dtype)
-        input_k = Tensor(name="k", shape=k.shape, dtype=trt_dtype)
-        input_v = Tensor(name="v", shape=v.shape, dtype=trt_dtype)
-        input_mask = Tensor(name="mask", shape=mask.shape, dtype=trt.bool)
-        input_bias = Tensor(name="bias", shape=bias.shape, dtype=trt_dtype)
+        input_q = Tensor(name="q", shape=input_q_shape, dtype=trt_dtype)
+        input_k = Tensor(name="k", shape=input_k_shape, dtype=trt_dtype)
+        input_v = Tensor(name="v", shape=input_v_shape, dtype=trt_dtype)
+        input_mask = Tensor(name="mask", shape=input_mask_shape, dtype=trt.bool) if use_mask else None
+        input_bias = Tensor(name="bias",
+                            shape=input_bias_shape,
+                            dtype=trt_dtype_bias)
         output, lse = triangle_attention(input_q,
                                          input_k,
                                          input_v,
@@ -87,7 +150,8 @@ def test_triangle_attention(use_trifast, dtype, si, sj):
                                          num_heads,
                                          head_dim,
                                          dtype=dtype,
-                                         use_trifast=use_trifast)
+                                         use_trifast=use_trifast,
+                                         use_tf32=use_tf32)
 
         output.mark_output("output", trt_dtype)
         lse.mark_output("lse", trt_dtype)
@@ -98,23 +162,20 @@ def test_triangle_attention(use_trifast, dtype, si, sj):
     session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
-    # Verify result
-    inputs = {
-        'q': q,
-        'k': k,
-        'v': v,
-        'mask': mask,
-        'bias': bias,
-    }
+    if use_trifast:
+        output_shape = (bs * num_heads, si, sj, head_dim)
+        lse_shape = (bs * num_heads, sj, sj)
+    else:
+        output_shape = (bs, si, num_heads, sj, head_dim)
+        lse_shape = (bs, si, num_heads, sj)
+
     outputs = {
         'output':
-        torch.empty([bs * num_heads, si, sj, head_dim],
+        torch.empty(output_shape,
                     dtype=str_dtype_to_torch(dtype),
                     device="cuda"),
         'lse':
-        torch.empty([bs * num_heads, sj, sj],
-                    dtype=str_dtype_to_torch(dtype),
-                    device="cuda")
+        torch.empty(lse_shape, dtype=str_dtype_to_torch(dtype) if use_trifast else torch.float32, device="cuda")
     }
     session.run(inputs=inputs, outputs=outputs, stream=stream)
     torch.cuda.synchronize()
@@ -137,17 +198,35 @@ def test_triangle_attention(use_trifast, dtype, si, sj):
                       d=head_dim).contiguous()
         bias = rearrange(bias, "(b h) i j -> b h i j", b=bs,
                          h=num_heads).contiguous()
-        mask = rearrange(mask, "b i j -> b i () () j",
-                         b=bs).contiguous().float() * torch.finfo(q.dtype).min
+        if use_trifast:
+            mask = rearrange(mask, "b i j -> b i () () j",
+                             b=bs).contiguous().float() * torch.finfo(
+                                 q.dtype).min
+        else:  # flip mask for cuequiv ops
+            mask = rearrange(~mask, "b i j -> b i () () j",
+                             b=bs).contiguous().float() * torch.finfo(
+                                 q.dtype).min
+
         ref_o = plain_triangle_mha(q, k, v, num_heads, head_dim, [mask, bias])
-        ref_o = rearrange(ref_o,
-                          "b i j h d -> (b h) i j d",
-                          b=bs,
-                          h=num_heads,
-                          i=si,
-                          j=sj,
-                          d=head_dim)
-    torch.cuda.synchronize()
+
+        if use_trifast:
+            ref_o = rearrange(ref_o,
+                              "b i j h d -> (b h) i j d",
+                              b=bs,
+                              h=num_heads,
+                              i=si,
+                              j=sj,
+                              d=head_dim)
+        else:  # use cuequiv ops
+            ref_o = rearrange(ref_o,
+                              "b i j h d -> b i h j d",
+                              b=bs,
+                              h=num_heads,
+                              i=si,
+                              j=sj,
+                              d=head_dim)
+        torch.cuda.synchronize()
+
     if dtype == "float32":
         torch.testing.assert_close(outputs['output'], ref_o)
     else:

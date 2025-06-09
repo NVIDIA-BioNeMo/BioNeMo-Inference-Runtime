@@ -29,10 +29,12 @@ def _prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
         q = rearrange(q, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
         k = rearrange(k, "b j (h d) -> b h d j", h=no_heads, d=head_dim)
         v = rearrange(v, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
-    else:
+    elif q.ndim == 4:
         q = rearrange(q, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
         k = rearrange(k, "b i j (h d) -> b i h d j", h=no_heads, d=head_dim)
         v = rearrange(v, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
+    else:
+        k = rearrange(k, "b i h j d -> b i h d j", h=no_heads, d=head_dim)
 
     return q, k, v
 
@@ -64,7 +66,8 @@ def plain_triangle_mha(
     bias = biases[1]
     if mask.ndim == 4:
         mask = mask.unsqueeze(0)
-    bias = bias.unsqueeze(1)
+    if bias.ndim == 4:
+        bias = bias.unsqueeze(1)
     q, k, v = _prep_qkv(q, k, v, no_heads, head_dim)
 
     a = torch.matmul(q, k)

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import IntEnum
-from typing import Callable
+from typing import Callable, Optional
 
 import numpy as np
 import tensorrt as trt
@@ -157,11 +157,12 @@ def triangle_attention(q: Tensor,
                        k: Tensor,
                        v: Tensor,
                        bias: Tensor,
-                       mask: Tensor,
+                       mask: Optional[Tensor],
                        num_heads: int,
                        head_dim: int,
                        dtype: str = "float32",
-                       use_trifast: bool = False) -> tuple[Tensor, Tensor]:
+                       use_trifast: bool = False,
+                       use_tf32: bool = False) -> tuple[Tensor, Tensor]:
     dtype = "float32" if dtype is None else dtype
     tri_attn_plg_creator = trt.get_plugin_registry().get_plugin_creator(
         'TriAttn', '1', TRT_BNM_PLUGIN_NAMESPACE)
@@ -173,19 +174,24 @@ def triangle_attention(q: Tensor,
     use_trifast = trt.PluginField("use_trifast",
                                   np.array(use_trifast, dtype=np.bool_),
                                   trt.PluginFieldType.INT8)
+    use_tf32 = trt.PluginField("use_tf32",
+                               np.array(use_tf32, dtype=np.bool_),
+                               trt.PluginFieldType.INT8)
     if isinstance(dtype, str):
         type_id = int(str_dtype_to_trt(dtype))
     else:
         type_id = int(dtype)
     pf_type = trt.PluginField("type_id", np.array([type_id], np.int32),
                               trt.PluginFieldType.INT32)
-    pfc = trt.PluginFieldCollection([nheads, head_dim, use_trifast, pf_type])
+    pfc = trt.PluginFieldCollection([nheads, head_dim, use_trifast, use_tf32, pf_type])
 
     tri_attn_plug = tri_attn_plg_creator.create_plugin("tri_attn", pfc)
     plug_inputs = [
-        q.trt_tensor, k.trt_tensor, v.trt_tensor, bias.trt_tensor,
-        mask.trt_tensor
+        q.trt_tensor, k.trt_tensor, v.trt_tensor, bias.trt_tensor
     ]
+    if mask is not None:
+        plug_inputs += [ mask.trt_tensor ]
+
     layer = default_trtnet().add_plugin_v2(plug_inputs, tri_attn_plug)
     _add_plugin_info(layer, tri_attn_plg_creator, "tri_attn", pfc)
     output = _create_tensor(layer.get_output(0), layer)

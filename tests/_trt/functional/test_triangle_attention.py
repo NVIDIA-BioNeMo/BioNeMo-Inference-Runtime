@@ -27,10 +27,7 @@ from test_utils.ref_attn import plain_triangle_mha
 from tensorrt_bionemo._trt.functional import triangle_attention
 
 
-# @pytest.mark.parametrize("use_trifast", [False],
-#                          ids=["cuequiv"])
-@pytest.mark.parametrize("use_mask", [True, False],
-                         ids=["mask", "nomask"])
+@pytest.mark.parametrize("use_mask", [True, False], ids=["mask", "nomask"])
 @pytest.mark.parametrize("use_trifast", [True, False],
                          ids=["cuequiv", "trifast"])
 @pytest.mark.parametrize("use_tf32", [False])
@@ -46,8 +43,11 @@ def test_triangle_attention(use_mask, use_trifast, use_tf32, dtype, si, sj, sk):
     num_heads = 4
     head_dim = 32
 
-    if use_trifast and not use_mask:
-        pytest.skip("Mask is not optional in trifast")
+    if use_trifast:
+        if not use_mask:
+            pytest.skip("Mask is not optional in trifast")
+        if sk != sj:
+            pytest.skip("sk != sj is not supported in trifast")
 
     q = torch.randn(bs * num_heads,
                     si,
@@ -138,7 +138,8 @@ def test_triangle_attention(use_mask, use_trifast, use_tf32, dtype, si, sj, sk):
         input_q = Tensor(name="q", shape=input_q_shape, dtype=trt_dtype)
         input_k = Tensor(name="k", shape=input_k_shape, dtype=trt_dtype)
         input_v = Tensor(name="v", shape=input_v_shape, dtype=trt_dtype)
-        input_mask = Tensor(name="mask", shape=input_mask_shape, dtype=trt.bool) if use_mask else None
+        input_mask = Tensor(name="mask", shape=input_mask_shape,
+                            dtype=trt.bool) if use_mask else None
         input_bias = Tensor(name="bias",
                             shape=input_bias_shape,
                             dtype=trt_dtype_bias)
@@ -175,7 +176,10 @@ def test_triangle_attention(use_mask, use_trifast, use_tf32, dtype, si, sj, sk):
                     dtype=str_dtype_to_torch(dtype),
                     device="cuda"),
         'lse':
-        torch.empty(lse_shape, dtype=str_dtype_to_torch(dtype) if use_trifast else torch.float32, device="cuda")
+        torch.empty(
+            lse_shape,
+            dtype=str_dtype_to_torch(dtype) if use_trifast else torch.float32,
+            device="cuda")
     }
     session.run(inputs=inputs, outputs=outputs, stream=stream)
     torch.cuda.synchronize()

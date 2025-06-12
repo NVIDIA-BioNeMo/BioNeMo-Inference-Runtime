@@ -30,6 +30,36 @@ class AttentionBiasType(IntEnum):
     pairwise = 1
 
 
+def identity_sz(s: Tensor,
+                z: Tensor,
+                use_identity_plugin: bool = True) -> Tensor:
+    '''
+    Add an identity operation.
+
+    This plugin is used to break Myelin layers. See NVBUGs: NVBug 5300894
+
+    Parameters:
+        input : Tensor
+            The input tensor.
+
+    Returns:
+        The tensor produced by this identity operation.
+    '''
+    if not use_identity_plugin:
+        return s, z
+    plg_creator = trt.get_plugin_registry().get_plugin_creator(
+        'IdentitySZ', '1', TRT_BNM_PLUGIN_NAMESPACE)
+    assert plg_creator is not None
+    pfc = trt.PluginFieldCollection()
+    id_plug = plg_creator.create_plugin("identity_sz", pfc)
+    plug_inputs = [s.trt_tensor, z.trt_tensor]
+    layer = default_trtnet().add_plugin_v2(plug_inputs, id_plug)
+    _add_plugin_info(layer, plg_creator, "identity_sz", pfc)
+
+    return _create_tensor(layer.get_output(0), layer), \
+        _create_tensor(layer.get_output(1), layer)
+
+
 def chunk_loop(tensors: list[Tensor],
                chunk_size: int = 0,
                loop_body: Callable = None,

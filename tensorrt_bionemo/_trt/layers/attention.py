@@ -201,8 +201,11 @@ class TriangleAttention(Module):
                     mask_bias = mask_bias.unsqueeze(0)
                 mask_bias = squeeze(mask_bias, (2, 3))
                 mask_bias = cast(mask_bias, "bool")
-                bias_shape = concat([bs * self.num_attention_heads, sj, sj])
-                triangle_bias = triangle_bias.view(bias_shape)
+                if self.support_batch:
+                    bias_shape = concat([bs * self.num_attention_heads, sj, sj])
+                    triangle_bias = triangle_bias.view(bias_shape)
+                else:
+                    triangle_bias = triangle_bias.squeeze(0, False)
 
                 context, _ = triangle_attention(
                     query,

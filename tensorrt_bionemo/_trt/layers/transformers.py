@@ -22,6 +22,7 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.module import Module, ModuleList
 from tensorrt_llm.network import Network
 
+from tensorrt_bionemo._trt.functional import identity_sz
 from tensorrt_bionemo.confs.modules.transformers import (PairformerBuildConfig,
                                                          PairformerConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
@@ -66,6 +67,8 @@ class PairformerLayerV1(Module):
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
         self.support_batch = support_batch
+        self.triangle_attn_backend = triangle_attn_backend
+
         self.eps = eps
         self.inf = inf
         self.dtype = dtype
@@ -179,6 +182,9 @@ class PairformerLayerV1(Module):
                 pairmask: Tensor,
                 attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        # Add identity to break Myelin fusion
+        use_identity_plugin = self.triangle_attn_backend != "VANILLA"
+        s, z = identity_sz(s, z, use_identity_plugin)
         original_dtype = z.dtype
         z = self._transform_z(z, pairmask, attention_params, all_reduce_params)
         if not self.no_update_s:
@@ -233,6 +239,9 @@ class PairformerLayerV2(PairformerLayerV1):
                 pair_mask: Tensor,
                 attention_params: Optional[AttentionParams] = None,
                 all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        # Add identity to break Myelin fusion
+        use_identity_plugin = self.triangle_attn_backend != "VANILLA"
+        s, z = identity_sz(s, z, use_identity_plugin)
         z = self._transform_z(z, pair_mask, attention_params, all_reduce_params)
         original_dtype = s.dtype
         z = cast(z, "float32")
@@ -262,6 +271,8 @@ class PairformerModule(PretrainedModule):
     def __init__(self, config: PairformerConfig):
         super().__init__(config)
         layer_cls = PairformerLayerV1 if config.version == "v1" else PairformerLayerV2
+        logger.info(
+            f"Using triangle_attn_backend: {config.triangle_attn_backend}")
         self.layers = ModuleList([
             layer_cls(local_layer_idx=i,
                       token_s=config.token_s,

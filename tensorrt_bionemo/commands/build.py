@@ -15,6 +15,7 @@
 import argparse
 import copy
 import os
+import shutil
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -27,22 +28,47 @@ from tensorrt_llm._utils import (OMPI_COMM_TYPE_HOST, mpi_barrier, mpi_comm,
 from tensorrt_llm.logger import logger, severity_map
 from tensorrt_llm.plugin import PluginConfig, add_plugin_argument
 
-from tensorrt_bionemo._trt.builder import Engine, build
+from tensorrt_bionemo import __version__
+from tensorrt_bionemo._trt.builder import Engine, EngineConfig, build
 # TODO: Make mapping of model name to module class and config class
-from tensorrt_bionemo._trt.layers.transformers import PairformerModule
-from tensorrt_bionemo.confs.build_config import BuildModuleConfig
-from tensorrt_bionemo.confs.model_config import PretrainedModuleConfig
+from tensorrt_bionemo._trt.layers.transformers import (PairformerModule,
+                                                       TokenTransformer)
+from tensorrt_bionemo.configs import BuildModuleConfig, PretrainedModuleConfig
+from tensorrt_bionemo.runtime.backend import BackendType
 
-MODULES_MAPPING = {
+TRT_MODULES_MAPPING = {
     "boltz-1": {
         "structure_pairformer": PairformerModule,
         "confidence_pairformer": PairformerModule,
+        "token_transformer": TokenTransformer,
     },
     "boltz-2": {
         "structure_pairformer": PairformerModule,
         "confidence_pairformer": PairformerModule,
+        "token_transformer": TokenTransformer,
     }
 }
+
+
+def get_backend_names(directory_path: str) -> list[str]:
+    """
+    Returns a list of names of subdirectories within the specified directory.
+    """
+    backend_names = []
+    try:
+        # Get all entries in the directory
+        entries = os.listdir(directory_path)
+
+        # Iterate through entries and check if they are directories
+        for entry in entries:
+            full_path = os.path.join(directory_path, entry)
+            if os.path.isdir(full_path):
+                backend_names.append(entry)
+    except FileNotFoundError:
+        print(f"Error: Directory '{directory_path}' not found.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    return backend_names
 
 
 def parse_arguments():
@@ -61,16 +87,6 @@ def parse_arguments():
                         type=str,
                         default=None,
                         help="The module name.")
-    parser.add_argument(
-        '--module_config',
-        type=str,
-        default=None,
-        help="The file path that saves TensorRT-BNM module config.")
-    parser.add_argument(
-        '--build_config',
-        type=str,
-        default=None,
-        help="The file path that saves TensorRT-BNM build config.")
     parser.add_argument('--max_seqlen',
                         type=int,
                         default=128,
@@ -143,6 +159,11 @@ def parse_arguments():
                         default=None,
                         choices=['float16', 'bfloat16', 'float32'],
                         help="The data type of the model.")
+    parser.add_argument('--torch_dtype',
+                        type=str,
+                        default=None,
+                        choices=['bfloat16', 'float32'],
+                        help="The data type of the torch model.")
     logits_parser = parser.add_argument_group("Logits arguments")
     logits_parser.add_argument('--logits_dtype',
                                type=str,
@@ -188,14 +209,26 @@ def build_and_save(rank, gpu_id, ckpt_dir, build_config, output_dir, log_level,
     import tensorrt_bionemo  # load plugins
     torch.cuda.set_device(gpu_id)
     logger.set_level(log_level)
-    engine = build_module(build_config,
-                          rank,
-                          ckpt_dir,
-                          module_config,
-                          module_cls=module_cls,
-                          **kwargs)
-    assert engine is not None
-    engine.save(output_dir)
+    if module_config.backend == BackendType.TRT:
+        engine = build_module(build_config,
+                              rank,
+                              ckpt_dir,
+                              module_config,
+                              module_cls=module_cls,
+                              **kwargs)
+        assert engine is not None
+        engine.save(output_dir)
+    elif module_config.backend == BackendType.TORCH:
+        # copy rank{rank}.pkl to output_dir
+        if os.path.exists(os.path.join(ckpt_dir, f"rank{rank}.pkl")):
+            shutil.copy(os.path.join(ckpt_dir, f"rank{rank}.pkl"),
+                        os.path.join(output_dir, f"rank{rank}.pkl"))
+        engine_config = EngineConfig(module_config, BuildModuleConfig(),
+                                     __version__)
+        engine = Engine(engine_config, None, None)
+        engine.save(output_dir)
+    else:
+        raise ValueError(f"Backend {module_config.backend} is not supported")
     return True
 
 
@@ -278,59 +311,66 @@ def main():
         'norm_epsilon': args.norm_epsilon,
         'mask_inf': args.mask_inf,
     }
-    ckpt_dir_or_module_config = args.checkpoint_dir if args.checkpoint_dir is not None else args.module_config
-    if ckpt_dir_or_module_config.lower().endswith('.json'):
-        config_path = ckpt_dir_or_module_config
-        ckpt_dir = None
-    else:
-        config_path = os.path.join(ckpt_dir_or_module_config, 'config.json')
-        ckpt_dir = ckpt_dir_or_module_config
-    module_cls = MODULES_MAPPING[args.model][args.module]
-    module_config = PretrainedModuleConfig.from_json_file(
-        module_cls, config_path)
+    ckpt_dir = args.checkpoint_dir
+    backend_names = get_backend_names(ckpt_dir)
+    for backend in backend_names:
+        if not BackendType.is_supported(backend):
+            logger.warning(f"Backend {backend} is not supported")
+            continue
+        backend_dir = os.path.join(ckpt_dir, backend)
+        config_path = os.path.join(backend_dir, 'config.json')
+        module_cls = TRT_MODULES_MAPPING[args.model][args.module]
+        module_config = PretrainedModuleConfig.from_json_file(
+            module_cls, config_path)
 
-    if args.build_config is None:
-        # TODO: remove this, make it a command line argument
-        force_num_profiles_from_env = int(
-            os.environ.get("BUILDER_FORCE_NUM_PROFILES", 0))
-        if force_num_profiles_from_env is not None:
-            logger.warning(
-                f"Overriding # of builder profiles <= {force_num_profiles_from_env}."
-            )
-        logger.info(
-            f"Disable custom all reduce: {module_config.disable_custom_all_reduce}"
-        )
-        strongly_typed = True
-        if args.weakly_dtype is not None and args.weakly_dtype != module_config.dtype:
-            strongly_typed = False
+        output_dir = os.path.join(args.output_dir, backend)
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Building module {args.module} for backend {backend}")
+        if backend == BackendType.TRT:
+            # TODO: remove this, make it a command line argument
+            force_num_profiles_from_env = int(
+                os.environ.get("BUILDER_FORCE_NUM_PROFILES", 0))
+            if force_num_profiles_from_env is not None:
+                logger.warning(
+                    f"Overriding # of builder profiles <= {force_num_profiles_from_env}."
+                )
             logger.info(
-                f"Building weakly-typed engine with dtype {args.weakly_dtype}.")
+                f"Disable custom all reduce: {module_config.disable_custom_all_reduce}"
+            )
+            strongly_typed = True
+            logger.info(
+                f"Module config dtype: {module_config.dtype}, weakly_dtype: {args.weakly_dtype}"
+            )
+            if args.weakly_dtype is not None and args.weakly_dtype != module_config.dtype:
+                strongly_typed = False
+                logger.info(
+                    f"Building weakly-typed engine with dtype {args.weakly_dtype}."
+                )
 
-        build_config_dict = {
-            'strongly_typed': strongly_typed,
-            'weakly_dtype': args.weakly_dtype,
-            'force_num_profiles': force_num_profiles_from_env,
-            'profiling_verbosity': args.profiling_verbosity,
-            'enable_debug_output': args.enable_debug_output,
-            'input_timing_cache': args.input_timing_cache,
-            'output_timing_cache': args.output_timing_cache,
-            'dry_run': args.dry_run,
-            'monitor_memory': args.monitor_memory,
-            'max_seqlen': args.max_seqlen,
-            'min_seqlen': args.min_seqlen
-        }
-        build_config = module_cls.build_config_class.from_dict(
-            build_config_dict,
-            plugin_config=plugin_config,
-            module_config=module_config)
-    else:
-        build_config = module_cls.build_config_class.from_json_file(
-            args.build_config,
-            plugin_config=plugin_config,
-            module_config=module_config)
+            build_config_dict = {
+                'strongly_typed': strongly_typed,
+                'weakly_dtype': args.weakly_dtype,
+                'force_num_profiles': force_num_profiles_from_env,
+                'profiling_verbosity': args.profiling_verbosity,
+                'enable_debug_output': args.enable_debug_output,
+                'input_timing_cache': args.input_timing_cache,
+                'output_timing_cache': args.output_timing_cache,
+                'dry_run': args.dry_run,
+                'monitor_memory': args.monitor_memory,
+                'max_seqlen': args.max_seqlen,
+                'min_seqlen': args.min_seqlen
+            }
+            build_config = module_cls.build_config_class.from_dict(
+                build_config_dict, plugin_config=plugin_config)
 
-    parallel_build(module_config, ckpt_dir, build_config, args.output_dir,
-                   workers, args.log_level, module_cls, **kwargs)
+            parallel_build(module_config, backend_dir, build_config, output_dir,
+                           workers, args.log_level, module_cls, **kwargs)
+        elif backend == BackendType.TORCH:
+            if args.torch_dtype is not None:
+                module_config.set_dtype(args.torch_dtype)
+            build_config = None
+            parallel_build(module_config, backend_dir, build_config, output_dir,
+                           workers, args.log_level, module_cls, **kwargs)
 
     tok = time.time()
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))

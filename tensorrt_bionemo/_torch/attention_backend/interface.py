@@ -28,6 +28,7 @@ class AttentionMetadata:
     Metadata for multi-head attention layer.
     """
     mapping: Optional[Mapping] = None
+    bias_cache: Optional[dict[str, torch.Tensor]] = None
 
 
 TMetadata = TypeVar("TMetadata", bound=AttentionMetadata)

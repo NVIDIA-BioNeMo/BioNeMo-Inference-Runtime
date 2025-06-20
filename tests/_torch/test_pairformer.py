@@ -25,7 +25,7 @@ from test_utils.ref_layers import RefPairformerLayer
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.transformers import PairformerLayer
+from tensorrt_bionemo._torch.layers.transformers import PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -65,7 +65,7 @@ def test_pairformer_layer(sc: Scenario):
 
     weights_and_biases = create_pairformer_layer_weights(from_ref=ref_layer)
 
-    layer = PairformerLayer(
+    layer = PairformerLayerV1(
         layer_idx=0,
         token_s=ref_layer.token_s,
         token_z=ref_layer.token_z,

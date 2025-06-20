@@ -332,6 +332,7 @@ class SelfAttentionPairBias(Module):
                  inf: float = 1e6,
                  eps: float = 1e-05,
                  dtype: str = None,
+                 need_project_z: bool = True,
                  mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
@@ -389,18 +390,21 @@ class SelfAttentionPairBias(Module):
                                    tp_group=mapping.tp_group,
                                    tp_size=mapping.tp_size,
                                    gather_output=False)
-        self.proj_z_norm = LayerNorm(normalized_shape=[c_z],
-                                     dtype=dtype,
-                                     eps=eps,
-                                     tp_size=1,
-                                     tp_dim=0)
-        self.proj_z = ColumnLinear(self.c_z,
-                                   mapping.tp_size * self.num_attention_heads,
-                                   bias=False,
-                                   dtype=dtype,
-                                   tp_group=mapping.tp_group,
-                                   tp_size=mapping.tp_size,
-                                   gather_output=False)
+        self.need_project_z = need_project_z
+        if need_project_z:
+            self.proj_z_norm = LayerNorm(normalized_shape=[c_z],
+                                         dtype=dtype,
+                                         eps=eps,
+                                         tp_size=1,
+                                         tp_dim=0)
+            self.proj_z = ColumnLinear(self.c_z,
+                                       mapping.tp_size *
+                                       self.num_attention_heads,
+                                       bias=False,
+                                       dtype=dtype,
+                                       tp_group=mapping.tp_group,
+                                       tp_size=mapping.tp_size,
+                                       gather_output=False)
         self.proj_o = RowLinear(mapping.tp_size * self.q_size,
                                 self.c_s,
                                 bias=False,
@@ -413,15 +417,16 @@ class SelfAttentionPairBias(Module):
                 z: Tensor,
                 mask: Tensor,
                 norm_before_bmm1: bool = False,
+                compute_pair_bias: bool = True,
                 attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None):
         """
         Implementation of the self-attention pair bias in TensorRT.
 
         Args:
-            s: [B, I, C_S]
-            z: [B, I, I, C_Z]
-            mask: [B, I]
+            s: [B*num_particles, I, C_S]
+            z: [B, I, I, C_Z] or [B, H, I, I]
+            mask: [B*num_particles, I]
         """
         if self.norm_s:
             norm_s = self.norm_s(s)
@@ -455,10 +460,12 @@ class SelfAttentionPairBias(Module):
             # key and value have also the same shape
             key = key.permute([0, 1, 3, 2])
             model_type = query.dtype
-            z = self.proj_z_norm(z)
-            pair_bias = self.proj_z(z)  # [B, N, N, H]
-            pair_bias = pair_bias.permute([0, 3, 1,
-                                           2])  # [B, N, N, H] -> [B, H, N, N]
+            pair_bias = z
+            if compute_pair_bias and self.need_project_z:
+                z = self.proj_z_norm(z)
+                pair_bias = self.proj_z(z)  # [B, N, N, H]
+                pair_bias = pair_bias.permute(
+                    [0, 3, 1, 2])  # [B, N, N, H] -> [B, H, N, N]
             mask = cast(mask, model_type)
             inf_const = constant_to_tensor_(-self.inf,
                                             dtype=model_type,

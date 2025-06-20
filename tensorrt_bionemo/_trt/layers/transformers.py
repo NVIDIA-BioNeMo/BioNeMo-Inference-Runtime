@@ -16,20 +16,24 @@
 from typing import Optional
 
 import tensorrt as trt
-from tensorrt_llm.functional import AllReduceParams, Tensor, cast
+from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
+                                     concat, shape, slice)
+from tensorrt_llm.layers.linear import ColumnLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.logger import logger
 from tensorrt_llm.module import Module, ModuleList
 from tensorrt_llm.network import Network
 
 from tensorrt_bionemo._trt.functional import identity_sz
-from tensorrt_bionemo.confs.modules.transformers import (PairformerBuildConfig,
-                                                         PairformerConfig)
+from tensorrt_bionemo.configs import (PairformerBuildConfig, PairformerConfig,
+                                      TokenTransformerBuildConfig,
+                                      TokenTransformerConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..module_utils import PretrainedModule
 from .attention import AttentionParams, SelfAttentionPairBias
-from .transition import Transition
+from .normalization import AdaLN
+from .transition import ConditionedTransitionBlock, Transition
 from .triangle_nodes import (TriangleAttentionNode, TriangleAttentionNodeType,
                              TriangleMultiplicationNode,
                              TriangleMultiplicationNodeType)
@@ -89,6 +93,7 @@ class PairformerLayerV1(Module):
                 eps=eps,
                 inf=inf,
                 initial_norm=attention_initial_norm,
+                need_project_z=True,
                 mapping=m)
         m = mapping
         if max_tri_mul_tp_size:
@@ -192,6 +197,7 @@ class PairformerLayerV1(Module):
                 s = s + self.attention(s,
                                        z,
                                        mask,
+                                       compute_pair_bias=True,
                                        attention_params=attention_params,
                                        all_reduce_params=all_reduce_params)
             else:
@@ -199,6 +205,7 @@ class PairformerLayerV1(Module):
                     s.unsqueeze(0),
                     z.unsqueeze(0),
                     mask.unsqueeze(0),
+                    compute_pair_bias=True,
                     attention_params=attention_params,
                     all_reduce_params=all_reduce_params).squeeze(0, False)
             s = s + self.transition_s(s)
@@ -248,12 +255,20 @@ class PairformerLayerV2(PairformerLayerV1):
         s = cast(s, "float32")
         s_normed = self.pre_norm_s(s)
         if self.support_batch:
-            s = s + self.attention(s_normed, z, mask, attention_params,
-                                   all_reduce_params)
+            s = s + self.attention(s_normed,
+                                   z,
+                                   mask,
+                                   compute_pair_bias=True,
+                                   attention_params=attention_params,
+                                   all_reduce_params=all_reduce_params)
         else:
-            s = s + self.attention(s_normed.unsqueeze(0), z.unsqueeze(0),
-                                   mask.unsqueeze(0), attention_params,
-                                   all_reduce_params).squeeze(0, False)
+            s = s + self.attention(s_normed.unsqueeze(0),
+                                   z.unsqueeze(0),
+                                   mask.unsqueeze(0),
+                                   compute_pair_bias=True,
+                                   attention_params=attention_params,
+                                   all_reduce_params=all_reduce_params).squeeze(
+                                       0, False)
         s = s + self.transition_s(s)
         if self.post_layer_norm:
             s = self.post_norm_s(s)
@@ -318,3 +333,150 @@ class PairformerModule(PretrainedModule):
             if "softmax" in layer.name and "SOFTMAX_0" in layer.name:
                 layer.trt_layer.precision = trt.float32
         return network
+
+
+class DiffusionTransformerLayer(Module):
+
+    def __init__(self,
+                 *,
+                 local_layer_idx: int,
+                 num_heads: int,
+                 dim: int,
+                 dim_single_cond: int,
+                 dim_pairwise: int = 128,
+                 dtype: str = None,
+                 eps: float = 1e-5,
+                 inf: float = 1e9,
+                 attention_initial_norm: bool = False,
+                 post_layer_norm: bool = False,
+                 need_project_z: bool = True,
+                 mapping: Optional[Mapping] = None):
+        super().__init__()
+        self.num_heads = num_heads
+        self.adaln = AdaLN(dim,
+                           dim_single_cond,
+                           eps=eps,
+                           dtype=dtype,
+                           mapping=mapping)
+
+        self.pair_bias_attn = SelfAttentionPairBias(
+            local_layer_idx=local_layer_idx,
+            c_s=dim,
+            c_z=dim_pairwise,
+            num_heads=num_heads,
+            dtype=dtype,
+            eps=eps,
+            inf=inf,
+            initial_norm=attention_initial_norm,
+            need_project_z=need_project_z,
+            mapping=mapping)
+        self.output_projection = ColumnLinear(
+            dim_single_cond,
+            dim,
+            dtype=dtype,
+            tp_group=mapping.tp_group,
+            tp_size=mapping.tp_size,
+            gather_output=True,
+            is_qkv=False,
+        )
+        self.transition = ConditionedTransitionBlock(
+            dim_single=dim,
+            dim_single_cond=dim_single_cond,
+            expansion_factor=2,
+            dtype=dtype,
+            eps=eps,
+            mapping=mapping)
+        self.post_lnorm = None
+        if post_layer_norm:
+            self.post_lnorm = LayerNorm(normalized_shape=[dim],
+                                        eps=eps,
+                                        dtype=dtype,
+                                        tp_size=1,
+                                        tp_dim=0)
+
+    def forward(self,
+                a: Tensor,
+                s: Tensor,
+                bias: Tensor,
+                mask: Optional[Tensor] = None,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        b = self.adaln(a, s)
+        b = self.pair_bias_attn(s=b,
+                                z=bias,
+                                mask=mask,
+                                compute_pair_bias=False,
+                                attention_params=attention_params,
+                                all_reduce_params=all_reduce_params)
+        b = activation(self.output_projection(s),
+                       trt.ActivationType.SIGMOID) * b  # TODO: fuse here
+        a = a + b
+        a = a + self.transition(a, s, all_reduce_params=all_reduce_params)
+        if self.post_lnorm is not None:
+            a = self.post_lnorm(a)
+        return a
+
+
+class TokenTransformer(PretrainedModule):
+    config_class = TokenTransformerConfig
+    build_config_class = TokenTransformerBuildConfig
+
+    def __init__(self, config: TokenTransformerConfig):
+        super().__init__(config)
+        self.version = config.version
+        logger.info(
+            f"Using pairwise attention backend: {config.pairwise_attn_backend}")
+        self.layers = ModuleList([
+            DiffusionTransformerLayer(
+                local_layer_idx=i,
+                num_heads=config.num_heads,
+                dim=config.dim,
+                dim_single_cond=config.dim_single_cond,
+                dtype=config.dtype,
+                eps=config.norm_epsilon,
+                inf=config.mask_inf,
+                attention_initial_norm=config.attention_initial_norm,
+                post_layer_norm=config.post_layer_norm,
+                need_project_z=config.version == "v1",
+                mapping=config.mapping) for i in range(config.num_blocks)
+        ])
+
+    def forward(self,
+                a: Tensor,
+                s: Tensor,
+                z: Tensor,
+                mask: Optional[Tensor] = None,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        """
+        Token transformer for both v1 and v2
+        Args:
+            a: [B, S, dim]
+            s: [B, S, dim_single_cond]
+            z: [B, H, N, N, L] for v1, [B, N, N, H*L] for v2
+            mask: [B, S]
+            attention_params: AttentionParams
+            all_reduce_params: AllReduceParams
+        """
+        if self.version == "v2":
+            B = shape(z, 0)
+            N = shape(z, 1)
+            M = shape(z, 2)
+            L = self.config.num_blocks
+            D = self.config.num_heads
+            z = z.view(concat([B, N, M, L, D]))
+            z = z.permute([0, 4, 1, 2, 3])  # [B, H, N, N, L]
+        else:
+            B = shape(z, 0)
+            N = shape(z, 2)
+            M = shape(z, 3)
+            L = self.config.num_blocks
+            D = self.config.num_heads
+        bias = z
+        for i, layer in enumerate(self.layers):
+            # Slice the bias term for each layer
+            starts = concat([0, 0, 0, 0, i])
+            ends = concat([B, D, N, M, 1])
+            sub_bias = slice(bias, starts, ends).squeeze(-1, True)
+            a = layer(a, s, sub_bias, mask, attention_params, all_reduce_params)
+        return a

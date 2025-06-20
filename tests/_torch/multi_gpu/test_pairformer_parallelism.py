@@ -29,7 +29,7 @@ from test_utils.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.transformers import PairformerLayer
+from tensorrt_bionemo._torch.layers.transformers import PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -154,7 +154,7 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         attn_metadatas["triangle_attn"].closest_n = 2**int(
             np.ceil(np.log2(scenario.seq_len)))
 
-    single_dev_pairformer_layer = PairformerLayer(
+    single_dev_pairformer_layer = PairformerLayerV1(
         layer_idx=0,
         token_s=token_s,
         token_z=token_z,

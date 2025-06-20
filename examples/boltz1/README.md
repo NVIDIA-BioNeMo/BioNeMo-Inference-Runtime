@@ -6,6 +6,8 @@
 
 ### Pairformer - Convert and Split Weights
 
+This will export for both of `torch` and `trt` backends.
+
 ```bash
 $ export WORLD_SIZE=8 # world_size must be equal tp_size * dcp_size
 $ export TP_SIZE=4
@@ -35,7 +37,7 @@ $ python tensorrt_bionemo/commands/build.py \
     --nccl_plugin ${NCCL_DTYPE} \
     --max_seqlen ${MAX_SEQLEN} \
     --min_seqlen ${MIN_SEQLEN} \
-    --output_dir ${PAIRFORMER_TYPE}_pairformer_${TP_SIZE}_${DP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines
+    --output_dir ${PAIRFORMER_TYPE}_pairformer_${TP_SIZE}_${DCP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines
 ```
 
 Parallel build (recommend):
@@ -43,11 +45,11 @@ Parallel build (recommend):
 ```bash
 $ python tensorrt_bionemo/commands/build.py \
     --model boltz-1 --module ${PAIRFORMER_TYPE}_pairformer \
-    --checkpoint_dir ${PAIRFORMER_TYPE}_pairformer_ckpt_${TP_SIZE}_${DP_SIZE} \
+    --checkpoint_dir ${PAIRFORMER_TYPE}_pairformer_ckpt_${TP_SIZE}_${DCP_SIZE} \
     --nccl_plugin float32 \
     --max_seqlen ${MAX_SEQLEN} \
     --min_seqlen ${MIN_SEQLEN} \
-    --output_dir ${PAIRFORMER_TYPE}_pairformer_${TP_SIZE}_${DP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines \
+    --output_dir ${PAIRFORMER_TYPE}_pairformer_${TP_SIZE}_${DCP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines \
     --workers ${WORLD_SIZE}
 ```
 
@@ -62,9 +64,54 @@ $ python tensorrt_bionemo/commands/build.py \
     --nccl_plugin ${NCCL_TYPE} \
     --max_seqlen ${MAX_SEQLEN} \
     --min_seqlen ${MIN_SEQLEN} \
-    --weakly_type ${WEAKLY_DTYPE} \
+    --weakly_dtype ${WEAKLY_DTYPE} \
     --output_dir ${PAIRFORMER_TYPE}_pairformer_${TP_SIZE}_${DP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines \
     --workers ${WORLD_SIZE}
+```
+
+### Token transformer - Convert and Split Weights
+
+This will export for both of `torch` and `trt` backends.
+
+```bash
+$ export WORLD_SIZE=8 # world_size must be equal tp_size * dcp_size
+$ export TP_SIZE=4
+$ export DCP_SIZE=1 # hasn't supported for DCP_SIZE > 1
+$ export DTYPE=float32
+$ export MAX_NUM_PARTICLES=4
+$ python convert_token_transformer_checkpoint.py \
+    --tp_size ${TP_SIZE} \
+    --dtype ${DTYPE} \
+    --output_dir token_transformer_ckpt_${TP_SIZE}_${DCP_SIZE}_${DTYPE} \
+    --max_num_particles ${MAX_NUM_PARTICLES}
+```
+
+### Token transformer - Build TensorRT engine(s)
+
+Single worker build
+
+```bash
+# For float32
+$ export BUILDER_FORCE_NUM_PROFILES=2
+$ export MAX_SEQLEN=1536
+$ export MIN_SEQLEN=32
+$ export TP_SIZE=1
+$ export DCP_SIZE=1
+$ python tensorrt_bionemo/commands/build.py \
+    --model boltz-1 --module token_transformer \
+    --checkpoint_dir token_transformer_ckpt_${TP_SIZE}_${DCP_SIZE} \
+    --max_seqlen ${MAX_SEQLEN} \
+    --min_seqlen ${MIN_SEQLEN} \
+    --output_dir token_transofrmer_${TP_SIZE}_${DCP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines
+
+# For bfloat16
+$ python tensorrt_bionemo/commands/build.py \
+    --model boltz-1 --module token_transformer \
+    --checkpoint_dir token_transformer_ckpt_${TP_SIZE}_${DCP_SIZE} \
+    --max_seqlen ${MAX_SEQLEN} \
+    --min_seqlen ${MIN_SEQLEN} \
+    --output_dir token_transofrmer_${TP_SIZE}_${DCP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines \
+    --weakly_dtype bfloat16
 ```
 
 ### Benchmark Pairformer
@@ -73,7 +120,7 @@ $ python tensorrt_bionemo/commands/build.py \
 $ cd benchmarks
 $ mpirun -n ${WORLD_SIZE} python benchmark.py \
     -m pairformer \
-    --engine_dir ${PAIRFORMER_TYPE}_pairformer_${TP_SIZE}_${DP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines \
+    --engine_dir ${PAIRFORMER_TYPE}_pairformer_${TP_SIZE}_${DCP_SIZE}_${MIN_SEQLEN}_${MAX_SEQLEN}_engines \
     --csv # If you want to export to a csv file
 ```
 
@@ -135,5 +182,8 @@ $ python run_demo.py --sample_dir ${SAMPLE_DIR} # run with torch original
 $ mpirun -n ${WORLD_SIZE} \
     python run_demo.py --sample_dir ${SAMPLE_DIR} \
     --structure_pairformer_engines_dir _path_to_structure_pairformer_ \
-    --confidence_pairformer_engines_dir _path_to_confidence_pairformer_
+    --confidence_pairformer_engines_dir _path_to_confidence_pairformer_ \
+    --token_transformer_engines_dir _path_to_token_transformer_
 ```
+
+Default backend is `trt`, you can change backend for each module by configurations, see details by `python run_demon.py --help`

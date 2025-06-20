@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from tensorrt_bionemo.hf.checkpoints import load_hf_weights
+from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 
 
 def _prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
@@ -213,7 +213,7 @@ class RefPairwiseSelfAttention(nn.Module):
                  c_s: int,
                  c_z: int,
                  num_heads: int,
-                 inf: float = 1e6,
+                 inf: float = 1e9,
                  initial_norm: bool = True) -> None:
         """
         Args:
@@ -264,14 +264,24 @@ class RefPairwiseSelfAttention(nn.Module):
             (f"{layer_path}.proj_z.1.weight", None),
             (f"{layer_path}.proj_o.weight", None),
         ]
-        c_s = state_dict[weights_biases_path[0][0]].shape[0]
-        c_z = state_dict[weights_biases_path[6][0]].shape[1]
-        num_heads = state_dict[weights_biases_path[6][0]].shape[0]
-        attn = cls(c_s, c_z, num_heads, initial_norm=True)
-        layers = [
-            attn.norm_s, attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,
-            attn.proj_z[0], attn.proj_z[1], attn.proj_o
-        ]
+        c_s = state_dict[f"{layer_path}.proj_q.weight"].shape[0]
+        c_z = state_dict[f"{layer_path}.proj_z.1.weight"].shape[1]
+        num_heads = state_dict[f"{layer_path}.proj_z.1.weight"].shape[0]
+
+        if f"{layer_path}.norm_s.weight" in state_dict:
+            attn = cls(c_s, c_z, num_heads, initial_norm=True)
+            layers = [
+                attn.norm_s, attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,
+                attn.proj_z[0], attn.proj_z[1], attn.proj_o
+            ]
+        else:
+            attn = cls(c_s, c_z, num_heads, initial_norm=False)
+            layers = [
+                attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,
+                attn.proj_z[0], attn.proj_z[1], attn.proj_o
+            ]
+            weights_biases_path = weights_biases_path[1:]
+
         for (weights_path, bias_path), layer in zip(weights_biases_path,
                                                     layers):
             if bias_path is not None:
@@ -283,6 +293,7 @@ class RefPairwiseSelfAttention(nn.Module):
                 s: torch.Tensor,
                 z: torch.Tensor,
                 mask: torch.Tensor,
+                compute_pair_bias: bool = True,
                 multiplicity: int = 1) -> torch.Tensor:
         """
         Args:
@@ -297,8 +308,9 @@ class RefPairwiseSelfAttention(nn.Module):
         q = self.proj_q(s)
         k = self.proj_k(s)
         v = self.proj_v(s)
-        z = self.proj_z(z)
-        z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
+        if compute_pair_bias:
+            z = self.proj_z(z)
+            z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
         g = self.proj_g(s).sigmoid()
         mask_bias = (1 - mask[:, None, None, :].float()) * -self.inf
         mhca_o = plain_pairwise_mhca(q, k, v, self.num_heads, self.head_dim,

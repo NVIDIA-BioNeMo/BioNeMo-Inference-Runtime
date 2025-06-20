@@ -31,12 +31,9 @@ from pytorch_lightning import seed_everything
 from score import kabsch_torch, lddt
 from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
-from tensorrt_bionemo.hf.checkpoints import load_hf_weights
-from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.convert import (convert_hf_pairformer,
-                                                    torch_pairformer_load_fn)
-from tensorrt_bionemo.modules.pairformer import PairformerBackendBuilder
+from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.modules import (PairformerBackendBuilder,
+                                      TokenTransformerBackendBuilder)
 
 SEED = 42
 """
@@ -156,25 +153,36 @@ def pad_batch(batch: dict, pad_seqlen: int, seqlen: int):
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '--structure_pairformer_engines_dir',
+        '--structure_pairformer_ckpt',
         type=Path,
         default=None,
         help=
         'The path to the directory containing the structure pairformer engines')
     parser.add_argument(
-        '--confidence_pairformer_engines_dir',
+        '--confidence_pairformer_ckpt',
         type=Path,
         default=None,
         help=
         'The path to the directory containing the confidence pairformer engines'
     )
-    parser.add_argument('--original_torch',
-                        action='store_true',
-                        help='Use default torch')
-    parser.add_argument('--torch_backend_config',
-                        type=Path,
-                        default=None,
-                        help='The path to the torch backend config')
+    parser.add_argument(
+        '--token_transformer_ckpt',
+        type=Path,
+        default=None,
+        help='The path to the directory containing the token transformer engines'
+    )
+    parser.add_argument('--structure_pairformer_backend',
+                        type=str,
+                        default="trt",
+                        help='The backend to use for the structure pairformer')
+    parser.add_argument('--confidence_pairformer_backend',
+                        type=str,
+                        default="trt",
+                        help='The backend to use for the confidence pairformer')
+    parser.add_argument('--token_transformer_backend',
+                        type=str,
+                        default="trt",
+                        help='The backend to use for the token transformer')
     parser.add_argument('--sample_dir',
                         type=Path,
                         default='sample',
@@ -250,6 +258,10 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
             torch.cuda.synchronize()
             start_time = time.time()
             with torch.no_grad():
+                if hasattr(model.structure_module.score_model.token_transformer,
+                           "reset"):
+                    """ TODO: Refactor for all backends to call reset method. """
+                    model.structure_module.score_model.token_transformer.reset()
                 output = model(
                     batch,
                     recycling_steps=predict_params.recycling_steps,
@@ -298,6 +310,38 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
         report_df.to_csv(f"report_{strategy}.csv", index=False)
 
 
+def load_pairformers(args, model, world_size, rank):
+    context_address = None
+    if args.structure_pairformer_ckpt:
+        structure_pairformer = PairformerBackendBuilder.build(
+            checkpoint_dir=args.structure_pairformer_ckpt,
+            backend=args.structure_pairformer_backend,
+            context_without_device_memory=True)
+        setattr(model, "pairformer_module", structure_pairformer)
+        context_address, _ = structure_pairformer.get_backend_workspace()
+    if args.confidence_pairformer_ckpt:
+        confidence_pairformer = PairformerBackendBuilder.build(
+            checkpoint_dir=args.confidence_pairformer_ckpt,
+            backend=args.confidence_pairformer_backend,
+            context_without_device_memory=True)
+        setattr(model.confidence_module, "pairformer_module",
+                confidence_pairformer)
+    return context_address
+
+
+def load_token_transformer(args, model, world_size, rank, context_address=None):
+    if args.token_transformer_ckpt:
+        token_transformer = TokenTransformerBackendBuilder.build(
+            checkpoint_dir=args.token_transformer_ckpt,
+            backend=args.token_transformer_backend,
+            with_torch_load_fn=True,
+            context_without_device_memory=True,
+            address=context_address)
+        setattr(model.structure_module.score_model, "token_transformer",
+                token_transformer)
+    return context_address
+
+
 def main(args):
     import tensorrt_llm
 
@@ -306,71 +350,11 @@ def main(args):
     torch.cuda.set_device(rank % args.gpu_per_node)
     model, predict_params = create_original_model(device=torch.device("cuda"))
     logger.set_level("info")
-    structure_pairformer = None
-    confidence_pairformer = None
-    dcp_size = 1
-    context_address = None  # use only by trt-backend
-    if args.structure_pairformer_engines_dir:
-        with open(args.structure_pairformer_engines_dir / "config.json",
-                  "r") as f:
-            config = PairformerConfig.from_dict(
-                json.load(f)["pretrained_config"])
-            dcp_size = config.mapping.dcp_size
-        structure_pairformer = PairformerBackendBuilder.build(
-            config=config,
-            checkpoint_dir=args.structure_pairformer_engines_dir,
-            world_size=world_size,
-            rank=rank,
-            context_without_device_memory=True)
-        setattr(model, "pairformer_module", structure_pairformer)
-        context_address, _ = structure_pairformer.get_backend_workspace()
-        assert args.confidence_pairformer_engines_dir is not None, "confidence pairformer engines dir is required"
-        with open(args.confidence_pairformer_engines_dir / "config.json",
-                  "r") as f:
-            config = PairformerConfig.from_dict(
-                json.load(f)["pretrained_config"])
-        confidence_pairformer = PairformerBackendBuilder.build(
-            config=config,
-            checkpoint_dir=args.confidence_pairformer_engines_dir,
-            world_size=world_size,
-            rank=rank,
-            context_without_device_memory=True,
-            address=context_address)
-        setattr(model.confidence_module, "pairformer_module",
-                confidence_pairformer)
-    else:
-        # Using original torch or torch backend
-        if args.original_torch:
-            assert world_size == 1, "original torch only supports single GPU"
-        else:
-            with open(args.torch_backend_config) as f:
-                config = PairformerConfig.from_dict(
-                    json.load(f)["pretrained_config"])
-            # Override mapping to ensure correct mapping for each rank
-            config.mapping = Mapping(world_size=world_size,
-                                     tp_size=config.mapping.tp_size,
-                                     dcp_size=config.mapping.dcp_size,
-                                     rank=rank)
-            dcp_size = config.mapping.dcp_size
-            structure_weights = convert_hf_pairformer(config, None, "structure")
-            confidence_weights = convert_hf_pairformer(config, None,
-                                                       "confidence")
+    dcp_size = 1  # FIXME: support dcp > 1
+    # Using original torch or torch backend
+    context_address = load_pairformers(args, model, world_size, rank)
+    load_token_transformer(args, model, world_size, rank, context_address)
 
-            structure_pairformer = PairformerBackendBuilder.build(
-                config=config,
-                world_size=world_size,
-                rank=rank,
-                weights=structure_weights,
-                load_weights_fn=torch_pairformer_load_fn)
-            confidence_pairformer = PairformerBackendBuilder.build(
-                config=config,
-                world_size=world_size,
-                rank=rank,
-                weights=confidence_weights,
-                load_weights_fn=torch_pairformer_load_fn)
-            setattr(model, "pairformer_module", structure_pairformer)
-            setattr(model.confidence_module, "pairformer_module",
-                    confidence_pairformer)
     run_single_rank(sample_dir=args.sample_dir,
                     model=model,
                     rank=rank,

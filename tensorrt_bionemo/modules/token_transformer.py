@@ -12,81 +12,106 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import os
+from collections import OrderedDict
 from typing import Callable, Optional
 
-import numpy as np
 import tensorrt as trt
 import torch
 import torch.nn as nn
 from cuda import cudart
 from tensorrt_llm._utils import str_dtype_to_trt, trt_dtype_to_torch
 from tensorrt_llm.logger import logger
-from tensorrt_llm.plugin.plugin import CustomAllReduceHelper
 from tensorrt_llm.runtime import Session, TensorInfo
 from tensorrt_llm.runtime.session import _scoped_stream
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.transformers import PairformerModule
-from tensorrt_bionemo.configs import PairformerConfig
+from tensorrt_bionemo._torch.layers.transformers import TokenTransformer
+from tensorrt_bionemo.configs import TokenTransformerConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.backend import BackendBase, BackendBuilder
 from tensorrt_bionemo.runtime.misc import (CUASSERT, dtype_context,
                                            ensure_contiguous)
 
 
-@torch.compiler.disable
-def get_closest_n(s):
-    return 2**int(np.ceil(np.log2(s.shape[1])))
-
-
-class PairformerTorch(BackendBase):
-    IMPL_CLASS = PairformerModule
+class TokenTransformerTorch(BackendBase):
+    IMPL_CLASS = TokenTransformer
 
     def __init__(self,
-                 config: PairformerConfig,
+                 config: TokenTransformerConfig,
                  load_weights_fn: Optional[Callable] = None,
                  impl: nn.Module = None):
         super().__init__(config, load_weights_fn, impl)
+        self.metadata_cls = get_attention_backend(
+            self.config.pairwise_attn_backend).Metadata
+        self.attn_metadata = self.metadata_cls(mapping=self.config.mapping,
+                                               bias_cache={})
 
-        pairwise_metadata_cls = get_attention_backend(
-            config.pairwise_attn_backend).Metadata
-        triangle_metadata_cls = get_attention_backend(
-            config.triangle_attn_backend).Metadata
+    def reset(self):
+        # Use OrderedDict to maintain the order of the keys from layers
+        self.attn_metadata.bias_cache = OrderedDict({})
 
-        self.attn_metadatas = {
-            "triangle_attn": triangle_metadata_cls(mapping=config.mapping),
-            "pairwise_attn": pairwise_metadata_cls(mapping=config.mapping),
-        }
+    def gather_bias(self) -> torch.Tensor:
+        if self.config.version == "v1":
+            keys = list(self.attn_metadata.bias_cache.keys())
+            biases = [self.attn_metadata.bias_cache[k] for k in keys]
+            return torch.stack(biases, dim=-1).contiguous()
+        raise NotImplementedError(
+            "Gather bias is not implemented for version 2")
 
-    def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        s.dtype
+    def _forward_v1(self,
+                    a: torch.Tensor,
+                    s: torch.Tensor,
+                    z: torch.Tensor = None,
+                    mask: torch.Tensor = None,
+                    **kwargs) -> torch.Tensor:
         with dtype_context(expected_dtype=self.config.torch_dtype,
                            original_dtype=s.dtype) as cast_func:
-            if self.config.triangle_attn_backend == "TRIFAST":
-                self.attn_metadatas["triangle_attn"].closest_n = get_closest_n(
-                    s // self.config.mapping.dcp_size)
-            s, z = cast_func(self._module)(s,
-                                           z,
-                                           mask,
-                                           pair_mask,
-                                           attn_metadatas=self.attn_metadatas)
-        return s, z
+            # TODO: add allreduce parameters here
+            a = cast_func(self._module)(a,
+                                        s,
+                                        z=z,
+                                        mask=mask,
+                                        attn_metadata=self.attn_metadata)
+        return a
+
+    def _forward_v2(self,
+                    a: torch.Tensor,
+                    s: torch.Tensor,
+                    bias: torch.Tensor = None,
+                    mask: torch.Tensor = None,
+                    **kwargs) -> torch.Tensor:
+        with dtype_context(expected_dtype=self.config.torch_dtype,
+                           original_dtype=s.dtype) as cast_func:
+            # TODO: add allreduce parameters here
+            a = cast_func(self._module)(a,
+                                        s,
+                                        z=bias,
+                                        mask=mask,
+                                        attn_metadata=self.attn_metadata)
+        return a
+
+    def forward(self, *args, **kwargs):
+        if self.config.version == "v1":
+            return self._forward_v1(*args, **kwargs)
+        elif self.config.version == "v2":
+            return self._forward_v2(*args, **kwargs)
+        else:
+            raise ValueError(
+                f"Invalid token transformer version: {self.config.version}")
 
 
-class PairformerTRT(BackendBase):
+class TokenTransformerTRT(BackendBase):
     IMPL_CLASS = None
 
     def __init__(self,
-                 config: PairformerConfig,
+                 config: TokenTransformerConfig,
                  load_weights_fn: Optional[Callable] = None,
                  impl: nn.Module = None):
         super().__init__(config, load_weights_fn, impl)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
+        self._concat_bias_cache: torch.Tensor = None  # for Boltz-1 model
 
     def load_weights(self,
                      checkpoint_dir: str,
@@ -95,7 +120,25 @@ class PairformerTRT(BackendBase):
                      context_without_device_memory: bool = True,
                      address=None,
                      stream=None,
+                     torch_load_weights_fn: Optional[Callable] = None,
+                     torch_local_checkpoint: str = None,
                      **kwargs):
+        """
+        Load the token transformer engine from the checkpoint directory.
+        Args:
+            checkpoint_dir: The directory containing the token transformer engine.
+            world_size: The world size of the engine.
+            rank: The rank of the engine.
+            context_without_device_memory: Whether to create a context without device memory.
+            address: The address of the device memory.
+            stream: The stream to use for the engine.
+            torch_load_weights_fn:
+                The function to load the weights for the token transformer torch backend.
+                This is only used for the Boltz-1 model. For the first iteration to compute the biases
+            torch_local_checkpoint:
+                The local checkpoint for the token transformer torch backend.
+                This is only used for the Boltz-1 model.
+        """
         self.checkpoint_dir = checkpoint_dir
         self.world_size = world_size
         self.runtime_rank = rank
@@ -178,15 +221,25 @@ class PairformerTRT(BackendBase):
             min_opt = mask_dims[0]
             max_opt = mask_dims[-1]
 
-            if self.config.support_batch:
-                min_s = min_opt[1]  # 0: batch_size, 1: seqlen
-                max_s = max_opt[1]  # 0: batch_size, 1: seqlen
-            else:
-                min_s = min_opt[0]  # 0: seqlen
-                max_s = max_opt[0]  # 0: seqlen
+            min_s = min_opt[1]  # 0: batch_size, 1: seqlen
+            max_s = max_opt[1]  # 0: batch_size, 1: seqlen
 
             self.opt_profile_map[(min_s, max_s)] = i
         self.curr_profile = 0
+        if self.config.version == "v1":  # Boltz-1 model
+            if torch_load_weights_fn is not None:
+                self._torch_module = TokenTransformerTorch(
+                    self.config, torch_load_weights_fn)
+                self._torch_module.load_weights(torch_local_checkpoint,
+                                                world_size,
+                                                rank,
+                                                compile=True)
+
+    def reset(self):
+        if self.config.version == "v1":
+            # Delete the bias cache
+            self._torch_module.reset()
+            self._concat_bias_cache = None
 
     def get_backend_workspace(self):
         """ Return the address and the size of the workspace for the backend."""
@@ -207,33 +260,51 @@ class PairformerTRT(BackendBase):
                 self.context.set_optimization_profile_async(
                     self.curr_profile, stream)
 
+    def _forward_v1(self,
+                    a: torch.Tensor,
+                    s: torch.Tensor,
+                    z: torch.Tensor = None,
+                    mask: torch.Tensor = None,
+                    **kwargs) -> torch.Tensor:
+        if self._concat_bias_cache is None:
+            # Run the torch module backend only once to compute the biases
+            a = self._torch_module(a, s, z, mask, **kwargs)
+            self._concat_bias_cache = self._torch_module.gather_bias()
+            return a
+        return self._forward_internal(a, s, self._concat_bias_cache, mask,
+                                      **kwargs)
+
+    def _forward_v2(self,
+                    a: torch.Tensor,
+                    s: torch.Tensor,
+                    bias: torch.Tensor = None,
+                    mask: torch.Tensor = None,
+                    **kwargs) -> torch.Tensor:
+        return self._forward_internal(a, s, bias, mask, **kwargs)
+
     @ensure_contiguous
-    def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        # Ensure the inputs are contiguous
-        self.switch_opt_profile(s.shape[1])
-        if not self.config.support_batch:
-            s = s.squeeze(0)
-            z = z.squeeze(0)
-            mask = mask.squeeze(0)
-            pair_mask = pair_mask.squeeze(0)
+    def _forward_internal(self,
+                          a: torch.Tensor,
+                          s: torch.Tensor,
+                          z: torch.Tensor = None,
+                          mask: torch.Tensor = None,
+                          **kwargs) -> torch.Tensor:
+        self.switch_opt_profile(a.shape[1])
         original_dtype = s.dtype
 
         # TODO: Use config.get_input_names() to get the input names
         inputs = {
+            "a": a.to(self.config.torch_dtype),
             "s": s.to(self.config.torch_dtype),
             "z": z.to(self.config.torch_dtype),
-            "mask": mask.to(self.config.torch_dtype),
-            "pair_mask": pair_mask.to(self.config.torch_dtype)
+            "mask": mask.to(self.config.torch_dtype)
         }
 
         output_info = self.session.infer_shapes([
+            TensorInfo("a", dtype=self.trt_dtype, shape=a.shape),
             TensorInfo("s", dtype=self.trt_dtype, shape=s.shape),
             TensorInfo("z", dtype=self.trt_dtype, shape=z.shape),
             TensorInfo("mask", dtype=self.trt_dtype, shape=mask.shape),
-            TensorInfo("pair_mask", dtype=self.trt_dtype,
-                       shape=pair_mask.shape),
         ], self.context)
         outputs = {
             t.name:
@@ -249,14 +320,21 @@ class PairformerTRT(BackendBase):
                               self.stream,
                               context=self.context)
         assert ok, "Runtime execution failed"
-        s = outputs["output_s"].to(original_dtype)
-        z = outputs["output_z"].to(original_dtype)
-        if not self.config.support_batch:
-            s = s.unsqueeze(0)
-            z = z.unsqueeze(0)
-        return s, z
+        return outputs["output_a"].to(original_dtype)
+
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        if self.config.version == "v1":
+            return self._forward_v1(*args, **kwargs)
+        elif self.config.version == "v2":
+            return self._forward_v2(*args, **kwargs)
+        else:
+            raise ValueError(
+                f"Invalid token transformer version: {self.config.version}")
 
 
-class PairformerBackendBuilder(BackendBuilder):
-    BACKEND_CLASSES = {"trt": PairformerTRT, "torch": PairformerTorch}
-    CONFIG_CLASS = PairformerConfig
+class TokenTransformerBackendBuilder(BackendBuilder):
+    BACKEND_CLASSES = {
+        "torch": TokenTransformerTorch,
+        "trt": TokenTransformerTRT
+    }
+    CONFIG_CLASS = TokenTransformerConfig

@@ -13,16 +13,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import torch
+import torch.nn as nn
 from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
-from tensorrt_bionemo.hf.checkpoints import load_hf_weights
+from tensorrt_bionemo.configs import PairformerConfig
+from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.models.boltz1.convert import \
+    convert_hf_token_transformer as boltz1_convert_hf_token_transformer
 from tensorrt_bionemo.models.boltz1.convert import (get_pairwise_attn_weights,
                                                     get_transition_weights,
                                                     get_tri_attn_node_weights,
                                                     get_tri_mul_node_weights)
+from tensorrt_bionemo.models.boltz1.convert import \
+    torch_pairformer_load_fn as boltz1_torch_pairformer_load_fn
+from tensorrt_bionemo.models.boltz1.convert import \
+    torch_token_transformer_load_fn as boltz1_torch_token_transformer_load_fn
 
 
 def get_post_pre_norm_weights(state_dict: dict,
@@ -50,7 +57,8 @@ def get_post_pre_norm_weights(state_dict: dict,
 def convert_hf_pairformer(config: PairformerConfig,
                           mapping: Mapping,
                           pairformer_type: str = "structure",
-                          local_checkpoint: str = None):
+                          local_checkpoint: str = None,
+                          model_name: str = "boltz-2"):
     """
     Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
     """
@@ -66,7 +74,7 @@ def convert_hf_pairformer(config: PairformerConfig,
                                 map_location="cpu",
                                 weights_only=False)["state_dict"]
     else:
-        state_dict = load_hf_weights(name="boltz-2")
+        state_dict = load_hf_weights(name=model_name)
 
     logger.info(
         f"Loading weights for {pairformer_type} pairformer, dtype: {config.dtype}, num_blocks: {config.num_blocks}"
@@ -134,3 +142,47 @@ def convert_hf_pairformer(config: PairformerConfig,
                                    config.token_z * 4,
                                    dtype=config.dtype))
     return weights
+
+
+def torch_pairformer_load_fn(module: nn.Module,
+                             checkpoint_dir: str = None,
+                             world_size: int = 1,
+                             rank: int = 0,
+                             weights: dict = None,
+                             pairformer_type: str = "structure",
+                             **kwargs):
+    """
+    Load a pairformer model from a PyTorch checkpoint.
+
+    Args:
+        module: The module to load the weights into.
+        checkpoint_dir: The directory to load the checkpoint from.
+        world_size: The number of processes to use.
+        rank: The rank of the process.
+        weights: The weights to load into the module.
+        pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
+    """
+    weights = convert_hf_pairformer(module.config,
+                                    Mapping(),
+                                    pairformer_type,
+                                    local_checkpoint=checkpoint_dir)
+
+    boltz1_torch_pairformer_load_fn(module, checkpoint_dir, world_size, rank,
+                                    weights, pairformer_type, **kwargs)
+
+    for name, module in list(module.named_modules()):
+        if name.endswith(".pre_norm_s") or name.endswith(".post_norm_s"):
+            weight = weights[f"{name}.weight"]
+            bias = weights[f"{name}.bias"]
+            module.bias.data.copy_(bias.to(module.weight.dtype))
+            module.weight.data.copy_(weight.to(module.weight.dtype))
+
+
+def torch_token_transformer_load_fn(*args, **kwargs):
+    boltz1_torch_token_transformer_load_fn(*args, **kwargs)
+
+
+def convert_hf_token_transformer(*args, **kwargs):
+    if kwargs.get("model_name") is None:
+        kwargs["model_name"] = "boltz-2"
+    return boltz1_convert_hf_token_transformer(*args, **kwargs)

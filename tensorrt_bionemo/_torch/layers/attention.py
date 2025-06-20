@@ -168,6 +168,7 @@ class SelfAttentionPairBias(nn.Module):
                  initial_norm: bool = True,
                  dtype: torch.dtype = None,
                  inf: float = 1e6,
+                 eps: float = 1e-5,
                  max_attention_pairwise_tp_size: bool = True,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
@@ -200,7 +201,7 @@ class SelfAttentionPairBias(nn.Module):
 
         self.norm_s = None
         if initial_norm:
-            self.norm_s = nn.LayerNorm(c_s, dtype=dtype)
+            self.norm_s = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
 
         self.proj_q = Linear(
             self.c_s,
@@ -236,7 +237,7 @@ class SelfAttentionPairBias(nn.Module):
         )
 
         self.proj_z = nn.Sequential(
-            nn.LayerNorm(c_z, dtype=dtype),
+            nn.LayerNorm(c_z, dtype=dtype, eps=eps),
             Linear(
                 c_z,
                 tp_size * self.num_heads,
@@ -271,6 +272,8 @@ class SelfAttentionPairBias(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
+        compute_pair_bias: bool = True,
+        save_to_cache_key: Optional[str] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
@@ -282,10 +285,16 @@ class SelfAttentionPairBias(nn.Module):
         q = self.proj_q(s)
         kv = self.proj_kv(s)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
-        z = self.proj_z(z)
-        z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
         mask_bias = (1 - mask[:, None, None].float()) * -self.inf
-        biases = [mask_bias, z]
+        pair_bias = z
+        if compute_pair_bias:
+            pair_bias = self.proj_z(z)
+            pair_bias = torch.moveaxis(pair_bias, 3,
+                                       1)  # [B, N, N, H] -> [B, H, N, N]
+        if save_to_cache_key is not None and save_to_cache_key not in attn_metadata.bias_cache:
+            attn_metadata.bias_cache[save_to_cache_key] = pair_bias
+        biases = [mask_bias, pair_bias]
+
         mha_o = self.attn.forward(
             q.contiguous(),
             k.contiguous(),
@@ -298,3 +307,30 @@ class SelfAttentionPairBias(nn.Module):
         g = self.proj_g(s).sigmoid()
         o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o
+
+
+class SelfAttentionPairBiasWithCache(SelfAttentionPairBias):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._bias_key = f"{self.__class__.__name__}_{self.layer_idx}"
+
+    def forward(self,
+                s: torch.Tensor,
+                z: torch.Tensor,
+                mask: torch.Tensor,
+                attn_metadata: Optional[AttentionMetadata] = None,
+                all_reduce_params: Optional[AllReduceParams] = None):
+        pair_bias = z
+        compute_pair_bias = True
+        assert attn_metadata is not None, "attn_metadata is required for self attention pair bias with cache"
+        if attn_metadata.bias_cache is not None and self._bias_key in attn_metadata.bias_cache:
+            pair_bias = attn_metadata.bias_cache[self._bias_key]
+            compute_pair_bias = False
+        return super().forward(s=s,
+                               z=pair_bias,
+                               mask=mask,
+                               compute_pair_bias=compute_pair_bias,
+                               save_to_cache_key=self._bias_key,
+                               attn_metadata=attn_metadata,
+                               all_reduce_params=all_reduce_params)

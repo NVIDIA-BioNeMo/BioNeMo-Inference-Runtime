@@ -1,15 +1,12 @@
 # Boltz-2
 
-Currently, Boltz-2 is private and access is restricted to authorized users only.
+Boltz-2 repo: https://github.com/jwohlwend/boltz/tree/main
 
 ## Overview
 
-Install boltz-2 from directory
+## Build engines
 
-```bash
-$ cd ${_boltz2_dir_}
-$ pip install -e .
-```
+The building progress is similar to the Boltz-1 model in the Boltz1's example folder. Please see: [`examples/boltz1`](examples/boltz1)
 
 ## Generate test samples
 
@@ -63,19 +60,4 @@ def get_dropout_mask(
     d = d * 1.0 / (1.0 - dropout)
     return d
 
-```
-
-The import boltz module will go error, so need to change the `${_boltz2_dir_}/model/layers/triangular_attention/primitives.py` in the site-packges directory. Replace:
-
-```python
-fa_is_installed = importlib.util.find_spec("flash_attn") is not None
-if fa_is_installed:
-    from flash_attn.bert_padding import unpad_input
-    from flash_attn.flash_attn_interface import flash_attn_unpadded_kvpacked_func
-```
-
-by
-
-```python
-fa_is_installed = False
 ```

@@ -22,7 +22,7 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.network import net_guard
 
 from tensorrt_bionemo._trt.module_utils import PretrainedModule
-from tensorrt_bionemo.confs.build_config import BuildModuleConfig
+from tensorrt_bionemo.configs import BuildModuleConfig
 from tensorrt_bionemo.version import __version__
 
 
@@ -32,7 +32,7 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
     build_config = copy.deepcopy(build_config)
     build_config.plugin_config.dtype = module.config.dtype
 
-    module_config = build_config.module_config
+    module_config = module.config
     builder = Builder()
     if build_config.strongly_typed:
         precision = module.config.dtype
@@ -77,6 +77,8 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
         }
         inputs = module.prepare_inputs(**prepare_input_args)
         outputs = module(**inputs)
+        if not isinstance(outputs, tuple) and not isinstance(outputs, list):
+            outputs = (outputs, )
 
         output_names = module.config.get_output_names()
         for output, output_name in zip(outputs, output_names):

@@ -16,9 +16,10 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from test_utils.ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
 
-from tensorrt_bionemo.hf.checkpoints import load_hf_weights
+from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 
 
 class RefTriangleMultiplicationNode(nn.Module):
@@ -394,3 +395,219 @@ class RefPairformerLayer(nn.Module):
             s = s + self.transition_s(s)
 
         return s, z
+
+
+class RefAdaLN(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/transformers.py#L17 """
+
+    def __init__(self,
+                 dim: int,
+                 dim_single_cond: int,
+                 eps: float = 1e-5) -> None:
+        super().__init__()
+        self.dim = dim
+        self.dim_single_cond = dim_single_cond
+        self.eps = eps
+
+        self.a_norm = nn.LayerNorm(dim, bias=False)
+        self.s_norm = nn.LayerNorm(dim_single_cond, bias=False)
+        self.s_scale = nn.Linear(dim_single_cond, dim, bias=True)
+        self.s_bias = nn.Linear(dim_single_cond, dim, bias=False)
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, a: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        a = self.a_norm(a)
+        s = self.s_norm(s)
+        a = self.sigmoid(self.s_scale(s)) * a + self.s_bias(s)
+        return a
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-1",
+            layer_path:
+        str = "structure_module.score_model.token_transformer.layers.0.adaln",
+            state_dict: Optional[dict] = None) -> 'RefAdaLN':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        weights_biases_path = [
+            # (f"{layer_path}.a_norm.weight", f"{layer_path}.a_norm.bias"),
+            (f"{layer_path}.s_norm.weight", None),
+            (f"{layer_path}.s_scale.weight", f"{layer_path}.s_scale.bias"),
+            (f"{layer_path}.s_bias.weight", None),
+        ]
+        dim = state_dict[weights_biases_path[1][0]].shape[0]
+        dim_single_cond = state_dict[weights_biases_path[1][0]].shape[1]
+        m = cls(dim, dim_single_cond)
+        layers = [
+            # m.a_norm,
+            m.s_norm,
+            m.s_scale,
+            m.s_bias,
+        ]
+        m.a_norm.weight.data.copy_(torch.ones(dim))
+
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m
+
+
+class RefSwiGLU(nn.Module):
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x, gates = x.chunk(2, dim=-1)
+        return F.silu(gates) * x
+
+
+class RefConditionedTransitionBlock(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/transformers.py#L20 """
+
+    def __init__(self,
+                 dim_single: int,
+                 dim_single_cond: int,
+                 expansion_factor: int = 2) -> None:
+        super().__init__()
+        self.adaln = RefAdaLN(dim_single, dim_single_cond)
+
+        dim_inner = int(dim_single * expansion_factor)
+        self.swish_gate = nn.Sequential(
+            nn.Linear(dim_single, dim_inner * 2, bias=False),
+            RefSwiGLU(),
+        )
+        self.a_to_b = nn.Linear(dim_single, dim_inner, bias=False)
+        self.b_to_a = nn.Linear(dim_inner, dim_single, bias=False)
+
+        self.output_projection = nn.Sequential(
+            nn.Linear(dim_single_cond, dim_single, bias=True), nn.Sigmoid())
+
+    def forward(self, a: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        a = self.adaln(a, s)
+        b = self.swish_gate(a) * self.a_to_b(a)
+        a = self.output_projection(s) * self.b_to_a(b)
+        return a
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-1",
+            layer_path:
+        str = "structure_module.score_model.token_transformer.layers.0.transition",
+            state_dict: Optional[dict] = None
+    ) -> 'RefConditionedTransitionBlock':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+
+        adaln = RefAdaLN.load_weights(state_dict=state_dict,
+                                      layer_path=layer_path + ".adaln")
+        m = cls(adaln.dim, adaln.dim_single_cond)
+        setattr(m, "adaln", adaln)
+
+        weights_biases_path = [
+            (f"{layer_path}.swish_gate.0.weight", None),
+            (f"{layer_path}.a_to_b.weight", None),
+            (f"{layer_path}.b_to_a.weight", None),
+            (f"{layer_path}.output_projection.0.weight",
+             f"{layer_path}.output_projection.0.bias"),
+        ]
+        layers = [
+            m.swish_gate[0],
+            m.a_to_b,
+            m.b_to_a,
+            m.output_projection[0],
+        ]
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m
+
+
+class RefDiffusionTransformerLayer(nn.Module):
+
+    def __init__(
+        self,
+        heads: int,
+        dim: int = 384,
+        dim_single_cond: Optional[int] = None,
+        dim_pairwise: int = 128,
+    ):
+        super().__init__()
+        dim_single_cond = dim_single_cond if dim_single_cond is not None else dim
+
+        self.adaln = RefAdaLN(dim, dim_single_cond)
+
+        self.pair_bias_attn = RefPairwiseSelfAttention(c_s=dim,
+                                                       c_z=dim_pairwise,
+                                                       num_heads=heads,
+                                                       initial_norm=False)
+
+        self.output_projection = nn.Sequential(nn.Linear(dim_single_cond, dim),
+                                               nn.Sigmoid())
+
+        self.transition = RefConditionedTransitionBlock(
+            dim_single=dim, dim_single_cond=dim_single_cond)
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        s: torch.Tensor,
+        bias: torch.Tensor,
+        mask: torch.Tensor,
+        compute_pair_bias: bool = True,
+        multiplicity: int = 1,
+    ):
+        b = self.adaln(a, s)
+        b = self.pair_bias_attn(
+            s=b,
+            z=bias,
+            mask=mask,
+            compute_pair_bias=compute_pair_bias,
+        )
+        b = self.output_projection(s) * b
+        a = a + b
+        a = a + self.transition(a, s)
+        return a
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-1",
+            layer_path:
+        str = "structure_module.score_model.token_transformer.layers.0",
+            state_dict: Optional[dict] = None
+    ) -> 'RefDiffusionTransformerLayer':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+
+        adaln = RefAdaLN.load_weights(state_dict=state_dict,
+                                      layer_path=layer_path + ".adaln")
+        pair_bias_attn = RefPairwiseSelfAttention.load_weights(
+            state_dict=state_dict, layer_path=layer_path + ".pair_bias_attn")
+        transition = RefConditionedTransitionBlock.load_weights(
+            state_dict=state_dict, layer_path=layer_path + ".transition")
+        m = cls(heads=pair_bias_attn.num_heads,
+                dim=adaln.dim,
+                dim_single_cond=adaln.dim_single_cond,
+                dim_pairwise=pair_bias_attn.c_z)
+        setattr(m, "adaln", adaln)
+        setattr(m, "pair_bias_attn", pair_bias_attn)
+        setattr(m, "transition", transition)
+
+        weights_biases_path = [
+            (f"{layer_path}.output_projection.0.weight",
+             f"{layer_path}.output_projection.0.bias"),
+        ]
+        layers = [
+            m.output_projection[0],
+        ]
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m

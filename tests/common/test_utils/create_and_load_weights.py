@@ -20,8 +20,9 @@ from tensorrt_llm.models.convert_utils import split
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from .ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
-from .ref_layers import (RefPairformerLayer, RefTransition,
-                         RefTriangleAttentionNode,
+from .ref_layers import (RefAdaLN, RefConditionedTransitionBlock,
+                         RefDiffusionTransformerLayer, RefPairformerLayer,
+                         RefTransition, RefTriangleAttentionNode,
                          RefTriangleMultiplicationNode)
 
 
@@ -144,8 +145,11 @@ def create_self_pairwise_attention_weights(
         norm_z_bias = torch.empty(size=[c_z], dtype=torch_dtype)
         torch.nn.init.zeros_(norm_z_bias)
     else:
-        init_norm_weight = from_ref.norm_s.weight.data
-        init_norm_bias = from_ref.norm_s.bias.data
+        init_norm_weight = None
+        init_norm_bias = None
+        if hasattr(from_ref, "norm_s") and from_ref.norm_s is not None:
+            init_norm_weight = from_ref.norm_s.weight.data
+            init_norm_bias = from_ref.norm_s.bias.data
         q_weight = from_ref.proj_q.weight.data
         q_bias = from_ref.proj_q.bias.data
         k_weight = from_ref.proj_k.weight.data
@@ -175,10 +179,11 @@ def load_self_pairwise_attention_weights_trt(module,
         z_weight = split(z_weight, tp_size, tp_rank, 0)
 
     kv_weights = torch.cat([k_weight, v_weight], dim=0)
-    module.norm_s.weight.value = np.ascontiguousarray(
-        init_norm_weight.cpu().numpy())
-    module.norm_s.bias.value = np.ascontiguousarray(
-        init_norm_bias.cpu().numpy())
+    if hasattr(module, "norm_s") and module.norm_s is not None:
+        module.norm_s.weight.value = np.ascontiguousarray(
+            init_norm_weight.cpu().numpy())
+        module.norm_s.bias.value = np.ascontiguousarray(
+            init_norm_bias.cpu().numpy())
     module.proj_q.weight.value = np.ascontiguousarray(q_weight.cpu().numpy())
     module.proj_q.bias.value = np.ascontiguousarray(q_bias.cpu().numpy())
     # k,v,o,g are identity matrices
@@ -213,8 +218,9 @@ def load_self_pairwise_attention_weights_torch(module,
     g_proj_weights = [{"weight": g_weight.to(dtype).to("cuda"), "bias": None}]
 
     z_1_proj_weights = [{"weight": z_weight.to(dtype).to("cuda"), "bias": None}]
-    module.norm_s.weight.data.copy_(init_norm_weight.to(dtype).to("cuda"))
-    module.norm_s.bias.data.copy_(init_norm_bias.to(dtype).to("cuda"))
+    if hasattr(module, "norm_s") and module.norm_s is not None:
+        module.norm_s.weight.data.copy_(init_norm_weight.to(dtype).to("cuda"))
+        module.norm_s.bias.data.copy_(init_norm_bias.to(dtype).to("cuda"))
     module.proj_q.load_weights(q_proj_weights)
     module.proj_kv.load_weights(kv_proj_weights)
     module.proj_o.load_weights(o_proj_weights)
@@ -239,8 +245,9 @@ def load_self_pairwise_attention_weights_ref_torch(module, weights_and_biases):
     norm_z_weight.to("cuda")
     norm_z_bias.to("cuda")
 
-    module.norm_s.weight.data.copy_(init_norm_weight)
-    module.norm_s.bias.data.copy_(init_norm_bias)
+    if hasattr(module, "norm_s") and module.norm_s is not None:
+        module.norm_s.weight.data.copy_(init_norm_weight)
+        module.norm_s.bias.data.copy_(init_norm_bias)
 
     module.proj_q.weight.data.copy_(q_weight)
     module.proj_q.bias.data.copy_(q_bias)
@@ -697,3 +704,310 @@ def load_pairformer_layer_weights_torch(module,
                                   weights_and_biases["transition_s"], dtype)
     load_transition_weights_torch(module.transition_z,
                                   weights_and_biases["transition_z"], dtype)
+
+
+def create_adaln_weights(dim=None,
+                         dim_single_cond=None,
+                         torch_dtype=None,
+                         from_ref: RefAdaLN = None):
+    if not from_ref:
+        a_norm_weight = torch.empty(size=[dim], dtype=torch_dtype)
+        torch.nn.init.constant_(a_norm_weight, 1.0)
+        s_norm_weight = torch.empty(size=[dim_single_cond], dtype=torch_dtype)
+        torch.nn.init.uniform_(s_norm_weight)
+        s_scale_weight = torch.empty(size=[dim, dim_single_cond],
+                                     dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(s_scale_weight)
+        s_scale_bias = torch.empty(size=[dim], dtype=torch_dtype)
+        torch.nn.init.uniform_(s_scale_bias)
+        s_bias_weight = torch.empty(size=[dim, dim_single_cond],
+                                    dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(s_bias_weight)
+    else:
+        a_norm_weight = from_ref.a_norm.weight.data
+        s_norm_weight = from_ref.s_norm.weight.data
+        s_scale_weight = from_ref.s_scale.weight.data
+        s_scale_bias = from_ref.s_scale.bias.data
+        s_bias_weight = from_ref.s_bias.weight.data
+    return a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight
+
+
+def load_adaln_weights_ref_torch(module, weights_and_biases):
+    a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight = weights_and_biases
+    # a_norm_weight.to("cuda")
+    s_norm_weight.to("cuda")
+    s_scale_weight.to("cuda")
+    s_scale_bias.to("cuda")
+    s_bias_weight.to("cuda")
+
+    module.s_norm.weight.data.copy_(s_norm_weight)
+    module.s_scale.weight.data.copy_(s_scale_weight)
+    module.s_scale.bias.data.copy_(s_scale_bias)
+    module.s_bias.weight.data.copy_(s_bias_weight)
+
+
+def load_adaln_weights_torch(module, weights_and_biases, dtype=torch.float32):
+    a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight = weights_and_biases
+
+    # module.a_norm.weight.data.copy_(a_norm_weight)
+    module.s_norm.weight.data.copy_(s_norm_weight)
+
+    module.fused_s_scale_s_bias.load_weights([
+        {
+            "weight": s_scale_weight.to(dtype).to("cuda"),
+            "bias": s_scale_bias.to(dtype).to("cuda")
+        },
+        {
+            "weight": s_bias_weight.to(dtype).to("cuda"),
+            "bias": torch.zeros(s_bias_weight.shape[0],
+                                dtype=dtype).to("cuda")  # s_bias has no bias
+        }
+    ])
+
+
+def load_adaln_weights_trt(module, weights_and_biases, mapping: Mapping = None):
+    a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight = weights_and_biases
+    s_bias_bias = torch.zeros(s_bias_weight.shape[0],
+                              dtype=s_bias_weight.dtype,
+                              device=s_bias_weight.device)
+
+    module.s_norm.weight.value = np.ascontiguousarray(
+        s_norm_weight.cpu().numpy())
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    tp_size = m.tp_size
+    tp_rank = m.tp_rank
+    if tp_size > 1:
+        s_scale_weight = split(s_scale_weight, tp_size, tp_rank, 0)
+        s_scale_bias = split(s_scale_bias, tp_size, tp_rank, 0)
+        s_bias_weight = split(s_bias_weight, tp_size, tp_rank, 0)
+        s_bias_bias = split(s_bias_bias, tp_size, tp_rank, 0)
+    fused_s_scale_s_bias_weight = torch.cat([s_scale_weight, s_bias_weight],
+                                            dim=0)
+    fused_s_scale_s_bias_bias = torch.cat([s_scale_bias, s_bias_bias], dim=0)
+
+    module.fused_s_scale_s_bias.weight.value = np.ascontiguousarray(
+        fused_s_scale_s_bias_weight.cpu().numpy())
+    module.fused_s_scale_s_bias.bias.value = np.ascontiguousarray(
+        fused_s_scale_s_bias_bias.cpu().numpy())
+
+
+def create_conditioned_transition_block_weights(
+        dim_single=None,
+        dim_single_cond=None,
+        expansion_factor: int = 2,
+        torch_dtype=None,
+        from_ref: RefConditionedTransitionBlock = None):
+    if not from_ref:
+        dim_inner = int(dim_single * expansion_factor)
+        adaln_weights = create_adaln_weights(dim=dim_single,
+                                             dim_single_cond=dim_single_cond,
+                                             torch_dtype=torch_dtype)
+        swish_gate_weight = torch.empty(size=[dim_inner * 2, dim_single],
+                                        dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(swish_gate_weight)
+        a_to_b_weight = torch.empty(size=[dim_inner, dim_single],
+                                    dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(a_to_b_weight)
+        b_to_a_weight = torch.empty(size=[dim_single, dim_inner],
+                                    dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(b_to_a_weight)
+        output_projection_weight = torch.empty(
+            size=[dim_single, dim_single_cond], dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(output_projection_weight)
+        output_projection_bias = torch.empty(size=[dim_single],
+                                             dtype=torch_dtype)
+        torch.nn.init.uniform_(output_projection_bias)
+    else:
+        adaln_weights = create_adaln_weights(from_ref=from_ref.adaln)
+        swish_gate_weight = from_ref.swish_gate[0].weight.data
+        a_to_b_weight = from_ref.a_to_b.weight.data
+        b_to_a_weight = from_ref.b_to_a.weight.data
+        output_projection_weight = from_ref.output_projection[0].weight.data
+        output_projection_bias = from_ref.output_projection[0].bias.data
+    return adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
+        output_projection_weight, output_projection_bias
+
+
+def load_conditioned_transition_block_weights_ref_torch(module,
+                                                        weights_and_biases):
+    adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
+        output_projection_weight, output_projection_bias = weights_and_biases
+    swish_gate_weight.to("cuda")
+    a_to_b_weight.to("cuda")
+    b_to_a_weight.to("cuda")
+    output_projection_weight.to("cuda")
+    output_projection_bias.to("cuda")
+
+    load_adaln_weights_ref_torch(module.adaln, adaln_weights)
+    module.swish_gate[0].weight.data.copy_(swish_gate_weight)
+    module.a_to_b.weight.data.copy_(a_to_b_weight)
+    module.b_to_a.weight.data.copy_(b_to_a_weight)
+    module.output_projection[0].weight.data.copy_(output_projection_weight)
+    module.output_projection[0].bias.data.copy_(output_projection_bias)
+
+
+def load_conditioned_transition_block_weights_torch(module,
+                                                    weights_and_biases,
+                                                    dtype=torch.float32):
+    adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
+        output_projection_weight, output_projection_bias = weights_and_biases
+    load_adaln_weights_torch(module.adaln, adaln_weights, dtype)
+    swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(swish_gate_weight,
+                                                           2,
+                                                           dim=0)
+
+    module.fused_swl_a_to_b.load_weights([{
+        "weight":
+        swish_gate_weight_0.to(dtype).to("cuda"),
+        "bias":
+        None
+    }, {
+        "weight":
+        swish_gate_weight_1.to(dtype).to("cuda"),
+        "bias":
+        None
+    }, {
+        "weight":
+        a_to_b_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.b_to_a.load_weights([{
+        "weight": b_to_a_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    module.output_projection.load_weights([{
+        "weight":
+        output_projection_weight.to(dtype).to("cuda"),
+        "bias":
+        output_projection_bias.to(dtype).to("cuda")
+    }])
+
+
+def load_conditioned_transition_block_weights_trt(module,
+                                                  weights_and_biases,
+                                                  mapping: Mapping = None):
+    adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
+        output_projection_weight, output_projection_bias = weights_and_biases
+    m = mapping if mapping else Mapping()  # dynamic mapping
+
+    load_adaln_weights_trt(module.adaln, adaln_weights, mapping)
+
+    swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(swish_gate_weight,
+                                                           2,
+                                                           dim=0)
+    tp_size = m.tp_size
+    tp_rank = m.tp_rank
+    if tp_size > 1:
+        swish_gate_weight_0 = split(swish_gate_weight_0, tp_size, tp_rank, 0)
+        swish_gate_weight_1 = split(swish_gate_weight_1, tp_size, tp_rank, 0)
+        a_to_b_weight = split(a_to_b_weight, tp_size, tp_rank, 0)
+        b_to_a_weight = split(b_to_a_weight, tp_size, tp_rank, 1)
+        output_projection_weight = split(output_projection_weight, tp_size,
+                                         tp_rank, 0)
+        output_projection_bias = split(output_projection_bias, tp_size, tp_rank,
+                                       0)
+    fused_swl_a_to_b_weight = torch.cat(
+        [swish_gate_weight_0, swish_gate_weight_1, a_to_b_weight], dim=0)
+
+    module.fused_swl_a_to_b.weight.value = np.ascontiguousarray(
+        fused_swl_a_to_b_weight.cpu().numpy())
+    module.b_to_a.weight.value = np.ascontiguousarray(
+        b_to_a_weight.cpu().numpy())
+    module.output_projection.weight.value = np.ascontiguousarray(
+        output_projection_weight.cpu().numpy())
+    module.output_projection.bias.value = np.ascontiguousarray(
+        output_projection_bias.cpu().numpy())
+
+
+def create_diffusion_transformer_layer_weights(
+        num_heads=None,
+        dim=None,
+        dim_single_cond=None,
+        dim_pairwise=None,
+        torch_dtype=None,
+        from_ref: RefDiffusionTransformerLayer = None):
+    ret = {}
+    if not from_ref:
+        ret["adaln"] = create_adaln_weights(dim=dim,
+                                            dim_single_cond=dim_single_cond,
+                                            torch_dtype=torch_dtype)
+        ret["pair_bias_attn"] = create_self_pairwise_attention_weights(
+            c_s=dim,
+            c_z=dim_pairwise,
+            num_attention_heads=num_heads,
+            torch_dtype=torch_dtype)
+        ret["transition"] = create_conditioned_transition_block_weights(
+            dim_single=dim,
+            dim_single_cond=dim_single_cond,
+            torch_dtype=torch_dtype)
+        output_projection_weight = torch.empty(size=[dim, dim_single_cond],
+                                               dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(output_projection_weight)
+        output_projection_bias = torch.empty(size=[dim], dtype=torch_dtype)
+        torch.nn.init.uniform_(output_projection_bias)
+        ret["output_projection"] = (output_projection_weight,
+                                    output_projection_bias)
+    else:
+        ret["adaln"] = create_adaln_weights(from_ref=from_ref.adaln)
+        ret["pair_bias_attn"] = create_self_pairwise_attention_weights(
+            from_ref=from_ref.pair_bias_attn)
+        ret["transition"] = create_conditioned_transition_block_weights(
+            from_ref=from_ref.transition)
+        ret["output_projection"] = (from_ref.output_projection[0].weight.data,
+                                    from_ref.output_projection[0].bias.data)
+    return ret
+
+
+def load_diffusion_transformer_layer_weights_ref_torch(module,
+                                                       weights_and_biases):
+    load_adaln_weights_ref_torch(module.adaln, weights_and_biases["adaln"])
+    load_self_pairwise_attention_weights_ref_torch(
+        module.pair_bias_attn, weights_and_biases["pair_bias_attn"])
+    load_conditioned_transition_block_weights_ref_torch(
+        module.transition, weights_and_biases["transition"])
+    module.output_projection[0].weight.data.copy_(
+        weights_and_biases["output_projection"][0])
+    module.output_projection[0].bias.data.copy_(
+        weights_and_biases["output_projection"][1])
+
+
+def load_diffusion_transformer_layer_weights_torch(module,
+                                                   weights_and_biases,
+                                                   dtype=torch.float32):
+    load_adaln_weights_torch(module.adaln, weights_and_biases["adaln"], dtype)
+    load_self_pairwise_attention_weights_torch(
+        module.pair_bias_attn, weights_and_biases["pair_bias_attn"], dtype)
+    load_conditioned_transition_block_weights_torch(
+        module.transition, weights_and_biases["transition"], dtype)
+    module.output_projection.load_weights([{
+        "weight":
+        weights_and_biases["output_projection"][0].to(dtype).to("cuda"),
+        "bias":
+        weights_and_biases["output_projection"][1].to(dtype).to("cuda")
+    }])
+
+
+def load_diffusion_transformer_layer_weights_trt(module,
+                                                 weights_and_biases,
+                                                 mapping: Mapping = None):
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    load_adaln_weights_trt(module.adaln, weights_and_biases["adaln"], m)
+    load_self_pairwise_attention_weights_trt(
+        module.pair_bias_attn, weights_and_biases["pair_bias_attn"], m.tp_size,
+        m.tp_rank)
+    load_conditioned_transition_block_weights_trt(
+        module.transition, weights_and_biases["transition"], m)
+
+    output_projection_weight = weights_and_biases["output_projection"][0]
+    output_projection_bias = weights_and_biases["output_projection"][1]
+    if m.tp_size > 1:
+        output_projection_weight = split(output_projection_weight, m.tp_size,
+                                         m.tp_rank, 0)
+        output_projection_bias = split(output_projection_bias, m.tp_size,
+                                       m.tp_rank, 0)
+
+    module.output_projection.weight.value = np.ascontiguousarray(
+        output_projection_weight.cpu().numpy())
+    module.output_projection.bias.value = np.ascontiguousarray(
+        output_projection_bias.cpu().numpy())

@@ -32,8 +32,9 @@ from pytorch_lightning import seed_everything
 from score import kabsch_torch, lddt
 from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
-from tensorrt_bionemo.modules.pairformer import PairformerBackendBuilder
+from tensorrt_bionemo.hubs import load_hf_weights
+from tensorrt_bionemo.modules import (PairformerBackendBuilder,
+                                      TokenTransformerBackendBuilder)
 
 SEED = 42
 """
@@ -53,7 +54,6 @@ class PairformerArgsV2:
     dropout: float = 0.0
     activation_checkpointing: bool = False
     offload_to_cpu: bool = False
-    use_trifast: bool = True
     v2: bool = True
 
 
@@ -65,8 +65,8 @@ class Boltz2DiffusionParams:
     gamma_min: float = 1.0
     noise_scale: float = 1.003
     rho: float = 7
-    step_scale: float = 1.638
-    sigma_min: float = 0.0004
+    step_scale: float = 1.5
+    sigma_min: float = 0.0001
     sigma_max: float = 160.0
     sigma_data: float = 16.0
     P_mean: float = -1.2
@@ -79,7 +79,7 @@ class Boltz2DiffusionParams:
 @dataclass
 class BoltzPredictionParams:
     recycling_steps: int = 3
-    sampling_steps: int = 200
+    sampling_steps: int = 50
     diffusion_samples: int = 1
     write_confidence_summary: bool = True
     write_full_pae: bool = False
@@ -95,11 +95,13 @@ class MSAModuleArgs:
     msa_blocks: int = 4
     msa_dropout: float = 0.0
     z_dropout: float = 0.0
+    use_paired_feature: bool = True
     pairwise_head_width: int = 32
     pairwise_num_heads: int = 4
     activation_checkpointing: bool = False
     offload_to_cpu: bool = False
-    use_trifast: bool = True
+    subsample_msa: bool = False
+    num_subsampled_msa: int = 1024
 
 
 @dataclass
@@ -107,7 +109,7 @@ class BoltzSteeringParams:
     """Steering parameters."""
 
     fk_steering: bool = True
-    num_particles: int = 8
+    num_particles: int = 3
     fk_lambda: float = 4.0
     fk_resampling_interval: int = 3
     guidance_update: bool = True
@@ -115,9 +117,13 @@ class BoltzSteeringParams:
 
 
 def create_original_model(
-    checkpoint: str = ".cache/boltz2_conf.ckpt",
+    checkpoint: str = None,
     device: torch.device = torch.device("cuda")
 ) -> nn.Module:
+    if checkpoint is None:
+        cached_file = load_hf_weights("boltz-2", return_raw=True)
+    else:
+        cached_file = checkpoint
     predict_params = BoltzPredictionParams()
     diffusion_params = Boltz2DiffusionParams()
     pairformer_args = PairformerArgsV2()
@@ -127,7 +133,7 @@ def create_original_model(
     # trainer = Trainer(accelerator="gpu", devices=1, precision="bf16-mixed")
     # with trainer.init_module():
     model: Boltz2 = Boltz2.load_from_checkpoint(
-        checkpoint,
+        cached_file,
         strict=True,
         predict_args=asdict(predict_params),
         map_location=device,
@@ -190,25 +196,36 @@ def pad_batch(batch: dict, pad_seqlen: int, seqlen: int):
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '--structure_pairformer_engines_dir',
+        '--structure_pairformer_ckpt',
         type=Path,
         default=None,
         help=
         'The path to the directory containing the structure pairformer engines')
     parser.add_argument(
-        '--confidence_pairformer_engines_dir',
+        '--confidence_pairformer_ckpt',
         type=Path,
         default=None,
         help=
         'The path to the directory containing the confidence pairformer engines'
     )
-    parser.add_argument('--original_torch',
-                        action='store_true',
-                        help='Use default torch')
-    parser.add_argument('--torch_backend_config',
-                        type=Path,
-                        default=None,
-                        help='The path to the torch backend config')
+    parser.add_argument(
+        '--token_transformer_ckpt',
+        type=Path,
+        default=None,
+        help='The path to the directory containing the token transformer engines'
+    )
+    parser.add_argument('--structure_pairformer_backend',
+                        type=str,
+                        default="trt",
+                        help='The backend to use for the structure pairformer')
+    parser.add_argument('--confidence_pairformer_backend',
+                        type=str,
+                        default="trt",
+                        help='The backend to use for the confidence pairformer')
+    parser.add_argument('--token_transformer_backend',
+                        type=str,
+                        default="trt",
+                        help='The backend to use for the token transformer')
     parser.add_argument('--sample_dir',
                         type=Path,
                         default='sample',
@@ -242,7 +259,7 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
     # TODO: write docs for sample dir
     # torch.backends.cuda.matmul.allow_tf32 = True
     # torch.backends.cudnn.allow_tf32 = True
-    # torch.set_float32_matmul_precision("high")
+    torch.set_float32_matmul_precision("highest")
     # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 
     torch.cuda.set_device(rank)
@@ -279,6 +296,10 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
         pad_seqlen = (seqlens[i] + dcp_size - 1) // dcp_size * dcp_size
         batch = pad_batch(batch, pad_seqlen, seqlens[i])
         for l in range(args.repeat):
+            if hasattr(model.structure_module.score_model.token_transformer,
+                       "reset"):
+                """ TODO: Refactor for all backends to call reset method. """
+                model.structure_module.score_model.token_transformer.reset()
             torch.cuda.empty_cache()
             seed_everything(SEED)
             np.random.default_rng(SEED)
@@ -335,6 +356,38 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
         report_df.to_csv(f"report_{strategy}.csv", index=False)
 
 
+def load_pairformers(args, model, world_size, rank):
+    context_address = None
+    if args.structure_pairformer_ckpt:
+        structure_pairformer = PairformerBackendBuilder.build(
+            checkpoint_dir=args.structure_pairformer_ckpt,
+            backend=args.structure_pairformer_backend,
+            context_without_device_memory=True)
+        setattr(model, "pairformer_module", structure_pairformer)
+        context_address, _ = structure_pairformer.get_backend_workspace()
+    if args.confidence_pairformer_ckpt:
+        confidence_pairformer = PairformerBackendBuilder.build(
+            checkpoint_dir=args.confidence_pairformer_ckpt,
+            backend=args.confidence_pairformer_backend,
+            context_without_device_memory=True)
+        setattr(model.confidence_module, "pairformer_module",
+                confidence_pairformer)
+    return context_address
+
+
+def load_token_transformer(args, model, world_size, rank, context_address=None):
+    if args.token_transformer_ckpt:
+        token_transformer = TokenTransformerBackendBuilder.build(
+            checkpoint_dir=args.token_transformer_ckpt,
+            backend=args.token_transformer_backend,
+            with_torch_load_fn=True,
+            context_without_device_memory=True,
+            address=context_address)
+        setattr(model.structure_module.score_model, "token_transformer",
+                token_transformer)
+    return context_address
+
+
 def main(args):
     import tensorrt_llm
 
@@ -343,43 +396,11 @@ def main(args):
     torch.cuda.set_device(rank % args.gpu_per_node)
     model, predict_params = create_original_model(device=torch.device("cuda"))
     logger.set_level("info")
-    structure_pairformer = None
-    confidence_pairformer = None
     dcp_size = 1
-    context_address = None  # use only by trt-backend
-    if args.structure_pairformer_engines_dir:
-        with open(args.structure_pairformer_engines_dir / "config.json",
-                  "r") as f:
-            config = PairformerConfig.from_dict(
-                json.load(f)["pretrained_config"])
-            dcp_size = config.mapping.dcp_size
-        structure_pairformer = PairformerBackendBuilder.build(
-            config=config,
-            checkpoint_dir=args.structure_pairformer_engines_dir,
-            world_size=world_size,
-            rank=rank,
-            context_without_device_memory=True)
-        setattr(model, "pairformer_module", structure_pairformer)
-        context_address, _ = structure_pairformer.get_backend_workspace()
 
-        if args.confidence_pairformer_engines_dir:
-            with open(args.confidence_pairformer_engines_dir / "config.json",
-                      "r") as f:
-                config = PairformerConfig.from_dict(
-                    json.load(f)["pretrained_config"])
-            confidence_pairformer = PairformerBackendBuilder.build(
-                config=config,
-                checkpoint_dir=args.confidence_pairformer_engines_dir,
-                world_size=world_size,
-                rank=rank,
-                context_without_device_memory=True,
-                address=context_address)
-            setattr(model.confidence_module, "pairformer_module",
-                    confidence_pairformer)
-    else:
-        # Using original torch or torch backend
-        if args.original_torch:
-            assert world_size == 1, "original torch only supports single GPU"
+    # Using original torch or torch backend
+    context_address = load_pairformers(args, model, world_size, rank)
+    load_token_transformer(args, model, world_size, rank, context_address)
 
     run_single_rank(sample_dir=args.sample_dir,
                     model=model,

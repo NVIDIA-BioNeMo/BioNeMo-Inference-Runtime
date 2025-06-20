@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import time
 from pathlib import Path
@@ -6,10 +7,12 @@ from pathlib import Path
 import safetensors
 from tensorrt_llm import logger
 
-from tensorrt_bionemo.confs.models.boltz2 import Boltz2Config
-from tensorrt_bionemo.confs.modules.transformers import PairformerConfig
+from tensorrt_bionemo.configs import (Boltz2Config, PairformerConfig,
+                                      TorchLoadWeightsMetadata)
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz2.convert import convert_hf_pairformer
+from tensorrt_bionemo.models.boltz2.convert import (convert_hf_pairformer,
+                                                    torch_pairformer_load_fn)
+from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def parse_arguments():
@@ -72,6 +75,11 @@ def parse_arguments():
                         type=bool,
                         default=False,
                         help='Whether to support batch')
+    parser.add_argument('--backend',
+                        type=str,
+                        default='all',
+                        choices=['all', 'trt', 'torch'],
+                        help='The backend to convert')
     parser.add_argument(
         '--workers',
         type=int,
@@ -82,16 +90,40 @@ def parse_arguments():
     return args
 
 
-def convert(worker_rank, world_size, config, args):
+def convert(worker_rank, world_size, configs, args):
+    # Dump for tensorrt config
+    if args.backend == 'all' or args.backend == BackendType.TRT:
+        (args.output_dir / f'{BackendType.TRT}').mkdir(parents=True,
+                                                       exist_ok=True)
+        with (args.output_dir /
+              f'{BackendType.TRT}/config.json').open('w') as f:
+            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+    # Dump for torch config
+    if args.backend == 'all' or args.backend == BackendType.TORCH:
+        (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
+                                                         exist_ok=True)
+        with (args.output_dir /
+              f'{BackendType.TORCH}/config.json').open('w') as f:
+            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
                           tp_size=args.tp_size,
                           dcp_size=args.dcp_size,
                           rank=rank)
-        weights = convert_hf_pairformer(config, mapping, args.pairformer_type,
-                                        args.local_checkpoint)
-        safetensors.torch.save_file(weights,
-                                    args.output_dir / f'rank{rank}.safetensors')
+        if args.backend == 'all' or args.backend == BackendType.TRT:
+            weights = convert_hf_pairformer(configs[BackendType.TRT], mapping,
+                                            args.pairformer_type)
+            safetensors.torch.save_file(
+                weights,
+                args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
+        if args.backend == 'all' or args.backend == BackendType.TORCH:
+            # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
+            TorchLoadWeightsMetadata(
+                load_weights_fn=torch_pairformer_load_fn,
+                load_weights_fn_kwargs={},
+                compile=True).dump(args.output_dir /
+                                   f'{BackendType.TORCH}/rank{rank}.pkl')
 
 
 def main():
@@ -157,13 +189,16 @@ def main():
         "support_batch":
         args.support_batch,
     }
-    pairformer_config = PairformerConfig.from_dict(config)
-    config = pairformer_config.to_dict()
-    with (args.output_dir / 'config.json').open('w') as f:
-        json.dump(config, f, indent=4)
+    trt_pairformer_config = PairformerConfig.from_dict(config)
+    torch_pairformer_config = copy.deepcopy(trt_pairformer_config)
+    torch_pairformer_config.backend = "torch"
 
+    configs = {
+        BackendType.TRT: trt_pairformer_config,
+        BackendType.TORCH: torch_pairformer_config
+    }
     if args.workers == 1:
-        convert(0, world_size, pairformer_config, args)
+        convert(0, world_size, configs, args)
     else:
         if args.workers > world_size:
             args.workers = world_size

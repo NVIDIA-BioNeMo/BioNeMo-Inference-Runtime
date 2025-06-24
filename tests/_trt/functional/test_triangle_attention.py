@@ -24,25 +24,27 @@ from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
 from tensorrt_llm.functional import Tensor
 from test_utils.ref_attn import plain_triangle_mha
 
-from tensorrt_bionemo._trt.functional import triangle_attention
+from tensorrt_bionemo._trt.functional import (AttentionBackend,
+                                              triangle_attention)
 
 
 @pytest.mark.parametrize("use_mask", [True, False], ids=["mask", "nomask"])
-@pytest.mark.parametrize("use_trifast", [True, False],
-                         ids=["cuequiv", "trifast"])
+@pytest.mark.parametrize("backend",
+                         [AttentionBackend.TRIFAST, AttentionBackend.CUEQUIV],
+                         ids=["trifast", "cuequiv"])
 @pytest.mark.parametrize("use_tf32", [False])
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
 @pytest.mark.parametrize("si", [64, 128])
 @pytest.mark.parametrize("sj", [64, 128])
 @pytest.mark.parametrize("sk", [64, 128])
-def test_triangle_attention(use_mask, use_trifast, use_tf32, dtype, si, sj, sk):
+def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     num_heads = 4
     head_dim = 32
-
+    use_trifast = backend == AttentionBackend.TRIFAST
     if use_trifast:
         if not use_mask:
             pytest.skip("Mask is not optional in trifast")

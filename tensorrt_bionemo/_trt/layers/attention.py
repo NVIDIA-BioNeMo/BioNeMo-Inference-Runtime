@@ -159,7 +159,6 @@ class TriangleAttention(Module):
                 triangle_bias = triangle_bias.unsqueeze(1)
 
         if self.triangle_attn_backend != 'VANILLA':
-            assert self.triangle_attn_backend == "TRIFAST", "Only TRIFAST is supported for now"
             logger.debug(
                 f"Using {self.triangle_attn_backend} triangle attention backend, {self.dtype}"
             )
@@ -216,7 +215,7 @@ class TriangleAttention(Module):
                     self.num_attention_heads,
                     self.attention_head_size,
                     dtype=query.dtype,
-                    use_trifast=True)  # [B*H, I, J, D]
+                    backend=self.triangle_attn_backend)  # [B*H, I, J, D]
                 if self.support_batch:
                     context = context.view(
                         concat([

@@ -13,4 +13,4 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-find_package(TensorRT 10 MODULE REQUIRED)
+find_package(TensorRT 10.11 MODULE REQUIRED)

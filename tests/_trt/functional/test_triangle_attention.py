@@ -153,7 +153,7 @@ def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
                                          num_heads,
                                          head_dim,
                                          dtype=dtype,
-                                         use_trifast=use_trifast,
+                                         backend=backend,
                                          use_tf32=use_tf32)
 
         output.mark_output("output", trt_dtype)

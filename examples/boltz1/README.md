@@ -19,8 +19,11 @@ $ python convert_pairformer_checkpoint.py \
     --dcp_size ${DCP_SIZE} \
     --pairformer_type ${PAIRFORMER_TYPE} \
     --dtype ${DTYPE}
-    --output_dir ${PAIRFORMER_TYPE}_pairformer_ckpt_${TP_SIZE}_${DCP_SIZE}_${DTYPE}
+    --output_dir ${PAIRFORMER_TYPE}_pairformer_ckpt_${TP_SIZE}_${DCP_SIZE}_${DTYPE} \
+    --triangle_attn_backend CUEQUIV # VANILLA, TRIFAST, CUEQUIV
 ```
+
+Note: For the `CUEQUIV` triangle attention backend the flag `support_batch` default to True, this make the context memory of engine will be reduced by half.
 
 ### Pairformer - Build TensorRT engine(s)
 

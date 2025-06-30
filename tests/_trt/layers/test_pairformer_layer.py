@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import os
-from collections import namedtuple
+from dataclasses import dataclass
 
 import pytest
 import tensorrt_llm
@@ -24,33 +24,45 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import *
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
+from tensorrt_bionemo._trt.layers.transformers import PairformerLayerV1
 
-PairformerLayerTestScenario = namedtuple("PairformerLayerTestScenario", [
-    "seq_len", "token_s", "token_z", "num_heads", "pairwise_head_width",
-    "pairwise_num_heads", "vanilla_attn_precision", "dtype"
-])
+
+@dataclass(kw_only=True, frozen=True)
+class Scenario:
+    dtype: str = "float32"
+    seq_len: int = 32
+    token_s: int = 32
+    token_z: int = 128
+    num_heads: int = 16
+    pairwise_head_width: int = 32
+    pairwise_num_heads: int = 4
+    triangle_attn_backend: str = "VANILLA"
+    pairwise_attn_backend: str = "VANILLA"
+    support_batch: bool = True
 
 
 @pytest.mark.parametrize("sc", [
-    PairformerLayerTestScenario(seq_len=63,
-                                token_s=32,
-                                token_z=128,
-                                num_heads=16,
-                                pairwise_head_width=32,
-                                pairwise_num_heads=4,
-                                vanilla_attn_precision="float32",
-                                dtype="float32"),
-    PairformerLayerTestScenario(seq_len=256,
-                                token_s=32,
-                                token_z=128,
-                                num_heads=16,
-                                pairwise_head_width=32,
-                                pairwise_num_heads=4,
-                                vanilla_attn_precision="float32",
-                                dtype="float32")
+    Scenario(seq_len=64),
+    Scenario(seq_len=256),
+    Scenario(seq_len=64, triangle_attn_backend="TRIFAST"),
+    Scenario(seq_len=256, triangle_attn_backend="TRIFAST"),
+    Scenario(seq_len=64, triangle_attn_backend="CUEQUIV"),
+    Scenario(seq_len=256, triangle_attn_backend="CUEQUIV"),
+    Scenario(seq_len=64, support_batch=False),
+    Scenario(seq_len=256, support_batch=False),
+    Scenario(seq_len=64, triangle_attn_backend="TRIFAST", support_batch=False),
+    Scenario(seq_len=256, triangle_attn_backend="TRIFAST", support_batch=False),
+    Scenario(seq_len=64, triangle_attn_backend="CUEQUIV", support_batch=False),
+    Scenario(seq_len=256, triangle_attn_backend="CUEQUIV", support_batch=False),
 ],
-                         ids=["63", "256"])
-def test_pairformer_layer(sc: PairformerLayerTestScenario):
+                         ids=[
+                             "64_vanilla", "256_vanilla", "64_trifast",
+                             "256_trifast", "64_cuequiv", "256_cuequiv",
+                             "64_vanilla_no_batch", "256_vanilla_no_batch",
+                             "64_trifast_no_batch", "256_trifast_no_batch",
+                             "64_cuequiv_no_batch", "256_cuequiv_no_batch"
+                         ])
+def test_pairformer_layer(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
@@ -59,29 +71,38 @@ def test_pairformer_layer(sc: PairformerLayerTestScenario):
     std_dev = 1 if sc.dtype == "float32" else 0.05
     torch_dtype = str_dtype_to_torch(sc.dtype)
 
-    s = torch.empty(size=[bs, sc.seq_len, sc.token_s],
-                    dtype=torch_dtype,
-                    device="cuda",
-                    requires_grad=False)
-    s.normal_(mean=mean, std=std_dev)
+    if sc.support_batch:
+        s = torch.empty(size=[bs, sc.seq_len, sc.token_s],
+                        dtype=torch_dtype,
+                        device="cuda",
+                        requires_grad=False)
+        s.normal_(mean=mean, std=std_dev)
 
-    z = torch.empty(size=[bs, sc.seq_len, sc.seq_len, sc.token_z],
-                    dtype=torch_dtype,
-                    device="cuda",
-                    requires_grad=False)
-    z.normal_(mean=mean, std=std_dev)
+        z = torch.empty(size=[bs, sc.seq_len, sc.seq_len, sc.token_z],
+                        dtype=torch_dtype,
+                        device="cuda",
+                        requires_grad=False)
+        z.normal_(mean=mean, std=std_dev)
 
-    mask = torch.empty(size=[bs, sc.seq_len],
-                       dtype=torch_dtype,
-                       device="cuda",
-                       requires_grad=False)
-    mask.normal_(mean=mean, std=std_dev)
-
-    pairmask = torch.empty(size=[bs, sc.seq_len, sc.seq_len],
-                           dtype=torch_dtype,
-                           device="cuda",
-                           requires_grad=False)
-    pairmask.normal_(mean=mean, std=std_dev)
+        mask = torch.randint(0, 2, (bs, sc.seq_len), dtype=torch_dtype).cuda()
+        pairmask = torch.randint(0,
+                                 2, (bs, sc.seq_len, sc.seq_len),
+                                 dtype=torch_dtype).cuda()
+    else:
+        s = torch.empty(size=[sc.seq_len, sc.token_s],
+                        dtype=torch_dtype,
+                        device="cuda",
+                        requires_grad=False)
+        s.normal_(mean=mean, std=std_dev)
+        z = torch.empty(size=[sc.seq_len, sc.seq_len, sc.token_z],
+                        dtype=torch_dtype,
+                        device="cuda",
+                        requires_grad=False)
+        z.normal_(mean=mean, std=std_dev)
+        mask = torch.randint(0, 2, (sc.seq_len, ), dtype=torch_dtype).cuda()
+        pairmask = torch.randint(0,
+                                 2, (sc.seq_len, sc.seq_len),
+                                 dtype=torch_dtype).cuda()
 
     weights_and_biases = \
         create_pairformer_layer_weights(sc.token_s, sc.token_z, sc.num_heads, sc.pairwise_head_width, sc.pairwise_num_heads, torch_dtype)
@@ -110,7 +131,9 @@ def test_pairformer_layer(sc: PairformerLayerTestScenario):
             token_z=sc.token_z,
             num_heads=sc.num_heads,
             pairwise_head_width=sc.pairwise_head_width,
-            pairwise_num_heads=sc.pairwise_num_heads)
+            pairwise_num_heads=sc.pairwise_num_heads,
+            triangle_attn_backend=sc.triangle_attn_backend,
+            support_batch=sc.support_batch)
 
         load_pairformer_layer_weights_trt(pairformer_layer, weights_and_biases)
 
@@ -119,8 +142,7 @@ def test_pairformer_layer(sc: PairformerLayerTestScenario):
             trt_z,
             trt_mask,
             trt_pairmask,
-            attention_params=AttentionParams(
-                vanilla_attn_precision=sc.vanilla_attn_precision))
+            attention_params=AttentionParams())
 
         output_s.mark_output("output_s",
                              tensorrt_llm.str_dtype_to_trt(sc.dtype))
@@ -158,7 +180,15 @@ def test_pairformer_layer(sc: PairformerLayerTestScenario):
     ref_pairformer_layer.to("cuda", dtype=torch_dtype)
 
     with torch.inference_mode():
-        ref_output_s, ref_output_z = ref_pairformer_layer(s, z, mask, pairmask)
+        if sc.support_batch:
+            ref_output_s, ref_output_z = ref_pairformer_layer(
+                s, z, mask, pairmask)
+        else:
+            ref_output_s, ref_output_z = ref_pairformer_layer(
+                s.unsqueeze(0), z.unsqueeze(0), mask.unsqueeze(0),
+                pairmask.unsqueeze(0))
+            ref_output_s = ref_output_s.squeeze(0)
+            ref_output_z = ref_output_z.squeeze(0)
         torch.cuda.synchronize()
     trt_output_s = outputs['output_s']
     trt_output_z = outputs['output_z']

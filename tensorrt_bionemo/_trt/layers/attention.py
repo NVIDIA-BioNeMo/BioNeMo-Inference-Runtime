@@ -22,8 +22,8 @@ import tensorrt as trt
 
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
                                      concat, constant_to_tensor_, expand_dims,
-                                     matmul, shape, slice, softmax, split,
-                                     squeeze)
+                                     matmul, not_op, shape, slice, softmax,
+                                     split, squeeze)
 from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.logger import logger
@@ -158,6 +158,22 @@ class TriangleAttention(Module):
             if self.support_batch:
                 triangle_bias = triangle_bias.unsqueeze(1)
 
+        def transpose_for_scores(x, is_kv: bool = False):
+            """
+            Transpose the tensor for the scores computation. Used for CUEQUIV backend and plain TensorRT mode.
+            """
+            _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
+            if self.support_batch:
+                new_x_shape = concat([
+                    bs, si, sj, _num_attention_heads, self.attention_head_size
+                ])
+                return x.view(new_x_shape).permute([0, 1, 3, 2,
+                                                    4])  # [B, I, H, J, D]
+            else:
+                new_x_shape = concat(
+                    [si, sj, _num_attention_heads, self.attention_head_size])
+                return x.view(new_x_shape).permute([0, 2, 1, 3])  # [I, H, J, D]
+
         if self.triangle_attn_backend != 'VANILLA':
             logger.debug(
                 f"Using {self.triangle_attn_backend} triangle attention backend, {self.dtype}"
@@ -231,24 +247,39 @@ class TriangleAttention(Module):
                             self.attention_head_size
                         ]))  # [H, I, J, D]
                     context = context.permute([1, 2, 0, 3])  # [I, J, H, D]
+            elif self.triangle_attn_backend == "CUEQUIV":
+                query = transpose_for_scores(
+                    query, is_kv=False)  # [B, I, H, J, D] or [I, H, J, D]
+                key = transpose_for_scores(
+                    key, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
+                value = transpose_for_scores(
+                    value, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
+                mask_bias = cast(mask_bias, "bool")
+                mask_bias = not_op(
+                    mask_bias)  # flip the mask for CUEQUIV backend
+                if not self.support_batch:
+                    # CUEQUIV requires the batch dimension
+                    mask_bias = mask_bias.unsqueeze(0)  # [B, I, 1, 1, J]
+                    query = query.unsqueeze(0)
+                    key = key.unsqueeze(0)
+                    value = value.unsqueeze(0)
+                    triangle_bias = triangle_bias.unsqueeze(
+                        1)  # [B, 1, H, J, J]
+                context, _ = triangle_attention(
+                    query,
+                    key,
+                    value,
+                    triangle_bias,
+                    mask_bias,
+                    self.num_attention_heads,
+                    self.attention_head_size,
+                    dtype=query.dtype,
+                    backend=self.triangle_attn_backend)  # [B, I, H, J, D]
+                context = context.permute([0, 1, 3, 2, 4])  # [B, I, J, H, D]
+                if not self.support_batch:
+                    context = context.squeeze(0, False)
         else:
             # plain TensorRT mode
-            def transpose_for_scores(x, is_kv: bool = False):
-                _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
-                if self.support_batch:
-                    new_x_shape = concat([
-                        bs, si, sj, _num_attention_heads,
-                        self.attention_head_size
-                    ])
-                    return x.view(new_x_shape).permute([0, 1, 3, 2,
-                                                        4])  # [B, I, H, J, D]
-                else:
-                    new_x_shape = concat([
-                        si, sj, _num_attention_heads, self.attention_head_size
-                    ])
-                    return x.view(new_x_shape).permute([0, 2, 1,
-                                                        3])  # [I, H, J, D]
-
             query, key, value = split(
                 qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
                 dim=-1)

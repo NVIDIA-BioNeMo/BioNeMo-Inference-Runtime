@@ -79,7 +79,7 @@ def parse_arguments():
     parser.add_argument('--triangle_attn_backend',
                         type=str,
                         default='VANILLA',
-                        choices=['VANILLA', 'TRIFAST'],
+                        choices=['VANILLA', 'TRIFAST', 'CUEQUIV'],
                         help='The backend of triangle attention')
     parser.add_argument('--backend',
                         type=str,
@@ -144,7 +144,8 @@ def main():
     pairformer_config = boltz1_config.structure_pairformer_backend_config
     if args.pairformer_type == "confidence":
         pairformer_config = boltz1_config.confidence_pairformer_backend_config
-
+    if args.triangle_attn_backend == "CUEQUIV":
+        args.support_batch = True
     config = {
         "max_batch_size":
         args.max_batch_size,

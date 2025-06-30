@@ -16,8 +16,9 @@ $ cd 3rdparty/TensorRT-LLM
 $ export PATH=$PATH:$HOME/.local/bin # this for conan executable
 $ git checkout v1.0.0rc0
 $ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
-$ pip install -e .
-$ cd ../..
+$ pip install -e . && cd ../..
+# Install cuequiv
+$ cd 3rdparty/cuequiv-ops && pip install nanobind pynvml scikit-build-core && ./build.sh cue-ops && cd ../..
 # Build TRT plugins for TensorRT-BioNemo
 $ ./scripts/build_cpp.sh
 # Install as develop mode

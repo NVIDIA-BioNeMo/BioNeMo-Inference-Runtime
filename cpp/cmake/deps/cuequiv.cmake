@@ -16,35 +16,36 @@
 find_package(Python REQUIRED)
 
 execute_process(
-  COMMAND "${Python_EXECUTABLE}" -c
-          "import cuequivariance_ops; print(cuequivariance_ops.root_dir())"
-  RESULT_VARIABLE STATUS
+  COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops-cu12
+  COMMAND grep Location
+  COMMAND awk "{print \$2}"  # This command doesn't require cuda libraries to be installed
+  RESULT_VARIABLE FOUND_STATUS
   OUTPUT_VARIABLE CUE_OPS_PATH
   OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-if(STATUS AND NOT STATUS EQUAL 0)
+if("${CUE_OPS_PATH}" MATCHES "not found")
   message(
-    STATUS
-      "WARNING: ${STATUS}, Cannot find cuequivariance_ops package. Installing it from 3rdparty/cuequiv-ops"
+    WARNING "WARNING: ${FOUND_STATUS}, Cannot find cuequivariance_ops package. Installing it from pip."
   )
-  execute_process(COMMAND "${Python_EXECUTABLE}" -m pip install
-                          scikit-build-core nanobind pynvml)
-  execute_process(WORKING_DIRECTORY ${TRT_BIONEMO_THIRDPARTY_DIR}/cuequiv-ops
-                  COMMAND bash build.sh cue-ops)
+  execute_process(COMMAND "${Python_EXECUTABLE}" -m pip install cuequivariance-ops-cu12)
   execute_process(
-    COMMAND "${Python_EXECUTABLE}" -c
-            "import cuequivariance_ops; print(cuequivariance_ops.root_dir())"
-    RESULT_VARIABLE STATUS
-    OUTPUT_VARIABLE CUE_OPS_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
-  if(STATUS AND NOT STATUS EQUAL 0)
+    COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops-cu12
+    COMMAND grep Location
+    COMMAND awk "{print \$2}"  # This command doesn't require cuda libraries to be installed
+    RESULT_VARIABLE FOUND_STATUS
+    OUTPUT_VARIABLE CUE_OPS_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if("${CUE_OPS_PATH}" MATCHES "not found")
     message(
       STATUS
-        "ERROR: ${STATUS}, Cannot find cuequivariance_ops package. Please check the build.sh script in 3rdparty/cuequiv-ops"
+        "FATAL_ERROR: ${FOUND_STATUS}, Cannot find cuequivariance_ops package. Please check the build.sh script in 3rdparty/cuequiv-ops"
     )
   else()
+    set(CUE_OPS_PATH ${CUE_OPS_PATH}/cuequivariance_ops)
     message(STATUS "Found cuequivariance_ops package: ${CUE_OPS_PATH}")
   endif()
 else()
+  set(CUE_OPS_PATH ${CUE_OPS_PATH}/cuequivariance_ops)
   message(STATUS "Found cuequivariance_ops package: ${CUE_OPS_PATH}")
 endif()
 

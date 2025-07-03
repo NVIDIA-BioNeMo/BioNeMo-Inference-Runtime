@@ -13,9 +13,6 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-include(
-  ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM/cpp/cmake/modules/resolve_dirs.cmake
-)
 # Find CUDA Toolkit
 find_package(CUDAToolkit REQUIRED)
-resolve_dirs(CUDAToolkit_INCLUDE_DIRS "${CUDAToolkit_INCLUDE_DIRS}")
+

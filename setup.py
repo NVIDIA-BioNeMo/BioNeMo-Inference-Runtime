@@ -15,9 +15,14 @@
 
 import os
 from pathlib import Path
-
+from setuptools.dist import Distribution
 from setuptools import find_packages, setup
 
+class BinaryDistribution(Distribution):
+    """Distribution which always forces a binary package with platform name"""
+
+    def has_ext_modules(self):
+        return True
 
 def parse_requirements(filename: os.PathLike):
     with open(filename) as f:
@@ -70,7 +75,8 @@ setup(
     # TODO: FIXME
     # url="https://github.com/NVIDIA/TensorRT-BioNemo"
     # download_url="https://github.com/NVIDIA/TensorRT-BioNemo/releases"
-    packages=find_packages(),
+    packages=find_packages(exclude=["tests", "tests.*"]),
+    package_data={"tensorrt_bionemo": ["libs/*.so"]},
     classifiers=[
         "Development Status :: 1 - Planning",
         "Intended Audience :: Developers",
@@ -86,9 +92,10 @@ setup(
     extras_require={
         "dev": devel_deps,
     },
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     zip_safe=True,
     entry_points={
         "console_scripts": ["trtbnm-build=tensorrt_bionemo.commands.build:main"]
-    }
+    },
+    distclass=BinaryDistribution,
 )

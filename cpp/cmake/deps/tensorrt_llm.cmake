@@ -13,15 +13,33 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-set(TRT_LLM_ROOT_DIR ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM)
-set(TRT_LLM_CPP_DIR ${TRT_LLM_ROOT_DIR}/cpp)
+find_package(Python REQUIRED)
+
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -m pip show tensorrt-llm
+  COMMAND grep Location
+  COMMAND awk "{print \$2}"  # This command doesn't require cuda libraries to be installed
+  RESULT_VARIABLE FOUND_STATUS
+  OUTPUT_VARIABLE TRT_LLM_ROOT_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+  
+if("${TRT_LLM_ROOT_DIR}" MATCHES "not found")
+  # trtllm package is not installed, set its path from 3rdparty/TensorRT-LLM
+  message(
+    STATUS
+    "WARNING: ${FOUND_STATUS}, Cannot find tensorrt_llm package. Set its path from 3rdparty/TensorRT-LLM"
+  )
+  set(TRT_LLM_ROOT_DIR ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM)
+endif()
+
+set(TRT_LLM_PY_DIR ${TRT_LLM_ROOT_DIR}/tensorrt_llm)
+set(TRT_LLM_CPP_DIR ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM/cpp)
 set(TRT_LLM_CPP_DIR
     ${TRT_LLM_CPP_DIR}
     PARENT_SCOPE)
-set(TRT_LLM_PY_DIR ${TRT_LLM_ROOT_DIR}/tensorrt_llm)
+
 set(TRT_LLM_LIBS_DIR ${TRT_LLM_PY_DIR}/libs)
-set(TRT_LLM_CPP_BUILD_DIR ${TRT_LLM_CPP_DIR}/build_${CMAKE_BUILD_TYPE})
 
 set(TRT_LIB_DIR ${TRT_ROOT_DIR}/lib)
 set(TRT_INCLUDE_DIR ${TRT_ROOT_DIR}/include)
-find_package(TRT_LLM 0.18.0 MODULE REQUIRED)
+find_package(TRT_LLM 1.0.0 MODULE REQUIRED)

@@ -7,6 +7,8 @@
 
 ## Getting Started
 
+### Develop
+
 Please use the `.devcontainer` for `vscode` or `cursor`. In the devcontainer, run as the following:
 
 ```bash
@@ -18,11 +20,22 @@ $ git checkout v1.0.0rc0
 $ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
 $ pip install -e . && cd ../..
 # Install cuequiv
-$ cd 3rdparty/cuequiv-ops && pip install nanobind pynvml scikit-build-core && ./build.sh cue-ops && cd ../..
+$ pip install cuequivariance-ops-cu12==0.5.1
 # Build TRT plugins for TensorRT-BioNemo
 $ ./scripts/build_cpp.sh
 # Install as develop mode
 $ pip install -e .
+```
+
+### Docker
+```bash
+$ make -C docker release
+```
+
+Only build wheels for TensorRT-LLM and TensorRT-BNM:
+```bash
+$ export PACKAGE_DIR=__path_to_save_wheel_on_host__
+$ make -C docker trtbnm_wheel
 ```
 
 ## Testing

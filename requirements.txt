@@ -1,5 +1,6 @@
 --extra-index-url https://pypi.nvidia.com
 
-# tensorrt-llm==0.18.0.dev2025031100
 omegaconf==2.3.0
 # triton==3.3.0
+cuequivariance-ops-cu12==0.5.1
+tensorrt-llm==1.0.0rc0

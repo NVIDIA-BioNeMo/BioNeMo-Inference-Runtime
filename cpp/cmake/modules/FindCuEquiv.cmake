@@ -14,14 +14,14 @@
 # the License.
 
 # Get cuequiv version Read the file content into a variable
-file(READ "${TRT_BIONEMO_THIRDPARTY_DIR}/cuequiv-ops/VERSION"
+file(READ "${CUE_OPS_PATH}/VERSION"
      VERSION_FILE_CONTENT)
 
 # Remove any whitespace or newlines that might be present
 string(STRIP "${VERSION_FILE_CONTENT}" VERSION_STRING)
 
 # Use regex to extract version components
-if(VERSION_STRING MATCHES "v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+if(VERSION_STRING MATCHES "([0-9]+)\\.([0-9]+)\\.([0-9]+)")
   set(VERSION_MAJOR ${CMAKE_MATCH_1})
   set(VERSION_MINOR ${CMAKE_MATCH_2})
   set(VERSION_PATCH ${CMAKE_MATCH_3})

@@ -58,6 +58,7 @@ class TriangleAttentionNode(Module):
         chunk_size: int = 0,
         triangle_attn_backend: str = 'VANILLA',
         support_batch: bool = True,
+        fallback_threshold = 0,    
         mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
@@ -74,7 +75,7 @@ class TriangleAttentionNode(Module):
         self.tp_size = mapping.tp_size
         self.tp_rank = mapping.tp_rank
         self.tp_group = mapping.tp_group
-
+        self.fallback_threshold = fallback_threshold
         self.chunk_size = chunk_size
 
         assert self.num_heads % self.tp_size == 0, \
@@ -104,6 +105,7 @@ class TriangleAttentionNode(Module):
             gating=True,
             triangle_attn_backend=self.triangle_attn_backend,
             support_batch=self.support_batch,
+            fallback_threshold=self.fallback_threshold,
             mapping=mapping)
 
     def forward(self,

@@ -181,7 +181,7 @@ def triangle_attention(q: Tensor,
     if isinstance(backend, str):
         backend = AttentionBackend.from_str(backend)
     dtype = "float32" if dtype is None else dtype
-    tri_attn_plg_creator = trt.get_plugin_registry().get_plugin_creator(
+    tri_attn_plg_creator = trt.get_plugin_registry().get_creator(
         'TriAttn', '1', TRT_BNM_PLUGIN_NAMESPACE)
     assert tri_attn_plg_creator is not None
     nheads = trt.PluginField("num_heads", np.array(num_heads, dtype=np.int32),
@@ -202,13 +202,15 @@ def triangle_attention(q: Tensor,
     pfc = trt.PluginFieldCollection(
         [nheads, head_dim, backend, use_tf32, pf_type])
 
-    tri_attn_plug = tri_attn_plg_creator.create_plugin("tri_attn", pfc)
+    tri_attn_plug = tri_attn_plg_creator.create_plugin("tri_attn", pfc, phase=trt.TensorRTPhase.BUILD)
     plug_inputs = [q.trt_tensor, k.trt_tensor, v.trt_tensor, bias.trt_tensor]
     if mask is not None:
         plug_inputs += [mask.trt_tensor]
 
-    layer = default_trtnet().add_plugin_v2(plug_inputs, tri_attn_plug)
+    layer = default_trtnet().add_plugin_v3(plug_inputs, [], tri_attn_plug)
     _add_plugin_info(layer, tri_attn_plg_creator, "tri_attn", pfc)
     output = _create_tensor(layer.get_output(0), layer)
     lse = _create_tensor(layer.get_output(1), layer)
+    if backend == AttentionBackend.CUEQUIV:
+        lse_max = _create_tensor(layer.get_output(2), layer)
     return output, lse

@@ -20,6 +20,7 @@ from typing import Optional
 import tensorrt as trt
 # isort: on
 
+from tensorrt_llm import functional as trt_f
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
                                      concat, constant_to_tensor_, expand_dims,
                                      matmul, not_op, shape, slice, softmax,
@@ -53,7 +54,8 @@ class TriangleAttention(Module):
                  dtype: str = None,
                  triangle_attn_backend: str = 'VANILLA',
                  support_batch: bool = False,
-                 mapping: Mapping = Mapping()):
+                 mapping: Mapping = Mapping(),
+                 fallback_threshold = 0):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.triangle_attn_backend = triangle_attn_backend
@@ -76,7 +78,7 @@ class TriangleAttention(Module):
         self.tp_rank = mapping.tp_rank
         self.dtype = dtype
         self.bias = bias
-
+        self.fallback_threshold = fallback_threshold
         self.norm_factor = math.sqrt(self.attention_head_size)
 
         self.q_size = self.num_attention_heads * self.attention_head_size
@@ -130,12 +132,12 @@ class TriangleAttention(Module):
         """
         if self.support_batch:
             bs = shape(hidden_states, 0)
-            si = shape(hidden_states, 1)
-            sj = shape(hidden_states, 2)
+            batch_dims = 1
         else:
             bs = 1
-            si = shape(hidden_states, 0)
-            sj = shape(hidden_states, 1)
+            batch_dims = 0
+        si = shape(hidden_states, batch_dims+0)
+        sj = shape(hidden_states, batch_dims+1)
         qkv = self.qkv_proj(hidden_states,
                             None)  # [B, I, J, 3*H*D] or [I, J, 3*H*D]
         mask_bias = None
@@ -146,14 +148,9 @@ class TriangleAttention(Module):
             triangle_bias = biases[1]
             # slice the triangle bias for tp by the head dimension
             if self.tp_size > 1:
-                if self.support_batch:
-                    starts = concat(
-                        [0, self.num_attention_heads * self.tp_rank, 0, 0])
-                    ends = concat([bs, self.num_attention_heads, sj, sj])
-                else:
-                    starts = concat(
-                        [0, self.num_attention_heads * self.tp_rank, 0, 0])
-                    ends = concat([1, self.num_attention_heads, sj, sj])
+                starts = concat(
+                    [0, self.num_attention_heads * self.tp_rank, 0, 0])
+                ends = concat([bs, self.num_attention_heads, sj, sj])
                 triangle_bias = slice(triangle_bias, starts, ends)
             if self.support_batch:
                 triangle_bias = triangle_bias.unsqueeze(1)
@@ -174,17 +171,70 @@ class TriangleAttention(Module):
                     [si, sj, _num_attention_heads, self.attention_head_size])
                 return x.view(new_x_shape).permute([0, 2, 1, 3])  # [I, H, J, D]
 
+        def vanilla_attention(query, key, value, triangle_bias, mask_bias):            
+            query = transpose_for_scores(
+                query, is_kv=False)  # [B, I, H, J, D] or [I, H, J, D]
+            key = transpose_for_scores(
+                key, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
+            value = transpose_for_scores(
+                value, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
+            if self.support_batch:
+                key = key.permute([0, 1, 2, 4, 3])  # [B, I, H, D, J] # K^T
+            else:
+                key = key.permute([0, 1, 3, 2])  # [I, H, D, J] # K^T
+            norm_factor_const = constant_to_tensor_(self.norm_factor,
+                                                    dtype=query.dtype,
+                                                    to_array=False)
+            if norm_before_bmm1:
+                query /= norm_factor_const
+            attention_scores = matmul(query, key)
+            if not norm_before_bmm1:
+                attention_scores /= norm_factor_const
+            if mask_bias is not None:
+                attention_scores += mask_bias
+            if triangle_bias is not None:
+                attention_scores += triangle_bias
+            attention_probs = softmax(attention_scores,
+                                      dim=-1)  # [B, I, H, J, J] or [I, H, J, J]
+            if self.support_batch:
+                context = matmul(attention_probs, value,
+                                 use_fp32_acc=False).permute(
+                                     [0, 1, 3, 2, 4])  # [B, I, J, H, D]
+            else:
+                context = matmul(attention_probs, value,
+                                 use_fp32_acc=False).permute([0, 2, 1, 3
+                                                              ])  # [I, J, H, D]
+            return context
+            
+        query, key, value = split(
+            qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
+            dim=-1)
+            
         if self.triangle_attn_backend != 'VANILLA':
             logger.debug(
                 f"Using {self.triangle_attn_backend} triangle attention backend, {self.dtype}"
             )
+            if self.fallback_threshold > 0:
+                hs_shape = shape(hidden_states)
+                dim_sj = slice(hs_shape, starts=[batch_dims+1], sizes=[1]) 
+                threshold = constant_to_tensor_(self.fallback_threshold,  # Threshold value
+                                                dtype=dim_sj.dtype,
+                                                to_array=False)
+                
+                condition = trt_f.gt(dim_sj, threshold).squeeze(0, False)
+                cond_node = trt_f.Conditional(condition)
+                query = cond_node.add_input(query)
+                key = cond_node.add_input(key)
+                value = cond_node.add_input(value)
+                triangle_bias = cond_node.add_input(triangle_bias)
+                if mask_bias is not None:
+                    mask_bias = cond_node.add_input(mask_bias)
+                # if sj < threshold, just call vanilla attention
+                fallback = vanilla_attention(query, key, value, triangle_bias, mask_bias)
+            
             context = None
 
-            query, key, value = split(
-                qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
-                dim=-1)
             if self.triangle_attn_backend == "TRIFAST":
-
                 def transpose_for_bh(x, is_kv: bool = False):
                     _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
                     if self.support_batch:
@@ -254,12 +304,14 @@ class TriangleAttention(Module):
                     key, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
                 value = transpose_for_scores(
                     value, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
-                mask_bias = cast(mask_bias, "bool")
-                mask_bias = not_op(
-                    mask_bias)  # flip the mask for CUEQUIV backend
+                if mask_bias is not None:
+                    mask_bias = cast(mask_bias, "bool")
+                    mask_bias = not_op(
+                        mask_bias)  # flip the mask for CUEQUIV backend
                 if not self.support_batch:
                     # CUEQUIV requires the batch dimension
-                    mask_bias = mask_bias.unsqueeze(0)  # [B, I, 1, 1, J]
+                    if mask_bias is not None:
+                        mask_bias = mask_bias.unsqueeze(0)  # [B, I, 1, 1, J]
                     query = query.unsqueeze(0)
                     key = key.unsqueeze(0)
                     value = value.unsqueeze(0)
@@ -278,44 +330,12 @@ class TriangleAttention(Module):
                 context = context.permute([0, 1, 3, 2, 4])  # [B, I, J, H, D]
                 if not self.support_batch:
                     context = context.squeeze(0, False)
+            # closing conditional
+            if self.fallback_threshold > 0:
+                context = cond_node.add_output(context, fallback) 
         else:
             # plain TensorRT mode
-            query, key, value = split(
-                qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
-                dim=-1)
-
-            query = transpose_for_scores(
-                query, is_kv=False)  # [B, I, H, J, D] or [I, H, J, D]
-            key = transpose_for_scores(
-                key, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
-            value = transpose_for_scores(
-                value, is_kv=True)  # [B, I, H, J, D] or [I, H, J, D]
-            if self.support_batch:
-                key = key.permute([0, 1, 2, 4, 3])  # [B, I, H, D, J] # K^T
-            else:
-                key = key.permute([0, 1, 3, 2])  # [I, H, D, J] # K^T
-            norm_factor_const = constant_to_tensor_(self.norm_factor,
-                                                    dtype=query.dtype,
-                                                    to_array=False)
-            if norm_before_bmm1:
-                query /= norm_factor_const
-            attention_scores = matmul(query, key)
-            if not norm_before_bmm1:
-                attention_scores /= norm_factor_const
-            if mask_bias is not None:
-                attention_scores += mask_bias
-            if triangle_bias is not None:
-                attention_scores += triangle_bias
-            attention_probs = softmax(attention_scores,
-                                      dim=-1)  # [B, I, H, J, J] or [I, H, J, J]
-            if self.support_batch:
-                context = matmul(attention_probs, value,
-                                 use_fp32_acc=False).permute(
-                                     [0, 1, 3, 2, 4])  # [B, I, J, H, D]
-            else:
-                context = matmul(attention_probs, value,
-                                 use_fp32_acc=False).permute([0, 2, 1, 3
-                                                              ])  # [I, J, H, D]
+            context = vanilla_attention(query, key, value, triangle_bias, mask_bias)
 
         if self.g_proj is not None:
             g = self.g_proj(hidden_states)  # [B, I, J, H*D] or [I, J, H*D]

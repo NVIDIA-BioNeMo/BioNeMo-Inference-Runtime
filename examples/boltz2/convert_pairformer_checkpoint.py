@@ -43,6 +43,10 @@ def parse_arguments():
                         type=int,
                         default=0,
                         help='The chunk size for the triangle attention node')
+    parser.add_argument('--triangle_attn_cueq_fallback_threshold',
+                        type=int,
+                        default=0,
+                        help='Threshold to fall back from CUEQUIV to VANILLA for triangle attention node')
     parser.add_argument('--max_batch_size',
                         type=int,
                         default=1,
@@ -51,7 +55,6 @@ def parse_arguments():
                         type=str,
                         default='float32',
                         choices=['bfloat16', 'float32'])
-
     parser.add_argument('--output_dir',
                         type=Path,
                         default='pairformer_checkpoint',
@@ -153,6 +156,8 @@ def main():
         args.max_tri_mul_tp_size,
         "triangle_attn_node_chunk_size":
         args.triangle_attn_node_chunk_size,
+        "triangle_attn_cueq_fallback_threshold":
+        args.triangle_attn_cueq_fallback_threshold,        
         "no_update_s":
         False,
         "no_update_z":

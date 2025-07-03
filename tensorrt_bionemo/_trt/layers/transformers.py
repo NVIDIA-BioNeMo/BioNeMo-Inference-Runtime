@@ -62,6 +62,7 @@ class PairformerLayerV1(Module):
                  support_batch: bool = True,
                  s_path_dtype: str = None,
                  attention_initial_norm: bool = True,
+                 fallback_threshold: int = 0,
                  mapping: Mapping = Mapping(),
                  **kwargs):
         super().__init__()
@@ -72,7 +73,8 @@ class PairformerLayerV1(Module):
         self.no_update_z = no_update_z
         self.support_batch = support_batch
         self.triangle_attn_backend = triangle_attn_backend
-
+        self.fallback_threshold = fallback_threshold
+        
         self.eps = eps
         self.inf = inf
         self.dtype = dtype
@@ -126,6 +128,7 @@ class PairformerLayerV1(Module):
             chunk_size=chunk_size,
             triangle_attn_backend=triangle_attn_backend,
             support_batch=support_batch,
+            fallback_threshold = self.fallback_threshold,
             mapping=mapping)
         self.tri_attn_end = TriangleAttentionNode(
             local_layer_idx=local_layer_idx,
@@ -139,6 +142,7 @@ class PairformerLayerV1(Module):
             chunk_size=chunk_size,
             triangle_attn_backend=triangle_attn_backend,
             support_batch=support_batch,
+            fallback_threshold = self.fallback_threshold,
             mapping=mapping)
         if not self.no_update_s:
             m = mapping
@@ -287,7 +291,7 @@ class PairformerModule(PretrainedModule):
         super().__init__(config)
         layer_cls = PairformerLayerV1 if config.version == "v1" else PairformerLayerV2
         logger.info(
-            f"Using triangle_attn_backend: {config.triangle_attn_backend}")
+            f"Using triangle_attn_backend: {config.triangle_attn_backend}, cueq threshold: {config.triangle_attn_cueq_fallback_threshold}")
         self.layers = ModuleList([
             layer_cls(local_layer_idx=i,
                       token_s=config.token_s,
@@ -301,12 +305,12 @@ class PairformerModule(PretrainedModule):
                       eps=config.norm_epsilon,
                       inf=config.mask_inf,
                       max_transition_tp_size=config.max_transition_tp_size,
-                      max_attention_pairwise_tp_size=config.
-                      max_attention_pairwise_tp_size,
+                      max_attention_pairwise_tp_size=config.max_attention_pairwise_tp_size,
                       max_tri_mul_tp_size=config.max_tri_mul_tp_size,
                       triangle_attn_backend=config.triangle_attn_backend,
                       support_batch=config.support_batch,
                       mapping=config.mapping,
+                      fallback_threshold = config.triangle_attn_cueq_fallback_threshold,
                       post_layer_norm=config.post_layer_norm,
                       attention_initial_norm=config.attention_initial_norm)
             for i in range(config.num_blocks)

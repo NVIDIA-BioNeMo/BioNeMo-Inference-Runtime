@@ -43,6 +43,7 @@ class PairformerConfig(PretrainedModuleConfig):
                  support_batch: bool = True,
                  s_path_dtype: str = None,
                  post_layer_norm: bool = False,
+                 triangle_attn_cueq_fallback_threshold: int = 0,
                  version: str = "v1",
                  **kwargs):
         super().__init__(**kwargs)
@@ -67,6 +68,7 @@ class PairformerConfig(PretrainedModuleConfig):
         self.support_batch = support_batch
         self.s_path_dtype = s_path_dtype
         self.post_layer_norm = post_layer_norm
+        self.triangle_attn_cueq_fallback_threshold = triangle_attn_cueq_fallback_threshold
         self.version = version
 
     @property

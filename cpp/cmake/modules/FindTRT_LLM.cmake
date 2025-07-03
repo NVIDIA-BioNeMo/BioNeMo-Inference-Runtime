@@ -50,7 +50,7 @@ find_trtllm_library(tensorrt_llm)
 find_trtllm_library(th_common)
 find_trtllm_library(nvinfer_plugin_tensorrt_llm)
 find_trtllm_library(tensorrt_llm_ucx_wrapper)
-find_trtllm_library(tensorrt_llm_nvrtc_wrapper)
+# find_trtllm_library(tensorrt_llm_nvrtc_wrapper)
 find_trtllm_library(decoder_attention_0)
 find_trtllm_library(decoder_attention_1)
 

@@ -118,8 +118,11 @@ def convert(worker_rank, world_size, configs, args):
                           dcp_size=args.dcp_size,
                           rank=rank)
         if args.backend == 'all' or args.backend == BackendType.TRT:
-            weights = convert_hf_pairformer(configs[BackendType.TRT], mapping,
-                                            args.pairformer_type)
+            weights = convert_hf_pairformer(
+                configs[BackendType.TRT],
+                mapping,
+                args.pairformer_type,
+                local_checkpoint=args.local_checkpoint)
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')

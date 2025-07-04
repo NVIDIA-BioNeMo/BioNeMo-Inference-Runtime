@@ -43,10 +43,13 @@ def parse_arguments():
                         type=int,
                         default=0,
                         help='The chunk size for the triangle attention node')
-    parser.add_argument('--triangle_attn_cueq_fallback_threshold',
-                        type=int,
-                        default=0,
-                        help='Threshold to fall back from CUEQUIV to VANILLA for triangle attention node')
+    parser.add_argument(
+        '--triangle_attn_cueq_fallback_threshold',
+        type=int,
+        default=0,
+        help=
+        'Threshold to fall back from CUEQUIV to VANILLA for triangle attention node'
+    )
     parser.add_argument('--max_batch_size',
                         type=int,
                         default=1,
@@ -115,8 +118,11 @@ def convert(worker_rank, world_size, configs, args):
                           dcp_size=args.dcp_size,
                           rank=rank)
         if args.backend == 'all' or args.backend == BackendType.TRT:
-            weights = convert_hf_pairformer(configs[BackendType.TRT], mapping,
-                                            args.pairformer_type)
+            weights = convert_hf_pairformer(
+                configs[BackendType.TRT],
+                mapping,
+                args.pairformer_type,
+                local_checkpoint=args.local_checkpoint)
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
@@ -157,7 +163,7 @@ def main():
         "triangle_attn_node_chunk_size":
         args.triangle_attn_node_chunk_size,
         "triangle_attn_cueq_fallback_threshold":
-        args.triangle_attn_cueq_fallback_threshold,        
+        args.triangle_attn_cueq_fallback_threshold,
         "no_update_s":
         False,
         "no_update_z":

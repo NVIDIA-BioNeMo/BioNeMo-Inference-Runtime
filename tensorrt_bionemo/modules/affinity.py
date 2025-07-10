@@ -28,58 +28,89 @@ from tensorrt_llm.runtime.session import _scoped_stream
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.transformers import PairformerModule
-from tensorrt_bionemo.configs import PairformerConfig
+from tensorrt_bionemo._torch.layers.affinity import (AffinityModule,
+                                                     compute_distogram,
+                                                     create_cross_pair_mask)
+from tensorrt_bionemo.configs import AffinityModuleConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.backend import BackendBase, BackendBuilder
-from tensorrt_bionemo.runtime.misc import (CUASSERT, dtype_context,
-                                           ensure_contiguous, get_closest_n)
+from tensorrt_bionemo.runtime.misc import CUASSERT, ensure_contiguous
 
 
-class PairformerTorch(BackendBase):
-    IMPL_CLASS = PairformerModule
+class AffinityModuleTorch(BackendBase):
+    # Boltz2 affinity module
+    IMPL_CLASS = AffinityModule
 
     def __init__(self,
-                 config: PairformerConfig,
+                 config: AffinityModuleConfig,
                  load_weights_fn: Optional[Callable] = None,
                  impl: nn.Module = None):
         super().__init__(config, load_weights_fn, impl)
 
-        pairwise_metadata_cls = get_attention_backend(
-            config.pairwise_attn_backend).Metadata
         triangle_metadata_cls = get_attention_backend(
             config.triangle_attn_backend).Metadata
 
         self.attn_metadatas = {
             "triangle_attn": triangle_metadata_cls(mapping=config.mapping),
-            "pairwise_attn": pairwise_metadata_cls(mapping=config.mapping),
         }
 
-    def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        with dtype_context(expected_dtype=self.config.torch_dtype,
-                           original_dtype=s.dtype) as cast_func:
-            if self.config.triangle_attn_backend == "TRIFAST":
-                self.attn_metadatas["triangle_attn"].closest_n = get_closest_n(
-                    s.shape[1] // self.config.mapping.dcp_size)
-            s, z = cast_func(self._module)(s,
-                                           z,
-                                           mask,
-                                           pair_mask,
-                                           attn_metadatas=self.attn_metadatas)
-        return s, z
+        boundaries = torch.linspace(2, config.max_dist,
+                                    config.num_dist_bins - 1)
+        self.register_buffer("boundaries", boundaries)
+
+    def forward(self,
+                s_inputs: torch.Tensor,
+                z: torch.Tensor,
+                x_pred: torch.Tensor,
+                feats: dict[str, torch.Tensor],
+                multiplicity=1,
+                **kwargs) -> dict[str, torch.Tensor]:
+        # Sanity check
+        assert multiplicity == 1, "Multiplicity > 1 is not supported"
+        assert "token_to_rep_atom" in feats, "token_to_rep_atom is required"
+        assert "pad_token_mask" in feats, "pad_token_mask is required"
+        assert "mol_type" in feats, "mol_type is required"
+        assert "affinity_token_mask" in feats, "affinity_token_mask is required"
+
+        distogram = compute_distogram(x_pred, self.boundaries,
+                                      feats["token_to_rep_atom"], multiplicity)
+        cross_pair_mask_0, cross_pair_mask_1 = \
+                    create_cross_pair_mask(
+                                    feats["pad_token_mask"],
+                                    feats["mol_type"],
+                                    feats["affinity_token_mask"],
+                                    multiplicity,
+                                    include_mask_for_head=True)
+
+        original_dtype = s_inputs.dtype
+        # Cast the output to the expected dtype
+        if self.config.triangle_attn_backend == "TRIFAST":
+            self.attn_metadatas["triangle_attn"].closest_n = get_closest_n(
+                s_inputs.shape[1] // self.config.mapping.dcp_size)
+        pred_value, logits_binary = self._module(
+            s_inputs.to(self.config.torch_dtype), z.to(self.config.torch_dtype),
+            distogram.to(torch.int32),
+            cross_pair_mask_0.to(self.config.torch_dtype),
+            cross_pair_mask_1.to(self.config.torch_dtype))
+        return {
+            "affinity_pred_value": pred_value.to(original_dtype),
+            "affinity_logits_binary": logits_binary.to(original_dtype)
+        }
 
 
-class PairformerTRT(BackendBase):
+class AffinityModuleTRT(BackendBase):
     IMPL_CLASS = None
 
     def __init__(self,
-                 config: PairformerConfig,
+                 config: AffinityModuleConfig,
                  load_weights_fn: Optional[Callable] = None,
                  impl: nn.Module = None):
         super().__init__(config, load_weights_fn, impl)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
+        self.int32_dtype = str_dtype_to_trt("int32")
+        boundaries = torch.linspace(2, config.max_dist,
+                                    config.num_dist_bins - 1)
+        self.register_buffer("boundaries", boundaries)
 
     def load_weights(self,
                      checkpoint_dir: str,
@@ -167,16 +198,12 @@ class PairformerTRT(BackendBase):
         self.opt_profile_map = {}
         num_optimization_profiles = self.engine.num_optimization_profiles
         for i in range(num_optimization_profiles):
-            mask_dims = self.engine.get_tensor_profile_shape("mask", i)
-            min_opt = mask_dims[0]
-            max_opt = mask_dims[-1]
+            z_dims = self.engine.get_tensor_profile_shape("z", i)
+            min_opt = z_dims[0]
+            max_opt = z_dims[-1]
 
-            if self.config.support_batch:
-                min_s = min_opt[1]  # 0: batch_size, 1: seqlen
-                max_s = max_opt[1]  # 0: batch_size, 1: seqlen
-            else:
-                min_s = min_opt[0]  # 0: seqlen
-                max_s = max_opt[0]  # 0: seqlen
+            min_s = min_opt[1]  # 0: batch_size, 1: seqlen
+            max_s = max_opt[1]  # 0: batch_size, 1: seqlen
 
             self.opt_profile_map[(min_s, max_s)] = i
         self.curr_profile = 0
@@ -201,32 +228,47 @@ class PairformerTRT(BackendBase):
                     self.curr_profile, stream)
 
     @ensure_contiguous
-    def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self,
+                s_inputs: torch.Tensor,
+                z: torch.Tensor,
+                x_pred: torch.Tensor,
+                feats: dict[str, torch.Tensor],
+                multiplicity=1,
+                **kwargs) -> dict[str, torch.Tensor]:
         # Ensure the inputs are contiguous
-        self.switch_opt_profile(s.shape[1])
-        if not self.config.support_batch:
-            s = s.squeeze(0)
-            z = z.squeeze(0)
-            mask = mask.squeeze(0)
-            pair_mask = pair_mask.squeeze(0)
-        original_dtype = s.dtype
+        self.switch_opt_profile(s_inputs.shape[1])
+        original_dtype = s_inputs.dtype
+
+        distogram = compute_distogram(x_pred, self.boundaries,
+                                      feats["token_to_rep_atom"], multiplicity)
+        cross_pair_mask_0, cross_pair_mask_1 = \
+                    create_cross_pair_mask(
+                                    feats["token_pad_mask"],
+                                    feats["mol_type"],
+                                    feats["affinity_token_mask"],
+                                    multiplicity,
+                                    include_mask_for_head=True)
 
         # TODO: Use config.get_input_names() to get the input names
         inputs = {
-            "s": s.to(self.config.torch_dtype),
+            "s": s_inputs.to(self.config.torch_dtype),
             "z": z.to(self.config.torch_dtype),
-            "mask": mask.to(self.config.torch_dtype),
-            "pair_mask": pair_mask.to(self.config.torch_dtype)
+            "distogram": distogram.to(torch.int32),
+            "cross_pair_mask_0": cross_pair_mask_0.to(self.config.torch_dtype),
+            "cross_pair_mask_1": cross_pair_mask_1.to(self.config.torch_dtype)
         }
 
         output_info = self.session.infer_shapes([
-            TensorInfo("s", dtype=self.trt_dtype, shape=s.shape),
+            TensorInfo("s", dtype=self.trt_dtype, shape=s_inputs.shape),
             TensorInfo("z", dtype=self.trt_dtype, shape=z.shape),
-            TensorInfo("mask", dtype=self.trt_dtype, shape=mask.shape),
-            TensorInfo("pair_mask", dtype=self.trt_dtype,
-                       shape=pair_mask.shape),
+            TensorInfo(
+                "distogram", dtype=self.int32_dtype, shape=distogram.shape),
+            TensorInfo("cross_pair_mask_0",
+                       dtype=self.trt_dtype,
+                       shape=cross_pair_mask_0.shape),
+            TensorInfo("cross_pair_mask_1",
+                       dtype=self.trt_dtype,
+                       shape=cross_pair_mask_1.shape),
         ], self.context)
         outputs = {
             t.name:
@@ -242,14 +284,14 @@ class PairformerTRT(BackendBase):
                               self.stream,
                               context=self.context)
         assert ok, "Runtime execution failed"
-        s = outputs["output_s"].to(original_dtype)
-        z = outputs["output_z"].to(original_dtype)
-        if not self.config.support_batch:
-            s = s.unsqueeze(0)
-            z = z.unsqueeze(0)
-        return s, z
+        pred_value = outputs["pred_value"].to(original_dtype)
+        logits_binary = outputs["logits_binary"].to(original_dtype)
+        return {
+            "affinity_pred_value": pred_value,
+            "affinity_logits_binary": logits_binary
+        }
 
 
-class PairformerBackendBuilder(BackendBuilder):
-    BACKEND_CLASSES = {"trt": PairformerTRT, "torch": PairformerTorch}
-    CONFIG_CLASS = PairformerConfig
+class AffinityModuleBackendBuilder(BackendBuilder):
+    BACKEND_CLASSES = {"trt": AffinityModuleTRT, "torch": AffinityModuleTorch}
+    CONFIG_CLASS = AffinityModuleConfig

@@ -19,11 +19,8 @@ from tensorrt_llm.models.convert_utils import split
 
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
-from .ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
-from .ref_layers import (RefAdaLN, RefConditionedTransitionBlock,
-                         RefDiffusionTransformerLayer, RefPairformerLayer,
-                         RefTransition, RefTriangleAttentionNode,
-                         RefTriangleMultiplicationNode)
+from .ref_attn import *
+from .ref_layers import *
 
 
 def create_triangle_attention_weights(c_q=None,
@@ -572,15 +569,17 @@ def create_pairformer_layer_weights(token_s=None,
                                     num_heads=None,
                                     pairwise_head_width=None,
                                     pairwise_num_heads=None,
+                                    include_s_path: bool = True,
                                     torch_dtype=None,
                                     from_ref: RefPairformerLayer = None):
     ret = {}
     if not from_ref:
-        ret["attention"] = create_self_pairwise_attention_weights(
-            c_s=token_s,
-            c_z=token_z,
-            num_attention_heads=num_heads,
-            torch_dtype=torch_dtype)
+        if include_s_path:
+            ret["attention"] = create_self_pairwise_attention_weights(
+                c_s=token_s,
+                c_z=token_z,
+                num_attention_heads=num_heads,
+                torch_dtype=torch_dtype)
         ret["tri_mul_out"] = create_triangle_multiplication_node_weights(
             dim=token_z, torch_dtype=torch_dtype)
         ret["tri_mul_in"] = create_triangle_multiplication_node_weights(
@@ -595,17 +594,20 @@ def create_pairformer_layer_weights(token_s=None,
             c_hidden=pairwise_head_width,
             num_attention_heads=pairwise_num_heads,
             torch_dtype=torch_dtype)
-        ret["transition_s"] = create_transition_weights(dim=token_s,
-                                                        hidden=token_s * 4,
-                                                        out_dim=token_s,
-                                                        torch_dtype=torch_dtype)
+        if include_s_path:
+            ret["transition_s"] = create_transition_weights(
+                dim=token_s,
+                hidden=token_s * 4,
+                out_dim=token_s,
+                torch_dtype=torch_dtype)
         ret["transition_z"] = create_transition_weights(dim=token_z,
                                                         hidden=token_z * 4,
                                                         out_dim=token_z,
                                                         torch_dtype=torch_dtype)
     else:
-        ret["attention"] = create_self_pairwise_attention_weights(
-            from_ref=from_ref.attention)
+        if include_s_path:
+            ret["attention"] = create_self_pairwise_attention_weights(
+                from_ref=from_ref.attention)
         ret["tri_mul_out"] = create_triangle_multiplication_node_weights(
             from_ref=from_ref.tri_mul_out)
         ret["tri_mul_in"] = create_triangle_multiplication_node_weights(
@@ -614,8 +616,9 @@ def create_pairformer_layer_weights(token_s=None,
             from_ref=from_ref.tri_attn_start)
         ret["tri_attn_end"] = create_triangle_attention_node_weights(
             from_ref=from_ref.tri_attn_end)
-        ret["transition_s"] = create_transition_weights(
-            from_ref=from_ref.transition_s)
+        if include_s_path:
+            ret["transition_s"] = create_transition_weights(
+                from_ref=from_ref.transition_s)
         ret["transition_z"] = create_transition_weights(
             from_ref=from_ref.transition_z)
     return ret
@@ -630,13 +633,15 @@ def load_pairformer_layer_weights_trt(
         token_z=None,
         max_attention_pairwise_tp_size: bool = False,
         max_transition_tp_size: bool = False,
-        max_tri_mul_tp_size: bool = False):
+        max_tri_mul_tp_size: bool = False,
+        include_s_path: bool = True):
     m = mapping if mapping else Mapping()  # dynamic mapping
-    if max_attention_pairwise_tp_size:
-        m = create_max_tp_mapping(mapping, num_heads)
-    load_self_pairwise_attention_weights_trt(module.attention,
-                                             weights_and_biases["attention"],
-                                             m.tp_size, m.tp_rank)
+    if include_s_path:
+        if max_attention_pairwise_tp_size:
+            m = create_max_tp_mapping(mapping, num_heads)
+        load_self_pairwise_attention_weights_trt(
+            module.attention, weights_and_biases["attention"], m.tp_size,
+            m.tp_rank)
 
     m = mapping if mapping else Mapping()  # dynamic mapping
     if max_tri_mul_tp_size:
@@ -656,11 +661,12 @@ def load_pairformer_layer_weights_trt(
                                              weights_and_biases["tri_attn_end"],
                                              m.tp_size, m.tp_rank)
     m = mapping if mapping else Mapping()  # dynamic mapping
-    if max_transition_tp_size:
-        m = create_max_tp_mapping(mapping, token_s * 4)
-    load_transition_weights_trt(module.transition_s,
-                                weights_and_biases["transition_s"], m.tp_size,
-                                m.tp_rank)
+    if include_s_path:
+        if max_transition_tp_size:
+            m = create_max_tp_mapping(mapping, token_s * 4)
+        load_transition_weights_trt(module.transition_s,
+                                    weights_and_biases["transition_s"],
+                                    m.tp_size, m.tp_rank)
     m = mapping if mapping else Mapping()  # dynamic mapping
     if max_transition_tp_size:
         m = create_max_tp_mapping(mapping, token_z * 4)
@@ -670,8 +676,9 @@ def load_pairformer_layer_weights_trt(
 
 
 def load_pairformer_layer_weights_ref_torch(module, weights_and_biases):
-    load_self_pairwise_attention_weights_ref_torch(
-        module.attention, weights_and_biases["attention"])
+    if module.attention:
+        load_self_pairwise_attention_weights_ref_torch(
+            module.attention, weights_and_biases["attention"])
     load_triangle_multiplication_node_weights_ref_torch(
         module.tri_mul_out, weights_and_biases["tri_mul_out"])
     load_triangle_multiplication_node_weights_ref_torch(
@@ -680,8 +687,9 @@ def load_pairformer_layer_weights_ref_torch(module, weights_and_biases):
         module.tri_attn_start, weights_and_biases["tri_attn_start"])
     load_triangle_attention_node_weights_ref_torch(
         module.tri_attn_end, weights_and_biases["tri_attn_end"])
-    load_transition_weights_ref_torch(module.transition_s,
-                                      weights_and_biases["transition_s"])
+    if module.transition_s:
+        load_transition_weights_ref_torch(module.transition_s,
+                                          weights_and_biases["transition_s"])
     load_transition_weights_ref_torch(module.transition_z,
                                       weights_and_biases["transition_z"])
 
@@ -689,9 +697,9 @@ def load_pairformer_layer_weights_ref_torch(module, weights_and_biases):
 def load_pairformer_layer_weights_torch(module,
                                         weights_and_biases,
                                         dtype=torch.float32):
-    load_self_pairwise_attention_weights_torch(module.attention,
-                                               weights_and_biases["attention"],
-                                               dtype)
+    if hasattr(module, "attention"):
+        load_self_pairwise_attention_weights_torch(
+            module.attention, weights_and_biases["attention"], dtype)
     load_triangle_multiplication_node_weights_torch(
         module.tri_mul_out, weights_and_biases["tri_mul_out"], dtype)
     load_triangle_multiplication_node_weights_torch(
@@ -700,8 +708,9 @@ def load_pairformer_layer_weights_torch(module,
         module.tri_attn_start, weights_and_biases["tri_attn_start"], dtype)
     load_triangle_attention_node_weights_torch(
         module.tri_attn_end, weights_and_biases["tri_attn_end"], dtype)
-    load_transition_weights_torch(module.transition_s,
-                                  weights_and_biases["transition_s"], dtype)
+    if hasattr(module, "transition_s"):
+        load_transition_weights_torch(module.transition_s,
+                                      weights_and_biases["transition_s"], dtype)
     load_transition_weights_torch(module.transition_z,
                                   weights_and_biases["transition_z"], dtype)
 
@@ -1011,3 +1020,648 @@ def load_diffusion_transformer_layer_weights_trt(module,
         output_projection_weight.cpu().numpy())
     module.output_projection.bias.value = np.ascontiguousarray(
         output_projection_bias.cpu().numpy())
+
+
+# Pairwise conditioning weights
+def create_pairwise_conditioning_weights(
+        token_z: int = None,
+        dim_token_rel_pos_feats: int = None,
+        num_transitions: int = 2,
+        transition_expansion_factor: int = 2,
+        torch_dtype=None,
+        from_ref: RefPairwiseConditioning = None):
+    ret = {}
+    if not from_ref:
+        ret["init_proj_norm"] = [
+            torch.randn(token_z + dim_token_rel_pos_feats, dtype=torch_dtype),
+            torch.randn(token_z + dim_token_rel_pos_feats, dtype=torch_dtype),
+        ]
+        ret["init_proj_linear"] = torch.randn(token_z,
+                                              token_z + dim_token_rel_pos_feats,
+                                              dtype=torch_dtype)
+        ret["transitions"] = [
+            create_transition_weights(
+                dim=token_z,
+                hidden=token_z * transition_expansion_factor,
+                out_dim=token_z,
+                torch_dtype=torch_dtype,
+            ) for _ in range(num_transitions)
+        ]
+    else:
+        ret["init_proj_norm"] = [
+            from_ref.dim_pairwise_init_proj[0].weight.data,
+            from_ref.dim_pairwise_init_proj[0].bias.data,
+        ]
+        ret["init_proj_linear"] = from_ref.dim_pairwise_init_proj[1].weight.data
+        ret["transitions"] = [
+            create_transition_weights(from_ref=from_ref.transitions[i])
+            for i in range(num_transitions)
+        ]
+    return ret
+
+
+def load_pairwise_conditioning_weights_ref_torch(module, weights_and_biases):
+    init_proj_norm_weight, init_proj_norm_bias = weights_and_biases[
+        "init_proj_norm"]
+    init_proj_linear_weight = weights_and_biases["init_proj_linear"]
+    transitions = weights_and_biases["transitions"]
+
+    module.dim_pairwise_init_proj[0].weight.data.copy_(init_proj_norm_weight)
+    module.dim_pairwise_init_proj[0].bias.data.copy_(init_proj_norm_bias)
+    module.dim_pairwise_init_proj[1].weight.data.copy_(init_proj_linear_weight)
+    for i, transition in enumerate(transitions):
+        load_transition_weights_ref_torch(module.transitions[i], transition)
+
+
+def load_pairwise_conditioning_weights_torch(module,
+                                             weights_and_biases,
+                                             dtype=torch.float32):
+    init_proj_norm_weight, init_proj_norm_bias = weights_and_biases[
+        "init_proj_norm"]
+    module.init_proj_norm.weight.data.copy_(init_proj_norm_weight)
+    module.init_proj_norm.bias.data.copy_(init_proj_norm_bias)
+
+    init_proj_linear_weight = weights_and_biases["init_proj_linear"]
+    module.init_proj_linear.load_weights([{
+        "weight":
+        init_proj_linear_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+
+    transitions = weights_and_biases["transitions"]
+    for i, transition in enumerate(transitions):
+        load_transition_weights_torch(module.transitions[i], transition, dtype)
+
+
+def load_pairwise_conditioning_weights_trt(module,
+                                           weights_and_biases,
+                                           mapping: Mapping = None):
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    init_proj_norm_weight, init_proj_norm_bias = weights_and_biases[
+        "init_proj_norm"]
+    init_proj_linear_weight = weights_and_biases["init_proj_linear"]
+    transitions = weights_and_biases["transitions"]
+
+    module.init_proj_norm.weight.value = np.ascontiguousarray(
+        init_proj_norm_weight.cpu().numpy())
+    module.init_proj_norm.bias.value = np.ascontiguousarray(
+        init_proj_norm_bias.cpu().numpy())
+
+    if m.tp_size > 1:
+        init_proj_linear_weight = split(init_proj_linear_weight, m.tp_size,
+                                        m.tp_rank, 0)
+    module.init_proj_linear.weight.value = np.ascontiguousarray(
+        init_proj_linear_weight.cpu().numpy())
+
+    for i, transition in enumerate(transitions):
+        load_transition_weights_trt(module.transitions[i], transition,
+                                    m.tp_size, m.tp_rank)
+
+
+def create_affinity_heads_transformer_weights(
+        token_z: int = None,
+        token_s: int = None,
+        torch_dtype=None,
+        from_ref: RefAffinityHeadsTransformer = None):
+    ret = {}
+    if not from_ref:
+        affinity_out_mlp_linear_0_weight = torch.randn(token_z,
+                                                       token_z,
+                                                       dtype=torch_dtype)
+        affinity_out_mlp_linear_0_bias = torch.randn(token_z, dtype=torch_dtype)
+
+        affinity_out_mlp_linear_1 = torch.randn(token_s,
+                                                token_z,
+                                                dtype=torch_dtype)
+        affinity_out_mlp_linear_1_bias = torch.randn(token_s, dtype=torch_dtype)
+
+        to_affinity_pred_value_0_weight = torch.randn(token_s,
+                                                      token_s,
+                                                      dtype=torch_dtype)
+        to_affinity_pred_value_0_bias = torch.randn(token_s, dtype=torch_dtype)
+
+        to_affinity_pred_value_1_weight = torch.randn(token_s,
+                                                      token_s,
+                                                      dtype=torch_dtype)
+        to_affinity_pred_value_1_bias = torch.randn(token_s, dtype=torch_dtype)
+
+        to_affinity_pred_value_2_weight = torch.randn(1,
+                                                      token_s,
+                                                      dtype=torch_dtype)
+        to_affinity_pred_value_2_bias = torch.randn(1, dtype=torch_dtype)
+
+        to_affinity_pred_score_0_weight = torch.randn(token_s,
+                                                      token_s,
+                                                      dtype=torch_dtype)
+        to_affinity_pred_score_0_bias = torch.randn(token_s, dtype=torch_dtype)
+
+        to_affinity_pred_score_1_weight = torch.randn(token_s,
+                                                      token_s,
+                                                      dtype=torch_dtype)
+        to_affinity_pred_score_1_bias = torch.randn(token_s, dtype=torch_dtype)
+
+        to_affinity_pred_score_2_weight = torch.randn(1,
+                                                      token_s,
+                                                      dtype=torch_dtype)
+        to_affinity_pred_score_2_bias = torch.randn(1, dtype=torch_dtype)
+
+        to_affinity_logits_binary_weight = torch.randn(1, 1, dtype=torch_dtype)
+        to_affinity_logits_binary_bias = torch.randn(1, dtype=torch_dtype)
+
+        ret["affinity_out_mlp_linear_0"] = (affinity_out_mlp_linear_0_weight,
+                                            affinity_out_mlp_linear_0_bias)
+        ret["affinity_out_mlp_linear_1"] = (affinity_out_mlp_linear_1,
+                                            affinity_out_mlp_linear_1_bias)
+        ret["to_affinity_pred_value_0"] = (to_affinity_pred_value_0_weight,
+                                           to_affinity_pred_value_0_bias)
+        ret["to_affinity_pred_value_1"] = (to_affinity_pred_value_1_weight,
+                                           to_affinity_pred_value_1_bias)
+        ret["to_affinity_pred_value_2"] = (to_affinity_pred_value_2_weight,
+                                           to_affinity_pred_value_2_bias)
+        ret["to_affinity_pred_score_0"] = (to_affinity_pred_score_0_weight,
+                                           to_affinity_pred_score_0_bias)
+        ret["to_affinity_pred_score_1"] = (to_affinity_pred_score_1_weight,
+                                           to_affinity_pred_score_1_bias)
+        ret["to_affinity_logits_binary"] = (to_affinity_logits_binary_weight,
+                                            to_affinity_logits_binary_bias)
+    else:
+        ret["affinity_out_mlp_linear_0"] = (
+            from_ref.affinity_out_mlp[0].weight.data,
+            from_ref.affinity_out_mlp[0].bias.data)
+        ret["affinity_out_mlp_linear_1"] = (
+            from_ref.affinity_out_mlp[2].weight.data,
+            from_ref.affinity_out_mlp[2].bias.data)
+        ret["to_affinity_pred_value_0"] = (
+            from_ref.to_affinity_pred_value[0].weight.data,
+            from_ref.to_affinity_pred_value[0].bias.data)
+        ret["to_affinity_pred_value_1"] = (
+            from_ref.to_affinity_pred_value[2].weight.data,
+            from_ref.to_affinity_pred_value[2].bias.data)
+        ret["to_affinity_pred_value_2"] = (
+            from_ref.to_affinity_pred_value[4].weight.data,
+            from_ref.to_affinity_pred_value[4].bias.data)
+        ret["to_affinity_pred_score_0"] = (
+            from_ref.to_affinity_pred_score[0].weight.data,
+            from_ref.to_affinity_pred_score[0].bias.data)
+        ret["to_affinity_pred_score_1"] = (
+            from_ref.to_affinity_pred_score[2].weight.data,
+            from_ref.to_affinity_pred_score[2].bias.data)
+        ret["to_affinity_pred_score_2"] = (
+            from_ref.to_affinity_pred_score[4].weight.data,
+            from_ref.to_affinity_pred_score[4].bias.data)
+        ret["to_affinity_logits_binary"] = (
+            from_ref.to_affinity_logits_binary.weight.data,
+            from_ref.to_affinity_logits_binary.bias.data)
+    return ret
+
+
+def load_affinity_heads_transformer_weights_ref_torch(module,
+                                                      weights_and_biases):
+    affinity_out_mlp_linear_0_weight, affinity_out_mlp_linear_0_bias = weights_and_biases[
+        "affinity_out_mlp_linear_0"]
+    module.affinity_out_mlp[0].weight.data.copy_(
+        affinity_out_mlp_linear_0_weight)
+    module.affinity_out_mlp[0].bias.data.copy_(affinity_out_mlp_linear_0_bias)
+
+    affinity_out_mlp_linear_1_weight, affinity_out_mlp_linear_1_bias = weights_and_biases[
+        "affinity_out_mlp_linear_1"]
+    module.affinity_out_mlp[2].weight.data.copy_(
+        affinity_out_mlp_linear_1_weight)
+    module.affinity_out_mlp[2].bias.data.copy_(affinity_out_mlp_linear_1_bias)
+
+    to_affinity_pred_value_0_weight, to_affinity_pred_value_0_bias = weights_and_biases[
+        "to_affinity_pred_value_0"]
+    module.to_affinity_pred_value[0].weight.data.copy_(
+        to_affinity_pred_value_0_weight)
+    module.to_affinity_pred_value[0].bias.data.copy_(
+        to_affinity_pred_value_0_bias)
+
+    to_affinity_pred_value_1_weight, to_affinity_pred_value_1_bias = weights_and_biases[
+        "to_affinity_pred_value_1"]
+    module.to_affinity_pred_value[2].weight.data.copy_(
+        to_affinity_pred_value_1_weight)
+    module.to_affinity_pred_value[2].bias.data.copy_(
+        to_affinity_pred_value_1_bias)
+
+    to_affinity_pred_value_2_weight, to_affinity_pred_value_2_bias = weights_and_biases[
+        "to_affinity_pred_value_2"]
+    module.to_affinity_pred_value[4].weight.data.copy_(
+        to_affinity_pred_value_2_weight)
+    module.to_affinity_pred_value[4].bias.data.copy_(
+        to_affinity_pred_value_2_bias)
+
+    to_affinity_pred_score_0_weight, to_affinity_pred_score_0_bias = weights_and_biases[
+        "to_affinity_pred_score_0"]
+    module.to_affinity_pred_score[0].weight.data.copy_(
+        to_affinity_pred_score_0_weight)
+    module.to_affinity_pred_score[0].bias.data.copy_(
+        to_affinity_pred_score_0_bias)
+
+    to_affinity_pred_score_1_weight, to_affinity_pred_score_1_bias = weights_and_biases[
+        "to_affinity_pred_score_1"]
+    module.to_affinity_pred_score[2].weight.data.copy_(
+        to_affinity_pred_score_1_weight)
+    module.to_affinity_pred_score[2].bias.data.copy_(
+        to_affinity_pred_score_1_bias)
+
+    to_affinity_pred_score_2_weight, to_affinity_pred_score_2_bias = weights_and_biases[
+        "to_affinity_pred_score_2"]
+    module.to_affinity_pred_score[4].weight.data.copy_(
+        to_affinity_pred_score_2_weight)
+    module.to_affinity_pred_score[4].bias.data.copy_(
+        to_affinity_pred_score_2_bias)
+
+    to_affinity_logits_binary_weight, to_affinity_logits_binary_bias = weights_and_biases[
+        "to_affinity_logits_binary"]
+    module.to_affinity_logits_binary.weight.data.copy_(
+        to_affinity_logits_binary_weight)
+    module.to_affinity_logits_binary.bias.data.copy_(
+        to_affinity_logits_binary_bias)
+
+
+def load_affinity_heads_transformer_weights_torch(module,
+                                                  weights_and_biases,
+                                                  dtype=torch.float32):
+    affinity_out_mlp_linear_0_weight, affinity_out_mlp_linear_0_bias = weights_and_biases[
+        "affinity_out_mlp_linear_0"]
+    module.affinity_out_mlp_linear_0.load_weights([{
+        "weight":
+        affinity_out_mlp_linear_0_weight.to(dtype).to("cuda"),
+        "bias":
+        affinity_out_mlp_linear_0_bias.to(dtype).to("cuda")
+    }])
+    affinity_out_mlp_linear_1_weight, affinity_out_mlp_linear_1_bias = weights_and_biases[
+        "affinity_out_mlp_linear_1"]
+    module.affinity_out_mlp_linear_1.load_weights([{
+        "weight":
+        affinity_out_mlp_linear_1_weight.to(dtype).to("cuda"),
+        "bias":
+        affinity_out_mlp_linear_1_bias.to(dtype).to("cuda")
+    }])
+
+    # to_affinity_pred_value
+    to_affinity_pred_value_0_weight, to_affinity_pred_value_0_bias = weights_and_biases[
+        "to_affinity_pred_value_0"]
+    module.to_affinity_pred_value_0.load_weights([{
+        "weight":
+        to_affinity_pred_value_0_weight.to(dtype).to("cuda"),
+        "bias":
+        to_affinity_pred_value_0_bias.to(dtype).to("cuda")
+    }])
+    to_affinity_pred_value_1_weight, to_affinity_pred_value_1_bias = weights_and_biases[
+        "to_affinity_pred_value_1"]
+    module.to_affinity_pred_value_1.load_weights([{
+        "weight":
+        to_affinity_pred_value_1_weight.to(dtype).to("cuda"),
+        "bias":
+        to_affinity_pred_value_1_bias.to(dtype).to("cuda")
+    }])
+    to_affinity_pred_value_2_weight, to_affinity_pred_value_2_bias = weights_and_biases[
+        "to_affinity_pred_value_2"]
+    module.to_affinity_pred_value_2.weight.data.copy_(
+        to_affinity_pred_value_2_weight)
+    module.to_affinity_pred_value_2.bias.data.copy_(
+        to_affinity_pred_value_2_bias)
+
+    # to_affinity_pred_score
+    to_affinity_pred_score_0_weight, to_affinity_pred_score_0_bias = weights_and_biases[
+        "to_affinity_pred_score_0"]
+    module.to_affinity_pred_score_0.load_weights([{
+        "weight":
+        to_affinity_pred_score_0_weight.to(dtype).to("cuda"),
+        "bias":
+        to_affinity_pred_score_0_bias.to(dtype).to("cuda")
+    }])
+    to_affinity_pred_score_1_weight, to_affinity_pred_score_1_bias = weights_and_biases[
+        "to_affinity_pred_score_1"]
+    module.to_affinity_pred_score_1.load_weights([{
+        "weight":
+        to_affinity_pred_score_1_weight.to(dtype).to("cuda"),
+        "bias":
+        to_affinity_pred_score_1_bias.to(dtype).to("cuda")
+    }])
+    to_affinity_pred_score_2_weight, to_affinity_pred_score_2_bias = weights_and_biases[
+        "to_affinity_pred_score_2"]
+    module.to_affinity_pred_score_2.weight.data.copy_(
+        to_affinity_pred_score_2_weight)
+    module.to_affinity_pred_score_2.bias.data.copy_(
+        to_affinity_pred_score_2_bias)
+
+    # to_affinity_logits_binary
+    to_affinity_logits_binary_weight, to_affinity_logits_binary_bias = weights_and_biases[
+        "to_affinity_logits_binary"]
+    module.to_affinity_logits_binary.weight.data.copy_(
+        to_affinity_logits_binary_weight)
+    module.to_affinity_logits_binary.bias.data.copy_(
+        to_affinity_logits_binary_bias)
+
+
+def load_affinity_heads_transformer_weights_trt(module,
+                                                weights_and_biases,
+                                                mapping: Mapping = None):
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    affinity_out_mlp_linear_0_weight, affinity_out_mlp_linear_0_bias = weights_and_biases[
+        "affinity_out_mlp_linear_0"]
+    affinity_out_mlp_linear_1_weight, affinity_out_mlp_linear_1_bias = weights_and_biases[
+        "affinity_out_mlp_linear_1"]
+    to_affinity_pred_value_0_weight, to_affinity_pred_value_0_bias = weights_and_biases[
+        "to_affinity_pred_value_0"]
+    to_affinity_pred_value_1_weight, to_affinity_pred_value_1_bias = weights_and_biases[
+        "to_affinity_pred_value_1"]
+    to_affinity_pred_value_2_weight, to_affinity_pred_value_2_bias = weights_and_biases[
+        "to_affinity_pred_value_2"]
+    to_affinity_pred_score_0_weight, to_affinity_pred_score_0_bias = weights_and_biases[
+        "to_affinity_pred_score_0"]
+    to_affinity_pred_score_1_weight, to_affinity_pred_score_1_bias = weights_and_biases[
+        "to_affinity_pred_score_1"]
+    to_affinity_pred_score_2_weight, to_affinity_pred_score_2_bias = weights_and_biases[
+        "to_affinity_pred_score_2"]
+    to_affinity_logits_binary_weight, to_affinity_logits_binary_bias = weights_and_biases[
+        "to_affinity_logits_binary"]
+
+    if m.tp_size > 1:
+        affinity_out_mlp_linear_0_weight = split(
+            affinity_out_mlp_linear_0_weight, m.tp_size, m.tp_rank,
+            0)  # tp column
+        affinity_out_mlp_linear_0_bias = split(affinity_out_mlp_linear_0_bias,
+                                               m.tp_size, m.tp_rank, 0)
+        affinity_out_mlp_linear_1_weight = split(
+            affinity_out_mlp_linear_1_weight, m.tp_size, m.tp_rank, 1)  # tp row
+        affinity_out_mlp_linear_1_bias = split(affinity_out_mlp_linear_1_bias,
+                                               m.tp_size, m.tp_rank, 1)
+
+        to_affinity_pred_value_0_weight = split(to_affinity_pred_value_0_weight,
+                                                m.tp_size, m.tp_rank,
+                                                0)  # tp column
+        to_affinity_pred_value_0_bias = split(to_affinity_pred_value_0_bias,
+                                              m.tp_size, m.tp_rank, 0)
+        to_affinity_pred_value_1_weight = split(to_affinity_pred_value_1_weight,
+                                                m.tp_size, m.tp_rank,
+                                                1)  # tp row
+        to_affinity_pred_value_1_bias = split(to_affinity_pred_value_1_bias,
+                                              m.tp_size, m.tp_rank, 1)
+
+        to_affinity_pred_score_0_weight = split(to_affinity_pred_score_0_weight,
+                                                m.tp_size, m.tp_rank,
+                                                0)  # tp column
+        to_affinity_pred_score_0_bias = split(to_affinity_pred_score_0_bias,
+                                              m.tp_size, m.tp_rank, 0)
+        to_affinity_pred_score_1_weight = split(to_affinity_pred_score_1_weight,
+                                                m.tp_size, m.tp_rank,
+                                                1)  # tp row
+        to_affinity_pred_score_1_bias = split(to_affinity_pred_score_1_bias,
+                                              m.tp_size, m.tp_rank, 1)
+
+    module.affinity_out_mlp_linear_0.weight.value = np.ascontiguousarray(
+        affinity_out_mlp_linear_0_weight.cpu().numpy())
+    module.affinity_out_mlp_linear_0.bias.value = np.ascontiguousarray(
+        affinity_out_mlp_linear_0_bias.cpu().numpy())
+    module.affinity_out_mlp_linear_1.weight.value = np.ascontiguousarray(
+        affinity_out_mlp_linear_1_weight.cpu().numpy())
+    module.affinity_out_mlp_linear_1.bias.value = np.ascontiguousarray(
+        affinity_out_mlp_linear_1_bias.cpu().numpy())
+
+    module.to_affinity_pred_value_0.weight.value = np.ascontiguousarray(
+        to_affinity_pred_value_0_weight.cpu().numpy())
+    module.to_affinity_pred_value_0.bias.value = np.ascontiguousarray(
+        to_affinity_pred_value_0_bias.cpu().numpy())
+    module.to_affinity_pred_value_1.weight.value = np.ascontiguousarray(
+        to_affinity_pred_value_1_weight.cpu().numpy())
+    module.to_affinity_pred_value_1.bias.value = np.ascontiguousarray(
+        to_affinity_pred_value_1_bias.cpu().numpy())
+    module.to_affinity_pred_value_2.weight.value = np.ascontiguousarray(
+        to_affinity_pred_value_2_weight.cpu().numpy())
+    module.to_affinity_pred_value_2.bias.value = np.ascontiguousarray(
+        to_affinity_pred_value_2_bias.cpu().numpy())
+
+    module.to_affinity_pred_score_0.weight.value = np.ascontiguousarray(
+        to_affinity_pred_score_0_weight.cpu().numpy())
+    module.to_affinity_pred_score_0.bias.value = np.ascontiguousarray(
+        to_affinity_pred_score_0_bias.cpu().numpy())
+    module.to_affinity_pred_score_1.weight.value = np.ascontiguousarray(
+        to_affinity_pred_score_1_weight.cpu().numpy())
+    module.to_affinity_pred_score_1.bias.value = np.ascontiguousarray(
+        to_affinity_pred_score_1_bias.cpu().numpy())
+    module.to_affinity_pred_score_2.weight.value = np.ascontiguousarray(
+        to_affinity_pred_score_2_weight.cpu().numpy())
+    module.to_affinity_pred_score_2.bias.value = np.ascontiguousarray(
+        to_affinity_pred_score_2_bias.cpu().numpy())
+
+    module.to_affinity_logits_binary.weight.value = np.ascontiguousarray(
+        to_affinity_logits_binary_weight.cpu().numpy())
+    module.to_affinity_logits_binary.bias.value = np.ascontiguousarray(
+        to_affinity_logits_binary_bias.cpu().numpy())
+
+
+def create_affinity_module_weights(token_s: int = None,
+                                   token_z: int = None,
+                                   num_dist_bins: int = None,
+                                   pairformer_num_blocks: int = None,
+                                   pairwise_head_width: int = None,
+                                   pairwise_num_heads: int = None,
+                                   torch_dtype=None,
+                                   from_ref: RefAffinityModule = None):
+    ret = {}
+    if not from_ref:
+        ret["dist_bin_pairwise_embed"] = torch.randn(num_dist_bins,
+                                                     token_z,
+                                                     dtype=torch_dtype)
+        ret["s_to_z_prod_in1"] = torch.randn(token_z,
+                                             token_s,
+                                             dtype=torch_dtype)
+        ret["s_to_z_prod_in2"] = torch.randn(token_z,
+                                             token_s,
+                                             dtype=torch_dtype)
+        ret["z_norm"] = [
+            torch.randn(token_z, dtype=torch_dtype),
+            torch.randn(token_z, dtype=torch_dtype)
+        ]
+        ret["z_linear"] = torch.randn(token_z, token_z, dtype=torch_dtype)
+        ret["pairwise_conditioner"] = create_pairwise_conditioning_weights(
+            token_z=token_z,
+            dim_token_rel_pos_feats=token_z,
+            num_transitions=2,
+            transition_expansion_factor=2,
+            torch_dtype=torch_dtype,
+        )
+        ret["pairformer_stack"] = [
+            create_pairformer_layer_weights(
+                token_s=token_s,
+                token_z=token_z,
+                num_heads=pairwise_num_heads,
+                pairwise_head_width=pairwise_head_width,
+                pairwise_num_heads=pairwise_num_heads,
+                include_s_path=False,
+                torch_dtype=torch_dtype,
+            ) for _ in range(pairformer_num_blocks)
+        ]
+        ret["affinity_heads"] = create_affinity_heads_transformer_weights(
+            token_z=token_z,
+            token_s=token_s,
+            torch_dtype=torch_dtype,
+        )
+    else:
+        ret["dist_bin_pairwise_embed"] = from_ref.dist_bin_pairwise_embed.weight.data
+        ret["s_to_z_prod_in1"] = from_ref.s_to_z_prod_in1.weight.data
+        ret["s_to_z_prod_in2"] = from_ref.s_to_z_prod_in2.weight.data
+        ret["z_norm"] = [from_ref.z_norm.weight.data, from_ref.z_norm.bias.data]
+        ret["z_linear"] = from_ref.z_linear.weight.data
+        ret["pairwise_conditioner"] = create_pairwise_conditioning_weights(
+            from_ref=from_ref.pairwise_conditioner)
+        ret["pairformer_stack"] = [
+            create_pairformer_layer_weights(
+                from_ref=from_ref.pairformer_stack.layers[i],
+                include_s_path=False,
+            ) for i in range(from_ref.pairformer_num_blocks)
+        ]
+        ret["affinity_heads"] = create_affinity_heads_transformer_weights(
+            from_ref=from_ref.affinity_heads)
+    return ret
+
+
+def load_affinity_module_weights_ref_torch(module, weights_and_biases):
+    dist_bin_pairwise_embed_weight = weights_and_biases[
+        "dist_bin_pairwise_embed"]
+    module.dist_bin_pairwise_embed.weight.data.copy_(
+        dist_bin_pairwise_embed_weight)
+
+    s_to_z_prod_in1_weight = weights_and_biases["s_to_z_prod_in1"]
+    module.s_to_z_prod_in1.weight.data.copy_(s_to_z_prod_in1_weight)
+
+    s_to_z_prod_in2_weight = weights_and_biases["s_to_z_prod_in2"]
+    module.s_to_z_prod_in2.weight.data.copy_(s_to_z_prod_in2_weight)
+
+    z_norm_weight, z_norm_bias = weights_and_biases["z_norm"]
+    module.z_norm.weight.data.copy_(z_norm_weight)
+    module.z_norm.bias.data.copy_(z_norm_bias)
+
+    z_linear_weight = weights_and_biases["z_linear"]
+    module.z_linear.weight.data.copy_(z_linear_weight)
+
+    pairwise_conditioner_weights = weights_and_biases["pairwise_conditioner"]
+    load_pairwise_conditioning_weights_ref_torch(module.pairwise_conditioner,
+                                                 pairwise_conditioner_weights)
+
+    pairformer_stack_weights = weights_and_biases["pairformer_stack"]
+    for i in range(len(pairformer_stack_weights)):
+        load_pairformer_layer_weights_ref_torch(module.pairformer_stack[i],
+                                                pairformer_stack_weights[i])
+
+    affinity_heads_weights = weights_and_biases["affinity_heads"]
+    load_affinity_heads_transformer_weights_ref_torch(module.affinity_heads,
+                                                      affinity_heads_weights)
+
+
+def load_affinity_module_weights_torch(module,
+                                       weights_and_biases,
+                                       dtype=torch.float32,
+                                       mapping: Mapping = None):
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    dist_bin_pairwise_embed_weight = weights_and_biases[
+        "dist_bin_pairwise_embed"]
+    if m.tp_size > 1:
+        # shard dim 0 for embedding
+        dist_bin_pairwise_embed_weight = split(dist_bin_pairwise_embed_weight,
+                                               m.tp_size, m.tp_rank, 0)
+    module.dist_bin_pairwise_embed.load_weights([{
+        "weight":
+        dist_bin_pairwise_embed_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+
+    s_to_z_prod_in1_weight = weights_and_biases["s_to_z_prod_in1"]
+    s_to_z_prod_in2_weight = weights_and_biases["s_to_z_prod_in2"]
+    module.fused_s_to_z.load_weights([{
+        "weight":
+        s_to_z_prod_in1_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }, {
+        "weight":
+        s_to_z_prod_in2_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+
+    z_norm_weight, z_norm_bias = weights_and_biases["z_norm"]
+    module.z_norm.weight.data.copy_(z_norm_weight)
+    module.z_norm.bias.data.copy_(z_norm_bias)
+
+    z_linear_weight = weights_and_biases["z_linear"]
+    module.z_linear.load_weights([{
+        "weight": z_linear_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+
+    pairwise_conditioner_weights = weights_and_biases["pairwise_conditioner"]
+    load_pairwise_conditioning_weights_torch(module.pairwise_conditioner,
+                                             pairwise_conditioner_weights,
+                                             dtype)
+
+    pairformer_stack_weights = weights_and_biases["pairformer_stack"]
+    for i in range(len(pairformer_stack_weights)):
+        load_pairformer_layer_weights_torch(module.pairformer_stack.layers[i],
+                                            pairformer_stack_weights[i], dtype)
+
+    affinity_heads_weights = weights_and_biases["affinity_heads"]
+    load_affinity_heads_transformer_weights_torch(module.affinity_heads,
+                                                  affinity_heads_weights, dtype)
+
+
+def load_affinity_module_weights_trt(module,
+                                     weights_and_biases,
+                                     mapping: Mapping = None):
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    dist_bin_pairwise_embed_weight = weights_and_biases[
+        "dist_bin_pairwise_embed"]
+    if m.tp_size > 1:  # shard dim 0 for embedding
+        dist_bin_pairwise_embed_weight = split(dist_bin_pairwise_embed_weight,
+                                               m.tp_size, m.tp_rank, 0)
+    module.dist_bin_pairwise_embed.weight.value = np.ascontiguousarray(
+        dist_bin_pairwise_embed_weight.cpu().numpy())
+
+    s_to_z_prod_in1_weight = weights_and_biases["s_to_z_prod_in1"]
+    s_to_z_prod_in2_weight = weights_and_biases["s_to_z_prod_in2"]
+    if m.tp_size > 1:
+        s_to_z_prod_in1_weight = split(s_to_z_prod_in1_weight, m.tp_size,
+                                       m.tp_rank, 0)
+        s_to_z_prod_in2_weight = split(s_to_z_prod_in2_weight, m.tp_size,
+                                       m.tp_rank, 0)
+    fused_s_to_z = torch.cat([s_to_z_prod_in1_weight, s_to_z_prod_in2_weight],
+                             dim=0)
+
+    module.fused_s_to_z.weight.value = np.ascontiguousarray(
+        fused_s_to_z.cpu().numpy())
+
+    z_norm_weight, z_norm_bias = weights_and_biases["z_norm"]
+
+    module.z_norm.weight.value = np.ascontiguousarray(
+        z_norm_weight.cpu().numpy())
+    module.z_norm.bias.value = np.ascontiguousarray(z_norm_bias.cpu().numpy())
+
+    z_linear_weight = weights_and_biases["z_linear"]
+    if m.tp_size > 1:
+        z_linear_weight = split(z_linear_weight, m.tp_size, m.tp_rank, 0)
+
+    module.z_linear.weight.value = np.ascontiguousarray(
+        z_linear_weight.cpu().numpy())
+
+    pairwise_conditioner_weights = weights_and_biases["pairwise_conditioner"]
+    load_pairwise_conditioning_weights_trt(module.pairwise_conditioner,
+                                           pairwise_conditioner_weights,
+                                           mapping)
+
+    pairformer_stack_weights = weights_and_biases["pairformer_stack"]
+    for i in range(len(pairformer_stack_weights)):
+        load_pairformer_layer_weights_trt(
+            module.pairformer_stack.layers[i],
+            pairformer_stack_weights[i],
+            mapping=mapping,
+            include_s_path=False,
+        )
+
+    affinity_heads_weights = weights_and_biases["affinity_heads"]
+    load_affinity_heads_transformer_weights_trt(module.affinity_heads,
+                                                affinity_heads_weights, mapping)

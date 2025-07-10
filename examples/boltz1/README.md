@@ -97,7 +97,7 @@ Single worker build
 # For float32
 $ export BUILDER_FORCE_NUM_PROFILES=2
 $ export MAX_SEQLEN=1536
-$ export MIN_SEQLEN=32
+$ export MIN_SEQLEN=16
 $ export TP_SIZE=1
 $ export DCP_SIZE=1
 $ python tensorrt_bionemo/commands/build.py \

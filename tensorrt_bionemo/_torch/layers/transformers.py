@@ -37,9 +37,9 @@ from .triangle_nodes import (TriangleAttentionEndingNode,
 class PairformerLayerV1(nn.Module):
 
     def __init__(self,
-                 layer_idx: int,
-                 token_s: int,
-                 token_z: int,
+                 layer_idx: int = 0,
+                 token_s: int = 384,
+                 token_z: int = 128,
                  num_heads: int = 16,
                  pairwise_head_width: int = 32,
                  pairwise_num_heads: int = 4,
@@ -148,7 +148,7 @@ class PairformerLayerV1(nn.Module):
     def _transform_z(
             self,
             z: torch.Tensor,
-            pairmask: torch.Tensor,
+            pair_mask: torch.Tensor,
             attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
             all_reduce_params: Optional[AllReduceParams] = None
     ) -> torch.Tensor:
@@ -192,6 +192,67 @@ class PairformerLayerV1(nn.Module):
                 all_reduce_params=all_reduce_params)
             s = s + self.transition_s(s)
         return s, z
+
+
+class PairformerNoSeqLayer(PairformerLayerV1):
+
+    def __init__(self,
+                 *,
+                 layer_idx: int,
+                 token_z: int = 128,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4,
+                 **kwargs):
+        kwargs["no_update_s"] = True
+        super().__init__(layer_idx=layer_idx,
+                         token_z=token_z,
+                         pairwise_head_width=pairwise_head_width,
+                         pairwise_num_heads=pairwise_num_heads,
+                         **kwargs)
+
+    def forward(
+            self,
+            z: torch.Tensor,
+            pair_mask: torch.Tensor,
+            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+            all_reduce_params: Optional[AllReduceParams] = None
+    ) -> torch.Tensor:
+        _, update_z = super().forward(s=None,
+                                      z=z,
+                                      mask=None,
+                                      pair_mask=pair_mask,
+                                      attn_metadatas=attn_metadatas,
+                                      all_reduce_params=all_reduce_params)
+        return update_z
+
+
+class PairformerNoSeqModule(nn.Module):
+
+    def __init__(self,
+                 num_blocks: int = 8,
+                 token_z: int = 128,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4,
+                 **kwargs):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            PairformerNoSeqLayer(layer_idx=i,
+                                 token_z=token_z,
+                                 pairwise_head_width=pairwise_head_width,
+                                 pairwise_num_heads=pairwise_num_heads,
+                                 **kwargs) for i in range(num_blocks)
+        ])
+
+    def forward(
+            self,
+            z: torch.Tensor,
+            pair_mask: torch.Tensor,
+            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+            all_reduce_params: Optional[AllReduceParams] = None
+    ) -> torch.Tensor:
+        for layer in self.layers:
+            z = layer(z, pair_mask, attn_metadatas, all_reduce_params)
+        return z
 
 
 class PairformerLayerV2(PairformerLayerV1):

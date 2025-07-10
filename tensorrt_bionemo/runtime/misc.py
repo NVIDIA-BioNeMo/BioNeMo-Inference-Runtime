@@ -16,8 +16,14 @@ import functools
 from contextlib import contextmanager
 from typing import Any, Optional, Tuple
 
+import numpy as np
 import torch
 from cuda import cudart
+
+
+@torch.compiler.disable
+def get_closest_n(s):
+    return 2**int(np.ceil(np.log2(s.shape[1])))
 
 
 def CUASSERT(cuda_ret):

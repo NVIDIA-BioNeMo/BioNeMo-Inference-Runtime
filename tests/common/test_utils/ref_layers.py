@@ -611,3 +611,445 @@ class RefDiffusionTransformerLayer(nn.Module):
                 layer.bias.data.copy_(state_dict[bias_path])
             layer.weight.data.copy_(state_dict[weights_path])
         return m
+
+
+class RefPairformerNoSeqLayer(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/layers/pairformer.py#L206 """
+
+    def __init__(
+        self,
+        token_z: int,
+        pairwise_head_width: int = 32,
+        pairwise_num_heads: int = 4,
+    ) -> None:
+        super().__init__()
+        self.token_z = token_z
+        self.pairwise_head_width = pairwise_head_width
+        self.pairwise_num_heads = pairwise_num_heads
+
+        self.tri_mul_out = RefTriangleMultiplicationNode(token_z, outgoing=True)
+        self.tri_mul_in = RefTriangleMultiplicationNode(token_z, outgoing=False)
+        self.tri_attn_start = RefTriangleAttentionNode(token_z,
+                                                       pairwise_head_width,
+                                                       pairwise_num_heads,
+                                                       inf=1e9,
+                                                       starting=True)
+        self.tri_attn_end = RefTriangleAttentionNode(token_z,
+                                                     pairwise_head_width,
+                                                     pairwise_num_heads,
+                                                     inf=1e9,
+                                                     starting=False)
+        self.transition_z = RefTransition(token_z, token_z * 4)
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2-affinity",
+            layer_path: str = "affinity_module1.pairformer_stack.layers.0",
+            state_dict: Optional[dict] = None) -> 'RefPairformerNoSeqLayer':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        m = cls(128, 128)  # fake token_s and token_z
+        submodules = [(
+            RefTriangleMultiplicationNode,
+            layer_path + ".tri_mul_out",
+        ), (
+            RefTriangleMultiplicationNode,
+            layer_path + ".tri_mul_in",
+        ), (
+            RefTriangleAttentionNode,
+            layer_path + ".tri_att_start",
+        ), (
+            RefTriangleAttentionNode,
+            layer_path + ".tri_att_end",
+        ), (
+            RefTransition,
+            layer_path + ".transition_z",
+        )]
+        for subm_cls, subm_path in submodules:
+            subm = subm_cls.load_weights(state_dict=state_dict,
+                                         layer_path=subm_path)
+            if "tri_mul_out" in subm_path:
+                subm.outgoing = True
+                m.tri_mul_out = subm
+            elif "tri_mul_in" in subm_path:
+                subm.outgoing = False
+                m.tri_mul_in = subm
+            elif "tri_att_start" in subm_path:
+                subm.starting = True
+                m.tri_attn_start = subm
+            elif "tri_att_end" in subm_path:
+                subm.starting = False
+                m.tri_attn_end = subm
+            elif "transition_z" in subm_path:
+                m.transition_z = subm
+            base_path = subm_path.split(".")[-1]
+            if base_path == "tri_att_start":
+                m.pairwise_num_heads = subm.num_heads
+                m.pairwise_head_width = subm.c_hidden
+
+        return m
+
+    def forward(self, z: torch.Tensor, pair_mask: torch.Tensor) -> torch.Tensor:
+        z = z + self.tri_mul_out(z, mask=pair_mask)
+        z = z + self.tri_mul_in(z, mask=pair_mask)
+        if z.dtype != pair_mask.dtype:
+            z = z.to(pair_mask.dtype)
+        z = z + self.tri_attn_start(z, mask=pair_mask)
+        z = z + self.tri_attn_end(z, mask=pair_mask)
+
+        z = z + self.transition_z(z)
+        return z
+
+
+class RefPairformerNoSeqModule(nn.Module):
+
+    def __init__(self,
+                 num_blocks: int = 8,
+                 token_z: int = 128,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4,
+                 **kwargs):
+        super().__init__()
+        self.num_blocks = num_blocks
+        self.token_z = token_z
+        self.pairwise_head_width = pairwise_head_width
+        self.pairwise_num_heads = pairwise_num_heads
+        self.layers = nn.ModuleList([
+            RefPairformerNoSeqLayer(token_z, pairwise_head_width,
+                                    pairwise_num_heads)
+            for _ in range(num_blocks)
+        ])
+
+    def forward(self, z: torch.Tensor, pair_mask: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+            z = layer(z, pair_mask)
+        return z
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2-affinity",
+            layer_path: str = "affinity_module1.pairformer_stack",
+            state_dict: Optional[dict] = None) -> 'RefPairformerNoSeqModule':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        all_keys = len([
+            k for k in state_dict.keys()
+            if k.startswith(f"{layer_path}.layers.")
+        ])
+        keys_layer_0 = [
+            k for k in state_dict.keys()
+            if k.startswith(f"{layer_path}.layers.0.")
+        ]
+        num_blocks = all_keys // len(keys_layer_0)
+        m = cls(num_blocks=num_blocks,
+                token_z=128)  # fake token_z and pairwise_head_width
+        for i in range(m.num_blocks):
+            layer_path_i = f"{layer_path}.layers.{i}"
+            m.layers[i] = RefPairformerNoSeqLayer.load_weights(
+                state_dict=state_dict, layer_path=layer_path_i)
+        return m
+
+
+class RefPairwiseConditioning(nn.Module):
+
+    def __init__(
+        self,
+        token_z,
+        dim_token_rel_pos_feats,
+        num_transitions=2,
+        transition_expansion_factor=2,
+    ):
+        super().__init__()
+        self.token_z = token_z
+        self.dim_token_rel_pos_feats = dim_token_rel_pos_feats
+        self.num_transitions = num_transitions
+        self.transition_expansion_factor = transition_expansion_factor
+
+        self.dim_pairwise_init_proj = nn.Sequential(
+            nn.LayerNorm(token_z + dim_token_rel_pos_feats),
+            nn.Linear(token_z + dim_token_rel_pos_feats, token_z, bias=False),
+        )
+
+        transitions = nn.ModuleList([])
+        for _ in range(num_transitions):
+            transition = RefTransition(dim=token_z,
+                                       hidden=transition_expansion_factor *
+                                       token_z)
+            transitions.append(transition)
+
+        self.transitions = transitions
+
+    def forward(
+            self,
+            z_trunk,  # Float['b n n tz'],
+            token_rel_pos_feats,  # Float['b n n 3'],
+    ):  # -> Float['b n n tz']:
+        z = torch.cat((z_trunk, token_rel_pos_feats), dim=-1)
+        z = self.dim_pairwise_init_proj(z)
+        for transition in self.transitions:
+            z = transition(z) + z
+
+        return z
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2-affinity",
+            layer_path: str = "affinity_module1.pairwise_conditioner",
+            state_dict: Optional[dict] = None) -> 'RefPairwiseConditioning':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+
+        weights_biases_path = [
+            (f"{layer_path}.dim_pairwise_init_proj.0.weight",
+             f"{layer_path}.dim_pairwise_init_proj.0.bias"),
+            (f"{layer_path}.dim_pairwise_init_proj.1.weight", None),
+        ]
+        token_z = state_dict[
+            f"{layer_path}.dim_pairwise_init_proj.1.weight"].shape[0]
+        dim_token_rel_pos_feats = state_dict[
+            f"{layer_path}.dim_pairwise_init_proj.1.weight"].shape[1] - token_z
+        m = cls(token_z=token_z,
+                dim_token_rel_pos_feats=dim_token_rel_pos_feats)
+        layers = [
+            m.dim_pairwise_init_proj[0],
+            m.dim_pairwise_init_proj[1],
+        ]
+
+        for i in range(m.num_transitions):
+            m.transitions[i] = RefTransition.load_weights(
+                state_dict=state_dict,
+                layer_path=f"{layer_path}.transitions.{i}")
+
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+
+        return m
+
+
+class RefAffinityHeadsTransformer(nn.Module):
+
+    def __init__(
+        self,
+        token_z,
+        input_token_s,
+        num_blocks: int = None,
+        num_heads: int = None,
+        use_cross_transformer: bool = False,
+        groups: dict = {},
+    ):
+        """ Reference affinity heads transformer: https://github.com/jwohlwend/boltz/blob/v2.1.1/src/boltz/model/modules/affinity.py """
+        super().__init__()
+        self.affinity_out_mlp = nn.Sequential(
+            nn.Linear(token_z, token_z),
+            nn.ReLU(),
+            nn.Linear(token_z, input_token_s),
+            nn.ReLU(),
+        )
+
+        self.to_affinity_pred_value = nn.Sequential(
+            nn.Linear(input_token_s, input_token_s),
+            nn.ReLU(),
+            nn.Linear(input_token_s, input_token_s),
+            nn.ReLU(),
+            nn.Linear(input_token_s, 1),
+        )
+
+        self.to_affinity_pred_score = nn.Sequential(
+            nn.Linear(input_token_s, input_token_s),
+            nn.ReLU(),
+            nn.Linear(input_token_s, input_token_s),
+            nn.ReLU(),
+            nn.Linear(input_token_s, 1),
+        )
+        self.to_affinity_logits_binary = nn.Linear(1, 1)
+
+    def forward(
+        self,
+        z,
+        cross_pair_mask,
+        multiplicity=1,
+    ):
+        g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
+            torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7)
+        g = self.affinity_out_mlp(g)
+
+        affinity_pred_value = self.to_affinity_pred_value(g).reshape(-1, 1)
+        affinity_pred_score = self.to_affinity_pred_score(g).reshape(-1, 1)
+
+        affinity_logits_binary = self.to_affinity_logits_binary(
+            affinity_pred_score).reshape(-1, 1)
+
+        return affinity_pred_value, affinity_logits_binary
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2-affinity",
+            layer_path: str = "affinity_module1.affinity_heads",
+            state_dict: Optional[dict] = None) -> 'RefAffinityHeadsTransformer':
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        weights_biases_path = [
+            (f"{layer_path}.affinity_out_mlp.0.weight",
+             f"{layer_path}.affinity_out_mlp.0.bias"),
+            (f"{layer_path}.affinity_out_mlp.2.weight",
+             f"{layer_path}.affinity_out_mlp.2.bias"),
+            (f"{layer_path}.to_affinity_pred_value.0.weight",
+             f"{layer_path}.to_affinity_pred_value.0.bias"),
+            (f"{layer_path}.to_affinity_pred_value.2.weight",
+             f"{layer_path}.to_affinity_pred_value.2.bias"),
+            (f"{layer_path}.to_affinity_pred_value.4.weight",
+             f"{layer_path}.to_affinity_pred_value.4.bias"),
+            (f"{layer_path}.to_affinity_pred_score.0.weight",
+             f"{layer_path}.to_affinity_pred_score.0.bias"),
+            (f"{layer_path}.to_affinity_pred_score.2.weight",
+             f"{layer_path}.to_affinity_pred_score.2.bias"),
+            (f"{layer_path}.to_affinity_pred_score.4.weight",
+             f"{layer_path}.to_affinity_pred_score.4.bias"),
+            (f"{layer_path}.to_affinity_logits_binary.weight",
+             f"{layer_path}.to_affinity_logits_binary.bias"),
+        ]
+        token_z = state_dict[f"{layer_path}.affinity_out_mlp.0.weight"].shape[0]
+        input_token_s = state_dict[
+            f"{layer_path}.to_affinity_pred_value.0.weight"].shape[0]
+        m = cls(token_z=token_z, input_token_s=input_token_s)
+        layers = [
+            m.affinity_out_mlp[0],
+            m.affinity_out_mlp[2],
+            m.to_affinity_pred_value[0],
+            m.to_affinity_pred_value[2],
+            m.to_affinity_pred_value[4],
+            m.to_affinity_pred_score[0],
+            m.to_affinity_pred_score[2],
+            m.to_affinity_pred_score[4],
+            m.to_affinity_logits_binary,
+        ]
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m
+
+
+class RefAffinityModule(nn.Module):
+    """ Reference affinity module: https://github.com/jwohlwend/boltz/blob/v2.1.1/src/boltz/model/modules/affinity.py
+    This affinity module does not support multiplicity > 1. And does not compute masks from feats.
+    """
+
+    def __init__(self,
+                 token_s: int = 384,
+                 token_z: int = 128,
+                 num_dist_bins: int = 64,
+                 pairformer_num_blocks: int = 8,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4):
+        super().__init__()
+        self.token_s = token_s
+        self.token_z = token_z
+        self.num_dist_bins = num_dist_bins
+        self.pairformer_num_blocks = pairformer_num_blocks
+        self.pairwise_head_width = pairwise_head_width
+        self.pairwise_num_heads = pairwise_num_heads
+
+        self.dist_bin_pairwise_embed = nn.Embedding(num_dist_bins, token_z)
+        self.s_to_z_prod_in1 = nn.Linear(token_s, token_z, bias=False)
+        self.s_to_z_prod_in2 = nn.Linear(token_s, token_z, bias=False)
+
+        self.z_norm = nn.LayerNorm(token_z)
+        self.z_linear = nn.Linear(token_z, token_z, bias=False)
+
+        self.pairwise_conditioner = RefPairwiseConditioning(
+            token_z=token_z,
+            dim_token_rel_pos_feats=token_z,
+            num_transitions=2,
+        )
+        self.pairformer_stack = RefPairformerNoSeqModule(
+            num_blocks=pairformer_num_blocks,
+            token_z=token_z,
+            pairwise_head_width=pairwise_head_width,
+            pairwise_num_heads=pairwise_num_heads,
+        )
+        self.affinity_heads = RefAffinityHeadsTransformer(
+            token_z=token_z,
+            input_token_s=token_s,
+        )
+
+    @classmethod
+    def load_weights(cls,
+                     model: str = "boltz-2-affinity",
+                     layer_path: str = "affinity_module1",
+                     state_dict: Optional[dict] = None):
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        weights_biases_path = [
+            (f"{layer_path}.dist_bin_pairwise_embed.weight", None),
+            (f"{layer_path}.s_to_z_prod_in1.weight", None),
+            (f"{layer_path}.s_to_z_prod_in2.weight", None),
+            (f"{layer_path}.z_norm.weight", f"{layer_path}.z_norm.bias"),
+            (f"{layer_path}.z_linear.weight", None),
+        ]
+        num_dist_bins = state_dict[
+            f"{layer_path}.dist_bin_pairwise_embed.weight"].shape[0]
+        token_z = state_dict[
+            f"{layer_path}.dist_bin_pairwise_embed.weight"].shape[1]
+        token_s = state_dict[f"{layer_path}.s_to_z_prod_in1.weight"].shape[1]
+
+        m = cls(token_s=token_s, token_z=token_z, num_dist_bins=num_dist_bins)
+        layers = [
+            m.dist_bin_pairwise_embed,
+            m.s_to_z_prod_in1,
+            m.s_to_z_prod_in2,
+            m.z_norm,
+            m.z_linear,
+        ]
+        m.pairwise_conditioner = RefPairwiseConditioning.load_weights(
+            state_dict=state_dict,
+            layer_path=f"{layer_path}.pairwise_conditioner")
+        m.pairformer_stack = RefPairformerNoSeqModule.load_weights(
+            state_dict=state_dict, layer_path=f"{layer_path}.pairformer_stack")
+        m.affinity_heads = RefAffinityHeadsTransformer.load_weights(
+            state_dict=state_dict, layer_path=f"{layer_path}.affinity_heads")
+
+        m.pairformer_num_blocks = m.pairformer_stack.num_blocks
+        m.pairwise_head_width = m.pairformer_stack.pairwise_head_width
+        m.pairwise_num_heads = m.pairformer_stack.pairwise_num_heads
+
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m
+
+    def forward(self,
+                s,
+                z,
+                distogram,
+                cross_pair_mask_0,
+                cross_pair_mask_1,
+                multiplicity=1):
+        # TODO: support multiplicity > 1
+        z = self.z_linear(self.z_norm(z))
+
+        z = (z + self.s_to_z_prod_in1(s)[:, :, None, :] +
+             self.s_to_z_prod_in2(s)[:, None, :, :])
+        distogram = self.dist_bin_pairwise_embed(distogram)
+
+        z = z + self.pairwise_conditioner(z_trunk=z,
+                                          token_rel_pos_feats=distogram)
+
+        z = self.pairformer_stack(z, pair_mask=cross_pair_mask_0)
+
+        affinity_pred_value, affinity_logits_binary = self.affinity_heads(
+            z=z,
+            cross_pair_mask=cross_pair_mask_1,
+            multiplicity=multiplicity,
+        )
+        return affinity_pred_value, affinity_logits_binary

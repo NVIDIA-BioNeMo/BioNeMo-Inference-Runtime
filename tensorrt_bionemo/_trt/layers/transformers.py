@@ -44,9 +44,9 @@ class PairformerLayerV1(Module):
     def __init__(self,
                  *,
                  local_layer_idx: int,
-                 token_s: int,
-                 token_z: int,
-                 num_heads: int,
+                 token_s: int = 384,
+                 token_z: int = 128,
+                 num_heads: int = 16,
                  pairwise_head_width: int = 32,
                  pairwise_num_heads: int = 4,
                  no_update_s: bool = False,
@@ -66,6 +66,7 @@ class PairformerLayerV1(Module):
                  mapping: Mapping = Mapping(),
                  **kwargs):
         super().__init__()
+
         self.token_z = token_z
         self.token_s = token_s
         self.num_heads = num_heads
@@ -74,7 +75,7 @@ class PairformerLayerV1(Module):
         self.support_batch = support_batch
         self.triangle_attn_backend = triangle_attn_backend
         self.fallback_threshold = fallback_threshold
-        
+
         self.eps = eps
         self.inf = inf
         self.dtype = dtype
@@ -128,7 +129,7 @@ class PairformerLayerV1(Module):
             chunk_size=chunk_size,
             triangle_attn_backend=triangle_attn_backend,
             support_batch=support_batch,
-            fallback_threshold = self.fallback_threshold,
+            fallback_threshold=self.fallback_threshold,
             mapping=mapping)
         self.tri_attn_end = TriangleAttentionNode(
             local_layer_idx=local_layer_idx,
@@ -142,7 +143,7 @@ class PairformerLayerV1(Module):
             chunk_size=chunk_size,
             triangle_attn_backend=triangle_attn_backend,
             support_batch=support_batch,
-            fallback_threshold = self.fallback_threshold,
+            fallback_threshold=self.fallback_threshold,
             mapping=mapping)
         if not self.no_update_s:
             m = mapping
@@ -167,18 +168,18 @@ class PairformerLayerV1(Module):
     def _transform_z(
             self,
             z: Tensor,
-            pairmask: Tensor,
+            pair_mask: Tensor,
             attention_params: AttentionParams = None,
             all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
-        z = z + self.tri_mul_out(z, mask=pairmask)
-        z = z + self.tri_mul_in(z, mask=pairmask)
+        z = z + self.tri_mul_out(z, mask=pair_mask)
+        z = z + self.tri_mul_in(z, mask=pair_mask)
 
         z = z + self.tri_attn_start(z,
-                                    mask=pairmask,
+                                    mask=pair_mask,
                                     attention_params=attention_params,
                                     all_reduce_params=all_reduce_params)
         z = z + self.tri_attn_end(z,
-                                  mask=pairmask,
+                                  mask=pair_mask,
                                   attention_params=attention_params,
                                   all_reduce_params=all_reduce_params)
         z = z + self.transition_z(z)
@@ -188,14 +189,15 @@ class PairformerLayerV1(Module):
                 s: Tensor,
                 z: Tensor,
                 mask: Tensor,
-                pairmask: Tensor,
+                pair_mask: Tensor,
                 attention_params: AttentionParams = None,
                 all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
-        # Add identity to break Myelin fusion
-        use_identity_plugin = self.triangle_attn_backend != "VANILLA"
-        s, z = identity_sz(s, z, use_identity_plugin)
+        if not self.no_update_s:
+            # Add identity to break Myelin fusion
+            use_identity_plugin = self.triangle_attn_backend != "VANILLA"
+            s, z = identity_sz(s, z, use_identity_plugin)
         original_dtype = z.dtype
-        z = self._transform_z(z, pairmask, attention_params, all_reduce_params)
+        z = self._transform_z(z, pair_mask, attention_params, all_reduce_params)
         if not self.no_update_s:
             if self.support_batch:
                 s = s + self.attention(s,
@@ -213,8 +215,8 @@ class PairformerLayerV1(Module):
                     attention_params=attention_params,
                     all_reduce_params=all_reduce_params).squeeze(0, False)
             s = s + self.transition_s(s)
-        if s.dtype != original_dtype:
-            s = cast(s, original_dtype)
+            if s.dtype != original_dtype:
+                s = cast(s, original_dtype)
         if z.dtype != original_dtype:
             z = cast(z, original_dtype)
         return s, z
@@ -291,28 +293,31 @@ class PairformerModule(PretrainedModule):
         super().__init__(config)
         layer_cls = PairformerLayerV1 if config.version == "v1" else PairformerLayerV2
         logger.info(
-            f"Using triangle_attn_backend: {config.triangle_attn_backend}, cueq threshold: {config.triangle_attn_cueq_fallback_threshold}")
+            f"Using triangle_attn_backend: {config.triangle_attn_backend}, cueq threshold: {config.triangle_attn_cueq_fallback_threshold}"
+        )
         self.layers = ModuleList([
-            layer_cls(local_layer_idx=i,
-                      token_s=config.token_s,
-                      token_z=config.token_z,
-                      num_heads=config.num_heads,
-                      pairwise_head_width=config.pairwise_head_width,
-                      pairwise_num_heads=config.pairwise_num_heads,
-                      no_update_s=config.no_update_s,
-                      no_update_z=config.no_update_z,
-                      dtype=config.dtype,
-                      eps=config.norm_epsilon,
-                      inf=config.mask_inf,
-                      max_transition_tp_size=config.max_transition_tp_size,
-                      max_attention_pairwise_tp_size=config.max_attention_pairwise_tp_size,
-                      max_tri_mul_tp_size=config.max_tri_mul_tp_size,
-                      triangle_attn_backend=config.triangle_attn_backend,
-                      support_batch=config.support_batch,
-                      mapping=config.mapping,
-                      fallback_threshold = config.triangle_attn_cueq_fallback_threshold,
-                      post_layer_norm=config.post_layer_norm,
-                      attention_initial_norm=config.attention_initial_norm)
+            layer_cls(
+                local_layer_idx=i,
+                token_s=config.token_s,
+                token_z=config.token_z,
+                num_heads=config.num_heads,
+                pairwise_head_width=config.pairwise_head_width,
+                pairwise_num_heads=config.pairwise_num_heads,
+                no_update_s=config.no_update_s,
+                no_update_z=config.no_update_z,
+                dtype=config.dtype,
+                eps=config.norm_epsilon,
+                inf=config.mask_inf,
+                max_transition_tp_size=config.max_transition_tp_size,
+                max_attention_pairwise_tp_size=config.
+                max_attention_pairwise_tp_size,
+                max_tri_mul_tp_size=config.max_tri_mul_tp_size,
+                triangle_attn_backend=config.triangle_attn_backend,
+                support_batch=config.support_batch,
+                mapping=config.mapping,
+                fallback_threshold=config.triangle_attn_cueq_fallback_threshold,
+                post_layer_norm=config.post_layer_norm,
+                attention_initial_norm=config.attention_initial_norm)
             for i in range(config.num_blocks)
         ])
 
@@ -337,6 +342,76 @@ class PairformerModule(PretrainedModule):
             if "softmax" in layer.name and "SOFTMAX_0" in layer.name:
                 layer.trt_layer.precision = trt.float32
         return network
+
+
+class PairformerNoSeqLayer(PairformerLayerV1):
+
+    def __init__(self,
+                 *,
+                 local_layer_idx: int,
+                 token_z: int = 128,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4,
+                 triangle_attn_backend: str = 'VANILLA',
+                 **kwargs):
+        kwargs["no_update_s"] = True
+        super().__init__(local_layer_idx=local_layer_idx,
+                         token_z=token_z,
+                         pairwise_head_width=pairwise_head_width,
+                         pairwise_num_heads=pairwise_num_heads,
+                         triangle_attn_backend=triangle_attn_backend,
+                         **kwargs)
+
+    def forward(self,
+                z: Tensor,
+                pair_mask: Tensor,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        _, update_z = super().forward(s=None,
+                                      z=z,
+                                      mask=None,
+                                      pair_mask=pair_mask,
+                                      attention_params=attention_params,
+                                      all_reduce_params=all_reduce_params)
+        return update_z
+
+
+class PairformerNoSeqModule(Module):
+
+    def __init__(self,
+                 num_blocks: int = 8,
+                 token_z: int = 128,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4,
+                 dtype: str = None,
+                 eps: float = 1e-5,
+                 inf: float = 1e9,
+                 triangle_attn_backend: str = 'VANILLA',
+                 mapping: Mapping = Mapping(),
+                 **kwargs):
+        super().__init__()
+        logger.info(f"Using triangle_attn_backend: {triangle_attn_backend}")
+        self.layers = ModuleList([
+            PairformerNoSeqLayer(local_layer_idx=i,
+                                 token_z=token_z,
+                                 pairwise_head_width=pairwise_head_width,
+                                 pairwise_num_heads=pairwise_num_heads,
+                                 dtype=dtype,
+                                 eps=eps,
+                                 inf=inf,
+                                 triangle_attn_backend=triangle_attn_backend,
+                                 mapping=mapping,
+                                 **kwargs) for i in range(num_blocks)
+        ])
+
+    def forward(self,
+                z: Tensor,
+                pair_mask: Tensor,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        for layer in self.layers:
+            z = layer(z, pair_mask, attention_params, all_reduce_params)
+        return z
 
 
 class DiffusionTransformerLayer(Module):

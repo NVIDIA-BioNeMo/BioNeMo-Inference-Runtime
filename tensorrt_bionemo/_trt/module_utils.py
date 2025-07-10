@@ -131,6 +131,10 @@ class PretrainedModule(Module):
             has_attention: bool = False,
             disable_custom_all_reduce: bool = False) -> dict[str, Any]:
         input_shapes = self.config.get_input_shapes()
+        if hasattr(self.config, "get_input_dtypes"):
+            input_dtypes = self.config.get_input_dtypes()
+        else:
+            input_dtypes = {}
         mapping = self.config.mapping
         dtype = str_dtype_to_trt(self.config.dtype)
 
@@ -150,7 +154,10 @@ class PretrainedModule(Module):
                         raise ValueError(
                             f"Dynamic input {k} has no any opt_profiles")
                 shape = [dim.size for dim in v]
-                basic_inputs[k] = Tensor(name=k, dtype=dtype, shape=shape)
+                basic_inputs[k] = Tensor(name=k,
+                                         dtype=input_dtypes.get(k, dtype),
+                                         shape=shape,
+                                         dim_range=None)
         else:
             for k, v in input_shapes.items():
                 dim_ranges = OrderedDict()
@@ -169,10 +176,11 @@ class PretrainedModule(Module):
                     dim_ranges[dim.name + "_" + str(count)] = dim_range
                     shape.append(dim.size)
                 logger.info(
-                    f"Dynamic input {k} with shape: {shape}, dtype: {dtype}")
+                    f"Dynamic input {k} with shape: {shape}, dtype: {input_dtypes.get(k, dtype)}"
+                )
                 logger.info(f"  And dim ranges: {dim_ranges}")
                 basic_inputs[k] = Tensor(name=k,
-                                         dtype=dtype,
+                                         dtype=input_dtypes.get(k, dtype),
                                          shape=shape,
                                          dim_range=dim_ranges)
 

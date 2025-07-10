@@ -16,11 +16,11 @@
 from typing import Optional
 
 import tensorrt as trt
-from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, split,
-                                     swiglu)
+from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
+                                     concat, split, swiglu)
 from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
-from tensorrt_llm.module import Module
+from tensorrt_llm.module import Module, ModuleList
 
 from tensorrt_bionemo._trt.layers.normalization import AdaLN
 from tensorrt_bionemo.mapping import Mapping
@@ -143,3 +143,65 @@ class ConditionedTransitionBlock(Module):
         a = activation(a, trt.ActivationType.SIGMOID) * self.b_to_a(
             b, all_reduce_params=all_reduce_params)
         return a
+
+
+class PairwiseConditioning(Module):
+    """Algorithm 21"""
+
+    def __init__(self,
+                 token_z: int,
+                 dim_token_rel_pos_feats: int,
+                 num_transitions: int = 2,
+                 transition_expansion_factor: int = 2,
+                 eps: float = 1e-5,
+                 dtype: str = None,
+                 mapping: Mapping = Mapping()):
+        super().__init__()
+        self.mapping = mapping
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
+        self.tp_group = mapping.tp_group
+        self.dtype = dtype
+        self.token_z = token_z
+        self.dim_token_rel_pos_feats = dim_token_rel_pos_feats
+        self.num_transitions = num_transitions
+
+        self.init_proj_norm = LayerNorm(
+            normalized_shape=[token_z + dim_token_rel_pos_feats],
+            eps=eps,
+            dtype=dtype)
+
+        self.init_proj_linear = ColumnLinear(token_z + dim_token_rel_pos_feats,
+                                             token_z,
+                                             bias=False,
+                                             dtype=dtype,
+                                             tp_group=self.tp_group,
+                                             tp_size=self.tp_size,
+                                             gather_output=True)
+
+        transitions = []
+        for i in range(num_transitions):
+            transitions.append(
+                Transition(local_layer_idx=i,
+                           dim=token_z,
+                           hidden=token_z * transition_expansion_factor,
+                           eps=eps,
+                           dtype=self.dtype,
+                           mapping=self.mapping))
+        self.transitions = ModuleList(transitions)
+
+    def forward(self, z_trunk: Tensor, token_rel_pos_feats: Tensor) -> Tensor:
+        """
+        Args:
+            z_trunk: [B, I, I, token_z]
+            token_rel_pos_feats: [B, I, I, 3]
+        Return:
+            [B, I, I, token_z]
+        """
+        z = concat([z_trunk, token_rel_pos_feats], dim=-1)
+        z = self.init_proj_norm(z)
+        z = self.init_proj_linear(z)
+
+        for transition in self.transitions:
+            z = transition(z) + z
+        return z

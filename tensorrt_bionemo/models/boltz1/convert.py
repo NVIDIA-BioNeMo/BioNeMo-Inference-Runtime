@@ -242,14 +242,15 @@ def convert_hf_pairformer(config: PairformerConfig,
     for i in range(config.num_blocks):
         layer_prefix = f"{prefix}.{i}"
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
-        weights.update(
-            get_pairwise_attn_weights(mapping,
-                                      state_dict,
-                                      f"{layer_prefix}.attention",
-                                      f"{layer_tbm_prefix}.attention",
-                                      config.max_attention_pairwise_tp_size,
-                                      config.num_heads,
-                                      dtype=config.dtype))
+        if not config.no_update_s:
+            weights.update(
+                get_pairwise_attn_weights(mapping,
+                                          state_dict,
+                                          f"{layer_prefix}.attention",
+                                          f"{layer_tbm_prefix}.attention",
+                                          config.max_attention_pairwise_tp_size,
+                                          config.num_heads,
+                                          dtype=config.dtype))
         weights.update(
             get_tri_attn_node_weights(mapping,
                                       state_dict,
@@ -276,14 +277,15 @@ def convert_hf_pairformer(config: PairformerConfig,
                                      f"{layer_tbm_prefix}.tri_mul_in",
                                      config.max_tri_mul_tp_size,
                                      dtype=config.dtype))
-        weights.update(
-            get_transition_weights(mapping,
-                                   state_dict,
-                                   f"{layer_prefix}.transition_s",
-                                   f"{layer_tbm_prefix}.transition_s",
-                                   config.max_transition_tp_size,
-                                   config.token_s * 4,
-                                   dtype=config.dtype))
+        if not config.no_update_s:
+            weights.update(
+                get_transition_weights(mapping,
+                                       state_dict,
+                                       f"{layer_prefix}.transition_s",
+                                       f"{layer_tbm_prefix}.transition_s",
+                                       config.max_transition_tp_size,
+                                       config.token_s * 4,
+                                       dtype=config.dtype))
         weights.update(
             get_transition_weights(mapping,
                                    state_dict,

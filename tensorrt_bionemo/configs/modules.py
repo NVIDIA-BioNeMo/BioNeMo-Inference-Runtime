@@ -16,6 +16,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
+from tensorrt_llm._utils import str_dtype_to_trt
+
 from .base import DimSpec, PretrainedModuleConfig
 from .build import BuildModuleConfig
 
@@ -266,6 +268,88 @@ class TokenTransformerConfig(PretrainedModuleConfig):
 
 @dataclass
 class TokenTransformerBuildConfig(BuildModuleConfig):
+    max_seqlen: int = 128
+    min_seqlen: int = 64
+    align: int = 16
+
+    @property
+    def optimization_profiles(self) -> list[Any]:
+        return _create_optimization_profiles(self)
+
+
+class AffinityModuleConfig(PretrainedModuleConfig):
+
+    def __init__(self,
+                 *,
+                 token_s: int = 384,
+                 token_z: int = 128,
+                 num_dist_bins: int = 64,
+                 max_dist: int = 22,
+                 pairformer_num_blocks: int = 8,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4,
+                 triangle_attn_backend: str = 'VANILLA',
+                 max_batch_size: int = 1,
+                 eps: float = 1e-5,
+                 inf: float = 1e9,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.token_s = token_s
+        self.token_z = token_z
+        self.num_dist_bins = num_dist_bins
+        self.max_dist = max_dist
+        self.pairformer_num_blocks = pairformer_num_blocks
+        self.pairwise_head_width = pairwise_head_width
+        self.pairwise_num_heads = pairwise_num_heads
+        self.triangle_attn_backend = triangle_attn_backend
+        self.eps = eps
+        self.inf = inf
+        self.max_batch_size = max_batch_size
+
+    @classmethod
+    def from_dict(cls, config_dict: dict):
+        return cls(**config_dict)
+
+    def get_input_names(self):
+        return list(self.get_input_shapes().keys())
+
+    def get_output_names(self):
+        return list(self.get_output_shapes().keys())
+
+    def get_input_dtypes(self) -> dict[str, str]:
+        return {
+            "s": str_dtype_to_trt(self.dtype),
+            "z": str_dtype_to_trt(self.dtype),
+            "distogram": str_dtype_to_trt("int32"),
+            "cross_pair_mask_0": str_dtype_to_trt(self.dtype),
+            "cross_pair_mask_1": str_dtype_to_trt(self.dtype),
+        }
+
+    def get_input_shapes(self):
+        batch_size = DimSpec(name="batch_size", dynamic=True)
+        seqlen = DimSpec(name="seqlen", dynamic=True)
+        token_s = DimSpec(name="token_s", size=self.token_s)
+        token_z = DimSpec(name="token_z", size=self.token_z)
+
+        return OrderedDict([
+            ("s", (batch_size, seqlen, token_s)),
+            ("z", (batch_size, seqlen, seqlen, token_z)),
+            ("distogram", (batch_size, seqlen, seqlen)),
+            ("cross_pair_mask_0", (batch_size, seqlen, seqlen)),
+            ("cross_pair_mask_1", (batch_size, seqlen, seqlen,
+                                   DimSpec(size=1, name="const_1"))),
+        ])
+
+    def get_output_shapes(self):
+        batch_size = DimSpec(name="batch_size", dynamic=True)
+        return OrderedDict([
+            ("pred_value", (batch_size, 1)),
+            ("logits_binary", (batch_size, 1)),
+        ])
+
+
+@dataclass
+class AffinityModuleBuildConfig(BuildModuleConfig):
     max_seqlen: int = 128
     min_seqlen: int = 64
     align: int = 16

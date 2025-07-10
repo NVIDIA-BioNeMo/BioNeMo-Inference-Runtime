@@ -30,7 +30,8 @@ from tensorrt_llm.plugin import PluginConfig, add_plugin_argument
 
 from tensorrt_bionemo import __version__
 from tensorrt_bionemo._trt.builder import Engine, EngineConfig, build
-# TODO: Make mapping of model name to module class and config class
+from tensorrt_bionemo._trt.layers.affinity import AffinityModule
+# TODO: Create a singleton for registering modules
 from tensorrt_bionemo._trt.layers.transformers import (PairformerModule,
                                                        TokenTransformer)
 from tensorrt_bionemo.configs import BuildModuleConfig, PretrainedModuleConfig
@@ -46,6 +47,7 @@ TRT_MODULES_MAPPING = {
         "structure_pairformer": PairformerModule,
         "confidence_pairformer": PairformerModule,
         "token_transformer": TokenTransformer,
+        "affinity_module": AffinityModule,
     }
 }
 

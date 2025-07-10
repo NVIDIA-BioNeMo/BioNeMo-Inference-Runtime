@@ -37,6 +37,13 @@ HF_CHECKPOINTS = {
         weights_only=False,
         state_dict_key="state_dict",
     ),
+    "boltz-2-affinity":
+    HFCheckpoint(
+        repo_id="boltz-community/boltz-2",
+        filename="boltz2_aff.ckpt",
+        weights_only=False,
+        state_dict_key="state_dict",
+    ),
 }
 
 

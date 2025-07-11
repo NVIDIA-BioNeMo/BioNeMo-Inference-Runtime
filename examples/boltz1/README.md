@@ -82,11 +82,13 @@ $ export TP_SIZE=4
 $ export DCP_SIZE=1 # hasn't supported for DCP_SIZE > 1
 $ export DTYPE=float32
 $ export MAX_NUM_PARTICLES=4
+$ export MAX_DIFFUSION_SAMPLES=1
 $ python convert_token_transformer_checkpoint.py \
     --tp_size ${TP_SIZE} \
     --dtype ${DTYPE} \
     --output_dir token_transformer_ckpt_${TP_SIZE}_${DCP_SIZE}_${DTYPE} \
     --max_num_particles ${MAX_NUM_PARTICLES}
+    --max_diffusion_samples ${MAX_DIFFUSION_SAMPLES}
 ```
 
 ### Token transformer - Build TensorRT engine(s)

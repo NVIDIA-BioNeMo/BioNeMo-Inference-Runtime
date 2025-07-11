@@ -30,6 +30,11 @@ def parse_arguments():
         type=int,
         default=1,
         help='The max number of particles for the token transformer')
+    parser.add_argument(
+        '--max_diffusion_samples',
+        type=int,
+        default=1,
+        help='The max number of diffusion samples for the token transformer')
     parser.add_argument('--dtype',
                         type=str,
                         default='float32',
@@ -114,10 +119,11 @@ def main():
     tik = time.time()
     boltz1_config = Boltz1Config.from_pretrained(
         checkpoint_dir=args.local_checkpoint)
-    token_transformer_config = boltz1_config.token_transformer_backend_config
+    token_transformer_config = boltz1_config.token_transformer_config
 
     config = {
         "max_num_particles": args.max_num_particles,
+        "max_diffusion_samples": args.max_diffusion_samples,
         "backend": "trt",
         "num_blocks": token_transformer_config.num_blocks,
         "num_heads": token_transformer_config.num_heads,

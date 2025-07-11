@@ -197,6 +197,7 @@ class TokenTransformerConfig(PretrainedModuleConfig):
                  dim_pairwise: int = 128,
                  expansion_factor: int = 2,
                  max_num_particles: int = 1,
+                 max_diffusion_samples: int = 1,
                  version: str = "v1",
                  pairwise_attn_backend: str = 'VANILLA',
                  backend: str = "torch",
@@ -212,6 +213,8 @@ class TokenTransformerConfig(PretrainedModuleConfig):
         self.expansion_factor = expansion_factor
         self.pairwise_attn_backend = pairwise_attn_backend
         self.max_num_particles = max_num_particles
+        self.max_diffusion_samples = max_diffusion_samples
+        self.max_batch_size = self.max_diffusion_samples * self.max_num_particles
 
     @property
     def attention_initial_norm(self):
@@ -237,7 +240,7 @@ class TokenTransformerConfig(PretrainedModuleConfig):
 
     def get_input_shapes(self):
         seqlen = DimSpec(name="seqlen", dynamic=True)
-        num_particles = DimSpec(name="num_particles", dynamic=True)
+        batch_size = DimSpec(name="batch_size", dynamic=True)
         dim = DimSpec(name="dim", size=self.dim)
         dim_single_cond = DimSpec(name="dim_single_cond",
                                   size=self.dim_single_cond)
@@ -253,17 +256,17 @@ class TokenTransformerConfig(PretrainedModuleConfig):
                        heads_times_blocks)
 
         return OrderedDict([
-            ("a", (num_particles, seqlen, dim)),
-            ("s", (num_particles, seqlen, dim_single_cond)),
+            ("a", (batch_size, seqlen, dim)),
+            ("s", (batch_size, seqlen, dim_single_cond)),
             ("z", z_shape),
-            ("mask", (num_particles, seqlen)),
+            ("mask", (batch_size, seqlen)),
         ])
 
     def get_output_shapes(self):
         seqlen = DimSpec(name="seqlen", dynamic=True)
-        num_particles = DimSpec(name="num_particles", dynamic=True)
+        batch_size = DimSpec(name="batch_size", dynamic=True)
         dim = DimSpec(name="dim", size=self.dim)
-        return OrderedDict([("output_a", (num_particles, seqlen, dim))])
+        return OrderedDict([("output_a", (batch_size, seqlen, dim))])
 
 
 @dataclass

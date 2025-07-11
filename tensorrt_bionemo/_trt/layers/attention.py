@@ -55,7 +55,7 @@ class TriangleAttention(Module):
                  triangle_attn_backend: str = 'VANILLA',
                  support_batch: bool = False,
                  mapping: Mapping = Mapping(),
-                 fallback_threshold = 0):
+                 fallback_threshold=0):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.triangle_attn_backend = triangle_attn_backend
@@ -136,8 +136,8 @@ class TriangleAttention(Module):
         else:
             bs = 1
             batch_dims = 0
-        si = shape(hidden_states, batch_dims+0)
-        sj = shape(hidden_states, batch_dims+1)
+        si = shape(hidden_states, batch_dims + 0)
+        sj = shape(hidden_states, batch_dims + 1)
         qkv = self.qkv_proj(hidden_states,
                             None)  # [B, I, J, 3*H*D] or [I, J, 3*H*D]
         mask_bias = None
@@ -171,7 +171,7 @@ class TriangleAttention(Module):
                     [si, sj, _num_attention_heads, self.attention_head_size])
                 return x.view(new_x_shape).permute([0, 2, 1, 3])  # [I, H, J, D]
 
-        def vanilla_attention(query, key, value, triangle_bias, mask_bias):            
+        def vanilla_attention(query, key, value, triangle_bias, mask_bias):
             query = transpose_for_scores(
                 query, is_kv=False)  # [B, I, H, J, D] or [I, H, J, D]
             key = transpose_for_scores(
@@ -205,22 +205,23 @@ class TriangleAttention(Module):
                                  use_fp32_acc=False).permute([0, 2, 1, 3
                                                               ])  # [I, J, H, D]
             return context
-            
+
         query, key, value = split(
             qkv, [self.attention_hidden_size, self.kv_size, self.kv_size],
             dim=-1)
-            
+
         if self.triangle_attn_backend != 'VANILLA':
             logger.debug(
                 f"Using {self.triangle_attn_backend} triangle attention backend, {self.dtype}"
             )
             if self.fallback_threshold > 0:
                 hs_shape = shape(hidden_states)
-                dim_sj = slice(hs_shape, starts=[batch_dims+1], sizes=[1]) 
-                threshold = constant_to_tensor_(self.fallback_threshold,  # Threshold value
-                                                dtype=dim_sj.dtype,
-                                                to_array=False)
-                
+                dim_sj = slice(hs_shape, starts=[batch_dims + 1], sizes=[1])
+                threshold = constant_to_tensor_(
+                    self.fallback_threshold,  # Threshold value
+                    dtype=dim_sj.dtype,
+                    to_array=False)
+
                 condition = trt_f.gt(dim_sj, threshold).squeeze(0, False)
                 cond_node = trt_f.Conditional(condition)
                 query = cond_node.add_input(query)
@@ -230,11 +231,13 @@ class TriangleAttention(Module):
                 if mask_bias is not None:
                     mask_bias = cond_node.add_input(mask_bias)
                 # if sj < threshold, just call vanilla attention
-                fallback = vanilla_attention(query, key, value, triangle_bias, mask_bias)
-            
+                fallback = vanilla_attention(query, key, value, triangle_bias,
+                                             mask_bias)
+
             context = None
 
             if self.triangle_attn_backend == "TRIFAST":
+
                 def transpose_for_bh(x, is_kv: bool = False):
                     _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
                     if self.support_batch:
@@ -332,10 +335,11 @@ class TriangleAttention(Module):
                     context = context.squeeze(0, False)
             # closing conditional
             if self.fallback_threshold > 0:
-                context = cond_node.add_output(context, fallback) 
+                context = cond_node.add_output(context, fallback)
         else:
             # plain TensorRT mode
-            context = vanilla_attention(query, key, value, triangle_bias, mask_bias)
+            context = vanilla_attention(query, key, value, triangle_bias,
+                                        mask_bias)
 
         if self.g_proj is not None:
             g = self.g_proj(hidden_states)  # [B, I, J, H*D] or [I, J, H*D]
@@ -383,6 +387,7 @@ class SelfAttentionPairBias(Module):
                  eps: float = 1e-05,
                  dtype: str = None,
                  need_project_z: bool = True,
+                 max_batch_size: int = 1,
                  mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
@@ -391,6 +396,7 @@ class SelfAttentionPairBias(Module):
         self.attention_head_size = c_s // num_heads
         self.initial_norm = initial_norm
         self.inf = 1e6
+        self.max_batch_size = max_batch_size  # this for multi-diffusion samples
 
         self.num_attention_kv_heads = num_heads
         # This equal to 1 for self-attention
@@ -474,9 +480,9 @@ class SelfAttentionPairBias(Module):
         Implementation of the self-attention pair bias in TensorRT.
 
         Args:
-            s: [B*num_particles, I, C_S]
-            z: [B, I, I, C_Z] or [B, H, I, I]
-            mask: [B*num_particles, I]
+            s: [B, I, C_S]
+            z: [1, I, I, C_Z] or [1, H, I, I]
+            mask: [B, I]
         """
         if self.norm_s:
             norm_s = self.norm_s(s)
@@ -516,6 +522,11 @@ class SelfAttentionPairBias(Module):
                 pair_bias = self.proj_z(z)  # [B, N, N, H]
                 pair_bias = pair_bias.permute(
                     [0, 3, 1, 2])  # [B, N, N, H] -> [B, H, N, N]
+
+            # For multi-diffusion samples, but the broadcasting automatically do the repeat_interleave
+            # if self.max_batch_size > 1:
+            #     batch_size = shape(s, 0)
+            #     pair_bias = repeat_interleave(pair_bias, batch_size, dim=0)
             mask = cast(mask, model_type)
             inf_const = constant_to_tensor_(-self.inf,
                                             dtype=model_type,

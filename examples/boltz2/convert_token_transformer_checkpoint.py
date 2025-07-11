@@ -25,11 +25,20 @@ def parse_arguments():
                         type=int,
                         default=1,
                         help='N-way data-context parallelism size')
+    parser.add_argument('--is_affinity',
+                        action='store_true',
+                        default=False,
+                        help='Whether to convert the affinity model')
     parser.add_argument(
         '--max_num_particles',
         type=int,
         default=4,  # default value for boltz-2
         help='The max number of particles for the token transformer')
+    parser.add_argument(
+        '--max_diffusion_samples',
+        type=int,
+        default=1,
+        help='The max number of diffusion samples for the token transformer')
     parser.add_argument('--dtype',
                         type=str,
                         default='float32',
@@ -67,6 +76,9 @@ def parse_arguments():
 
 
 def convert(worker_rank, world_size, configs, args):
+    model_name = "boltz-2"
+    if args.is_affinity:
+        model_name = "boltz-2-affinity"
     # Dump for tensorrt config
     if args.backend == 'all' or args.backend == BackendType.TRT:
         (args.output_dir / f'{BackendType.TRT}').mkdir(parents=True,
@@ -91,7 +103,8 @@ def convert(worker_rank, world_size, configs, args):
             weights = convert_hf_token_transformer(
                 configs[BackendType.TRT],
                 mapping,
-                local_checkpoint=args.local_checkpoint)
+                local_checkpoint=args.local_checkpoint,
+                model_name=model_name)
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
@@ -113,11 +126,12 @@ def main():
 
     tik = time.time()
     boltz2_config = Boltz2Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint)
-    token_transformer_config = boltz2_config.token_transformer_backend_config
+        checkpoint_dir=args.local_checkpoint, is_affinity=args.is_affinity)
+    token_transformer_config = boltz2_config.token_transformer_config
 
     config = {
         "max_num_particles": args.max_num_particles,
+        "max_diffusion_samples": args.max_diffusion_samples,
         "backend": "trt",
         "num_blocks": token_transformer_config.num_blocks,
         "num_heads": token_transformer_config.num_heads,

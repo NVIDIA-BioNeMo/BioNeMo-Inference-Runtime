@@ -429,6 +429,7 @@ class DiffusionTransformerLayer(Module):
                  attention_initial_norm: bool = False,
                  post_layer_norm: bool = False,
                  need_project_z: bool = True,
+                 max_batch_size: int = 1,
                  mapping: Optional[Mapping] = None):
         super().__init__()
         self.num_heads = num_heads
@@ -448,6 +449,7 @@ class DiffusionTransformerLayer(Module):
             inf=inf,
             initial_norm=attention_initial_norm,
             need_project_z=need_project_z,
+            max_batch_size=max_batch_size,
             mapping=mapping)
         self.output_projection = ColumnLinear(
             dim_single_cond,
@@ -517,6 +519,7 @@ class TokenTransformer(PretrainedModule):
                 attention_initial_norm=config.attention_initial_norm,
                 post_layer_norm=config.post_layer_norm,
                 need_project_z=config.version == "v1",
+                max_batch_size=config.max_batch_size,
                 mapping=config.mapping) for i in range(config.num_blocks)
         ])
 
@@ -532,7 +535,7 @@ class TokenTransformer(PretrainedModule):
         Args:
             a: [B, S, dim]
             s: [B, S, dim_single_cond]
-            z: [B, H, N, N, L] for v1, [B, N, N, H*L] for v2
+            z: [1, H, N, N, L] for v1, [1, N, N, H*L] for v2
             mask: [B, S]
             attention_params: AttentionParams
             all_reduce_params: AllReduceParams

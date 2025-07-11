@@ -26,6 +26,10 @@ def parse_arguments():
                         type=int,
                         default=1,
                         help='N-way data-context parallelism size')
+    parser.add_argument('--is_affinity',
+                        action='store_true',
+                        default=False,
+                        help='Whether to convert the affinity model')
     parser.add_argument('--max_transition_tp_size',
                         type=bool,
                         default=True,
@@ -97,6 +101,9 @@ def parse_arguments():
 
 
 def convert(worker_rank, world_size, configs, args):
+    model_name = "boltz-2"
+    if args.is_affinity:
+        model_name = "boltz-2-affinity"
     # Dump for tensorrt config
     if args.backend == 'all' or args.backend == BackendType.TRT:
         (args.output_dir / f'{BackendType.TRT}').mkdir(parents=True,
@@ -122,7 +129,8 @@ def convert(worker_rank, world_size, configs, args):
                 configs[BackendType.TRT],
                 mapping,
                 args.pairformer_type,
-                local_checkpoint=args.local_checkpoint)
+                local_checkpoint=args.local_checkpoint,
+                model_name=model_name)
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
@@ -143,10 +151,10 @@ def main():
 
     tik = time.time()
     boltz2_config = Boltz2Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint)
-    pairformer_config = boltz2_config.structure_pairformer_backend_config
+        checkpoint_dir=args.local_checkpoint, is_affinity=args.is_affinity)
+    pairformer_config = boltz2_config.structure_pairformer_config
     if args.pairformer_type == "confidence":
-        pairformer_config = boltz2_config.confidence_pairformer_backend_config
+        pairformer_config = boltz2_config.confidence_pairformer_config
 
     if args.triangle_attn_backend == "CUEQUIV":
         args.support_batch = True

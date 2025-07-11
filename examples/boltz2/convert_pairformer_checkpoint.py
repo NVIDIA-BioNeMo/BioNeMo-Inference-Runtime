@@ -179,9 +179,9 @@ def main():
         "backend":
         "trt",
         "token_s":
-        boltz2_config.token_s,
+        pairformer_config.token_s,
         "token_z":
-        boltz2_config.token_z,
+        pairformer_config.token_z,
         "pairwise_head_width":
         pairformer_config.pairwise_head_width,
         "pairwise_num_heads":

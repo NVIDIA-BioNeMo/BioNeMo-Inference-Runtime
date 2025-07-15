@@ -16,23 +16,23 @@
 find_package(Python REQUIRED)
 
 execute_process(
-  COMMAND "${Python_EXECUTABLE}" -m pip show tensorrt-llm
-  COMMAND grep Location
-  COMMAND awk "{print \$2}"  # This command doesn't require cuda libraries to be installed
+  COMMAND
+    "${Python_EXECUTABLE}" -c
+    "import importlib; pkg=importlib.util.find_spec('tensorrt_llm'); print(pkg.submodule_search_locations[0])"
   RESULT_VARIABLE FOUND_STATUS
-  OUTPUT_VARIABLE TRT_LLM_ROOT_DIR
+  OUTPUT_VARIABLE TRT_LLM_PY_DIR
   OUTPUT_STRIP_TRAILING_WHITESPACE)
-  
-if("${TRT_LLM_ROOT_DIR}" MATCHES "not found")
+
+if("${TRT_LLM_PY_DIR}" MATCHES "tensorrt_llm")
   # trtllm package is not installed, set its path from 3rdparty/TensorRT-LLM
+  message(STATUS "Found tensorrt_llm package at ${TRT_LLM_PY_DIR}")
+else()
   message(
-    STATUS
-    "WARNING: ${FOUND_STATUS}, Cannot find tensorrt_llm package. Set its path from 3rdparty/TensorRT-LLM"
-  )
-  set(TRT_LLM_ROOT_DIR ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM)
+    WARNING
+      "Not found tensorrt_llm package, set its path from 3rdparty/TensorRT-LLM")
+  set(TRT_LLM_PY_DIR ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM/tensorrt_llm)
 endif()
 
-set(TRT_LLM_PY_DIR ${TRT_LLM_ROOT_DIR}/tensorrt_llm)
 set(TRT_LLM_CPP_DIR ${TRT_BIONEMO_THIRDPARTY_DIR}/TensorRT-LLM/cpp)
 set(TRT_LLM_CPP_DIR
     ${TRT_LLM_CPP_DIR}

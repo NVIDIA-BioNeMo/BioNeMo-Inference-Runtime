@@ -6,6 +6,7 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from tensorrt_llm._torch.distributed.ops import get_output_info
 from tensorrt_llm.functional import AllReduceParams, AllReduceStrategy
 
 from tensorrt_bionemo.mapping import Mapping
@@ -30,29 +31,41 @@ def allgather(input: torch.Tensor,
         return input
     if mapping.dcp_size == 1 and mode == AllGatherMode.DP:
         return input
+
+    output_info = get_output_info(input, gather_dim)
+    input = input.contiguous().view(-1, output_info['numel_base'])
+
     if mode == AllGatherMode.TP:
         output = torch.ops.trtllm.allgather(
             input,
+            None,
             mapping.tp_group,
         )
-        split_size = mapping.tp_size
+        mapping.tp_size
     elif mode == AllGatherMode.DP:
         output = torch.ops.trtllm.allgather(
             input,
+            None,
             mapping.dcp_group,
         )
-        split_size = mapping.dcp_size
+        mapping.dcp_size
     else:
         raise ValueError(f"Invalid allgather mode: {mode}")
+    sizes = None  # TODO: support sizes != None
 
-    if gather_dim < 0:
-        gather_dim += input.ndim
-    output = torch.movedim(output, 0, gather_dim)
-    input_shape = input.size()
-    output = output.reshape(input_shape[:gather_dim] +
-                            (split_size * input_shape[gather_dim], ) +
-                            input_shape[gather_dim + 1:])
-    return output
+    def convert_output(x, x_info):
+        if gather_dim == 0:
+            x = x.view(x_info['output_shape'])
+        else:
+            if sizes is None:
+                x_list = x.chunk(mapping.tp_size)
+            else:
+                x_list = x.split(sizes)
+            x = torch.cat([x.reshape(x_info['output_shape']) for x in x_list],
+                          dim=gather_dim)
+        return x
+
+    return convert_output(output, output_info)
 
 
 class AllReduce(nn.Module):
@@ -96,6 +109,8 @@ class AllReduce(nn.Module):
             strategy=self.strategy,
             op=all_reduce_params.fusion_op,
             eps=all_reduce_params.eps,
+            trigger_completion_at_end=all_reduce_params.
+            trigger_completion_at_end,
         )
 
         return output if len(output) > 1 else output[0]

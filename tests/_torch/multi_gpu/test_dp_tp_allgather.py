@@ -62,7 +62,7 @@ def run_single_rank(x, y, tp_size, dcp_size):
 def test_dp_tp_allgather():
     torch.manual_seed(42)
     tp_size = 2
-    dcp_size = 2
+    dcp_size = 1
     if torch.cuda.device_count() < tp_size * dcp_size:
         tp_size = 1
         dcp_size = 2

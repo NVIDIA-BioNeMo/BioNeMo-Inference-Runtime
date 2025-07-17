@@ -32,6 +32,7 @@ from test_utils.create_and_load_weights import (
 from test_utils.ref_layers import RefPairformerLayer
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
+from tensorrt_bionemo._trt.layers.transformers import PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -163,8 +164,7 @@ class PairformerParallelism:
                 self.num_heads, self.token_s, self.token_z,
                 self.max_attention_pairwise_tp_size,
                 self.max_transition_tp_size, self.max_tri_mul_tp_size)
-            attention_params = AttentionParams(
-                vanilla_attn_precision=self.vanilla_attn_precision)
+            attention_params = AttentionParams()
             output_s, output_z = pairformer_layer(
                 trt_s,
                 trt_z,

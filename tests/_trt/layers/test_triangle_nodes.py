@@ -219,6 +219,7 @@ def test_triangle_multiplication_node(
             local_layer_idx=0,
             dim=sc.dim,
             dtype=sc.dtype,
+            support_batch=True,
             multiplication_type=sc.multiplication_type,
         )
         load_triangle_multiplication_node_weights_trt(node, weights_and_biases)

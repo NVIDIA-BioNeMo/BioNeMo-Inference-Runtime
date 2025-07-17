@@ -121,7 +121,7 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         attn_metadatas["triangle_attn"].closest_n = 2**int(
             np.ceil(np.log2(scenario.seq_len // scenario.dcp_size)))
 
-    pairformer_layer = PairformerLayer(
+    pairformer_layer = PairformerLayerV1(
         layer_idx=0,
         token_s=token_s,
         token_z=token_z,

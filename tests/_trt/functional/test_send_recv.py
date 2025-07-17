@@ -135,7 +135,3 @@ def test_send_recv(pair):
             *zip(*[(x, world_size, dcp_size, tp_size)] * world_size))
         for r in results:
             assert r is True
-
-
-if __name__ == "__main__":
-    test_send_recv((2, 1))

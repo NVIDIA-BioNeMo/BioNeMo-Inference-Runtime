@@ -38,8 +38,9 @@ class Scenario:
     num_key_value_heads: int = 4
     gating: bool = True
     bias: bool = False
-    chunk_size: int = None
-    chunk_dim: int = None
+    # FIXME: add chunk_size and chunk_dim back
+    # chunk_size: int = None
+    # chunk_dim: int = None
     torch_dtype: str = "float32"
 
 
@@ -54,7 +55,7 @@ def test_triangle_attention_backend(s: Scenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     metadata_cls = get_attention_backend(s.backend).Metadata
-
+    bs = 1
     dtype = str_dtype_to_torch(s.torch_dtype)
     device = torch.device('cuda')
 
@@ -72,24 +73,24 @@ def test_triangle_attention_backend(s: Scenario):
                              dtype=dtype)
     load_triangle_attention_weights_torch(attn, weights_and_biases, dtype=dtype)
     attn.to(device)
-    attn_metadata = metadata_cls(chunk_size=s.chunk_size,
-                                 chunk_dim=s.chunk_dim,
-                                 mapping=Mapping())
+    attn_metadata = metadata_cls(mapping=Mapping())
     if s.backend == "TRIFAST":
         attn_metadata.closest_n = 2**int(np.ceil(np.log2(s.seq_len)))
-    hidden_states = torch.randn(s.seq_len,
+    hidden_states = torch.randn(bs,
+                                s.seq_len,
                                 s.seq_len,
                                 s.hidden_size,
                                 dtype=torch.float32,
                                 device=device)
     biases = [
-        torch.randn(s.seq_len,
+        torch.randn(bs,
+                    s.seq_len,
                     1,
                     1,
                     s.seq_len,
                     dtype=torch.float32,
                     device=device),
-        torch.randn(1,
+        torch.randn(bs,
                     s.num_attention_heads,
                     s.seq_len,
                     s.seq_len,

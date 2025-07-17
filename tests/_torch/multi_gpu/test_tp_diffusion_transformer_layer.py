@@ -77,7 +77,7 @@ def diffusion_transformer_layer_forward(a, s, z, mask, tensor_parallel_size,
         a, s, z, mask, attn_metadata=attn_pairwise_metadata_cls(bias_cache={}))
     single_dev_dt_layer = DiffusionTransformerLayer(
         layer_idx=0,
-        heads=16,
+        num_heads=16,
         dim=a.shape[-1],
         dim_single_cond=s.shape[-1],
         dim_pairwise=z.shape[-1],

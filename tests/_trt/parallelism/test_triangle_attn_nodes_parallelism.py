@@ -194,6 +194,7 @@ class TriangleAttnNodesParallelism:
                 num_heads=self.num_attention_heads,
                 local_layer_idx=0,
                 dtype=self.dtype,
+                support_batch=True,
                 chunk_size=0,
                 node_type=self.node_type,
                 mapping=self.mapping)
@@ -202,8 +203,7 @@ class TriangleAttnNodesParallelism:
                                                      self.mapping.tp_size,
                                                      self.mapping.tp_rank)
 
-            attention_params = AttentionParams(
-                vanilla_attn_precision=self.vanilla_attn_precision)
+            attention_params = AttentionParams()
             output = tri_attn_node(trt_hidden_states, trt_mask,
                                    attention_params)
             output.mark_output("output",

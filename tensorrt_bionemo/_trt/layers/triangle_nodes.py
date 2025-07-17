@@ -58,7 +58,7 @@ class TriangleAttentionNode(Module):
         chunk_size: int = 0,
         triangle_attn_backend: str = 'VANILLA',
         support_batch: bool = True,
-        fallback_threshold = 0,    
+        fallback_threshold=0,
         mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
@@ -270,7 +270,7 @@ class TriangleMultiplicationNode(Module):
             x: [B, I, J, D] or [I, J, D]
             mask: [B, I, J] or [I, J]
         Note: The ring-communication on the dcp group (dcp_size > 1) is experimental and may not work,
-            or make engines go large and slow than normal
+            or make engines go large and slow than normal. And it will be reworked in the future.
         """
         original_dtype = mask.dtype
         if self.support_batch:

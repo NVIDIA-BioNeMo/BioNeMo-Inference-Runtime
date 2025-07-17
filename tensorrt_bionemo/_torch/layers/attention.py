@@ -116,6 +116,13 @@ class TriangleAttention(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
+        """
+        Args:
+            hidden_states: [B, I, J, F]
+            biases: Include two biases:
+                - mask_bias: [B, I, 1, 1, J]
+                - triangle_bias: [B, H, J, J]
+        """
         if self.mapping.tp_size > 1:
             new_biases = []
             new_biases.append(biases[0])

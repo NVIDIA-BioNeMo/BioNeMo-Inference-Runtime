@@ -20,7 +20,7 @@ import pytest
 import tensorrt_llm
 import torch
 from tensorrt_llm import Tensor
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm._utils import get_sm_version, str_dtype_to_torch
 from test_utils.create_and_load_weights import *
 from test_utils.ref_attn import RefTriangleAttention
 
@@ -28,81 +28,101 @@ import tensorrt_bionemo
 
 TriAttnTestScenario = namedtuple("TriAttnTestScenario", [
     "bs", "si", "sj", "hidden_size", "num_attention_heads", "dtype",
-    "triangle_attn_backend"
+    "triangle_attn_backend", "support_batch"
 ])
 
 
 @pytest.mark.parametrize("sc", [
-    TriAttnTestScenario(bs=1,
-                        si=5,
-                        sj=5,
-                        hidden_size=32,
-                        num_attention_heads=16,
-                        dtype="float32",
-                        triangle_attn_backend="VANILLA"),
-    TriAttnTestScenario(bs=2,
-                        si=6,
-                        sj=12,
-                        hidden_size=48,
-                        num_attention_heads=8,
-                        dtype="float32",
-                        triangle_attn_backend="VANILLA"),
-    TriAttnTestScenario(bs=3,
-                        si=100,
-                        sj=200,
-                        hidden_size=64,
-                        num_attention_heads=8,
-                        dtype="float32",
-                        triangle_attn_backend="VANILLA"),
-    TriAttnTestScenario(bs=1,
-                        si=70,
-                        sj=70,
-                        hidden_size=32,
-                        num_attention_heads=4,
-                        dtype="float32",
-                        triangle_attn_backend="TRIFAST"),
     TriAttnTestScenario(bs=2,
                         si=64,
                         sj=96,
                         hidden_size=32,
                         num_attention_heads=2,
                         dtype="float32",
-                        triangle_attn_backend="TRIFAST"),
-    TriAttnTestScenario(bs=3,
-                        si=100,
-                        sj=512,
+                        triangle_attn_backend="VANILLA",
+                        support_batch=True),
+    TriAttnTestScenario(bs=1,
+                        si=64,
+                        sj=96,
                         hidden_size=32,
-                        num_attention_heads=1,
+                        num_attention_heads=2,
                         dtype="float32",
-                        triangle_attn_backend="TRIFAST"),
-])
+                        triangle_attn_backend="VANILLA",
+                        support_batch=False),
+    TriAttnTestScenario(bs=2,
+                        si=64,
+                        sj=96,
+                        hidden_size=32,
+                        num_attention_heads=2,
+                        dtype="float32",
+                        triangle_attn_backend="TRIFAST",
+                        support_batch=True),
+    TriAttnTestScenario(bs=1,
+                        si=64,
+                        sj=96,
+                        hidden_size=32,
+                        num_attention_heads=2,
+                        dtype="float32",
+                        triangle_attn_backend="TRIFAST",
+                        support_batch=False),
+    TriAttnTestScenario(bs=2,
+                        si=64,
+                        sj=96,
+                        hidden_size=32,
+                        num_attention_heads=2,
+                        dtype="float32",
+                        triangle_attn_backend="CUEQUIV",
+                        support_batch=True),
+    TriAttnTestScenario(bs=1,
+                        si=64,
+                        sj=96,
+                        hidden_size=32,
+                        num_attention_heads=2,
+                        dtype="float32",
+                        triangle_attn_backend="CUEQUIV",
+                        support_batch=False),
+],
+                         ids=[
+                             "vanilla_batch", "vanilla_no_batch",
+                             "trifast_batch", "trifast_no_batch",
+                             "cuequiv_batch", "cuequiv_no_batch"
+                         ])
 def test_triangle_attention(sc: TriAttnTestScenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    if sc.triangle_attn_backend == "TRIFAST":
+        sm_version = get_sm_version()
+        if sm_version not in [80, 86]:
+            pytest.skip(
+                "trifast is only supported on sm_80 and sm_86 architectures for now"
+            )
 
     c_q = c_k = c_v = sc.hidden_size * sc.num_attention_heads
 
     mean = 0.0
     std_dev = 1 if sc.dtype == "float32" else 0.05
     torch_dtype = str_dtype_to_torch(sc.dtype)
-    hidden_states = torch.empty(size=[sc.bs, sc.si, sc.sj, c_q],
+    if sc.support_batch:
+        shape = [sc.bs, sc.si, sc.sj, c_q]
+    else:
+        shape = [sc.si, sc.sj, c_q]
+    hidden_states = torch.empty(size=shape,
                                 dtype=torch_dtype,
                                 device="cuda",
                                 requires_grad=False)
     hidden_states.normal_(mean=mean, std=std_dev)
 
-    mask_bias = torch.empty(size=[sc.bs, sc.si, 1, 1, sc.sj],
-                            dtype=torch_dtype,
-                            device="cuda",
-                            requires_grad=False)
-    mask_bias.normal_(mean=mean, std=std_dev)
-    if sc.triangle_attn_backend == "TRIFAST":
-        mask_bias = torch.randint(0,
-                                  2, (sc.bs, sc.si, 1, 1, sc.sj),
-                                  dtype=torch_dtype,
-                                  device="cuda",
-                                  requires_grad=False)
+    if sc.support_batch:
+        shape = [sc.bs, sc.si, 1, 1, sc.sj]
+    else:
+        shape = [sc.si, 1, 1, sc.sj]
+    mask_bias = torch.randint(0,
+                              2,
+                              shape,
+                              dtype=torch_dtype,
+                              device="cuda",
+                              requires_grad=False)
     triangle_bias = torch.empty(
         size=[sc.bs, sc.num_attention_heads, sc.sj, sc.sj],
         dtype=torch_dtype,
@@ -136,6 +156,7 @@ def test_triangle_attention(sc: TriAttnTestScenario):
             local_layer_idx=0,
             gating=True,
             dtype=sc.dtype,
+            support_batch=sc.support_batch,
             triangle_attn_backend=sc.triangle_attn_backend)
         load_triangle_attention_weights_trt(attn_layer, weights_and_biases)
 
@@ -181,10 +202,15 @@ def test_triangle_attention(sc: TriAttnTestScenario):
     load_triangle_attention_weights_ref_torch(ref_attn, weights_and_biases)
 
     with torch.inference_mode():
-        if sc.triangle_attn_backend == "TRIFAST":
+        if sc.triangle_attn_backend in ["TRIFAST", "CUEQUIV"]:
             mask_bias = mask_bias.to(torch_dtype) * torch.finfo(torch_dtype).min
+        if not sc.support_batch:
+            hidden_states = hidden_states.unsqueeze(0)
+            mask_bias = mask_bias.unsqueeze(0)
         ref_output = ref_attn(hidden_states, hidden_states,
                               [mask_bias, triangle_bias])
 
     trt_output = outputs['output']
+    if not sc.support_batch:
+        trt_output = trt_output.unsqueeze(0)
     torch.testing.assert_close(trt_output, ref_output, atol=1e-4, rtol=1e-3)

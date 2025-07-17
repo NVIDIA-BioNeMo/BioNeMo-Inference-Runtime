@@ -20,7 +20,8 @@ import tensorrt as trt
 import tensorrt_llm
 import torch
 from einops import rearrange
-from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
+from tensorrt_llm._utils import (get_sm_version, str_dtype_to_torch,
+                                 str_dtype_to_trt)
 from tensorrt_llm.functional import Tensor
 from test_utils.ref_attn import plain_triangle_mha
 
@@ -46,6 +47,11 @@ def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
     head_dim = 32
     use_trifast = backend == AttentionBackend.TRIFAST
     if use_trifast:
+        sm_version = get_sm_version()
+        if sm_version not in [80, 86]:
+            pytest.skip(
+                "trifast is only supported on sm_80 and sm_86 architectures for now"
+            )
         if not use_mask:
             pytest.skip("Mask is not optional in trifast")
         if sk != sj:

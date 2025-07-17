@@ -112,6 +112,7 @@ class TriangleMulNodesParallelism:
                 local_layer_idx=0,
                 dim=self.dim,
                 dtype=self.dtype,
+                support_batch=True,
                 multiplication_type=self.multiplication_type,
                 mapping=self.mapping)
             load_triangle_multiplication_node_weights_trt(

@@ -99,9 +99,11 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     attn_metadata = metadata_cls(mapping=Mapping())
     if s.backend == "TRIFAST":
         attn_metadata.closest_n = 2**int(np.ceil(np.log2(s.seq_len)))
-    x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in).cuda()
+    x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in,
+                    dtype=torch.float32).cuda()
     # Need mask is bool for trifast
-    mask = torch.randint(0, 2, (bs, s.seq_len, s.seq_len)).cuda()
+    mask = torch.randint(0, 2, (bs, s.seq_len, s.seq_len),
+                         dtype=torch.float32).cuda()
 
     with torch.inference_mode():
         ref_output_float = ref_node(x, mask)

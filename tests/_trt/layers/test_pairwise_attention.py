@@ -107,7 +107,7 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
         load_self_pairwise_attention_weights_trt(attn_layer, weights_and_biases)
 
         attention_params = tensorrt_bionemo._trt.layers.attention.AttentionParams(
-            vanilla_attn_precision=sc.vanilla_attn_precision)
+        )
         output = attn_layer(trt_s,
                             trt_z,
                             mask=trt_mask,

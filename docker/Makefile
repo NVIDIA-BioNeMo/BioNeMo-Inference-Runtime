@@ -34,6 +34,8 @@ base: submodules
 	docker build --pull \
 		--target devel \
 		--file $(TRTLLM_DIR)/docker/Dockerfile.multi \
+		--build-arg BASE_TAG=25.04-py3 \
+		--build-arg BASE_IMAGE=nvcr.io/nvidia/pytorch \
 		--tag $(BASE_IMAGE):$(BASE_TAG) $(TRTLLM_DIR)
 
 submodules:

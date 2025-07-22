@@ -15,26 +15,41 @@
 
 from typing import Optional, Type
 
-from .interface import AttentionBackend
+from .cuequiv import CuEquivAttention
+from .interface import AttentionBackend, AttentionType
 from .trifast import TrifastAttention
-from .vanilla import VanillaAttention
+from .vanilla import VanillaPairwiseAttention, VanillaTriangleAttention
 
 
-def get_attention_backend(backend_name: str) -> Type[AttentionBackend]:
-    """Get the attention backend class based on the backend name."""
-    if backend_name == "VANILLA":
-        return VanillaAttention
-    elif backend_name == "TRIFAST":
-        return TrifastAttention
+def get_attention_backend(
+    backend_name: str,
+    attention_type: AttentionType = AttentionType.TRIANGLE
+) -> Type[AttentionBackend]:
+    """Get the attention backend class based on the backend name and attention type."""
+    if attention_type == AttentionType.TRIANGLE:
+        if backend_name == "VANILLA":
+            return VanillaTriangleAttention
+        elif backend_name == "TRIFAST":
+            return TrifastAttention
+        elif backend_name == "CUEQUIV":
+            return CuEquivAttention
+    elif attention_type == AttentionType.PAIRWISE:
+        if backend_name == "VANILLA":
+            return VanillaPairwiseAttention
+        else:
+            raise ValueError(f"Invalid backend name: {backend_name}")
     else:
         raise ValueError(f"Invalid backend name: {backend_name}")
 
 
-def create_attention(backend_name: str,
-                     layer_idx: int,
-                     num_heads: int,
-                     head_dim: int,
-                     num_kv_heads: Optional[int] = None) -> AttentionBackend:
-    """Create an attention backend based on the backend name."""
-    attn_cls = get_attention_backend(backend_name)
+def create_attention(
+        backend_name: str,
+        layer_idx: int,
+        num_heads: int,
+        head_dim: int,
+        num_kv_heads: Optional[int] = None,
+        attention_type: AttentionType = AttentionType.TRIANGLE
+) -> AttentionBackend:
+    """Create an attention backend based on the backend name and attention type."""
+    attn_cls = get_attention_backend(backend_name, attention_type)
     return attn_cls(layer_idx, num_heads, head_dim, num_kv_heads)

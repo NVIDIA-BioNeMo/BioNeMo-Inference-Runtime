@@ -23,8 +23,8 @@ from test_utils.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_torch)
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.transformers import \
     DiffusionTransformerLayer
 from tensorrt_bionemo.mapping import Mapping
@@ -56,7 +56,8 @@ def diffusion_transformer_layer_forward(a, s, z, mask, tensor_parallel_size,
                       tp_size=tensor_parallel_size,
                       rank=rank)
     dtype = torch.float32
-    attn_pairwise_metadata_cls = get_attention_backend("VANILLA").Metadata
+    attn_pairwise_metadata_cls = get_attention_backend(
+        "VANILLA", AttentionType.PAIRWISE).Metadata
     dt_layer = DiffusionTransformerLayer(
         layer_idx=0,
         num_heads=16,

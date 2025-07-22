@@ -23,8 +23,7 @@ from test_utils.create_and_load_weights import (
     load_diffusion_transformer_layer_weights_torch)
 from test_utils.ref_layers import RefDiffusionTransformerLayer
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import get_attention_backend
 from tensorrt_bionemo._torch.layers.transformers import \
     DiffusionTransformerLayer
 
@@ -57,7 +56,8 @@ def test_diffusion_transformer_layer(sc: Scenario):
     weights_and_biases = create_diffusion_transformer_layer_weights(
         from_ref=ref_module)
 
-    attn_pairwise_metadata_cls = get_attention_backend("VANILLA").Metadata
+    attn_pairwise_metadata_cls = get_attention_backend(
+        "VANILLA", AttentionType.PAIRWISE).Metadata
     module = DiffusionTransformerLayer(
         layer_idx=0,
         num_heads=ref_module.pair_bias_attn.num_heads,

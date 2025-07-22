@@ -15,7 +15,7 @@
 
 import enum
 from dataclasses import dataclass
-from typing import Generic, Optional, Type, TypeVar, Union
+from typing import Generic, Optional, Type, TypeVar
 
 import torch
 
@@ -34,7 +34,7 @@ class AttentionMetadata:
 TMetadata = TypeVar("TMetadata", bound=AttentionMetadata)
 
 
-class PredefinedAttentionBiases(str, enum.Enum):
+class AttentionType(str, enum.Enum):
     """
     Predefined attention mask types
 
@@ -45,10 +45,6 @@ class PredefinedAttentionBiases(str, enum.Enum):
 
     TRIANGLE = "triangle"
     PAIRWISE = "pairwise"
-
-
-# May extend to custom attention mask type
-AttentionBiases = Union[PredefinedAttentionBiases]
 
 
 class AttentionBackend(Generic[TMetadata]):
@@ -82,8 +78,6 @@ class AttentionBackend(Generic[TMetadata]):
         v: torch.Tensor,
         biases: Optional[list[torch.Tensor]] = None,
         metadata: TMetadata = None,
-        attention_biases: Optional[AttentionBiases] = PredefinedAttentionBiases.
-        TRIANGLE,
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -94,7 +88,6 @@ class AttentionBackend(Generic[TMetadata]):
             v (torch.Tensor): The value tensor. Shape [I, s_kv, h_kv*d]
             biases (Optional[list[torch.Tensor]]): The biases for the attention layer.
             metadata (AttentionMetadata): The metadata for the attention layer.
-            attention_biases (Optional[AttentionBiases]): The type of attention biases to use.
             **kwargs: Additional keyword arguments.
         Returns:
             torch.Tensor: The output tensor.

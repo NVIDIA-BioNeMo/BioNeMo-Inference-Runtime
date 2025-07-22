@@ -23,8 +23,8 @@ from test_utils.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
 from test_utils.ref_attn import RefTriangleAttention
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
 
@@ -49,12 +49,15 @@ class Scenario:
     Scenario(backend="VANILLA", torch_dtype="bfloat16"),
     Scenario(backend="TRIFAST"),
     Scenario(backend="TRIFAST", torch_dtype="bfloat16"),
+    Scenario(backend="CUEQUIV"),
+    Scenario(backend="CUEQUIV", torch_dtype="bfloat16"),
 ])
 def test_triangle_attention_backend(s: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-    metadata_cls = get_attention_backend(s.backend).Metadata
+    metadata_cls = get_attention_backend(s.backend,
+                                         AttentionType.TRIANGLE).Metadata
     bs = 1
     dtype = str_dtype_to_torch(s.torch_dtype)
     device = torch.device('cuda')

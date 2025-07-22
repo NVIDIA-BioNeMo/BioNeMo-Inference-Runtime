@@ -22,8 +22,7 @@ from torch.library import wrap_triton
 
 from tensorrt_bionemo.triton_kernels.trifast import create_autotuner
 
-from .interface import (AttentionBackend, AttentionBiases, AttentionMetadata,
-                        PredefinedAttentionBiases)
+from .interface import AttentionBackend, AttentionMetadata
 
 
 class TrifastAttentionMetadata(AttentionMetadata):
@@ -51,8 +50,6 @@ class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
         v: torch.Tensor,
         biases: Optional[list[torch.Tensor]] = None,
         metadata: Optional[AttentionMetadata] = None,
-        biases_type: Optional[AttentionBiases] = PredefinedAttentionBiases.
-        TRIANGLE,
         **kwargs,
     ) -> torch.Tensor:
         """Implementation of trifast attention."""
@@ -70,7 +67,6 @@ class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
             mask = mask.unsqueeze(0)
         if bias.ndim == 3:
             bias = bias.unsqueeze(0)
-        assert biases_type == PredefinedAttentionBiases.TRIANGLE, "Only triangle attention is supported for trifast attention"
 
         bs, i, j, hd = q.shape
         q = rearrange(q, "b i j (h d) -> (b h) i j d",

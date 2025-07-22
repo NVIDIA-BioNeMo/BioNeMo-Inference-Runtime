@@ -27,8 +27,8 @@ from test_utils.create_and_load_weights import (
 from test_utils.ref_layers import (RefTriangleAttentionNode,
                                    RefTriangleMultiplicationNode)
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
@@ -71,7 +71,8 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-    metadata_cls = get_attention_backend(s.backend).Metadata
+    metadata_cls = get_attention_backend(s.backend,
+                                         AttentionType.TRIANGLE).Metadata
     bs = 1
 
     dtype = str_dtype_to_torch(s.torch_dtype)

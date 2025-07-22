@@ -25,7 +25,7 @@ from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
-from ..attention_backend import AttentionMetadata, PredefinedAttentionBiases
+from ..attention_backend import AttentionMetadata, AttentionType
 from ..attention_backend.utils import create_attention
 
 
@@ -107,6 +107,7 @@ class TriangleAttention(nn.Module):
             self.num_heads,
             self.head_dim,
             self.num_key_value_heads,
+            attention_type=AttentionType.TRIANGLE,
         )
 
     def forward(
@@ -137,13 +138,11 @@ class TriangleAttention(nn.Module):
             hidden_states = hidden_states.contiguous()
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        mha_o = self.attn.forward(
-            q.contiguous(),
-            k.contiguous(),
-            v.contiguous(),
-            biases=biases,
-            metadata=attn_metadata,
-            biases_type=PredefinedAttentionBiases.TRIANGLE)
+        mha_o = self.attn.forward(q.contiguous(),
+                                  k.contiguous(),
+                                  v.contiguous(),
+                                  biases=biases,
+                                  metadata=attn_metadata)
         if self.g_proj is not None:
             g = self.g_proj(hidden_states)
             g = F.sigmoid(g)
@@ -272,6 +271,7 @@ class SelfAttentionPairBias(nn.Module):
             self.num_heads,
             self.head_dim,
             self.num_key_value_heads,
+            attention_type=AttentionType.PAIRWISE,
         )
 
     def forward(
@@ -302,13 +302,11 @@ class SelfAttentionPairBias(nn.Module):
             attn_metadata.bias_cache[save_to_cache_key] = pair_bias
         biases = [mask_bias, pair_bias]
 
-        mha_o = self.attn.forward(
-            q.contiguous(),
-            k.contiguous(),
-            v.contiguous(),
-            biases=biases,
-            metadata=attn_metadata,
-            biases_type=PredefinedAttentionBiases.PAIRWISE)
+        mha_o = self.attn.forward(q.contiguous(),
+                                  k.contiguous(),
+                                  v.contiguous(),
+                                  biases=biases,
+                                  metadata=attn_metadata)
         o = mha_o.reshape(B, -1, self.num_heads * self.head_dim)
 
         g = self.proj_g(s).sigmoid()

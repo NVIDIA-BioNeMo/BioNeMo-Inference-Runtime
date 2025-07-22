@@ -23,8 +23,8 @@ from test_utils.create_and_load_weights import (
     create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
 from test_utils.ref_layers import RefPairformerLayer
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.transformers import PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
 
@@ -47,15 +47,19 @@ class Scenario:
     Scenario(triangle_attn_backend="TRIFAST",
              pairwise_attn_backend="VANILLA",
              torch_dtype="bfloat16"),
+    Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
+    Scenario(triangle_attn_backend="CUEQUIV",
+             pairwise_attn_backend="VANILLA",
+             torch_dtype="bfloat16"),
 ])
 def test_pairformer_layer(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     pairwise_metadata_cls = get_attention_backend(
-        sc.pairwise_attn_backend).Metadata
+        sc.pairwise_attn_backend, AttentionType.PAIRWISE).Metadata
     triangle_metadata_cls = get_attention_backend(
-        sc.triangle_attn_backend).Metadata
+        sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
     bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
     device = torch.device('cuda')

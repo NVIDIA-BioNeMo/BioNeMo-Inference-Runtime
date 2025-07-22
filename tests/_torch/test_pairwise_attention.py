@@ -23,8 +23,8 @@ from test_utils.create_and_load_weights import (
     load_self_pairwise_attention_weights_torch)
 from test_utils.ref_attn import RefPairwiseSelfAttention
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.attention import SelfAttentionPairBias
 
 
@@ -47,7 +47,8 @@ def test_pairwise_attention_backend(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-    metadata_cls = get_attention_backend(sc.backend).Metadata
+    metadata_cls = get_attention_backend(sc.backend,
+                                         AttentionType.PAIRWISE).Metadata
     bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
     device = torch.device('cuda')

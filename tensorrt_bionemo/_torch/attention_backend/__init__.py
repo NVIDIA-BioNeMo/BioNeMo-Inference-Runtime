@@ -1,16 +1,21 @@
-from .interface import (
-    AttentionBackend,
-    AttentionBiases,
-    AttentionMetadata,
-    PredefinedAttentionBiases,
-)
-from .vanilla import VanillaAttention, VanillaAttentionMetadata
+from .cuequiv import CuEquivAttention, CuEquivAttentionMetadata
+from .interface import AttentionBackend, AttentionMetadata, AttentionType
+from .trifast import TrifastAttention, TrifastAttentionMetadata
+from .utils import create_attention, get_attention_backend
+from .vanilla import (VanillaAttentionMetadata, VanillaPairwiseAttention,
+                      VanillaTriangleAttention)
 
 __all__ = [
     "AttentionMetadata",
     "AttentionBackend",
-    "VanillaAttention",
+    "VanillaTriangleAttention",
+    "VanillaPairwiseAttention",
     "VanillaAttentionMetadata",
-    "AttentionBiases",
-    "PredefinedAttentionBiases",
+    "CuEquivAttention",
+    "CuEquivAttentionMetadata",
+    "TrifastAttention",
+    "TrifastAttentionMetadata",
+    "AttentionType",
+    "get_attention_backend",
+    "create_attention",
 ]

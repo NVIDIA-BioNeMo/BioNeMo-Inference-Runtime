@@ -19,8 +19,6 @@ import pytest
 import torch
 from test_utils.ref_attn import plain_triangle_mha
 
-from tensorrt_bionemo._torch.attention_backend.interface import \
-    PredefinedAttentionBiases
 from tensorrt_bionemo._torch.attention_backend.trifast import (
     TrifastAttention, TrifastAttentionMetadata)
 
@@ -63,7 +61,6 @@ def test_trifast_attention_for_triangle(seq_len, i_factor, dtype):
         v.to(dtype),
         # biases=[original_mask.bool(), biases[1].to(dtype)],
         biases=[biases[0], biases[1].to(dtype)],
-        biases_type=PredefinedAttentionBiases.TRIANGLE,
         metadata=metadata)
     plain_out = plain_triangle_mha(q, k, v, num_heads, head_dim,
                                    [biases[0].float(), biases[1].float()])

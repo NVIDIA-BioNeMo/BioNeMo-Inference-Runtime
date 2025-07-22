@@ -29,8 +29,8 @@ from test_utils.create_and_load_weights import (
     load_triangle_attention_node_weights_torch,
     load_triangle_multiplication_node_weights_torch)
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
@@ -149,7 +149,8 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
                       rank=rank)
 
     dtype = str_dtype_to_torch(scenario.torch_dtype)
-    metadata_cls = get_attention_backend("VANILLA").Metadata
+    metadata_cls = get_attention_backend("VANILLA",
+                                         AttentionType.TRIANGLE).Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
     multi_devs_tri_attn_node = TriangleAttentionNode(

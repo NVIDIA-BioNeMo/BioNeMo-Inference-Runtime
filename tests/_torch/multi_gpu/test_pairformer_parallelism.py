@@ -27,8 +27,8 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.create_and_load_weights import (
     create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.transformers import PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
 
@@ -111,8 +111,9 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
                       rank=rank)
 
     triangle_metadata_cls = get_attention_backend(
-        scenario.tri_attention_backend).Metadata
-    pairwise_metadata_cls = get_attention_backend("VANILLA").Metadata
+        scenario.tri_attention_backend, AttentionType.TRIANGLE).Metadata
+    pairwise_metadata_cls = get_attention_backend(
+        "VANILLA", AttentionType.PAIRWISE).Metadata
     attn_metadatas = {
         "triangle_attn": triangle_metadata_cls(mapping=mapping),
         "pairwise_attn": pairwise_metadata_cls(mapping=mapping),

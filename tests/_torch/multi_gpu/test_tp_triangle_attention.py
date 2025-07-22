@@ -24,8 +24,8 @@ from mpi4py.futures import MPIPoolExecutor
 from test_utils.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
 
@@ -57,7 +57,8 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
     mapping = Mapping(world_size=tensor_parallel_size,
                       tp_size=tensor_parallel_size,
                       rank=tensor_parallel_rank)
-    metadata_cls = get_attention_backend(backend).Metadata
+    metadata_cls = get_attention_backend(backend,
+                                         AttentionType.TRIANGLE).Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
     tri_attn = TriangleAttention(

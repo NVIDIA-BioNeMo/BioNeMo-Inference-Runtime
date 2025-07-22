@@ -23,8 +23,8 @@ from test_utils.create_and_load_weights import (
     create_self_pairwise_attention_weights,
     load_self_pairwise_attention_weights_torch)
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.attention import SelfAttentionPairBias
 from tensorrt_bionemo.mapping import Mapping
 
@@ -57,7 +57,8 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
                       rank=tensor_parallel_rank)
 
     dtype = torch.float32
-    metadata_cls = get_attention_backend("VANILLA").Metadata
+    metadata_cls = get_attention_backend("VANILLA",
+                                         AttentionType.PAIRWISE).Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
     pairwise_attn = SelfAttentionPairBias(

@@ -32,8 +32,9 @@ from score import kabsch_torch, lddt
 from tensorrt_llm.logger import logger
 
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
-from tensorrt_bionemo.modules import (PairformerBackendBuilder,
-                                      TokenTransformerBackendBuilder)
+from tensorrt_bionemo.models import Boltz1 as Boltz1Opt
+from tensorrt_bionemo.models import Boltz1AcceleratedModules
+from tensorrt_bionemo.runtime import BackendType, SharedContextMemoryManager
 
 SEED = 42
 """
@@ -310,50 +311,29 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
         report_df.to_csv(f"report_{strategy}.csv", index=False)
 
 
-def load_pairformers(args, model, world_size, rank):
-    context_address = None
-    if args.structure_pairformer_ckpt:
-        structure_pairformer = PairformerBackendBuilder.build(
-            checkpoint_dir=args.structure_pairformer_ckpt,
-            backend=args.structure_pairformer_backend,
-            context_without_device_memory=True)
-        setattr(model, "pairformer_module", structure_pairformer)
-        context_address, _ = structure_pairformer.get_backend_workspace()
-    if args.confidence_pairformer_ckpt:
-        confidence_pairformer = PairformerBackendBuilder.build(
-            checkpoint_dir=args.confidence_pairformer_ckpt,
-            backend=args.confidence_pairformer_backend,
-            context_without_device_memory=True)
-        setattr(model.confidence_module, "pairformer_module",
-                confidence_pairformer)
-    return context_address
-
-
-def load_token_transformer(args, model, world_size, rank, context_address=None):
-    if args.token_transformer_ckpt:
-        token_transformer = TokenTransformerBackendBuilder.build(
-            checkpoint_dir=args.token_transformer_ckpt,
-            backend=args.token_transformer_backend,
-            with_torch_load_fn=True,
-            context_without_device_memory=True,
-            address=context_address)
-        setattr(model.structure_module.score_model, "token_transformer",
-                token_transformer)
-    return context_address
-
-
 def main(args):
     import tensorrt_llm
 
     rank = tensorrt_llm.mpi_rank()
-    world_size = tensorrt_llm.mpi_world_size()
+    tensorrt_llm.mpi_world_size()
     torch.cuda.set_device(rank % args.gpu_per_node)
     model, predict_params = create_original_model(device=torch.device("cuda"))
     logger.set_level("info")
     dcp_size = 1  # FIXME: support dcp > 1
-    # Using original torch or torch backend
-    context_address = load_pairformers(args, model, world_size, rank)
-    load_token_transformer(args, model, world_size, rank, context_address)
+
+    # Create optimized model with TensorRT backends
+    manager = SharedContextMemoryManager()
+    acc_m = Boltz1AcceleratedModules(checkpoints={
+        "structure_pairformer":
+        args.structure_pairformer_ckpt,
+        "confidence_pairformer":
+        args.confidence_pairformer_ckpt,
+        "token_transformer":
+        args.token_transformer_ckpt
+    },
+                                     backend=BackendType.TRT)
+    model = Boltz1Opt.optimize(model, acc_m, manager)
+    manager.load()
 
     run_single_rank(sample_dir=args.sample_dir,
                     model=model,

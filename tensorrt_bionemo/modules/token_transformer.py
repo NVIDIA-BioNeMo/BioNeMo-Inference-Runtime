@@ -12,27 +12,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 from collections import OrderedDict
 from typing import Callable, Optional
 
-import tensorrt as trt
 import torch
 import torch.nn as nn
-from cuda import cudart
-from tensorrt_llm._utils import str_dtype_to_trt, trt_dtype_to_torch
-from tensorrt_llm.logger import logger
-from tensorrt_llm.runtime import Session, TensorInfo
-from tensorrt_llm.runtime.session import _scoped_stream
+from tensorrt_llm._utils import str_dtype_to_trt
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.layers.transformers import TokenTransformer
 from tensorrt_bionemo.configs import TokenTransformerConfig
-from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import BackendBase, BackendBuilder
-from tensorrt_bionemo.runtime.misc import (CUASSERT, dtype_context,
-                                           ensure_contiguous)
+from tensorrt_bionemo.runtime.misc import dtype_context, ensure_contiguous
 
 
 class TokenTransformerTorch(BackendBase):
@@ -108,8 +101,12 @@ class TokenTransformerTRT(BackendBase):
     def __init__(self,
                  config: TokenTransformerConfig,
                  load_weights_fn: Optional[Callable] = None,
-                 impl: nn.Module = None):
-        super().__init__(config, load_weights_fn, impl)
+                 impl: nn.Module = None,
+                 context_memory_allocator: BaseContextMemoryManager = None):
+        super().__init__(config,
+                         load_weights_fn,
+                         impl,
+                         context_memory_allocator=context_memory_allocator)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
         self._concat_bias_cache: torch.Tensor = None  # for Boltz-1 model
 
@@ -139,93 +136,18 @@ class TokenTransformerTRT(BackendBase):
                 The local checkpoint for the token transformer torch backend.
                 This is only used for the Boltz-1 model.
         """
-        self.checkpoint_dir = checkpoint_dir
-        self.world_size = world_size
-        self.runtime_rank = rank
-        if self._load_weights_fn is not None:
-            self._load_weights_fn(
-                self,
-                checkpoint_dir=checkpoint_dir,
-                world_size=world_size,
-                rank=rank,
-                context_without_device_memory=context_without_device_memory,
-                address=address,
-                stream=stream,
-                **kwargs)
-            return
+        # Set attributes for the allocator
+        self._checkpoint_dir = checkpoint_dir
+        self._world_size = world_size
+        self._runtime_rank = rank
 
-        assert self.config is not None
-        config_dtype = self.config.dtype
-        logger.info(f"Engine dtype: {config_dtype}")
-        self.disable_custom_all_reduce = self.config.disable_custom_all_reduce
-        self.tp_size = self.config.mapping.tp_size
-        self.dcp_size = self.config.mapping.dcp_size
-        assert world_size == self.world_size, \
-            (f'Engine world size ({world_size}) != Runtime world size ({self.world_size})')
-        self.engine_name = f"rank{self.runtime_rank}.engine"
-        self.runtime_mapping = Mapping(world_size=self.world_size,
-                                       rank=self.runtime_rank,
-                                       tp_size=self.tp_size,
-                                       dcp_size=self.dcp_size)
-        if self.world_size > 1 and not self.disable_custom_all_reduce:
-            # init_all_reduce_helper()
-            _, self.workspace = CustomAllReduceHelper.allocate_workspace(
-                self.runtime_mapping,
-                CustomAllReduceHelper.max_workspace_size_auto(
-                    self.runtime_mapping.tp_size))
-        self.stream = stream
-        if self.stream is None:
-            self.stream = torch.cuda.current_stream().cuda_stream
-        self.serialize_path = os.path.join(self.checkpoint_dir,
-                                           self.engine_name)
-        with open(self.serialize_path, 'rb') as f:
-            engine_buffer = f.read()
-            assert engine_buffer is not None
-        logger.info(f"Deserialize engine from {self.serialize_path}")
-        self.runtime = trt.Runtime(logger.trt_logger)
-        self.engine = self.runtime.deserialize_cuda_engine(engine_buffer)
-        self.device_memory_size = self.engine.device_memory_size_v2
-        self.address = None
+        # Store the custom stream
+        self._custom_stream = stream
 
-        if not context_without_device_memory:
-            self.context = self.engine.create_execution_context()
-            with _scoped_stream() as stream:
-                self.context.set_optimization_profile_async(0, stream)
-        else:
-            self.context = self.engine.create_execution_context_without_device_memory(
-            )
-            if address is None:
-                address = CUASSERT(cudart.cudaMalloc(
-                    self.device_memory_size))[0]
-            self.context.set_device_memory(address, self.device_memory_size)
-            self.address = address
-            with _scoped_stream() as stream:
-                self.context.set_optimization_profile_async(0, stream)
-        # Initialize session
-        self.session = Session()
-        self.session._runtime = self.runtime
-        self.session._context = self.context
-        self.session.engine = self.engine
+        # Delegate engine management to the allocator
+        if self._context_memory_allocator is not None:
+            self._context_memory_allocator.add_handle(self, stream=stream)
 
-        self.session._print_engine_info()
-        self.engine = self.session.engine
-        logger.info(
-            f"The memory required by the largest profile: {self.engine.device_memory_size_v2}"
-        )
-        self.context = self.session.context
-
-        self.opt_profile_map = {}
-        num_optimization_profiles = self.engine.num_optimization_profiles
-        for i in range(num_optimization_profiles):
-            mask_dims = self.engine.get_tensor_profile_shape("mask", i)
-            min_opt = mask_dims[0]
-            max_opt = mask_dims[-1]
-
-            min_s = min_opt[1]  # 0: batch_size, 1: seqlen
-            max_s = max_opt[1]  # 0: batch_size, 1: seqlen
-
-            self.opt_profile_map[(min_s, max_s)] = i
-        self.curr_profile = 0
         if self.config.version == "v1":  # Boltz-1 model
             if torch_load_weights_fn is not None:
                 self._torch_module = TokenTransformerTorch(
@@ -240,25 +162,6 @@ class TokenTransformerTRT(BackendBase):
             # Delete the bias cache
             self._torch_module.reset()
             self._concat_bias_cache = None
-
-    def get_backend_workspace(self):
-        """ Return the address and the size of the workspace for the backend."""
-        return self.address, self.device_memory_size
-
-    def switch_opt_profile(self, input_length: int):
-        found_profile = -1
-        for k, v in self.opt_profile_map.items():
-            if k[0] <= input_length <= k[1]:
-                found_profile = v
-        if found_profile == -1:
-            raise ValueError(
-                f"No suitable optimization profile found for the current rank. "
-                f"Please check the engine configuration.")
-        if found_profile != self.curr_profile:
-            self.curr_profile = found_profile
-            with _scoped_stream() as stream:
-                self.context.set_optimization_profile_async(
-                    self.curr_profile, stream)
 
     def _forward_v1(self,
                     a: torch.Tensor,
@@ -289,7 +192,6 @@ class TokenTransformerTRT(BackendBase):
                           z: torch.Tensor = None,
                           mask: torch.Tensor = None,
                           **kwargs) -> torch.Tensor:
-        self.switch_opt_profile(a.shape[1])
         original_dtype = s.dtype
 
         # TODO: Use config.get_input_names() to get the input names
@@ -300,26 +202,9 @@ class TokenTransformerTRT(BackendBase):
             "mask": mask.to(self.config.torch_dtype)
         }
 
-        output_info = self.session.infer_shapes([
-            TensorInfo("a", dtype=self.trt_dtype, shape=a.shape),
-            TensorInfo("s", dtype=self.trt_dtype, shape=s.shape),
-            TensorInfo("z", dtype=self.trt_dtype, shape=z.shape),
-            TensorInfo("mask", dtype=self.trt_dtype, shape=mask.shape),
-        ], self.context)
-        outputs = {
-            t.name:
-            torch.empty(tuple(t.shape),
-                        dtype=trt_dtype_to_torch(t.dtype),
-                        device='cuda')
-            for t in output_info
-        }
-        if self.world_size > 1 and not self.disable_custom_all_reduce:
-            inputs["all_reduce_workspace"] = self.workspace
-        ok = self.session.run(inputs,
-                              outputs,
-                              self.stream,
-                              context=self.context)
-        assert ok, "Runtime execution failed"
+        # Use the allocator from the base class for execution
+        allocator = self._context_memory_allocator
+        outputs = allocator.forward(self, inputs)
         return outputs["output_a"].to(original_dtype)
 
     def forward(self, *args, **kwargs) -> torch.Tensor:

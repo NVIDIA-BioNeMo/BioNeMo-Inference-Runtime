@@ -24,6 +24,8 @@ import torch.nn as nn
 from tensorrt_bionemo.configs import (PretrainedModuleConfig,
                                       TorchLoadWeightsMetadata)
 
+from .allocator import BaseContextMemoryManager, SimpleContextMemoryManager
+
 
 class BackendType:
     TRT = "trt"
@@ -41,19 +43,40 @@ class BackendBase(nn.Module):
                  config: PretrainedModuleConfig,
                  load_weights_fn: Optional[Callable] = None,
                  load_weights_fn_kwargs: dict = {},
-                 impl: nn.Module = None):
+                 impl: nn.Module = None,
+                 context_memory_allocator: BaseContextMemoryManager = None):
         """ BackendBase is the base class for all backends.
         It provides the basic functionality for all backends.
         Args:
             config(PretrainedModuleConfig): The configuration for the backend.
             load_weights_fn(Optional[Callable]): The function to load the weights.
             impl(nn.Module): The implementation of the backend. If None, the implementation will be created by the IMPL_CLASS.
+            context_memory_allocator(BaseContextMemoryManager): The context memory allocator to use. If None, the default allocator will be used.
         """
         super().__init__()
-        self.config = config
+        self._config = config
         self._load_weights_fn = load_weights_fn
         self._module = impl
         self._load_weights_fn_kwargs = load_weights_fn_kwargs
+        self._context_memory_allocator = context_memory_allocator
+        if self._context_memory_allocator is None:
+            self._context_memory_allocator = SimpleContextMemoryManager()
+
+    @property
+    def config(self):
+        return self._config
+
+    @property
+    def checkpoint_dir(self):
+        return self._checkpoint_dir
+
+    @property
+    def world_size(self):
+        return self._world_size
+
+    @property
+    def runtime_rank(self):
+        return self._runtime_rank
 
     def reset(self):
         """
@@ -84,9 +107,9 @@ class BackendBase(nn.Module):
             assert issubclass(
                 self.IMPL_CLASS,
                 nn.Module), "IMPL_CLASS must be a subclass of nn.Module"
-            self.checkpoint_dir = checkpoint_dir
-            self.world_size = world_size
-            self.runtime_rank = rank
+            self._checkpoint_dir = checkpoint_dir
+            self._world_size = world_size
+            self._runtime_rank = rank
             self._module = self.IMPL_CLASS(self.config)
             if self._load_weights_fn_kwargs is not None:
                 kwargs.update(self._load_weights_fn_kwargs)
@@ -123,6 +146,7 @@ class BackendBuilder(ABC):
               checkpoint_dir: str,
               backend: str,
               with_torch_load_fn: bool = False,
+              context_memory_allocator: BaseContextMemoryManager = None,
               **kwargs) -> nn.Module:
         """
         Build the backend module from the checkpoint directory.
@@ -154,10 +178,11 @@ class BackendBuilder(ABC):
 
         if backend == BackendType.TORCH:
             module = cls.BACKEND_CLASSES[backend](config, load_weights_fn,
-                                                  load_weights_fn_kwargs)
+                                                  load_weights_fn_kwargs,
+                                                  context_memory_allocator=context_memory_allocator)
             torch_load_weights_fn = None
         else:
-            module = cls.BACKEND_CLASSES[backend](config)
+            module = cls.BACKEND_CLASSES[backend](config, context_memory_allocator=context_memory_allocator)
             torch_load_weights_fn = load_weights_fn
 
         world_size = config.mapping.world_size

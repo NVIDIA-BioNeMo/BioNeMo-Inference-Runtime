@@ -23,7 +23,7 @@ from .interface import AttentionBackend, AttentionMetadata
 
 
 class CuEquivAttentionMetadata(AttentionMetadata):
-    flip_mask: bool = False
+    flip_mask: bool = True
 
 
 class CuEquivAttention(AttentionBackend[CuEquivAttentionMetadata]):

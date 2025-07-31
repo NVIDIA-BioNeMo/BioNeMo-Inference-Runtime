@@ -16,18 +16,22 @@ from typing import Optional
 
 import torch.nn as nn
 
-from tensorrt_bionemo.models.common import AcceleratedModules
-from tensorrt_bionemo.modules import (AffinityBackendBuilder,
-                                      PairformerBackendBuilder,
-                                      TokenTransformerBackendBuilder)
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
+
+from ..helper import AcceleratedModules, build_optimized_module
+from .convert import (convert_hf_affinity_module_torch,
+                      convert_hf_msa_module_torch, convert_hf_pairformer_torch,
+                      convert_hf_token_transformer_torch)
+from .modules import (AffinityBackendBuilder, MSAModuleBackendBuilder,
+                      PairformerBackendBuilder, TokenTransformerBackendBuilder)
 
 
 class Boltz2AcceleratedModules(AcceleratedModules):
 
     def get_supported_module_names(self):
         return [
-            "structure_pairformer", "confidence_pairformer", "token_transformer"
+            "structure_pairformer", "confidence_pairformer",
+            "token_transformer", "msa_module"
         ]
 
 
@@ -36,7 +40,8 @@ class Boltz2AffinityAcceleratedModules(AcceleratedModules):
     def get_supported_module_names(self):
         return [
             "structure_pairformer", "confidence_pairformer",
-            "token_transformer", "affinity_module1", "affinity_module2"
+            "token_transformer", "msa_module", "affinity_module1",
+            "affinity_module2"
         ]
 
 
@@ -44,10 +49,10 @@ class Boltz2:
 
     @staticmethod
     def optimize(
-        model: nn.Module,
-        accelerated_modules: Boltz2AcceleratedModules,
-        context_memory_allocator: Optional[BaseContextMemoryManager] = None
-    ) -> nn.Module:
+            model: nn.Module,
+            accelerated_modules: Boltz2AcceleratedModules,
+            context_memory_allocator: Optional[BaseContextMemoryManager] = None,
+            is_affinity: bool = False) -> nn.Module:
         """
         This function is used to build the optimized version of Boltz2 model from the original.
         Args:
@@ -59,43 +64,124 @@ class Boltz2:
         """
         if accelerated_modules is None:
             return model
+
         module_names = accelerated_modules.get_module_names()
+        device = next(model.parameters()).device
+        state_dict = model.state_dict()
+        opt_m = {}
+
         if "structure_pairformer" in module_names:
+
             checkpoint_dir = accelerated_modules.get_module_checkpoint(
                 "structure_pairformer")
             backend = accelerated_modules.get_module_backend(
                 "structure_pairformer")
-            structure_pairformer = PairformerBackendBuilder.build(
+            default_config = accelerated_modules.get_default_module_config(
+                "structure_pairformer")
+            structure_pairformer = build_optimized_module(
+                state_dict=state_dict,
+                module_name="structure_pairformer",
+                backend_builder=PairformerBackendBuilder,
                 checkpoint_dir=checkpoint_dir,
                 backend=backend,
-                context_memory_allocator=context_memory_allocator)
+                compile=False,  # TODO: Whether to compile the module
+                device=device,
+                context_memory_allocator=context_memory_allocator,
+                default_config=default_config,
+                convert_weights_func=convert_hf_pairformer_torch,
+                convert_weights_func_kwargs={
+                    "pairformer_type": "structure",
+                    "num_layers": default_config.num_blocks,
+                    "weights": state_dict,
+                    "is_affinity": is_affinity
+                },
+            )
             setattr(model, "pairformer_module", structure_pairformer)
+            opt_m["structure_pairformer"] = structure_pairformer
 
         if "confidence_pairformer" in module_names:
             checkpoint_dir = accelerated_modules.get_module_checkpoint(
                 "confidence_pairformer")
             backend = accelerated_modules.get_module_backend(
                 "confidence_pairformer")
-            confidence_pairformer = PairformerBackendBuilder.build(
+            default_config = accelerated_modules.get_default_module_config(
+                "confidence_pairformer")
+            confidence_pairformer = build_optimized_module(
+                state_dict=state_dict,
+                module_name="confidence_pairformer",
+                backend_builder=PairformerBackendBuilder,
                 checkpoint_dir=checkpoint_dir,
                 backend=backend,
-                context_memory_allocator=context_memory_allocator)
-            setattr(model.confidence_module, "pairformer_module",
+                compile=False,  # TODO: Whether to compile the module
+                device=device,
+                context_memory_allocator=context_memory_allocator,
+                default_config=default_config,
+                convert_weights_func=convert_hf_pairformer_torch,
+                convert_weights_func_kwargs={
+                    "pairformer_type": "confidence",
+                    "num_layers": default_config.num_blocks,
+                    "weights": state_dict,
+                    "is_affinity": is_affinity
+                },
+            )
+            setattr(model.confidence_module, "pairformer_stack",
                     confidence_pairformer)
+            opt_m["confidence_pairformer"] = confidence_pairformer
 
         if "token_transformer" in module_names:
             checkpoint_dir = accelerated_modules.get_module_checkpoint(
                 "token_transformer")
             backend = accelerated_modules.get_module_backend(
                 "token_transformer")
-            token_transformer = TokenTransformerBackendBuilder.build(
+            default_config = accelerated_modules.get_default_module_config(
+                "token_transformer")
+            token_transformer = build_optimized_module(
+                state_dict=state_dict,
+                module_name="token_transformer",
+                backend_builder=TokenTransformerBackendBuilder,
                 checkpoint_dir=checkpoint_dir,
                 backend=backend,
-                context_memory_allocator=context_memory_allocator)
+                compile=False,  # TODO: Whether to compile the module
+                device=device,
+                context_memory_allocator=context_memory_allocator,
+                default_config=default_config,
+                convert_weights_func=convert_hf_token_transformer_torch,
+                convert_weights_func_kwargs={
+                    "num_layers": default_config.num_blocks,
+                    "weights": state_dict,
+                    "is_affinity": is_affinity
+                },
+            )
             setattr(model.structure_module.score_model, "token_transformer",
                     token_transformer)
+            opt_m["token_transformer"] = token_transformer
 
-        return model
+        if "msa_module" in module_names:
+            checkpoint_dir = accelerated_modules.get_module_checkpoint(
+                "msa_module")
+            backend = accelerated_modules.get_module_backend("msa_module")
+            default_config = accelerated_modules.get_default_module_config(
+                "msa_module")
+            msa_module = build_optimized_module(
+                state_dict=state_dict,
+                module_name="msa_module",
+                backend_builder=MSAModuleBackendBuilder,
+                checkpoint_dir=checkpoint_dir,
+                backend=backend,
+                compile=False,  # TODO: Whether to compile the module
+                device=device,
+                context_memory_allocator=context_memory_allocator,
+                default_config=default_config,
+                convert_weights_func=convert_hf_msa_module_torch,
+                convert_weights_func_kwargs={
+                    "msa_blocks": default_config.msa_blocks,
+                    "weights": state_dict,
+                    "is_affinity": is_affinity
+                },
+            )
+            setattr(model, "msa_module", msa_module)
+            opt_m["msa_module"] = msa_module
+        return model, opt_m
 
 
 class Boltz2Affinity:
@@ -119,61 +205,64 @@ class Boltz2Affinity:
             return model
 
         module_names = accelerated_modules.get_module_names()
-        if "structure_pairformer" in module_names:
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
-                "structure_pairformer")
-            backend = accelerated_modules.get_module_backend(
-                "structure_pairformer")
-            structure_pairformer = PairformerBackendBuilder.build(
-                checkpoint_dir=checkpoint_dir,
-                backend=backend,
-                context_memory_allocator=context_memory_allocator)
-            setattr(model, "pairformer_module", structure_pairformer)
+        device = next(model.parameters()).device
+        state_dict = model.state_dict()
 
-        if "confidence_pairformer" in module_names:
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
-                "confidence_pairformer")
-            backend = accelerated_modules.get_module_backend(
-                "confidence_pairformer")
-            confidence_pairformer = PairformerBackendBuilder.build(
-                checkpoint_dir=checkpoint_dir,
-                backend=backend,
-                context_memory_allocator=context_memory_allocator)
-            setattr(model.confidence_module, "pairformer_module",
-                    confidence_pairformer)
-
-        if "token_transformer" in module_names:
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
-                "token_transformer")
-            backend = accelerated_modules.get_module_backend(
-                "token_transformer")
-            token_transformer = TokenTransformerBackendBuilder.build(
-                checkpoint_dir=checkpoint_dir,
-                backend=backend,
-                context_memory_allocator=context_memory_allocator)
-            setattr(model.structure_module.score_model, "token_transformer",
-                    token_transformer)
+        model, opt_m = Boltz2.optimize(model,
+                                       accelerated_modules,
+                                       context_memory_allocator,
+                                       is_affinity=True)
 
         if "affinity_module1" in module_names:
             checkpoint_dir = accelerated_modules.get_module_checkpoint(
                 "affinity_module1")
             backend = accelerated_modules.get_module_backend("affinity_module1")
-            affinity_module1 = AffinityBackendBuilder.build(
+            default_config = accelerated_modules.get_default_module_config(
+                "affinity_module1")
+            affinity_module1 = build_optimized_module(
+                state_dict=state_dict,
+                module_name="affinity_module1",
+                backend_builder=AffinityBackendBuilder,
                 checkpoint_dir=checkpoint_dir,
                 backend=backend,
-                context_memory_allocator=context_memory_allocator)
+                compile=False,  # TODO: Whether to compile the module
+                device=device,
+                context_memory_allocator=context_memory_allocator,
+                default_config=default_config,
+                convert_weights_func=convert_hf_affinity_module_torch,
+                convert_weights_func_kwargs={
+                    "weights": state_dict,
+                    "affinity_module_name": "affinity_module1"
+                },
+            )
             setattr(model.affinity_module1, "affinity_module1",
                     affinity_module1)
+            opt_m["affinity_module1"] = affinity_module1
 
         if "affinity_module2" in module_names:
             checkpoint_dir = accelerated_modules.get_module_checkpoint(
                 "affinity_module2")
             backend = accelerated_modules.get_module_backend("affinity_module2")
-            affinity_module2 = AffinityBackendBuilder.build(
+            default_config = accelerated_modules.get_default_module_config(
+                "affinity_module2")
+            affinity_module2 = build_optimized_module(
+                state_dict=state_dict,
+                module_name="affinity_module2",
+                backend_builder=AffinityBackendBuilder,
                 checkpoint_dir=checkpoint_dir,
                 backend=backend,
-                context_memory_allocator=context_memory_allocator)
+                compile=False,  # TODO: Whether to compile the module
+                device=device,
+                context_memory_allocator=context_memory_allocator,
+                default_config=default_config,
+                convert_weights_func=convert_hf_affinity_module_torch,
+                convert_weights_func_kwargs={
+                    "weights": state_dict,
+                    "affinity_module_name": "affinity_module2"
+                },
+            )
             setattr(model.affinity_module2, "affinity_module2",
                     affinity_module2)
+            opt_m["affinity_module2"] = affinity_module2
 
-        return model
+        return model, opt_m

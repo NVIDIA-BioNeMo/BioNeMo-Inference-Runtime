@@ -37,11 +37,6 @@ class RefTriangleMultiplicationNode(nn.Module):
         self.p_out = nn.Linear(dim, dim, bias=False)
         self.g_out = nn.Linear(dim, dim, bias=False)
 
-    def skip_cast(self):
-        self.norm_out = self.norm_out.float()
-        self.p_out = self.p_out.float()
-        self.g_out = self.g_out.float()
-
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -73,8 +68,12 @@ class RefTriangleMultiplicationNode(nn.Module):
             else:
                 x = torch.einsum("kid,kjd->ijd", a, b)
         # Output gating
+        self.norm_out = self.norm_out.float()  # cast to float
+        self.p_out = self.p_out.float()  # cast to float
+        self.g_out = self.g_out.float()  # cast to float
         x = self.p_out(self.norm_out(x)) * self.g_out(x_in.float()).sigmoid()
-
+        if x.dtype != mask.dtype:
+            x = x.to(mask.dtype)
         return x
 
     @classmethod
@@ -215,6 +214,9 @@ class RefTransition(nn.Module):
                  hidden: int = 512,
                  out_dim: Optional[int] = None) -> None:
         super().__init__()
+        self.dim = dim
+        self.hidden = hidden
+        self.out_dim = out_dim
         if out_dim is None:
             out_dim = dim
 
@@ -821,6 +823,7 @@ class RefPairwiseConditioning(nn.Module):
         for i in range(m.num_transitions):
             m.transitions[i] = RefTransition.load_weights(
                 state_dict=state_dict,
+                model=model,
                 layer_path=f"{layer_path}.transitions.{i}")
 
         for (weights_path, bias_path), layer in zip(weights_biases_path,
@@ -1011,11 +1014,16 @@ class RefAffinityModule(nn.Module):
         ]
         m.pairwise_conditioner = RefPairwiseConditioning.load_weights(
             state_dict=state_dict,
+            model=model,
             layer_path=f"{layer_path}.pairwise_conditioner")
         m.pairformer_stack = RefPairformerNoSeqModule.load_weights(
-            state_dict=state_dict, layer_path=f"{layer_path}.pairformer_stack")
+            state_dict=state_dict,
+            model=model,
+            layer_path=f"{layer_path}.pairformer_stack")
         m.affinity_heads = RefAffinityHeadsTransformer.load_weights(
-            state_dict=state_dict, layer_path=f"{layer_path}.affinity_heads")
+            state_dict=state_dict,
+            model=model,
+            layer_path=f"{layer_path}.affinity_heads")
 
         m.pairformer_num_blocks = m.pairformer_stack.num_blocks
         m.pairwise_head_width = m.pairformer_stack.pairwise_head_width
@@ -1053,3 +1061,374 @@ class RefAffinityModule(nn.Module):
             multiplicity=multiplicity,
         )
         return affinity_pred_value, affinity_logits_binary
+
+
+class RefPairWeightedAveraging(nn.Module):
+    """ Reference pair weighted averaging: https://github.com/jwohlwend/boltz/blob/v2.2.0/src/boltz/model/layers/pair_averaging.py """
+
+    def __init__(self,
+                 c_m: int,
+                 c_z: int,
+                 c_h: int,
+                 num_heads: int,
+                 inf: float = 1e9):
+        super().__init__()
+        self.c_m = c_m
+        self.c_z = c_z
+        self.c_h = c_h
+        self.num_heads = num_heads
+        self.inf = inf
+
+        self.norm_m = nn.LayerNorm(c_m)
+        self.norm_z = nn.LayerNorm(c_z)
+
+        self.proj_m = nn.Linear(c_m, c_h * num_heads, bias=False)
+        self.proj_g = nn.Linear(c_m, c_h * num_heads, bias=False)
+        self.proj_z = nn.Linear(c_z, num_heads, bias=False)
+        self.proj_o = nn.Linear(c_h * num_heads, c_m, bias=False)
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2",
+            layer_path: str = "msa_module.layers.0.pair_weighted_averaging",
+            state_dict: Optional[dict] = None):
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        weights_biases_path = [
+            (f"{layer_path}.norm_m.weight", f"{layer_path}.norm_m.bias"),
+            (f"{layer_path}.norm_z.weight", f"{layer_path}.norm_z.bias"),
+            (f"{layer_path}.proj_m.weight", None),
+            (f"{layer_path}.proj_g.weight", None),
+            (f"{layer_path}.proj_z.weight", None),
+            (f"{layer_path}.proj_o.weight", None),
+        ]
+        c_m = state_dict[f"{layer_path}.norm_m.weight"].shape[0]
+        c_z = state_dict[f"{layer_path}.norm_z.weight"].shape[0]
+        c_h_times_num_heads = state_dict[f"{layer_path}.proj_m.weight"].shape[0]
+        num_heads = state_dict[f"{layer_path}.proj_z.weight"].shape[0]
+        c_h = c_h_times_num_heads // num_heads
+        m = cls(c_m=c_m, c_z=c_z, c_h=c_h, num_heads=num_heads)
+        layers = [
+            m.norm_m,
+            m.norm_z,
+            m.proj_m,
+            m.proj_g,
+            m.proj_z,
+            m.proj_o,
+        ]
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m
+
+    def forward(self, m: torch.Tensor, z: torch.Tensor,
+                mask: torch.Tensor) -> torch.Tensor:
+        # Compute layer norms
+        m = self.norm_m(m)
+        z = self.norm_z(z)
+
+        # Project input tensors
+        v = self.proj_m(m)
+        v = v.reshape(*v.shape[:3], self.num_heads, self.c_h)
+        v = v.permute(0, 3, 1, 2, 4)
+
+        # Compute weights
+        b = self.proj_z(z)
+        b = b.permute(0, 3, 1, 2)
+        b = b + (1 - mask[:, None]) * -self.inf
+        w = torch.softmax(b, dim=-1)
+        # Compute gating
+        g = self.proj_g(m)
+        g = g.sigmoid()
+
+        # Compute output
+        o = torch.einsum("bhij,bhsjd->bhsid", w.to(v.dtype), v)
+        o = o.permute(0, 2, 3, 1, 4)
+        o = o.reshape(*o.shape[:3], self.num_heads * self.c_h)
+        o = self.proj_o(g * o)
+        return o
+
+
+class RefOuterProductMean(nn.Module):
+    """Outer product mean layer."""
+
+    def __init__(self, c_in: int, c_hidden: int, c_out: int) -> None:
+        super().__init__()
+        self.c_hidden = c_hidden
+        self.c_out = c_out
+        self.c_in = c_in
+
+        self.norm = nn.LayerNorm(c_in)
+        self.proj_a = nn.Linear(c_in, c_hidden, bias=False)
+        self.proj_b = nn.Linear(c_in, c_hidden, bias=False)
+        self.proj_o = nn.Linear(c_hidden * c_hidden, c_out)
+
+    @classmethod
+    def load_weights(cls,
+                     model: str = "boltz-2",
+                     layer_path: str = "msa_module.layers.0.outer_product_mean",
+                     state_dict: Optional[dict] = None):
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        weights_biases_path = [
+            (f"{layer_path}.norm.weight", f"{layer_path}.norm.bias"),
+            (f"{layer_path}.proj_a.weight", None),
+            (f"{layer_path}.proj_b.weight", None),
+            (f"{layer_path}.proj_o.weight", f"{layer_path}.proj_o.bias"),
+        ]
+        c_in = state_dict[f"{layer_path}.norm.weight"].shape[0]
+        c_hidden = state_dict[f"{layer_path}.proj_a.weight"].shape[0]
+        c_out = state_dict[f"{layer_path}.proj_o.weight"].shape[0]
+        m = cls(c_in=c_in, c_hidden=c_hidden, c_out=c_out)
+        layers = [
+            m.norm,
+            m.proj_a,
+            m.proj_b,
+            m.proj_o,
+        ]
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m
+
+    def forward(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask = mask.unsqueeze(-1).to(m)
+
+        # Compute projections
+        m = self.norm(m)
+        a = self.proj_a(m) * mask
+        b = self.proj_b(m) * mask
+
+        mask = mask[:, :, None, :] * mask[:, :, :, None]
+        num_mask = mask.sum(1).clamp(min=1)
+        z = torch.einsum("bsic,bsjd->bijcd", a.float(), b.float())
+        z = z.reshape(*z.shape[:3], -1)
+        z = z / num_mask
+
+        # Project to output
+        z = self.proj_o(z.to(m))
+        return z
+
+
+class RefMSALayer(nn.Module):
+
+    def __init__(self,
+                 msa_s: int,
+                 token_z: int,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4) -> None:
+        super().__init__()
+        self.msa_s = msa_s
+        self.token_z = token_z
+        self.pairwise_head_width = pairwise_head_width
+        self.pairwise_num_heads = pairwise_num_heads
+
+        self.msa_transition = RefTransition(dim=msa_s, hidden=msa_s * 4)
+        self.pair_weighted_averaging = RefPairWeightedAveraging(
+            c_m=msa_s,
+            c_z=token_z,
+            c_h=32,
+            num_heads=8,
+        )
+        self.pairformer_layer = RefPairformerNoSeqLayer(
+            token_z=token_z,
+            pairwise_head_width=pairwise_head_width,
+            pairwise_num_heads=pairwise_num_heads,
+        )
+        self.outer_product_mean = RefOuterProductMean(
+            c_in=msa_s,
+            c_hidden=32,
+            c_out=token_z,
+        )
+
+    @classmethod
+    def load_weights(cls,
+                     model: str = "boltz-2",
+                     layer_path: str = "msa_module.layers.0",
+                     state_dict: Optional[dict] = None):
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+
+        msa_transition = RefTransition.load_weights(
+            state_dict=state_dict,
+            model=model,
+            layer_path=f"{layer_path}.msa_transition")
+        pair_weighted_averaging = RefPairWeightedAveraging.load_weights(
+            state_dict=state_dict,
+            model=model,
+            layer_path=f"{layer_path}.pair_weighted_averaging")
+        pairformer_layer = RefPairformerNoSeqLayer.load_weights(
+            state_dict=state_dict,
+            model=model,
+            layer_path=f"{layer_path}.pairformer_layer")
+        outer_product_mean = RefOuterProductMean.load_weights(
+            state_dict=state_dict,
+            model=model,
+            layer_path=f"{layer_path}.outer_product_mean")
+
+        m = cls(
+            msa_s=msa_transition.dim,
+            token_z=pair_weighted_averaging.c_z,
+            pairwise_head_width=pairformer_layer.pairwise_head_width,
+            pairwise_num_heads=pairformer_layer.pairwise_num_heads,
+        )
+        setattr(m, "msa_transition", msa_transition)
+        setattr(m, "pair_weighted_averaging", pair_weighted_averaging)
+        setattr(m, "pairformer_layer", pairformer_layer)
+        setattr(m, "outer_product_mean", outer_product_mean)
+        return m
+
+    def forward(
+        self,
+        z: torch.Tensor,
+        m: torch.Tensor,
+        token_mask: torch.Tensor,
+        msa_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        m = m + self.pair_weighted_averaging(m, z, token_mask)
+        m = m + self.msa_transition(m)
+
+        z = z + self.outer_product_mean(m, msa_mask)
+        # Compute pairwise stack
+        z = self.pairformer_layer(z, token_mask)
+
+        return z, m
+
+
+class RefMSAModule(nn.Module):
+    """ Reference MSA module: https://github.com/jwohlwend/boltz/blob/v2.2.0/src/boltz/model/modules/trunkv2.py """
+
+    def __init__(
+        self,
+        msa_s: int,
+        token_z: int,
+        token_s: int,
+        msa_blocks: int,
+        pairwise_head_width: int = 32,
+        pairwise_num_heads: int = 4,
+        use_paired_feature: bool = True,
+        num_tokens: int = 33,
+        **kwargs,
+    ) -> None:
+        """Initialize the MSA module.
+
+        Parameters
+        ----------
+        token_z : int
+            The token pairwise embedding size.
+
+        """
+        super().__init__()
+        self.msa_s = msa_s
+        self.token_z = token_z
+        self.token_s = token_s
+        self.msa_blocks = msa_blocks
+        self.use_paired_feature = use_paired_feature
+        self.num_tokens = num_tokens
+        self.pairwise_head_width = pairwise_head_width
+        self.pairwise_num_heads = pairwise_num_heads
+
+        self.s_proj = nn.Linear(token_s, msa_s, bias=False)
+        self.msa_proj = nn.Linear(
+            num_tokens + 2 + int(use_paired_feature),
+            msa_s,
+            bias=False,
+        )
+        self.layers = nn.ModuleList()
+        for i in range(msa_blocks):
+            self.layers.append(
+                RefMSALayer(
+                    msa_s,
+                    token_z,
+                    pairwise_head_width,
+                    pairwise_num_heads,
+                ))
+
+    @classmethod
+    def load_weights(cls,
+                     model: str = "boltz-2",
+                     layer_path: str = "msa_module",
+                     state_dict: Optional[dict] = None):
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+
+        s_proj_weights = state_dict[f"{layer_path}.s_proj.weight"]
+        msa_proj_weights = state_dict[f"{layer_path}.msa_proj.weight"]
+
+        token_s = s_proj_weights.shape[1]
+        msa_s = s_proj_weights.shape[0]
+
+        all_keys = len([
+            k for k in state_dict.keys()
+            if k.startswith(f"{layer_path}.layers.")
+        ])
+        keys_layer_0 = [
+            k for k in state_dict.keys()
+            if k.startswith(f"{layer_path}.layers.0.")
+        ]
+        msa_blocks = all_keys // len(keys_layer_0)
+        msa_layers = []
+        for i in range(msa_blocks):
+            msa_layers.append(
+                RefMSALayer.load_weights(state_dict=state_dict,
+                                         model=model,
+                                         layer_path=f"{layer_path}.layers.{i}"))
+        token_z = msa_layers[0].token_z
+        pairwise_head_width = msa_layers[0].pairwise_head_width
+        pairwise_num_heads = msa_layers[0].pairwise_num_heads
+
+        num_tokens = 33
+        if msa_proj_weights.shape[1] > num_tokens + 2:
+            use_paired_feature = True
+        else:
+            use_paired_feature = False
+
+        m = cls(
+            msa_s=msa_s,
+            token_z=token_z,
+            token_s=token_s,
+            msa_blocks=msa_blocks,
+            pairwise_head_width=pairwise_head_width,
+            pairwise_num_heads=pairwise_num_heads,
+            use_paired_feature=use_paired_feature,
+            num_tokens=num_tokens,
+        )
+        m.s_proj.weight.data.copy_(s_proj_weights)
+        m.msa_proj.weight.data.copy_(msa_proj_weights)
+        m.layers = nn.ModuleList(msa_layers)
+        return m
+
+    def forward(self, z: torch.Tensor, emb: torch.Tensor, msa: torch.Tensor,
+                has_deletion: torch.Tensor, deletion_value: torch.Tensor,
+                msa_paired: torch.Tensor, msa_mask: torch.Tensor,
+                token_pad_mask: torch.Tensor) -> torch.Tensor:
+
+        msa = torch.nn.functional.one_hot(msa, num_classes=self.num_tokens)
+        has_deletion = has_deletion.unsqueeze(-1)
+        deletion_value = deletion_value.unsqueeze(-1)
+        is_paired = msa_paired.unsqueeze(-1)
+        token_mask = token_pad_mask.float()
+        token_mask = token_mask[:, :, None] * token_mask[:, None, :]
+
+        # Compute MSA embeddings
+        if self.use_paired_feature:
+            m = torch.cat([msa, has_deletion, deletion_value, is_paired],
+                          dim=-1)
+        else:
+            m = torch.cat([msa, has_deletion, deletion_value], dim=-1)
+        m = self.msa_proj(m)
+        m = m + self.s_proj(emb).unsqueeze(1)
+
+        for i in range(self.msa_blocks):
+            z, m = self.layers[i](
+                z,
+                m,
+                token_mask,
+                msa_mask,
+            )
+        return z

@@ -19,9 +19,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tensorrt_llm.functional import AllReduceParams
+from tensorrt_llm.llmapi.utils import print_colored_debug
 
-from tensorrt_bionemo.configs import PairformerConfig, TokenTransformerConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.models.boltz1.configs import (PairformerConfig,
+                                                    TokenTransformerConfig)
 
 from ..attention_backend import AttentionMetadata
 from .attention import SelfAttentionPairBias, SelfAttentionPairBiasWithCache
@@ -56,10 +58,14 @@ class PairformerLayerV1(nn.Module):
                  triangle_attn_backend: str = "VANILLA",
                  pairwise_attn_backend: str = "VANILLA",
                  skip_create_weights: bool = False,
-                 s_path_dtype: torch.dtype = None):
+                 attention_initial_norm: bool = False,
+                 s_path_dtype: torch.dtype = None,
+                 **kwargs):
         super().__init__()
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
+        self.token_s = token_s
+        self.token_z = token_z
         self.mapping = mapping or Mapping()
 
         if s_path_dtype is None:
@@ -72,12 +78,14 @@ class PairformerLayerV1(nn.Module):
                 c_z=token_z,
                 num_heads=num_heads,
                 dtype=s_path_dtype,
+                bias_proj=True,
                 eps=eps,
                 inf=inf,
                 max_attention_pairwise_tp_size=max_attention_pairwise_tp_size,
                 mapping=mapping,
                 skip_create_weights=skip_create_weights,
                 attn_backend=pairwise_attn_backend,
+                initial_norm=attention_initial_norm,
             )
         self.tri_mul_out = TriangleMultiplicationNode(
             layer_idx=layer_idx,
@@ -173,15 +181,14 @@ class PairformerLayerV1(nn.Module):
         z = z + self.transition_z(z)
         return z
 
-    def forward(
-        self,
-        s: torch.Tensor,
-        z: torch.Tensor,
-        mask: torch.Tensor,
-        pair_mask: torch.Tensor,
-        attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self,
+                s: torch.Tensor,
+                z: torch.Tensor,
+                mask: torch.Tensor,
+                pair_mask: torch.Tensor,
+                attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+                all_reduce_params: Optional[AllReduceParams] = None,
+                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         z = self._transform_z(z, pair_mask, attn_metadatas, all_reduce_params)
         if not self.no_update_s:
             s = s + self.attention(
@@ -210,13 +217,12 @@ class PairformerNoSeqLayer(PairformerLayerV1):
                          pairwise_num_heads=pairwise_num_heads,
                          **kwargs)
 
-    def forward(
-            self,
-            z: torch.Tensor,
-            pair_mask: torch.Tensor,
-            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def forward(self,
+                z: torch.Tensor,
+                pair_mask: torch.Tensor,
+                attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+                all_reduce_params: Optional[AllReduceParams] = None,
+                **kwargs) -> torch.Tensor:
         _, update_z = super().forward(s=None,
                                       z=z,
                                       mask=None,
@@ -243,13 +249,12 @@ class PairformerNoSeqModule(nn.Module):
                                  **kwargs) for i in range(num_blocks)
         ])
 
-    def forward(
-            self,
-            z: torch.Tensor,
-            pair_mask: torch.Tensor,
-            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def forward(self,
+                z: torch.Tensor,
+                pair_mask: torch.Tensor,
+                attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+                all_reduce_params: Optional[AllReduceParams] = None,
+                **kwargs) -> torch.Tensor:
         for layer in self.layers:
             z = layer(z, pair_mask, attn_metadatas, all_reduce_params)
         return z
@@ -261,7 +266,6 @@ class PairformerLayerV2(PairformerLayerV1):
         kwargs["s_path_dtype"] = torch.float32
         super().__init__(**kwargs)
         self.post_layer_norm = post_layer_norm
-
         self.pre_norm_s = nn.LayerNorm(self.token_s, dtype=torch.float32)
         self.post_norm_s = None
         if self.post_layer_norm:
@@ -276,14 +280,15 @@ class PairformerLayerV2(PairformerLayerV1):
         attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self._transform_z(z, pair_mask, attention_params, all_reduce_params)
+        z = self._transform_z(z, pair_mask, attn_metadatas, all_reduce_params)
         original_dtype = s.dtype
 
+        # v2 use float precision on the computing of s
         z = z.float()
         s = s.float()
-        self.pre_norm_s(s)
+        s_normed = self.pre_norm_s(s)
         s = s + self.attention(
-            s,
+            s_normed,
             z,
             mask,
             attn_metadata=attn_metadatas.get("pairwise_attn"),
@@ -291,10 +296,8 @@ class PairformerLayerV2(PairformerLayerV1):
         s = s + self.transition_s(s)
         if self.post_layer_norm:
             s = self.post_norm_s(s)
-        if s.dtype != original_dtype:
-            s = s.to(original_dtype)
-        if z.dtype != original_dtype:
-            z = z.to(original_dtype)
+        s = s.to(original_dtype)
+        z = z.to(original_dtype)
         return s, z
 
 
@@ -330,18 +333,46 @@ class PairformerModule(nn.Module):
                     triangle_attn_backend=config.triangle_attn_backend,
                     pairwise_attn_backend=config.pairwise_attn_backend,
                     post_layer_norm=config.post_layer_norm,
+                    attention_initial_norm=config.attention_initial_norm,
                     s_path_dtype=config.s_path_dtype,
                 ))
 
-    def forward(
-        self,
-        s: torch.Tensor,
-        z: torch.Tensor,
-        mask: torch.Tensor,
-        pair_mask: torch.Tensor,
-        attn_metadatas: Optional[dict[str, AttentionMetadata]] = dict(),
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def load_weights(self, weights: dict):
+        loaded_weight = set()
+
+        for name, module in self.named_modules():
+            if len(module._parameters) > 0:
+                print_colored_debug(f"loading for: {name}")
+                try:
+                    if hasattr(module, 'load_weights'):
+                        module.load_weights(weights=weights[name])
+                    else:
+                        print_colored_debug(f" use copy_ to load {name}")
+                        module_weights = weights[name][0]
+                        for n, p in module._parameters.items():
+                            if p is not None:
+                                weight = module_weights[n][:]
+                                if p.dtype != weight.dtype:
+                                    weight = weight.to(p.dtype)
+                                p.data.copy_(weight)
+
+                except Exception as e:
+                    raise e
+            loaded_weight.add(name)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
+
+    def forward(self,
+                s: torch.Tensor,
+                z: torch.Tensor,
+                mask: torch.Tensor,
+                pair_mask: torch.Tensor,
+                attn_metadatas: Optional[dict[str, AttentionMetadata]] = dict(),
+                all_reduce_params: Optional[AllReduceParams] = None,
+                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         for layer in self.layers:
             s, z = layer(s, z, mask, pair_mask, attn_metadatas,
                          all_reduce_params)
@@ -406,15 +437,14 @@ class DiffusionTransformerLayer(nn.Module):
         if post_layer_norm:
             self.post_lnorm = nn.LayerNorm(dim, dtype=dtype, eps=eps)
 
-    def forward(
-            self,
-            a: torch.Tensor,
-            s: torch.Tensor,
-            bias: torch.Tensor,
-            mask: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def forward(self,
+                a: torch.Tensor,
+                s: torch.Tensor,
+                bias: torch.Tensor,
+                mask: Optional[torch.Tensor] = None,
+                attn_metadata: Optional[AttentionMetadata] = None,
+                all_reduce_params: Optional[AllReduceParams] = None,
+                **kwargs) -> torch.Tensor:
         """ First version of DiffusionTransformerLayer, does not support multiplicity > 1 and atom encoder, decoder"""
         b = self.adaln(a, s)
         if self.with_pair_bias_cache:
@@ -464,15 +494,42 @@ class TokenTransformer(nn.Module):
                     skip_create_weights=config.skip_create_weights,
                 ))
 
-    def forward(
-            self,
-            a: torch.Tensor = None,
-            s: torch.Tensor = None,
-            z: Optional[torch.Tensor] = None,
-            mask: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def load_weights(self, weights: dict):
+        loaded_weight = set()
+
+        for name, module in self.named_modules():
+            if len(module._parameters) > 0:
+                print_colored_debug(f"loading for: {name}")
+                try:
+                    if hasattr(module, 'load_weights'):
+                        module.load_weights(weights=weights[name])
+                    else:
+                        print_colored_debug(f" use copy_ to load {name}")
+                        module_weights = weights[name][0]
+                        for n, p in module._parameters.items():
+                            if p is not None:
+                                weight = module_weights[n][:]
+                                if p.dtype != weight.dtype:
+                                    weight = weight.to(p.dtype)
+                                p.data.copy_(weight)
+
+                except Exception as e:
+                    raise e
+            loaded_weight.add(name)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
+
+    def forward(self,
+                a: torch.Tensor = None,
+                s: torch.Tensor = None,
+                z: Optional[torch.Tensor] = None,
+                mask: Optional[torch.Tensor] = None,
+                attn_metadata: Optional[AttentionMetadata] = None,
+                all_reduce_params: Optional[AllReduceParams] = None,
+                **kwargs) -> torch.Tensor:
         if self.version == "v2":
             B, N, M, D = z.shape
             L = self.num_blocks

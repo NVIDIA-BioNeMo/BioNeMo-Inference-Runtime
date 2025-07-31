@@ -28,7 +28,7 @@ from tensorrt_llm._utils import str_dtype_to_trt
 from tensorrt_llm.layers.linear import Linear
 from tensorrt_llm.profiler import device_memory_info, host_memory_info
 
-from tensorrt_bionemo.configs import PretrainedModuleConfig
+from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.allocator import (BaseContextMemoryManager,
                                                 OnDemandContextMemoryManager,

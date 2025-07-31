@@ -30,8 +30,8 @@ from test_utils.ref_layers import RefAffinityModule
 # isort: on
 
 from tensorrt_bionemo._trt.layers.affinity import AffinityModule
-from tensorrt_bionemo.configs.modules import AffinityModuleConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.models.boltz2.configs import AffinityModuleConfig
 
 
 @dataclass(kw_only=True, frozen=True)

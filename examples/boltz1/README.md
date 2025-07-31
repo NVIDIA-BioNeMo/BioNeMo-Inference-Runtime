@@ -153,23 +153,7 @@ Then, you have to use `botlz predict` to dump the input dict to model. Finally, 
 ### Run scripts
 
 ```bash
-$ pip install boltz==0.4.1 --no-deps
-$ pip install pytorch_lightning==2.4.0 fairscale==0.4.13 mashumaro==3.14
-```
-
-The import boltz module will go error, so need to change the `boltz/model/layers/triangular_attention/primitives.py` in the site-packges directory. Replace:
-
-```python
-fa_is_installed = importlib.util.find_spec("flash_attn") is not None
-if fa_is_installed:
-    from flash_attn.bert_padding import unpad_input
-    from flash_attn.flash_attn_interface import flash_attn_unpadded_kvpacked_func
-```
-
-by
-
-```python
-fa_is_installed = False
+$ pip install boltz==2.2.0
 ```
 
 And patch the function `get_dropout_mask` in `boltz/model/layers/drop_out.py`, this make a consistent prediction at the inference time:

@@ -25,8 +25,8 @@ from test_utils.ref_layers import RefAffinityModule
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.layers.affinity import AffinityModule
-from tensorrt_bionemo.configs.modules import AffinityModuleConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.models.boltz2.configs import AffinityModuleConfig
 
 
 @dataclass(kw_only=True, frozen=True)

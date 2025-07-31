@@ -25,7 +25,7 @@ from tensorrt_llm.plugin.plugin import CustomAllReduceHelper
 from tensorrt_llm.runtime import Session, TensorInfo
 from tensorrt_llm.runtime.session import _scoped_stream
 
-from tensorrt_bionemo.configs import PretrainedModuleConfig
+from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping
 
 if TYPE_CHECKING:

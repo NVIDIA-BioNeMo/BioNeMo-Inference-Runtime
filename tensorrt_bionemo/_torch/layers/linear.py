@@ -190,6 +190,8 @@ class Linear(nn.Module):
         assert self._weights_created
 
         def copy(dst: Parameter, src: torch.Tensor):
+            if dst.dtype != src.dtype:
+                src = src.to(dst.dtype)
             assert dst.dtype == src.dtype, f"Incompatible dtype. dst: {dst.dtype}, src: {src.dtype}"
             dst.data.copy_(src)
 

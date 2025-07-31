@@ -24,10 +24,12 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
 from tensorrt_bionemo._torch.layers.affinity import (AffinityModule,
                                                      compute_distogram,
                                                      create_cross_pair_mask)
-from tensorrt_bionemo.configs import AffinityModuleConfig
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
-from tensorrt_bionemo.runtime.backend import BackendBase, BackendBuilder
+from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
+                                              BackendType)
 from tensorrt_bionemo.runtime.misc import ensure_contiguous, get_closest_n
+
+from ..configs import AffinityModuleConfig
 
 
 class AffinityModuleTorch(BackendBase):
@@ -96,11 +98,9 @@ class AffinityModuleTRT(BackendBase):
 
     def __init__(self,
                  config: AffinityModuleConfig,
-                 load_weights_fn: Optional[Callable] = None,
                  impl: nn.Module = None,
                  context_memory_allocator: BaseContextMemoryManager = None):
         super().__init__(config,
-                         load_weights_fn,
                          impl,
                          context_memory_allocator=context_memory_allocator)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
@@ -108,26 +108,6 @@ class AffinityModuleTRT(BackendBase):
         boundaries = torch.linspace(2, config.max_dist,
                                     config.num_dist_bins - 1)
         self.register_buffer("boundaries", boundaries)
-
-    def load_weights(self,
-                     checkpoint_dir: str,
-                     world_size: int,
-                     rank: int,
-                     context_without_device_memory: bool = True,
-                     address=None,
-                     stream=None,
-                     **kwargs):
-        # Set attributes for the allocator
-        self._checkpoint_dir = checkpoint_dir
-        self._world_size = world_size
-        self._runtime_rank = rank
-
-        # Store the custom stream
-        self._custom_stream = stream
-
-        # Delegate engine management to the allocator
-        if self._context_memory_allocator is not None:
-            self._context_memory_allocator.add_handle(self, stream=stream)
 
     @ensure_contiguous
     def forward(self,
@@ -171,5 +151,8 @@ class AffinityModuleTRT(BackendBase):
 
 
 class AffinityBackendBuilder(BackendBuilder):
-    BACKEND_CLASSES = {"trt": AffinityModuleTRT, "torch": AffinityModuleTorch}
+    BACKEND_CLASSES = {
+        BackendType.TRT: AffinityModuleTRT,
+        BackendType.TORCH: AffinityModuleTorch,
+    }
     CONFIG_CLASS = AffinityModuleConfig

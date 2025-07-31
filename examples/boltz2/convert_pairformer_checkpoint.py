@@ -5,13 +5,14 @@ import time
 from pathlib import Path
 
 import safetensors
+import torch
 from tensorrt_llm import logger
 
-from tensorrt_bionemo.configs import (Boltz2Config, PairformerConfig,
-                                      TorchLoadWeightsMetadata)
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.models.boltz2.configs import (Boltz2Config,
+                                                    PairformerConfig)
 from tensorrt_bionemo.models.boltz2.convert import (convert_hf_pairformer,
-                                                    torch_pairformer_load_fn)
+                                                    convert_hf_pairformer_torch)
 from tensorrt_bionemo.runtime.backend import BackendType
 
 
@@ -74,7 +75,7 @@ def parse_arguments():
                         help='The type of pairformer to convert')
     parser.add_argument('--triangle_attn_backend',
                         type=str,
-                        default='VANILLA',
+                        default='CUEQUIV',
                         choices=['VANILLA', 'TRIFAST', 'CUEQUIV'],
                         help='The backend of triangle attention')
     parser.add_argument('--local_checkpoint',
@@ -136,11 +137,14 @@ def convert(worker_rank, world_size, configs, args):
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
         if args.backend == 'all' or args.backend == BackendType.TORCH:
             # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
-            TorchLoadWeightsMetadata(
-                load_weights_fn=torch_pairformer_load_fn,
-                load_weights_fn_kwargs={},
-                compile=True).dump(args.output_dir /
-                                   f'{BackendType.TORCH}/rank{rank}.pkl')
+            weights = convert_hf_pairformer_torch(
+                local_checkpoint=args.local_checkpoint,
+                num_layers=configs[BackendType.TORCH].num_blocks,
+                world_size=world_size,
+                rank=rank,
+                is_affinity=args.is_affinity)
+            torch.save(weights,
+                       args.output_dir / f'{BackendType.TORCH}/weights.pt')
 
 
 def main():
@@ -226,9 +230,7 @@ def main():
             args.workers = world_size
         logger.info(f'Convert checkpoint using {args.workers} workers.')
         import torch.multiprocessing as mp
-        mp.spawn(convert,
-                 nprocs=args.workers,
-                 args=(world_size, pairformer_config, args))
+        mp.spawn(convert, nprocs=args.workers, args=(world_size, configs, args))
 
     tok = time.time()
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))

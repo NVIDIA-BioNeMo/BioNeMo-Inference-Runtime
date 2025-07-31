@@ -12,18 +12,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import re
 
 import torch
-import torch.nn as nn
-import tqdm
 from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
-from tensorrt_bionemo.configs import PairformerConfig, TokenTransformerConfig
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
+
+from .configs import PairformerConfig, TokenTransformerConfig
 
 
 def get_pairwise_attn_weights(mapping: Mapping,
@@ -297,129 +295,199 @@ def convert_hf_pairformer(config: PairformerConfig,
     return weights
 
 
-def torch_load_qkv_weights(module: nn.Module, weights: dict, name: str):
-    weight = weights[f"{name}.weight"]
-    bias = weights.get(f"{name}.bias", None)
-    q_weight, k_weight, v_weight = weight.chunk(3, dim=0)
-    q_bias, k_bias, v_bias = None, None, None
-    if bias is not None:
-        q_bias, k_bias, v_bias = bias.chunk(3, dim=0)
-    module_dtype = module.dtype
-    module.load_weights([
-        {
-            "weight": q_weight.to(module_dtype),
-            "bias": q_bias.to(module_dtype) if q_bias is not None else None
-        },
-        {
-            "weight": k_weight.to(module_dtype),
-            "bias": k_bias.to(module_dtype) if k_bias is not None else None
-        },
-        {
-            "weight": v_weight.to(module_dtype),
-            "bias": v_bias.to(module_dtype) if v_bias is not None else None
-        },
-    ])
+def _load_boltz1_weights(local_checkpoint: str = None, weights: dict = None):
+    state_dict = None
+
+    if weights is not None:
+        state_dict = weights
+
+    if state_dict is None and local_checkpoint is not None:
+        state_dict = torch.load(local_checkpoint,
+                                map_location="cpu",
+                                weights_only=False)["state_dict"]
+    elif state_dict is None:
+        logger.info(
+            f"`weights` and `local_checkpoint` aren't both provided, loading from HuggingFace"
+        )
+        ckpt = load_hf_weights(name="boltz-1", return_raw=True)
+        state_dict = torch.load(ckpt, map_location="cpu",
+                                weights_only=False)["state_dict"]
+    return state_dict
 
 
-def torch_load_kv_weights(module: nn.Module, weights: dict, name: str):
-    weight = weights[f"{name}.weight"]
-    bias = weights.get(f"{name}.bias", None)
-    k_weight, v_weight = weight.chunk(2, dim=0)
-    k_bias, v_bias = None, None
-    if bias is not None:
-        k_bias, v_bias = bias.chunk(2, dim=0)
-    module_dtype = module.dtype
-    module.load_weights([
-        {
-            "weight": k_weight.contiguous().to(module_dtype),
-            "bias": k_bias.to(module_dtype) if k_bias is not None else None
-        },
-        {
-            "weight": v_weight.contiguous().to(module_dtype),
-            "bias": v_bias.to(module_dtype) if v_bias is not None else None
-        },
-    ])
-
-
-def torch_load_vanilla_weights(module: nn.Module, weights: dict, name: str):
-    weight = weights[f"{name}.weight"]
-    bias = weights.get(f"{name}.bias", None)
-    module_dtype = module.dtype
-    module.load_weights([{
-        "weight":
-        weight.to(module_dtype),
-        "bias":
-        bias.to(module_dtype) if bias is not None else None
-    }])
-
-
-def torch_pairformer_load_fn(pretrained_module: nn.Module,
-                             checkpoint_dir: str = None,
-                             world_size: int = 1,
-                             rank: int = 0,
-                             weights: dict = None,
-                             pairformer_type: str = "structure",
-                             **kwargs):
+def convert_hf_pairformer_torch(local_checkpoint: str = None,
+                                world_size: int = 1,
+                                rank: int = 0,
+                                weights: dict = None,
+                                pairformer_type: str = "structure",
+                                num_layers: int = None,
+                                prefix: str = None,
+                                **kwargs):
     """
-    Load a pairformer model from a PyTorch checkpoint.
-    This function is used to in the tensorrt_bionemo.runtime.backend_builder.BackendBuilder.load_weights method.
-
+    This function is used to convert PyTorch weights to dict for pairformer v1 torch backend.
     Args:
-        module: The module to load the weights into.
-        checkpoint_dir: The directory to load the checkpoint from.
+        local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         world_size: The number of processes to use.
         rank: The rank of the process.
-        weights: The weights to load into the module.
-        pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
+        weights: The model weights to load into the module. If weights is None, the function will load the weights from the local_checkpoint.
+        pairformer_type: The type of pairformer v1 to convert. 'structure' or 'confidence'
+        num_layers: The number of layers to convert. If num_layers is None, the function will automatically calculate the number of layers.
+    Returns:
+        dict: The weights is loaded from the Pairformer Torch backend.
     """
-    if weights is None:
-        weights = convert_hf_pairformer(module.config,
-                                        Mapping(),
-                                        pairformer_type,
-                                        local_checkpoint=checkpoint_dir)
+    state_dict = _load_boltz1_weights(local_checkpoint, weights)
 
-    for name, module in tqdm.tqdm(list(module.named_modules()),
-                                  desc="Loading weights"):
-        if len(module._parameters) > 0:
-            if name.endswith(".attention.proj_z.0"):
-                prefix = ".".join(name.split(".")[:-1])
-                weight = weights[f"{prefix}_norm.weight"]
-                bias = weights[f"{prefix}_norm.bias"]
-                module.bias.data.copy_(bias.to(module.weight.dtype))
-                module.weight.data.copy_(weight.to(module.weight.dtype))
-            elif name.endswith(".attention.proj_z.1"):
-                prefix = ".".join(name.split(".")[:-1])
-                weight = weights[f"{prefix}.weight"]
-                bias = weights.get(f"{prefix}.bias", None)
-                if bias is not None:
-                    bias = bias.to(module.weight.dtype)
-                module.load_weights([{
-                    "weight": weight.to(module.weight.dtype),
-                    "bias": bias
-                }])
-            elif hasattr(module, "load_weights"):
-                weight = weights[f"{name}.weight"]
-                bias = weights.get(f"{name}.bias", None)
-                module_dtype = module.dtype
-                if "qkv_proj" in name:
-                    torch_load_qkv_weights(module, weights, name)
-                elif "kv_proj" in name or "proj_kv" in name or "p_in" in name or "g_in" in name:
-                    torch_load_kv_weights(module, weights, name)
-                elif "fused_fc2_fc1" in name:
-                    torch_load_kv_weights(module, weights, name)
-                else:
-                    module.load_weights([{
-                        "weight":
-                        weight.to(module_dtype),
-                        "bias":
-                        bias.to(module_dtype) if bias is not None else None
-                    }])
-            else:
-                for n, p in module._parameters.items():
-                    if f"{name}.{n}" in weights:
-                        p.data.copy_(weights[f"{name}.{n}"].to(p.dtype))
-                    else:
-                        logger.warning(f"Missing weights for {name}.{n}")
+    module_state_dict = {}
+    if prefix is None:
+        prefix = "pairformer_module."
+        if pairformer_type == "confidence":
+            prefix = f"confidence_module.{prefix}"
+
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            module_state_dict[k.replace(prefix, "")] = v
+    tbnm_state_dict = {}
+    for i in range(num_layers):
+        # weight for pairwise attention
+        if f"layers.{i}.attention.norm_s.weight" in module_state_dict:
+            tbnm_state_dict[f"layers.{i}.attention.norm_s"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.attention.norm_s.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.attention.norm_s.bias"]
+            }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_q"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_q.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.attention.proj_q.bias"]
+        }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_kv"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_k.weight"],
+        }, {
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_v.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_g"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_g.weight"],
+        }]
+        if f"layers.{i}.attention.proj_z.0.weight" in module_state_dict:  # for attention pair bias v2
+            tbnm_state_dict[f"layers.{i}.attention.proj_z.0"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.attention.proj_z.0.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.attention.proj_z.0.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.attention.proj_z.1"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.attention.proj_z.1.weight"],
+            }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_o"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_o.weight"]
+        }]
+
+        # weight for tri_mul_out and tri_mul_in
+        for name in ["tri_mul_out", "tri_mul_in"]:
+            tbnm_state_dict[f"layers.{i}.{name}.norm_in"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.norm_in.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.{name}.norm_in.bias"]
+            }]
+
+            w = module_state_dict[f"layers.{i}.{name}.p_in.weight"]
+            p_in_0_weight, p_in_1_weight = w.chunk(2, dim=0)
+            tbnm_state_dict[f"layers.{i}.{name}.p_in"] = [{
+                'weight':
+                p_in_0_weight,
+            }, {
+                'weight':
+                p_in_1_weight,
+            }]
+
+            w = module_state_dict[f"layers.{i}.{name}.g_in.weight"]
+            g_in_0_weight, g_in_1_weight = w.chunk(2, dim=0)
+            tbnm_state_dict[f"layers.{i}.{name}.g_in"] = [{
+                'weight':
+                g_in_0_weight,
+            }, {
+                'weight':
+                g_in_1_weight,
+            }]
+            tbnm_state_dict[f"layers.{i}.{name}.norm_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.norm_out.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.{name}.norm_out.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.{name}.p_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.p_out.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.{name}.g_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.g_out.weight"],
+            }]
+
+        # weight for tri_attn_start and tri_attn_end
+        for name in ["start", "end"]:
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.layer_norm"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.layer_norm.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.tri_att_{name}.layer_norm.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.linear"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.mha.qkv_proj"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_q.weight"],
+            }, {
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_k.weight"],
+            }, {
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_v.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.mha.o_proj"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_o.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.mha.g_proj"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
+            }]
+        # weight for transition_s and transition_z
+        for name in ["s", "z"]:
+            tbnm_state_dict[f"layers.{i}.transition_{name}.norm"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.norm.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.transition_{name}.norm.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.transition_{name}.fused_fc2_fc1"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.fc2.weight"],
+            }, {
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.fc1.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.transition_{name}.fc3"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.fc3.weight"],
+            }]
+    return tbnm_state_dict
 
 
 def get_adaln_weights(mapping: Mapping,
@@ -633,101 +701,352 @@ def convert_hf_token_transformer(config: TokenTransformerConfig,
     return weights
 
 
-def torch_load_adaln_weights(module: nn.Module, weights: dict, name: str):
-    if "s_norm" in name:  # skip a_norm because it's initialized by torch
-        module.weight.data.copy_(weights[f"{name}.weight"].to(
-            module.weight.dtype))
-        if module.bias is not None:
-            module.bias.data.copy_(weights[f"{name}.bias"].to(
-                module.bias.dtype))
-    elif "fused_s_scale_s_bias" in name:
-        weight = weights[f"{name}.weight"]
-        bias = weights.get(f"{name}.bias", None)
-        s_scale_weight, s_bias_weight = weight.chunk(2, dim=0)
-        s_scale_bias, s_bias_bias = None, None
-        if bias is not None:
-            s_scale_bias, s_bias_bias = bias.chunk(2, dim=0)
-        module.load_weights([
+def convert_hf_token_transformer_torch(local_checkpoint: str = None,
+                                       world_size: int = 1,
+                                       rank: int = 0,
+                                       weights: dict = None,
+                                       num_layers: int = None,
+                                       **kwargs):
+    """
+    Convert a token transformer model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    state_dict = _load_boltz1_weights(local_checkpoint, weights)
+    prefix = "structure_module.score_model.token_transformer."
+    module_state_dict = {}
+
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            module_state_dict[k.replace(prefix, "")] = v
+
+    tbnm_state_dict = {}
+    dim = module_state_dict[f"layers.0.adaln.s_bias.weight"].shape[0]
+    dtype = module_state_dict[f"layers.0.adaln.s_bias.weight"].dtype
+
+    for i in range(num_layers):
+        # weight for adaln
+        tbnm_state_dict[f"layers.{i}.adaln.a_norm"] = [{
+            "weight":
+            torch.ones([dim], dtype=dtype)
+        }]
+        tbnm_state_dict[f"layers.{i}.adaln.s_norm"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.adaln.s_norm.weight"]
+        }]
+        tbnm_state_dict[f"layers.{i}.adaln.fused_s_scale_s_bias"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.adaln.s_scale.weight"],
+            "bias":
+            module_state_dict[f"layers.{i}.adaln.s_scale.bias"]
+        }, {
+            "weight":
+            module_state_dict[f"layers.{i}.adaln.s_bias.weight"],
+            "bias":
+            torch.zeros([dim], dtype=dtype)
+        }]
+
+        # weight for pairwise attention
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_q"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.bias"]
+        }]
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_kv"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_k.weight"],
+        }, {
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_v.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_g"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_g.weight"],
+        }]
+
+        if f"layers.{i}.pair_bias_attn.proj_z.0.weight" in module_state_dict:  # v2
+            tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1.weight"],
+            }]
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_o"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_o.weight"]
+        }]
+
+        # weight for output_projection
+        tbnm_state_dict[f"layers.{i}.output_projection"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.output_projection.0.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.output_projection.0.bias"]
+        }]
+
+        # weight for conditioned transition block
+        tbnm_state_dict[f"layers.{i}.transition.adaln.a_norm"] = [{
+            "weight":
+            torch.ones([dim], dtype=dtype)
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.adaln.s_norm"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.transition.adaln.s_norm.weight"]
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.adaln.fused_s_scale_s_bias"] = [
             {
                 "weight":
-                s_scale_weight.to(module.weight.dtype),
+                module_state_dict[
+                    f"layers.{i}.transition.adaln.s_scale.weight"],
                 "bias":
-                s_scale_bias.to(module.bias.dtype)
-                if s_scale_bias is not None else None
-            },
-            {
+                module_state_dict[f"layers.{i}.transition.adaln.s_scale.bias"]
+            }, {
                 "weight":
-                s_bias_weight.to(module.weight.dtype),
+                module_state_dict[f"layers.{i}.transition.adaln.s_bias.weight"],
                 "bias":
-                s_bias_bias.to(module.bias.dtype)
-                if s_bias_bias is not None else None
-            },
-        ])
+                torch.zeros([dim], dtype=dtype)
+            }
+        ]
+        swish_gate_weight = module_state_dict[
+            f"layers.{i}.transition.swish_gate.0.weight"]
+        swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(
+            swish_gate_weight, 2, dim=0)
+        tbnm_state_dict[f"layers.{i}.transition.fused_swl_a_to_b"] = [{
+            "weight":
+            swish_gate_weight_0,
+        }, {
+            "weight":
+            swish_gate_weight_1,
+        }, {
+            "weight":
+            module_state_dict[f"layers.{i}.transition.a_to_b.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.b_to_a"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.transition.b_to_a.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.output_projection"] = [{
+            "weight":
+            module_state_dict[
+                f"layers.{i}.transition.output_projection.0.weight"],
+            "bias":
+            module_state_dict[f"layers.{i}.transition.output_projection.0.bias"]
+        }]
+
+    return tbnm_state_dict
 
 
-def torch_token_transformer_load_fn(pretrained_module: nn.Module,
-                                    checkpoint_dir: str = None,
-                                    world_size: int = 1,
-                                    rank: int = 0,
-                                    weights: dict = None,
-                                    **kwargs):
+def convert_hf_msa_module_torch(local_checkpoint: str = None,
+                                world_size: int = 1,
+                                rank: int = 0,
+                                weights: dict = None,
+                                msa_blocks: int = None,
+                                **kwargs):
     """
-    Load a token transformer model from a PyTorch checkpoint.
+    Convert a msa module model from a Hugging Face checkpoint to a PyTorch model weights.
     """
-    if weights is None:
-        weights = convert_hf_token_transformer(pretrained_module.config,
-                                               Mapping(),
-                                               local_checkpoint=checkpoint_dir)
+    state_dict = _load_boltz1_weights(local_checkpoint, weights)
+    prefix = "msa_module."
+    module_state_dict = {}
 
-    version = pretrained_module.config.version
-    for name, module in tqdm.tqdm(list(pretrained_module.named_modules()),
-                                  desc="Loading weights"):
-        if len(module._parameters) > 0:
-            if re.search(r"layers\.\d+\.adaln\..+", name):
-                torch_load_adaln_weights(module, weights, name)
-            elif "pair_bias_attn" in name:
-                # TODO: move to a function
-                if name.endswith(".proj_z.0"):
-                    if version != "v1":  # skip for v2
-                        continue
-                    prefix = ".".join(name.split(".")[:-1])
-                    weight = weights[f"{prefix}_norm.weight"]
-                    bias = weights[f"{prefix}_norm.bias"]
-                    module.bias.data.copy_(bias.to(module.weight.dtype))
-                    module.weight.data.copy_(weight.to(module.weight.dtype))
-                elif name.endswith(".proj_z.1"):
-                    if version != "v1":  # skip for v2
-                        continue
-                    prefix = ".".join(name.split(".")[:-1])
-                    weight = weights[f"{prefix}.weight"]
-                    bias = weights.get(f"{prefix}.bias", None)
-                    if bias is not None:
-                        bias = bias.to(module.weight.dtype)
-                    module.load_weights([{
-                        "weight":
-                        weight.to(module.weight.dtype),
-                        "bias":
-                        bias
-                    }])
-                elif "proj_kv" in name:
-                    torch_load_kv_weights(module, weights, name)
-                elif hasattr(module, "load_weights"):
-                    torch_load_vanilla_weights(module, weights, name)
-            elif "transition" in name:
-                if "adaln" in name:
-                    torch_load_adaln_weights(module, weights, name)
-                elif "fused_swl_a_to_b" in name:
-                    torch_load_qkv_weights(module, weights, name)
-                elif "output_projection" in name:
-                    torch_load_vanilla_weights(module, weights, name)
-                elif "b_to_a" in name:
-                    torch_load_vanilla_weights(module, weights, name)
-            elif "output_projection" in name:
-                torch_load_vanilla_weights(module, weights, name)
-            elif "post_lnorm" in name:
-                weight = weights[f"{name}.weight"]
-                bias = weights[f"{name}.bias"]
-                module.bias.data.copy_(bias.to(module.weight.dtype))
-                module.weight.data.copy_(weight.to(module.weight.dtype))
-            else:
-                logger.warning(f"Missing weights for {name}")
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            module_state_dict[k.replace(prefix, "")] = v
+
+    tbnm_state_dict = {}
+    tbnm_state_dict[f"s_proj"] = [{
+        "weight": module_state_dict[f"s_proj.weight"],
+    }]
+    tbnm_state_dict[f"msa_proj"] = [{
+        "weight":
+        module_state_dict[f"msa_proj.weight"],
+    }]
+
+    for i in range(msa_blocks):
+        # Weight for msa transition
+        tbnm_state_dict[f"layers.{i}.msa_transition.norm"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.msa_transition.norm.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.msa_transition.norm.bias"]
+        }]
+        tbnm_state_dict[f"layers.{i}.msa_transition.fused_fc2_fc1"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.msa_transition.fc2.weight"],
+        }, {
+            'weight':
+            module_state_dict[f"layers.{i}.msa_transition.fc1.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.msa_transition.fc3"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.msa_transition.fc3.weight"],
+        }]
+
+        # Weight for pair_weighted_averaging
+        tbnm_state_dict[f"layers.{i}.pair_weighted_averaging.norm_m"] = [{
+            'weight':
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.norm_m.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.pair_weighted_averaging.norm_m.bias"]
+        }]
+        tbnm_state_dict[f"layers.{i}.pair_weighted_averaging.norm_z"] = [{
+            'weight':
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.norm_z.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.pair_weighted_averaging.norm_z.bias"]
+        }]
+        tbnm_state_dict[
+            f"layers.{i}.pair_weighted_averaging.fused_proj_m_g"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.pair_weighted_averaging.proj_m.weight"],
+            }, {
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.pair_weighted_averaging.proj_g.weight"],
+            }]
+        tbnm_state_dict[f"layers.{i}.pair_weighted_averaging.proj_z"] = [{
+            'weight':
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.proj_z.weight"]
+        }]
+        tbnm_state_dict[f"layers.{i}.pair_weighted_averaging.proj_o"] = [{
+            'weight':
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.proj_o.weight"]
+        }]
+
+        # Weight for pairformer_layer
+        for name in ["tri_mul_out", "tri_mul_in"]:
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.norm_in"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.norm_in.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.{name}.norm_in.bias"]
+            }]
+
+            w = module_state_dict[f"layers.{i}.{name}.p_in.weight"]
+            p_in_0_weight, p_in_1_weight = w.chunk(2, dim=0)
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.p_in"] = [{
+                'weight':
+                p_in_0_weight,
+            }, {
+                'weight':
+                p_in_1_weight,
+            }]
+
+            w = module_state_dict[f"layers.{i}.{name}.g_in.weight"]
+            g_in_0_weight, g_in_1_weight = w.chunk(2, dim=0)
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.g_in"] = [{
+                'weight':
+                g_in_0_weight,
+            }, {
+                'weight':
+                g_in_1_weight,
+            }]
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.norm_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.norm_out.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.{name}.norm_out.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.p_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.p_out.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.g_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.g_out.weight"],
+            }]
+
+        # weight for tri_attn_start and tri_attn_end
+        for name in ["start", "end"]:
+            tbnm_state_dict[
+                f"layers.{i}.pairformer_layer.tri_attn_{name}.layer_norm"] = [{
+                    'weight':
+                    module_state_dict[
+                        f"layers.{i}.tri_att_{name}.layer_norm.weight"],
+                    'bias':
+                    module_state_dict[
+                        f"layers.{i}.tri_att_{name}.layer_norm.bias"]
+                }]
+            tbnm_state_dict[
+                f"layers.{i}.pairformer_layer.tri_attn_{name}.linear"] = [{
+                    'weight':
+                    module_state_dict[
+                        f"layers.{i}.tri_att_{name}.linear.weight"],
+                }]
+            tbnm_state_dict[
+                f"layers.{i}.pairformer_layer.tri_attn_{name}.mha.qkv_proj"] = [
+                    {
+                        'weight':
+                        module_state_dict[
+                            f"layers.{i}.tri_att_{name}.mha.linear_q.weight"],
+                    }, {
+                        'weight':
+                        module_state_dict[
+                            f"layers.{i}.tri_att_{name}.mha.linear_k.weight"],
+                    }, {
+                        'weight':
+                        module_state_dict[
+                            f"layers.{i}.tri_att_{name}.mha.linear_v.weight"],
+                    }
+                ]
+            tbnm_state_dict[
+                f"layers.{i}.pairformer_layer.tri_attn_{name}.mha.o_proj"] = [{
+                    'weight':
+                    module_state_dict[
+                        f"layers.{i}.tri_att_{name}.mha.linear_o.weight"],
+                }]
+            tbnm_state_dict[
+                f"layers.{i}.pairformer_layer.tri_attn_{name}.mha.g_proj"] = [{
+                    'weight':
+                    module_state_dict[
+                        f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
+                }]
+        # weight for transition_z
+        tbnm_state_dict[f"layers.{i}.pairformer_layer.transition_z.norm"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.z_transition.norm.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.z_transition.norm.bias"]
+        }]
+        tbnm_state_dict[
+            f"layers.{i}.pairformer_layer.transition_z.fused_fc2_fc1"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.z_transition.fc2.weight"],
+            }, {
+                'weight':
+                module_state_dict[f"layers.{i}.z_transition.fc1.weight"],
+            }]
+        tbnm_state_dict[f"layers.{i}.pairformer_layer.transition_z.fc3"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.z_transition.fc3.weight"],
+        }]
+
+        # weight for outer_product_mean
+        tbnm_state_dict[f"layers.{i}.outer_product_mean.norm"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.outer_product_mean.norm.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.outer_product_mean.norm.bias"]
+        }]
+        tbnm_state_dict[f"layers.{i}.outer_product_mean.fused_proj_a_b"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.outer_product_mean.proj_a.weight"],
+        }, {
+            'weight':
+            module_state_dict[f"layers.{i}.outer_product_mean.proj_b.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.outer_product_mean.proj_o"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.outer_product_mean.proj_o.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.outer_product_mean.proj_o.bias"]
+        }]
+    return tbnm_state_dict

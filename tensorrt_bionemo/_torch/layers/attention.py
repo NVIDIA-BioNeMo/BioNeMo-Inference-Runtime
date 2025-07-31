@@ -172,6 +172,7 @@ class SelfAttentionPairBias(nn.Module):
                  c_z: int,
                  num_heads: int,
                  initial_norm: bool = True,
+                 bias_proj: bool = False,
                  dtype: torch.dtype = None,
                  inf: float = 1e6,
                  eps: float = 1e-5,
@@ -204,6 +205,7 @@ class SelfAttentionPairBias(nn.Module):
         self.num_key_value_heads = self.num_key_value_heads // tp_size
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_key_value_heads * self.head_dim
+        self.bias_proj = bias_proj
 
         self.norm_s = None
         if initial_norm:
@@ -241,20 +243,20 @@ class SelfAttentionPairBias(nn.Module):
             gather_output=False,
             skip_create_weights=skip_create_weights,
         )
-
-        self.proj_z = nn.Sequential(
-            nn.LayerNorm(c_z, dtype=dtype, eps=eps),
-            Linear(
-                c_z,
-                tp_size * self.num_heads,
-                bias=False,
-                dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=False,
-                skip_create_weights=skip_create_weights,
-            ),
-        )
+        if self.bias_proj:
+            self.proj_z = nn.Sequential(
+                nn.LayerNorm(c_z, dtype=dtype, eps=eps),
+                Linear(
+                    c_z,
+                    tp_size * self.num_heads,
+                    bias=False,
+                    dtype=dtype,
+                    mapping=mapping,
+                    tensor_parallel_mode=TensorParallelMode.COLUMN,
+                    gather_output=False,
+                    skip_create_weights=skip_create_weights,
+                ),
+            )
         self.proj_o = Linear(
             tp_size * self.q_size,
             self.c_s,
@@ -294,7 +296,7 @@ class SelfAttentionPairBias(nn.Module):
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
         mask_bias = (1 - mask[:, None, None].float()) * -self.inf
         pair_bias = z
-        if compute_pair_bias:
+        if compute_pair_bias and self.bias_proj:
             pair_bias = self.proj_z(z)
             pair_bias = torch.moveaxis(pair_bias, 3,
                                        1)  # [B, N, N, H] -> [B, H, N, N]
@@ -317,6 +319,7 @@ class SelfAttentionPairBias(nn.Module):
 class SelfAttentionPairBiasWithCache(SelfAttentionPairBias):
 
     def __init__(self, *args, **kwargs):
+        kwargs["bias_proj"] = True
         super().__init__(*args, **kwargs)
         self._bias_key = f"{self.__class__.__name__}_{self.layer_idx}"
 

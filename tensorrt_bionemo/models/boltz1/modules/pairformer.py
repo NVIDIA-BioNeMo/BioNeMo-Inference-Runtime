@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional
-
 import torch
 import torch.nn as nn
 from tensorrt_llm._utils import str_dtype_to_trt
@@ -22,21 +20,20 @@ from tensorrt_llm._utils import str_dtype_to_trt
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.layers.transformers import PairformerModule
-from tensorrt_bionemo.configs import PairformerConfig
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
-from tensorrt_bionemo.runtime.backend import BackendBase, BackendBuilder
+from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
+                                              BackendType)
 from tensorrt_bionemo.runtime.misc import (dtype_context, ensure_contiguous,
                                            get_closest_n)
+
+from ..configs import PairformerConfig
 
 
 class PairformerTorch(BackendBase):
     IMPL_CLASS = PairformerModule
 
-    def __init__(self,
-                 config: PairformerConfig,
-                 load_weights_fn: Optional[Callable] = None,
-                 impl: nn.Module = None):
-        super().__init__(config, load_weights_fn, impl)
+    def __init__(self, config: PairformerConfig, impl: nn.Module = None):
+        super().__init__(config, impl)
 
         pairwise_metadata_cls = get_attention_backend(
             config.pairwise_attn_backend).Metadata
@@ -69,34 +66,12 @@ class PairformerTRT(BackendBase):
 
     def __init__(self,
                  config: PairformerConfig,
-                 load_weights_fn: Optional[Callable] = None,
                  impl: nn.Module = None,
                  context_memory_allocator: BaseContextMemoryManager = None):
         super().__init__(config,
-                         load_weights_fn,
                          impl,
                          context_memory_allocator=context_memory_allocator)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
-
-    def load_weights(self,
-                     checkpoint_dir: str,
-                     world_size: int,
-                     rank: int,
-                     context_without_device_memory: bool = True,
-                     address=None,
-                     stream=None,
-                     **kwargs):
-        # Set attributes for the allocator
-        self._checkpoint_dir = checkpoint_dir
-        self._world_size = world_size
-        self._runtime_rank = rank
-
-        # Store the custom stream
-        self._custom_stream = stream
-
-        # Delegate engine management to the allocator
-        if self._context_memory_allocator is not None:
-            self._context_memory_allocator.add_handle(self, stream=stream)
 
     @ensure_contiguous
     def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
@@ -130,5 +105,8 @@ class PairformerTRT(BackendBase):
 
 
 class PairformerBackendBuilder(BackendBuilder):
-    BACKEND_CLASSES = {"trt": PairformerTRT, "torch": PairformerTorch}
+    BACKEND_CLASSES = {
+        BackendType.TRT: PairformerTRT,
+        BackendType.TORCH: PairformerTorch,
+    }
     CONFIG_CLASS = PairformerConfig

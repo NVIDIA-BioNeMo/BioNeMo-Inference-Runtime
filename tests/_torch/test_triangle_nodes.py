@@ -170,7 +170,6 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
         x = x.to(dtype)
         mask = mask.to(dtype)
         ref_node = ref_node.to(dtype)
-        ref_node.skip_cast()
         ref_output = ref_node(x, mask)
         output = node(x, mask)
 

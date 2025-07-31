@@ -12,14 +12,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
-from tensorrt_llm._utils import str_dtype_to_trt
+import torch
+from transformers import PretrainedConfig
 
-from .base import DimSpec, PretrainedModuleConfig
-from .build import BuildModuleConfig
+from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig
+from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+
+from .const import TOKENS
 
 
 class PairformerConfig(PretrainedModuleConfig):
@@ -280,34 +284,33 @@ class TokenTransformerBuildConfig(BuildModuleConfig):
         return _create_optimization_profiles(self)
 
 
-class AffinityModuleConfig(PretrainedModuleConfig):
+class MSAModuleConfig(PretrainedModuleConfig):
 
     def __init__(self,
-                 *,
-                 token_s: int = 384,
-                 token_z: int = 128,
-                 num_dist_bins: int = 64,
-                 max_dist: int = 22,
-                 pairformer_num_blocks: int = 8,
+                 msa_s: int,
+                 token_z: int,
+                 token_s: int,
+                 msa_blocks: int,
+                 num_tokens: int,
                  pairwise_head_width: int = 32,
                  pairwise_num_heads: int = 4,
+                 use_paired_feature: bool = True,
+                 version: str = "v1",
                  triangle_attn_backend: str = 'VANILLA',
-                 max_batch_size: int = 1,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
+                 backend: str = "torch",
                  **kwargs):
         super().__init__(**kwargs)
-        self.token_s = token_s
+        self.msa_s = msa_s
         self.token_z = token_z
-        self.num_dist_bins = num_dist_bins
-        self.max_dist = max_dist
-        self.pairformer_num_blocks = pairformer_num_blocks
+        self.token_s = token_s
+        self.msa_blocks = msa_blocks
+        self.num_tokens = num_tokens
         self.pairwise_head_width = pairwise_head_width
         self.pairwise_num_heads = pairwise_num_heads
+        self.use_paired_feature = use_paired_feature
+        self.version = version
         self.triangle_attn_backend = triangle_attn_backend
-        self.eps = eps
-        self.inf = inf
-        self.max_batch_size = max_batch_size
+        self.backend = backend
 
     @classmethod
     def from_dict(cls, config_dict: dict):
@@ -319,44 +322,111 @@ class AffinityModuleConfig(PretrainedModuleConfig):
     def get_output_names(self):
         return list(self.get_output_shapes().keys())
 
-    def get_input_dtypes(self) -> dict[str, str]:
-        return {
-            "s": str_dtype_to_trt(self.dtype),
-            "z": str_dtype_to_trt(self.dtype),
-            "distogram": str_dtype_to_trt("int32"),
-            "cross_pair_mask_0": str_dtype_to_trt(self.dtype),
-            "cross_pair_mask_1": str_dtype_to_trt(self.dtype),
-        }
-
     def get_input_shapes(self):
-        batch_size = DimSpec(name="batch_size", dynamic=True)
         seqlen = DimSpec(name="seqlen", dynamic=True)
-        token_s = DimSpec(name="token_s", size=self.token_s)
+        batch_size = DimSpec(name="batch_size", dynamic=True)
+        n_msa = DimSpec(name="n_msa", dynamic=True)
         token_z = DimSpec(name="token_z", size=self.token_z)
+        token_s = DimSpec(name="token_s", size=self.token_s)
 
         return OrderedDict([
-            ("s", (batch_size, seqlen, token_s)),
             ("z", (batch_size, seqlen, seqlen, token_z)),
-            ("distogram", (batch_size, seqlen, seqlen)),
-            ("cross_pair_mask_0", (batch_size, seqlen, seqlen)),
-            ("cross_pair_mask_1", (batch_size, seqlen, seqlen,
-                                   DimSpec(size=1, name="const_1"))),
+            ("emb", (batch_size, seqlen, token_s)),
+            ("msa", (batch_size, n_msa, seqlen)),
+            ("has_deletion", (batch_size, n_msa, seqlen)),
+            ("deletion_value", (batch_size, n_msa, seqlen)),
+            ("msa_paired", (batch_size, n_msa, seqlen)),
+            ("msa_mask", (batch_size, n_msa, seqlen)),
+            ("token_pad_mask", (batch_size, seqlen)),
         ])
 
     def get_output_shapes(self):
+        seqlen = DimSpec(name="seqlen", dynamic=True)
         batch_size = DimSpec(name="batch_size", dynamic=True)
-        return OrderedDict([
-            ("pred_value", (batch_size, 1)),
-            ("logits_binary", (batch_size, 1)),
-        ])
+        token_z = DimSpec(name="token_z", size=self.token_z)
+        return OrderedDict([("output_z", (batch_size, seqlen, seqlen, token_z))
+                            ])
 
 
-@dataclass
-class AffinityModuleBuildConfig(BuildModuleConfig):
-    max_seqlen: int = 128
-    min_seqlen: int = 64
-    align: int = 16
+class Boltz1Config(PretrainedConfig):
+    model_type = "boltz1"
 
-    @property
-    def optimization_profiles(self) -> list[Any]:
-        return _create_optimization_profiles(self)
+    def __init__(self,
+                 structure_pairformer_config: PairformerConfig = None,
+                 confidence_pairformer_config: PairformerConfig = None,
+                 token_transformer_config: TokenTransformerConfig = None,
+                 msa_module_config: MSAModuleConfig = None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.structure_pairformer_config = structure_pairformer_config
+        self.confidence_pairformer_config = confidence_pairformer_config
+        self.token_transformer_config = token_transformer_config
+        self.msa_module_config = msa_module_config
+
+    @classmethod
+    def from_pretrained(cls,
+                        checkpoint_dir: str = None,
+                        trust_remote_code=False,
+                        **kwargs):
+        if checkpoint_dir is None:
+            ckpt = load_hf_weights(name="boltz-1", return_raw=True)
+            state_dict = torch.load(ckpt,
+                                    map_location="cpu",
+                                    weights_only=False)
+        else:
+            state_dict = torch.load(checkpoint_dir,
+                                    map_location="cpu",
+                                    weights_only=False)
+        hparams = state_dict["hyper_parameters"]
+
+        token_s = hparams["token_s"]
+        token_z = hparams["token_z"]
+        msa_pairwise_head_width = hparams["msa_args"]["pairwise_head_width"]
+        msa_pairwise_num_heads = hparams["msa_args"]["pairwise_num_heads"]
+
+        structure_pairformer_config = PairformerConfig(
+            architecture="structure_pairformer",
+            token_s=token_s,
+            token_z=token_z,
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            num_blocks=hparams["pairformer_args"]["num_blocks"],
+            num_heads=hparams["pairformer_args"]["num_heads"],
+            version="v1",
+            dtype="float32")
+        confidence_pairformer_config = PairformerConfig(
+            architecture="confidence_pairformer",
+            token_s=token_s,
+            token_z=token_z,
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            num_blocks=hparams["pairformer_args"]["num_blocks"],
+            num_heads=hparams["pairformer_args"]["num_heads"],
+            version="v1",
+            dtype="float32")
+        token_transformer_config = TokenTransformerConfig(
+            architecture="token_transformer",
+            dtype="float32",
+            num_blocks=hparams["score_model_args"]["token_transformer_depth"],
+            num_heads=hparams["score_model_args"]["token_transformer_heads"],
+            dim=2 * token_s,
+            dim_single_cond=2 * token_s,
+            dim_pairwise=token_z,
+            version="v1")
+        msa_module_config = MSAModuleConfig(
+            architecture="msa_module",
+            dtype="float32",
+            msa_s=hparams["msa_args"]["msa_s"],
+            token_z=token_z,
+            token_s=token_s,
+            msa_blocks=hparams["msa_args"]["msa_blocks"],
+            num_tokens=len(TOKENS),
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            use_paired_feature=False,
+            version="v1")
+        return cls(structure_pairformer_config=structure_pairformer_config,
+                   confidence_pairformer_config=confidence_pairformer_config,
+                   token_transformer_config=token_transformer_config,
+                   msa_module_config=msa_module_config,
+                   **kwargs)

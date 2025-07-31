@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections import OrderedDict
-from typing import Callable, Optional
 
 import torch
 import torch.nn as nn
@@ -22,20 +21,19 @@ from tensorrt_llm._utils import str_dtype_to_trt
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.layers.transformers import TokenTransformer
-from tensorrt_bionemo.configs import TokenTransformerConfig
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
-from tensorrt_bionemo.runtime.backend import BackendBase, BackendBuilder
+from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
+                                              BackendType)
 from tensorrt_bionemo.runtime.misc import dtype_context, ensure_contiguous
+
+from ..configs import TokenTransformerConfig
 
 
 class TokenTransformerTorch(BackendBase):
     IMPL_CLASS = TokenTransformer
 
-    def __init__(self,
-                 config: TokenTransformerConfig,
-                 load_weights_fn: Optional[Callable] = None,
-                 impl: nn.Module = None):
-        super().__init__(config, load_weights_fn, impl)
+    def __init__(self, config: TokenTransformerConfig, impl: nn.Module = None):
+        super().__init__(config, impl)
         self.metadata_cls = get_attention_backend(
             self.config.pairwise_attn_backend).Metadata
         self.attn_metadata = self.metadata_cls(mapping=self.config.mapping,
@@ -100,25 +98,22 @@ class TokenTransformerTRT(BackendBase):
 
     def __init__(self,
                  config: TokenTransformerConfig,
-                 load_weights_fn: Optional[Callable] = None,
                  impl: nn.Module = None,
                  context_memory_allocator: BaseContextMemoryManager = None):
         super().__init__(config,
-                         load_weights_fn,
                          impl,
                          context_memory_allocator=context_memory_allocator)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
         self._concat_bias_cache: torch.Tensor = None  # for Boltz-1 model
+        if self.config.version == "v1":
+            self._torch_module = TokenTransformerTorch(self.config)
 
     def load_weights(self,
                      checkpoint_dir: str,
                      world_size: int,
                      rank: int,
-                     context_without_device_memory: bool = True,
-                     address=None,
-                     stream=None,
-                     torch_load_weights_fn: Optional[Callable] = None,
-                     torch_local_checkpoint: str = None,
+                     weights: dict = None,
+                     loaded_by_manager: bool = True,
                      **kwargs):
         """
         Load the token transformer engine from the checkpoint directory.
@@ -136,26 +131,26 @@ class TokenTransformerTRT(BackendBase):
                 The local checkpoint for the token transformer torch backend.
                 This is only used for the Boltz-1 model.
         """
-        # Set attributes for the allocator
-        self._checkpoint_dir = checkpoint_dir
-        self._world_size = world_size
-        self._runtime_rank = rank
-
-        # Store the custom stream
-        self._custom_stream = stream
-
-        # Delegate engine management to the allocator
-        if self._context_memory_allocator is not None:
-            self._context_memory_allocator.add_handle(self, stream=stream)
+        super().load_weights(checkpoint_dir=checkpoint_dir,
+                             world_size=world_size,
+                             rank=rank,
+                             weights=weights,
+                             loaded_by_manager=loaded_by_manager,
+                             **kwargs)
 
         if self.config.version == "v1":  # Boltz-1 model
-            if torch_load_weights_fn is not None:
-                self._torch_module = TokenTransformerTorch(
-                    self.config, torch_load_weights_fn)
-                self._torch_module.load_weights(torch_local_checkpoint,
-                                                world_size,
-                                                rank,
-                                                compile=True)
+            if weights is not None:
+                self._torch_module.load_weights(checkpoint_dir=None,
+                                                weights=weights,
+                                                world_size=world_size,
+                                                rank=rank,
+                                                loaded_by_manager=False,
+                                                compile=True,
+                                                **kwargs)
+            else:
+                raise ValueError(
+                    "Torch backend weights are required for the Boltz-1 TokenTransformer"
+                )
 
     def reset(self):
         if self.config.version == "v1":
@@ -219,7 +214,7 @@ class TokenTransformerTRT(BackendBase):
 
 class TokenTransformerBackendBuilder(BackendBuilder):
     BACKEND_CLASSES = {
-        "torch": TokenTransformerTorch,
-        "trt": TokenTransformerTRT
+        BackendType.TORCH: TokenTransformerTorch,
+        BackendType.TRT: TokenTransformerTRT,
     }
     CONFIG_CLASS = TokenTransformerConfig

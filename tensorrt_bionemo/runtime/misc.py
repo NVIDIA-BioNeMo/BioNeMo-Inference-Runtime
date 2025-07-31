@@ -23,7 +23,7 @@ from cuda import cudart
 
 @torch.compiler.disable
 def get_closest_n(s):
-    return 2**int(np.ceil(np.log2(s.shape[1])))
+    return 2**int(np.ceil(np.log2(s)))
 
 
 def CUASSERT(cuda_ret):

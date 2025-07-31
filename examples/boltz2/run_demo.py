@@ -33,15 +33,17 @@ from score import kabsch_torch, lddt
 from tensorrt_llm.logger import logger
 
 from tensorrt_bionemo.hubs import load_hf_weights
-from tensorrt_bionemo.models import Boltz2 as Boltz2Opt
-from tensorrt_bionemo.models import Boltz2AcceleratedModules
+from tensorrt_bionemo.models.boltz2 import Boltz2 as Boltz2Opt
+from tensorrt_bionemo.models.boltz2 import (Boltz2AcceleratedModules,
+                                            Boltz2Config)
+from tensorrt_bionemo.models.helper import AcceleratedConfig
 from tensorrt_bionemo.runtime import BackendType, SharedContextMemoryManager
 
 SEED = 42
 """
 NOTE:
-    This script is used to run the demo of the Boltz1 model along with torch backbone from the original repo.
-    It is used to verify the correctness of the TensorRT-BNM implementation. The inputs to model is dumped by `botlz predict`.
+    This script is used to run the demo of the Boltz2 model along with torch backbone from the original repo.
+    It is used to verify the correctness of the TensorRT-BNM implementation. The inputs to model is dumped by `boltz predict`.
     For usage TRT-engines in production, please use _torch.backend for models.
 """
 
@@ -109,11 +111,12 @@ class MSAModuleArgs:
 class BoltzSteeringParams:
     """Steering parameters."""
 
-    fk_steering: bool = True
+    fk_steering: bool = False
     num_particles: int = 3
     fk_lambda: float = 4.0
     fk_resampling_interval: int = 3
-    guidance_update: bool = True
+    physical_guidance_update: bool = False
+    contact_guidance_update: bool = True
     num_gd_steps: int = 20
 
 
@@ -217,15 +220,15 @@ def parse_arguments():
     )
     parser.add_argument('--structure_pairformer_backend',
                         type=str,
-                        default="trt",
+                        default=BackendType.TORCH,
                         help='The backend to use for the structure pairformer')
     parser.add_argument('--confidence_pairformer_backend',
                         type=str,
-                        default="trt",
+                        default=BackendType.TORCH,
                         help='The backend to use for the confidence pairformer')
     parser.add_argument('--token_transformer_backend',
                         type=str,
-                        default="trt",
+                        default=BackendType.TORCH,
                         help='The backend to use for the token transformer')
     parser.add_argument('--sample_dir',
                         type=Path,
@@ -369,17 +372,33 @@ def main(args):
 
     # Create optimized model with TensorRT backends
     manager = SharedContextMemoryManager()
-    acc_m = Boltz2AcceleratedModules(checkpoints={
-        "structure_pairformer":
-        args.structure_pairformer_ckpt,
-        "confidence_pairformer":
-        args.confidence_pairformer_ckpt,
-        "token_transformer":
-        args.token_transformer_ckpt
-    },
-                                     backend=BackendType.TRT)
+    config = Boltz2Config.from_pretrained()
+
+    config.structure_pairformer_config.set_dtype("bfloat16")
+    config.token_transformer_config.set_dtype("bfloat16")
+    config.confidence_pairformer_config.set_dtype("bfloat16")
+    config.msa_module_config.set_dtype("bfloat16")
+
+    acc_m = Boltz2AcceleratedModules(
+        configs={
+            "structure_pairformer":
+            AcceleratedConfig(checkpoint=args.structure_pairformer_ckpt,
+                              backend=args.structure_pairformer_backend,
+                              default=config.structure_pairformer_config),
+            "confidence_pairformer":
+            AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
+                              backend=args.confidence_pairformer_backend,
+                              default=config.confidence_pairformer_config),
+            "token_transformer":
+            AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
+                              backend=args.token_transformer_backend,
+                              default=config.token_transformer_config),
+            "msa_module":
+            AcceleratedConfig(checkpoint=None,
+                              backend=BackendType.TORCH,
+                              default=config.msa_module_config),
+        })
     model = Boltz2Opt.optimize(model, acc_m, manager)
-    manager.load()
 
     run_single_rank(sample_dir=args.sample_dir,
                     model=model,

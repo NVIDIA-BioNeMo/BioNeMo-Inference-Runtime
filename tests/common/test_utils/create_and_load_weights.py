@@ -1665,3 +1665,285 @@ def load_affinity_module_weights_trt(module,
     affinity_heads_weights = weights_and_biases["affinity_heads"]
     load_affinity_heads_transformer_weights_trt(module.affinity_heads,
                                                 affinity_heads_weights, mapping)
+
+
+def create_pair_weighted_averaging_weights(
+        c_m: int = None,
+        c_z: int = None,
+        c_h: int = None,
+        num_heads: int = None,
+        torch_dtype=None,
+        from_ref: RefPairWeightedAveraging = None):
+    if not from_ref:
+        norm_m_weight = torch.empty(size=[c_m], dtype=torch_dtype)
+        torch.nn.init.uniform_(norm_m_weight)
+        norm_m_bias = torch.empty(size=[c_m], dtype=torch_dtype)
+        torch.nn.init.zeros_(norm_m_bias)
+        norm_z_weight = torch.empty(size=[c_z], dtype=torch_dtype)
+        torch.nn.init.uniform_(norm_z_weight)
+        norm_z_bias = torch.empty(size=[c_z], dtype=torch_dtype)
+        torch.nn.init.zeros_(norm_z_bias)
+        proj_m_weight = torch.empty(size=[c_m, c_h * num_heads],
+                                    dtype=torch_dtype)
+        torch.nn.init.uniform_(proj_m_weight)
+        proj_g_weight = torch.empty(size=[c_m, c_h * num_heads],
+                                    dtype=torch_dtype)
+        torch.nn.init.uniform_(proj_g_weight)
+        proj_z_weight = torch.empty(size=[c_z, num_heads], dtype=torch_dtype)
+        torch.nn.init.uniform_(proj_z_weight)
+        proj_o_weight = torch.empty(size=[c_h * num_heads, c_m],
+                                    dtype=torch_dtype)
+        torch.nn.init.uniform_(proj_o_weight)
+    else:
+        norm_m_weight = from_ref.norm_m.weight.data
+        norm_m_bias = from_ref.norm_m.bias.data
+        norm_z_weight = from_ref.norm_z.weight.data
+        norm_z_bias = from_ref.norm_z.bias.data
+        proj_m_weight = from_ref.proj_m.weight.data
+        proj_g_weight = from_ref.proj_g.weight.data
+        proj_z_weight = from_ref.proj_z.weight.data
+        proj_o_weight = from_ref.proj_o.weight.data
+    return norm_m_weight, norm_m_bias, \
+           norm_z_weight, norm_z_bias, \
+           proj_m_weight, proj_g_weight, proj_z_weight, proj_o_weight
+
+
+def load_pair_weighted_averaging_weights_ref_torch(module, weights_and_biases):
+    norm_m_weight, norm_m_bias, \
+    norm_z_weight, norm_z_bias, \
+    proj_m_weight, proj_g_weight, proj_z_weight, proj_o_weight = weights_and_biases
+
+    module.norm_m.weight.data.copy_(norm_m_weight.to("cuda"))
+    module.norm_m.bias.data.copy_(norm_m_bias.to("cuda"))
+    module.norm_z.weight.data.copy_(norm_z_weight.to("cuda"))
+    module.norm_z.bias.data.copy_(norm_z_bias.to("cuda"))
+    module.proj_m.weight.data.copy_(proj_m_weight.to("cuda"))
+    module.proj_g.weight.data.copy_(proj_g_weight.to("cuda"))
+    module.proj_z.weight.data.copy_(proj_z_weight.to("cuda"))
+    module.proj_o.weight.data.copy_(proj_o_weight.to("cuda"))
+
+
+def load_pair_weighted_averaging_weights_torch(module,
+                                               weights_and_biases,
+                                               dtype=torch.float32):
+    norm_m_weight, norm_m_bias, \
+    norm_z_weight, norm_z_bias, \
+    proj_m_weight, proj_g_weight, proj_z_weight, proj_o_weight = weights_and_biases
+
+    module.norm_m.weight.data.copy_(norm_m_weight.to("cuda"))
+    module.norm_m.bias.data.copy_(norm_m_bias.to("cuda"))
+    module.norm_z.weight.data.copy_(norm_z_weight.to("cuda"))
+    module.norm_z.bias.data.copy_(norm_z_bias.to("cuda"))
+
+    module.fused_proj_m_g.load_weights([{
+        "weight":
+        proj_m_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }, {
+        "weight":
+        proj_g_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.proj_z.load_weights([{
+        "weight": proj_z_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    module.proj_o.load_weights([{
+        "weight": proj_o_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+
+
+def create_outer_product_mean_weights(c_in: int = None,
+                                      c_hidden: int = None,
+                                      c_out: int = None,
+                                      torch_dtype=None,
+                                      from_ref: RefOuterProductMean = None):
+    if not from_ref:
+        norm_weight = torch.empty(size=[c_in], dtype=torch_dtype)
+        torch.nn.init.uniform_(norm_weight)
+        norm_bias = torch.empty(size=[c_in], dtype=torch_dtype)
+        torch.nn.init.zeros_(norm_bias)
+        proj_a_weight = torch.empty(size=[c_hidden, c_in], dtype=torch_dtype)
+        torch.nn.init.uniform_(proj_a_weight)
+        proj_b_weight = torch.empty(size=[c_hidden, c_in], dtype=torch_dtype)
+        torch.nn.init.uniform_(proj_b_weight)
+        proj_o_weight = torch.empty(size=[c_out, c_hidden * c_hidden],
+                                    dtype=torch_dtype)
+        torch.nn.init.uniform_(proj_o_weight)
+        proj_o_bias = torch.empty(size=[c_out], dtype=torch_dtype)
+        torch.nn.init.zeros_(proj_o_bias)
+    else:
+        norm_weight = from_ref.norm.weight.data
+        norm_bias = from_ref.norm.bias.data
+        proj_a_weight = from_ref.proj_a.weight.data
+        proj_b_weight = from_ref.proj_b.weight.data
+        proj_o_weight = from_ref.proj_o.weight.data
+        proj_o_bias = from_ref.proj_o.bias.data
+    return norm_weight, norm_bias, proj_a_weight, proj_b_weight, proj_o_weight, proj_o_bias
+
+
+def load_outer_product_mean_weights_ref_torch(module, weights_and_biases):
+    norm_weight, norm_bias, proj_a_weight, proj_b_weight, proj_o_weight, proj_o_bias = weights_and_biases
+
+    module.norm.weight.data.copy_(norm_weight.to("cuda"))
+    module.norm.bias.data.copy_(norm_bias.to("cuda"))
+    module.proj_a.weight.data.copy_(proj_a_weight.to("cuda"))
+    module.proj_b.weight.data.copy_(proj_b_weight.to("cuda"))
+    module.proj_o.weight.data.copy_(proj_o_weight.to("cuda"))
+
+
+def load_outer_product_mean_weights_torch(module,
+                                          weights_and_biases,
+                                          dtype=torch.float32):
+    norm_weight, norm_bias, proj_a_weight, proj_b_weight, proj_o_weight, proj_o_bias = weights_and_biases
+
+    module.norm.weight.data.copy_(norm_weight.to("cuda"))
+    module.norm.bias.data.copy_(norm_bias.to("cuda"))
+
+    module.fused_proj_a_b.load_weights([{
+        "weight":
+        proj_a_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }, {
+        "weight":
+        proj_b_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.proj_o.load_weights([{
+        "weight": proj_o_weight.to(dtype).to("cuda"),
+        "bias": proj_o_bias.to(dtype).to("cuda")
+    }])
+
+
+def create_msa_layer_weights(msa_s: int = None,
+                             token_z: int = None,
+                             pairwise_head_width: int = 32,
+                             pairwise_num_heads: int = 4,
+                             torch_dtype=None,
+                             from_ref: RefMSALayer = None):
+    if not from_ref:
+        msa_transition_weights = create_transition_weights(
+            dim=msa_s, hidden=msa_s * 4, torch_dtype=torch_dtype)
+        pair_weighted_averaging_weights = create_pair_weighted_averaging_weights(
+            c_m=msa_s,
+            c_z=token_z,
+            c_h=32,
+            num_heads=8,
+            torch_dtype=torch_dtype)
+        pairformer_layer_weights = create_pairformer_layer_weights(
+            token_s=None,
+            token_z=token_z,
+            num_heads=pairwise_num_heads,
+            pairwise_head_width=pairwise_head_width,
+            include_s_path=False,
+            torch_dtype=torch_dtype)
+        outer_product_mean_weights = create_outer_product_mean_weights(
+            c_in=msa_s, c_hidden=32, c_out=token_z, torch_dtype=torch_dtype)
+    else:
+        msa_transition_weights = create_transition_weights(
+            from_ref=from_ref.msa_transition)
+        pair_weighted_averaging_weights = create_pair_weighted_averaging_weights(
+            from_ref=from_ref.pair_weighted_averaging)
+        pairformer_layer_weights = create_pairformer_layer_weights(
+            from_ref=from_ref.pairformer_layer, include_s_path=False)
+        outer_product_mean_weights = create_outer_product_mean_weights(
+            from_ref=from_ref.outer_product_mean)
+    return msa_transition_weights, pair_weighted_averaging_weights, \
+        pairformer_layer_weights, outer_product_mean_weights
+
+
+def load_msa_layer_weights_ref_torch(module, weights_and_biases):
+    msa_transition_weights, pair_weighted_averaging_weights, \
+    pairformer_layer_weights, outer_product_mean_weights = weights_and_biases
+
+    load_transition_weights_ref_torch(module.msa_transition,
+                                      msa_transition_weights)
+    load_pair_weighted_averaging_weights_ref_torch(
+        module.pair_weighted_averaging, pair_weighted_averaging_weights)
+    load_pairformer_layer_weights_ref_torch(module.pairformer_layer,
+                                            pairformer_layer_weights)
+    load_outer_product_mean_weights_ref_torch(module.outer_product_mean,
+                                              outer_product_mean_weights)
+
+
+def load_msa_layer_weights_torch(module,
+                                 weights_and_biases,
+                                 dtype=torch.float32):
+    msa_transition_weights, pair_weighted_averaging_weights, \
+    pairformer_layer_weights, outer_product_mean_weights = weights_and_biases
+
+    load_transition_weights_torch(module.msa_transition, msa_transition_weights,
+                                  dtype)
+    load_pair_weighted_averaging_weights_torch(module.pair_weighted_averaging,
+                                               pair_weighted_averaging_weights,
+                                               dtype)
+    load_pairformer_layer_weights_torch(module.pairformer_layer,
+                                        pairformer_layer_weights, dtype)
+    load_outer_product_mean_weights_torch(module.outer_product_mean,
+                                          outer_product_mean_weights, dtype)
+
+
+def create_msa_module_weights(msa_s: int = None,
+                              token_z: int = None,
+                              token_s: int = None,
+                              msa_blocks: int = None,
+                              num_tokens: int = None,
+                              pairwise_head_width: int = 32,
+                              pairwise_num_heads: int = 4,
+                              use_paired_feature: bool = True,
+                              from_ref: RefMSAModule = None):
+    if not from_ref:
+        s_proj_weight = torch.empty(size=[msa_s, token_s], dtype=torch_dtype)
+        torch.nn.init.uniform_(s_proj_weight)
+        msa_proj_weight = torch.empty(
+            size=[msa_s, num_tokens + 2 + int(use_paired_feature)],
+            dtype=torch_dtype)
+        torch.nn.init.uniform_(msa_proj_weight)
+        msa_layers_weights = []
+        for i in range(msa_blocks):
+            msa_layers_weights.append(
+                create_msa_layer_weights(
+                    msa_s=msa_s,
+                    token_z=token_z,
+                    pairwise_head_width=pairwise_head_width,
+                    pairwise_num_heads=pairwise_num_heads,
+                    torch_dtype=torch_dtype))
+    else:
+        s_proj_weight = from_ref.s_proj.weight.data
+        msa_proj_weight = from_ref.msa_proj.weight.data
+        msa_layers_weights = []
+        for i in range(from_ref.msa_blocks):
+            msa_layers_weights.append(
+                create_msa_layer_weights(from_ref=from_ref.layers[i]))
+    return s_proj_weight, msa_proj_weight, msa_layers_weights
+
+
+def load_msa_module_weights_ref_torch(module, weights_and_biases):
+    s_proj_weight, msa_proj_weight, msa_layers_weights = weights_and_biases
+    module.s_proj.weight.data.copy_(s_proj_weight.to("cuda"))
+    module.msa_proj.weight.data.copy_(msa_proj_weight.to("cuda"))
+    for i in range(len(msa_layers_weights)):
+        load_msa_layer_weights_ref_torch(module.layers[i],
+                                         msa_layers_weights[i])
+
+
+def load_msa_module_weights_torch(module,
+                                  weights_and_biases,
+                                  dtype=torch.float32):
+    s_proj_weight, msa_proj_weight, msa_layers_weights = weights_and_biases
+    module.s_proj.load_weights([{
+        "weight": s_proj_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    module.msa_proj.load_weights([{
+        "weight": msa_proj_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    for i in range(len(msa_layers_weights)):
+        load_msa_layer_weights_torch(module.layers[i], msa_layers_weights[i],
+                                     dtype)

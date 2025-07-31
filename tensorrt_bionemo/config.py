@@ -16,13 +16,13 @@
 import copy
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Generic, Optional, TypeVar, Union
+from typing import Any, Generic, Optional, TypeVar, Union
 
-import dill
 import transformers
 from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
+from tensorrt_llm.lora_manager import LoraConfig
+from tensorrt_llm.plugin import PluginConfig
 
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.version import __version__
@@ -146,36 +146,80 @@ class PretrainedModuleConfig:
         self.dtype = value
 
 
-class TorchLoadWeightsMetadata:
+@dataclass
+class BuildModuleConfig:
+    """ TensorRT-BNM build configurations """
 
-    def __init__(self, load_weights_fn: Callable, load_weights_fn_kwargs: dict,
-                 compile: bool):
-        self._load_weights_fn = load_weights_fn
-        self._load_weights_fn_kwargs = load_weights_fn_kwargs
-        self._compile = compile
+    strongly_typed: bool = True
+    weakly_dtype: str = None
+    force_num_profiles: Optional[int] = None
+    profiling_verbosity: str = 'layer_names_only'
+    plugin_config: PluginConfig = field(default_factory=PluginConfig)
+    module_config: PretrainedModuleConfig = None
+    input_timing_cache: str = None
+    output_timing_cache: str = 'model.cache'
+    has_attention: bool = True
+    vanilla_attn_precision: str = "float32"
+    dry_run: bool = False
+    monitor_memory: bool = False
+    enable_debug_output: bool = False
+    lora_config: LoraConfig = field(
+        default_factory=LoraConfig)  # Patch for save engine
 
-    def dump(self, file_path: Union[str, Path]):
-        with open(file_path, 'wb') as f:
-            dill.dump(
-                {
-                    "load_weights_fn": self._load_weights_fn,
-                    "load_weights_fn_kwargs": self._load_weights_fn_kwargs,
-                    "compile": self._compile
-                }, f)
+    @property
+    def optimization_profiles(self) -> list[Any]:
+        raise NotImplementedError("Subclasses must implement this method")
 
     @classmethod
-    def load(cls, file_path: Union[str, Path]):
-        with open(file_path, 'rb') as f:
-            return cls(**dill.load(f))
+    def from_json_file(cls, config_file, plugin_config=None):
+        with open(config_file) as f:
+            config = json.load(f)
+        return cls.from_dict(config, plugin_config=plugin_config)
 
-    @property
-    def load_weights_fn(self):
-        return self._load_weights_fn
+    def update_from_dict(self, config: dict):
+        for name, value in config.items():
+            if not hasattr(self, name):
+                raise AttributeError(
+                    f"{self.__class__} object has no attribute {name}")
+            setattr(self, name, value)
 
-    @property
-    def load_weights_fn_kwargs(self):
-        return self._load_weights_fn_kwargs
+    @classmethod
+    def from_dict(cls, config, plugin_config=None):
+        config = copy.deepcopy(config)
+        strongly_typed = config.pop('strongly_typed', True)
+        force_num_profiles = config.pop('force_num_profiles', None)
+        profiling_verbosity = config.pop('profiling_verbosity',
+                                         'layer_names_only')
+        config.pop('enable_debug_output', False)
+        input_timing_cache = config.pop('input_timing_cache', None)
+        output_timing_cache = config.pop('output_timing_cache', None)
+        has_attention = config.pop('has_attention', True)
+        vanilla_attn_precision = config.pop('vanilla_attn_precision', "float32")
 
-    @property
-    def compile(self):
-        return self._compile
+        if plugin_config is None:
+            plugin_config = PluginConfig()
+        if "plugin_config" in config.keys():
+            plugin_config.update_from_dict(config["plugin_config"])
+
+        dry_run = config.pop('dry_run', False)
+        monitor_memory = config.pop('monitor_memory', False)
+
+        ret = cls(strongly_typed=strongly_typed,
+                  force_num_profiles=force_num_profiles,
+                  profiling_verbosity=profiling_verbosity,
+                  plugin_config=plugin_config,
+                  input_timing_cache=input_timing_cache,
+                  output_timing_cache=output_timing_cache,
+                  has_attention=has_attention,
+                  vanilla_attn_precision=vanilla_attn_precision,
+                  dry_run=dry_run,
+                  monitor_memory=monitor_memory)
+        ret.update_from_dict(config)
+        return ret
+
+    def to_dict(self):
+        output = copy.deepcopy(self.__dict__)
+        output['plugin_config'] = output['plugin_config'].to_dict()
+        output['lora_config'] = output['lora_config'].to_dict()
+        del output['module_config']
+        return output

@@ -15,14 +15,13 @@
 import json
 from abc import ABC
 from pathlib import Path
-from typing import Callable, Optional
 
 import tensorrt_llm
 import torch
 import torch.nn as nn
+from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.configs import (PretrainedModuleConfig,
-                                      TorchLoadWeightsMetadata)
+from tensorrt_bionemo.config import PretrainedModuleConfig
 
 from .allocator import BaseContextMemoryManager, SimpleContextMemoryManager
 
@@ -41,26 +40,24 @@ class BackendBase(nn.Module):
 
     def __init__(self,
                  config: PretrainedModuleConfig,
-                 load_weights_fn: Optional[Callable] = None,
-                 load_weights_fn_kwargs: dict = {},
                  impl: nn.Module = None,
                  context_memory_allocator: BaseContextMemoryManager = None):
         """ BackendBase is the base class for all backends.
         It provides the basic functionality for all backends.
         Args:
             config(PretrainedModuleConfig): The configuration for the backend.
-            load_weights_fn(Optional[Callable]): The function to load the weights.
-            impl(nn.Module): The implementation of the backend. If None, the implementation will be created by the IMPL_CLASS.
+            impl(nn.Module): The implementation of the backend.
+                             If None, the implementation will be created by the IMPL_CLASS.
+                             This is to use for debugging purposes.
             context_memory_allocator(BaseContextMemoryManager): The context memory allocator to use. If None, the default allocator will be used.
         """
         super().__init__()
         self._config = config
-        self._load_weights_fn = load_weights_fn
         self._module = impl
-        self._load_weights_fn_kwargs = load_weights_fn_kwargs
         self._context_memory_allocator = context_memory_allocator
         if self._context_memory_allocator is None:
             self._context_memory_allocator = SimpleContextMemoryManager()
+        self._loaded_by_manager = False
 
     @property
     def config(self):
@@ -84,11 +81,12 @@ class BackendBase(nn.Module):
         """
 
     def load_weights(self,
-                     checkpoint_dir: str,
+                     checkpoint_dir: str = None,
                      world_size: int = 1,
                      rank: int = 0,
                      weights: dict = None,
                      compile: bool = True,
+                     loaded_by_manager: bool = False,
                      **kwargs):
         """
         TODO: add caching cudagraphs support here
@@ -101,39 +99,40 @@ class BackendBase(nn.Module):
             compile(bool): Whether to compile the module.
             **kwargs: Additional arguments to pass to the load_weights_fn.
         """
-        if self._module is not None:
+        self._checkpoint_dir = checkpoint_dir
+        self._world_size = world_size
+        self._runtime_rank = rank
+        if "stream" in kwargs:
+            self._stream = kwargs["stream"]
+        else:
+            self._stream = None
+        self._loaded_by_manager = loaded_by_manager
+        if self._loaded_by_manager:
+            self._context_memory_allocator.add_handle(self, stream=self._stream)
             return
-        if self.IMPL_CLASS is not None:
+
+        if self._module is not None:
+            self._module.load_weights(weights=weights)
+        elif self.IMPL_CLASS is not None:
             assert issubclass(
                 self.IMPL_CLASS,
                 nn.Module), "IMPL_CLASS must be a subclass of nn.Module"
-            self._checkpoint_dir = checkpoint_dir
-            self._world_size = world_size
-            self._runtime_rank = rank
             self._module = self.IMPL_CLASS(self.config)
-            if self._load_weights_fn_kwargs is not None:
-                kwargs.update(self._load_weights_fn_kwargs)
-            if self._load_weights_fn is not None:
-                self._load_weights_fn(self._module,
-                                      checkpoint_dir=checkpoint_dir,
-                                      world_size=world_size,
-                                      rank=rank,
-                                      weights=weights,
-                                      **kwargs)
-            self._module.cuda()
-            self._module.eval()
-            # TODO: Whether use torch.compile() or not, checking chunking configurations
-            mode = None
-            if compile:
-                if self.config.mapping.world_size > 1:
-                    mode = "max-autotune-no-cudagraphs"
-                self._module = torch.compile(self._module,
-                                             fullgraph=True,
-                                             dynamic=True,
-                                             mode=mode)
+            self._module.load_weights(weights=weights)
         else:
             raise NotImplementedError(
-                "load_weights is not implemented for this backend")
+                "IMPL_CLASS is not implemented and self._module is None")
+        self._module.cuda()
+        self._module.eval()
+        # TODO: Whether use torch.compile() or not, checking chunking configurations
+        mode = None
+        if compile:
+            if self.config.mapping.world_size > 1:
+                mode = "max-autotune-no-cudagraphs"
+            self._module = torch.compile(self._module,
+                                         fullgraph=True,
+                                         dynamic=True,
+                                         mode=mode)
 
 
 class BackendBuilder(ABC):
@@ -145,51 +144,63 @@ class BackendBuilder(ABC):
     def build(cls,
               checkpoint_dir: str,
               backend: str,
-              with_torch_load_fn: bool = False,
               context_memory_allocator: BaseContextMemoryManager = None,
+              compile: bool = True,
+              weights: dict = None,
+              config: PretrainedModuleConfig = None,
               **kwargs) -> nn.Module:
         """
         Build the backend module from the checkpoint directory.
         Args:
             checkpoint_dir(str): The directory to load the checkpoint from.
             backend(str): The backend to use.
-            with_torch_load_fn(bool): Whether to use the torch load function.
+            context_memory_allocator(BaseContextMemoryManager): The context memory allocator to use. If None, the default allocator will be used.
+            compile(bool): Whether to compile the module.
+            weights(dict): The weights to load into the module. If None, the weights will be loaded from the checkpoint directory.
+            **kwargs: Additional arguments to pass to the load_weights method.
         """
-        backend_checkpoint_dir = Path(checkpoint_dir) / backend
-        if backend not in cls.BACKEND_CLASSES:
-            raise ValueError(f"Invalid backend: {backend}")
-        config_path = backend_checkpoint_dir / "config.json"
-        with open(config_path, "r") as f:
-            config_dict = json.load(f)["pretrained_config"]
-        config_dict["backend"] = backend
-        load_weights_fn = None
-        load_weights_fn_kwargs = {}
+        backend_checkpoint_dir = None
         rank = tensorrt_llm.mpi_rank()
-        assert cls.CONFIG_CLASS is not None, f"CONFIG_CLASS must be set for the backend builder: {cls.__name__}"
-        config = cls.CONFIG_CLASS.from_dict(config_dict)
-        compile = True
-        if backend == BackendType.TORCH or with_torch_load_fn:
-            torch_checkpoint_dir = Path(checkpoint_dir) / BackendType.TORCH
-            torch_load_weights_metadata = TorchLoadWeightsMetadata.load(
-                torch_checkpoint_dir / f"rank{rank}.pkl")
-            load_weights_fn = torch_load_weights_metadata.load_weights_fn
-            load_weights_fn_kwargs = torch_load_weights_metadata.load_weights_fn_kwargs
-            compile = torch_load_weights_metadata.compile if torch_load_weights_metadata.compile is not None else True
+
+        if checkpoint_dir is not None:
+            backend_checkpoint_dir = Path(checkpoint_dir) / backend
+            if backend not in cls.BACKEND_CLASSES:
+                raise ValueError(f"Invalid backend: {backend}")
+            config_path = backend_checkpoint_dir / "config.json"
+            with open(config_path, "r") as f:
+                config_dict = json.load(f)["pretrained_config"]
+            config_dict["backend"] = backend
+            assert cls.CONFIG_CLASS is not None, f"CONFIG_CLASS must be set for the backend builder: {cls.__name__}"
+            config = cls.CONFIG_CLASS.from_dict(config_dict)
+
+        assert config is not None, f"config must be provided for the backend builder: {cls.__name__}"
 
         if backend == BackendType.TORCH:
-            module = cls.BACKEND_CLASSES[backend](config, load_weights_fn,
-                                                  load_weights_fn_kwargs,
-                                                  context_memory_allocator=context_memory_allocator)
-            torch_load_weights_fn = None
+            if weights is None:
+                weights = torch.load(backend_checkpoint_dir / f"weights.pt")
+            module = cls.BACKEND_CLASSES[backend](config)
+            loaded_by_manager = False
         else:
-            module = cls.BACKEND_CLASSES[backend](config, context_memory_allocator=context_memory_allocator)
-            torch_load_weights_fn = load_weights_fn
+            module = cls.BACKEND_CLASSES[backend](
+                config, context_memory_allocator=context_memory_allocator)
+            loaded_by_manager = True
+            # still try to load the torch backend if any.
+            # This is for the case that the TRT backend is also use the Torch backend inside.
+            # For example, the Boltz1 TRT TokenTransformer is using along with the Torch backend.
+            try:
+                torch_backend_dir = Path(checkpoint_dir) / BackendType.TORCH
+                weights = torch.load(torch_backend_dir / f"weights.pt")
+            except Exception as e:
+                logger.warning(
+                    f"Torch backend weights are not available along with the TRT backend: {e}"
+                )
 
         world_size = config.mapping.world_size
         module.load_weights(checkpoint_dir=backend_checkpoint_dir,
                             world_size=world_size,
                             rank=rank,
+                            weights=weights,
                             compile=compile,
-                            torch_load_weights_fn=torch_load_weights_fn,
+                            loaded_by_manager=loaded_by_manager,
                             **kwargs)
         return module

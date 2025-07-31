@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorrt_bionemo.configs import PairformerBuildConfig, PairformerConfig
+from tensorrt_bionemo.models.boltz1.configs import (PairformerBuildConfig,
+                                                    PairformerConfig)
 
 
 def test_pairformer_build_config():

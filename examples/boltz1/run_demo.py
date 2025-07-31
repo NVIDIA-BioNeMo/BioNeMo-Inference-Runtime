@@ -16,6 +16,8 @@ import argparse
 import glob
 import json
 import multiprocessing as mp
+
+mp.set_start_method('spawn')
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,23 +26,25 @@ import boltz.data.const as const
 import pandas as pd
 import torch
 import torch.nn as nn
-from boltz.data.feature.pad import pad_dim
-from boltz.model.model import Boltz1
+from boltz.data.pad import pad_dim
+from boltz.model.models.boltz1 import Boltz1
 # isort: on
 from pytorch_lightning import seed_everything
 from score import kabsch_torch, lddt
 from tensorrt_llm.logger import logger
 
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
-from tensorrt_bionemo.models import Boltz1 as Boltz1Opt
-from tensorrt_bionemo.models import Boltz1AcceleratedModules
+from tensorrt_bionemo.models.boltz1 import Boltz1 as Boltz1Opt
+from tensorrt_bionemo.models.boltz1 import (Boltz1AcceleratedModules,
+                                            Boltz1Config)
+from tensorrt_bionemo.models.helper import AcceleratedConfig
 from tensorrt_bionemo.runtime import BackendType, SharedContextMemoryManager
 
 SEED = 42
 """
 NOTE:
     This script is used to run the demo of the Boltz1 model along with torch backbone from the original repo.
-    It is used to verify the correctness of the TensorRT-BNM implementation. The inputs to model is dumped by `botlz predict`.
+    It is used to verify the correctness of the TensorRT-BNM implementation. The inputs to model is dumped by `boltz predict`.
     For usage TRT-engines in production, please use _torch.backend for models.
 """
 
@@ -174,15 +178,15 @@ def parse_arguments():
     )
     parser.add_argument('--structure_pairformer_backend',
                         type=str,
-                        default="trt",
+                        default=BackendType.TORCH,
                         help='The backend to use for the structure pairformer')
     parser.add_argument('--confidence_pairformer_backend',
                         type=str,
-                        default="trt",
+                        default=BackendType.TORCH,
                         help='The backend to use for the confidence pairformer')
     parser.add_argument('--token_transformer_backend',
                         type=str,
-                        default="trt",
+                        default=BackendType.TORCH,
                         help='The backend to use for the token transformer')
     parser.add_argument('--sample_dir',
                         type=Path,
@@ -211,7 +215,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
+def run_single_rank(sample_dir: Path, model: nn.Module, opt_m: dict, rank: int,
                     dcp_size: int, device: torch.device,
                     predict_params: BoltzPredictionParams, strategy: str):
     # TODO: write docs for sample dir
@@ -261,13 +265,17 @@ def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
             with torch.no_grad():
                 if hasattr(model.structure_module.score_model.token_transformer,
                            "reset"):
-                    """ TODO: Refactor for all backends to call reset method. """
-                    model.structure_module.score_model.token_transformer.reset()
+                    # """ TODO: Refactor for all backends to call reset method. """
+                    # model.structure_module.score_model.token_transformer.reset()
+                    for _, module in opt_m.items():
+                        if hasattr(module, "reset"):
+                            module.reset()
                 output = model(
                     batch,
                     recycling_steps=predict_params.recycling_steps,
                     num_sampling_steps=predict_params.sampling_steps,
                     diffusion_samples=predict_params.diffusion_samples,
+                    max_parallel_samples=1,
                     run_confidence_sequentially=True)
             torch.cuda.synchronize()
             end_time = time.time()
@@ -323,20 +331,38 @@ def main(args):
 
     # Create optimized model with TensorRT backends
     manager = SharedContextMemoryManager()
-    acc_m = Boltz1AcceleratedModules(checkpoints={
-        "structure_pairformer":
-        args.structure_pairformer_ckpt,
-        "confidence_pairformer":
-        args.confidence_pairformer_ckpt,
-        "token_transformer":
-        args.token_transformer_ckpt
-    },
-                                     backend=BackendType.TRT)
-    model = Boltz1Opt.optimize(model, acc_m, manager)
-    manager.load()
+    config = Boltz1Config.from_pretrained()
+
+    # Comment out to use bfloat16 precision
+    # config.structure_pairformer_config.set_dtype("bfloat16")
+    # config.token_transformer_config.set_dtype("bfloat16")
+    # config.confidence_pairformer_config.set_dtype("bfloat16")
+    # config.msa_module_config.set_dtype("bfloat16")
+
+    acc_m = Boltz1AcceleratedModules(
+        configs={
+            "structure_pairformer":
+            AcceleratedConfig(checkpoint=args.structure_pairformer_ckpt,
+                              backend=args.structure_pairformer_backend,
+                              default=config.structure_pairformer_config),
+            "confidence_pairformer":
+            AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
+                              backend=args.confidence_pairformer_backend,
+                              default=config.confidence_pairformer_config),
+            "token_transformer":
+            AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
+                              backend=args.token_transformer_backend,
+                              default=config.token_transformer_config),
+            "msa_module":
+            AcceleratedConfig(checkpoint=None,
+                              backend=BackendType.TORCH,
+                              default=config.msa_module_config),
+        })
+    model, opt_m = Boltz1Opt.optimize(model, acc_m, manager)
 
     run_single_rank(sample_dir=args.sample_dir,
                     model=model,
+                    opt_m=opt_m,
                     rank=rank,
                     dcp_size=dcp_size,
                     device=torch.device("cuda"),
@@ -345,6 +371,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    mp.set_start_method('spawn')
     args = parse_arguments()
     main(args)

@@ -15,6 +15,7 @@
 
 from ._trt.plugin import _load_plugin_lib
 from .version import __version__
+from .registry import register_default_building_modules
 
 _inited = False
 
@@ -26,6 +27,7 @@ def _init() -> None:
     _inited = True
     # load plugin lib
     _load_plugin_lib()
+    register_default_building_modules()
 
 
 _init()

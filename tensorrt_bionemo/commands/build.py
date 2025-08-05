@@ -27,29 +27,13 @@ from tensorrt_llm._utils import (OMPI_COMM_TYPE_HOST, mpi_barrier, mpi_comm,
                                  mpi_rank, mpi_world_size)
 from tensorrt_llm.logger import logger, severity_map
 from tensorrt_llm.plugin import PluginConfig, add_plugin_argument
+from tensorrt_llm.builder import Engine, EngineConfig
 
 from tensorrt_bionemo import __version__
-from tensorrt_bionemo._trt.builder import Engine, EngineConfig, build
-from tensorrt_bionemo._trt.layers.affinity import AffinityModule
-# TODO: Create a singleton for registering modules
-from tensorrt_bionemo._trt.layers.transformers import (PairformerModule,
-                                                       TokenTransformer)
-from tensorrt_bionemo.configs import BuildModuleConfig, PretrainedModuleConfig
+from tensorrt_bionemo._trt.builder import build
+from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig
 from tensorrt_bionemo.runtime.backend import BackendType
-
-TRT_MODULES_MAPPING = {
-    "boltz-1": {
-        "structure_pairformer": PairformerModule,
-        "confidence_pairformer": PairformerModule,
-        "token_transformer": TokenTransformer,
-    },
-    "boltz-2": {
-        "structure_pairformer": PairformerModule,
-        "confidence_pairformer": PairformerModule,
-        "token_transformer": TokenTransformer,
-        "affinity_module": AffinityModule,
-    }
-}
+from tensorrt_bionemo.registry import get_building_module_class
 
 
 def get_backend_names(directory_path: str) -> list[str]:
@@ -321,7 +305,7 @@ def main():
             continue
         backend_dir = os.path.join(ckpt_dir, backend)
         config_path = os.path.join(backend_dir, 'config.json')
-        module_cls = TRT_MODULES_MAPPING[args.model][args.module]
+        module_cls = get_building_module_class(args.model, args.module)
         module_config = PretrainedModuleConfig.from_json_file(
             module_cls, config_path)
 

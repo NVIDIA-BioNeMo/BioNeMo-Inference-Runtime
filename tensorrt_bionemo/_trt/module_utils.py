@@ -27,7 +27,7 @@ from tensorrt_llm.plugin import (current_all_reduce_helper,
                                  init_all_reduce_helper)
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
-from tensorrt_bionemo.configs import PretrainedModuleConfig
+from tensorrt_bionemo.config import PretrainedModuleConfig
 
 
 class PretrainedModule(Module):

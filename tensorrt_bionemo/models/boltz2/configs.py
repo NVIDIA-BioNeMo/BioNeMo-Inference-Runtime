@@ -20,7 +20,7 @@ from typing import Any
 import torch
 from transformers import PretrainedConfig
 
-from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig
+from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig, DimSpec
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 from tensorrt_bionemo.models.boltz1.configs import (MSAModuleConfig,
                                                     PairformerConfig,

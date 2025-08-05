@@ -22,7 +22,7 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.network import net_guard
 
 from tensorrt_bionemo._trt.module_utils import PretrainedModule
-from tensorrt_bionemo.configs import BuildModuleConfig
+from tensorrt_bionemo.config import BuildModuleConfig
 from tensorrt_bionemo.version import __version__
 
 

@@ -25,9 +25,9 @@ from tensorrt_llm.module import Module, ModuleList
 from tensorrt_llm.network import Network
 
 from tensorrt_bionemo._trt.functional import identity_sz
-from tensorrt_bionemo.configs import (PairformerBuildConfig, PairformerConfig,
-                                      TokenTransformerBuildConfig,
-                                      TokenTransformerConfig)
+from tensorrt_bionemo.models.boltz1.configs import (PairformerBuildConfig, PairformerConfig,
+                                       TokenTransformerBuildConfig,
+                                       TokenTransformerConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..module_utils import PretrainedModule

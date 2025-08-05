@@ -22,8 +22,7 @@ from tensorrt_llm.layers.linear import ColumnLinear, Linear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
 
-from tensorrt_bionemo.configs import (AffinityModuleBuildConfig,
-                                      AffinityModuleConfig)
+from tensorrt_bionemo.models.boltz2.configs import AffinityModuleBuildConfig, AffinityModuleConfig
 from tensorrt_bionemo.mapping import Mapping
 
 from ..module_utils import PretrainedModule

@@ -18,10 +18,10 @@ from dataclasses import dataclass
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_self_pairwise_attention_weights,
     load_self_pairwise_attention_weights_torch)
-from test_utils.ref_attn import RefPairwiseSelfAttention
+from test_utils.boltz.ref_attn import RefPairwiseSelfAttention
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
@@ -64,6 +64,7 @@ def test_pairwise_attention_backend(sc: Scenario):
                                  c_z=sc.c_z,
                                  num_heads=ref_attn.num_heads,
                                  dtype=dtype,
+                                 bias_proj=True,
                                  initial_norm=True)
     load_self_pairwise_attention_weights_torch(attn,
                                                weights_and_biases,

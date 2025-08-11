@@ -19,9 +19,9 @@ import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
-from test_utils.ref_layers import RefPairformerLayer
+from test_utils.boltz.ref_layers import RefPairformerLayer
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
@@ -80,6 +80,7 @@ def test_pairformer_layer(sc: Scenario):
         triangle_attn_backend=sc.triangle_attn_backend,
         pairwise_attn_backend=sc.pairwise_attn_backend,
         skip_create_weights=False,
+        attention_initial_norm=True  # Pairformer v1 uses attention_initial_norm
     )
     layer.to(device)
     load_pairformer_layer_weights_torch(layer, weights_and_biases, dtype)

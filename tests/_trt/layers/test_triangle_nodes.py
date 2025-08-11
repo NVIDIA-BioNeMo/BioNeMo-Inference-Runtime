@@ -21,9 +21,9 @@ import tensorrt_llm
 import torch
 from tensorrt_llm import Tensor
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import *
-from test_utils.ref_layers import (RefTriangleAttentionNode,
-                                   RefTriangleMultiplicationNode)
+from test_utils.boltz.create_and_load_weights import *
+from test_utils.boltz.ref_layers import (RefTriangleAttentionNode,
+                                         RefTriangleMultiplicationNode)
 
 import tensorrt_bionemo
 from tensorrt_bionemo._trt.layers.triangle_nodes import (

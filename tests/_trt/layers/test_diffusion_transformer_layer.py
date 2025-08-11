@@ -21,10 +21,10 @@ import tensorrt_llm
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
 from tensorrt_llm.functional import Tensor
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_trt)
-from test_utils.ref_layers import RefDiffusionTransformerLayer
+from test_utils.boltz.ref_layers import RefDiffusionTransformerLayer
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
 from tensorrt_bionemo._trt.layers.transformers import DiffusionTransformerLayer
@@ -96,8 +96,8 @@ def test_diffusion_transformer_layer(sc: Scenario):
                          attention_params=AttentionParams())
         output_a.mark_output("output_a", trt_dtype)
 
-    builder_config = builder.create_builder_config(name="pairformer_layer",
-                                                   precision=sc.dtype)
+    builder_config = builder.create_builder_config(
+        name="diffusion_transformer_layer", precision=sc.dtype)
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)

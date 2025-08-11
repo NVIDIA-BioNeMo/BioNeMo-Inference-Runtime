@@ -17,7 +17,7 @@ from typing import Optional
 
 import tensorrt as trt
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
-                                     concat, split, swiglu)
+                                     concat, relu, split, swiglu)
 from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module, ModuleList
@@ -205,3 +205,117 @@ class PairwiseConditioning(Module):
         for transition in self.transitions:
             z = transition(z) + z
         return z
+
+
+class PairTransition(Module):
+    """
+    Implements Algorithm 15.
+    """
+
+    def __init__(self,
+                 c_z: int,
+                 n: int,
+                 dtype: str,
+                 mapping: Mapping,
+                 eps: float = 1e-5):
+        """
+        Args:
+            c_z:
+                Pair transition channel dimension
+            n:
+                Factor by which c_z is multiplied to obtain hidden channel
+                dimension
+        """
+        super().__init__()
+        self.dtype = dtype
+        self.mapping = mapping
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
+        self.tp_group = mapping.tp_group
+        self.c_z = c_z
+        self.n = n
+
+        self.layer_norm = LayerNorm([self.c_z], dtype=dtype, eps=eps)
+        self.linear_1 = ColumnLinear(self.c_z,
+                                     self.n * self.c_z,
+                                     bias=True,
+                                     dtype=dtype,
+                                     tp_group=self.tp_group,
+                                     tp_size=self.tp_size,
+                                     gather_output=False)
+        self.linear_2 = RowLinear(self.n * self.c_z,
+                                  self.c_z,
+                                  bias=True,
+                                  dtype=dtype,
+                                  tp_group=self.tp_group,
+                                  tp_size=self.tp_size)
+
+    def forward(self, z: Tensor, mask: Tensor):
+        mask = mask.unsqueeze(-1)
+        # [*, N_res, N_res, C_z]
+        z = self.layer_norm(z)
+
+        # [*, N_res, N_res, C_hidden]
+        z = self.linear_1(z)
+        z = relu(z)
+
+        # [*, N_res, N_res, C_z]
+        z = self.linear_2(z)
+        z = z * mask
+
+        return z
+
+
+class MSATransition(Module):
+    """
+    Implements Algorithm 15.
+    """
+
+    def __init__(self,
+                 c_m: int,
+                 n: int,
+                 dtype: str,
+                 mapping: Mapping,
+                 eps: float = 1e-5):
+        """
+        Args:
+            c_m:
+                Pair transition channel dimension
+            n:
+                Factor by which c_m is multiplied to obtain hidden channel
+                dimension
+        """
+        super().__init__()
+        self.dtype = dtype
+        self.mapping = mapping
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
+        self.tp_group = mapping.tp_group
+        self.c_m = c_m
+        self.n = n
+
+        self.layer_norm = LayerNorm([self.c_m], dtype=dtype, eps=eps)
+        self.linear_1 = ColumnLinear(self.c_m,
+                                     self.n * self.c_m,
+                                     bias=True,
+                                     dtype=dtype,
+                                     tp_group=self.tp_group,
+                                     tp_size=self.tp_size,
+                                     gather_output=False)
+        self.linear_2 = RowLinear(self.n * self.c_m,
+                                  self.c_m,
+                                  bias=True,
+                                  dtype=dtype,
+                                  tp_group=self.tp_group,
+                                  tp_size=self.tp_size)
+
+    def forward(self, m: Tensor, mask: Tensor):
+        # Similar to PairTransition, but with different names
+        mask = mask.unsqueeze(-1)
+        m = self.layer_norm(m)
+        m = self.linear_1(m)
+        m = relu(m)
+        m = self.linear_2(m)
+        m = m * mask
+
+        return m

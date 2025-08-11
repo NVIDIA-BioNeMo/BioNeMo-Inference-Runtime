@@ -8,8 +8,9 @@ import safetensors
 import torch
 from tensorrt_llm import logger
 
-from tensorrt_bionemo.configs import Boltz1Config, PairformerConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.models.boltz1.configs import (Boltz1Config,
+                                                    PairformerConfig)
 from tensorrt_bionemo.models.boltz1.convert import (convert_hf_pairformer,
                                                     convert_hf_pairformer_torch)
 from tensorrt_bionemo.runtime.backend import BackendType

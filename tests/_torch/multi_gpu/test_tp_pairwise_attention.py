@@ -19,7 +19,7 @@ import pytest
 import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_self_pairwise_attention_weights,
     load_self_pairwise_attention_weights_torch)
 
@@ -126,7 +126,18 @@ def test_tp_pairwise_attention(num_attention_heads):
     mask = torch.randn(b, seq_len, dtype=torch.float32)
 
     weights_and_biases = create_self_pairwise_attention_weights(
-        c_s=c_s, c_z=c_z, num_attention_heads=num_attention_heads)
+        c_s=c_s,
+        c_z=c_z,
+        num_attention_heads=num_attention_heads,
+        compute_pair_bias=True,
+        bias_flags={
+            "q": True,
+            "k": False,
+            "v": False,
+            "z": False,
+            "g": False,
+            "o": False
+        })
 
     with MPIPoolExecutor(max_workers=tensor_parallel_size) as executor:
         results = executor.map(

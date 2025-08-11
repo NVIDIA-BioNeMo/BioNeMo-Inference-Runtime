@@ -20,9 +20,9 @@ import tensorrt_llm
 import torch
 from tensorrt_llm import Tensor
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (create_adaln_weights,
-                                                load_adaln_weights_trt)
-from test_utils.ref_layers import RefAdaLN
+from test_utils.boltz.create_and_load_weights import (create_adaln_weights,
+                                                      load_adaln_weights_trt)
+from test_utils.boltz.ref_layers import RefAdaLN
 
 from tensorrt_bionemo._trt.layers.normalization import AdaLN
 from tensorrt_bionemo.mapping import Mapping
@@ -75,8 +75,8 @@ def test_adaln(sc: Scenario):
         output = adaln(trt_a, trt_s)
         output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
 
-    builder_config = builder.create_builder_config(
-        name="self_pairwise_attention", precision=sc.dtype)
+    builder_config = builder.create_builder_config(name="adaln",
+                                                   precision=sc.dtype)
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
@@ -88,7 +88,6 @@ def test_adaln(sc: Scenario):
     outputs = {'output': torch.empty(a.shape, dtype=torch_dtype, device="cuda")}
     session.run(inputs=inputs, outputs=outputs, stream=stream)
 
-    ref_adaln(a, s)
     ref_output = ref_adaln(a.to(torch_dtype), s.to(torch_dtype))
     torch.cuda.synchronize()
     if sc.dtype == "float32":

@@ -19,7 +19,7 @@ import pytest
 import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_torch)
 

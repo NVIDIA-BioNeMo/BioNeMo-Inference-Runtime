@@ -59,6 +59,14 @@ class TriangleAttentionNode(Module):
         triangle_attn_backend: str = 'VANILLA',
         support_batch: bool = True,
         fallback_threshold=0,
+        mha_bias_flags: dict[str, bool] = {
+            "q": False,
+            "k": False,
+            "v": False,
+            "g": False,
+            "z": False,
+            "o": False
+        },
         mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
@@ -101,7 +109,7 @@ class TriangleAttentionNode(Module):
             num_attention_heads=self.num_heads,
             num_kv_heads=self.num_heads,
             dtype=dtype,
-            bias=False,
+            bias_flags=mha_bias_flags,
             gating=True,
             triangle_attn_backend=self.triangle_attn_backend,
             support_batch=self.support_batch,
@@ -211,6 +219,12 @@ class TriangleMultiplicationNode(Module):
         multiplication_type:
         TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
         OUTGOING,
+        bias_flags: dict[str, bool] = {
+            "p_in": False,
+            "g_in": False,
+            "p_out": False,
+            "g_out": False,
+        },
         dtype: str = None,
         support_batch: bool = False,
         mapping: Mapping = Mapping()):
@@ -232,14 +246,14 @@ class TriangleMultiplicationNode(Module):
                                  dtype=dtype)
         self.p_in = ColumnLinear(dim,
                                  2 * dim,
-                                 bias=False,
+                                 bias=bias_flags["p_in"],
                                  dtype=dtype,
                                  tp_group=self.tp_group,
                                  tp_size=self.tp_size,
                                  gather_output=False)
         self.g_in = ColumnLinear(dim,
                                  2 * dim,
-                                 bias=False,
+                                 bias=bias_flags["g_in"],
                                  dtype=dtype,
                                  tp_group=self.tp_group,
                                  tp_size=self.tp_size,
@@ -250,14 +264,14 @@ class TriangleMultiplicationNode(Module):
                                   dtype="float32")
         self.p_out = ColumnLinear(dim,
                                   dim,
-                                  bias=False,
+                                  bias=bias_flags["p_out"],
                                   dtype="float32",
                                   tp_group=self.tp_group,
                                   tp_size=self.tp_size,
                                   gather_output=True)
         self.g_out = ColumnLinear(dim,
                                   dim,
-                                  bias=False,
+                                  bias=bias_flags["g_out"],
                                   dtype="float32",
                                   tp_group=self.tp_group,
                                   tp_size=self.tp_size,

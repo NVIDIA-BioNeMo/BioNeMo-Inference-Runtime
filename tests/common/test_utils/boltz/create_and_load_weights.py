@@ -26,51 +26,102 @@ from .ref_layers import *
 def create_triangle_attention_weights(c_q=None,
                                       c_k=None,
                                       c_v=None,
+                                      num_attention_heads: int = None,
+                                      bias_flags=None,
                                       torch_dtype=None,
                                       from_ref: RefTriangleAttention = None):
     if not from_ref:
+        if bias_flags is None:
+            bias_flags = {}
         q_weight = torch.empty(size=[c_q, c_q], dtype=torch_dtype)
         torch.nn.init.xavier_uniform_(q_weight)
+        q_bias = None
+        if bias_flags.get("q", False):
+            q_bias = torch.empty(size=[c_q], dtype=torch_dtype)
+            torch.nn.init.zeros_(q_bias)
 
-        # The reason why chose the identity matrix for K and V,
-        # see tensorrt_llm/tests/test_layer.py::TestLayer::test_attention
-        eye_weight = torch.eye(c_k, dtype=torch_dtype)
-        k_weight = eye_weight.contiguous()  # clone
-        v_weight = eye_weight.contiguous()
-        out_weight = eye_weight.contiguous()
-        gating_weight = eye_weight.contiguous()
+        k_weight = torch.empty(size=[c_k, c_k], dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(k_weight)
+        k_bias = None
+        if bias_flags.get("k", False):
+            k_bias = torch.empty(size=[c_k], dtype=torch_dtype)
+            torch.nn.init.zeros_(k_bias)
+
+        v_weight = torch.empty(size=[c_v, c_v], dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(v_weight)
+        v_bias = None
+        if bias_flags.get("v", False):
+            v_bias = torch.empty(size=[c_v], dtype=torch_dtype)
+            torch.nn.init.zeros_(v_bias)
+
+        out_weight = torch.empty(size=[c_q, c_q], dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(out_weight)
+        out_bias = None
+        if bias_flags.get("o", False):
+            out_bias = torch.empty(size=[c_q], dtype=torch_dtype)
+            torch.nn.init.zeros_(out_bias)
+
+        gating_weight = torch.empty(size=[c_q, c_q], dtype=torch_dtype)
+        torch.nn.init.xavier_uniform_(gating_weight)
+        gating_bias = None
+        if bias_flags.get("g", False):
+            gating_bias = torch.empty(size=[c_q], dtype=torch_dtype)
+            torch.nn.init.zeros_(gating_bias)
     else:
+        bias_flags = from_ref.bias_flags
         q_weight = from_ref.linear_q.weight.data
+        q_bias = None
+        if bias_flags.get("q", False):
+            q_bias = from_ref.linear_q.bias.data
         k_weight = from_ref.linear_k.weight.data
+        k_bias = None
+        if bias_flags.get("k", False):
+            k_bias = from_ref.linear_k.bias.data
         v_weight = from_ref.linear_v.weight.data
+        v_bias = None
+        if bias_flags.get("v", False):
+            v_bias = from_ref.linear_v.bias.data
         out_weight = from_ref.linear_o.weight.data
+        out_bias = None
+        if bias_flags.get("o", False):
+            out_bias = from_ref.linear_o.bias.data
         gating_weight = from_ref.linear_g.weight.data
-    return q_weight, k_weight, v_weight, out_weight, gating_weight
+        gating_bias = None
+        if bias_flags.get("g", False):
+            gating_bias = from_ref.linear_g.bias.data
+    return q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias
 
 
 def load_triangle_attention_weights_torch(module,
                                           weights_and_biases,
                                           dtype=torch.float32):
     # Load for _torch module
-    q_weight, k_weight, v_weight, out_weight, gating_weight = weights_and_biases
+    q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = weights_and_biases
     qkv_weights = [
         {
             "weight": q_weight.to(dtype).to("cuda"),
-            "bias": None
+            "bias": q_bias.to(dtype).to("cuda") if q_bias is not None else None
         },
         {
             "weight": k_weight.to(dtype).to("cuda"),
-            "bias": None
+            "bias": k_bias.to(dtype).to("cuda") if k_bias is not None else None
         },
         {
             "weight": v_weight.to(dtype).to("cuda"),
-            "bias": None
+            "bias": v_bias.to(dtype).to("cuda") if v_bias is not None else None
         },
     ]
-    o_proj_weights = [{"weight": out_weight.to(dtype).to("cuda"), "bias": None}]
+    o_proj_weights = [{
+        "weight":
+        out_weight.to(dtype).to("cuda"),
+        "bias":
+        out_bias.to(dtype).to("cuda") if out_bias is not None else None
+    }]
     g_proj_weights = [{
-        "weight": gating_weight.to(dtype).to("cuda"),
-        "bias": None
+        "weight":
+        gating_weight.to(dtype).to("cuda"),
+        "bias":
+        gating_bias.to(dtype).to("cuda") if gating_bias is not None else None
     }]
     module.qkv_proj.load_weights(qkv_weights)
     module.o_proj.load_weights(o_proj_weights)
@@ -79,85 +130,186 @@ def load_triangle_attention_weights_torch(module,
 
 def load_triangle_attention_weights_ref_torch(module, weights_and_biases):
     # Load for reference torch
-    q_weight, k_weight, v_weight, out_weight, gating_weight = weights_and_biases
+    q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = weights_and_biases
     q_weight.to("cuda")
+    if q_bias is not None:
+        q_bias.to("cuda")
     k_weight.to("cuda")
+    if k_bias is not None:
+        k_bias.to("cuda")
     v_weight.to("cuda")
+    if v_bias is not None:
+        v_bias.to("cuda")
     out_weight.to("cuda")
+    if out_bias is not None:
+        out_bias.to("cuda")
     gating_weight.to("cuda")
+    if gating_bias is not None:
+        gating_bias.to("cuda")
 
     module.linear_q.weight.data.copy_(q_weight)
+    if q_bias is not None:
+        module.linear_q.bias.data.copy_(q_bias)
     # k,v,o,g are identity matrices
     module.linear_k.weight.data.copy_(k_weight)
+    if k_bias is not None:
+        module.linear_k.bias.data.copy_(k_bias)
     module.linear_v.weight.data.copy_(v_weight)
+    if v_bias is not None:
+        module.linear_v.bias.data.copy_(v_bias)
     module.linear_o.weight.data.copy_(out_weight)
+    if out_bias is not None:
+        module.linear_o.bias.data.copy_(out_bias)
     module.linear_g.weight.data.copy_(gating_weight)
+    if gating_bias is not None:
+        module.linear_g.bias.data.copy_(gating_bias)
 
 
 def load_triangle_attention_weights_trt(module,
                                         weights_and_biases,
                                         tp_size=1,
                                         tp_rank=0):
-    q_weight, k_weight, v_weight, out_weight, gating_weight = weights_and_biases
+    q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = weights_and_biases
     if tp_size > 1:
         q_weight = split(q_weight, tp_size, tp_rank, 0)
+        if q_bias is not None:
+            q_bias = split(q_bias, tp_size, tp_rank, 0)
         k_weight = split(k_weight, tp_size, tp_rank, 0)
+        if k_bias is not None:
+            k_bias = split(k_bias, tp_size, tp_rank, 0)
         v_weight = split(v_weight, tp_size, tp_rank, 0)
-        out_weight = split(out_weight, tp_size, tp_rank, 1)
+        if v_bias is not None:
+            v_bias = split(v_bias, tp_size, tp_rank, 0)
+        out_weight = split(out_weight, tp_size, tp_rank,
+                           1)  # ignore bias for row tp
         gating_weight = split(gating_weight, tp_size, tp_rank, 0)
+        if gating_bias is not None:
+            gating_bias = split(gating_bias, tp_size, tp_rank, 0)
     qkv_weights = torch.cat([q_weight, k_weight, v_weight], dim=0)
     module.qkv_proj.weight.value = np.ascontiguousarray(
         qkv_weights.cpu().numpy())
+    if q_bias is not None and k_bias is not None and v_bias is not None:
+        qkv_bias = torch.cat([q_bias, k_bias, v_bias], dim=0)
+        module.qkv_proj.bias.value = np.ascontiguousarray(
+            qkv_bias.cpu().numpy())
     module.o_proj.weight.value = np.ascontiguousarray(out_weight.cpu().numpy())
+    if out_bias is not None:
+        module.o_proj.bias.value = np.ascontiguousarray(out_bias.cpu().numpy())
     module.g_proj.weight.value = np.ascontiguousarray(
         gating_weight.cpu().numpy())
+    if gating_bias is not None:
+        module.g_proj.bias.value = np.ascontiguousarray(
+            gating_bias.cpu().numpy())
 
 
 def create_self_pairwise_attention_weights(
         c_s=None,
         c_z=None,
         num_attention_heads=None,
+        bias_flags=None,
+        compute_pair_bias=True,
+        initial_norm=True,
         torch_dtype=None,
         from_ref: RefPairwiseSelfAttention = None):
     if not from_ref:
-        init_norm_weight = torch.empty(size=[c_s], dtype=torch_dtype)
-        torch.nn.init.uniform_(init_norm_weight)
-        init_norm_bias = torch.empty(size=[c_s], dtype=torch_dtype)
-        torch.nn.init.zeros_(init_norm_bias)
+        init_norm_weight = None
+        init_norm_bias = None
+        if bias_flags is None:
+            bias_flags = {}
+        if initial_norm:
+            init_norm_weight = torch.empty(size=[c_s], dtype=torch_dtype)
+            torch.nn.init.uniform_(init_norm_weight)
+            init_norm_bias = torch.empty(size=[c_s], dtype=torch_dtype)
+            torch.nn.init.zeros_(init_norm_bias)
 
         q_weight = torch.empty(size=[c_s, c_s], dtype=torch_dtype)
-        q_bias = torch.empty(size=[c_s], dtype=torch_dtype)
+        q_bias = None
         torch.nn.init.xavier_uniform_(q_weight)
-        torch.nn.init.zeros_(q_bias)
+        if bias_flags.get("q",
+                          True):  # default to True for q with the boltz family
+            q_bias = torch.empty(size=[c_s], dtype=torch_dtype)
+            torch.nn.init.zeros_(q_bias)
 
         eye_weight = torch.eye(c_s, dtype=torch_dtype)
         k_weight = eye_weight.contiguous()
+        k_bias = None
+        if bias_flags.get("k", False):
+            k_bias = torch.empty(size=[c_s], dtype=torch_dtype)
+            torch.nn.init.zeros_(k_bias)
         v_weight = eye_weight.contiguous()
+        v_bias = None
+        if bias_flags.get("v", False):
+            v_bias = torch.empty(size=[c_s], dtype=torch_dtype)
+            torch.nn.init.zeros_(v_bias)
         o_weight = eye_weight.contiguous()
+        o_bias = None
+        if bias_flags.get("o", False):
+            o_bias = torch.empty(size=[c_s], dtype=torch_dtype)
+            torch.nn.init.zeros_(o_bias)
         g_weight = eye_weight.contiguous()
-        z_weight = torch.empty([num_attention_heads, c_z], dtype=torch_dtype)
-        torch.nn.init.xavier_uniform_(z_weight)
-        norm_z_weight = torch.empty(size=[c_z], dtype=torch_dtype)
-        torch.nn.init.uniform_(norm_z_weight)
-        norm_z_bias = torch.empty(size=[c_z], dtype=torch_dtype)
-        torch.nn.init.zeros_(norm_z_bias)
+        g_bias = None
+        if bias_flags.get("g", False):
+            g_bias = torch.empty(size=[c_s], dtype=torch_dtype)
+            torch.nn.init.zeros_(g_bias)
+        if compute_pair_bias:
+            z_weight = torch.empty([num_attention_heads, c_z],
+                                   dtype=torch_dtype)
+            torch.nn.init.xavier_uniform_(z_weight)
+            z_bias = None
+            if bias_flags.get("z", False):
+                z_bias = torch.empty(size=[c_z], dtype=torch_dtype)
+                torch.nn.init.zeros_(z_bias)
+            norm_z_weight = torch.empty(size=[c_z], dtype=torch_dtype)
+            torch.nn.init.uniform_(norm_z_weight)
+            norm_z_bias = torch.empty(size=[c_z], dtype=torch_dtype)
+            torch.nn.init.zeros_(norm_z_bias)
+        else:
+            z_weight = None
+            z_bias = None
+            norm_z_weight = None
+            norm_z_bias = None
     else:
+        bias_flags = from_ref.bias_flags
         init_norm_weight = None
         init_norm_bias = None
         if hasattr(from_ref, "norm_s") and from_ref.norm_s is not None:
             init_norm_weight = from_ref.norm_s.weight.data
             init_norm_bias = from_ref.norm_s.bias.data
         q_weight = from_ref.proj_q.weight.data
-        q_bias = from_ref.proj_q.bias.data
+        q_bias = None
+        if bias_flags.get("q", False):
+            q_bias = from_ref.proj_q.bias.data
         k_weight = from_ref.proj_k.weight.data
+        k_bias = None
+        if bias_flags.get("k", False):
+            k_bias = from_ref.proj_k.bias.data
         v_weight = from_ref.proj_v.weight.data
+        v_bias = None
+        if bias_flags.get("v", False):
+            v_bias = from_ref.proj_v.bias.data
         o_weight = from_ref.proj_o.weight.data
+        o_bias = None
+        if bias_flags.get("o", False):
+            o_bias = from_ref.proj_o.bias.data
         g_weight = from_ref.proj_g.weight.data
-        z_weight = from_ref.proj_z[1].weight.data
-        norm_z_weight = from_ref.proj_z[0].weight.data
-        norm_z_bias = from_ref.proj_z[0].bias.data
+        g_bias = None
+        if bias_flags.get("g", False):
+            g_bias = from_ref.proj_g.bias.data
+        if from_ref.compute_pair_bias:
+            z_weight = from_ref.proj_z[1].weight.data
+            z_bias = None
+            if bias_flags.get("z", False):
+                z_bias = from_ref.proj_z[1].bias.data
+            norm_z_weight = from_ref.proj_z[0].weight.data
+            norm_z_bias = from_ref.proj_z[0].bias.data
+        else:
+            z_weight = None
+            z_bias = None
+            norm_z_weight = None
+            norm_z_bias = None
 
-    return init_norm_weight, init_norm_bias, q_weight, q_bias, k_weight, v_weight, o_weight, g_weight, z_weight, norm_z_weight, norm_z_bias
+    return init_norm_weight, init_norm_bias, q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, \
+            o_weight, o_bias, g_weight, g_bias, z_weight, z_bias, norm_z_weight, norm_z_bias
 
 
 def load_self_pairwise_attention_weights_trt(module,
@@ -165,99 +317,176 @@ def load_self_pairwise_attention_weights_trt(module,
                                              tp_size=1,
                                              tp_rank=0):
     init_norm_weight, init_norm_bias, q_weight, q_bias, \
-        k_weight, v_weight, o_weight, g_weight, z_weight, norm_z_weight, norm_z_bias = weights_and_biases
+        k_weight, k_bias, v_weight, v_bias, o_weight, o_bias, \
+        g_weight, g_bias, z_weight, z_bias, norm_z_weight, norm_z_bias = weights_and_biases
     if tp_size > 1:
         q_weight = split(q_weight, tp_size, tp_rank, 0)
-        q_bias = split(q_bias, tp_size, tp_rank, 0)
+        if q_bias is not None:
+            q_bias = split(q_bias, tp_size, tp_rank, 0)
         k_weight = split(k_weight, tp_size, tp_rank, 0)
+        if k_bias is not None:
+            k_bias = split(k_bias, tp_size, tp_rank, 0)
         v_weight = split(v_weight, tp_size, tp_rank, 0)
-        o_weight = split(o_weight, tp_size, tp_rank, 1)
+        if v_bias is not None:
+            v_bias = split(v_bias, tp_size, tp_rank, 0)
+        o_weight = split(o_weight, tp_size, tp_rank, 1)  # tp row, ignore bias
+
         g_weight = split(g_weight, tp_size, tp_rank, 0)
-        z_weight = split(z_weight, tp_size, tp_rank, 0)
+        if g_bias is not None:
+            g_bias = split(g_bias, tp_size, tp_rank, 0)
+        if z_weight is not None:
+            z_weight = split(z_weight, tp_size, tp_rank, 0)
+            if z_bias is not None:
+                z_bias = split(z_bias, tp_size, tp_rank, 0)
 
     kv_weights = torch.cat([k_weight, v_weight], dim=0)
-    if hasattr(module, "norm_s") and module.norm_s is not None:
+    if hasattr(module, "norm_s") and module.norm_s is not None and \
+       init_norm_weight is not None and init_norm_bias is not None:
         module.norm_s.weight.value = np.ascontiguousarray(
             init_norm_weight.cpu().numpy())
         module.norm_s.bias.value = np.ascontiguousarray(
             init_norm_bias.cpu().numpy())
     module.proj_q.weight.value = np.ascontiguousarray(q_weight.cpu().numpy())
-    module.proj_q.bias.value = np.ascontiguousarray(q_bias.cpu().numpy())
+    if q_bias is not None:
+        module.proj_q.bias.value = np.ascontiguousarray(q_bias.cpu().numpy())
     # k,v,o,g are identity matrices
     module.proj_kv.weight.value = np.ascontiguousarray(kv_weights.cpu().numpy())
+    if k_bias is not None and v_bias is not None:
+        module.proj_kv.bias.value = np.ascontiguousarray(
+            torch.cat([k_bias, v_bias], dim=0).cpu().numpy())
     module.proj_o.weight.value = np.ascontiguousarray(o_weight.cpu().numpy())
+    if o_bias is not None:
+        module.proj_o.bias.value = np.ascontiguousarray(o_bias.cpu().numpy())
     module.proj_g.weight.value = np.ascontiguousarray(g_weight.cpu().numpy())
-    module.proj_z.weight.value = np.ascontiguousarray(z_weight.cpu().numpy())
-
-    module.proj_z_norm.weight.value = np.ascontiguousarray(
-        norm_z_weight.cpu().numpy())
-    module.proj_z_norm.bias.value = np.ascontiguousarray(
-        norm_z_bias.cpu().numpy())
+    if g_bias is not None:
+        module.proj_g.bias.value = np.ascontiguousarray(g_bias.cpu().numpy())
+    if z_weight is not None:
+        module.proj_z.weight.value = np.ascontiguousarray(
+            z_weight.cpu().numpy())
+        if z_bias is not None:
+            module.proj_z.bias.value = np.ascontiguousarray(
+                z_bias.cpu().numpy())
+    if norm_z_weight is not None and norm_z_bias is not None:
+        module.proj_z_norm.weight.value = np.ascontiguousarray(
+            norm_z_weight.cpu().numpy())
+        module.proj_z_norm.bias.value = np.ascontiguousarray(
+            norm_z_bias.cpu().numpy())
 
 
 def load_self_pairwise_attention_weights_torch(module,
                                                weights_and_biases,
                                                dtype=torch.float32):
     init_norm_weight, init_norm_bias, q_weight, q_bias, \
-        k_weight, v_weight, o_weight, g_weight, z_weight, norm_z_weight, norm_z_bias = weights_and_biases
+        k_weight, k_bias, v_weight, v_bias, o_weight, o_bias, g_weight, g_bias, z_weight, z_bias, norm_z_weight, norm_z_bias = weights_and_biases
     q_proj_weights = [{
-        "weight": q_weight.to(dtype).to("cuda"),
-        "bias": q_bias.to(dtype).to("cuda")
+        "weight":
+        q_weight.to(dtype).to("cuda"),
+        "bias":
+        q_bias.to(dtype).to("cuda") if q_bias is not None else None
     }]
     kv_proj_weights = [{
-        "weight": k_weight.to(dtype).to("cuda"),
-        "bias": None
+        "weight":
+        k_weight.to(dtype).to("cuda"),
+        "bias":
+        k_bias.to(dtype).to("cuda") if k_bias is not None else None
     }, {
-        "weight": v_weight.to(dtype).to("cuda"),
-        "bias": None
+        "weight":
+        v_weight.to(dtype).to("cuda"),
+        "bias":
+        v_bias.to(dtype).to("cuda") if v_bias is not None else None
     }]
-    o_proj_weights = [{"weight": o_weight.to(dtype).to("cuda"), "bias": None}]
-    g_proj_weights = [{"weight": g_weight.to(dtype).to("cuda"), "bias": None}]
+    o_proj_weights = [{
+        "weight":
+        o_weight.to(dtype).to("cuda"),
+        "bias":
+        o_bias.to(dtype).to("cuda") if o_bias is not None else None
+    }]
+    g_proj_weights = [{
+        "weight":
+        g_weight.to(dtype).to("cuda"),
+        "bias":
+        g_bias.to(dtype).to("cuda") if g_bias is not None else None
+    }]
 
-    z_1_proj_weights = [{"weight": z_weight.to(dtype).to("cuda"), "bias": None}]
-    if hasattr(module, "norm_s") and module.norm_s is not None:
+
+    if hasattr(module, "norm_s") and module.norm_s is not None and \
+       init_norm_weight is not None and init_norm_bias is not None:
         module.norm_s.weight.data.copy_(init_norm_weight.to(dtype).to("cuda"))
         module.norm_s.bias.data.copy_(init_norm_bias.to(dtype).to("cuda"))
     module.proj_q.load_weights(q_proj_weights)
     module.proj_kv.load_weights(kv_proj_weights)
     module.proj_o.load_weights(o_proj_weights)
     module.proj_g.load_weights(g_proj_weights)
-    module.proj_z[0].weight.data.copy_(norm_z_weight.to(dtype).to("cuda"))
-    module.proj_z[0].bias.data.copy_(norm_z_bias.to(dtype).to("cuda"))
-    module.proj_z[1].load_weights(z_1_proj_weights)
+
+    if norm_z_weight is not None and norm_z_bias is not None and z_weight is not None:
+        z_1_proj_weights = [{
+            "weight":
+            z_weight.to(dtype).to("cuda"),
+            "bias":
+            z_bias.to(dtype).to("cuda") if z_bias is not None else None
+        }]
+        module.proj_z[0].weight.data.copy_(norm_z_weight.to(dtype).to("cuda"))
+        module.proj_z[0].bias.data.copy_(norm_z_bias.to(dtype).to("cuda"))
+        module.proj_z[1].load_weights(z_1_proj_weights)
 
 
 def load_self_pairwise_attention_weights_ref_torch(module, weights_and_biases):
     init_norm_weight, init_norm_bias, q_weight, q_bias, \
-        k_weight, v_weight, o_weight, g_weight, z_weight, norm_z_weight, norm_z_bias = weights_and_biases
+        k_weight, k_bias, v_weight, v_bias, o_weight, o_bias, \
+        g_weight, g_bias, z_weight, z_bias, norm_z_weight, norm_z_bias = weights_and_biases
     init_norm_weight.to("cuda")
     init_norm_bias.to("cuda")
     q_weight.to("cuda")
-    q_bias.to("cuda")
+    if q_bias is not None:
+        q_bias.to("cuda")
     k_weight.to("cuda")
+    if k_bias is not None:
+        k_bias.to("cuda")
     v_weight.to("cuda")
+    if v_bias is not None:
+        v_bias.to("cuda")
     o_weight.to("cuda")
+    if o_bias is not None:
+        o_bias.to("cuda")
     g_weight.to("cuda")
+    if g_bias is not None:
+        g_bias.to("cuda")
     z_weight.to("cuda")
-    norm_z_weight.to("cuda")
-    norm_z_bias.to("cuda")
+    if z_bias is not None:
+        z_bias.to("cuda")
 
-    if hasattr(module, "norm_s") and module.norm_s is not None:
+
+    if hasattr(module, "norm_s") and module.norm_s is not None and \
+       init_norm_weight is not None and init_norm_bias is not None:
         module.norm_s.weight.data.copy_(init_norm_weight)
         module.norm_s.bias.data.copy_(init_norm_bias)
 
     module.proj_q.weight.data.copy_(q_weight)
-    module.proj_q.bias.data.copy_(q_bias)
+    if q_bias is not None:
+        module.proj_q.bias.data.copy_(q_bias)
 
     # k,v,o,g are identity matrices
     module.proj_k.weight.data.copy_(k_weight)
+    if k_bias is not None:
+        module.proj_k.bias.data.copy_(k_bias)
     module.proj_v.weight.data.copy_(v_weight)
+    if v_bias is not None:
+        module.proj_v.bias.data.copy_(v_bias)
     module.proj_o.weight.data.copy_(o_weight)
+    if o_bias is not None:
+        module.proj_o.bias.data.copy_(o_bias)
     module.proj_g.weight.data.copy_(g_weight)
-    module.proj_z[1].weight.data.copy_(z_weight)
+    if g_bias is not None:
+        module.proj_g.bias.data.copy_(g_bias)
 
-    module.proj_z[0].weight.data.copy_(norm_z_weight)
-    module.proj_z[0].bias.data.copy_(norm_z_bias)
+    if norm_z_weight is not None and norm_z_bias is not None and z_weight is not None:
+        norm_z_weight.to("cuda")
+        norm_z_bias.to("cuda")
+        module.proj_z[1].weight.data.copy_(z_weight)
+        if z_bias is not None:
+            module.proj_z[1].bias.data.copy_(z_bias)
+        module.proj_z[0].weight.data.copy_(norm_z_weight)
+        module.proj_z[0].bias.data.copy_(norm_z_bias)
 
 
 def create_triangle_attention_node_weights(
@@ -297,8 +526,10 @@ def create_triangle_attention_node_weights(
 
 def load_triangle_attention_node_weights_trt(module,
                                              weights_and_biases,
-                                             tp_size=1,
-                                             tp_rank=0):
+                                             mapping: Mapping = None):
+    mapping = mapping or Mapping()
+    tp_size = mapping.tp_size
+    tp_rank = mapping.tp_rank
     layer_norm_weight, layer_norm_bias = weights_and_biases["layer_norm"]
     linear_weight = weights_and_biases["linear"]
     mha_weights_and_biases = weights_and_biases["mha"]
@@ -345,15 +576,25 @@ def load_triangle_attention_node_weights_torch(module,
 def create_triangle_multiplication_node_weights(
         dim=None,
         torch_dtype=None,
+        bias_flags=None,
         from_ref: RefTriangleMultiplicationNode = None):
     if not from_ref:
         norm_in_weight = torch.empty(size=[dim], dtype=torch_dtype)
         torch.nn.init.uniform_(norm_in_weight)
         norm_in_bias = torch.empty(size=[dim], dtype=torch_dtype)
         torch.nn.init.zeros_(norm_in_bias)
-
+        if bias_flags is None:
+            bias_flags = {}
         p_in_weight = torch.rand(2 * dim, dim, dtype=torch_dtype)
+        p_in_bias = None
+        if bias_flags.get("p_in", False):
+            p_in_bias = torch.empty(size=[2 * dim], dtype=torch_dtype)
+            torch.nn.init.zeros_(p_in_bias)
         g_in_weight = torch.rand(2 * dim, dim, dtype=torch_dtype)
+        g_in_bias = None
+        if bias_flags.get("g_in", False):
+            g_in_bias = torch.empty(size=[2 * dim], dtype=torch_dtype)
+            torch.nn.init.zeros_(g_in_bias)
 
         norm_out_weight = torch.empty(size=[dim], dtype=torch.float32)
         torch.nn.init.uniform_(norm_out_weight)
@@ -361,30 +602,65 @@ def create_triangle_multiplication_node_weights(
         torch.nn.init.zeros_(norm_out_bias)
 
         p_out_weight = torch.rand(dim, dim, dtype=torch.float32)
+        p_out_bias = None
+        if bias_flags.get("p_out", False):
+            p_out_bias = torch.empty(size=[dim], dtype=torch.float32)
+            torch.nn.init.zeros_(p_out_bias)
         g_out_weight = torch.rand(dim, dim, dtype=torch.float32)
+        g_out_bias = None
+        if bias_flags.get("g_out", False):
+            g_out_bias = torch.empty(size=[dim], dtype=torch.float32)
+            torch.nn.init.zeros_(g_out_bias)
     else:
+        bias_flags = from_ref.bias_flags
         norm_in_weight = from_ref.norm_in.weight.data
         norm_in_bias = from_ref.norm_in.bias.data
         p_in_weight = from_ref.p_in.weight.data
+        p_in_bias = None
+        if bias_flags.get("p_in", False):
+            p_in_bias = from_ref.p_in.bias.data
         g_in_weight = from_ref.g_in.weight.data
+        g_in_bias = None
+        if bias_flags.get("g_in", False):
+            g_in_bias = from_ref.g_in.bias.data
         norm_out_weight = from_ref.norm_out.weight.data
         norm_out_bias = from_ref.norm_out.bias.data
         p_out_weight = from_ref.p_out.weight.data
+        p_out_bias = None
+        if bias_flags.get("p_out", False):
+            p_out_bias = from_ref.p_out.bias.data
         g_out_weight = from_ref.g_out.weight.data
-    return norm_in_weight, norm_in_bias, p_in_weight, g_in_weight, norm_out_weight, norm_out_bias, p_out_weight, g_out_weight
+        g_out_bias = None
+        if bias_flags.get("g_out", False):
+            g_out_bias = from_ref.g_out.bias.data
+    return norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
+            norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias
 
 
 def load_triangle_multiplication_node_weights_trt(module,
                                                   weights_and_biases,
-                                                  tp_size=1,
-                                                  tp_rank=0):
-    norm_in_weight, norm_in_bias, p_in_weight, g_in_weight, norm_out_weight, norm_out_bias, p_out_weight, g_out_weight = weights_and_biases
+                                                  mapping: Mapping = None):
+    mapping = mapping or Mapping()
+    tp_size = mapping.tp_size
+    tp_rank = mapping.tp_rank
+    norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
+        norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias = weights_and_biases
     dim = p_in_weight.shape[0] // 2
     if tp_size > 1:
         p0_weight = p_in_weight[:dim, :]
+        p0_bias = None
         p1_weight = p_in_weight[dim:, :]
+        p1_bias = None
+        if p_in_bias is not None:
+            p0_bias = p_in_bias[:dim]
+            p1_bias = p_in_bias[dim:]
         g0_weight = g_in_weight[:dim, :]
         g1_weight = g_in_weight[dim:, :]
+        g0_bias = None
+        g1_bias = None
+        if g_in_bias is not None:
+            g0_bias = g_in_bias[:dim]
+            g1_bias = g_in_bias[dim:]
         p0_weight = split(p0_weight, tp_size, tp_rank, 0)
         p1_weight = split(p1_weight, tp_size, tp_rank, 0)
         g0_weight = split(g0_weight, tp_size, tp_rank, 0)
@@ -392,62 +668,106 @@ def load_triangle_multiplication_node_weights_trt(module,
 
         p_in_weight = torch.cat([p0_weight, p1_weight], dim=0)
         g_in_weight = torch.cat([g0_weight, g1_weight], dim=0)
+        if p_in_bias is not None:
+            p_in_bias = torch.cat([p0_bias, p1_bias], dim=0)
+        if g_in_bias is not None:
+            g_in_bias = torch.cat([g0_bias, g1_bias], dim=0)
         p_out_weight = split(p_out_weight, tp_size, tp_rank, 0)
+        if p_out_bias is not None:
+            p_out_bias = split(p_out_bias, tp_size, tp_rank, 0)
         g_out_weight = split(g_out_weight, tp_size, tp_rank, 0)
+        if g_out_bias is not None:
+            g_out_bias = split(g_out_bias, tp_size, tp_rank, 0)
     module.norm_in.weight.value = np.ascontiguousarray(
         norm_in_weight.cpu().numpy())
     module.norm_in.bias.value = np.ascontiguousarray(norm_in_bias.cpu().numpy())
     module.p_in.weight.value = np.ascontiguousarray(p_in_weight.cpu().numpy())
+    if p_in_bias is not None:
+        module.p_in.bias.value = np.ascontiguousarray(p_in_bias.cpu().numpy())
     module.g_in.weight.value = np.ascontiguousarray(g_in_weight.cpu().numpy())
+    if g_in_bias is not None:
+        module.g_in.bias.value = np.ascontiguousarray(g_in_bias.cpu().numpy())
 
     module.norm_out.weight.value = np.ascontiguousarray(
         norm_out_weight.cpu().numpy())
     module.norm_out.bias.value = np.ascontiguousarray(
         norm_out_bias.cpu().numpy())
     module.p_out.weight.value = np.ascontiguousarray(p_out_weight.cpu().numpy())
+    if p_out_bias is not None:
+        module.p_out.bias.value = np.ascontiguousarray(p_out_bias.cpu().numpy())
     module.g_out.weight.value = np.ascontiguousarray(g_out_weight.cpu().numpy())
+    if g_out_bias is not None:
+        module.g_out.bias.value = np.ascontiguousarray(g_out_bias.cpu().numpy())
 
 
 def load_triangle_multiplication_node_weights_ref_torch(module,
                                                         weights_and_biases):
-    norm_in_weight, norm_in_bias, p_in_weight, g_in_weight, norm_out_weight, norm_out_bias, p_out_weight, g_out_weight = weights_and_biases
+    norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
+        norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias = weights_and_biases
     norm_in_weight.to("cuda")
     norm_in_bias.to("cuda")
     p_in_weight.to("cuda")
+    if p_in_bias is not None:
+        p_in_bias.to("cuda")
     g_in_weight.to("cuda")
+    if g_in_bias is not None:
+        g_in_bias.to("cuda")
     norm_out_weight.to("cuda")
     norm_out_bias.to("cuda")
     p_out_weight.to("cuda")
+    if p_out_bias is not None:
+        p_out_bias.to("cuda")
     g_out_weight.to("cuda")
+    if g_out_bias is not None:
+        g_out_bias.to("cuda")
 
     module.norm_in.weight.data.copy_(norm_in_weight)
     module.norm_in.bias.data.copy_(norm_in_bias)
     module.p_in.weight.data.copy_(p_in_weight)
+    if p_in_bias is not None:
+        module.p_in.bias.data.copy_(p_in_bias)
     module.g_in.weight.data.copy_(g_in_weight)
+    if g_in_bias is not None:
+        module.g_in.bias.data.copy_(g_in_bias)
 
     module.norm_out.weight.data.copy_(norm_out_weight)
     module.norm_out.bias.data.copy_(norm_out_bias)
     module.p_out.weight.data.copy_(p_out_weight)
+    if p_out_bias is not None:
+        module.p_out.bias.data.copy_(p_out_bias)
     module.g_out.weight.data.copy_(g_out_weight)
+    if g_out_bias is not None:
+        module.g_out.bias.data.copy_(g_out_bias)
 
 
 def load_triangle_multiplication_node_weights_torch(module,
                                                     weights_and_biases,
                                                     dtype=torch.float32):
-    norm_in_weight, norm_in_bias, p_in_weight, g_in_weight, norm_out_weight, norm_out_bias, p_out_weight, g_out_weight = weights_and_biases
+    norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
+        norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias = weights_and_biases
     module.norm_in.weight.data.copy_(norm_in_weight.to(dtype).to("cuda"))
     module.norm_in.bias.data.copy_(norm_in_bias.to(dtype).to("cuda"))
     dim = p_in_weight.shape[0] // 2
     p0_weight = p_in_weight[:dim, :]
     p1_weight = p_in_weight[dim:, :]
+    p0_bias = None
+    p1_bias = None
+    if p_in_bias is not None:
+        p0_bias = p_in_bias[:dim]
+        p1_bias = p_in_bias[dim:]
+    g0_bias = None
+    g1_bias = None
+    if g_in_bias is not None:
+        g0_bias = g_in_bias[:dim]
+        g1_bias = g_in_bias[dim:]
     p_in_weights = [
         {
             "weight": p0_weight.to(dtype).to("cuda"),
-            "bias": None
+            "bias": p0_bias
         },
         {
             "weight": p1_weight.to(dtype).to("cuda"),
-            "bias": None
+            "bias": p1_bias
         },
     ]
     module.p_in.load_weights(p_in_weights)
@@ -456,11 +776,11 @@ def load_triangle_multiplication_node_weights_torch(module,
     g_in_weights = [
         {
             "weight": g0_weight.to(dtype).to("cuda"),
-            "bias": None
+            "bias": g0_bias
         },
         {
             "weight": g1_weight.to(dtype).to("cuda"),
-            "bias": None
+            "bias": g1_bias
         },
     ]
     module.g_in.load_weights(g_in_weights)
@@ -469,13 +789,13 @@ def load_triangle_multiplication_node_weights_torch(module,
         "weight":
         p_out_weight.to(torch.float32).to("cuda"),
         "bias":
-        None
+        p_out_bias
     }])
     module.g_out.load_weights([{
         "weight":
         g_out_weight.to(torch.float32).to("cuda"),
         "bias":
-        None
+        g_out_bias
     }])
     module.norm_out.weight.data.copy_(
         norm_out_weight.to(torch.float32).to("cuda"))
@@ -647,19 +967,16 @@ def load_pairformer_layer_weights_trt(
     if max_tri_mul_tp_size:
         m = create_max_tp_mapping(mapping, token_z)
     load_triangle_multiplication_node_weights_trt(
-        module.tri_mul_out, weights_and_biases["tri_mul_out"], m.tp_size,
-        m.tp_rank)
+        module.tri_mul_out, weights_and_biases["tri_mul_out"], m)
     load_triangle_multiplication_node_weights_trt(
-        module.tri_mul_in, weights_and_biases["tri_mul_in"], m.tp_size,
-        m.tp_rank)
+        module.tri_mul_in, weights_and_biases["tri_mul_in"], m)
 
     m = mapping if mapping else Mapping()  # dynamic mapping
     load_triangle_attention_node_weights_trt(
-        module.tri_attn_start, weights_and_biases["tri_attn_start"], m.tp_size,
-        m.tp_rank)
+        module.tri_attn_start, weights_and_biases["tri_attn_start"], m)
     load_triangle_attention_node_weights_trt(module.tri_attn_end,
                                              weights_and_biases["tri_attn_end"],
-                                             m.tp_size, m.tp_rank)
+                                             m)
     m = mapping if mapping else Mapping()  # dynamic mapping
     if include_s_path:
         if max_transition_tp_size:
@@ -1387,9 +1704,8 @@ def load_affinity_heads_transformer_weights_trt(module,
         affinity_out_mlp_linear_0_bias = split(affinity_out_mlp_linear_0_bias,
                                                m.tp_size, m.tp_rank, 0)
         affinity_out_mlp_linear_1_weight = split(
-            affinity_out_mlp_linear_1_weight, m.tp_size, m.tp_rank, 1)  # tp row
-        affinity_out_mlp_linear_1_bias = split(affinity_out_mlp_linear_1_bias,
-                                               m.tp_size, m.tp_rank, 1)
+            affinity_out_mlp_linear_1_weight, m.tp_size, m.tp_rank,
+            1)  # tp row, ignore bias
 
         to_affinity_pred_value_0_weight = split(to_affinity_pred_value_0_weight,
                                                 m.tp_size, m.tp_rank,
@@ -1398,9 +1714,7 @@ def load_affinity_heads_transformer_weights_trt(module,
                                               m.tp_size, m.tp_rank, 0)
         to_affinity_pred_value_1_weight = split(to_affinity_pred_value_1_weight,
                                                 m.tp_size, m.tp_rank,
-                                                1)  # tp row
-        to_affinity_pred_value_1_bias = split(to_affinity_pred_value_1_bias,
-                                              m.tp_size, m.tp_rank, 1)
+                                                1)  # tp row, ignore bias
 
         to_affinity_pred_score_0_weight = split(to_affinity_pred_score_0_weight,
                                                 m.tp_size, m.tp_rank,
@@ -1409,9 +1723,7 @@ def load_affinity_heads_transformer_weights_trt(module,
                                               m.tp_size, m.tp_rank, 0)
         to_affinity_pred_score_1_weight = split(to_affinity_pred_score_1_weight,
                                                 m.tp_size, m.tp_rank,
-                                                1)  # tp row
-        to_affinity_pred_score_1_bias = split(to_affinity_pred_score_1_bias,
-                                              m.tp_size, m.tp_rank, 1)
+                                                1)  # tp row, ignore bias
 
     module.affinity_out_mlp_linear_0.weight.value = np.ascontiguousarray(
         affinity_out_mlp_linear_0_weight.cpu().numpy())
@@ -1760,6 +2072,7 @@ def create_outer_product_mean_weights(c_in: int = None,
                                       c_hidden: int = None,
                                       c_out: int = None,
                                       torch_dtype=None,
+                                      bias_flags: dict[str, bool] = None,
                                       from_ref: RefOuterProductMean = None):
     if not from_ref:
         norm_weight = torch.empty(size=[c_in], dtype=torch_dtype)
@@ -1767,38 +2080,62 @@ def create_outer_product_mean_weights(c_in: int = None,
         norm_bias = torch.empty(size=[c_in], dtype=torch_dtype)
         torch.nn.init.zeros_(norm_bias)
         proj_a_weight = torch.empty(size=[c_hidden, c_in], dtype=torch_dtype)
+        proj_a_bias = None
+        if bias_flags["proj_a"]:
+            proj_a_bias = torch.zeros(size=[c_hidden], dtype=torch_dtype)
         torch.nn.init.uniform_(proj_a_weight)
         proj_b_weight = torch.empty(size=[c_hidden, c_in], dtype=torch_dtype)
+        proj_b_bias = None
+        if bias_flags["proj_b"]:
+            proj_b_bias = torch.zeros(size=[c_hidden], dtype=torch_dtype)
         torch.nn.init.uniform_(proj_b_weight)
         proj_o_weight = torch.empty(size=[c_out, c_hidden * c_hidden],
                                     dtype=torch_dtype)
         torch.nn.init.uniform_(proj_o_weight)
-        proj_o_bias = torch.empty(size=[c_out], dtype=torch_dtype)
-        torch.nn.init.zeros_(proj_o_bias)
+        proj_o_bias = None
+        if bias_flags["proj_o"]:
+            proj_o_bias = torch.zeros(size=[c_out], dtype=torch_dtype)
     else:
+        bias_flags = from_ref.bias_flags
         norm_weight = from_ref.norm.weight.data
         norm_bias = from_ref.norm.bias.data
         proj_a_weight = from_ref.proj_a.weight.data
+        proj_a_bias = None
+        if bias_flags["proj_a"]:
+            proj_a_bias = from_ref.proj_a.bias.data
         proj_b_weight = from_ref.proj_b.weight.data
+        proj_b_bias = None
+        if bias_flags["proj_b"]:
+            proj_b_bias = from_ref.proj_b.bias.data
         proj_o_weight = from_ref.proj_o.weight.data
-        proj_o_bias = from_ref.proj_o.bias.data
-    return norm_weight, norm_bias, proj_a_weight, proj_b_weight, proj_o_weight, proj_o_bias
+        proj_o_bias = None
+        if bias_flags["proj_o"]:
+            proj_o_bias = from_ref.proj_o.bias.data
+    return norm_weight, norm_bias, proj_a_weight, proj_a_bias, proj_b_weight, proj_b_bias, proj_o_weight, proj_o_bias
 
 
 def load_outer_product_mean_weights_ref_torch(module, weights_and_biases):
-    norm_weight, norm_bias, proj_a_weight, proj_b_weight, proj_o_weight, proj_o_bias = weights_and_biases
+    norm_weight, norm_bias, proj_a_weight, proj_a_bias, proj_b_weight, proj_b_bias, proj_o_weight, proj_o_bias = weights_and_biases
 
     module.norm.weight.data.copy_(norm_weight.to("cuda"))
     module.norm.bias.data.copy_(norm_bias.to("cuda"))
     module.proj_a.weight.data.copy_(proj_a_weight.to("cuda"))
+    if proj_a_bias is not None:
+        module.proj_a.bias.data.copy_(proj_a_bias.to("cuda"))
+
     module.proj_b.weight.data.copy_(proj_b_weight.to("cuda"))
+    if proj_b_bias is not None:
+        module.proj_b.bias.data.copy_(proj_b_bias.to("cuda"))
+
     module.proj_o.weight.data.copy_(proj_o_weight.to("cuda"))
+    if proj_o_bias is not None:
+        module.proj_o.bias.data.copy_(proj_o_bias.to("cuda"))
 
 
 def load_outer_product_mean_weights_torch(module,
                                           weights_and_biases,
                                           dtype=torch.float32):
-    norm_weight, norm_bias, proj_a_weight, proj_b_weight, proj_o_weight, proj_o_bias = weights_and_biases
+    norm_weight, norm_bias, proj_a_weight, proj_a_bias, proj_b_weight, proj_b_bias, proj_o_weight, proj_o_bias = weights_and_biases
 
     module.norm.weight.data.copy_(norm_weight.to("cuda"))
     module.norm.bias.data.copy_(norm_bias.to("cuda"))
@@ -1807,17 +2144,52 @@ def load_outer_product_mean_weights_torch(module,
         "weight":
         proj_a_weight.to(dtype).to("cuda"),
         "bias":
-        None
+        proj_a_bias.to(dtype).to("cuda") if proj_a_bias is not None else None
     }, {
         "weight":
         proj_b_weight.to(dtype).to("cuda"),
         "bias":
-        None
+        proj_b_bias.to(dtype).to("cuda") if proj_b_bias is not None else None
     }])
     module.proj_o.load_weights([{
-        "weight": proj_o_weight.to(dtype).to("cuda"),
-        "bias": proj_o_bias.to(dtype).to("cuda")
+        "weight":
+        proj_o_weight.to(dtype).to("cuda"),
+        "bias":
+        proj_o_bias.to(dtype).to("cuda") if proj_o_bias is not None else None
     }])
+
+
+def load_outer_product_mean_weights_trt(module,
+                                        weights_and_biases,
+                                        mapping: Mapping = None):
+    m = mapping if mapping else Mapping()  # dynamic mapping
+    norm_weight, norm_bias, proj_a_weight, proj_a_bias, \
+    proj_b_weight, proj_b_bias, proj_o_weight, proj_o_bias = weights_and_biases
+    if m.tp_size > 1:
+        proj_a_weight = split(proj_a_weight, m.tp_size, m.tp_rank, 0)
+        proj_a_bias = split(proj_a_bias, m.tp_size, m.tp_rank,
+                            0) if proj_a_bias is not None else None
+        proj_b_weight = split(proj_b_weight, m.tp_size, m.tp_rank, 0)
+        proj_b_bias = split(proj_b_bias, m.tp_size, m.tp_rank,
+                            0) if proj_b_bias is not None else None
+        proj_o_weight = split(proj_o_weight, m.tp_size, m.tp_rank,
+                              1)  # ignore slip bias for row tp
+    module.norm.weight.value = np.ascontiguousarray(norm_weight.cpu().numpy())
+    module.norm.bias.value = np.ascontiguousarray(norm_bias.cpu().numpy())
+
+    fused_proj_a_b_weight = torch.cat([proj_a_weight, proj_b_weight], dim=0)
+
+    module.fused_proj_a_b.weight.value = np.ascontiguousarray(
+        fused_proj_a_b_weight.cpu().numpy())
+    if proj_a_bias is not None and proj_b_bias is not None:
+        fused_proj_a_b_bias = torch.cat([proj_a_bias, proj_b_bias], dim=0)
+        module.fused_proj_a_b.bias.value = np.ascontiguousarray(
+            fused_proj_a_b_bias.cpu().numpy())
+    module.proj_o.weight.value = np.ascontiguousarray(
+        proj_o_weight.cpu().numpy())
+    if proj_o_bias is not None:
+        module.proj_o.bias.value = np.ascontiguousarray(
+            proj_o_bias.cpu().numpy())
 
 
 def create_msa_layer_weights(msa_s: int = None,

@@ -19,9 +19,9 @@ import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
-from test_utils.ref_attn import RefTriangleAttention
+from test_utils.boltz.ref_attn import RefTriangleAttention
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)

@@ -17,7 +17,7 @@ import os
 import numpy as np
 import pytest
 import torch
-from test_utils.ref_attn import plain_triangle_mha
+from test_utils.boltz.ref_attn import plain_triangle_mha
 
 from tensorrt_bionemo._torch.attention_backend.trifast import (
     TrifastAttention, TrifastAttentionMetadata)

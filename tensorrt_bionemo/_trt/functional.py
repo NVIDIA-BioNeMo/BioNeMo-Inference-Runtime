@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import IntEnum
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import numpy as np
 import tensorrt as trt
 from tensorrt_llm._common import default_net, default_trtnet
-from tensorrt_llm._utils import str_dtype_to_trt
+from tensorrt_llm._utils import fp32_array, str_dtype_to_trt
 from tensorrt_llm.functional import (Tensor, _add_plugin_info, _create_tensor,
                                      cast, concat, constant, floordiv, shape)
 
@@ -212,3 +212,23 @@ def triangle_attention(q: Tensor,
     output = _create_tensor(layer.get_output(0), layer)
     lse = _create_tensor(layer.get_output(1), layer)
     return output, lse
+
+
+def dynamic_const_tensor(shape: Tensor,
+                         value: float = 0.0,
+                         dtype: Union[str, trt.DataType] = 'float32') -> Tensor:
+    """ Create a dynamic tensor of zeros. """
+    low = constant(fp32_array(float(0.0)))
+    high = constant(fp32_array([float(0.0)] * shape.shape[0]))
+
+    layer = default_trtnet().add_fill([0], trt.FillOperation.LINSPACE,
+                                      trt.float32)
+
+    layer.set_input(0, shape.trt_tensor)
+    layer.set_input(1, low.trt_tensor)
+    layer.set_input(2, high.trt_tensor)
+
+    if value != 0.0:
+        c = constant(fp32_array(value))
+        return cast(_create_tensor(layer.get_output(0), layer) + c, dtype)
+    return cast(_create_tensor(layer.get_output(0), layer), dtype)

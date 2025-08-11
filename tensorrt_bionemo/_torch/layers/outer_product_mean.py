@@ -32,6 +32,15 @@ class OuterProductMean(nn.Module):
                  c_hidden: int,
                  c_out: int,
                  eps: float = 1e-5,
+                 mask_eps: float = 1e-3,
+                 norm_mask_by_eps: bool = False,
+                 norm_before_output: bool = True,
+                 cast_to_float_before_einsum: bool = True,
+                 bias_flags: dict[str, bool] = {
+                     "proj_a": False,
+                     "proj_b": False,
+                     "proj_o": True
+                 },
                  dtype: torch.dtype = None,
                  skip_create_weights: bool = False,
                  mapping: Optional[Mapping] = None) -> None:
@@ -41,14 +50,20 @@ class OuterProductMean(nn.Module):
             c_in: Input channel dimension.
             c_hidden: Hidden channel dimension.
             c_out: Output channel dimension.
+            norm_before_output: Whether to normalize the output before projection (this for OpenFold family models).
+            norm_mask_by_eps: Add mask by mask_eps to avoid zero division (this for OpenFold family models).
         """
         super().__init__()
         self.c_in = c_in
         self.c_hidden = c_hidden
         self.c_out = c_out
         self.eps = eps
+        self.mask_eps = mask_eps
+        self.norm_mask_by_eps = norm_mask_by_eps
+        self.cast_to_float_before_einsum = cast_to_float_before_einsum
         self.dtype = dtype
         self.mapping = mapping or Mapping()
+        self.norm_before_output = norm_before_output
         assert self.c_hidden % self.mapping.tp_size == 0, \
             "c_hidden must be divisible by tp_size"
         self.c_hidden = self.c_hidden // self.mapping.tp_size
@@ -56,7 +71,7 @@ class OuterProductMean(nn.Module):
         self.fused_proj_a_b = Linear(
             c_in,
             2 * self.c_hidden * self.mapping.tp_size,
-            bias=False,
+            bias=bias_flags["proj_a"] or bias_flags["proj_b"],
             dtype=dtype,
             mapping=self.mapping,
             tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -65,9 +80,9 @@ class OuterProductMean(nn.Module):
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
             skip_create_weights=skip_create_weights)
         self.proj_o = Linear(self.c_hidden * self.c_hidden *
-                             self.mapping.tp_size,
+                             self.mapping.tp_size * self.mapping.tp_size,
                              c_out,
-                             bias=True,
+                             bias=bias_flags["proj_o"],
                              dtype=dtype,
                              mapping=self.mapping,
                              tensor_parallel_mode=TensorParallelMode.ROW,
@@ -100,15 +115,25 @@ class OuterProductMean(nn.Module):
         m = self.norm(m)
         ab = self.fused_proj_a_b(m)
         a, b = ab.split([self.c_hidden, self.c_hidden], dim=-1)
-        a = (a * mask).float()
-        b = (b * mask).float()
+        if self.cast_to_float_before_einsum:
+            a = (a * mask).float()
+            b = (b * mask).float()
+        else:
+            a = a * mask
+            b = b * mask
 
         mask = mask[:, :, None, :] * mask[:, :, :, None]
-        num_mask = mask.sum(1).clamp(min=1)
+        if self.norm_mask_by_eps:
+            # This for OF family models
+            num_mask = mask.sum(1) + self.mask_eps
+        else:
+            # This for Boltz family models
+            num_mask = mask.sum(1).clamp(min=1)
 
         if self.mapping.tp_size == 1:
             z = torch.einsum("bsic,bsjd->bijcd", a, b)
         else:
+            # TODO: Checking the logic here
             # ring communication to compute z
             buffers = [a, a_recv]  # double buffers
             send_idx = 0
@@ -121,7 +146,10 @@ class OuterProductMean(nn.Module):
                 send_idx ^= 1  # flip the buffer
             z = torch.cat(z, dim=3)
         z = z.reshape(*z.shape[:3], -1)
-        z = z / num_mask
+        if self.norm_before_output:
+            z = z / num_mask
 
         z = self.proj_o(z.to(m.dtype), all_reduce_params=all_reduce_params)
+        if not self.norm_before_output:
+            z = z / num_mask
         return z

@@ -25,15 +25,20 @@ from tensorrt_llm.module import Module, ModuleList
 from tensorrt_llm.network import Network
 
 from tensorrt_bionemo._trt.functional import identity_sz
-from tensorrt_bionemo.models.boltz1.configs import (PairformerBuildConfig, PairformerConfig,
-                                       TokenTransformerBuildConfig,
-                                       TokenTransformerConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
+from tensorrt_bionemo.models.boltz1.configs import (PairformerBuildConfig,
+                                                    PairformerConfig,
+                                                    TokenTransformerBuildConfig,
+                                                    TokenTransformerConfig)
+from tensorrt_bionemo.models.openfold2.configs import (
+    EvoformerStackBuildConfig, EvoformerStackConfig)
 
 from ..module_utils import PretrainedModule
-from .attention import AttentionParams, SelfAttentionPairBias
+from .attention import AttentionParams, MSAAttention, SelfAttentionPairBias
 from .normalization import AdaLN
-from .transition import ConditionedTransitionBlock, Transition
+from .outer_product_mean import OuterProductMean
+from .transition import (ConditionedTransitionBlock, MSATransition,
+                         PairTransition, Transition)
 from .triangle_nodes import (TriangleAttentionNode, TriangleAttentionNodeType,
                              TriangleMultiplicationNode,
                              TriangleMultiplicationNodeType)
@@ -562,3 +567,305 @@ class TokenTransformer(PretrainedModule):
             sub_bias = slice(bias, starts, ends).squeeze(-1, True)
             a = layer(a, s, sub_bias, mask, attention_params, all_reduce_params)
         return a
+
+
+class EvoformerBlock(Module):
+    """ Implementation of the Evoformer block from the AlphaFold2 paper.
+    https://github.com/aqlaboratory/openfold/blob/main/openfold/model/evoformer.py#L377
+    """
+
+    def __init__(self,
+                 *,
+                 local_layer_idx: int,
+                 c_m: int,
+                 c_z: int,
+                 c_hidden_msa_att: int,
+                 c_hidden_opm: int,
+                 c_hidden_mul: int,
+                 c_hidden_pair_att: int,
+                 no_heads_msa: int,
+                 no_heads_pair: int,
+                 transition_n: int,
+                 no_column_attention: bool = False,
+                 opm_first: bool = False,
+                 triangle_attn_backend: str = 'VANILLA',
+                 support_batch: bool = True,
+                 dtype: str = None,
+                 eps: float = 1e-5,
+                 inf: float = 1e9,
+                 chunk_size: int = 0,
+                 mapping: Optional[Mapping] = None,
+                 **kwargs):
+        super().__init__()
+        self.c_m = c_m
+        self.c_z = c_z
+        self.c_hidden_msa_att = c_hidden_msa_att
+        self.c_hidden_opm = c_hidden_opm
+        self.c_hidden_mul = c_hidden_mul
+        self.c_hidden_pair_att = c_hidden_pair_att
+        self.no_heads_msa = no_heads_msa
+        self.no_heads_pair = no_heads_pair
+        self.transition_n = transition_n
+        self.no_column_attention = no_column_attention
+        self.opm_first = opm_first
+        self.triangle_attn_backend = triangle_attn_backend
+        self.support_batch = support_batch
+        self.dtype = dtype
+        self.eps = eps
+        self.inf = inf
+        self.mapping = mapping
+
+        self.msa_att_row = MSAAttention(
+            local_layer_idx=local_layer_idx,
+            c_in=c_m,
+            num_heads=no_heads_msa,
+            c_z=c_z,
+            triangle_attn_backend=triangle_attn_backend,
+            support_batch=support_batch,
+            need_project_z=True,
+            eps=eps,
+            inf=inf,
+            dtype=dtype,
+            mapping=mapping)
+
+        self.msa_transition = MSATransition(c_m=c_m,
+                                            n=transition_n,
+                                            dtype=dtype,
+                                            mapping=mapping,
+                                            eps=eps)
+
+        self.outer_product_mean = OuterProductMean(
+            c_in=c_m,
+            c_hidden=c_hidden_opm,
+            c_out=c_z,
+            eps=eps,
+            mask_eps=1e-3,
+            norm_mask_by_eps=True,
+            norm_before_output=False,
+            cast_to_float_before_einsum=True,
+            bias_flags={
+                "proj_a": True,
+                "proj_b": True,
+                "proj_o": True
+            },
+            dtype=dtype,
+            mapping=mapping)
+        self.tri_mul_out = TriangleMultiplicationNode(
+            local_layer_idx=local_layer_idx,
+            dim=c_z,
+            dtype=dtype,
+            eps=eps,
+            multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
+            support_batch=support_batch,
+            bias_flags={
+                "p_in": True,
+                "g_in": True,
+                "p_out": True,
+                "g_out": True
+            },
+            mapping=mapping)
+        self.tri_mul_in = TriangleMultiplicationNode(
+            local_layer_idx=local_layer_idx,
+            dim=c_z,
+            dtype=dtype,
+            eps=eps,
+            multiplication_type=TriangleMultiplicationNodeType.INCOMING,
+            support_batch=support_batch,
+            bias_flags={
+                "p_in": True,
+                "g_in": True,
+                "p_out": True,
+                "g_out": True
+            },
+            mapping=mapping)
+        self.tri_attn_start = TriangleAttentionNode(
+            local_layer_idx=local_layer_idx,
+            c_in=c_z,
+            c_hidden=c_hidden_pair_att,
+            num_heads=no_heads_pair,
+            node_type=TriangleAttentionNodeType.STARTING,
+            dtype=dtype,
+            eps=eps,
+            inf=inf,
+            chunk_size=chunk_size,
+            triangle_attn_backend=triangle_attn_backend,
+            support_batch=support_batch,
+            mapping=mapping,
+            mha_bias_flags={
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": True,
+                "z": False,
+                "o": True
+            })
+        self.tri_attn_end = TriangleAttentionNode(
+            local_layer_idx=local_layer_idx,
+            c_in=c_z,
+            c_hidden=c_hidden_pair_att,
+            num_heads=no_heads_pair,
+            node_type=TriangleAttentionNodeType.ENDING,
+            dtype=dtype,
+            eps=eps,
+            inf=inf,
+            chunk_size=chunk_size,
+            triangle_attn_backend=triangle_attn_backend,
+            support_batch=support_batch,
+            mapping=mapping,
+            mha_bias_flags={
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": True,
+                "z": False,
+                "o": True
+            })
+
+        self.pair_transition = PairTransition(c_z=c_z,
+                                              n=transition_n,
+                                              dtype=dtype,
+                                              mapping=mapping,
+                                              eps=eps)
+
+        if not self.no_column_attention:
+            self.msa_att_col = MSAAttention(
+                local_layer_idx=local_layer_idx,
+                c_in=c_m,
+                num_heads=no_heads_msa,
+                c_z=None,
+                triangle_attn_backend=triangle_attn_backend,
+                support_batch=support_batch,
+                need_project_z=False,
+                transpose_input=True,
+                eps=eps,
+                inf=inf,
+                dtype=dtype,
+                mapping=mapping)
+
+    def _compute_opm(
+        self,
+        m: Tensor,
+        z: Tensor,
+        msa_mask: Tensor,
+        all_reduce_params: Optional[AllReduceParams] = None
+    ) -> tuple[Tensor, Tensor]:
+        opm = self.outer_product_mean(m,
+                                      mask=msa_mask,
+                                      all_reduce_params=all_reduce_params)
+        z = z + opm
+        return m, z
+
+    def forward(self,
+                m: Optional[Tensor],
+                z: Optional[Tensor],
+                msa_mask: Tensor,
+                pair_mask: Tensor,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        """
+        Args:
+            m:
+                [*, N_seq, N_res, C_m] MSA embedding
+            z:
+                [*, N_res, N_res, C_z] pair embedding
+            msa_mask:
+                [*, N_seq, N_res] MSA mask
+            pair_mask:
+                [*, N_res, N_res] pair mask
+        """
+        if self.opm_first:
+            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
+
+        m = m + self.msa_att_row(m,
+                                 z,
+                                 mask=msa_mask,
+                                 attention_params=attention_params,
+                                 all_reduce_params=all_reduce_params)
+
+        if not self.no_column_attention:
+            m = m + self.msa_att_col(m,
+                                     z=None,
+                                     mask=msa_mask,
+                                     attention_params=attention_params,
+                                     all_reduce_params=all_reduce_params)
+        msa_trans_mask = msa_mask
+        m = m + self.msa_transition(m, mask=msa_trans_mask)
+
+        if not self.opm_first:
+            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
+
+        z = z + self.tri_mul_out(z, mask=pair_mask)
+        z = z + self.tri_mul_in(z, mask=pair_mask)
+
+        z = z + self.tri_attn_start(z,
+                                    mask=pair_mask,
+                                    attention_params=attention_params,
+                                    all_reduce_params=all_reduce_params)
+        z = z + self.tri_attn_end(z,
+                                  mask=pair_mask,
+                                  attention_params=attention_params,
+                                  all_reduce_params=all_reduce_params)
+        pair_trans_mask = pair_mask
+        z = z + self.pair_transition(z, mask=pair_trans_mask)
+
+        return m, z
+
+
+class EvoformerStack(PretrainedModule):
+    config_class = EvoformerStackConfig
+    build_config_class = EvoformerStackBuildConfig
+
+    def __init__(self, config: EvoformerStackConfig):
+        super().__init__(config)
+        self.blocks = ModuleList([
+            EvoformerBlock(local_layer_idx=i,
+                           c_m=config.c_m,
+                           c_z=config.c_z,
+                           c_hidden_msa_att=config.c_hidden_msa_att,
+                           c_hidden_opm=config.c_hidden_opm,
+                           c_hidden_mul=config.c_hidden_mul,
+                           c_hidden_pair_att=config.c_hidden_pair_att,
+                           no_heads_msa=config.no_heads_msa,
+                           no_heads_pair=config.no_heads_pair,
+                           transition_n=config.transition_n,
+                           no_column_attention=config.no_column_attention,
+                           opm_first=config.opm_first,
+                           triangle_attn_backend=config.triangle_attn_backend,
+                           support_batch=config.support_batch,
+                           dtype=config.dtype,
+                           eps=config.norm_epsilon,
+                           inf=config.mask_inf,
+                           chunk_size=config.chunk_size,
+                           mapping=config.mapping)
+            for i in range(config.no_blocks)
+        ])
+        self.linear = ColumnLinear(
+            config.c_m,
+            config.c_s,
+            bias=True,
+            dtype=config.dtype,
+            tp_group=config.mapping.tp_group,
+            tp_size=config.mapping.tp_size,
+            gather_output=True,
+            is_qkv=False,
+        )
+
+    def forward(
+        self,
+        m: Optional[Tensor],
+        z: Optional[Tensor],
+        msa_mask: Tensor,
+        pair_mask: Tensor,
+        attention_params: Optional[AttentionParams] = None,
+        all_reduce_params: Optional[AllReduceParams] = None
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        for block in self.blocks:
+            m, z = block(m, z, msa_mask, pair_mask, attention_params,
+                         all_reduce_params)
+
+        starts = concat([0, 0, 0, 0])
+        ends = concat([shape(m, 0), 1, shape(m, 2), shape(m, 3)])
+        s = slice(m, starts, ends).squeeze(1, True)
+        s = self.linear(s)
+
+        return m, z, s

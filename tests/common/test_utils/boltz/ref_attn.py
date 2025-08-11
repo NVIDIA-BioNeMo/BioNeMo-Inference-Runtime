@@ -66,14 +66,15 @@ def plain_triangle_mha(
     bias = biases[1]
     if mask.ndim == 4:
         mask = mask.unsqueeze(0)
-    if bias.ndim == 4:
+    if bias is not None and bias.ndim == 4:
         bias = bias.unsqueeze(1)
     q, k, v = _prep_qkv(q, k, v, no_heads, head_dim)
 
     a = torch.matmul(q, k)
     a /= math.sqrt(head_dim)  # [B, I, H, J, J]
     a += mask
-    a += bias
+    if bias is not None:
+        a += bias
 
     a = torch.nn.functional.softmax(a, dim=-1)
 
@@ -106,7 +107,12 @@ def plain_pairwise_mhca(
     a = torch.nn.functional.softmax(a, dim=-1)
 
     a = torch.matmul(a, v)
-    a = a.transpose(1, 2).contiguous()
+    if q.ndim == 4:
+        a = a.transpose(1, 2).contiguous()
+    elif q.ndim == 5:
+        a = a.transpose(2, 3).contiguous()
+    else:
+        assert False, f"Invalid input shape, not supported number of dimensions {q.ndim()}"
     return a
 
 
@@ -121,7 +127,14 @@ class RefTriangleAttention(nn.Module):
                  c_v: int,
                  c_hidden: int,
                  no_heads: int,
-                 gating: bool = True):
+                 gating: bool = True,
+                 bias_flags: dict[str, bool] = {
+                     "q": False,
+                     "k": False,
+                     "v": False,
+                     "g": False,
+                     "o": False
+                 }):
         """
         Args:
             c_q (int): query dimension
@@ -138,25 +151,26 @@ class RefTriangleAttention(nn.Module):
         self.c_hidden = c_hidden
         self.no_heads = no_heads
         self.gating = gating
+        self.bias_flags = bias_flags
 
         self.linear_q = nn.Linear(c_q,
                                   self.c_hidden * self.no_heads,
-                                  bias=False)
+                                  bias=bias_flags["q"])
         self.linear_k = nn.Linear(c_k,
                                   self.c_hidden * self.no_heads,
-                                  bias=False)
+                                  bias=bias_flags["k"])
         self.linear_v = nn.Linear(c_v,
                                   self.c_hidden * self.no_heads,
-                                  bias=False)
+                                  bias=bias_flags["v"])
         self.linear_o = nn.Linear(self.c_hidden * self.no_heads,
                                   c_q,
-                                  bias=False)
+                                  bias=bias_flags["o"])
 
         self.linear_g = None
         if self.gating:
             self.linear_g = nn.Linear(c_q,
                                       self.c_hidden * self.no_heads,
-                                      bias=False)
+                                      bias=bias_flags["g"])
         self.sigmoid = nn.Sigmoid()
 
     @classmethod
@@ -212,18 +226,32 @@ class RefPairwiseSelfAttention(nn.Module):
     # TODO: Add a ref pairwise attention for diffusion modules (with model cache)
     """
 
-    def __init__(self,
-                 c_s: int,
-                 c_z: int,
-                 num_heads: int,
-                 inf: float = 1e9,
-                 initial_norm: bool = True) -> None:
+    def __init__(
+            self,
+            c_s: int,
+            c_z: int,
+            num_heads: int,
+            inf: float = 1e9,
+            bias_flags: dict[str, bool] = {
+                "q": True,
+                "k": False,
+                "v": False,
+                "g": False,
+                "z": False,
+                "o": False
+            },  # default for boltz
+            compute_pair_bias: bool = True,
+            transform_mask: bool = True,
+            initial_norm: bool = True) -> None:
         """
         Args:
             c_s (int):  The input sequence dimension.
             c_z (int): The input pairwise dimension.
             num_heads (int): number of attention heads
             inf (float): infinity value
+            q_bias (bool): if True, use bias in the q projection
+            compute_pair_bias (bool): if True, compute the pair bias
+            initial_norm (bool): if True, use layer norm
         """
         super().__init__()
         assert c_s % num_heads == 0
@@ -234,20 +262,24 @@ class RefPairwiseSelfAttention(nn.Module):
         self.head_dim = c_s // num_heads
         self.inf = inf
         self.initial_norm = initial_norm
+        self.compute_pair_bias = compute_pair_bias
+        self.transform_mask = transform_mask
+        self.bias_flags = bias_flags
 
         if initial_norm:
             self.norm_s = nn.LayerNorm(c_s)
 
-        self.proj_q = nn.Linear(c_s, c_s)
-        self.proj_k = nn.Linear(c_s, c_s, bias=False)
-        self.proj_v = nn.Linear(c_s, c_s, bias=False)
-        self.proj_g = nn.Linear(c_s, c_s, bias=False)
+        self.proj_q = nn.Linear(c_s, c_s, bias=bias_flags["q"])
+        self.proj_k = nn.Linear(c_s, c_s, bias=bias_flags["k"])
+        self.proj_v = nn.Linear(c_s, c_s, bias=bias_flags["v"])
+        self.proj_g = nn.Linear(c_s, c_s, bias=bias_flags["g"])
 
-        self.proj_z = nn.Sequential(
-            nn.LayerNorm(c_z),
-            nn.Linear(c_z, num_heads, bias=False),
-        )
-        self.proj_o = nn.Linear(c_s, c_s, bias=False)
+        if self.compute_pair_bias:
+            self.proj_z = nn.Sequential(
+                nn.LayerNorm(c_z),
+                nn.Linear(c_z, num_heads, bias=bias_flags["z"]),
+            )
+        self.proj_o = nn.Linear(c_s, c_s, bias=bias_flags["o"])
 
     @classmethod
     def load_weights(
@@ -300,9 +332,9 @@ class RefPairwiseSelfAttention(nn.Module):
                 multiplicity: int = 1) -> torch.Tensor:
         """
         Args:
-            s (torch.Tensor): The input sequence (B, S, Ds).
-            z (torch.Tensor): The input pairwise. (B, N, N, Dz)
-            mask (torch.Tensor): The mask. (B, N)
+            s (torch.Tensor): The input sequence (B, I, Ds) or (B, J, I, Ds).
+            z (torch.Tensor): The input pairwise. (B, I, I, Dz)
+            mask (torch.Tensor): The mask. (B, J, I)
             multiplicity (int): The multiplicity. The diffution batch size, default 1
         """
         B = s.size(0)
@@ -311,14 +343,27 @@ class RefPairwiseSelfAttention(nn.Module):
         q = self.proj_q(s)
         k = self.proj_k(s)
         v = self.proj_v(s)
-        if compute_pair_bias:
+        if compute_pair_bias and self.compute_pair_bias:
             z = self.proj_z(z)
-            z = torch.moveaxis(z, 3, 1)  # [B, N, N, H] -> [B, H, N, N]
+            if mask.ndim == 2:
+                z = torch.moveaxis(z, 3, 1)  # [B, I, I, H] -> [B, H, N, N]
+            if mask.ndim == 3:
+                z = torch.moveaxis(z, 3, 1)  # [B, I, I, H] -> [B, H, N, N]
+                z = z.unsqueeze(1)  # [B, I, I, H] -> [B, 1, H, I, I]
         g = self.proj_g(s).sigmoid()
-        mask_bias = (1 - mask[:, None, None, :].float()) * -self.inf
+        if self.transform_mask:
+            if s.ndim == 3:
+                mask_bias = (1 - mask[:, None, None, :].float()) * -self.inf
+            elif s.ndim == 4:
+                mask_bias = (1 - mask[:, :, None, None, :].float()) * -self.inf
+        else:
+            mask_bias = mask.float()
         mhca_o = plain_pairwise_mhca(q, k, v, self.num_heads, self.head_dim,
                                      [mask_bias, z])
-        o = mhca_o.reshape(B, -1, self.c_s)
+        if s.ndim == 3:
+            o = mhca_o.reshape(B, -1, self.c_s)
+        elif s.ndim == 4:
+            o = mhca_o.reshape(B, s.shape[1], -1, self.c_s)
         o = self.proj_o(g * o)
 
         return o

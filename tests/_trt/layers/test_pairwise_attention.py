@@ -14,62 +14,54 @@
 # limitations under the License.
 
 import os
-from collections import namedtuple
+from dataclasses import dataclass
 
 import pytest
 import tensorrt_llm
 import torch
 from tensorrt_llm import Tensor
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import *
-from test_utils.ref_attn import RefPairwiseSelfAttention
+from test_utils.boltz.create_and_load_weights import *
+from test_utils.boltz.ref_attn import RefPairwiseSelfAttention
 
 import tensorrt_bionemo
 
-SelfPairwiseTestScenario = namedtuple("SelfPairwiseTestScenario", [
-    "batch_size", "seq_len", "c_s", "c_z", "num_attention_heads",
-    "vanilla_attn_precision", "dtype"
-])
+# This is the same as RefPairwiseSelfAttention, but with a different code structure
+# We do test it as well to make sure the code is correct
+
+
+@dataclass(kw_only=True, frozen=True)
+class Scenario:
+    backend: str = "VANILLA"
+    batch_size: int = 1
+    seq_len: int = 32
+    n_res: int = 16
+    dtype: str = "float32"
 
 
 @pytest.mark.parametrize("sc", [
-    SelfPairwiseTestScenario(batch_size=1,
-                             seq_len=5,
-                             c_s=384,
-                             c_z=128,
-                             num_attention_heads=16,
-                             vanilla_attn_precision="float32",
-                             dtype="float32"),
-    SelfPairwiseTestScenario(batch_size=2,
-                             seq_len=15,
-                             c_s=96,
-                             c_z=64,
-                             num_attention_heads=8,
-                             vanilla_attn_precision="float32",
-                             dtype="float32"),
-    SelfPairwiseTestScenario(batch_size=3,
-                             seq_len=30,
-                             c_s=384,
-                             c_z=128,
-                             num_attention_heads=32,
-                             vanilla_attn_precision="float32",
-                             dtype="float32"),
+    Scenario(batch_size=1, seq_len=5, dtype="float32"),
+    Scenario(batch_size=2, seq_len=15, dtype="float32"),
+    Scenario(batch_size=3, seq_len=30, dtype="float32"),
 ])
-def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
+def test_self_pairwise_attention(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 
+    torch_dtype = str_dtype_to_torch(sc.dtype)
+    ref_attn = RefPairwiseSelfAttention.load_weights()
+    weights_and_biases = create_self_pairwise_attention_weights(
+        from_ref=ref_attn)
+
     mean = 0.0
     std_dev = 1 if sc.dtype == "float32" else 0.005
-    torch_dtype = str_dtype_to_torch(sc.dtype)
-
-    s = torch.empty(size=[sc.batch_size, sc.seq_len, sc.c_s],
+    s = torch.empty(size=[sc.batch_size, sc.seq_len, ref_attn.c_s],
                     dtype=torch_dtype,
                     device="cuda",
                     requires_grad=False)
     s.normal_(mean=mean, std=std_dev)
-    z = torch.empty(size=[sc.batch_size, sc.seq_len, sc.seq_len, sc.c_z],
+    z = torch.empty(size=[sc.batch_size, sc.seq_len, sc.seq_len, ref_attn.c_z],
                     dtype=torch_dtype,
                     device="cuda",
                     requires_grad=False)
@@ -79,9 +71,6 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
                        device="cuda",
                        requires_grad=False)
     mask.normal_(mean=mean, std=std_dev)
-
-    weights_and_biases = \
-        create_self_pairwise_attention_weights(sc.c_s, sc.c_z, sc.num_attention_heads, torch_dtype)
 
     # construct trt network
     builder = tensorrt_llm.Builder()
@@ -99,9 +88,9 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
                           dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
 
         attn_layer = tensorrt_bionemo._trt.layers.SelfAttentionPairBias(
-            c_s=sc.c_s,
-            c_z=sc.c_z,
-            num_heads=sc.num_attention_heads,
+            c_s=ref_attn.c_s,
+            c_z=ref_attn.c_z,
+            num_heads=ref_attn.num_heads,
             initial_norm=True,
             local_layer_idx=0)
         load_self_pairwise_attention_weights_trt(attn_layer, weights_and_biases)
@@ -132,15 +121,7 @@ def test_self_pairwise_attention(sc: SelfPairwiseTestScenario):
     session.run(inputs=inputs, outputs=outputs, stream=stream)
     torch.cuda.synchronize()
 
-    # Verify result
-    ref_attn = RefPairwiseSelfAttention(c_s=sc.c_s,
-                                        c_z=sc.c_z,
-                                        num_heads=sc.num_attention_heads,
-                                        inf=1e6,
-                                        initial_norm=True)
     ref_attn.to("cuda", dtype=torch_dtype)
-
-    load_self_pairwise_attention_weights_ref_torch(ref_attn, weights_and_biases)
 
     with torch.inference_mode():
         ref_output = ref_attn(s, z, mask)

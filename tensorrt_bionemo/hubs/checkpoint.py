@@ -44,6 +44,69 @@ HF_CHECKPOINTS = {
         weights_only=False,
         state_dict_key="state_dict",
     ),
+    "openfold2_finetuning_2":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_2.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_finetuning_3":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_3.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_finetuning_4":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_4.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_finetuning_5":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_5.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_no_templ_1":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_no_templ_1.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_no_templ_2":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_no_templ_2.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_no_templ_ptm_1":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_no_templ_ptm_1.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_ptm_1":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_ptm_1.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_ptm_2":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_ptm_2.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
 }
 
 

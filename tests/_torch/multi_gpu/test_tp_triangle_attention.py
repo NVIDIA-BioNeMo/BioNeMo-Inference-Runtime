@@ -21,7 +21,7 @@ import pytest
 import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,

@@ -18,11 +18,10 @@ from dataclasses import dataclass
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (create_msa_layer_weights,
-                                                create_msa_module_weights,
-                                                load_msa_layer_weights_torch,
-                                                load_msa_module_weights_torch)
-from test_utils.ref_layers import RefMSALayer, RefMSAModule
+from test_utils.boltz.create_and_load_weights import (
+    create_msa_layer_weights, create_msa_module_weights,
+    load_msa_layer_weights_torch, load_msa_module_weights_torch)
+from test_utils.boltz.ref_layers import RefMSALayer, RefMSAModule
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
@@ -126,13 +125,15 @@ def test_msa_module(sc: Scenario):
 
     weights_and_biases = create_msa_module_weights(from_ref=ref_mod)
 
-    config = MSAModuleConfig(msa_s=ref_mod.msa_s,
+    config = MSAModuleConfig(architecture="msa_module",
+                             msa_s=ref_mod.msa_s,
                              token_z=ref_mod.token_z,
                              token_s=ref_mod.token_s,
                              msa_blocks=ref_mod.msa_blocks,
                              num_tokens=ref_mod.num_tokens,
                              pairwise_head_width=ref_mod.pairwise_head_width,
                              pairwise_num_heads=ref_mod.pairwise_num_heads,
+                             version="v2",
                              dtype=sc.torch_dtype)
     msa_module = MSAModule(config)
     load_msa_module_weights_torch(msa_module, weights_and_biases, dtype=dtype)

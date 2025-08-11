@@ -14,10 +14,12 @@
 # limitations under the License.
 
 from tensorrt_bionemo._trt.layers.affinity import AffinityModule
-from tensorrt_bionemo._trt.layers.transformers import (PairformerModule,
+from tensorrt_bionemo._trt.layers.transformers import (EvoformerStack,
+                                                       PairformerModule,
                                                        TokenTransformer)
 
 TRT_BUILDING_MODULES_REGISTRY = {}
+
 
 def register_building_module(model_name: str, module_name: str, module_class):
     """Register a module class for a specific model and module type"""
@@ -37,9 +39,11 @@ def register_building_modules(models_modules: dict | list):
         for model_name, module_name, module_class in models_modules:
             if model_name not in TRT_BUILDING_MODULES_REGISTRY:
                 TRT_BUILDING_MODULES_REGISTRY[model_name] = {}
-            TRT_BUILDING_MODULES_REGISTRY[model_name][module_name] = module_class
+            TRT_BUILDING_MODULES_REGISTRY[model_name][
+                module_name] = module_class
     else:
-        raise ValueError(f"Invalid type for models_modules: {type(models_modules)}")    
+        raise ValueError(
+            f"Invalid type for models_modules: {type(models_modules)}")
 
 
 def register_default_building_modules():
@@ -54,6 +58,9 @@ def register_default_building_modules():
             "confidence_pairformer": PairformerModule,
             "token_transformer": TokenTransformer,
             "affinity_module": AffinityModule,
+        },
+        "openfold2": {
+            "evoformer": EvoformerStack,
         }
     })
 

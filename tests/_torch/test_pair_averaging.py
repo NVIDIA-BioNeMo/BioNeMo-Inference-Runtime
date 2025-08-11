@@ -18,10 +18,10 @@ from dataclasses import dataclass
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_pair_weighted_averaging_weights,
     load_pair_weighted_averaging_weights_torch)
-from test_utils.ref_layers import RefPairWeightedAveraging
+from test_utils.boltz.ref_layers import RefPairWeightedAveraging
 
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 

@@ -20,7 +20,8 @@ from typing import Any
 import torch
 from transformers import PretrainedConfig
 
-from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig, DimSpec
+from tensorrt_bionemo.config import (BuildModuleConfig, DimSpec,
+                                     PretrainedModuleConfig)
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 
 from .const import TOKENS
@@ -132,7 +133,9 @@ class PairformerConfig(PretrainedModuleConfig):
         return cls(**config_dict)
 
 
-def _create_optimization_profiles(self: BuildModuleConfig) -> list[Any]:
+def _create_optimization_profiles(
+        self: BuildModuleConfig,
+        seqlen_key_names: list[str] = ["seqlen"]) -> list[Any]:
     input_shapes = self.module_config.get_input_shapes()
 
     if self.force_num_profiles == 0:
@@ -158,7 +161,7 @@ def _create_optimization_profiles(self: BuildModuleConfig) -> list[Any]:
             max_shape = []
 
             for spec in v:
-                if spec.name == "seqlen":
+                if spec.name in seqlen_key_names:
                     min_shape.append(rmin)
                     opt_shape.append(rmax)
                     max_shape.append(rmax)

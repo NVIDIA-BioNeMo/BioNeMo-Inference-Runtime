@@ -24,7 +24,7 @@ import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
@@ -135,7 +135,9 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         skip_create_weights=False,
         max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size,
         max_transition_tp_size=scenario.max_transition_tp_size,
-        mapping=mapping)
+        mapping=mapping,
+        attention_initial_norm=True
+    )  # Pairformer v1 uses attention_initial_norm
     pairformer_layer.cuda()
     pairformer_layer.eval()
 
@@ -168,7 +170,9 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         skip_create_weights=False,
         max_attention_pairwise_tp_size=scenario.max_attention_pairwise_tp_size,
         max_transition_tp_size=scenario.max_transition_tp_size,
-        mapping=mapping)
+        mapping=mapping,
+        attention_initial_norm=True
+    )  # Pairformer v1 uses attention_initial_norm
     load_pairformer_layer_weights_torch(single_dev_pairformer_layer,
                                         weights_and_biases,
                                         dtype=dtype)

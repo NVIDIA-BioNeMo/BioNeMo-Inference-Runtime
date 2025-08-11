@@ -20,8 +20,8 @@ import pytest
 import tensorrt_llm
 import torch
 from tensorrt_llm import Tensor, str_dtype_to_torch, str_dtype_to_trt
-from test_utils.create_and_load_weights import *
-from test_utils.ref_layers import RefConditionedTransitionBlock
+from test_utils.boltz.create_and_load_weights import *
+from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
 from tensorrt_bionemo._trt.layers.transition import ConditionedTransitionBlock
 

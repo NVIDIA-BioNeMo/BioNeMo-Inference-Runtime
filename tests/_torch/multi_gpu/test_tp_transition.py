@@ -19,7 +19,7 @@ import pytest
 import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_conditioned_transition_block_weights,
     load_conditioned_transition_block_weights_torch)
 

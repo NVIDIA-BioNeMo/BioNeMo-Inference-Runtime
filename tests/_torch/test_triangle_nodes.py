@@ -19,13 +19,13 @@ import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_node_weights,
     create_triangle_multiplication_node_weights,
     load_triangle_attention_node_weights_torch,
     load_triangle_multiplication_node_weights_torch)
-from test_utils.ref_layers import (RefTriangleAttentionNode,
-                                   RefTriangleMultiplicationNode)
+from test_utils.boltz.ref_layers import (RefTriangleAttentionNode,
+                                         RefTriangleMultiplicationNode)
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)

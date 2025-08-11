@@ -17,7 +17,7 @@ import gc
 import json
 import logging
 import os
-from typing import Callable, Optional
+from typing import Optional
 
 import numpy as np
 import tensorrt_llm
@@ -80,51 +80,24 @@ class DummyBackend(BackendBase):
     def __init__(
             self,
             config: PretrainedModuleConfig,
-            load_weights_fn: Optional[Callable] = None,
             impl: nn.Module = None,
             context_memory_allocator: Optional[BaseContextMemoryManager] = None
     ):
         # Pass context_memory_allocator to parent, handling None case
-        if context_memory_allocator is not None:
-            super().__init__(config,
-                             load_weights_fn,
-                             impl,
-                             context_memory_allocator=context_memory_allocator)
-        else:
-            super().__init__(config, load_weights_fn, impl)
+
+        super().__init__(config,
+                         impl,
+                         context_memory_allocator=context_memory_allocator)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
-
-    def load_weights(self,
-                     checkpoint_dir: str,
-                     world_size: int,
-                     rank: int,
-                     stream=None,
-                     **kwargs):
-        # Set attributes first
-        self._checkpoint_dir = checkpoint_dir
-        self._world_size = world_size
-        self._runtime_rank = rank
-
-        # Store the custom stream
-        self._custom_stream = stream
-        # Pass it to the allocator
-        if self._context_memory_allocator is not None:
-            self._context_memory_allocator.add_handle(self, stream=stream)
 
     def forward(self, x: torch.Tensor):
         # Use the allocator from the base class
         inputs = {"input": x}
         # Cast to memory manager since it has the forward method
         allocator = self._context_memory_allocator
-        if isinstance(allocator,
-                      (SimpleContextMemoryManager, SharedContextMemoryManager,
-                       OnDemandContextMemoryManager)):
-            outputs = allocator.forward(self, inputs)
-            return outputs
-        else:
-            raise RuntimeError(
-                "Expected SimpleContextMemoryManager, SharedContextMemoryManager, or OnDemandContextMemoryManager for forward pass"
-            )
+
+        outputs = allocator.forward(self, inputs)
+        return outputs
 
 
 class DummyConfig(PretrainedModuleConfig):
@@ -278,7 +251,10 @@ def run_allocator_test(allocator_class: BaseContextMemoryManager,
 
     for i, (config, engine_dir) in enumerate(zip(configs, engine_dirs)):
         backend = DummyBackend(config, context_memory_allocator=allocator)
-        backend.load_weights(engine_dir, world_size=1, rank=0)
+        backend.load_weights(engine_dir,
+                             world_size=1,
+                             rank=0,
+                             loaded_by_manager=True)
         backends.append(backend)
         logger.info(
             f"Registered backend {i} with {allocator_name.lower()} allocator")
@@ -385,7 +361,10 @@ def test_ondemand_context_memory_manager():
     backends = []
     for config, engine_dir in zip(configs, engine_dirs):
         backend = DummyBackend(config, context_memory_allocator=allocator)
-        backend.load_weights(engine_dir, world_size=1, rank=0)
+        backend.load_weights(engine_dir,
+                             world_size=1,
+                             rank=0,
+                             loaded_by_manager=True)
         backends.append(backend)
 
     # Load engines (should NOT allocate memory)
@@ -520,7 +499,8 @@ def test_custom_stream():
         backend.load_weights(engine_dir,
                              world_size=1,
                              rank=0,
-                             stream=stream_handle)
+                             stream=stream_handle,
+                             loaded_by_manager=True)
         backends.append(backend)
         logger.info(
             f"Registered backend {i} with custom stream handle {stream_handle}")
@@ -641,7 +621,10 @@ def test_optimization_profile_switching():
     # Test with SimpleContextMemoryManager
     allocator = SimpleContextMemoryManager()
     backend = DummyBackend(config, context_memory_allocator=allocator)
-    backend.load_weights(engine_dir, world_size=1, rank=0)
+    backend.load_weights(engine_dir,
+                         world_size=1,
+                         rank=0,
+                         loaded_by_manager=True)
     allocator.load()
 
     # Test different sequence lengths to trigger profile switching

@@ -23,7 +23,7 @@ from einops import rearrange
 from tensorrt_llm._utils import (get_sm_version, str_dtype_to_torch,
                                  str_dtype_to_trt)
 from tensorrt_llm.functional import Tensor
-from test_utils.ref_attn import plain_triangle_mha
+from test_utils.boltz.ref_attn import plain_triangle_mha
 
 from tensorrt_bionemo._trt.functional import (AttentionBackend,
                                               triangle_attention)

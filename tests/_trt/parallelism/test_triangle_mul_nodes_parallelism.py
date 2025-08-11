@@ -27,11 +27,11 @@ from tensorrt_llm.builder import Builder
 from tensorrt_llm.functional import Tensor
 from tensorrt_llm.plugin.plugin import (CustomAllReduceHelper,
                                         init_all_reduce_helper)
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_triangle_multiplication_node_weights,
     load_triangle_multiplication_node_weights_ref_torch,
     load_triangle_multiplication_node_weights_trt)
-from test_utils.ref_layers import RefTriangleMultiplicationNode
+from test_utils.boltz.ref_layers import RefTriangleMultiplicationNode
 
 from tensorrt_bionemo._trt.layers.triangle_nodes import (
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)

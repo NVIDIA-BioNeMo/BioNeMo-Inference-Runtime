@@ -25,15 +25,15 @@ from typing import Optional, Union
 import torch
 from tensorrt_llm._utils import (OMPI_COMM_TYPE_HOST, mpi_barrier, mpi_comm,
                                  mpi_rank, mpi_world_size)
+from tensorrt_llm.builder import Engine, EngineConfig
 from tensorrt_llm.logger import logger, severity_map
 from tensorrt_llm.plugin import PluginConfig, add_plugin_argument
-from tensorrt_llm.builder import Engine, EngineConfig
 
 from tensorrt_bionemo import __version__
 from tensorrt_bionemo._trt.builder import build
 from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig
-from tensorrt_bionemo.runtime.backend import BackendType
 from tensorrt_bionemo.registry import get_building_module_class
+from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def get_backend_names(directory_path: str) -> list[str]:
@@ -148,13 +148,13 @@ def parse_arguments():
     parser.add_argument('--torch_dtype',
                         type=str,
                         default=None,
-                        choices=['bfloat16', 'float32'],
+                        choices=['float16', 'bfloat16', 'float32'],
                         help="The data type of the torch model.")
     logits_parser = parser.add_argument_group("Logits arguments")
     logits_parser.add_argument('--logits_dtype',
                                type=str,
                                default=None,
-                               choices=['bfloat16', 'float32'],
+                               choices=['float16', 'bfloat16', 'float32'],
                                help="The data type of logits.")
 
     plugin_config_parser = parser.add_argument_group("Plugin config arguments")

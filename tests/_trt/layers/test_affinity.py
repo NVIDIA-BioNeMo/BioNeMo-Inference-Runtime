@@ -23,10 +23,9 @@ import torch
 # isort: off
 from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
 from tensorrt_llm.functional import Tensor
-from test_utils.create_and_load_weights import (create_affinity_module_weights,
-                                                load_affinity_module_weights_trt
-                                                )
-from test_utils.ref_layers import RefAffinityModule
+from test_utils.boltz.create_and_load_weights import (
+    create_affinity_module_weights, load_affinity_module_weights_trt)
+from test_utils.boltz.ref_layers import RefAffinityModule
 # isort: on
 
 from tensorrt_bionemo._trt.layers.affinity import AffinityModule

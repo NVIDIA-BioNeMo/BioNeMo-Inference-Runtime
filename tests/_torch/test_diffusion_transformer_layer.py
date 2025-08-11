@@ -18,12 +18,13 @@ from dataclasses import dataclass
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_torch)
-from test_utils.ref_layers import RefDiffusionTransformerLayer
+from test_utils.boltz.ref_layers import RefDiffusionTransformerLayer
 
-from tensorrt_bionemo._torch.attention_backend import get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (AttentionType,
+                                                       get_attention_backend)
 from tensorrt_bionemo._torch.layers.transformers import \
     DiffusionTransformerLayer
 

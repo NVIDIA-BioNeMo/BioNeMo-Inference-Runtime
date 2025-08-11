@@ -18,13 +18,15 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from tensorrt_llm import str_dtype_to_trt
 from transformers import PretrainedConfig
 
-from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig, DimSpec
+from tensorrt_bionemo.config import (BuildModuleConfig, DimSpec,
+                                     PretrainedModuleConfig)
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
-from tensorrt_bionemo.models.boltz1.configs import (MSAModuleConfig,
-                                                    PairformerConfig,
-                                                    TokenTransformerConfig)
+from tensorrt_bionemo.models.boltz1.configs import (
+    MSAModuleConfig, PairformerConfig, TokenTransformerConfig,
+    _create_optimization_profiles)
 from tensorrt_bionemo.models.boltz1.const import TOKENS
 
 

@@ -17,7 +17,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from test_utils.ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
+from test_utils.boltz.ref_attn import (RefPairwiseSelfAttention,
+                                       RefTriangleAttention)
 
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 
@@ -25,17 +26,28 @@ from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 class RefTriangleMultiplicationNode(nn.Module):
     """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/layers/triangular_mult.py"""
 
-    def __init__(self, dim: int = 128, outgoing: bool = True) -> None:
+    def __init__(
+        self,
+        dim: int = 128,
+        outgoing: bool = True,
+        bias_flags: dict[str, bool] = {
+            "p_in": False,
+            "g_in": False,
+            "p_out": False,
+            "g_out": False,
+        }
+    ) -> None:
         super().__init__()
         self.dim = dim
         self.outgoing = outgoing
+        self.bias_flags = bias_flags
         self.norm_in = nn.LayerNorm(dim, eps=1e-5)
-        self.p_in = nn.Linear(dim, 2 * dim, bias=False)
-        self.g_in = nn.Linear(dim, 2 * dim, bias=False)
+        self.p_in = nn.Linear(dim, 2 * dim, bias=bias_flags["p_in"])
+        self.g_in = nn.Linear(dim, 2 * dim, bias=bias_flags["g_in"])
 
         self.norm_out = nn.LayerNorm(dim, eps=1e-5)
-        self.p_out = nn.Linear(dim, dim, bias=False)
-        self.g_out = nn.Linear(dim, dim, bias=False)
+        self.p_out = nn.Linear(dim, dim, bias=bias_flags["p_out"])
+        self.g_out = nn.Linear(dim, dim, bias=bias_flags["g_out"])
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -119,6 +131,13 @@ class RefTriangleAttentionNode(nn.Module):
                  c_hidden: int,
                  num_heads: int,
                  starting: bool = True,
+                 mha_bias_flags: dict[str, bool] = {
+                     "q": False,
+                     "k": False,
+                     "v": False,
+                     "g": False,
+                     "o": False,
+                 },
                  inf: float = 1e9):
         super().__init__()
         self.c_in = c_in
@@ -126,13 +145,18 @@ class RefTriangleAttentionNode(nn.Module):
         self.num_heads = num_heads
         self.starting = starting
         self.inf = inf
+        self.mha_bias_flags = mha_bias_flags
 
         self.layer_norm = nn.LayerNorm(self.c_in)
 
         self.linear = nn.Linear(c_in, self.num_heads, bias=False)
 
-        self.mha = RefTriangleAttention(self.c_in, self.c_in, self.c_in,
-                                        self.c_hidden, self.num_heads)
+        self.mha = RefTriangleAttention(self.c_in,
+                                        self.c_in,
+                                        self.c_in,
+                                        self.c_hidden,
+                                        self.num_heads,
+                                        bias_flags=mha_bias_flags)
 
     @classmethod
     def load_weights(
@@ -1155,16 +1179,34 @@ class RefPairWeightedAveraging(nn.Module):
 class RefOuterProductMean(nn.Module):
     """Outer product mean layer."""
 
-    def __init__(self, c_in: int, c_hidden: int, c_out: int) -> None:
+    def __init__(
+        self,
+        c_in: int,
+        c_hidden: int,
+        c_out: int,
+        norm_mask_by_eps: bool = False,
+        norm_before_output: bool = True,
+        bias_flags: dict[str, bool] = {
+            "proj_a": False,
+            "proj_b": False,
+            "proj_o": True
+        }
+    ) -> None:
         super().__init__()
         self.c_hidden = c_hidden
         self.c_out = c_out
         self.c_in = c_in
+        self.norm_mask_by_eps = norm_mask_by_eps
+        self.mask_eps = 1e-3
+        self.norm_before_output = norm_before_output
+        self.bias_flags = bias_flags
 
         self.norm = nn.LayerNorm(c_in)
-        self.proj_a = nn.Linear(c_in, c_hidden, bias=False)
-        self.proj_b = nn.Linear(c_in, c_hidden, bias=False)
-        self.proj_o = nn.Linear(c_hidden * c_hidden, c_out)
+        self.proj_a = nn.Linear(c_in, c_hidden, bias=bias_flags["proj_a"])
+        self.proj_b = nn.Linear(c_in, c_hidden, bias=bias_flags["proj_b"])
+        self.proj_o = nn.Linear(c_hidden * c_hidden,
+                                c_out,
+                                bias=bias_flags["proj_o"])
 
     @classmethod
     def load_weights(cls,
@@ -1182,7 +1224,10 @@ class RefOuterProductMean(nn.Module):
         c_in = state_dict[f"{layer_path}.norm.weight"].shape[0]
         c_hidden = state_dict[f"{layer_path}.proj_a.weight"].shape[0]
         c_out = state_dict[f"{layer_path}.proj_o.weight"].shape[0]
-        m = cls(c_in=c_in, c_hidden=c_hidden, c_out=c_out)
+        m = cls(c_in=c_in,
+                c_hidden=c_hidden,
+                c_out=c_out,
+                norm_before_output=True)
         layers = [
             m.norm,
             m.proj_a,
@@ -1205,13 +1250,20 @@ class RefOuterProductMean(nn.Module):
         b = self.proj_b(m) * mask
 
         mask = mask[:, :, None, :] * mask[:, :, :, None]
-        num_mask = mask.sum(1).clamp(min=1)
-        z = torch.einsum("bsic,bsjd->bijcd", a.float(), b.float())
-        z = z.reshape(*z.shape[:3], -1)
-        z = z / num_mask
-
+        if self.norm_mask_by_eps:
+            # This for OF family models
+            num_mask = mask.sum(1) + self.mask_eps
+        else:
+            # This for Boltz family models
+            num_mask = mask.sum(1).clamp(min=1)
+        z = torch.einsum("...sic,...sjd->...ijcd", a.float(), b.float())
+        z = z.reshape(z.shape[:-2] + (-1, ))
+        if self.norm_before_output:
+            z = z / num_mask
         # Project to output
         z = self.proj_o(z.to(m))
+        if not self.norm_before_output:
+            z = z / num_mask
         return z
 
 

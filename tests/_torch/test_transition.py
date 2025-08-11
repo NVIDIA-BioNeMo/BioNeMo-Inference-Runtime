@@ -18,10 +18,10 @@ from dataclasses import dataclass
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
-from test_utils.create_and_load_weights import (
+from test_utils.boltz.create_and_load_weights import (
     create_conditioned_transition_block_weights,
     load_conditioned_transition_block_weights_torch)
-from test_utils.ref_layers import RefConditionedTransitionBlock
+from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
 from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
 

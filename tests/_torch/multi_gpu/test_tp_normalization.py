@@ -19,8 +19,8 @@ import pytest
 import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
-from test_utils.create_and_load_weights import (create_adaln_weights,
-                                                load_adaln_weights_torch)
+from test_utils.boltz.create_and_load_weights import (create_adaln_weights,
+                                                      load_adaln_weights_torch)
 
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.mapping import Mapping

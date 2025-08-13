@@ -398,7 +398,7 @@ def main(args):
                               backend=BackendType.TORCH,
                               default=config.msa_module_config),
         })
-    model = Boltz2Opt.optimize(model, acc_m, manager)
+    model, opt_m = Boltz2Opt.optimize(model, acc_m, manager)
 
     run_single_rank(sample_dir=args.sample_dir,
                     model=model,

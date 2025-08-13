@@ -5,12 +5,14 @@ import time
 from pathlib import Path
 
 import safetensors
+import torch
 from tensorrt_llm import logger
 
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.openfold2.configs import (EvoformerStackConfig,
                                                        OpenFold2Config)
-from tensorrt_bionemo.models.openfold2.convert import convert_hf_evoformer
+from tensorrt_bionemo.models.openfold2.convert import (
+    convert_hf_evoformer, convert_hf_evoformer_torch)
 from tensorrt_bionemo.runtime.backend import BackendType
 
 
@@ -111,15 +113,12 @@ def convert(worker_rank, world_size, configs, args):
               f'{BackendType.TRT}/config.json').open('w') as f:
             json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
     # Dump for torch config
-    # TODO: add support for torch backend, uncomment when ready
-    """
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
             json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
-    """
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
                           tp_size=args.tp_size,
@@ -134,19 +133,14 @@ def convert(worker_rank, world_size, configs, args):
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
-        # TODO: add support for torch backend, uncomment when ready
-        """
         if args.backend == 'all' or args.backend == BackendType.TORCH:
             # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
-            weights = convert_hf_pairformer_torch(
+            weights = convert_hf_evoformer_torch(
+                config=configs[BackendType.TORCH],
                 local_checkpoint=args.local_checkpoint,
-                num_layers=configs[BackendType.TORCH].num_blocks,
-                world_size=world_size,
-                rank=rank,
-                is_affinity=args.is_affinity)
+                model_name=model_name)
             torch.save(weights,
                        args.output_dir / f'{BackendType.TORCH}/weights.pt')
-        """
 
 
 def main():
@@ -187,13 +181,13 @@ def main():
         "backend":
         "trt",
     })
-    trt_pairformer_config = EvoformerStackConfig.from_dict(config)
-    # torch_pairformer_config = copy.deepcopy(trt_pairformer_config)
-    # torch_pairformer_config.backend = "torch"
+    trt_evoformer_config = EvoformerStackConfig.from_dict(config)
+    torch_evoformer_config = copy.deepcopy(trt_evoformer_config)
+    torch_evoformer_config.backend = "torch"
 
     configs = {
-        BackendType.TRT: trt_pairformer_config,
-        # BackendType.TORCH: torch_pairformer_config
+        BackendType.TRT: trt_evoformer_config,
+        BackendType.TORCH: torch_evoformer_config
     }
     if args.workers == 1:
         convert(0, world_size, configs, args)

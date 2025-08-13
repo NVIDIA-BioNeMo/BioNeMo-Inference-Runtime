@@ -206,9 +206,12 @@ def build_and_save(rank, gpu_id, ckpt_dir, build_config, output_dir, log_level,
         engine.save(output_dir)
     elif module_config.backend == BackendType.TORCH:
         # copy rank{rank}.pkl to output_dir
-        if os.path.exists(os.path.join(ckpt_dir, f"rank{rank}.pkl")):
-            shutil.copy(os.path.join(ckpt_dir, f"rank{rank}.pkl"),
-                        os.path.join(output_dir, f"rank{rank}.pkl"))
+        if os.path.exists(os.path.join(ckpt_dir, f"weights.pt")):
+            shutil.copy(os.path.join(ckpt_dir, f"weights.pt"),
+                        os.path.join(output_dir, f"weights.pt"))
+        else:
+            logger.warning(
+                f"Weights file for torch backend not found in {ckpt_dir}")
         engine_config = EngineConfig(module_config, BuildModuleConfig(),
                                      __version__)
         engine = Engine(engine_config, None, None)

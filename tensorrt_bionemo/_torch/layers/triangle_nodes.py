@@ -35,19 +35,27 @@ from .attention import TriangleAttention
 class TriangleAttentionNode(nn.Module):
 
     def __init__(
-            self,
-            c_in: int,
-            c_hidden: int,
-            num_heads: int,
-            node_type: TriangleAttentionNodeType = TriangleAttentionNodeType.
+        self,
+        c_in: int,
+        c_hidden: int,
+        num_heads: int,
+        node_type: TriangleAttentionNodeType = TriangleAttentionNodeType.
         STARTING,
-            inf: float = 1e9,
-            layer_idx: int = 0,
-            dtype: torch.dtype = None,
-            chunk_size: int = 0,
-            mapping: Optional[Mapping] = None,
-            skip_create_weights: bool = False,
-            attn_backend: str = "VANILLA"):
+        inf: float = 1e9,
+        layer_idx: int = 0,
+        dtype: torch.dtype = None,
+        chunk_size: int = 0,
+        mapping: Optional[Mapping] = None,
+        skip_create_weights: bool = False,
+        attn_backend: str = "VANILLA",
+        mha_bias_flags: dict[str, bool] = {
+            "q": False,
+            "k": False,
+            "v": False,
+            "g": False,
+            "z": False,
+            "o": False
+        }):
         """
         Args:
             c_in (int): input channel dimension
@@ -100,7 +108,7 @@ class TriangleAttentionNode(nn.Module):
             num_attention_heads=self.num_heads * self.tp_size,
             num_key_value_heads=self.num_heads * self.tp_size,
             gating=True,
-            bias=False,
+            bias_flags=mha_bias_flags,
             dtype=dtype,
             mapping=self.mapping,
             skip_create_weights=skip_create_weights,
@@ -143,6 +151,7 @@ class TriangleAttentionNode(nn.Module):
         triangle_bias = torch.permute(lx, (0, 3, 1, 2))
 
         # First if dcp_size > 1, we need to split the input by dcp_size
+        # TODO: move the dcp to attention class implementation
         seq_len = x.shape[1]
         if self.dcp_size > 1:
             seq_len = seq_len // self.dcp_size
@@ -210,6 +219,12 @@ class TriangleMultiplicationNode(nn.Module):
             multiplication_type:
         TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
         OUTGOING,
+            bias_flags: dict[str, bool] = {
+                "p_in": False,
+                "g_in": False,
+                "p_out": False,
+                "g_out": False
+            },
             dtype: torch.dtype = None,
             mapping: Optional[Mapping] = None,
             skip_create_weights: bool = False,
@@ -236,7 +251,7 @@ class TriangleMultiplicationNode(nn.Module):
                                     eps=eps)
         self.p_in = Linear(self.dim * self.tp_size,
                            2 * self.dim * self.tp_size,
-                           bias=False,
+                           bias=bias_flags["p_in"],
                            dtype=dtype,
                            mapping=self.mapping,
                            tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -246,7 +261,7 @@ class TriangleMultiplicationNode(nn.Module):
                            skip_create_weights=skip_create_weights)
         self.g_in = Linear(self.dim * self.tp_size,
                            2 * self.dim * self.tp_size,
-                           bias=False,
+                           bias=bias_flags["g_in"],
                            dtype=dtype,
                            mapping=self.mapping,
                            tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -260,7 +275,7 @@ class TriangleMultiplicationNode(nn.Module):
                                      eps=eps)
         self.p_out = Linear(self.dim * self.tp_size,
                             self.dim * self.tp_size,
-                            bias=False,
+                            bias=bias_flags["p_out"],
                             dtype=torch.float32,
                             mapping=self.mapping,
                             tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -268,7 +283,7 @@ class TriangleMultiplicationNode(nn.Module):
                             skip_create_weights=skip_create_weights)
         self.g_out = Linear(self.dim * self.tp_size,
                             self.dim * self.tp_size,
-                            bias=False,
+                            bias=bias_flags["g_out"],
                             dtype=torch.float32,
                             mapping=self.mapping,
                             tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -359,4 +374,6 @@ class TriangleMultiplicationNode(nn.Module):
                           self.mapping,
                           gather_dim=gather_dim,
                           mode=AllGatherMode.DP)
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
         return x

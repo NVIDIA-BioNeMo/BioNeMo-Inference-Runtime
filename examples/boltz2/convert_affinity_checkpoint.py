@@ -67,6 +67,7 @@ def parse_arguments():
 
 
 def convert(worker_rank, world_size, configs, args):
+    model_name = "boltz-2-affinity"
     # Dump for tensorrt config
     if args.backend == 'all' or args.backend == BackendType.TRT:
         (args.output_dir / f'{BackendType.TRT}').mkdir(parents=True,
@@ -92,16 +93,19 @@ def convert(worker_rank, world_size, configs, args):
                 configs[BackendType.TRT],
                 mapping,
                 affinity_module_name=args.affinity_module_name,
-                local_checkpoint=args.local_checkpoint)
+                local_checkpoint=args.local_checkpoint,
+                model_name=model_name)
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
         if args.backend == 'all' or args.backend == BackendType.TORCH:
             # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
             weights = convert_hf_affinity_module_torch(
+                config=configs[BackendType.TORCH],
+                mapping=mapping,
                 local_checkpoint=args.local_checkpoint,
-                world_size=world_size,
-                rank=rank)
+                affinity_module_name=args.affinity_module_name,
+                model_name=model_name)
             torch.save(weights,
                        args.output_dir / f'{BackendType.TORCH}/weights.pt')
 

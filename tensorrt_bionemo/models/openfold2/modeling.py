@@ -19,6 +19,7 @@ import torch.nn as nn
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
 from ..helper import AcceleratedModules, build_optimized_module
+from .convert import convert_hf_evoformer_torch
 from .modules import EvoformerStackBackendBuilder
 
 
@@ -32,10 +33,10 @@ class OpenFold2:
 
     @staticmethod
     def optimize(
-        model: nn.Module,
-        accelerated_modules: OpenFold2AcceleratedModules,
-        context_memory_allocator: Optional[BaseContextMemoryManager] = None
-    ) -> nn.Module:
+            model: nn.Module,
+            accelerated_modules: OpenFold2AcceleratedModules,
+            context_memory_allocator: Optional[BaseContextMemoryManager] = None,
+            model_name: str = "openfold2_ptm_1") -> nn.Module:
         """
         This function is used to build the optimized version of Boltz2 model from the original.
         Args:
@@ -70,8 +71,14 @@ class OpenFold2:
                 device=device,
                 context_memory_allocator=context_memory_allocator,
                 default_config=default_config,
-                convert_weights_func=None,
-                convert_weights_func_kwargs={},
+                convert_weights_func=convert_hf_evoformer_torch,
+                convert_weights_func_kwargs={
+                    "config": default_config,
+                    "mapping": None,
+                    "local_checkpoint": checkpoint_dir,
+                    "model_name": model_name,
+                    "weights": state_dict,
+                },
             )
             setattr(model, "evoformer", evoformer)
             opt_m["evoformer"] = evoformer

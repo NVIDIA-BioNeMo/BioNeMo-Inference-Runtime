@@ -69,6 +69,7 @@ class Boltz2:
         device = next(model.parameters()).device
         state_dict = model.state_dict()
         opt_m = {}
+        model_name = "boltz-2" if not is_affinity else "boltz-2-affinity"
 
         if "structure_pairformer" in module_names:
 
@@ -90,10 +91,10 @@ class Boltz2:
                 default_config=default_config,
                 convert_weights_func=convert_hf_pairformer_torch,
                 convert_weights_func_kwargs={
+                    "config": default_config,
                     "pairformer_type": "structure",
-                    "num_layers": default_config.num_blocks,
                     "weights": state_dict,
-                    "is_affinity": is_affinity
+                    "model_name": model_name
                 },
             )
             setattr(model, "pairformer_module", structure_pairformer)
@@ -118,10 +119,10 @@ class Boltz2:
                 default_config=default_config,
                 convert_weights_func=convert_hf_pairformer_torch,
                 convert_weights_func_kwargs={
+                    "config": default_config,
                     "pairformer_type": "confidence",
-                    "num_layers": default_config.num_blocks,
                     "weights": state_dict,
-                    "is_affinity": is_affinity
+                    "model_name": model_name
                 },
             )
             setattr(model.confidence_module, "pairformer_stack",
@@ -147,9 +148,9 @@ class Boltz2:
                 default_config=default_config,
                 convert_weights_func=convert_hf_token_transformer_torch,
                 convert_weights_func_kwargs={
-                    "num_layers": default_config.num_blocks,
+                    "config": default_config,
                     "weights": state_dict,
-                    "is_affinity": is_affinity
+                    "model_name": model_name
                 },
             )
             setattr(model.structure_module.score_model, "token_transformer",
@@ -174,9 +175,9 @@ class Boltz2:
                 default_config=default_config,
                 convert_weights_func=convert_hf_msa_module_torch,
                 convert_weights_func_kwargs={
-                    "msa_blocks": default_config.msa_blocks,
+                    "config": default_config,
                     "weights": state_dict,
-                    "is_affinity": is_affinity
+                    "model_name": model_name
                 },
             )
             setattr(model, "msa_module", msa_module)
@@ -207,7 +208,7 @@ class Boltz2Affinity:
         module_names = accelerated_modules.get_module_names()
         device = next(model.parameters()).device
         state_dict = model.state_dict()
-
+        model_name = "boltz-2-affinity"
         model, opt_m = Boltz2.optimize(model,
                                        accelerated_modules,
                                        context_memory_allocator,
@@ -231,8 +232,10 @@ class Boltz2Affinity:
                 default_config=default_config,
                 convert_weights_func=convert_hf_affinity_module_torch,
                 convert_weights_func_kwargs={
+                    "config": default_config,
                     "weights": state_dict,
-                    "affinity_module_name": "affinity_module1"
+                    "affinity_module_name": "affinity_module1",
+                    "model_name": model_name
                 },
             )
             setattr(model.affinity_module1, "affinity_module1",
@@ -257,8 +260,10 @@ class Boltz2Affinity:
                 default_config=default_config,
                 convert_weights_func=convert_hf_affinity_module_torch,
                 convert_weights_func_kwargs={
+                    "config": default_config,
                     "weights": state_dict,
-                    "affinity_module_name": "affinity_module2"
+                    "affinity_module_name": "affinity_module2",
+                    "model_name": model_name
                 },
             )
             setattr(model.affinity_module2, "affinity_module2",

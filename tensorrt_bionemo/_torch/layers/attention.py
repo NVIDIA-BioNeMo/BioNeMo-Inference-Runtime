@@ -40,7 +40,14 @@ class TriangleAttention(nn.Module):
                  num_attention_heads: int,
                  num_key_value_heads: Optional[int] = None,
                  layer_idx: int,
-                 bias: bool = False,
+                 bias_flags: dict[str, bool] = {
+                     "q": False,
+                     "k": False,
+                     "v": False,
+                     "g": False,
+                     "z": False,
+                     "o": False,
+                 },
                  gating: bool = True,
                  dtype: torch.dtype = None,
                  mapping: Optional[Mapping] = None,
@@ -70,7 +77,7 @@ class TriangleAttention(nn.Module):
         self.qkv_proj = Linear(
             self.hidden_size,
             tp_size * self.q_size + 2 * tp_size * self.kv_size,
-            bias=bias,
+            bias=bias_flags["q"] or bias_flags["k"] or bias_flags["v"],
             dtype=dtype,
             mapping=self.mapping,
             tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -82,7 +89,7 @@ class TriangleAttention(nn.Module):
         self.o_proj = Linear(
             tp_size * self.q_size,
             self.hidden_size,
-            bias=False,
+            bias=bias_flags["o"],
             dtype=dtype,
             mapping=self.mapping,
             tensor_parallel_mode=TensorParallelMode.ROW,
@@ -94,7 +101,7 @@ class TriangleAttention(nn.Module):
             self.g_proj = Linear(
                 self.hidden_size,
                 tp_size * self.q_size,
-                bias=False,
+                bias=bias_flags["g"],
                 dtype=dtype,
                 mapping=self.mapping,
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -123,6 +130,7 @@ class TriangleAttention(nn.Module):
             biases: Include two biases:
                 - mask_bias: [B, I, 1, 1, J]
                 - triangle_bias: [B, H, J, J]
+        # TODO: Need to implement DCP here, 1D-mapping, 2D-mapping context
         """
         if self.mapping.tp_size > 1:
             new_biases = []
@@ -342,3 +350,110 @@ class SelfAttentionPairBiasWithCache(SelfAttentionPairBias):
                                save_to_cache_key=self._bias_key,
                                attn_metadata=attn_metadata,
                                all_reduce_params=all_reduce_params)
+
+
+class MSAAttention(nn.Module):
+
+    def __init__(self,
+                 *,
+                 local_layer_idx: int,
+                 c_in: int,
+                 num_heads: int,
+                 c_z: Optional[int] = None,
+                 triangle_attn_backend: str = 'VANILLA',
+                 support_batch: bool = True,
+                 need_project_z: bool = True,
+                 transpose_input: bool = False,
+                 bias_flags: dict[str, bool] = {"z": False},
+                 eps: float = 1e-5,
+                 inf: float = 1e9,
+                 dtype: torch.dtype = None,
+                 skip_create_weights: bool = False,
+                 mapping: Optional[Mapping] = None,
+                 **kwargs):
+        super().__init__()
+        assert support_batch, "support_batch is required for MSAAttention"
+        self.local_layer_idx = local_layer_idx
+        self.num_heads = num_heads
+        self.c_in = c_in
+        self.c_z = c_z
+        self.inf = inf
+        self.support_batch = support_batch
+        self.mapping = mapping or Mapping()
+        self.dtype = dtype
+        self.transpose_input = transpose_input
+        self.triangle_attn_backend = triangle_attn_backend
+
+        self.layer_norm_m = nn.LayerNorm(c_in, dtype=dtype, eps=eps)
+
+        self.proj_z_norm = None
+        self.proj_z = None
+        if need_project_z:
+            self.proj_z_norm = nn.LayerNorm(c_z, dtype=dtype, eps=eps)
+            self.proj_z = Linear(
+                self.c_z,
+                self.num_heads,
+                bias=bias_flags["z"],
+                dtype=dtype,
+                mapping=mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                skip_create_weights=skip_create_weights,
+                gather_output=True,
+            )
+        self.mha = TriangleAttention(
+            layer_idx=local_layer_idx,
+            hidden_size=self.c_in,
+            num_attention_heads=self.num_heads,
+            num_key_value_heads=self.num_heads,
+            gating=True,
+            bias_flags={
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": True,
+                "z": False,
+                "o": True,
+            },
+            dtype=dtype,
+            mapping=self.mapping,
+            skip_create_weights=skip_create_weights,
+            attn_backend=self.triangle_attn_backend,
+        )
+
+    def forward(self,
+                m: torch.Tensor,
+                z: torch.Tensor,
+                mask: torch.Tensor,
+                attn_metadata: Optional[AttentionMetadata] = None,
+                all_reduce_params: Optional[AllReduceParams] = None):
+        """
+        Args:
+            m: [B, J, I, c_in]
+            z: [B, I, I, c_z]
+            mask: [B, J, I]
+        """
+        if self.transpose_input:
+            m = torch.permute(m, (0, 2, 1, 3))
+            mask = torch.permute(mask, (0, 2, 1))
+        mask_bias = ((mask - 1.0) * self.inf)
+        mask_bias = mask_bias.unsqueeze(2).unsqueeze(3)
+
+        if self.proj_z_norm and self.proj_z and z is not None:
+            z = self.proj_z_norm(z)
+            z = self.proj_z(z)
+            z = torch.permute(z, (0, 3, 1, 2))  # [B, N, N, H] -> [B, H, N, N]
+        else:
+            if self.triangle_attn_backend != 'VANILLA':
+                # set z to zeros for non-vanilla triangle attention
+                z_shape = [m.size(0), self.num_heads, m.size(2), m.size(2)]
+                z = torch.zeros(z_shape, dtype=self.dtype).to(m.device)
+        biases = [mask_bias, z]
+        m = self.layer_norm_m(m)
+
+        output = self.mha(m,
+                          biases=biases,
+                          attn_metadata=attn_metadata,
+                          all_reduce_params=all_reduce_params)
+        if self.transpose_input:
+            output = torch.permute(output, (0, 2, 1, 3))
+        return output

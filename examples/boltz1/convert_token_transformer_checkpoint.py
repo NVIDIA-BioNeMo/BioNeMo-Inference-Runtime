@@ -104,10 +104,9 @@ def convert(worker_rank, world_size, configs, args):
         if args.backend == 'all' or args.backend == BackendType.TORCH:
             # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
             weights = convert_hf_token_transformer_torch(
-                local_checkpoint=args.local_checkpoint,
-                num_blocks=configs[BackendType.TORCH].num_blocks,
-                world_size=world_size,
-                rank=rank)
+                config=configs[BackendType.TORCH],
+                mapping=mapping,
+                local_checkpoint=args.local_checkpoint)
             torch.save(weights,
                        args.output_dir / f'{BackendType.TORCH}/weights.pt')
 

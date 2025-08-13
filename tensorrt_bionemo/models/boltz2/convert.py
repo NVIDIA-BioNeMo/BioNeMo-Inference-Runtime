@@ -30,7 +30,8 @@ from tensorrt_bionemo.models.boltz1.convert import (get_pairwise_attn_weights,
                                                     get_tri_attn_node_weights,
                                                     get_tri_mul_node_weights)
 
-from ..boltz1.configs import PairformerConfig
+from ..boltz1.configs import (MSAModuleConfig, PairformerConfig,
+                              TokenTransformerConfig)
 from .configs import AffinityModuleConfig
 
 
@@ -148,7 +149,7 @@ def convert_hf_pairformer(config: PairformerConfig,
 
 def _load_boltz2_weights(local_checkpoint: str = None,
                          weights: dict = None,
-                         is_affinity: bool = False):
+                         model_name: str = "boltz-2"):
     state_dict = None
 
     if weights is not None:
@@ -162,22 +163,18 @@ def _load_boltz2_weights(local_checkpoint: str = None,
         logger.info(
             f"`weights` and `local_checkpoint` aren't both provided, loading from HuggingFace"
         )
-        if is_affinity:
-            ckpt = load_hf_weights(name="boltz-2-affinity", return_raw=True)
-        else:
-            ckpt = load_hf_weights(name="boltz-2", return_raw=True)
+        ckpt = load_hf_weights(name=model_name, return_raw=True)
         state_dict = torch.load(ckpt, map_location="cpu",
                                 weights_only=False)["state_dict"]
     return state_dict
 
 
-def convert_hf_pairformer_torch(local_checkpoint: str = None,
-                                world_size: int = 1,
-                                rank: int = 0,
+def convert_hf_pairformer_torch(config: PairformerConfig = None,
+                                mapping: Mapping = None,
+                                local_checkpoint: str = None,
+                                model_name: str = "boltz-2",
                                 weights: dict = None,
                                 pairformer_type: str = "structure",
-                                num_layers: int = None,
-                                is_affinity: bool = False,
                                 **kwargs):
     """
     Load a pairformer model from a PyTorch checkpoint.
@@ -185,12 +182,11 @@ def convert_hf_pairformer_torch(local_checkpoint: str = None,
     Args:
         module: The module to load the weights into.
         checkpoint_dir: The directory to load the checkpoint from.
-        world_size: The number of processes to use.
-        rank: The rank of the process.
+        mapping: The mapping to use.
         weights: The weights to load into the module.
         pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
     """
-    state_dict = _load_boltz2_weights(local_checkpoint, weights, is_affinity)
+    state_dict = _load_boltz2_weights(local_checkpoint, weights, model_name)
 
     prefix = "pairformer_module."
     if pairformer_type == "confidence":
@@ -198,12 +194,11 @@ def convert_hf_pairformer_torch(local_checkpoint: str = None,
         prefix = f"confidence_module.{prefix}"
 
     tbnm_state_dict = boltz1_convert_hf_pairformer_torch(
+        config=config,
         local_checkpoint=None,
-        world_size=world_size,
-        rank=rank,
+        mapping=mapping,
         weights=state_dict,
         pairformer_type=pairformer_type,
-        num_layers=num_layers,
         prefix=prefix)
 
     for name in state_dict.keys():
@@ -219,20 +214,18 @@ def convert_hf_pairformer_torch(local_checkpoint: str = None,
     return tbnm_state_dict
 
 
-def convert_hf_token_transformer_torch(local_checkpoint: str = None,
-                                       world_size: int = 1,
-                                       rank: int = 0,
+def convert_hf_token_transformer_torch(config: TokenTransformerConfig = None,
+                                       mapping: Mapping = None,
+                                       local_checkpoint: str = None,
+                                       model_name: str = "boltz-2",
                                        weights: dict = None,
-                                       num_layers: int = None,
-                                       is_affinity: bool = False,
                                        **kwargs):
-    state_dict = _load_boltz2_weights(local_checkpoint, weights, is_affinity)
+    state_dict = _load_boltz2_weights(local_checkpoint, weights, model_name)
     tbnm_state_dict = boltz1_convert_hf_token_transformer_torch(
+        config=config,
         local_checkpoint=None,
-        world_size=world_size,
-        rank=rank,
-        weights=state_dict,
-        num_layers=num_layers)
+        mapping=mapping,
+        weights=state_dict)
     return tbnm_state_dict
 
 
@@ -459,9 +452,10 @@ def get_affinity_heads_weights(mapping: Mapping,
 
 
 def convert_hf_affinity_module_torch(
+        config: AffinityModuleConfig = None,
+        mapping: Mapping = None,
         local_checkpoint: str = None,
-        world_size: int = 1,
-        rank: int = 0,
+        model_name: str = "boltz-2-affinity",
         weights: dict = None,
         affinity_module_name: str = "affinity_module1",
         **kwargs):
@@ -470,7 +464,7 @@ def convert_hf_affinity_module_torch(
     """
     state_dict = _load_boltz2_weights(local_checkpoint,
                                       weights,
-                                      is_affinity=True)
+                                      model_name=model_name)
 
     prefix = f"{affinity_module_name}."
     all_keys = len([
@@ -737,8 +731,8 @@ def convert_hf_affinity_module_torch(
     return tbnm_state_dict
 
 
-def convert_hf_affinity_module(config: AffinityModuleConfig,
-                               mapping: Mapping,
+def convert_hf_affinity_module(config: AffinityModuleConfig = None,
+                               mapping: Mapping = None,
                                affinity_module_name: str = "affinity_module1",
                                local_checkpoint: str = None,
                                model_name: str = "boltz-2-affinity"):
@@ -821,17 +815,16 @@ def convert_hf_affinity_module(config: AffinityModuleConfig,
     return weights
 
 
-def convert_hf_msa_module_torch(local_checkpoint: str = None,
-                                world_size: int = 1,
-                                rank: int = 0,
+def convert_hf_msa_module_torch(config: MSAModuleConfig = None,
+                                mapping: Mapping = None,
+                                local_checkpoint: str = None,
+                                model_name: str = "boltz-2",
                                 weights: dict = None,
-                                msa_blocks: int = None,
-                                is_affinity: bool = False,
                                 **kwargs):
     """
     Convert a msa module model from a Hugging Face checkpoint to a PyTorch model weights.
     """
-    state_dict = _load_boltz2_weights(local_checkpoint, weights, is_affinity)
+    state_dict = _load_boltz2_weights(local_checkpoint, weights, model_name)
     prefix = "msa_module."
     module_state_dict = {}
 
@@ -848,7 +841,7 @@ def convert_hf_msa_module_torch(local_checkpoint: str = None,
         module_state_dict[f"msa_proj.weight"],
     }]
 
-    for i in range(msa_blocks):
+    for i in range(config.msa_blocks):
         # Weight for msa transition
         tbnm_state_dict[f"layers.{i}.msa_transition.norm"] = [{
             'weight':

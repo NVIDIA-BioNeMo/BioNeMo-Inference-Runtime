@@ -67,7 +67,7 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
         """
         mask = biases[0]
         bias = biases[1]
-        bias = bias.unsqueeze(1)
+
         q = rearrange(q,
                       "b i j (h d) -> b i h j d",
                       h=self.num_heads,
@@ -84,7 +84,9 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
         a /= math.sqrt(self.head_dim)
 
         a += mask
-        a += bias
+        if bias is not None:
+            bias = bias.unsqueeze(1)
+            a += bias
 
         a = torch.nn.functional.softmax(a, dim=-1)
 

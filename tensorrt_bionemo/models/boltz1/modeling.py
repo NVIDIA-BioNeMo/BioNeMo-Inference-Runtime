@@ -79,8 +79,8 @@ class Boltz1:
                 default_config=default_config,
                 convert_weights_func=convert_hf_pairformer_torch,
                 convert_weights_func_kwargs={
+                    "config": default_config,
                     "pairformer_type": "structure",
-                    "num_layers": default_config.num_blocks,
                     "weights": state_dict
                 },
             )
@@ -106,8 +106,8 @@ class Boltz1:
                 default_config=default_config,
                 convert_weights_func=convert_hf_pairformer_torch,
                 convert_weights_func_kwargs={
+                    "config": default_config,
                     "pairformer_type": "confidence",
-                    "num_layers": default_config.num_blocks,
                     "weights": state_dict
                 },
             )
@@ -134,7 +134,7 @@ class Boltz1:
                 default_config=default_config,
                 convert_weights_func=convert_hf_token_transformer_torch,
                 convert_weights_func_kwargs={
-                    "num_layers": default_config.num_blocks,
+                    "config": default_config,
                     "weights": state_dict
                 },
             )
@@ -160,7 +160,7 @@ class Boltz1:
                 default_config=default_config,
                 convert_weights_func=convert_hf_msa_module_torch,
                 convert_weights_func_kwargs={
-                    "msa_blocks": default_config.msa_blocks,
+                    "config": default_config,
                     "weights": state_dict
                 },
             )

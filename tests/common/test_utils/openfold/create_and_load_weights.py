@@ -21,13 +21,15 @@ from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_node_weights, create_triangle_attention_weights,
     create_triangle_multiplication_node_weights,
     load_outer_product_mean_weights_ref_torch,
-    load_outer_product_mean_weights_trt,
+    load_outer_product_mean_weights_torch, load_outer_product_mean_weights_trt,
     load_self_pairwise_attention_weights_ref_torch,
     load_triangle_attention_node_weights_ref_torch,
+    load_triangle_attention_node_weights_torch,
     load_triangle_attention_node_weights_trt,
     load_triangle_attention_weights_ref_torch,
-    load_triangle_attention_weights_trt,
+    load_triangle_attention_weights_torch, load_triangle_attention_weights_trt,
     load_triangle_multiplication_node_weights_ref_torch,
+    load_triangle_multiplication_node_weights_torch,
     load_triangle_multiplication_node_weights_trt)
 from test_utils.openfold.ref_layers import (RefEvoformerBlock, RefMSAAttention,
                                             RefMSATransition, RefPairTransition)
@@ -115,6 +117,21 @@ def load_msa_attention_weights_ref_torch(module, weights_and_biases):
         module.linear_z.weight.data.copy_(linear_z_weight.to("cuda"))
 
 
+def load_msa_attention_weights_torch(module, weights_and_biases):
+    layer_norm_m_weight, layer_norm_m_bias, layer_norm_z_weight, layer_norm_z_bias, linear_z_weight, mha_weights = weights_and_biases
+    load_triangle_attention_weights_torch(module.mha, mha_weights)
+    module.layer_norm_m.weight.data.copy_(layer_norm_m_weight.to("cuda"))
+    module.layer_norm_m.bias.data.copy_(layer_norm_m_bias.to("cuda"))
+    if layer_norm_z_weight is not None:
+        module.proj_z_norm.weight.data.copy_(layer_norm_z_weight.to("cuda"))
+        module.proj_z_norm.bias.data.copy_(layer_norm_z_bias.to("cuda"))
+    if linear_z_weight is not None:
+        module.proj_z.load_weights([{
+            "weight": linear_z_weight.to("cuda"),
+            "bias": None
+        }])
+
+
 def load_msa_attention_weights_trt(module,
                                    weights_and_biases,
                                    using_tri_attn: bool = True,
@@ -155,12 +172,30 @@ def create_msa_transition_weights(from_ref: RefMSATransition = None):
 
 def load_msa_transition_weights_ref_torch(module, weights_and_biases):
     layer_norm_weight, layer_norm_bias, linear_1_weight, linear_1_bias, linear_2_weight, linear_2_bias = weights_and_biases
-    module.layer_norm_m.weight.data.copy_(layer_norm_weight.to("cuda"))
-    module.layer_norm_m.bias.data.copy_(layer_norm_bias.to("cuda"))
+    module.layer_norm.weight.data.copy_(layer_norm_weight.to("cuda"))
+    module.layer_norm.bias.data.copy_(layer_norm_bias.to("cuda"))
     module.linear_1.weight.data.copy_(linear_1_weight.to("cuda"))
     module.linear_1.bias.data.copy_(linear_1_bias.to("cuda"))
     module.linear_2.weight.data.copy_(linear_2_weight.to("cuda"))
     module.linear_2.bias.data.copy_(linear_2_bias.to("cuda"))
+
+
+def load_msa_transition_weights_torch(module, weights_and_biases):
+    layer_norm_weight, layer_norm_bias, linear_1_weight, linear_1_bias, linear_2_weight, linear_2_bias = weights_and_biases
+    module.layer_norm.weight.data.copy_(layer_norm_weight.to("cuda"))
+    module.layer_norm.bias.data.copy_(layer_norm_bias.to("cuda"))
+    module.linear_1.load_weights([{
+        "weight":
+        linear_1_weight.to("cuda"),
+        "bias":
+        linear_1_bias.to("cuda") if linear_1_bias is not None else None
+    }])
+    module.linear_2.load_weights([{
+        "weight":
+        linear_2_weight.to("cuda"),
+        "bias":
+        linear_2_bias.to("cuda") if linear_2_bias is not None else None
+    }])
 
 
 def load_msa_transition_weights_trt(module,
@@ -208,6 +243,24 @@ def load_pair_transition_weights_ref_torch(module, weights_and_biases):
     module.linear_1.bias.data.copy_(linear_1_bias.to("cuda"))
     module.linear_2.weight.data.copy_(linear_2_weight.to("cuda"))
     module.linear_2.bias.data.copy_(linear_2_bias.to("cuda"))
+
+
+def load_pair_transition_weights_torch(module, weights_and_biases):
+    layer_norm_weight, layer_norm_bias, linear_1_weight, linear_1_bias, linear_2_weight, linear_2_bias = weights_and_biases
+    module.layer_norm.weight.data.copy_(layer_norm_weight.to("cuda"))
+    module.layer_norm.bias.data.copy_(layer_norm_bias.to("cuda"))
+    module.linear_1.load_weights([{
+        "weight":
+        linear_1_weight.to("cuda"),
+        "bias":
+        linear_1_bias.to("cuda") if linear_1_bias is not None else None
+    }])
+    module.linear_2.load_weights([{
+        "weight":
+        linear_2_weight.to("cuda"),
+        "bias":
+        linear_2_bias.to("cuda") if linear_2_bias is not None else None
+    }])
 
 
 def load_pair_transition_weights_trt(module,
@@ -282,6 +335,27 @@ def load_evoformer_block_weights_ref_torch(module, weights_and_biases):
                                                    tri_attn_end_weights)
     load_pair_transition_weights_ref_torch(module.pair_transition,
                                            pair_transition_weights)
+
+
+def load_evoformer_block_weights_torch(module, weights_and_biases):
+    msa_att_row_weights, msa_att_col_weights, msa_transition_weights, outer_product_mean_weights, \
+            tri_mul_out_weights, tri_mul_in_weights, tri_attn_start_weights, tri_attn_end_weights, pair_transition_weights = weights_and_biases
+    load_msa_attention_weights_torch(module.msa_att_row, msa_att_row_weights)
+    load_msa_attention_weights_torch(module.msa_att_col, msa_att_col_weights)
+    load_msa_transition_weights_torch(module.msa_transition,
+                                      msa_transition_weights)
+    load_outer_product_mean_weights_torch(module.outer_product_mean,
+                                          outer_product_mean_weights)
+    load_triangle_multiplication_node_weights_torch(module.tri_mul_out,
+                                                    tri_mul_out_weights)
+    load_triangle_multiplication_node_weights_torch(module.tri_mul_in,
+                                                    tri_mul_in_weights)
+    load_triangle_attention_node_weights_torch(module.tri_attn_start,
+                                               tri_attn_start_weights)
+    load_triangle_attention_node_weights_torch(module.tri_attn_end,
+                                               tri_attn_end_weights)
+    load_pair_transition_weights_torch(module.pair_transition,
+                                       pair_transition_weights)
 
 
 def load_evoformer_block_weights_trt(module,

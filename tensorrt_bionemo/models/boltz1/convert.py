@@ -21,7 +21,7 @@ from tensorrt_llm.models.convert_utils import split
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
-from .configs import PairformerConfig, TokenTransformerConfig
+from .configs import MSAModuleConfig, PairformerConfig, TokenTransformerConfig
 
 
 def get_pairwise_attn_weights(mapping: Mapping,
@@ -315,12 +315,12 @@ def _load_boltz1_weights(local_checkpoint: str = None, weights: dict = None):
     return state_dict
 
 
-def convert_hf_pairformer_torch(local_checkpoint: str = None,
-                                world_size: int = 1,
-                                rank: int = 0,
+def convert_hf_pairformer_torch(config: PairformerConfig = None,
+                                mapping: Mapping = None,
+                                local_checkpoint: str = None,
+                                model_name: str = "boltz-1",
                                 weights: dict = None,
                                 pairformer_type: str = "structure",
-                                num_layers: int = None,
                                 prefix: str = None,
                                 **kwargs):
     """
@@ -347,7 +347,7 @@ def convert_hf_pairformer_torch(local_checkpoint: str = None,
         if k.startswith(prefix):
             module_state_dict[k.replace(prefix, "")] = v
     tbnm_state_dict = {}
-    for i in range(num_layers):
+    for i in range(config.num_blocks):
         # weight for pairwise attention
         if f"layers.{i}.attention.norm_s.weight" in module_state_dict:
             tbnm_state_dict[f"layers.{i}.attention.norm_s"] = [{
@@ -634,8 +634,8 @@ def get_post_norm_weights(mapping: Mapping,
     return ret
 
 
-def convert_hf_token_transformer(config: TokenTransformerConfig,
-                                 mapping: Mapping,
+def convert_hf_token_transformer(config: TokenTransformerConfig = None,
+                                 mapping: Mapping = None,
                                  local_checkpoint: str = None,
                                  model_name: str = "boltz-1"):
     """
@@ -701,11 +701,11 @@ def convert_hf_token_transformer(config: TokenTransformerConfig,
     return weights
 
 
-def convert_hf_token_transformer_torch(local_checkpoint: str = None,
-                                       world_size: int = 1,
-                                       rank: int = 0,
+def convert_hf_token_transformer_torch(config: TokenTransformerConfig,
+                                       mapping: Mapping = None,
+                                       local_checkpoint: str = None,
+                                       model_name: str = "boltz-1",
                                        weights: dict = None,
-                                       num_layers: int = None,
                                        **kwargs):
     """
     Convert a token transformer model from a Hugging Face checkpoint to a PyTorch model weights.
@@ -717,12 +717,11 @@ def convert_hf_token_transformer_torch(local_checkpoint: str = None,
     for k, v in state_dict.items():
         if k.startswith(prefix):
             module_state_dict[k.replace(prefix, "")] = v
-
     tbnm_state_dict = {}
     dim = module_state_dict[f"layers.0.adaln.s_bias.weight"].shape[0]
     dtype = module_state_dict[f"layers.0.adaln.s_bias.weight"].dtype
 
-    for i in range(num_layers):
+    for i in range(config.num_blocks):
         # weight for adaln
         tbnm_state_dict[f"layers.{i}.adaln.a_norm"] = [{
             "weight":
@@ -839,11 +838,11 @@ def convert_hf_token_transformer_torch(local_checkpoint: str = None,
     return tbnm_state_dict
 
 
-def convert_hf_msa_module_torch(local_checkpoint: str = None,
-                                world_size: int = 1,
-                                rank: int = 0,
+def convert_hf_msa_module_torch(config: MSAModuleConfig,
+                                mapping: Mapping = None,
+                                local_checkpoint: str = None,
+                                model_name: str = "boltz-1",
                                 weights: dict = None,
-                                msa_blocks: int = None,
                                 **kwargs):
     """
     Convert a msa module model from a Hugging Face checkpoint to a PyTorch model weights.
@@ -865,7 +864,7 @@ def convert_hf_msa_module_torch(local_checkpoint: str = None,
         module_state_dict[f"msa_proj.weight"],
     }]
 
-    for i in range(msa_blocks):
+    for i in range(config.msa_blocks):
         # Weight for msa transition
         tbnm_state_dict[f"layers.{i}.msa_transition.norm"] = [{
             'weight':

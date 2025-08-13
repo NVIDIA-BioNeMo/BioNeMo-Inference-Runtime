@@ -231,3 +231,107 @@ class PairwiseConditioning(nn.Module):
         for transition in self.transitions:
             z = transition(z, all_reduce_params=all_reduce_params) + z
         return z
+
+
+class PairTransition(nn.Module):
+
+    def __init__(self,
+                 c_z: int,
+                 n: int,
+                 eps: float = 1e-5,
+                 dtype: torch.dtype = None,
+                 mapping: Optional[Mapping] = None,
+                 skip_create_weights: bool = False):
+        super().__init__()
+        self.dtype = dtype
+        self.mapping = mapping
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
+        self.tp_group = mapping.tp_group
+        self.c_z = c_z
+        self.n = n
+
+        self.layer_norm = nn.LayerNorm(c_z, eps=eps, dtype=dtype)
+        self.linear_1 = Linear(c_z,
+                               n * c_z,
+                               bias=True,
+                               dtype=dtype,
+                               mapping=mapping,
+                               tensor_parallel_mode=TensorParallelMode.COLUMN,
+                               gather_output=False)
+        self.linear_2 = Linear(n * c_z,
+                               c_z,
+                               bias=True,
+                               dtype=dtype,
+                               mapping=mapping,
+                               tensor_parallel_mode=TensorParallelMode.ROW,
+                               reduce_output=True)
+        self.relu = nn.ReLU()
+
+    def forward(self,
+                z: torch.Tensor,
+                mask: torch.Tensor,
+                all_reduce_params: Optional[AllReduceParams] = None):
+        mask = mask.unsqueeze(-1)
+        # [*, N_res, N_res, C_z]
+        z = self.layer_norm(z)
+
+        # [*, N_res, N_res, C_hidden]
+        z = self.linear_1(z)
+        z = self.relu(z)
+
+        # [*, N_res, N_res, C_z]
+        z = self.linear_2(z)
+        z = z * mask
+
+        return z
+
+
+class MSATransition(nn.Module):
+
+    def __init__(self,
+                 c_m: int,
+                 n: int,
+                 eps: float = 1e-5,
+                 dtype: torch.dtype = None,
+                 mapping: Optional[Mapping] = None,
+                 skip_create_weights: bool = False):
+        super().__init__()
+        self.dtype = dtype
+        self.mapping = mapping
+        self.tp_size = mapping.tp_size
+        self.tp_rank = mapping.tp_rank
+        self.tp_group = mapping.tp_group
+        self.c_m = c_m
+        self.n = n
+
+        self.layer_norm = nn.LayerNorm(c_m, eps=eps, dtype=dtype)
+        self.linear_1 = Linear(c_m,
+                               n * c_m,
+                               bias=True,
+                               dtype=dtype,
+                               mapping=mapping,
+                               tensor_parallel_mode=TensorParallelMode.COLUMN,
+                               gather_output=False)
+        self.linear_2 = Linear(n * c_m,
+                               c_m,
+                               bias=True,
+                               dtype=dtype,
+                               mapping=mapping,
+                               tensor_parallel_mode=TensorParallelMode.ROW,
+                               reduce_output=True)
+        self.relu = nn.ReLU()
+
+    def forward(self,
+                m: torch.Tensor,
+                mask: torch.Tensor,
+                all_reduce_params: Optional[AllReduceParams] = None):
+        # Similar to PairTransition, but with different names
+        mask = mask.unsqueeze(-1)
+        m = self.layer_norm(m)
+        m = self.linear_1(m)
+        m = self.relu(m)
+        m = self.linear_2(m)
+        m = m * mask
+
+        return m

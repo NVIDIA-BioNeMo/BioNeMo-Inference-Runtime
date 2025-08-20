@@ -80,6 +80,11 @@ class BackendBase(nn.Module):
         This method is used to reset the cache or something else for an backend implementation.
         """
 
+    def warmup(self):
+        """
+        This method is used to warmup the backend implementation (i.e. torch.compile).
+        """
+
     def load_weights(self,
                      checkpoint_dir: str = None,
                      world_size: int = 1,
@@ -125,12 +130,12 @@ class BackendBase(nn.Module):
         self._module.cuda()
         self._module.eval()
         # TODO: Whether use torch.compile() or not, checking chunking configurations
-        mode = None
+        mode = "default"
         if compile:
             if self.config.mapping.world_size > 1:
                 mode = "max-autotune-no-cudagraphs"
             self._module = torch.compile(self._module,
-                                         fullgraph=True,
+                                         fullgraph=None,
                                          dynamic=True,
                                          mode=mode)
 

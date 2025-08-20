@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 from tensorrt_llm.functional import AllReduceParams
 
-from tensorrt_bionemo._torch.distributed import DPCommManager
+from tensorrt_bionemo._torch.distributed import allgather
 from tensorrt_bionemo.mapping import Mapping
 
 from .linear import Linear, TensorParallelMode, WeightMode, WeightsLoadingConfig
@@ -41,7 +41,9 @@ class OuterProductMean(nn.Module):
                      "proj_b": False,
                      "proj_o": True
                  },
-                 dtype: torch.dtype = None,
+                 chunk_size: Optional[int] = None,
+                 mask_chunk_size: Optional[int] = None,
+                 dtype: Optional[torch.dtype] = None,
                  skip_create_weights: bool = False,
                  mapping: Optional[Mapping] = None) -> None:
         """Initialize the outer product mean layer.
@@ -64,6 +66,8 @@ class OuterProductMean(nn.Module):
         self.dtype = dtype
         self.mapping = mapping or Mapping()
         self.norm_before_output = norm_before_output
+        self.chunk_size = chunk_size
+        self.mask_chunk_size = mask_chunk_size
         assert self.c_hidden % self.mapping.tp_size == 0, \
             "c_hidden must be divisible by tp_size"
         self.c_hidden = self.c_hidden // self.mapping.tp_size
@@ -89,10 +93,49 @@ class OuterProductMean(nn.Module):
                              reduce_output=True,
                              skip_create_weights=skip_create_weights)
 
-        self.dp_comm = None
-        if self.mapping.tp_size > 1:
-            DPCommManager.init_dp_comm(self.mapping)
-            self.dp_comm = DPCommManager()
+    @torch.compiler.disable
+    def _compute_mask_with_chunking(self, mask: torch.Tensor) -> torch.Tensor:
+        for i in range(0, mask.shape[1], self.mask_chunk_size):
+            if i == 0:
+                num_mask = (mask[:, i:i + self.mask_chunk_size, None, :] *
+                            mask[:, i:i + self.mask_chunk_size, :, None]).sum(1)
+            else:
+                num_mask += (
+                    mask[:, i:i + self.mask_chunk_size, None, :] *
+                    mask[:, i:i + self.mask_chunk_size, :, None]).sum(1)
+        if self.norm_mask_by_eps:
+            num_mask = num_mask + self.mask_eps
+        else:
+            num_mask = num_mask.clamp(min=1)
+        return num_mask
+
+    @torch.compiler.disable
+    def _compute_output_with_chunking(self, m: torch.Tensor, a: torch.Tensor,
+                                      b: torch.Tensor,
+                                      num_mask: torch.Tensor) -> torch.Tensor:
+        """ This is similar to split on TP but for single device
+        See: https://github.com/jwohlwend/boltz/blob/v2.2.0/src/boltz/model/layers/outer_product_mean.py
+        """
+
+        for i in range(0, self.c_hidden, self.chunk_size):
+            a_chunk = a[:, :, :, i:i + self.chunk_size]
+            proj_o_sliced_weight = self.proj_o.weight[:, i * self.c_hidden:
+                                                      (i + self.chunk_size) *
+                                                      self.c_hidden]
+            z = torch.einsum("bsic,bsjd->bijcd", a_chunk, b)
+            z = z.reshape(*z.shape[:3], -1)
+            if self.norm_before_output:
+                z = z / num_mask
+            # Project to output
+            if i == 0:
+                z_out = z.to(m) @ proj_o_sliced_weight.T
+            else:
+                z_out = z_out + z.to(m) @ proj_o_sliced_weight.T
+            if not self.norm_before_output:
+                z_out = z_out / num_mask
+        if self.proj_o.bias is not None:
+            z_out = z_out + self.proj_o.bias  # add bias
+        return z_out
 
     def forward(
             self,
@@ -101,7 +144,6 @@ class OuterProductMean(nn.Module):
             all_reduce_params: Optional[AllReduceParams] = None
     ) -> torch.Tensor:
         """Forward pass.
-        TODO: Support chunking mechanism.
         Args:
             m(torch.Tensor): Input tensor of shape (B, S, N, c_in).
             mask(torch.Tensor): Mask tensor of shape (B, S, N).
@@ -121,30 +163,25 @@ class OuterProductMean(nn.Module):
         else:
             a = a * mask
             b = b * mask
+        if self.mapping.tp_size > 1:
+            b = allgather(b, self.mapping, dim=-1)
 
-        mask = mask[:, :, None, :] * mask[:, :, :, None]
-        if self.norm_mask_by_eps:
-            # This for OF family models
-            num_mask = mask.sum(1) + self.mask_eps
+        if self.mask_chunk_size is not None:
+            num_mask = self._compute_mask_with_chunking(mask)
         else:
-            # This for Boltz family models
-            num_mask = mask.sum(1).clamp(min=1)
+            mask = mask[:, :, None, :] * mask[:, :, :, None]
+            if self.norm_mask_by_eps:
+                # This for OF family models
+                num_mask = mask.sum(1) + self.mask_eps
+            else:
+                # This for Boltz family models
+                num_mask = mask.sum(1).clamp(min=1)
 
-        if self.mapping.tp_size == 1:
+        if self.chunk_size is None:
             z = torch.einsum("bsic,bsjd->bijcd", a, b)
         else:
-            # TODO: Checking the logic here
-            # ring communication to compute z
-            buffers = [a, a_recv]  # double buffers
-            send_idx = 0
-            recv_idx = 1
-            for i in range(1, self.mapping.tp_size):
-                self.dp_comm.batch_isend_irecv(buffers[send_idx],
-                                               buffers[recv_idx])
-                z = torch.einsum("bsic,bsjd->bijcd", buffers[send_idx], b)
-                recv_idx = send_idx
-                send_idx ^= 1  # flip the buffer
-            z = torch.cat(z, dim=3)
+            return self._compute_output_with_chunking(m, a, b, num_mask)
+
         z = z.reshape(*z.shape[:3], -1)
         if self.norm_before_output:
             z = z / num_mask

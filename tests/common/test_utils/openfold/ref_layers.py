@@ -23,7 +23,8 @@ from test_utils.boltz.ref_layers import \
     RefTriangleAttentionNode as BoltzRefTriangleAttentionNode
 from test_utils.boltz.ref_layers import \
     RefTriangleMultiplicationNode as BoltzRefTriangleMultiplicationNode
-from test_utils.openfold.ref_attn import (RefPairwiseSelfAttention,
+from test_utils.openfold.ref_attn import (RefGlobalAttention,
+                                          RefPairwiseSelfAttention,
                                           RefTriangleAttention)
 
 from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
@@ -626,3 +627,196 @@ class RefEvoformerBlock(nn.Module):
         pair_trans_mask = pair_mask
         z = z + self.pair_transition(z, pair_trans_mask)
         return m, z
+
+
+class RefMSAColumnGlobalAttention(nn.Module):
+
+    def __init__(self, c_in, c_hidden, no_heads, inf=1e9, eps=1e-5):
+        super().__init__()
+        self.c_in = c_in
+        self.c_hidden = c_hidden
+        self.no_heads = no_heads
+        self.inf = inf
+        self.eps = eps
+
+        self.layer_norm_m = nn.LayerNorm(c_in)
+
+        self.global_attention = RefGlobalAttention(
+            c_in=c_in,
+            c_hidden=c_hidden,
+            no_heads=no_heads,
+            inf=inf,
+            eps=eps,
+        )
+
+    @classmethod
+    def load_weights(cls,
+                     model: str = "openfold2_ptm_1",
+                     layer_path: str = "extra_msa_stack.blocks.0.msa_att_col",
+                     state_dict: dict = None):
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        global_attention = RefGlobalAttention.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.global_attention",
+            state_dict=state_dict)
+        m = cls(c_in=global_attention.c_in,
+                c_hidden=global_attention.c_hidden,
+                no_heads=global_attention.no_heads)
+        setattr(m, "global_attention", global_attention)
+
+        m.layer_norm_m.weight.data.copy_(
+            state_dict[f"{layer_path}.layer_norm_m.weight"])
+        m.layer_norm_m.bias.data.copy_(
+            state_dict[f"{layer_path}.layer_norm_m.bias"])
+        return m
+
+    def forward(
+        self,
+        m: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        n_seq, n_res, c_in = m.shape[-3:]
+
+        if mask is None:
+            # [*, N_seq, N_res]
+            mask = torch.ones(
+                m.shape[:-1],
+                dtype=m.dtype,
+                device=m.device,
+            ).detach()
+
+        # [*, N_res, N_seq, C_in]
+        m = m.transpose(-2, -3)
+        mask = mask.transpose(-1, -2)
+
+        m = self.layer_norm_m(m)
+        m = self.global_attention(m=m, mask=mask)
+
+        # [*, N_seq, N_res, C_in]
+        m = m.transpose(-2, -3)
+
+        return m
+
+
+class RefExtraMSABlock(RefEvoformerBlock):
+
+    def __init__(self,
+                 c_m: int,
+                 c_z: int,
+                 c_hidden_msa_att: int,
+                 c_hidden_opm: int,
+                 c_hidden_mul: int,
+                 c_hidden_pair_att: int,
+                 no_heads_msa: int,
+                 no_heads_pair: int,
+                 transition_n: int,
+                 opm_first: bool,
+                 inf: float = 1e9,
+                 eps: float = 1e-5):
+        super().__init__(c_m=c_m,
+                         c_z=c_z,
+                         c_hidden_msa_att=c_hidden_msa_att,
+                         c_hidden_opm=c_hidden_opm,
+                         c_hidden_mul=c_hidden_mul,
+                         c_hidden_pair_att=c_hidden_pair_att,
+                         no_heads_msa=no_heads_msa,
+                         no_heads_pair=no_heads_pair,
+                         transition_n=transition_n,
+                         no_column_attention=True,
+                         opm_first=opm_first,
+                         inf=inf,
+                         eps=eps)
+        self.msa_att_col = RefMSAColumnGlobalAttention(
+            c_in=c_m,
+            c_hidden=c_hidden_msa_att,
+            no_heads=no_heads_msa,
+            inf=inf,
+            eps=eps)
+
+    def forward(self, m: torch.Tensor, z: torch.Tensor, msa_mask: torch.Tensor,
+                pair_mask: torch.Tensor):
+        if self.opm_first:
+            m, z = self._compute_opm(m, z, msa_mask)
+        m = m + self.msa_att_row(m, z=z, mask=msa_mask)
+        m = m + self.msa_att_col(m, mask=msa_mask)
+
+        msa_trans_mask = msa_mask
+        m = m + self.msa_transition(m, mask=msa_trans_mask)
+        if not self.opm_first:
+            m, z = self._compute_opm(m, z, msa_mask)
+
+        z = z + self.tri_mul_out(z, pair_mask)
+        z = z + self.tri_mul_in(z, pair_mask)
+        z = z + self.tri_attn_start(z, pair_mask)
+        z = z + self.tri_attn_end(z, pair_mask)
+
+        pair_trans_mask = pair_mask
+        z = z + self.pair_transition(z, pair_trans_mask)
+        return m, z
+
+    @classmethod
+    def load_weights(cls,
+                     model: str = "openfold2_ptm_1",
+                     layer_path: str = "extra_msa_stack.blocks.0",
+                     state_dict: dict = None):
+        if state_dict is None:
+            state_dict = load_hf_weights(model, local_files_only=False)
+        msa_att_row = RefMSAAttention.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.msa_att_row",
+            state_dict=state_dict)
+        msa_att_col = RefMSAColumnGlobalAttention.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.msa_att_col",
+            state_dict=state_dict)
+        msa_transition = RefMSATransition.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.core.msa_transition",
+            state_dict=state_dict)
+        outer_product_mean = RefOuterProductMean.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.core.outer_product_mean",
+            state_dict=state_dict)
+        tri_mul_out = RefTriangleMultiplicationNode.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.core.tri_mul_out",
+            state_dict=state_dict)
+        tri_mul_in = RefTriangleMultiplicationNode.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.core.tri_mul_in",
+            state_dict=state_dict)
+        tri_attn_start = RefTriangleAttentionNode.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.core.tri_att_start",
+            state_dict=state_dict)
+        tri_attn_end = RefTriangleAttentionNode.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.core.tri_att_end",
+            state_dict=state_dict)
+        pair_transition = RefPairTransition.load_weights(
+            model=model,
+            layer_path=f"{layer_path}.core.pair_transition",
+            state_dict=state_dict)
+        m = cls(c_m=msa_att_row.c_in,
+                c_z=outer_product_mean.c_out,
+                c_hidden_msa_att=msa_att_row.c_hidden,
+                c_hidden_opm=outer_product_mean.c_hidden,
+                c_hidden_mul=tri_mul_out.dim,
+                c_hidden_pair_att=tri_attn_start.c_hidden,
+                no_heads_msa=msa_att_row.no_heads,
+                no_heads_pair=tri_attn_start.num_heads,
+                transition_n=msa_transition.n,
+                opm_first=False,
+                inf=msa_att_row.inf,
+                eps=msa_att_row.eps)
+        setattr(m, "msa_att_row", msa_att_row)
+        setattr(m, "msa_att_col", msa_att_col)
+        setattr(m, "msa_transition", msa_transition)
+        setattr(m, "outer_product_mean", outer_product_mean)
+        setattr(m, "tri_mul_out", tri_mul_out)
+        setattr(m, "tri_mul_in", tri_mul_in)
+        setattr(m, "tri_attn_start", tri_attn_start)
+        setattr(m, "tri_attn_end", tri_attn_end)
+        setattr(m, "pair_transition", pair_transition)
+        return m

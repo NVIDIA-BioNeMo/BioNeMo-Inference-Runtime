@@ -30,6 +30,8 @@ class AcceleratedConfig:
     checkpoint: str = None
     backend: BackendType = None
     default: PretrainedModuleConfig = None
+    warmup: bool = False
+    compile: bool = False
 
 
 class AcceleratedModules(ABC):
@@ -47,16 +49,21 @@ class AcceleratedModules(ABC):
             else:
                 self._configs[k] = v
 
-    def get_module_backend(self, module_name: str):
+    def get_module_config(self,
+                          module_name: str) -> Optional[AcceleratedConfig]:
+        return self._configs.get(module_name, None)
+
+    def get_module_backend(self, module_name: str) -> Optional[BackendType]:
         return self._configs.get(module_name, None).backend
 
-    def get_module_checkpoint(self, module_name: str):
+    def get_module_checkpoint(self, module_name: str) -> Optional[str]:
         return self._configs.get(module_name, None).checkpoint
 
-    def get_module_names(self):
-        return self._configs.keys()
+    def get_module_names(self) -> list[str]:
+        return list(self._configs.keys())
 
-    def get_default_module_config(self, module_name: str):
+    def get_default_module_config(
+            self, module_name: str) -> Optional[PretrainedModuleConfig]:
         return self._configs.get(module_name, None).default
 
     @abstractmethod

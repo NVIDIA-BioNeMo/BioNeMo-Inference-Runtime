@@ -68,12 +68,30 @@ $ python tensorrt_bionemo/commands/build.py \
     from tensorrt_bionemo.models.openfold2.modeling import OpenFold2, OpenFold2AcceleratedModules
     from tensorrt_bionemo.runtime import BackendType, SharedContextMemoryManager
     manager = SharedContextMemoryManager()
+    # manager = OnDemandContextMemoryManager(clear_cache_before_forward=True)
+    evoformer_stack_config = OpenFold2Config.from_pretrained().evoformer_stack_config
+    extra_msa_stack_config = OpenFold2Config.from_pretrained().extra_msa_stack_config
+    manager = SharedContextMemoryManager()
+    evoformer_stack_config.set_dtype("bfloat16")
+    extra_msa_stack_config.set_dtype("bfloat16")
+    extra_msa_stack_config.triangle_attn_backend = "CUEQUIV"
+    extra_msa_stack_config.opm_chunk_size = 16
+    extra_msa_stack_config.opm_mask_chunk_size = 256
+    extra_msa_stack_config.padding_inputs = True # This padding make torch.compile() run faster
     acc_m = OpenFold2AcceleratedModules(
         {
             "evoformer": AcceleratedConfig(
                 checkpoint="__path_to_engines_dir__",
                 backend=BackendType.TRT,
-                default=None
+                default=None,
+                default=evoformer_stack_config
+            ),
+            "extra_msa_stack": AcceleratedConfig(
+                checkpoint=None,
+                backend=BackendType.TORCH,
+                default=extra_msa_stack_config,
+                compile=True, # This for torch.compile()
+                warmup=True,  # Warmup for torch.compile()
             )
         }
     )

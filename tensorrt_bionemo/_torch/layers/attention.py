@@ -457,3 +457,187 @@ class MSAAttention(nn.Module):
         if self.transpose_input:
             output = torch.permute(output, (0, 2, 1, 3))
         return output
+
+
+class GlobalAttention(nn.Module):
+
+    def __init__(self,
+                 c_in: int,
+                 c_hidden: int,
+                 no_heads: int,
+                 bias_flags: dict[str, bool] = {
+                     "q": False,
+                     "k": False,
+                     "v": False,
+                     "g": True,
+                     "o": True,
+                 },
+                 eps: float = 1e-5,
+                 inf: float = 1e9,
+                 dtype: torch.dtype = None,
+                 skip_create_weights: bool = False,
+                 mapping: Optional[Mapping] = None,
+                 **kwargs):
+        super().__init__()
+        self.c_in = c_in
+        self.c_hidden = c_hidden
+        self.no_heads = no_heads
+        self.inf = inf
+        self.eps = eps
+        self.mapping = mapping or Mapping()
+        self.dtype = dtype
+
+        if self.mapping.tp_size > 1:
+            assert self.no_heads % self.mapping.tp_size == 0, "no_heads must be divisible by tp_size"
+            assert self.c_in % self.mapping.tp_size == 0, "c_in must be divisible by tp_size"
+        self.no_heads = self.no_heads // self.mapping.tp_size
+
+        self.proj_q = Linear(
+            c_in,
+            c_hidden * self.no_heads * self.mapping.tp_size,
+            bias=bias_flags["q"],
+            dtype=dtype,
+            mapping=mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=False,
+            skip_create_weights=skip_create_weights,
+        )
+
+        self.fused_proj_kv = Linear(
+            c_in,
+            c_hidden * 2,
+            bias=bias_flags["k"] or bias_flags["v"],
+            dtype=dtype,
+            mapping=mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=skip_create_weights,
+            weights_loading_config=WeightsLoadingConfig(
+                weight_mode=WeightMode.FUSED_KV_LINEAR),
+        )
+        self.proj_g = Linear(
+            c_in,
+            c_hidden * self.no_heads * self.mapping.tp_size,
+            bias=bias_flags["g"],
+            dtype=dtype,
+            mapping=mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=False,
+            skip_create_weights=skip_create_weights,
+        )
+        self.proj_o = Linear(
+            c_hidden * self.no_heads * self.mapping.tp_size,
+            c_in,
+            bias=bias_flags["o"],
+            dtype=dtype,
+            mapping=mapping,
+            reduce_output=True,
+            tensor_parallel_mode=TensorParallelMode.ROW,
+            skip_create_weights=skip_create_weights,
+        )
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self,
+                m: torch.Tensor,
+                mask: torch.Tensor,
+                all_reduce_params: Optional[AllReduceParams] = None):
+        """
+        Args:
+            m: [*, N_res, C_in]
+            mask: [B, N_res, N_seq]
+        """
+        kv = self.fused_proj_kv(m)
+        k, v = kv.split([self.c_hidden, self.c_hidden], dim=-1)
+
+        q = torch.sum(m * mask.unsqueeze(-1),
+                      dim=-2) / (torch.sum(mask, dim=-1)[..., None] + self.eps)
+
+        q = self.proj_q(q)  # tp by heads not by c_hidden
+        q *= (self.c_hidden**(-0.5))
+        # [*, N_res, H//tp_size, C_hidden]
+        q = q.view(q.shape[:-1] + (self.no_heads, -1))
+
+        bias = (self.inf * (mask - 1))[..., :, None, :]
+        a = torch.matmul(
+            q,
+            k.transpose(-1, -2),  # [*, N_res, C_hidden, N_seq]
+        )
+        a += bias  # [*, N_res, H//tp_size, N_seq]
+        a = torch.nn.functional.softmax(a, dim=-1)
+        # [*, N_res, H//tp_size, C_hidden]
+        o = torch.matmul(
+            a,
+            v,
+        )
+
+        # [*, N_res, N_seq, C_hidden*H//tp_size]
+        g = self.sigmoid(self.proj_g(m))
+        # [*, N_res, N_seq, H//tp_size, C_hidden]
+        g = g.view(g.shape[:-1] + (self.no_heads, -1))
+
+        # [*, N_res, N_seq, H//tp_size, C_hidden]
+        o = o.unsqueeze(-3) * g
+
+        # [*, N_res, N_seq, H * C_hidden]
+        o = o.reshape(o.shape[:-2] + (-1, ))
+
+        # [*, N_res, N_seq, C_in]
+        m = self.proj_o(o, all_reduce_params=all_reduce_params)
+
+        return m
+
+
+class MSAColumnGlobalAttention(nn.Module):
+
+    def __init__(self,
+                 *,
+                 local_layer_idx: int,
+                 c_in: int,
+                 c_hidden: int,
+                 no_heads: int,
+                 attn_bias_flags: dict[str, bool] = {
+                     "q": False,
+                     "k": False,
+                     "v": False,
+                     "g": True,
+                     "o": True,
+                 },
+                 eps: float = 1e-5,
+                 inf: float = 1e9,
+                 dtype: torch.dtype = None,
+                 skip_create_weights: bool = False,
+                 mapping: Optional[Mapping] = None,
+                 **kwargs):
+        super().__init__()
+        self.local_layer_idx = local_layer_idx
+        self.layer_norm_m = nn.LayerNorm(c_in, dtype=dtype, eps=eps)
+
+        self.global_attention = GlobalAttention(
+            c_in=c_in,
+            c_hidden=c_hidden,
+            no_heads=no_heads,
+            bias_flags=attn_bias_flags,
+            eps=eps,
+            inf=inf,
+            dtype=dtype,
+            skip_create_weights=skip_create_weights,
+            mapping=mapping,
+        )
+
+    def forward(self,
+                m: torch.Tensor,
+                mask: torch.Tensor,
+                all_reduce_params: Optional[AllReduceParams] = None):
+        # [*, N_seq, N_res]
+        m = m.transpose(-2, -3)
+        mask = mask.transpose(-1, -2)
+        m = self.layer_norm_m(m)
+        m = self.global_attention(m=m,
+                                  mask=mask,
+                                  all_reduce_params=all_reduce_params)
+
+        # [*, N_seq, N_res, C_in]
+        m = m.transpose(-2, -3)
+
+        return m

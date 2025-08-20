@@ -14,6 +14,7 @@
 # limitations under the License.
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 import pytest
 import torch
@@ -28,12 +29,16 @@ from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 @dataclass(kw_only=True, frozen=True)
 class Scenario:
     torch_dtype: str = "float32"
+    chunk_size: Optional[int] = None
+    mask_chunk_size: Optional[int] = None
 
 
 @pytest.mark.parametrize("sc", [
     Scenario(),
     Scenario(torch_dtype="bfloat16"),
-])
+    Scenario(chunk_size=16, mask_chunk_size=16),
+],
+                         ids=["float32", "bfloat16", "chunked"])
 def test_outer_product_mean(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
@@ -50,6 +55,8 @@ def test_outer_product_mean(sc: Scenario):
     outer_product_mean = OuterProductMean(c_in=ref_m.c_in,
                                           c_hidden=ref_m.c_hidden,
                                           c_out=ref_m.c_out,
+                                          chunk_size=sc.chunk_size,
+                                          mask_chunk_size=sc.mask_chunk_size,
                                           dtype=dtype)
     load_outer_product_mean_weights_torch(outer_product_mean,
                                           weights_and_biases,

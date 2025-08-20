@@ -22,8 +22,8 @@ from tensorrt_llm.functional import AllReduceParams
 from tensorrt_llm.llmapi.utils import print_colored_debug
 
 from tensorrt_bionemo._torch.distributed import allgather
+from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz2.configs import AffinityModuleConfig
 
 from ..attention_backend import AttentionMetadata
 from .linear import Linear, TensorParallelMode, WeightMode, WeightsLoadingConfig
@@ -217,7 +217,12 @@ class AffinityHeadsTransformer(nn.Module):
 
 class AffinityModule(nn.Module):
 
-    def __init__(self, config: AffinityModuleConfig):
+    def __init__(self, config: PretrainedModuleConfig):
+        """
+        Args:
+            config: tensorrt_bionemo.models.boltz2.configs.AffinityModuleConfig
+                The configuration of the affinity module.
+        """
         super().__init__()
         self.config = config
         self.mapping = config.mapping

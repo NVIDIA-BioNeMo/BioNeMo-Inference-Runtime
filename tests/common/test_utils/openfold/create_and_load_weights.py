@@ -31,7 +31,9 @@ from test_utils.boltz.create_and_load_weights import (
     load_triangle_multiplication_node_weights_ref_torch,
     load_triangle_multiplication_node_weights_torch,
     load_triangle_multiplication_node_weights_trt)
-from test_utils.openfold.ref_layers import (RefEvoformerBlock, RefMSAAttention,
+from test_utils.openfold.ref_layers import (RefEvoformerBlock, RefExtraMSABlock,
+                                            RefMSAAttention,
+                                            RefMSAColumnGlobalAttention,
                                             RefMSATransition, RefPairTransition)
 
 from tensorrt_bionemo.mapping import Mapping
@@ -383,3 +385,145 @@ def load_evoformer_block_weights_trt(module,
                                              tri_attn_end_weights, mapping)
     load_pair_transition_weights_trt(module.pair_transition,
                                      pair_transition_weights, mapping)
+
+
+def create_msa_global_attention_weights(
+        from_ref: RefMSAColumnGlobalAttention = None):
+    layer_norm_m_weight = from_ref.layer_norm_m.weight.data
+    layer_norm_m_bias = from_ref.layer_norm_m.bias.data
+    linear_q_weight = from_ref.global_attention.linear_q.weight.data
+    linear_k_weight = from_ref.global_attention.linear_k.weight.data
+    linear_v_weight = from_ref.global_attention.linear_v.weight.data
+    linear_g_weight = from_ref.global_attention.linear_g.weight.data
+    linear_g_bias = from_ref.global_attention.linear_g.bias.data
+    linear_o_weight = from_ref.global_attention.linear_o.weight.data
+    linear_o_bias = from_ref.global_attention.linear_o.bias.data
+    return layer_norm_m_weight, layer_norm_m_bias, \
+        linear_q_weight, linear_k_weight, linear_v_weight, \
+        linear_g_weight, linear_g_bias, linear_o_weight, linear_o_bias
+
+
+def load_msa_global_attention_weights_ref_torch(module, weights_and_biases):
+    layer_norm_m_weight, layer_norm_m_bias, \
+        linear_q_weight, linear_k_weight, linear_v_weight, \
+        linear_g_weight, linear_g_bias, linear_o_weight, linear_o_bias = weights_and_biases
+    module.layer_norm_m.weight.data.copy_(layer_norm_m_weight.to("cuda"))
+    module.layer_norm_m.bias.data.copy_(layer_norm_m_bias.to("cuda"))
+    module.global_attention.linear_q.weight.data.copy_(
+        linear_q_weight.to("cuda"))
+    module.global_attention.linear_k.weight.data.copy_(
+        linear_k_weight.to("cuda"))
+    module.global_attention.linear_v.weight.data.copy_(
+        linear_v_weight.to("cuda"))
+    module.global_attention.linear_g.weight.data.copy_(
+        linear_g_weight.to("cuda"))
+    module.global_attention.linear_g.bias.data.copy_(linear_g_bias.to("cuda"))
+    module.global_attention.linear_o.weight.data.copy_(
+        linear_o_weight.to("cuda"))
+    module.global_attention.linear_o.bias.data.copy_(linear_o_bias.to("cuda"))
+
+
+def load_msa_global_attention_weights_torch(module, weights_and_biases):
+    layer_norm_m_weight, layer_norm_m_bias, \
+        linear_q_weight, linear_k_weight, linear_v_weight, \
+        linear_g_weight, linear_g_bias, linear_o_weight, linear_o_bias = weights_and_biases
+    module.layer_norm_m.weight.data.copy_(layer_norm_m_weight.to("cuda"))
+    module.layer_norm_m.bias.data.copy_(layer_norm_m_bias.to("cuda"))
+    module.global_attention.proj_q.load_weights([{
+        "weight":
+        linear_q_weight.to("cuda"),
+        "bias":
+        None
+    }])
+    module.global_attention.fused_proj_kv.load_weights([{
+        "weight":
+        linear_k_weight.to("cuda"),
+        "bias":
+        None
+    }, {
+        "weight":
+        linear_v_weight.to("cuda"),
+        "bias":
+        None
+    }])
+    module.global_attention.proj_g.load_weights([{
+        "weight":
+        linear_g_weight.to("cuda"),
+        "bias":
+        linear_g_bias.to("cuda")
+    }])
+    module.global_attention.proj_o.load_weights([{
+        "weight":
+        linear_o_weight.to("cuda"),
+        "bias":
+        linear_o_bias.to("cuda")
+    }])
+
+
+def create_extra_msa_block_weights(from_ref: RefExtraMSABlock = None):
+    msa_att_row_weights = create_msa_attention_weights(
+        from_ref=from_ref.msa_att_row)
+    msa_att_col_weights = create_msa_global_attention_weights(
+        from_ref=from_ref.msa_att_col)
+    msa_transition_weights = create_msa_transition_weights(
+        from_ref=from_ref.msa_transition)
+    outer_product_mean_weights = create_outer_product_mean_weights(
+        from_ref=from_ref.outer_product_mean)
+    tri_mul_out_weights = create_triangle_multiplication_node_weights(
+        from_ref=from_ref.tri_mul_out)
+    tri_mul_in_weights = create_triangle_multiplication_node_weights(
+        from_ref=from_ref.tri_mul_in)
+    tri_attn_start_weights = create_triangle_attention_node_weights(
+        from_ref=from_ref.tri_attn_start)
+    tri_attn_end_weights = create_triangle_attention_node_weights(
+        from_ref=from_ref.tri_attn_end)
+    pair_transition_weights = create_pair_transition_weights(
+        from_ref=from_ref.pair_transition)
+
+    return msa_att_row_weights, msa_att_col_weights, msa_transition_weights, outer_product_mean_weights, \
+            tri_mul_out_weights, tri_mul_in_weights, tri_attn_start_weights, tri_attn_end_weights, pair_transition_weights
+
+
+def load_extra_msa_block_weights_ref_torch(module, weights_and_biases):
+    msa_att_row_weights, msa_att_col_weights, msa_transition_weights, outer_product_mean_weights, \
+            tri_mul_out_weights, tri_mul_in_weights, tri_attn_start_weights, tri_attn_end_weights, pair_transition_weights = weights_and_biases
+    load_msa_attention_weights_ref_torch(module.msa_att_row,
+                                         msa_att_row_weights)
+    load_msa_global_attention_weights_ref_torch(module.msa_att_col,
+                                                msa_att_col_weights)
+    load_msa_transition_weights_ref_torch(module.msa_transition,
+                                          msa_transition_weights)
+    load_outer_product_mean_weights_ref_torch(module.outer_product_mean,
+                                              outer_product_mean_weights)
+    load_triangle_multiplication_node_weights_ref_torch(module.tri_mul_out,
+                                                        tri_mul_out_weights)
+    load_triangle_multiplication_node_weights_ref_torch(module.tri_mul_in,
+                                                        tri_mul_in_weights)
+    load_triangle_attention_node_weights_ref_torch(module.tri_attn_start,
+                                                   tri_attn_start_weights)
+    load_triangle_attention_node_weights_ref_torch(module.tri_attn_end,
+                                                   tri_attn_end_weights)
+    load_pair_transition_weights_ref_torch(module.pair_transition,
+                                           pair_transition_weights)
+
+
+def load_extra_msa_block_weights_torch(module, weights_and_biases):
+    msa_att_row_weights, msa_att_col_weights, msa_transition_weights, outer_product_mean_weights, \
+            tri_mul_out_weights, tri_mul_in_weights, tri_attn_start_weights, tri_attn_end_weights, pair_transition_weights = weights_and_biases
+    load_msa_attention_weights_torch(module.msa_att_row, msa_att_row_weights)
+    load_msa_global_attention_weights_torch(module.msa_att_col,
+                                            msa_att_col_weights)
+    load_msa_transition_weights_torch(module.msa_transition,
+                                      msa_transition_weights)
+    load_outer_product_mean_weights_torch(module.outer_product_mean,
+                                          outer_product_mean_weights)
+    load_triangle_multiplication_node_weights_torch(module.tri_mul_out,
+                                                    tri_mul_out_weights)
+    load_triangle_multiplication_node_weights_torch(module.tri_mul_in,
+                                                    tri_mul_in_weights)
+    load_triangle_attention_node_weights_torch(module.tri_attn_start,
+                                               tri_attn_start_weights)
+    load_triangle_attention_node_weights_torch(module.tri_attn_end,
+                                               tri_attn_end_weights)
+    load_pair_transition_weights_torch(module.pair_transition,
+                                       pair_transition_weights)

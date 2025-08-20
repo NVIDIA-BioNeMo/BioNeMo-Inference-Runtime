@@ -1,3 +1,4 @@
 from .evoformer import EvoformerStackBackendBuilder
+from .extra_msa_stack import ExtraMSAStackBackendBuilder
 
-__all__ = ["EvoformerStackBackendBuilder"]
+__all__ = ["EvoformerStackBackendBuilder", "ExtraMSAStackBackendBuilder"]

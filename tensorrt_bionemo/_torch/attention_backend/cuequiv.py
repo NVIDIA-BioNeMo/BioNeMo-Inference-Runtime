@@ -26,6 +26,15 @@ class CuEquivAttentionMetadata(AttentionMetadata):
     flip_mask: bool = True
 
 
+@torch.compiler.disable
+def _invoke_triangle_attention_kernel(q: torch.Tensor, k: torch.Tensor,
+                                      v: torch.Tensor, bias: torch.Tensor,
+                                      mask: torch.Tensor,
+                                      sm_scale: float) -> torch.Tensor:
+    o = triangle_attention(q, k, v, bias, mask=mask, scale=sm_scale)
+    return o
+
+
 class CuEquivAttention(AttentionBackend[CuEquivAttentionMetadata]):
 
     Metadata = CuEquivAttentionMetadata
@@ -40,7 +49,6 @@ class CuEquivAttention(AttentionBackend[CuEquivAttentionMetadata]):
             num_kv_heads = num_heads
         assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
 
-    @torch.compiler.disable
     def forward(
         self,
         q: torch.Tensor,
@@ -79,6 +87,6 @@ class CuEquivAttention(AttentionBackend[CuEquivAttentionMetadata]):
             mask = ~mask
 
         sm_scale = self.head_dim**-0.5
-        o = triangle_attention(q, k, v, bias, mask=mask, scale=sm_scale)
+        o = _invoke_triangle_attention_kernel(q, k, v, bias, mask, sm_scale)
         o = rearrange(o, " b i h j d -> b i j h d").contiguous()
         return o

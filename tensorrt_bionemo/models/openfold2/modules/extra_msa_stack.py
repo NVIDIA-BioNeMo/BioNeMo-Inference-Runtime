@@ -18,6 +18,7 @@ import math
 
 import torch
 import torch.nn as nn
+from tensorrt_llm.logger import logger
 from tqdm import tqdm
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
@@ -48,7 +49,11 @@ class ExtraMSAStackTorch(BackendBase):
         n_res_list = []
         for i in range(5, nres_fl2):
             n_res_list.append(2**i)
-        n_res_list.extend([768, 1536, 1792, self.config.max_seq_len])
+        n_res_list = [self.config.max_seq_len]
+        additional = [384, 768, 1280, 1536, 1792]
+        for v in additional:
+            if v <= self.config.max_seq_len:
+                n_res_list.append(v)
         self.n_res_list = sorted(list(set(n_res_list)))
 
         n_seq_list = []
@@ -62,33 +67,38 @@ class ExtraMSAStackTorch(BackendBase):
             for n_res, n_seq in tqdm(itertools.product(self.n_res_list,
                                                        self.n_seq_list),
                                      desc="Warmup"):
-                m = torch.randn(self.config.max_batch_size,
-                                n_seq,
-                                n_res,
-                                self.config.c_m,
-                                dtype=self.config.torch_dtype,
-                                device="cuda")
-                z = torch.randn(self.config.max_batch_size,
-                                n_res,
-                                n_res,
-                                self.config.c_z,
-                                dtype=self.config.torch_dtype,
-                                device="cuda")
-                msa_mask = torch.randint(
-                    0,
-                    2, (self.config.max_batch_size, n_seq, n_res),
-                    dtype=self.config.torch_dtype,
-                    device="cuda")
-                pair_mask = torch.randint(
-                    0,
-                    2, (self.config.max_batch_size, n_res, n_res),
-                    dtype=self.config.torch_dtype,
-                    device="cuda")
-                self._module(m,
-                             z,
-                             msa_mask,
-                             pair_mask,
-                             attn_metadata=self.attn_metadata)
+                try:
+                    m = torch.randn(self.config.max_batch_size,
+                                    n_seq,
+                                    n_res,
+                                    self.config.c_m,
+                                    dtype=self.config.torch_dtype,
+                                    device="cuda")
+                    z = torch.randn(self.config.max_batch_size,
+                                    n_res,
+                                    n_res,
+                                    self.config.c_z,
+                                    dtype=self.config.torch_dtype,
+                                    device="cuda")
+                    msa_mask = torch.randint(
+                        0,
+                        2, (self.config.max_batch_size, n_seq, n_res),
+                        dtype=self.config.torch_dtype,
+                        device="cuda")
+                    pair_mask = torch.randint(
+                        0,
+                        2, (self.config.max_batch_size, n_res, n_res),
+                        dtype=self.config.torch_dtype,
+                        device="cuda")
+                    self._module(m,
+                                 z,
+                                 msa_mask,
+                                 pair_mask,
+                                 attn_metadata=self.attn_metadata)
+                except torch.OutOfMemoryError:
+                    logger.warning(
+                        f"Out of memory at n_res={n_res}, n_seq={n_seq}")
+                    continue
 
     def _pad_inputs(
         self, m: torch.Tensor, z: torch.Tensor, msa_mask: torch.Tensor,

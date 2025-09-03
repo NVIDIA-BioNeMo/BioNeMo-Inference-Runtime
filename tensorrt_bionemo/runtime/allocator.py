@@ -89,6 +89,9 @@ class TRTEngineHandle:
         self._self_allocated = False
         self._using_torch_caching_allocator = True
 
+    def get_stream(self):
+        return self._stream
+
     def set_context_memory(self,
                            address: Any = None,
                            size_in_bytes: int = None):
@@ -424,6 +427,18 @@ class BaseContextMemoryManager:
     def load(self):
         raise NotImplementedError("load() is not implemented")
 
+    def set_stream(self, stream: Any):
+        current_stream = torch.cuda.current_stream().cuda_stream
+        if stream is not None and stream != current_stream:
+            current_stream.synchronize()
+            torch.cuda.set_stream(stream)
+
+    def unset_stream(self, stream: Any):
+        current_stream = torch.cuda.current_stream().cuda_stream
+        if stream is not None and stream != current_stream:
+            stream.synchronize()
+            torch.cuda.set_stream(current_stream)
+
     def _execute_forward(self, backend_impl: 'BackendBase',
                          inputs: dict[str, torch.Tensor]):
         # Get the engine handle for this backend
@@ -480,15 +495,14 @@ class SimpleContextMemoryManager(BaseContextMemoryManager):
                 v.deserialize_engine()
                 self.add_deserialized_handle(k, v)
 
-    def sync_stream(self, stream: Any):
-        if stream is not None and stream != torch.cuda.current_stream(
-        ).cuda_stream:
-            torch.cuda.synchronize(stream)
-
     def forward(self, backend_impl: 'BackendBase', inputs: dict[str,
                                                                 torch.Tensor]):
-        outputs, handle = self._execute_forward(backend_impl, inputs)
-        self.sync_stream(handle._stream)
+        handle = self.get_deserialized_handles().get(backend_impl)
+        self.set_stream(handle.get_stream())
+        try:
+            outputs, _ = self._execute_forward(backend_impl, inputs)
+        finally:
+            self.unset_stream(handle.get_stream())
         return outputs
 
 
@@ -500,6 +514,12 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
         super().__init__(auto_load)
         self._shared_memory_address = None
         self._shared_memory_size = 0
+        try:
+            self._pool = torch.cuda.memory.MemPool(
+                use_on_oom=True)  # This for the future torch version
+        except:
+            self._pool = torch.cuda.memory.MemPool(
+            )  # Compatible with the current torch version
 
     def load(self):
         # TODO: thread-safe
@@ -523,10 +543,12 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
 
             # Allocate the shared memory buffer
             # self._shared_memory_address = CUASSERT(cudart.cudaMalloc(self._shared_memory_size))[0]
-            if self._shared_memory_address is not None:
-                torch.cuda.caching_allocator_delete(self._shared_memory_address)
-            self._shared_memory_address = torch.cuda.caching_allocator_alloc(
-                self._shared_memory_size)
+            with torch.cuda.use_mem_pool(self._pool):
+                if self._shared_memory_address is not None:
+                    torch.cuda.caching_allocator_delete(
+                        self._shared_memory_address)
+                self._shared_memory_address = torch.cuda.caching_allocator_alloc(
+                    self._shared_memory_size)
 
             # Set the shared memory for all engines
             for k, v in self.get_deserialized_handles().items():
@@ -541,7 +563,13 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
 
     def forward(self, backend_impl: 'BackendBase', inputs: dict[str,
                                                                 torch.Tensor]):
-        outputs, handle = self._execute_forward(backend_impl, inputs)
+        handle = self.get_deserialized_handles().get(backend_impl)
+        assert handle is not None, f"Engine handle for backend {backend_impl} not found"
+        self.set_stream(handle.get_stream())
+        try:
+            outputs, handle = self._execute_forward(backend_impl, inputs)
+        finally:
+            self.unset_stream(handle.get_stream())
         return outputs
 
     def __del__(self):
@@ -553,6 +581,7 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
                 # it just move the memory to the free list for post-processing (merge blocks memory) on torch caching allocator
                 # So it's fast for almost usecases
                 torch.cuda.caching_allocator_delete(self._shared_memory_address)
+                del self._pool
             except:
                 pass
 
@@ -565,6 +594,7 @@ class OnDemandContextMemoryManager(BaseContextMemoryManager):
                  clear_cache_before_forward: bool = False):
         super().__init__(auto_load)
         self._clear_cache_before_forward = clear_cache_before_forward
+        self._pool = torch.cuda.memory.MemPool()
 
     def load(self):
         for k, v in self.get_handles().items():
@@ -578,8 +608,10 @@ class OnDemandContextMemoryManager(BaseContextMemoryManager):
 
     def _ensure_engine_ready(self, engine_handle: TRTEngineHandle):
         if engine_handle.device_memory_address is None:
-            address = torch.cuda.caching_allocator_alloc(
-                engine_handle.device_memory_size, stream=engine_handle._stream)
+            with torch.cuda.use_mem_pool(self._pool):
+                address = torch.cuda.caching_allocator_alloc(
+                    engine_handle.device_memory_size,
+                    stream=engine_handle._stream)
             logger.debug(
                 f"Allocated {engine_handle.device_memory_size} bytes for engine"
             )
@@ -590,8 +622,9 @@ class OnDemandContextMemoryManager(BaseContextMemoryManager):
         # Free the memory
         if engine_handle.device_memory_address is not None:
             # cudart.cudaFree(engine_handle.device_memory_address)
-            torch.cuda.caching_allocator_delete(
-                engine_handle.device_memory_address)
+            with torch.cuda.use_mem_pool(self._pool):
+                torch.cuda.caching_allocator_delete(
+                    engine_handle.device_memory_address)
             logger.debug(f"Release memory for engine")
         # Reset the engine's memory state
         engine_handle.set_context_memory(None, 0)
@@ -607,7 +640,9 @@ class OnDemandContextMemoryManager(BaseContextMemoryManager):
         try:
             # Ensure engine has memory allocated
             self._ensure_engine_ready(handle)
+            self.set_stream(handle.get_stream())
             outputs, _ = self._execute_forward(backend_impl, inputs)
         finally:
+            self.unset_stream(handle.get_stream())
             self._cleanup_engine_memory(handle)
         return outputs

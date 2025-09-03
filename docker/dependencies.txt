@@ -1,35 +1,39 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
-h11>=0.16.0
-tornado>=6.5.0
-setuptools>=78.1.1
-accelerate>=0.25.0
+protobuf>=4.25.8
+accelerate>=1.7.0
 build
 colored
-cuda-python
+cuda-python>=12,<13
 diffusers>=0.27.0
 lark
 mpi4py
 numpy<2
-onnx>=1.12.0
+onnx>=1.18.0
 onnx_graphsurgeon>=0.5.2
 openai
 polygraphy
 psutil
-nvidia-ml-py>=12
-pynvml>=12.0.0
+nvidia-ml-py>=12,<13
+# Just a wrapper since nvidia-modelopt requires pynvml
+pynvml==12.0.0
 pulp
 pandas
 h5py==3.12.1
 StrEnum
 sentencepiece>=0.1.99
 tensorrt~=10.11.0
-torch>=2.7.0a0,<=2.7.0
+# https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-06.html#rel-25-06 uses 2.8.0a0.
+torch>=2.7.1,<=2.8.0a0
 torchvision
-nvidia-modelopt[torch]~=0.31.0
+nvidia-modelopt[torch]~=0.33.0
 nvidia-nccl-cu12
 nvidia-cuda-nvrtc-cu12
-transformers~=4.51.1
+transformers==4.55.0
+prometheus_client
+prometheus_fastapi_instrumentator
 pydantic>=2.9.1
+pydantic-settings[yaml]
+omegaconf
 pillow==10.3.0
 wheel<=0.45.1
 optimum
@@ -49,7 +53,9 @@ peft
 einops
 flashinfer-python==0.2.5
 opencv-python-headless
-xgrammar==0.1.16
+xgrammar==0.1.21
+llguidance==0.7.29
+jsonschema
 backoff
 nvtx
 matplotlib # FIXME: this is added to make nvtx happy
@@ -57,8 +63,13 @@ meson
 ninja
 etcd3
 blake3
-llguidance==0.7.29
-omegaconf==2.3.0
+soundfile
+triton==3.3.1; platform_machine == "x86_64"
+tiktoken
+blobfile
+openai-harmony==0.0.4
+
 cuequivariance-ops-cu12==0.5.1
 cuequivariance_ops_torch_cu12==0.5.1
 cuequivariance_torch==0.5.1
+cuequivariance==0.5.1

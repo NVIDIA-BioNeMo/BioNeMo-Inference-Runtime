@@ -6,6 +6,7 @@ BASE_IMAGE := tensorrt-llm
 BASE_TAG := base
 RELEASE_IMAGE ?= trtbnm
 RELEASE_TAG ?= release
+TORCH_BASE_TAG ?= 25.06-py3
 
 .PHONY: trtbnm_wheel release base submodules
 
@@ -34,7 +35,7 @@ base: submodules
 	docker build --pull \
 		--target devel \
 		--file $(TRTLLM_DIR)/docker/Dockerfile.multi \
-		--build-arg BASE_TAG=25.04-py3 \
+		--build-arg BASE_TAG=$(TORCH_BASE_TAG) \
 		--build-arg BASE_IMAGE=nvcr.io/nvidia/pytorch \
 		--tag $(BASE_IMAGE):$(BASE_TAG) $(TRTLLM_DIR)
 

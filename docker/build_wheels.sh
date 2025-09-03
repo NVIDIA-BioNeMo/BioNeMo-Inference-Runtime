@@ -1,7 +1,7 @@
 #!/bin/bash
 
 pip install --no-cache-dir -r /src/docker/dependencies.txt
-pip install tensorrt-llm==1.0.0rc0 --no-cache-dir --no-deps
+pip install tensorrt-llm==1.1.0rc2 --no-cache-dir --no-deps
 
 if [ ! -d /packages ]; then
     mkdir -p /packages

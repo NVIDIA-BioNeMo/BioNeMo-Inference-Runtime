@@ -16,7 +16,7 @@ $ git submodule update --init --recursive
 $ cd 3rdparty/TensorRT-LLM
 # Build TensorRT-LLM from source
 $ export PATH=$PATH:$HOME/.local/bin # this for conan executable
-$ git checkout v1.0.0rc0
+$ git checkout v1.1.0rc2
 $ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
 $ pip install -e . && cd ../..
 # Install cuequiv
@@ -28,11 +28,13 @@ $ pip install -e .
 ```
 
 ### Docker
+
 ```bash
 $ make -C docker release
 ```
 
 Only build wheels for TensorRT-LLM and TensorRT-BNM:
+
 ```bash
 $ export PACKAGE_DIR=__path_to_save_wheel_on_host__
 $ make -C docker trtbnm_wheel

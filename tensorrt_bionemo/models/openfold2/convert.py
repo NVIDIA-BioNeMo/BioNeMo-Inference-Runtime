@@ -360,6 +360,12 @@ def convert_hf_evoformer(config: EvoformerStackConfig,
     else:
         state_dict = load_hf_weights(name=model_name)
 
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            new_state_dict[k.replace("core.", "").replace("pair_stack.",
+                                                          "")] = v
+    state_dict = new_state_dict
     weights = {}
     weights.update(get_linear_weights(state_dict, f"{prefix}.linear",
                                       f"linear"))
@@ -372,7 +378,7 @@ def convert_hf_evoformer(config: EvoformerStackConfig,
         weights.update(
             get_outer_product_mean_weights(
                 state_dict,
-                f"{prefix}.blocks.{i}.core.outer_product_mean",
+                f"{prefix}.blocks.{i}.outer_product_mean",
                 f"blocks.{i}.outer_product_mean",
                 dtype=config.dtype,
                 mapping=mapping))
@@ -391,40 +397,38 @@ def convert_hf_evoformer(config: EvoformerStackConfig,
                 pair_bias=False,
                 mapping=mapping))
         weights.update(
-            get_msa_transition_weights(
-                state_dict,
-                f"{prefix}.blocks.{i}.core.msa_transition",
-                f"blocks.{i}.msa_transition",
-                dtype=config.dtype,
-                mapping=mapping))
+            get_msa_transition_weights(state_dict,
+                                       f"{prefix}.blocks.{i}.msa_transition",
+                                       f"blocks.{i}.msa_transition",
+                                       dtype=config.dtype,
+                                       mapping=mapping))
         weights.update(
-            get_pair_transition_weights(
-                state_dict,
-                f"{prefix}.blocks.{i}.core.pair_transition",
-                f"blocks.{i}.pair_transition",
-                dtype=config.dtype,
-                mapping=mapping))
+            get_pair_transition_weights(state_dict,
+                                        f"{prefix}.blocks.{i}.pair_transition",
+                                        f"blocks.{i}.pair_transition",
+                                        dtype=config.dtype,
+                                        mapping=mapping))
         weights.update(
             get_tri_mul_node_weights(state_dict,
-                                     f"{prefix}.blocks.{i}.core.tri_mul_in",
+                                     f"{prefix}.blocks.{i}.tri_mul_in",
                                      f"blocks.{i}.tri_mul_in",
                                      dtype=config.dtype,
                                      mapping=mapping))
         weights.update(
             get_tri_mul_node_weights(state_dict,
-                                     f"{prefix}.blocks.{i}.core.tri_mul_out",
+                                     f"{prefix}.blocks.{i}.tri_mul_out",
                                      f"blocks.{i}.tri_mul_out",
                                      dtype=config.dtype,
                                      mapping=mapping))
         weights.update(
             get_tri_attn_node_weights(state_dict,
-                                      f"{prefix}.blocks.{i}.core.tri_att_start",
+                                      f"{prefix}.blocks.{i}.tri_att_start",
                                       f"blocks.{i}.tri_attn_start",
                                       dtype=config.dtype,
                                       mapping=mapping))
         weights.update(
             get_tri_attn_node_weights(state_dict,
-                                      f"{prefix}.blocks.{i}.core.tri_att_end",
+                                      f"{prefix}.blocks.{i}.tri_att_end",
                                       f"blocks.{i}.tri_attn_end",
                                       dtype=config.dtype,
                                       mapping=mapping))

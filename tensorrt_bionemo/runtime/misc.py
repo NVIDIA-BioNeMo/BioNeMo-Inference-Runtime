@@ -18,7 +18,11 @@ from typing import Any, Optional, Tuple
 
 import numpy as np
 import torch
-from cuda import cudart
+
+try:
+    from cuda.bindings import runtime as cudart
+except ImportError:
+    from cuda import cudart
 
 
 @torch.compiler.disable

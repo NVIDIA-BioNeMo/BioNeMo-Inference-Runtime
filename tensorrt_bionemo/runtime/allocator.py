@@ -508,18 +508,16 @@ class SimpleContextMemoryManager(BaseContextMemoryManager):
 
 class SharedContextMemoryManager(BaseContextMemoryManager):
     """ Note: allocate shared context memory for all engines.
-    Use the maximum size of the context memory for all engines. """
+    Use the maximum size of the context memory for all engines.
+    TODO: This implementation is very un-safety for progress have the torch.cuda.empty_cache() at the end,
+    So we should use the OnDemandContextMemoryManager for more safety, and need to be investigated for hooking to torch.cuda.empty_cache().
+    Or using the torch.cuda.memory.MemPool() to allocate the shared memory.
+    """
 
     def __init__(self, auto_load: bool = True):
         super().__init__(auto_load)
         self._shared_memory_address = None
         self._shared_memory_size = 0
-        try:
-            self._pool = torch.cuda.memory.MemPool(
-                use_on_oom=True)  # This for the future torch version
-        except:
-            self._pool = torch.cuda.memory.MemPool(
-            )  # Compatible with the current torch version
 
     def load(self):
         # TODO: thread-safe
@@ -542,13 +540,10 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
                 f"Shared context memory size: {self._shared_memory_size}")
 
             # Allocate the shared memory buffer
-            # self._shared_memory_address = CUASSERT(cudart.cudaMalloc(self._shared_memory_size))[0]
-            with torch.cuda.use_mem_pool(self._pool):
-                if self._shared_memory_address is not None:
-                    torch.cuda.caching_allocator_delete(
-                        self._shared_memory_address)
-                self._shared_memory_address = torch.cuda.caching_allocator_alloc(
-                    self._shared_memory_size)
+            if self._shared_memory_address is not None:
+                torch.cuda.caching_allocator_delete(self._shared_memory_address)
+            self._shared_memory_address = torch.cuda.caching_allocator_alloc(
+                self._shared_memory_size)
 
             # Set the shared memory for all engines
             for k, v in self.get_deserialized_handles().items():
@@ -581,7 +576,6 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
                 # it just move the memory to the free list for post-processing (merge blocks memory) on torch caching allocator
                 # So it's fast for almost usecases
                 torch.cuda.caching_allocator_delete(self._shared_memory_address)
-                del self._pool
             except:
                 pass
 
@@ -594,7 +588,6 @@ class OnDemandContextMemoryManager(BaseContextMemoryManager):
                  clear_cache_before_forward: bool = False):
         super().__init__(auto_load)
         self._clear_cache_before_forward = clear_cache_before_forward
-        self._pool = torch.cuda.memory.MemPool()
 
     def load(self):
         for k, v in self.get_handles().items():
@@ -608,10 +601,8 @@ class OnDemandContextMemoryManager(BaseContextMemoryManager):
 
     def _ensure_engine_ready(self, engine_handle: TRTEngineHandle):
         if engine_handle.device_memory_address is None:
-            with torch.cuda.use_mem_pool(self._pool):
-                address = torch.cuda.caching_allocator_alloc(
-                    engine_handle.device_memory_size,
-                    stream=engine_handle._stream)
+            address = torch.cuda.caching_allocator_alloc(
+                engine_handle.device_memory_size, stream=engine_handle._stream)
             logger.debug(
                 f"Allocated {engine_handle.device_memory_size} bytes for engine"
             )
@@ -622,9 +613,8 @@ class OnDemandContextMemoryManager(BaseContextMemoryManager):
         # Free the memory
         if engine_handle.device_memory_address is not None:
             # cudart.cudaFree(engine_handle.device_memory_address)
-            with torch.cuda.use_mem_pool(self._pool):
-                torch.cuda.caching_allocator_delete(
-                    engine_handle.device_memory_address)
+            torch.cuda.caching_allocator_delete(
+                engine_handle.device_memory_address)
             logger.debug(f"Release memory for engine")
         # Reset the engine's memory state
         engine_handle.set_context_memory(None, 0)

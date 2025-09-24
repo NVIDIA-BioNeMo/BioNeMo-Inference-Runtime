@@ -16,11 +16,10 @@ $ git submodule update --init --recursive
 $ cd 3rdparty/TensorRT-LLM
 # Build TensorRT-LLM from source
 $ export PATH=$PATH:$HOME/.local/bin # this for conan executable
-$ git checkout v1.1.0rc2
 $ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
 $ pip install -e . && cd ../..
 # Install cuequiv
-$ pip install cuequivariance-ops-cu12==0.5.1
+$ pip install cuequivariance-ops-cu12==0.6.1
 # Build TRT plugins for TensorRT-BioNemo
 $ ./scripts/build_cpp.sh
 # Install as develop mode

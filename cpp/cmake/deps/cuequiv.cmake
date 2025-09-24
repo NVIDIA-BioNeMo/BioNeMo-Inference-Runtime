@@ -14,27 +14,30 @@
 # the License.
 
 find_package(Python REQUIRED)
-
+set(CUE_OPS_VERSION 0.6.1)
 execute_process(
-  COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops-cu12
+  COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops
   COMMAND grep Location
-  COMMAND awk "{print \$2}"  # This command doesn't require cuda libraries to be installed
+  COMMAND awk "{print \$2}" # This command doesn't require cuda libraries to be
+                            # installed
   RESULT_VARIABLE FOUND_STATUS
   OUTPUT_VARIABLE CUE_OPS_PATH
   OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 if("${CUE_OPS_PATH}" MATCHES "not found")
   message(
-    WARNING "WARNING: ${FOUND_STATUS}, Cannot find cuequivariance_ops package. Installing it from pip."
+    WARNING
+      "WARNING: ${FOUND_STATUS}, Cannot find cuequivariance_ops package. Installing it from pip."
   )
-  execute_process(COMMAND "${Python_EXECUTABLE}" -m pip install cuequivariance-ops-cu12)
+  execute_process(COMMAND "${Python_EXECUTABLE}" -m pip install
+                          cuequivariance-ops==${CUE_OPS_VERSION})
   execute_process(
-    COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops-cu12
+    COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops
     COMMAND grep Location
-    COMMAND awk "{print \$2}"  # This command doesn't require cuda libraries to be installed
+    COMMAND awk "{print \$2}" # This command doesn't require cuda libraries to
+                              # be installed
     RESULT_VARIABLE FOUND_STATUS
-    OUTPUT_VARIABLE CUE_OPS_PATH
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    OUTPUT_VARIABLE CUE_OPS_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
   if("${CUE_OPS_PATH}" MATCHES "not found")
     message(
       STATUS

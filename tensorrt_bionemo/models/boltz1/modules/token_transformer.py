@@ -145,7 +145,6 @@ class TokenTransformerTRT(BackendBase):
                                                 world_size=world_size,
                                                 rank=rank,
                                                 loaded_by_manager=False,
-                                                compile=True,
                                                 **kwargs)
             else:
                 raise ValueError(

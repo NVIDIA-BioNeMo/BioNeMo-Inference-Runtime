@@ -1,7 +1,8 @@
 --extra-index-url https://pypi.nvidia.com
 
-cuequivariance-ops-cu12==0.5.1
-cuequivariance_ops_torch_cu12==0.5.1
-cuequivariance_torch==0.5.1
-
-tensorrt-llm==1.1.0rc2
+# omegaconf==2.3.0
+# Update later
+cuequivariance-ops>=0.6.1rc0,<=0.6.1
+cuequivariance_ops_torch>=0.6.1rc0,<=0.6.1
+cuequivariance_torch>=0.6.1rc0,<=0.6.1
+tensorrt-llm==1.1.0rc5

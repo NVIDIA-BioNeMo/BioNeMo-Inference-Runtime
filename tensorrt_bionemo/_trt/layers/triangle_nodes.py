@@ -58,7 +58,7 @@ class TriangleAttentionNode(Module):
         chunk_size: int = 0,
         triangle_attn_backend: str = 'VANILLA',
         support_batch: bool = True,
-        fallback_threshold=0,
+        fallback_threshold: int = 0,
         mha_bias_flags: dict[str, bool] = {
             "q": False,
             "k": False,
@@ -219,6 +219,7 @@ class TriangleMultiplicationNode(Module):
         multiplication_type:
         TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
         OUTGOING,
+        high_precision: bool = True,
         bias_flags: dict[str, bool] = {
             "p_in": False,
             "g_in": False,
@@ -240,7 +241,7 @@ class TriangleMultiplicationNode(Module):
         self.support_batch = support_batch
         self.dim = dim // self.tp_size
         self.multiplication_type = multiplication_type
-
+        self.high_precision = high_precision
         self.norm_in = LayerNorm(normalized_shape=[self.dim * self.tp_size],
                                  eps=eps,
                                  dtype=dtype)
@@ -259,20 +260,21 @@ class TriangleMultiplicationNode(Module):
                                  tp_size=self.tp_size,
                                  gather_output=False)
 
+        high_precision_dtype = "float32" if high_precision else dtype
         self.norm_out = LayerNorm(normalized_shape=[dim],
                                   eps=eps,
-                                  dtype="float32")
+                                  dtype=high_precision_dtype)
         self.p_out = ColumnLinear(dim,
                                   dim,
                                   bias=bias_flags["p_out"],
-                                  dtype="float32",
+                                  dtype=high_precision_dtype,
                                   tp_group=self.tp_group,
                                   tp_size=self.tp_size,
                                   gather_output=True)
         self.g_out = ColumnLinear(dim,
                                   dim,
                                   bias=bias_flags["g_out"],
-                                  dtype="float32",
+                                  dtype=high_precision_dtype,
                                   tp_group=self.tp_group,
                                   tp_size=self.tp_size,
                                   gather_output=True)
@@ -342,7 +344,8 @@ class TriangleMultiplicationNode(Module):
         # TODO: SWiGLU, fuse p_in and g_in here
         x = self.p_in(x) * activation(self.g_in(x), trt.ActivationType.SIGMOID)
         x = x * mask.unsqueeze(-1)
-        x = cast(x, "float32")
+        if self.high_precision:
+            x = cast(x, "float32")
         a, b = split(x, [self.dim, self.dim], dim=-1)
 
         def _enisum_compute(a_, b_):
@@ -396,7 +399,8 @@ class TriangleMultiplicationNode(Module):
         if self.tp_size > 1:
             x = allgather(x, self.tp_group, gather_dim=-1)
 
-        x_in = cast(x_in, "float32")
+        if self.high_precision:
+            x_in = cast(x_in, "float32")
         norm_x = self.norm_out(x)
         pout_x = self.p_out(norm_x)
         gout_x = activation(self.g_out(x_in), trt.ActivationType.SIGMOID)

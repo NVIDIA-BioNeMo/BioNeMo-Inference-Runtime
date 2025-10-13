@@ -7,6 +7,18 @@
 
 ## Getting Started
 
+### Model hubs
+
+Currently, the TRT-BNM is supporting local and huggingface model hubs. The `load_weights` function will load checkpoints from the local hub, if not found in the local hub, it will fallback to the huggingface remote hub. You can specify the hub by setting the `hub` option in this function.
+
+```python
+from tensorrt_bionemo.hubs import load_weights
+os.environ["BOLTZ2_CKPT"] = "boltz2.ckpt"                   # see environment variables in tensorrt_bionemo/hubs/local.py
+boltz2_state_dict = load_weights("boltz-2")                 # priority: local -> hf
+boltz2_state_dict = load_weights("boltz-2", hub="hf")       # only hf
+boltz2_state_dict = load_weights("boltz-2", cache_path="boltz2.ckpt") # local checkpoint from a specific path
+```
+
 ### Develop
 
 Please use the `.devcontainer` for `vscode` or `cursor`. In the devcontainer, run as the following:

@@ -17,7 +17,7 @@ from typing import Optional
 
 import tensorrt as trt
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
-                                     concat, relu, split, swiglu)
+                                     concat, relu, silu, split, swiglu)
 from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module, ModuleList
@@ -77,15 +77,18 @@ class Transition(Module):
 class ConditionedTransitionBlock(Module):
     """Algorithm 25"""
 
-    def __init__(self,
-                 dim_single: int,
-                 dim_single_cond: int,
-                 expansion_factor: int = 2,
-                 eps: float = 1e-5,
-                 dtype: str = None,
-                 mapping: Mapping = Mapping()):
+    def __init__(
+        self,
+        dim_single: int,
+        dim_single_cond: int,
+        expansion_factor: int = 2,
+        eps: float = 1e-5,
+        dtype: str = None,
+        using_silu: bool = False,  # using silu instead of swiglu
+        mapping: Mapping = Mapping()):
         super().__init__()
         self.mapping = mapping
+        self.using_silu = using_silu
         self.tp_size = mapping.tp_size
         self.tp_rank = mapping.tp_rank
         self.tp_group = mapping.tp_group
@@ -101,14 +104,26 @@ class ConditionedTransitionBlock(Module):
                            mapping=mapping)
         self.dim_inner = int(dim_single * expansion_factor) // mapping.tp_size
         # Fused swiglu_gate linear and a_to_b
-        self.fused_swl_a_to_b = ColumnLinear(self.dim_single,
-                                             self.dim_inner * 3,
-                                             bias=False,
-                                             dtype=dtype,
-                                             tp_group=self.tp_group,
-                                             tp_size=self.tp_size,
-                                             gather_output=False,
-                                             is_qkv=True)
+        if not using_silu:
+            # Boltz1, Boltz2 uses swiglu instead of silu
+            self.fused_swl_a_to_b = ColumnLinear(self.dim_single,
+                                                 self.dim_inner * 3,
+                                                 bias=False,
+                                                 dtype=dtype,
+                                                 tp_group=self.tp_group,
+                                                 tp_size=self.tp_size,
+                                                 gather_output=False,
+                                                 is_qkv=True)
+        else:
+            # OF3 uses silu instead of swiglu, so we need to use a different column linear
+            self.fused_swl_a_to_b = ColumnLinear(self.dim_single,
+                                                 self.dim_inner * 2,
+                                                 bias=False,
+                                                 dtype=dtype,
+                                                 tp_group=self.tp_group,
+                                                 tp_size=self.tp_size,
+                                                 gather_output=False,
+                                                 is_qkv=True)
         self.b_to_a = RowLinear(self.dim_inner,
                                 self.dim_single,
                                 bias=False,
@@ -137,8 +152,12 @@ class ConditionedTransitionBlock(Module):
         """
         a = self.adaln(a, s)
         z = self.fused_swl_a_to_b(a)
-        m, n = split(z, [self.dim_inner * 2, self.dim_inner], dim=-1)
-        b = swiglu(m) * n  # TODO: Fused swiglu here
+        if not self.using_silu:
+            m, n = split(z, [self.dim_inner * 2, self.dim_inner], dim=-1)
+            b = swiglu(m) * n  # TODO: Fused swiglu here
+        else:
+            m, n = split(z, [self.dim_inner, self.dim_inner], dim=-1)
+            b = silu(m) * n
         a = self.output_projection(s)
         a = activation(a, trt.ActivationType.SIGMOID) * self.b_to_a(
             b, all_reduce_params=all_reduce_params)

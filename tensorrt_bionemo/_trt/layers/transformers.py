@@ -32,6 +32,10 @@ from tensorrt_bionemo.models.boltz1.configs import (PairformerBuildConfig,
                                                     TokenTransformerConfig)
 from tensorrt_bionemo.models.openfold2.configs import (
     EvoformerStackBuildConfig, EvoformerStackConfig)
+from tensorrt_bionemo.models.openfold3.configs import \
+    TokenTransformerBuildConfig as OpenFold3TokenTransformerBuildConfig
+from tensorrt_bionemo.models.openfold3.configs import \
+    TokenTransformerConfig as OpenFold3TokenTransformerConfig
 
 from ..module_utils import PretrainedModule
 from .attention import AttentionParams, MSAAttention, SelfAttentionPairBias
@@ -68,6 +72,7 @@ class PairformerLayerV1(Module):
                  s_path_dtype: str = None,
                  attention_initial_norm: bool = True,
                  fallback_threshold: int = 0,
+                 trimul_high_precision: bool = True,
                  mapping: Mapping = Mapping(),
                  **kwargs):
         super().__init__()
@@ -80,7 +85,7 @@ class PairformerLayerV1(Module):
         self.support_batch = support_batch
         self.triangle_attn_backend = triangle_attn_backend
         self.fallback_threshold = fallback_threshold
-
+        self.trimul_high_precision = trimul_high_precision
         self.eps = eps
         self.inf = inf
         self.dtype = dtype
@@ -113,6 +118,7 @@ class PairformerLayerV1(Module):
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
             support_batch=support_batch,
+            high_precision=trimul_high_precision,
             mapping=m)
         self.tri_mul_in = TriangleMultiplicationNode(
             local_layer_idx=local_layer_idx,
@@ -121,6 +127,7 @@ class PairformerLayerV1(Module):
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.INCOMING,
             support_batch=support_batch,
+            high_precision=trimul_high_precision,
             mapping=m)
         self.tri_attn_start = TriangleAttentionNode(
             local_layer_idx=local_layer_idx,
@@ -199,7 +206,9 @@ class PairformerLayerV1(Module):
                 all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
         if not self.no_update_s:
             # Add identity to break Myelin fusion
-            use_identity_plugin = self.triangle_attn_backend != "VANILLA"
+            use_identity_plugin = (
+                self.triangle_attn_backend
+                != "VANILLA")  # and self.trimul_high_precision, works for B200
             s, z = identity_sz(s, z, use_identity_plugin)
         original_dtype = z.dtype
         z = self._transform_z(z, pair_mask, attention_params, all_reduce_params)
@@ -258,7 +267,9 @@ class PairformerLayerV2(PairformerLayerV1):
                 attention_params: Optional[AttentionParams] = None,
                 all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
         # Add identity to break Myelin fusion
-        use_identity_plugin = self.triangle_attn_backend != "VANILLA"
+        use_identity_plugin = (
+            self.triangle_attn_backend
+            != "VANILLA")  # and self.trimul_high_precision, works for B200
         s, z = identity_sz(s, z, use_identity_plugin)
         z = self._transform_z(z, pair_mask, attention_params, all_reduce_params)
         original_dtype = s.dtype
@@ -298,7 +309,7 @@ class PairformerModule(PretrainedModule):
         super().__init__(config)
         layer_cls = PairformerLayerV1 if config.version == "v1" else PairformerLayerV2
         logger.info(
-            f"Using triangle_attn_backend: {config.triangle_attn_backend}, cueq threshold: {config.triangle_attn_cueq_fallback_threshold}"
+            f"Using triangle_attn_backend: {config.triangle_attn_backend}, cueq threshold: {config.triangle_attn_cueq_fallback_threshold}, trimul_high_precision: {config.trimul_high_precision}"
         )
         self.layers = ModuleList([
             layer_cls(
@@ -322,7 +333,8 @@ class PairformerModule(PretrainedModule):
                 mapping=config.mapping,
                 fallback_threshold=config.triangle_attn_cueq_fallback_threshold,
                 post_layer_norm=config.post_layer_norm,
-                attention_initial_norm=config.attention_initial_norm)
+                attention_initial_norm=config.attention_initial_norm,
+                trimul_high_precision=config.trimul_high_precision)
             for i in range(config.num_blocks)
         ])
 
@@ -421,23 +433,36 @@ class PairformerNoSeqModule(Module):
 
 class DiffusionTransformerLayer(Module):
 
-    def __init__(self,
-                 *,
-                 local_layer_idx: int,
-                 num_heads: int,
-                 dim: int,
-                 dim_single_cond: int,
-                 dim_pairwise: int = 128,
-                 dtype: str = None,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 attention_initial_norm: bool = False,
-                 post_layer_norm: bool = False,
-                 need_project_z: bool = True,
-                 max_batch_size: int = 1,
-                 mapping: Optional[Mapping] = None):
+    def __init__(
+            self,
+            *,
+            local_layer_idx: int,
+            num_heads: int,
+            dim: int,
+            dim_single_cond: int,
+            dim_pairwise: int = 128,
+            dtype: str = None,
+            eps: float = 1e-5,
+            inf: float = 1e9,
+            attention_initial_norm: bool = False,
+            post_layer_norm: bool = False,
+            need_project_z: bool = True,
+            need_compute_pair_bias: bool = False,  # For OF3
+            max_batch_size: int = 1,
+            attn_bias_flags: dict[str, bool] = {
+                "q": True,
+                "k": False,
+                "v": False,
+                "g": False,
+                "z": False,
+                "norm_z": True,
+                "o": False,
+            },
+            conditioned_transition_using_silu: bool = False,
+            mapping: Optional[Mapping] = None):
         super().__init__()
         self.num_heads = num_heads
+        self.need_compute_pair_bias = need_compute_pair_bias
         self.adaln = AdaLN(dim,
                            dim_single_cond,
                            eps=eps,
@@ -455,6 +480,7 @@ class DiffusionTransformerLayer(Module):
             initial_norm=attention_initial_norm,
             need_project_z=need_project_z,
             max_batch_size=max_batch_size,
+            bias_flags=attn_bias_flags,
             mapping=mapping)
         self.output_projection = ColumnLinear(
             dim_single_cond,
@@ -471,6 +497,7 @@ class DiffusionTransformerLayer(Module):
             expansion_factor=2,
             dtype=dtype,
             eps=eps,
+            using_silu=conditioned_transition_using_silu,
             mapping=mapping)
         self.post_lnorm = None
         if post_layer_norm:
@@ -491,7 +518,7 @@ class DiffusionTransformerLayer(Module):
         b = self.pair_bias_attn(s=b,
                                 z=bias,
                                 mask=mask,
-                                compute_pair_bias=False,
+                                compute_pair_bias=self.need_compute_pair_bias,
                                 attention_params=attention_params,
                                 all_reduce_params=all_reduce_params)
         b = activation(self.output_projection(s),
@@ -566,6 +593,54 @@ class TokenTransformer(PretrainedModule):
             ends = concat([B, D, N, M, 1])
             sub_bias = slice(bias, starts, ends).squeeze(-1, True)
             a = layer(a, s, sub_bias, mask, attention_params, all_reduce_params)
+        return a
+
+
+class OpenFold3TokenTransformer(PretrainedModule):
+    config_class = OpenFold3TokenTransformerConfig
+    build_config_class = OpenFold3TokenTransformerBuildConfig
+
+    def __init__(self, config: OpenFold3TokenTransformerConfig):
+        super().__init__(config)
+        self.version = config.version
+        logger.info(
+            f"Using pairwise attention backend: {config.pairwise_attn_backend}")
+        self.layers = ModuleList([
+            DiffusionTransformerLayer(
+                local_layer_idx=i,
+                num_heads=config.num_heads,
+                dim=config.dim,
+                dim_single_cond=config.dim_single_cond,
+                dtype=config.dtype,
+                eps=config.norm_epsilon,
+                inf=config.mask_inf,
+                attention_initial_norm=config.attention_initial_norm,
+                post_layer_norm=config.post_layer_norm,
+                need_project_z=True,
+                need_compute_pair_bias=True,
+                attn_bias_flags={
+                    "q": True,
+                    "k": False,
+                    "v": False,
+                    "g": False,
+                    "z": False,
+                    "norm_z": False,
+                    "o": False,
+                },
+                max_batch_size=config.max_batch_size,
+                conditioned_transition_using_silu=True,
+                mapping=config.mapping) for i in range(config.num_blocks)
+        ])
+
+    def forward(self,
+                a: Tensor,
+                s: Tensor,
+                z: Tensor,
+                mask: Optional[Tensor] = None,
+                attention_params: Optional[AttentionParams] = None,
+                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+        for layer in self.layers:
+            a = layer(a, s, z, mask, attention_params, all_reduce_params)
         return a
 
 

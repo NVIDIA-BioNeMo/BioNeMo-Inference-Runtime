@@ -14,9 +14,9 @@
 # limitations under the License.
 
 from tensorrt_bionemo._trt.layers.affinity import AffinityModule
-from tensorrt_bionemo._trt.layers.transformers import (EvoformerStack,
-                                                       PairformerModule,
-                                                       TokenTransformer)
+from tensorrt_bionemo._trt.layers.transformers import (
+    EvoformerStack, OpenFold3TokenTransformer, PairformerModule,
+    TokenTransformer)
 
 TRT_BUILDING_MODULES_REGISTRY = {}
 
@@ -61,6 +61,10 @@ def register_default_building_modules():
         },
         "openfold2": {
             "evoformer": EvoformerStack,
+        },
+        "openfold3": {
+            "pairformer": PairformerModule,
+            "token_transformer": OpenFold3TokenTransformer,
         }
     })
 

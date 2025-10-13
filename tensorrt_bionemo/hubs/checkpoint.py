@@ -13,117 +13,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections import namedtuple
 from pathlib import Path
 from typing import Optional, Union
 
-from .hf import load_state_dict_from_hf
+from tensorrt_llm.logger import logger
 
-HFCheckpoint = namedtuple(
-    "HFCheckpoint", ["repo_id", "filename", "weights_only", "state_dict_key"])
-
-HF_CHECKPOINTS = {
-    "boltz-1":
-    HFCheckpoint(
-        repo_id="boltz-community/boltz-1",
-        filename="boltz1_conf.ckpt",
-        weights_only=False,
-        state_dict_key="state_dict",
-    ),
-    "boltz-2":
-    HFCheckpoint(
-        repo_id="boltz-community/boltz-2",
-        filename="boltz2_conf.ckpt",
-        weights_only=False,
-        state_dict_key="state_dict",
-    ),
-    "boltz-2-affinity":
-    HFCheckpoint(
-        repo_id="boltz-community/boltz-2",
-        filename="boltz2_aff.ckpt",
-        weights_only=False,
-        state_dict_key="state_dict",
-    ),
-    "openfold2_finetuning_2":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_2.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_finetuning_3":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_3.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_finetuning_4":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_4.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_finetuning_5":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_5.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_no_templ_1":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_no_templ_1.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_no_templ_2":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_no_templ_2.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_no_templ_ptm_1":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_no_templ_ptm_1.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_ptm_1":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_ptm_1.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-    "openfold2_ptm_2":
-    HFCheckpoint(
-        repo_id="nz/OpenFold",
-        filename="finetuning_ptm_2.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
-}
+from .hf import load_hf_weights
+from .local import load_local_weights
 
 
-def load_hf_weights(name: str,
-                    local_files_only: bool = False,
-                    cache_dir: Optional[Union[str, Path]] = None,
-                    return_raw: bool = False,
-                    repo_id: Optional[Union[str, Path]] = None):
-    """ Load a checkpoint from the Hugging Face Hub """
-    checkpoint = HF_CHECKPOINTS[name]
-    default_repo_id = checkpoint.repo_id
-    if repo_id is None:
-        repo_id = default_repo_id
-    return load_state_dict_from_hf(repo_id=repo_id,
-                                   filename=checkpoint.filename,
-                                   weights_only=checkpoint.weights_only,
-                                   state_dict_key=checkpoint.state_dict_key,
-                                   local_files_only=local_files_only,
-                                   cache_dir=cache_dir,
-                                   return_raw=return_raw)
+def load_weights(name: str,
+                 return_raw: bool = False,
+                 local_files_only: bool = False,
+                 cache_path: Optional[Union[str, Path]] = None,
+                 repo_id: Optional[Union[str, Path]] = None,
+                 hub: str = None) -> Union[dict, str]:
+
+    if hub is None:
+        logger.warning(
+            f"No hub specified, automatically trying local hub -> huggingface hub"
+        )
+        state_dict = load_local_weights(name, return_raw, local_files_only,
+                                        cache_path, repo_id)
+        if state_dict is None:
+            state_dict = load_hf_weights(name, return_raw, local_files_only,
+                                         None, repo_id)
+        return state_dict
+    elif hub == "local":
+        state_dict = load_local_weights(name, return_raw, local_files_only,
+                                        cache_path, repo_id)
+        return state_dict
+    elif hub == "hf":
+        state_dict = load_hf_weights(name, return_raw, local_files_only, None,
+                                     repo_id)
+        return state_dict
+    else:
+        raise ValueError(f"Invalid hub: {hub}")

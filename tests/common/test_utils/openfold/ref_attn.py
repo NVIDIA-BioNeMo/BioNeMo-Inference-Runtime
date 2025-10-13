@@ -19,7 +19,7 @@ from test_utils.boltz.ref_attn import \
 from test_utils.boltz.ref_attn import \
     RefTriangleAttention as BoltzRefTriangleAttention
 
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 
 
 class RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
@@ -31,7 +31,7 @@ class RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
                      state_dict: dict = None,
                      num_heads: int = 8):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
 
         weights_biases_path = [
             (f"{layer_path}.linear_q.weight", None),
@@ -74,7 +74,7 @@ class RefTriangleAttention(BoltzRefTriangleAttention):
                      state_dict: dict = None,
                      num_heads: int = 8):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.linear_q.weight", None),
             (f"{layer_path}.linear_k.weight", None),
@@ -138,7 +138,7 @@ class RefGlobalAttention(nn.Module):
             state_dict: dict = None,
             num_heads: int = 8):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.linear_q.weight", None),
             (f"{layer_path}.linear_k.weight", None),

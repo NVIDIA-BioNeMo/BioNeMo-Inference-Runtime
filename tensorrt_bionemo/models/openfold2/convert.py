@@ -17,7 +17,7 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.openfold2.configs import (EvoformerStackConfig,
                                                        ExtraMSAStackConfig)
@@ -353,12 +353,7 @@ def convert_hf_evoformer(config: EvoformerStackConfig,
     mapping = mapping if mapping is not None else Mapping()
     prefix = "evoformer"
 
-    if local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)
-    else:
-        state_dict = load_hf_weights(name=model_name)
+    state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
 
     new_state_dict = {}
     for k, v in state_dict.items():
@@ -436,27 +431,6 @@ def convert_hf_evoformer(config: EvoformerStackConfig,
     return weights
 
 
-def _load_openfold2_weights(local_checkpoint: str = None,
-                            weights: dict = None,
-                            model_name: str = "openfold2_ptm_1"):
-    state_dict = None
-
-    if weights is not None:
-        state_dict = weights
-
-    if state_dict is None and local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)
-    elif state_dict is None:
-        logger.info(
-            f"`weights` and `local_checkpoint` aren't both provided, loading from HuggingFace"
-        )
-        ckpt = load_hf_weights(name=model_name, return_raw=True)
-        state_dict = torch.load(ckpt, map_location="cpu", weights_only=False)
-    return state_dict
-
-
 def convert_hf_evoformer_torch(config: EvoformerStackConfig,
                                mapping: Mapping = None,
                                local_checkpoint: str = None,
@@ -472,7 +446,11 @@ def convert_hf_evoformer_torch(config: EvoformerStackConfig,
         weights: The weights to load into the module.
         model_name: The name of the model to load the weights from.
     """
-    state_dict = _load_openfold2_weights(local_checkpoint, weights, model_name)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
     prefix = "evoformer."
 
     module_state_dict = {}
@@ -758,7 +736,11 @@ def convert_hf_extra_msa_stack_torch(config: ExtraMSAStackConfig,
     """
     Convert a extra msa stack model from a Hugging Face checkpoint to a PyTorch model weights.
     """
-    state_dict = _load_openfold2_weights(local_checkpoint, weights, model_name)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
     prefix = "extra_msa_stack."
 
     module_state_dict = {}

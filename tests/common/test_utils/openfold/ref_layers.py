@@ -27,7 +27,7 @@ from test_utils.openfold.ref_attn import (RefGlobalAttention,
                                           RefPairwiseSelfAttention,
                                           RefTriangleAttention)
 
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 
 
 class RefMSAAttention(nn.Module):
@@ -134,7 +134,7 @@ class RefMSAAttention(nn.Module):
                      state_dict: dict = None,
                      using_tri_attn: bool = True):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
 
         transpose_input = False
         if layer_path.endswith("msa_att_col"):
@@ -203,7 +203,7 @@ class RefOuterProductMean(BoltzRefOuterProductMean):
             layer_path: str = "evoformer.blocks.0.core.outer_product_mean",
             state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.layer_norm.weight",
              f"{layer_path}.layer_norm.bias"),
@@ -249,7 +249,7 @@ class RefTriangleAttentionNode(BoltzRefTriangleAttentionNode):
                      state_dict: dict = None):
         starting = True if "start" in layer_path else False
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.layer_norm.weight",
              f"{layer_path}.layer_norm.bias"),
@@ -287,7 +287,7 @@ class RefTriangleMultiplicationNode(BoltzRefTriangleMultiplicationNode):
                      state_dict: dict = None):
         outgoing = True if "out" in layer_path else False
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.layer_norm_in.weight",
              f"{layer_path}.layer_norm_in.bias"),
@@ -353,7 +353,7 @@ class RefPairTransition(nn.Module):
             layer_path: str = "evoformer.blocks.0.core.pair_transition",
             state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.layer_norm.weight",
              f"{layer_path}.layer_norm.bias"),
@@ -403,7 +403,7 @@ class RefMSATransition(nn.Module):
                      layer_path: str = "evoformer.blocks.0.core.msa_transition",
                      state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.layer_norm.weight",
              f"{layer_path}.layer_norm.bias"),
@@ -539,7 +539,7 @@ class RefEvoformerBlock(nn.Module):
                      layer_path: str = "evoformer.blocks.0",
                      state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         msa_att_row = RefMSAAttention.load_weights(
             model=model,
             layer_path=f"{layer_path}.msa_att_row",
@@ -655,7 +655,7 @@ class RefMSAColumnGlobalAttention(nn.Module):
                      layer_path: str = "extra_msa_stack.blocks.0.msa_att_col",
                      state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         global_attention = RefGlobalAttention.load_weights(
             model=model,
             layer_path=f"{layer_path}.global_attention",
@@ -761,7 +761,7 @@ class RefExtraMSABlock(RefEvoformerBlock):
                      layer_path: str = "extra_msa_stack.blocks.0",
                      state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         msa_att_row = RefMSAAttention.load_weights(
             model=model,
             layer_path=f"{layer_path}.msa_att_row",

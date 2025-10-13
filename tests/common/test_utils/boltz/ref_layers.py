@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from test_utils.boltz.ref_attn import (RefPairwiseSelfAttention,
                                        RefTriangleAttention)
 
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 
 
 class RefTriangleMultiplicationNode(nn.Module):
@@ -99,7 +99,7 @@ class RefTriangleMultiplicationNode(nn.Module):
         if not outgoing:
             layer_path = layer_path.replace("tri_mul_out", "tri_mul_in")
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.norm_in.weight", f"{layer_path}.norm_in.bias"),
             (f"{layer_path}.p_in.weight", None),
@@ -167,7 +167,7 @@ class RefTriangleAttentionNode(nn.Module):
             starting: bool = True,
             state_dict: Optional[dict] = None) -> 'RefTriangleAttentionNode':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_path = [
             f"{layer_path}.linear.weight",
             f"{layer_path}.layer_norm.weight",
@@ -258,7 +258,7 @@ class RefTransition(nn.Module):
             layer_path: str = "pairformer_module.layers.0.transition_s",
             state_dict: Optional[dict] = None) -> 'RefTransition':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.norm.weight", f"{layer_path}.norm.bias"),
             (f"{layer_path}.fc1.weight", None),
@@ -348,7 +348,7 @@ class RefPairformerLayer(nn.Module):
                      layer_path: str = "pairformer_module.layers.0",
                      state_dict: Optional[dict] = None) -> 'RefPairformerLayer':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         m = cls(128, 128)  # fake token_s and token_z
         submodules = [(
             RefPairwiseSelfAttention,
@@ -456,7 +456,7 @@ class RefAdaLN(nn.Module):
         str = "structure_module.score_model.token_transformer.layers.0.adaln",
             state_dict: Optional[dict] = None) -> 'RefAdaLN':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             # (f"{layer_path}.a_norm.weight", f"{layer_path}.a_norm.bias"),
             (f"{layer_path}.s_norm.weight", None),
@@ -525,7 +525,7 @@ class RefConditionedTransitionBlock(nn.Module):
             state_dict: Optional[dict] = None
     ) -> 'RefConditionedTransitionBlock':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
 
         adaln = RefAdaLN.load_weights(state_dict=state_dict,
                                       layer_path=layer_path + ".adaln")
@@ -608,7 +608,7 @@ class RefDiffusionTransformerLayer(nn.Module):
             state_dict: Optional[dict] = None
     ) -> 'RefDiffusionTransformerLayer':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
 
         adaln = RefAdaLN.load_weights(state_dict=state_dict,
                                       layer_path=layer_path + ".adaln")
@@ -674,7 +674,7 @@ class RefPairformerNoSeqLayer(nn.Module):
             layer_path: str = "affinity_module1.pairformer_stack.layers.0",
             state_dict: Optional[dict] = None) -> 'RefPairformerNoSeqLayer':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         m = cls(128, 128)  # fake token_s and token_z
         submodules = [(
             RefTriangleMultiplicationNode,
@@ -759,7 +759,7 @@ class RefPairformerNoSeqModule(nn.Module):
             layer_path: str = "affinity_module1.pairformer_stack",
             state_dict: Optional[dict] = None) -> 'RefPairformerNoSeqModule':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         all_keys = len([
             k for k in state_dict.keys()
             if k.startswith(f"{layer_path}.layers.")
@@ -826,7 +826,7 @@ class RefPairwiseConditioning(nn.Module):
             layer_path: str = "affinity_module1.pairwise_conditioner",
             state_dict: Optional[dict] = None) -> 'RefPairwiseConditioning':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
 
         weights_biases_path = [
             (f"{layer_path}.dim_pairwise_init_proj.0.weight",
@@ -921,7 +921,7 @@ class RefAffinityHeadsTransformer(nn.Module):
             layer_path: str = "affinity_module1.affinity_heads",
             state_dict: Optional[dict] = None) -> 'RefAffinityHeadsTransformer':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.affinity_out_mlp.0.weight",
              f"{layer_path}.affinity_out_mlp.0.bias"),
@@ -1014,7 +1014,7 @@ class RefAffinityModule(nn.Module):
                      layer_path: str = "affinity_module1",
                      state_dict: Optional[dict] = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.dist_bin_pairwise_embed.weight", None),
             (f"{layer_path}.s_to_z_prod_in1.weight", None),
@@ -1118,7 +1118,7 @@ class RefPairWeightedAveraging(nn.Module):
             layer_path: str = "msa_module.layers.0.pair_weighted_averaging",
             state_dict: Optional[dict] = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.norm_m.weight", f"{layer_path}.norm_m.bias"),
             (f"{layer_path}.norm_z.weight", f"{layer_path}.norm_z.bias"),
@@ -1214,7 +1214,7 @@ class RefOuterProductMean(nn.Module):
                      layer_path: str = "msa_module.layers.0.outer_product_mean",
                      state_dict: Optional[dict] = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.norm.weight", f"{layer_path}.norm.bias"),
             (f"{layer_path}.proj_a.weight", None),
@@ -1304,7 +1304,7 @@ class RefMSALayer(nn.Module):
                      layer_path: str = "msa_module.layers.0",
                      state_dict: Optional[dict] = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
 
         msa_transition = RefTransition.load_weights(
             state_dict=state_dict,
@@ -1407,7 +1407,7 @@ class RefMSAModule(nn.Module):
                      layer_path: str = "msa_module",
                      state_dict: Optional[dict] = None):
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
 
         s_proj_weights = state_dict[f"{layer_path}.s_proj.weight"]
         msa_proj_weights = state_dict[f"{layer_path}.msa_proj.weight"]

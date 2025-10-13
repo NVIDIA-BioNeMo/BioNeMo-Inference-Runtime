@@ -22,7 +22,7 @@ from transformers import PretrainedConfig
 
 from tensorrt_bionemo.config import (BuildModuleConfig, DimSpec,
                                      PretrainedModuleConfig)
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 
 from .const import TOKENS
 
@@ -51,6 +51,7 @@ class PairformerConfig(PretrainedModuleConfig):
                  s_path_dtype: str = None,
                  post_layer_norm: bool = False,
                  triangle_attn_cueq_fallback_threshold: int = 0,
+                 trimul_high_precision: bool = True,
                  version: str = "v1",
                  **kwargs):
         super().__init__(**kwargs)
@@ -72,6 +73,7 @@ class PairformerConfig(PretrainedModuleConfig):
         self.triangle_attn_backend = triangle_attn_backend
         self.pairwise_attn_backend = pairwise_attn_backend
         self.disable_custom_all_reduce = max_transition_tp_size or max_attention_pairwise_tp_size
+        self.trimul_high_precision = trimul_high_precision
         self.support_batch = support_batch
         self.s_path_dtype = s_path_dtype
         self.post_layer_norm = post_layer_norm
@@ -169,6 +171,10 @@ def _create_optimization_profiles(
                     min_shape.append(1)
                     opt_shape.append(self.module_config.max_num_particles)
                     max_shape.append(self.module_config.max_num_particles)
+                elif spec.name == "num_diffusion_samples":
+                    min_shape.append(1)
+                    opt_shape.append(self.module_config.max_diffusion_samples)
+                    max_shape.append(self.module_config.max_diffusion_samples)
                 elif spec.name == "batch_size":
                     min_shape.append(1)
                     opt_shape.append(self.module_config.max_batch_size)
@@ -371,15 +377,10 @@ class Boltz1Config(PretrainedConfig):
                         checkpoint_dir: str = None,
                         trust_remote_code=False,
                         **kwargs):
-        if checkpoint_dir is None:
-            ckpt = load_hf_weights(name="boltz-1", return_raw=True)
-            state_dict = torch.load(ckpt,
-                                    map_location="cpu",
-                                    weights_only=False)
-        else:
-            state_dict = torch.load(checkpoint_dir,
-                                    map_location="cpu",
-                                    weights_only=False)
+        ckpt = load_weights(name="boltz-1",
+                            return_raw=True,
+                            cache_path=checkpoint_dir)
+        state_dict = torch.load(ckpt, map_location="cpu", weights_only=False)
         hparams = state_dict["hyper_parameters"]
 
         token_s = hparams["token_s"]

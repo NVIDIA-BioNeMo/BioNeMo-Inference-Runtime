@@ -18,7 +18,7 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from .configs import MSAModuleConfig, PairformerConfig, TokenTransformerConfig
@@ -73,18 +73,21 @@ def get_pairwise_attn_weights(mapping: Mapping,
     if compute_pair_bias:
         # This flag is used to in TokenTransformer version 2, where we don't compute pair bias in the attention layer
         norm_z_weight = state_dict[f"{prefix}.proj_z.0.weight"]
-        norm_z_bias = state_dict[f"{prefix}.proj_z.0.bias"]
+        norm_z_bias = state_dict.get(f"{prefix}.proj_z.0.bias", None)
         z_weight = state_dict[f"{prefix}.proj_z.1.weight"]
         if tp_size > 1:
             z_weight = split(z_weight, tp_size, tp_rank, 0)
         ret.update({
             f"{tbm_prefix}.proj_z_norm.weight":
             norm_z_weight.to(torch_dtype),
-            f"{tbm_prefix}.proj_z_norm.bias":
-            norm_z_bias.to(torch_dtype),
             f"{tbm_prefix}.proj_z.weight":
             z_weight.to(torch_dtype),
         })
+        if norm_z_bias is not None:
+            ret.update({
+                f"{tbm_prefix}.proj_z_norm.bias":
+                norm_z_bias.to(torch_dtype),
+            })
     return ret
 
 
@@ -228,12 +231,8 @@ def convert_hf_pairformer(config: PairformerConfig,
         prefix = f"confidence_module.{prefix}"
     tbm_prefix = "layers"
     weights = {}
-    if local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)["state_dict"]
-    else:
-        state_dict = load_hf_weights(name=model_name)
+
+    state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     logger.info(
         f"Loading weights for {pairformer_type} pairformer, dtype: {config.dtype}"
     )
@@ -295,26 +294,6 @@ def convert_hf_pairformer(config: PairformerConfig,
     return weights
 
 
-def _load_boltz1_weights(local_checkpoint: str = None, weights: dict = None):
-    state_dict = None
-
-    if weights is not None:
-        state_dict = weights
-
-    if state_dict is None and local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)["state_dict"]
-    elif state_dict is None:
-        logger.info(
-            f"`weights` and `local_checkpoint` aren't both provided, loading from HuggingFace"
-        )
-        ckpt = load_hf_weights(name="boltz-1", return_raw=True)
-        state_dict = torch.load(ckpt, map_location="cpu",
-                                weights_only=False)["state_dict"]
-    return state_dict
-
-
 def convert_hf_pairformer_torch(config: PairformerConfig = None,
                                 mapping: Mapping = None,
                                 local_checkpoint: str = None,
@@ -335,7 +314,10 @@ def convert_hf_pairformer_torch(config: PairformerConfig = None,
     Returns:
         dict: The weights is loaded from the Pairformer Torch backend.
     """
-    state_dict = _load_boltz1_weights(local_checkpoint, weights)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
 
     module_state_dict = {}
     if prefix is None:
@@ -645,12 +627,7 @@ def convert_hf_token_transformer(config: TokenTransformerConfig = None,
     prefix = "structure_module.score_model.token_transformer.layers"
     tbm_prefix = "layers"
     weights = {}
-    if local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)["state_dict"]
-    else:
-        state_dict = load_hf_weights(name=model_name)
+    state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     logger.info(f"Loading weights for token transformer, dtype: {config.dtype}")
     for i in range(config.num_blocks):
         layer_prefix = f"{prefix}.{i}"
@@ -710,7 +687,10 @@ def convert_hf_token_transformer_torch(config: TokenTransformerConfig,
     """
     Convert a token transformer model from a Hugging Face checkpoint to a PyTorch model weights.
     """
-    state_dict = _load_boltz1_weights(local_checkpoint, weights)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
     prefix = "structure_module.score_model.token_transformer."
     module_state_dict = {}
 
@@ -847,7 +827,11 @@ def convert_hf_msa_module_torch(config: MSAModuleConfig,
     """
     Convert a msa module model from a Hugging Face checkpoint to a PyTorch model weights.
     """
-    state_dict = _load_boltz1_weights(local_checkpoint, weights)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
     prefix = "msa_module."
     module_state_dict = {}
 

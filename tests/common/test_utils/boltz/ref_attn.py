@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 
 
 def _prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
@@ -181,7 +181,7 @@ class RefTriangleAttention(nn.Module):
             no_heads: int = 4,
             state_dict: Optional[dict] = None) -> 'RefTriangleAttention':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_path = [
             f"{layer_path}.linear_q.weight",
             f"{layer_path}.linear_k.weight",
@@ -288,7 +288,7 @@ class RefPairwiseSelfAttention(nn.Module):
             layer_path: str = "pairformer_module.layers.0.attention",
             state_dict: Optional[dict] = None) -> 'RefPairwiseSelfAttention':
         if state_dict is None:
-            state_dict = load_hf_weights(model, local_files_only=False)
+            state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
             (f"{layer_path}.norm_s.weight", f"{layer_path}.norm_s.bias"),
             (f"{layer_path}.proj_q.weight", f"{layer_path}.proj_q.bias"),

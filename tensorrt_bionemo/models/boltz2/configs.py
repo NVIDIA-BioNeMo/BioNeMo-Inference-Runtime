@@ -23,7 +23,7 @@ from transformers import PretrainedConfig
 
 from tensorrt_bionemo.config import (BuildModuleConfig, DimSpec,
                                      PretrainedModuleConfig)
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.models.boltz1.configs import (
     MSAModuleConfig, PairformerConfig, TokenTransformerConfig,
     _create_optimization_profiles)
@@ -140,18 +140,15 @@ class Boltz2Config(PretrainedConfig):
                         trust_remote_code=False,
                         is_affinity=False,
                         **kwargs):
-        if checkpoint_dir is None:
-            if not is_affinity:
-                ckpt = load_hf_weights(name="boltz-2", return_raw=True)
-            else:
-                ckpt = load_hf_weights(name="boltz-2-affinity", return_raw=True)
-            state_dict = torch.load(ckpt,
-                                    map_location="cpu",
-                                    weights_only=False)
+        if not is_affinity:
+            ckpt = load_weights(name="boltz-2",
+                                return_raw=True,
+                                cache_path=checkpoint_dir)
         else:
-            state_dict = torch.load(checkpoint_dir,
-                                    map_location="cpu",
-                                    weights_only=False)
+            ckpt = load_weights(name="boltz-2-affinity",
+                                return_raw=True,
+                                cache_path=checkpoint_dir)
+        state_dict = torch.load(ckpt, map_location="cpu", weights_only=False)
         hparams = state_dict["hyper_parameters"]
 
         token_s = hparams["token_s"]

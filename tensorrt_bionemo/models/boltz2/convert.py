@@ -16,7 +16,7 @@ import torch
 from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.hubs.checkpoint import load_hf_weights
+from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import \
     convert_hf_pairformer_torch as boltz1_convert_hf_pairformer_torch
@@ -72,12 +72,7 @@ def convert_hf_pairformer(config: PairformerConfig,
         prefix = f"confidence_module.{prefix}"
     tbm_prefix = "layers"
     weights = {}
-    if local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)["state_dict"]
-    else:
-        state_dict = load_hf_weights(name=model_name)
+    state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
 
     logger.info(
         f"Loading weights for {pairformer_type} pairformer, dtype: {config.dtype}, num_blocks: {config.num_blocks}"
@@ -147,28 +142,6 @@ def convert_hf_pairformer(config: PairformerConfig,
     return weights
 
 
-def _load_boltz2_weights(local_checkpoint: str = None,
-                         weights: dict = None,
-                         model_name: str = "boltz-2"):
-    state_dict = None
-
-    if weights is not None:
-        state_dict = weights
-
-    if state_dict is None and local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)["state_dict"]
-    elif state_dict is None:
-        logger.info(
-            f"`weights` and `local_checkpoint` aren't both provided, loading from HuggingFace"
-        )
-        ckpt = load_hf_weights(name=model_name, return_raw=True)
-        state_dict = torch.load(ckpt, map_location="cpu",
-                                weights_only=False)["state_dict"]
-    return state_dict
-
-
 def convert_hf_pairformer_torch(config: PairformerConfig = None,
                                 mapping: Mapping = None,
                                 local_checkpoint: str = None,
@@ -186,7 +159,10 @@ def convert_hf_pairformer_torch(config: PairformerConfig = None,
         weights: The weights to load into the module.
         pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
     """
-    state_dict = _load_boltz2_weights(local_checkpoint, weights, model_name)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
 
     prefix = "pairformer_module."
     if pairformer_type == "confidence":
@@ -220,7 +196,10 @@ def convert_hf_token_transformer_torch(config: TokenTransformerConfig = None,
                                        model_name: str = "boltz-2",
                                        weights: dict = None,
                                        **kwargs):
-    state_dict = _load_boltz2_weights(local_checkpoint, weights, model_name)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
     tbnm_state_dict = boltz1_convert_hf_token_transformer_torch(
         config=config,
         local_checkpoint=None,
@@ -462,9 +441,10 @@ def convert_hf_affinity_module_torch(
     """
     Load a affinity module model from a PyTorch checkpoint.
     """
-    state_dict = _load_boltz2_weights(local_checkpoint,
-                                      weights,
-                                      model_name=model_name)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
 
     prefix = f"{affinity_module_name}."
     all_keys = len([
@@ -742,12 +722,7 @@ def convert_hf_affinity_module(config: AffinityModuleConfig = None,
     mapping = mapping if mapping is not None else Mapping()
     prefix = affinity_module_name
     weights = {}
-    if local_checkpoint is not None:
-        state_dict = torch.load(local_checkpoint,
-                                map_location="cpu",
-                                weights_only=False)["state_dict"]
-    else:
-        state_dict = load_hf_weights(name=model_name)
+    state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
 
     logger.info(
         f"Loading weights for {affinity_module_name} affinity module, dtype: {config.dtype}, num_dist_bins: {config.num_dist_bins}"
@@ -824,7 +799,10 @@ def convert_hf_msa_module_torch(config: MSAModuleConfig = None,
     """
     Convert a msa module model from a Hugging Face checkpoint to a PyTorch model weights.
     """
-    state_dict = _load_boltz2_weights(local_checkpoint, weights, model_name)
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
     prefix = "msa_module."
     module_state_dict = {}
 

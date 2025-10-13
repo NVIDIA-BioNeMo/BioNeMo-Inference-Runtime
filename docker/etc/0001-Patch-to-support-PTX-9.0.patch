@@ -1,0 +1,24 @@
+From 8553af481b7f635d2fef47791877ab3dea92cf35 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Sat, 4 Oct 2025 16:03:47 +0000
+Subject: [PATCH] Patch to support PTX 9.0
+
+---
+ third_party/nvidia/backend/compiler.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/third_party/nvidia/backend/compiler.py b/third_party/nvidia/backend/compiler.py
+index d01a5dcee..deb53409b 100644
+--- a/third_party/nvidia/backend/compiler.py
++++ b/third_party/nvidia/backend/compiler.py
+@@ -50,6 +50,8 @@ def ptx_get_version(cuda_version) -> int:
+     '''
+     assert isinstance(cuda_version, str)
+     major, minor = map(int, cuda_version.split('.'))
++    if major == 13:
++        return 90
+     if major == 12:
+         if minor < 6:
+             return 80 + minor
+--
+2.43.0

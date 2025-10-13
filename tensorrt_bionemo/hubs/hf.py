@@ -13,23 +13,114 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
+import io
+from collections import namedtuple
 from pathlib import Path
 from typing import Optional, Union
 
 import torch
 from huggingface_hub import hf_hub_download
+from tensorrt_llm.logger import logger
 
-logger = logging.getLogger(__name__)
+HFCheckpoint = namedtuple(
+    "HFCheckpoint", ["repo_id", "filename", "weights_only", "state_dict_key"])
+
+HF_CHECKPOINTS = {
+    "boltz-1":
+    HFCheckpoint(
+        repo_id="boltz-community/boltz-1",
+        filename="boltz1_conf.ckpt",
+        weights_only=False,
+        state_dict_key="state_dict",
+    ),
+    "boltz-2":
+    HFCheckpoint(
+        repo_id="boltz-community/boltz-2",
+        filename="boltz2_conf.ckpt",
+        weights_only=False,
+        state_dict_key="state_dict",
+    ),
+    "boltz-2-affinity":
+    HFCheckpoint(
+        repo_id="boltz-community/boltz-2",
+        filename="boltz2_aff.ckpt",
+        weights_only=False,
+        state_dict_key="state_dict",
+    ),
+    "openfold2_finetuning_2":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_2.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_finetuning_3":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_3.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_finetuning_4":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_4.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_finetuning_5":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_5.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_no_templ_1":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_no_templ_1.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_no_templ_2":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_no_templ_2.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_no_templ_ptm_1":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_no_templ_ptm_1.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_ptm_1":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_ptm_1.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    "openfold2_ptm_2":
+    HFCheckpoint(
+        repo_id="nz/OpenFold",
+        filename="finetuning_ptm_2.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+}
 
 
-def load_state_dict_from_hf(repo_id: str,
-                            filename: str,
-                            weights_only: bool = False,
-                            state_dict_key: Optional[str] = None,
-                            cache_dir: Optional[Union[str, Path]] = None,
-                            local_files_only: bool = False,
-                            return_raw: bool = False):
+def load_state_dict_from_hf(
+        repo_id: str,
+        filename: str,
+        weights_only: bool = False,
+        state_dict_key: Optional[str] = None,
+        cache_dir: Optional[Union[str, Path]] = None,
+        local_files_only: bool = False,
+        return_raw: bool = False) -> Union[io.BytesIO, dict[str]]:
     """ Load a state dict from the Hugging Face Hub """
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "hf"
@@ -49,3 +140,24 @@ def load_state_dict_from_hf(repo_id: str,
     if state_dict_key is not None:
         state_dict = state_dict[state_dict_key]
     return state_dict
+
+
+def load_hf_weights(
+        name: str,
+        return_raw: bool = False,
+        local_files_only: bool = False,
+        cache_path: Optional[Union[str, Path]] = None,
+        repo_id: Optional[Union[str,
+                                Path]] = None) -> Union[io.BytesIO, dict[str]]:
+    """ Load a checkpoint from the Hugging Face Hub """
+    checkpoint = HF_CHECKPOINTS[name]
+    default_repo_id = checkpoint.repo_id
+    if repo_id is None:
+        repo_id = default_repo_id
+    return load_state_dict_from_hf(repo_id=repo_id,
+                                   filename=checkpoint.filename,
+                                   weights_only=checkpoint.weights_only,
+                                   state_dict_key=checkpoint.state_dict_key,
+                                   local_files_only=local_files_only,
+                                   cache_dir=cache_path,
+                                   return_raw=return_raw)

@@ -386,28 +386,30 @@ class TriangleAttention(Module):
 
 class SelfAttentionPairBias(Module):
 
-    def __init__(self,
-                 *,
-                 local_layer_idx: int,
-                 c_s: int,
-                 c_z: int,
-                 num_heads: int,
-                 initial_norm: bool = True,
-                 bias_flags: dict[str, bool] = {
-                     "q": True,
-                     "k": False,
-                     "v": False,
-                     "g": False,
-                     "z": False,
-                     "o": False,
-                 },
-                 transform_mask: bool = True,
-                 inf: float = 1e9,
-                 eps: float = 1e-05,
-                 dtype: str = None,
-                 need_project_z: bool = True,
-                 max_batch_size: int = 1,
-                 mapping: Mapping = Mapping()):
+    def __init__(
+        self,
+        *,
+        local_layer_idx: int,
+        c_s: int,
+        c_z: int,
+        num_heads: int,
+        initial_norm: bool = True,
+        bias_flags: dict[str, bool] = {
+            "q": True,
+            "k": False,
+            "v": False,
+            "g": False,
+            "z": False,
+            "norm_z": True,
+            "o": False,
+        },
+        transform_mask: bool = True,
+        inf: float = 1e9,
+        eps: float = 1e-05,
+        dtype: str = None,
+        need_project_z: bool = True,
+        max_batch_size: int = 1,
+        mapping: Mapping = Mapping()):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.c_s = c_s
@@ -473,7 +475,8 @@ class SelfAttentionPairBias(Module):
                                          dtype=dtype,
                                          eps=eps,
                                          tp_size=1,
-                                         tp_dim=0)
+                                         tp_dim=0,
+                                         bias=bias_flags.get("norm_z", True))
             self.proj_z = ColumnLinear(self.c_z,
                                        mapping.tp_size *
                                        self.num_attention_heads,

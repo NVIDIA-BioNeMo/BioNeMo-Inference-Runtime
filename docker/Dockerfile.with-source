@@ -1,0 +1,11 @@
+ARG BASE_IMAGE=tensorrt-llm
+ARG BASE_TAG=base
+
+FROM ${BASE_IMAGE}:${BASE_TAG}
+
+WORKDIR /workspace
+COPY . /workspace/
+
+# Set the working directory for any subsequent operations
+WORKDIR /workspace
+

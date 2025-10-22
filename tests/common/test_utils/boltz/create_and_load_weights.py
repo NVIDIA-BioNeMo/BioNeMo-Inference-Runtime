@@ -22,7 +22,6 @@ from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 from .ref_attn import *
 from .ref_layers import *
 
-
 def create_triangle_attention_weights(c_q=None,
                                       c_k=None,
                                       c_v=None,
@@ -301,7 +300,11 @@ def create_self_pairwise_attention_weights(
             if bias_flags.get("z", False):
                 z_bias = from_ref.proj_z[1].bias.data
             norm_z_weight = from_ref.proj_z[0].weight.data
-            norm_z_bias = from_ref.proj_z[0].bias.data
+            
+            if from_ref.proj_z[0].bias is not None:
+                norm_z_bias = from_ref.proj_z[0].bias.data
+            else:
+                norm_z_bias = None
         else:
             z_weight = None
             z_bias = None
@@ -1146,7 +1149,10 @@ def create_conditioned_transition_block_weights(
     else:
         adaln_weights = create_adaln_weights(from_ref=from_ref.adaln)
         swish_gate_weight = from_ref.swish_gate[0].weight.data
-        a_to_b_weight = from_ref.a_to_b.weight.data
+        if hasattr(from_ref, "a_to_b"):
+            a_to_b_weight = from_ref.a_to_b.weight.data
+        else:
+            a_to_b_weight = None
         b_to_a_weight = from_ref.b_to_a.weight.data
         output_projection_weight = from_ref.output_projection[0].weight.data
         output_projection_bias = from_ref.output_projection[0].bias.data
@@ -1178,26 +1184,39 @@ def load_conditioned_transition_block_weights_torch(module,
     adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
         output_projection_weight, output_projection_bias = weights_and_biases
     load_adaln_weights_torch(module.adaln, adaln_weights, dtype)
+    
     swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(swish_gate_weight,
                                                            2,
                                                            dim=0)
-
-    module.fused_swl_a_to_b.load_weights([{
-        "weight":
-        swish_gate_weight_0.to(dtype).to("cuda"),
-        "bias":
-        None
-    }, {
-        "weight":
-        swish_gate_weight_1.to(dtype).to("cuda"),
-        "bias":
-        None
-    }, {
-        "weight":
-        a_to_b_weight.to(dtype).to("cuda"),
-        "bias":
-        None
-    }])
+    if a_to_b_weight is not None:
+        module.fused_swl_a_to_b.load_weights([{
+            "weight":
+            swish_gate_weight_0.to(dtype).to("cuda"),
+            "bias":
+            None
+        }, {
+            "weight":
+            swish_gate_weight_1.to(dtype).to("cuda"),
+            "bias":
+            None
+        }, {
+            "weight":
+            a_to_b_weight.to(dtype).to("cuda"),
+            "bias":
+            None
+        }])
+    else:
+        module.fused_swl_a_to_b.load_weights([{
+            "weight":
+            swish_gate_weight_0.to(dtype).to("cuda"),
+            "bias":
+            None
+        }, {
+            "weight":
+            swish_gate_weight_1.to(dtype).to("cuda"),
+            "bias":
+            None
+        }])
     module.b_to_a.load_weights([{
         "weight": b_to_a_weight.to(dtype).to("cuda"),
         "bias": None
@@ -1233,9 +1252,15 @@ def load_conditioned_transition_block_weights_trt(module,
                                          tp_rank, 0)
         output_projection_bias = split(output_projection_bias, tp_size, tp_rank,
                                        0)
-    fused_swl_a_to_b_weight = torch.cat(
-        [swish_gate_weight_0, swish_gate_weight_1, a_to_b_weight], dim=0)
 
+    if a_to_b_weight is not None:
+        fused_swl_a_to_b_weight = torch.cat(
+            [swish_gate_weight_0, swish_gate_weight_1, a_to_b_weight], dim=0)
+    else:   
+        # In boltz and openfold3 model the position of gate is different.
+        fused_swl_a_to_b_weight = torch.cat(
+            [swish_gate_weight_1, swish_gate_weight_0], dim=0)
+    
     module.fused_swl_a_to_b.weight.value = np.ascontiguousarray(
         fused_swl_a_to_b_weight.cpu().numpy())
     module.b_to_a.weight.value = np.ascontiguousarray(
@@ -1276,10 +1301,13 @@ def create_diffusion_transformer_layer_weights(
                                     output_projection_bias)
     else:
         ret["adaln"] = create_adaln_weights(from_ref=from_ref.adaln)
+        
         ret["pair_bias_attn"] = create_self_pairwise_attention_weights(
             from_ref=from_ref.pair_bias_attn)
+        
         ret["transition"] = create_conditioned_transition_block_weights(
             from_ref=from_ref.transition)
+        
         ret["output_projection"] = (from_ref.output_projection[0].weight.data,
                                     from_ref.output_projection[0].bias.data)
     return ret

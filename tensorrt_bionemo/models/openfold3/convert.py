@@ -246,7 +246,7 @@ def convert_hf_token_transformer(config: TokenTransformerConfig,
     for name, param in state_dict.items():
         if name.startswith(prefix):
             name = name.replace(prefix, replace_prefix)
-            int(name.split(".")[2])
+            # int(name.split(".")[2])
             if "attention_pair_bias" in name:
                 # change name for AdaLN
                 if "layer_norm_a" in name:
@@ -360,3 +360,197 @@ def convert_hf_token_transformer(config: TokenTransformerConfig,
                                   dtype=config.dtype))
 
     return weights
+
+
+def convert_hf_token_transformer_torch(config: TokenTransformerConfig,
+                                 mapping: Mapping = None,
+                                 local_checkpoint: str = None,
+                                 model_name: str = "openfold3",
+                                 weights: dict = None):
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+    assert state_dict is not None
+
+    prefix = "sample_diffusion.diffusion_module.diffusion_transformer.blocks"
+    replace_prefix = "layers"
+    module_state_dict = {}
+
+    # Mapping the weights from OF3 to Boltz1, so we can reuse the Boltz1 convert functions
+    for name, param in state_dict.items():
+        if name.startswith(prefix):
+            name = name.replace(prefix, replace_prefix)
+            if "attention_pair_bias" in name:
+                # change name for AdaLN
+                if "layer_norm_a" in name:
+                    name = name.replace("attention_pair_bias.layer_norm_a",
+                                        "adaln")
+                    name = name.replace("layer_norm_s", "s_norm")
+                    name = name.replace("linear_g", "s_scale")
+                    name = name.replace("linear_s", "s_bias")
+                    module_state_dict[name] = param
+                    continue
+                if "linear_ada_out" in name:
+                    name = name.replace("attention_pair_bias.linear_ada_out",
+                                        "output_projection.0")
+                    module_state_dict[name] = param
+                    continue
+                if "mha" in name:
+                    name = name.replace("attention_pair_bias.mha",
+                                        "pair_bias_attn")
+                    name = name.replace("linear_q", "proj_q")
+                    name = name.replace("linear_k", "proj_k")
+                    name = name.replace("linear_v", "proj_v")
+                    name = name.replace("linear_o", "proj_o")
+                    name = name.replace("linear_g", "proj_g")
+                    module_state_dict[name] = param
+                    continue
+                if "layer_norm_z" in name or "linear_z" in name:
+                    name = name.replace("attention_pair_bias.layer_norm_z",
+                                        "pair_bias_attn.proj_z.0")
+                    name = name.replace("attention_pair_bias.linear_z",
+                                        "pair_bias_attn.proj_z.1")
+                    module_state_dict[name] = param
+                    continue
+                logger.warning(f"Miss converting the weight: {name}")
+            if "conditioned_transition" in name:
+                if "layer_norm." in name:
+                    name = name.replace("conditioned_transition.layer_norm",
+                                        "transition.adaln")
+                    name = name.replace("layer_norm_s", "s_norm")
+                    name = name.replace("linear_g", "s_scale")
+                    name = name.replace("linear_s", "s_bias")
+                    module_state_dict[name] = param
+                    continue
+                if "swiglu" in name:
+                    name = name.replace(
+                        "conditioned_transition.swiglu.linear_a.weight",
+                        "transition.swish_gate.0.weight")
+                    name = name.replace(
+                        "conditioned_transition.swiglu.linear_b.weight",
+                        "transition.a_to_b.weight")
+                    module_state_dict[name] = param
+                    continue
+                if "linear_out" in name or "linear_g" in name:
+                    name = name.replace("conditioned_transition.linear_out",
+                                        "transition.b_to_a")
+                    name = name.replace("conditioned_transition.linear_g",
+                                        "transition.output_projection.0")
+                    module_state_dict[name] = param
+                    continue    
+    tbnm_state_dict = {}
+    dim = module_state_dict[f"layers.0.adaln.s_bias.weight"].shape[0]
+    dtype = module_state_dict[f"layers.0.adaln.s_bias.weight"].dtype
+
+    for i in range(config.num_blocks):
+        # weight for adaln
+        tbnm_state_dict[f"layers.{i}.adaln.a_norm"] = [{
+            "weight":
+            torch.ones([dim], dtype=dtype)
+        }]
+        tbnm_state_dict[f"layers.{i}.adaln.s_norm"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.adaln.s_norm.weight"]
+        }]
+        tbnm_state_dict[f"layers.{i}.adaln.fused_s_scale_s_bias"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.adaln.s_scale.weight"],
+            "bias":
+            module_state_dict[f"layers.{i}.adaln.s_scale.bias"]
+        }, {
+            "weight":
+            module_state_dict[f"layers.{i}.adaln.s_bias.weight"],
+            "bias":
+            torch.zeros([dim], dtype=dtype)
+        }]
+
+        # weight for pairwise attention
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_q"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.bias"]
+        }]
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_kv"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_k.weight"],
+        }, {
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_v.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_g"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_g.weight"],
+        }]
+
+        if f"layers.{i}.pair_bias_attn.proj_z.0.weight" in module_state_dict:  # v2
+            tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.weight"]
+                # 'bias':
+                # module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1.weight"],
+            }]
+        tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_o"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.pair_bias_attn.proj_o.weight"]
+        }]
+
+        # weight for output_projection
+        tbnm_state_dict[f"layers.{i}.output_projection"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.output_projection.0.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.output_projection.0.bias"]
+        }]
+
+        # weight for conditioned transition block
+        tbnm_state_dict[f"layers.{i}.transition.adaln.a_norm"] = [{
+            "weight":
+            torch.ones([dim], dtype=dtype)
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.adaln.s_norm"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.transition.adaln.s_norm.weight"]
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.adaln.fused_s_scale_s_bias"] = [
+            {
+                "weight":
+                module_state_dict[
+                    f"layers.{i}.transition.adaln.s_scale.weight"],
+                "bias":
+                module_state_dict[f"layers.{i}.transition.adaln.s_scale.bias"]
+            }, {
+                "weight":
+                module_state_dict[f"layers.{i}.transition.adaln.s_bias.weight"],
+                "bias":
+                torch.zeros([dim], dtype=dtype)
+            }
+        ]
+        swish_gate_weight = module_state_dict[
+            f"layers.{i}.transition.swish_gate.0.weight"]
+        swish_gate_weight_0 = swish_gate_weight
+        tbnm_state_dict[f"layers.{i}.transition.fused_swl_a_to_b"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.transition.a_to_b.weight"],
+        }, {
+            "weight":
+            swish_gate_weight_0,
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.b_to_a"] = [{
+            "weight":
+            module_state_dict[f"layers.{i}.transition.b_to_a.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.transition.output_projection"] = [{
+            "weight":
+            module_state_dict[
+                f"layers.{i}.transition.output_projection.0.weight"],
+            "bias":
+            module_state_dict[f"layers.{i}.transition.output_projection.0.bias"]
+        }]
+
+    return tbnm_state_dict

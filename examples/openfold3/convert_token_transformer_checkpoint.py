@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 
+import torch
 import safetensors
 from tensorrt_llm import logger
 
@@ -10,7 +11,7 @@ from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.openfold3.configs import (OpenFold3Config,
                                                        TokenTransformerConfig)
 from tensorrt_bionemo.models.openfold3.convert import \
-    convert_hf_token_transformer
+    convert_hf_token_transformer, convert_hf_token_transformer_torch
 from tensorrt_bionemo.runtime.backend import BackendType
 
 
@@ -100,7 +101,7 @@ def convert(worker_rank, world_size, configs, args):
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
-        """
+        
         if args.backend == 'all' or args.backend == BackendType.TORCH:
             # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
             weights = convert_hf_token_transformer_torch(
@@ -109,7 +110,7 @@ def convert(worker_rank, world_size, configs, args):
                 local_checkpoint=args.local_checkpoint)
             torch.save(weights,
                        args.output_dir / f'{BackendType.TORCH}/weights.pt')
-        """
+        
 
 
 def main():

@@ -21,6 +21,22 @@ from einops import rearrange
 
 from .interface import AttentionBackend, AttentionMetadata
 
+def prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
+            head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    if q.ndim == 3:
+        q = rearrange(q, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
+        k = rearrange(k, "b j (h d) -> b h d j", h=no_heads, d=head_dim)
+        v = rearrange(v, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
+    elif q.ndim == 4:
+        q = rearrange(q, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
+        k = rearrange(k, "b i j (h d) -> b i h d j", h=no_heads, d=head_dim)
+        v = rearrange(v, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
+    else:
+        k = rearrange(k, "b i h j d -> b i h d j", h=no_heads, d=head_dim)
+
+    return q, k, v
+
 
 class VanillaAttentionMetadata(AttentionMetadata):
     pass
@@ -68,18 +84,7 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
         mask = biases[0]
         bias = biases[1]
 
-        q = rearrange(q,
-                      "b i j (h d) -> b i h j d",
-                      h=self.num_heads,
-                      d=self.head_dim)
-        k = rearrange(k,
-                      "b i j (h d) -> b i h d j",
-                      h=self.num_heads,
-                      d=self.head_dim)
-        v = rearrange(v,
-                      "b i j (h d) -> b i h j d",
-                      h=self.num_heads,
-                      d=self.head_dim)
+        q, k, v = prep_qkv(q, k, v, self.num_heads, self.head_dim)
         a = torch.matmul(q, k)
         a /= math.sqrt(self.head_dim)
 
@@ -133,19 +138,9 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
             1. Mask over batch size: [B, 1, 1, s_kv]
             2. Bias with shape equal to the shape of QK^T: [B, h, s_q, s_kv]
         """
-        q = rearrange(q,
-                      "b j (h d) -> b h j d",
-                      h=self.num_heads,
-                      d=self.head_dim)
-        k = rearrange(k,
-                      "b j (h d) -> b h d j",
-                      h=self.num_heads,
-                      d=self.head_dim)
-        v = rearrange(v,
-                      "b j (h d) -> b h j d",
-                      h=self.num_heads,
-                      d=self.head_dim)
-
+        
+        q, k, v = prep_qkv(q, k, v, self.num_heads, self.head_dim)
+        
         a = torch.matmul(q, k)  # [B, H, s_q, s_kv]
         a /= math.sqrt(self.head_dim)
 
@@ -160,4 +155,11 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
         a = torch.nn.functional.softmax(a, dim=-1)
 
         a = torch.matmul(a, v)
-        return a.transpose(1, 2).contiguous()
+        if q.ndim == 4:
+            a = a.transpose(1, 2).contiguous()
+        elif q.ndim == 5:
+            a = a.transpose(2, 3).contiguous()
+        else:
+            assert False, f"Invalid input shape, not supported number of dimensions {q.ndim}"
+        
+        return a

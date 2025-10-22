@@ -94,7 +94,8 @@ class ConditionedTransitionBlock(nn.Module):
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
                  mapping: Optional[Mapping] = None,
-                 skip_create_weights: bool = False):
+                 skip_create_weights: bool = False,
+                 using_silu: bool = False):
         super().__init__()
         mapping = mapping or Mapping()
         self.tp_size = mapping.tp_size
@@ -114,17 +115,32 @@ class ConditionedTransitionBlock(nn.Module):
                            mapping=mapping)
         self.dim_inner = int(dim_single * expansion_factor) // mapping.tp_size
         # Fused swiglu_gate linear and a_to_b
-        self.fused_swl_a_to_b = Linear(
-            self.dim_single,
-            3 * self.dim_inner * mapping.tp_size,
-            bias=False,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
-            skip_create_weights=skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_QKV_LINEAR))
+        self.using_silu = using_silu
+        if not using_silu:
+            self.fused_swl_a_to_b = Linear(
+                self.dim_single,
+                3 * self.dim_inner * mapping.tp_size,
+                bias=False,
+                dtype=dtype,
+                mapping=mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=False,
+                skip_create_weights=skip_create_weights,
+                weights_loading_config=WeightsLoadingConfig(
+                    weight_mode=WeightMode.FUSED_QKV_LINEAR))
+        else:
+            self.fused_swl_a_to_b = Linear(
+                self.dim_single,
+                2 * self.dim_inner * mapping.tp_size,
+                bias=False,
+                dtype=dtype,
+                mapping=mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=False,
+                skip_create_weights=skip_create_weights,
+                weights_loading_config=WeightsLoadingConfig(
+                    weight_mode=WeightMode.FUSED_KV_LINEAR))
+
 
         self.b_to_a = Linear(self.dim_inner * mapping.tp_size,
                              self.dim_single,
@@ -163,9 +179,14 @@ class ConditionedTransitionBlock(nn.Module):
         """
         a = self.adaln(a, s)
         z = self.fused_swl_a_to_b(a)
-        x, gate, n = z.split([self.dim_inner, self.dim_inner, self.dim_inner],
-                             dim=-1)
-        b = self.silu(gate) * x * n  # TODO: Fused swiglu here
+
+        if not self.using_silu:
+            x, gate, n = z.split([self.dim_inner, self.dim_inner, self.dim_inner],
+                                 dim=-1)
+            b = self.silu(gate) * x * n  # TODO: Fused swiglu here
+        else:
+            x, gate = z.split([self.dim_inner, self.dim_inner], dim=-1)
+            b = self.silu(gate) * x
         a = self.output_projection(s)
         a = F.sigmoid(a) * self.b_to_a(b, all_reduce_params=all_reduce_params)
         return a

@@ -17,13 +17,40 @@ import torch
 import torch.nn as nn
 from tensorrt_llm import str_dtype_to_trt
 
+from tensorrt_bionemo._torch.layers.transformers import OpenFold3TokenTransformer
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
+from tensorrt_bionemo._torch.attention_backend.utils import \
+    get_attention_backend, AttentionType
 from tensorrt_bionemo.runtime.misc import ensure_contiguous
 
 from ..configs import TokenTransformerConfig
 
+class TokenTransformerTorch(BackendBase):
+    IMPL_CLASS = OpenFold3TokenTransformer
+
+    def __init__(self,
+                 config: TokenTransformerConfig,
+                 impl: nn.Module = None,
+                 context_memory_allocator: BaseContextMemoryManager = None):
+        super().__init__(config,
+                         impl,
+                         context_memory_allocator=context_memory_allocator)
+
+    @ensure_contiguous
+    def forward(self,
+                a: torch.Tensor,
+                s: torch.Tensor,
+                z: torch.Tensor = None,
+                mask: torch.Tensor = None,
+                **kwargs) -> torch.Tensor:
+        z = z.squeeze(1)
+        attn_pairwise_metadata_cls = get_attention_backend(
+            self.config.pairwise_attn_backend, AttentionType.PAIRWISE).Metadata
+        original_dtype = s.dtype
+        output = self._module(a, s, z, mask, attn_metadata=attn_pairwise_metadata_cls(bias_cache={}))
+        return output.to(original_dtype)
 
 class TokenTransformerTRT(BackendBase):
     IMPL_CLASS = None
@@ -78,6 +105,7 @@ class TokenTransformerTRT(BackendBase):
 
 class TokenTransformerBackendBuilder(BackendBuilder):
     BACKEND_CLASSES = {
-        BackendType.TRT: TokenTransformerTRT,
+        BackendType.TORCH: TokenTransformerTorch,
+        BackendType.TRT: TokenTransformerTRT
     }
     CONFIG_CLASS = TokenTransformerConfig

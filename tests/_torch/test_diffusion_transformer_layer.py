@@ -21,7 +21,9 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_torch)
+from tensorrt_bionemo.hubs.local import LOCAL_CHECKPOINTS
 from test_utils.boltz.ref_layers import RefDiffusionTransformerLayer
+from test_utils.openfold3.ref_layers import Openfold3RefDiffusionTransformerLayer
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
@@ -37,11 +39,22 @@ class Scenario:
     seq_len: int = 128
     num_heads: int = 16
     dim_pairwise: int = 128
-
+    num_samples: int = 1
+    test_with_openfold3: bool = False
+    conditioned_transition_using_silu: bool = False
 
 @pytest.mark.parametrize("sc", [
     Scenario(dim=768, dim_single_cond=768),
     Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16"),
+    Scenario(dim=768, dim_single_cond=768, num_samples=5),
+    Scenario(dim=768, dim_single_cond=768, num_samples=10, torch_dtype="bfloat16"),
+    Scenario(dim=768, dim_single_cond=384, num_samples=10, test_with_openfold3=True, conditioned_transition_using_silu=True),
+], ids=[
+    "boltz-single-float32",
+    "boltz-single-bfloat16",
+    "boltz-samples5-float32",
+    "boltz-samples10-bfloat16",
+    "openfold3-samples10-silu-float32",
 ])
 def test_diffusion_transformer_layer(sc: Scenario):
     torch.manual_seed(42)
@@ -51,7 +64,12 @@ def test_diffusion_transformer_layer(sc: Scenario):
     dtype = str_dtype_to_torch(sc.torch_dtype)
     device = torch.device('cuda')
 
-    ref_module = RefDiffusionTransformerLayer.load_weights()
+    # Load reference module based on whether it's OpenFold3 or Boltz
+    if sc.test_with_openfold3:
+        ref_module = Openfold3RefDiffusionTransformerLayer.load_weights()
+    else:
+        ref_module = RefDiffusionTransformerLayer.load_weights()
+    
     ref_module = ref_module.to(device)
 
     weights_and_biases = create_diffusion_transformer_layer_weights(
@@ -59,6 +77,7 @@ def test_diffusion_transformer_layer(sc: Scenario):
 
     attn_pairwise_metadata_cls = get_attention_backend(
         "VANILLA", AttentionType.PAIRWISE).Metadata
+
     module = DiffusionTransformerLayer(
         layer_idx=0,
         num_heads=ref_module.pair_bias_attn.num_heads,
@@ -66,30 +85,41 @@ def test_diffusion_transformer_layer(sc: Scenario):
         dim_single_cond=sc.dim_single_cond,
         dim_pairwise=sc.dim_pairwise,
         with_pair_bias_cache=True,
-        dtype=dtype)
+        dtype=dtype,
+        conditioned_transition_using_silu=sc.conditioned_transition_using_silu)
+    
     load_diffusion_transformer_layer_weights_torch(module,
                                                    weights_and_biases,
                                                    dtype=dtype)
+    
     module.to(device)
-
-    a = torch.randn(bs, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
-    s = torch.randn(bs, sc.seq_len, sc.dim_single_cond,
-                    dtype=torch.float32).cuda()
+    
+    # Handle both single and multi-sample cases
+    if sc.num_samples == 1:
+        a = torch.randn(bs, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
+        s = torch.randn(bs, sc.seq_len, sc.dim_single_cond,
+                        dtype=torch.float32).cuda()
+        mask = torch.randn(bs, sc.seq_len, dtype=torch.float32).cuda()
+    else:
+        a = torch.randn(bs, sc.num_samples, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
+        s = torch.randn(bs, 1, sc.seq_len, sc.dim_single_cond,
+                        dtype=torch.float32).cuda()
+        mask = torch.randn(bs, sc.num_samples, sc.seq_len, dtype=torch.float32).cuda()
+    
     z = torch.randn(bs,
                     sc.seq_len,
                     sc.seq_len,
                     sc.dim_pairwise,
                     dtype=torch.float32).cuda()
-    mask = torch.randn(bs, sc.seq_len, dtype=torch.float32).cuda()
-
     with torch.inference_mode():
         ref_output_float = ref_module(a, s, z, mask)
+        
         a = a.to(dtype)
         s = s.to(dtype)
         z = z.to(dtype)
         mask = mask.to(dtype)
+        
         ref_module = ref_module.to(dtype)
-
         ref_output = ref_module(a, s, z, mask)
         output = module.forward(
             a,

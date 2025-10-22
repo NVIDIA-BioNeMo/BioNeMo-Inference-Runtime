@@ -401,7 +401,8 @@ class DiffusionTransformerLayer(nn.Module):
                  attention_initial_norm: bool = False,
                  post_layer_norm: bool = False,
                  mapping: Optional[Mapping] = None,
-                 skip_create_weights: bool = False):
+                 skip_create_weights: bool = False,
+                 conditioned_transition_using_silu: bool = False,):
         super().__init__()
         self.adaln = AdaLN(dim,
                            dim_single_cond,
@@ -439,7 +440,8 @@ class DiffusionTransformerLayer(nn.Module):
             dim_single_cond=dim_single_cond,
             dtype=dtype,
             mapping=mapping,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+            using_silu=conditioned_transition_using_silu)
         self.post_lnorm = None
         if post_layer_norm:
             self.post_lnorm = nn.LayerNorm(dim, dtype=dtype, eps=eps)
@@ -554,6 +556,82 @@ class TokenTransformer(nn.Module):
             a = layer(a, s, bias, mask, attn_metadata, all_reduce_params)
         return a
 
+class OpenFold3TokenTransformer(nn.Module):
+
+    def __init__(self, config: PretrainedModuleConfig):
+        """
+        Args:
+            config: tensorrt_bionemo.models.boltz1.configs.TokenTransformerConfig
+                The configuration of the token transformer module.
+        """
+        super().__init__()
+        self.config = config
+        self.layers = nn.ModuleList()
+        self.version = config.version
+        self.num_blocks = config.num_blocks
+        for i in range(config.num_blocks):
+            layer = DiffusionTransformerLayer(
+                layer_idx=i,
+                num_heads=config.num_heads,
+                dim=config.dim,
+                dim_single_cond=config.dim_single_cond,
+                dim_pairwise=config.dim_pairwise,
+                post_layer_norm=config.post_layer_norm,
+                with_pair_bias_cache=config.with_pair_bias_cache,
+                dtype=config.torch_dtype,
+                eps=config.norm_epsilon,
+                inf=config.mask_inf,
+                attention_initial_norm=config.attention_initial_norm,
+                mapping=config.mapping,
+                skip_create_weights=config.skip_create_weights,
+                conditioned_transition_using_silu=True,
+            )
+            dim = layer.pair_bias_attn.proj_z[0].weight.shape
+            eps = layer.pair_bias_attn.proj_z[0].eps
+            new_layer = nn.LayerNorm(dim, bias=False, eps=eps)
+            layer.pair_bias_attn.proj_z[0] = new_layer
+            self.layers.append(layer)
+
+    def load_weights(self, weights: dict):
+        loaded_weight = set()
+
+        for name, module in self.named_modules():
+            if len(module._parameters) > 0:
+                print_colored_debug(f"loading for: {name}")
+                try:
+                    if hasattr(module, 'load_weights'):
+                        module.load_weights(weights=weights[name])
+                    else:
+                        print_colored_debug(f" use copy_ to load {name}")
+                        module_weights = weights[name][0]
+                        for n, p in module._parameters.items():
+                            if p is not None:
+                                weight = module_weights[n][:]
+                                if p.dtype != weight.dtype:
+                                    weight = weight.to(p.dtype)
+                                p.data.copy_(weight)
+
+                except Exception as e:
+                    raise e
+            loaded_weight.add(name)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
+
+    def forward(self,
+                a: torch.Tensor = None,
+                s: torch.Tensor = None,
+                z: Optional[torch.Tensor] = None,
+                mask: Optional[torch.Tensor] = None,
+                attn_metadata: Optional[AttentionMetadata] = None,
+                all_reduce_params: Optional[AllReduceParams] = None,
+                **kwargs) -> torch.Tensor:
+        
+        for layer in self.layers:
+            a = layer(a, s, z, mask, attn_metadata, all_reduce_params)
+        return a
 
 class EvoformerBlock(nn.Module):
 

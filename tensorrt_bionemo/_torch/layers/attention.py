@@ -302,23 +302,40 @@ class SelfAttentionPairBias(nn.Module):
         q = self.proj_q(s)
         kv = self.proj_kv(s)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
-        mask_bias = (1 - mask[:, None, None].float()) * -self.inf
+        
+        if s.ndim == 3:
+            mask_bias = (1 - mask[:, None, None, :].float()) * -self.inf
+        elif s.ndim == 4:
+            mask_bias = (1 - mask[:, :, None, None, :].float()) * -self.inf
+
+        # mask_bias = (1 - mask[:, None, None].float()) * -self.inf
+
         pair_bias = z
         if compute_pair_bias and self.bias_proj:
+            
             pair_bias = self.proj_z(z)
-            pair_bias = torch.moveaxis(pair_bias, 3,
-                                       1)  # [B, N, N, H] -> [B, H, N, N]
+            if mask.ndim == 2:
+                pair_bias = torch.moveaxis(pair_bias, 3,
+                                        1)  # [B, N, N, H] -> [B, H, N, N]
+
+            if mask.ndim == 3:
+                pair_bias = torch.moveaxis(pair_bias, 3, 1)  # [B, I, I, H] -> [B, H, N, N]
+                pair_bias = pair_bias.unsqueeze(1)  # [B, I, I, H] -> [B, 1, H, I, I]
+
         if save_to_cache_key is not None and save_to_cache_key not in attn_metadata.bias_cache:
             attn_metadata.bias_cache[save_to_cache_key] = pair_bias
-        biases = [mask_bias, pair_bias]
+        biases = [mask_bias, pair_bias] 
 
         mha_o = self.attn.forward(q.contiguous(),
                                   k.contiguous(),
                                   v.contiguous(),
                                   biases=biases,
                                   metadata=attn_metadata)
-        o = mha_o.reshape(B, -1, self.num_heads * self.head_dim)
-
+        if s.ndim == 3:
+            o = mha_o.reshape(B, -1, self.num_heads * self.head_dim)
+        elif s.ndim == 4:
+            o = mha_o.reshape(B, s.shape[1], -1, self.num_heads * self.head_dim)
+        
         g = self.proj_g(s).sigmoid()
         o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o

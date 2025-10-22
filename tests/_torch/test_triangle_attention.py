@@ -15,7 +15,6 @@
 import os
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
@@ -37,7 +36,6 @@ class Scenario:
     num_attention_heads: int = 4
     num_key_value_heads: int = 4
     gating: bool = True
-    bias: bool = False
     # FIXME: add chunk_size and chunk_dim back
     # chunk_size: int = None
     # chunk_dim: int = None
@@ -47,8 +45,6 @@ class Scenario:
 @pytest.mark.parametrize("s", [
     Scenario(backend="VANILLA"),
     Scenario(backend="VANILLA", torch_dtype="bfloat16"),
-    Scenario(backend="TRIFAST"),
-    Scenario(backend="TRIFAST", torch_dtype="bfloat16"),
     Scenario(backend="CUEQUIV"),
     Scenario(backend="CUEQUIV", torch_dtype="bfloat16"),
 ])
@@ -72,13 +68,10 @@ def test_triangle_attention_backend(s: Scenario):
                              num_attention_heads=s.num_attention_heads,
                              num_key_value_heads=s.num_key_value_heads,
                              gating=s.gating,
-                             bias=s.bias,
                              dtype=dtype)
     load_triangle_attention_weights_torch(attn, weights_and_biases, dtype=dtype)
     attn.to(device)
     attn_metadata = metadata_cls(mapping=Mapping())
-    if s.backend == "TRIFAST":
-        attn_metadata.closest_n = 2**int(np.ceil(np.log2(s.seq_len)))
     hidden_states = torch.randn(bs,
                                 s.seq_len,
                                 s.seq_len,

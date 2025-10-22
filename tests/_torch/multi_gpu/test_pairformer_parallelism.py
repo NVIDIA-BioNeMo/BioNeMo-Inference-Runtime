@@ -18,7 +18,6 @@ import traceback
 from dataclasses import dataclass
 from itertools import product
 
-import numpy as np
 import pytest
 import tensorrt_llm
 import torch
@@ -56,17 +55,13 @@ def _generate_scenarios() -> list[PairformerScenario]:
     ids = []
     total_devs = torch.cuda.device_count()
 
-    for seq_len, tri_attn_backend, dtype in product([64, 128],
-                                                    ["VANILLA", "TRIFAST"],
+    for seq_len, tri_attn_backend, dtype in product([64, 128], ["VANILLA"],
                                                     ["float32", "bfloat16"]):
         for tp_size, dcp_size in product([1, 2, 4, 8], repeat=2):
             if tp_size * dcp_size > total_devs:
                 continue
             if tp_size > 4:  # pairwise_num_heads
                 continue
-            if tri_attn_backend == "TRIFAST":
-                if seq_len // dcp_size <= 16:
-                    continue
             for max_transition_tp_size, max_attention_pairwise_tp_size in product(
                 [True, False], repeat=2):
                 ret.append(
@@ -118,9 +113,6 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         "triangle_attn": triangle_metadata_cls(mapping=mapping),
         "pairwise_attn": pairwise_metadata_cls(mapping=mapping),
     }
-    if scenario.tri_attention_backend == "TRIFAST":
-        attn_metadatas["triangle_attn"].closest_n = 2**int(
-            np.ceil(np.log2(scenario.seq_len // scenario.dcp_size)))
 
     pairformer_layer = PairformerLayerV1(
         layer_idx=0,
@@ -153,9 +145,6 @@ def _pairformer_forward(s, z, mask, pair_mask, weights_and_biases, scenario,
         "triangle_attn": triangle_metadata_cls(mapping=mapping),
         "pairwise_attn": pairwise_metadata_cls(mapping=mapping),
     }
-    if scenario.tri_attention_backend == "TRIFAST":
-        attn_metadatas["triangle_attn"].closest_n = 2**int(
-            np.ceil(np.log2(scenario.seq_len)))
 
     single_dev_pairformer_layer = PairformerLayerV1(
         layer_idx=0,

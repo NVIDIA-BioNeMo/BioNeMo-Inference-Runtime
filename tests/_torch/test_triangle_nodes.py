@@ -15,7 +15,6 @@
 import os
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
@@ -61,11 +60,7 @@ class MulNodeScenario:
     AttnNodeScenario(backend="VANILLA", chunk_size=16),
     AttnNodeScenario(backend="VANILLA", chunk_size=8),
     AttnNodeScenario(backend="VANILLA", torch_dtype="bfloat16", chunk_size=16),
-    AttnNodeScenario(backend="VANILLA", torch_dtype="bfloat16", chunk_size=8),
-    AttnNodeScenario(backend="TRIFAST"),
-    AttnNodeScenario(backend="TRIFAST", torch_dtype="bfloat16"),
-    AttnNodeScenario(backend="TRIFAST", chunk_size=8),
-    AttnNodeScenario(backend="TRIFAST", torch_dtype="bfloat16", chunk_size=8),
+    AttnNodeScenario(backend="VANILLA", torch_dtype="bfloat16", chunk_size=8)
 ])
 def test_triangle_attention_node(s: AttnNodeScenario):
     torch.manual_seed(42)
@@ -98,11 +93,8 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     node.to(device)
     load_triangle_attention_node_weights_torch(node, weights_and_biases, dtype)
     attn_metadata = metadata_cls(mapping=Mapping())
-    if s.backend == "TRIFAST":
-        attn_metadata.closest_n = 2**int(np.ceil(np.log2(s.seq_len)))
     x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in,
                     dtype=torch.float32).cuda()
-    # Need mask is bool for trifast
     mask = torch.randint(0, 2, (bs, s.seq_len, s.seq_len),
                          dtype=torch.float32).cuda()
 

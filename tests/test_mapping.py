@@ -35,7 +35,7 @@ def test_mapping():
     assert m.dcp_group == [0, 2]
     assert m.pp_group == [0, 4]
     assert m.is_first_pp_rank()
-    assert m.prep_pp_rank() == 4
+    assert m.prev_pp_rank() == 4
     assert m.next_pp_rank() == 4
 
     m = Mapping(world_size=8,

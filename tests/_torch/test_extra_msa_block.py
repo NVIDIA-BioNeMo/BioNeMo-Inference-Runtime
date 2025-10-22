@@ -39,25 +39,19 @@ class Scenario:
     opm_mask_chunk_size: Optional[int] = None
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(triangle_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="TRIFAST"),
-    Scenario(triangle_attn_backend="VANILLA",
-             opm_chunk_size=16,
-             opm_mask_chunk_size=16),
-    Scenario(triangle_attn_backend="CUEQUIV",
-             opm_chunk_size=16,
-             opm_mask_chunk_size=16),
-],
-                         ids=[
-                             "vanilla", "cueequiv", "trifast",
-                             "vanilla_chunked", "cueequiv_chunked"
-                         ])
+@pytest.mark.parametrize(
+    "sc", [
+        Scenario(triangle_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV"),
+        Scenario(triangle_attn_backend="VANILLA",
+                 opm_chunk_size=16,
+                 opm_mask_chunk_size=16),
+        Scenario(triangle_attn_backend="CUEQUIV",
+                 opm_chunk_size=16,
+                 opm_mask_chunk_size=16),
+    ],
+    ids=["vanilla", "cueequiv", "vanilla_chunked", "cueequiv_chunked"])
 def test_extra_msa_block(sc: Scenario):
-    if sc.triangle_attn_backend == "TRIFAST":
-        pytest.skip("TRIFAST is not supported for extra MSA block")
-
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"

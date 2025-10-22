@@ -116,8 +116,7 @@ class TriangleMulNodesParallelism:
                 multiplication_type=self.multiplication_type,
                 mapping=self.mapping)
             load_triangle_multiplication_node_weights_trt(
-                tri_mul_node, self.weights_and_biases, self.mapping.tp_size,
-                self.mapping.tp_rank)
+                tri_mul_node, self.weights_and_biases, self.mapping)
 
             output = tri_mul_node(trt_hidden_states, trt_mask)
             output.mark_output("output",

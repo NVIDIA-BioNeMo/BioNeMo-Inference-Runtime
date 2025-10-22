@@ -19,8 +19,7 @@ from dataclasses import dataclass
 import pytest
 import tensorrt_llm
 import torch
-from tensorrt_llm._utils import (get_sm_version, str_dtype_to_torch,
-                                 str_dtype_to_trt)
+from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
 from tensorrt_llm.functional import Tensor
 from test_utils.openfold.create_and_load_weights import (
     create_evoformer_block_weights, load_evoformer_block_weights_trt)
@@ -42,16 +41,9 @@ class Scenario:
 
 @pytest.mark.parametrize("sc", [
     Scenario(triangle_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="TRIFAST")
+    Scenario(triangle_attn_backend="CUEQUIV")
 ])
 def test_evoformer_block(sc: Scenario):
-    if sc.triangle_attn_backend == "TRIFAST":
-        sm_version = get_sm_version()
-        if sm_version not in [80, 86]:
-            pytest.skip(
-                "TRT trifast plugin is only supported on sm_80 and sm_86 architectures for now"
-            )
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
@@ -74,12 +66,6 @@ def test_evoformer_block(sc: Scenario):
     pair_mask = torch.randint(0,
                               2, (bs, sc.n_res, sc.n_res),
                               dtype=torch.float32).cuda()
-
-    if sc.triangle_attn_backend == "TRIFAST":
-        if ref_module.no_heads_msa not in [
-                4, 2, 1
-        ] or ref_module.no_heads_pair not in [4, 2, 1]:
-            pytest.skip("TRT trifast plugin is only supported on 4, 2, 1 heads")
 
     # construct trt network
     builder = tensorrt_llm.Builder()

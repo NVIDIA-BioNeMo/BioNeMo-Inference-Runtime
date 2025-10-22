@@ -39,7 +39,6 @@ class Scenario:
 @pytest.mark.parametrize("sc", [
     Scenario(triangle_attn_backend="VANILLA"),
     Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="TRIFAST")
 ])
 def test_evoformer_block(sc: Scenario):
     torch.manual_seed(42)

@@ -131,10 +131,10 @@ class OuterProductMean(nn.Module):
                 z_out = z.to(m) @ proj_o_sliced_weight.T
             else:
                 z_out = z_out + z.to(m) @ proj_o_sliced_weight.T
-            if not self.norm_before_output:
-                z_out = z_out / num_mask
         if self.proj_o.bias is not None:
             z_out = z_out + self.proj_o.bias  # add bias
+        if not self.norm_before_output:
+            z_out = z_out / num_mask
         return z_out
 
     def forward(

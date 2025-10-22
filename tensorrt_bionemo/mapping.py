@@ -49,6 +49,7 @@ class Mapping(object):
         self.world_size = world_size
         self.rank = rank
         self.gpus_per_node = gpus_per_node
+        self.enable_attention_dp = False  # FIXME: remove this after the attention dp is implemented
         self.pp_groups = []
         self.dcp_groups = []
         self.tp_groups = []

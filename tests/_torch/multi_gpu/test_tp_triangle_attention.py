@@ -16,7 +16,6 @@
 import os
 import traceback
 
-import numpy as np
 import pytest
 import tensorrt_llm
 import torch
@@ -83,8 +82,6 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
     mapping = Mapping()
 
     attn_metadata = metadata_cls(mapping=mapping)
-    if backend == "TRIFAST":
-        attn_metadata.closest_n = 2**int(np.ceil(np.log2(x.size(1))))
     single_dev_tri_attn = TriangleAttention(
         hidden_size=hidden_size,
         num_attention_heads=num_attention_heads,
@@ -118,7 +115,7 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2,
                     reason='needs 2 GPUs to run this test')
-@pytest.mark.parametrize("backend", ["VANILLA", "TRIFAST"])
+@pytest.mark.parametrize("backend", ["VANILLA"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("num_attention_heads", [4, 3],
                          ids=["balanced", "unbalanced"])

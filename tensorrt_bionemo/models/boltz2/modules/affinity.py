@@ -27,7 +27,7 @@ from tensorrt_bionemo._torch.layers.affinity import (AffinityModule,
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
-from tensorrt_bionemo.runtime.misc import ensure_contiguous, get_closest_n
+from tensorrt_bionemo.runtime.misc import ensure_contiguous
 
 from ..configs import AffinityModuleConfig
 
@@ -79,9 +79,6 @@ class AffinityModuleTorch(BackendBase):
 
         original_dtype = s_inputs.dtype
         # Cast the output to the expected dtype
-        if self.config.triangle_attn_backend == "TRIFAST":
-            self.attn_metadatas["triangle_attn"].closest_n = get_closest_n(
-                s_inputs.shape[1] // self.config.mapping.dcp_size)
         pred_value, logits_binary = self._module(
             s_inputs.to(self.config.torch_dtype), z.to(self.config.torch_dtype),
             distogram.to(torch.int32),

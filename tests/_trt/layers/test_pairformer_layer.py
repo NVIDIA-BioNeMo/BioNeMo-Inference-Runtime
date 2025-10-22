@@ -44,23 +44,18 @@ class Scenario:
 @pytest.mark.parametrize("sc", [
     Scenario(seq_len=64),
     Scenario(seq_len=256),
-    Scenario(seq_len=64, triangle_attn_backend="TRIFAST"),
-    Scenario(seq_len=256, triangle_attn_backend="TRIFAST"),
     Scenario(seq_len=64, triangle_attn_backend="CUEQUIV"),
     Scenario(seq_len=256, triangle_attn_backend="CUEQUIV"),
     Scenario(seq_len=64, support_batch=False),
     Scenario(seq_len=256, support_batch=False),
-    Scenario(seq_len=64, triangle_attn_backend="TRIFAST", support_batch=False),
-    Scenario(seq_len=256, triangle_attn_backend="TRIFAST", support_batch=False),
     Scenario(seq_len=64, triangle_attn_backend="CUEQUIV", support_batch=False),
     Scenario(seq_len=256, triangle_attn_backend="CUEQUIV", support_batch=False),
 ],
                          ids=[
-                             "64_vanilla", "256_vanilla", "64_trifast",
-                             "256_trifast", "64_cuequiv", "256_cuequiv",
-                             "64_vanilla_no_batch", "256_vanilla_no_batch",
-                             "64_trifast_no_batch", "256_trifast_no_batch",
-                             "64_cuequiv_no_batch", "256_cuequiv_no_batch"
+                             "64_vanilla", "256_vanilla", "64_cuequiv",
+                             "256_cuequiv", "64_vanilla_no_batch",
+                             "256_vanilla_no_batch", "64_cuequiv_no_batch",
+                             "256_cuequiv_no_batch"
                          ])
 def test_pairformer_layer(sc: Scenario):
     torch.manual_seed(42)

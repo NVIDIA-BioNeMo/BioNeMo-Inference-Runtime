@@ -21,7 +21,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
 from tensorrt_bionemo._torch.layers.msa_module import MSAModule
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
-from tensorrt_bionemo.runtime.misc import dtype_context, get_closest_n
+from tensorrt_bionemo.runtime.misc import dtype_context
 
 from ..configs import MSAModuleConfig
 
@@ -43,9 +43,6 @@ class MSAModuleTorch(BackendBase):
         with dtype_context(expected_dtype=self.config.torch_dtype,
                            original_dtype=z.dtype,
                            skip_keys=["msa"]) as cast_func:
-            if self.config.triangle_attn_backend == "TRIFAST":
-                self.attn_metadata.closest_n = get_closest_n(
-                    z.shape[1] // self.config.mapping.dcp_size)
             z = cast_func(self._module)(z,
                                         emb,
                                         msa=feats["msa"],

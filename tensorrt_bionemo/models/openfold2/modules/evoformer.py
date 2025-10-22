@@ -23,8 +23,7 @@ from tensorrt_bionemo._torch.layers.transformers import EvoformerStack
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
-from tensorrt_bionemo.runtime.misc import (dtype_context, ensure_contiguous,
-                                           get_closest_n)
+from tensorrt_bionemo.runtime.misc import dtype_context, ensure_contiguous
 
 from ..configs import EvoformerStackConfig
 
@@ -52,9 +51,6 @@ class EvoformerStackTorch(BackendBase):
                 pair_mask = pair_mask.unsqueeze(0)
         with dtype_context(expected_dtype=self.config.torch_dtype,
                            original_dtype=m.dtype) as cast_func:
-            if self.config.triangle_attn_backend == "TRIFAST":
-                self.attn_metadata.closest_n = get_closest_n(
-                    m.shape[1] // self.config.mapping.dcp_size)
             # TODO: support for all_reduce_params
             m, z, s = cast_func(self._module)(m,
                                               z,

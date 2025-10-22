@@ -15,7 +15,6 @@
 import os
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
 import torch
 from tensorrt_llm._utils import str_dtype_to_torch
@@ -41,10 +40,6 @@ class Scenario:
 @pytest.mark.parametrize("sc", [
     Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA"),
     Scenario(triangle_attn_backend="VANILLA",
-             pairwise_attn_backend="VANILLA",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="TRIFAST", pairwise_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="TRIFAST",
              pairwise_attn_backend="VANILLA",
              torch_dtype="bfloat16"),
     Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
@@ -97,9 +92,6 @@ def test_pairformer_layer(sc: Scenario):
         "triangle_attn": triangle_metadata_cls(mapping=Mapping()),
         "pairwise_attn": pairwise_metadata_cls(mapping=Mapping()),
     }
-    if sc.triangle_attn_backend == "TRIFAST":
-        attn_metadatas["triangle_attn"].closest_n = 2**int(
-            np.ceil(np.log2(sc.seq_len)))
 
     with torch.inference_mode():
         ref_s_float, ref_z_float = ref_layer(s, z, mask, pair_mask)

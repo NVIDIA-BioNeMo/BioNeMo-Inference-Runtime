@@ -163,9 +163,6 @@ class ExtraMSAStackTorch(BackendBase):
 
         with dtype_context(expected_dtype=self.config.torch_dtype,
                            original_dtype=m.dtype) as cast_func:
-            if self.config.triangle_attn_backend == "TRIFAST":
-                raise NotImplementedError(
-                    "TRIFAST is not supported for extra MSA stack")
             # TODO: support for all_reduce_params
             z = cast_func(self._module)(m,
                                         z,

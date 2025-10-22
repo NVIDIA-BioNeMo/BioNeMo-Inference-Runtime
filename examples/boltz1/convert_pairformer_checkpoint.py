@@ -80,7 +80,7 @@ def parse_arguments():
     parser.add_argument('--triangle_attn_backend',
                         type=str,
                         default='VANILLA',
-                        choices=['VANILLA', 'TRIFAST', 'CUEQUIV'],
+                        choices=['VANILLA', 'CUEQUIV'],
                         help='The backend of triangle attention')
     parser.add_argument('--backend',
                         type=str,

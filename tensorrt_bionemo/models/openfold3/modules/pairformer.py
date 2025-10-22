@@ -23,8 +23,7 @@ from tensorrt_bionemo._torch.layers.transformers import PairformerModule
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
-from tensorrt_bionemo.runtime.misc import (dtype_context, ensure_contiguous,
-                                           get_closest_n)
+from tensorrt_bionemo.runtime.misc import dtype_context, ensure_contiguous
 
 from ..configs import PairformerConfig
 
@@ -53,9 +52,6 @@ class PairformerTorch(BackendBase):
                 **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         with dtype_context(expected_dtype=self.config.torch_dtype,
                            original_dtype=s.dtype) as cast_func:
-            if self.config.triangle_attn_backend == "TRIFAST":
-                self.attn_metadatas["triangle_attn"].closest_n = get_closest_n(
-                    s.shape[1] // self.config.mapping.dcp_size)
             s, z = cast_func(self._module)(s,
                                            z,
                                            single_mask,

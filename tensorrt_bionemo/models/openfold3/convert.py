@@ -178,6 +178,239 @@ def convert_hf_pairformer(config: PairformerConfig,
                                    dtype=config.dtype))
     return weights
 
+def convert_hf_pairformer_torch(config: PairformerConfig,
+                          mapping: Mapping = None,
+                          local_checkpoint: str = None,
+                          model_name: str = "openfold3",
+                          weights: dict = None):
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+    assert state_dict is not None
+    # Get all weights relate to pairformer stack
+    # This procedure maps the weights from the OF3 to Boltz1
+    # So we can reuse the Boltz1 convert function
+    pairformer_state_dict = {}
+    prefix = "pairformer_stack"
+    for name, param in state_dict.items():
+        if name.startswith(prefix):
+            oringal_name = name
+            block_number = int(name.split(".")[2])
+            name = name.replace(prefix, "pairformer_module")
+            name = name.replace("blocks.", "layers.")
+            if "attn_pair_bias" in name:
+                name = name.replace("attn_pair_bias", "attention")
+                name = name.replace("layer_norm_a", "norm_s")
+                name = name.replace("layer_norm_z", "proj_z.0")
+                name = name.replace("linear_z", "proj_z.1")
+                name = name.replace("mha.linear_q", "proj_q")
+                name = name.replace("mha.linear_k", "proj_k")
+                name = name.replace("mha.linear_v", "proj_v")
+                name = name.replace("mha.linear_o", "proj_o")
+                name = name.replace("mha.linear_g", "proj_g")
+                pairformer_state_dict[name] = param
+                continue
+
+            if "single_transition" in name:
+                name = name.replace("single_transition", "transition_s")
+                name = name.replace("layer_norm", "norm")
+                name = name.replace("swiglu.linear_a", "fc1")
+                name = name.replace("swiglu.linear_b", "fc2")
+                name = name.replace("linear_out", "fc3")
+                pairformer_state_dict[name] = param
+                continue
+
+            if "pair_stack" in name:
+                name = name.replace("pair_stack.", "")
+                if "tri_att_start" in name or "tri_att_end" in name:
+                    name = name.replace("linear_z", "linear")
+                    pairformer_state_dict[name] = param
+                    continue
+                if "tri_mul_out" in name or "tri_mul_in" in name:
+                    tri_mul_type = "tri_mul_out" if "tri_mul_out" in name else "tri_mul_in"
+                    if "linear_a_p" in name or "linear_b_p" in name:
+                        name = name.replace(".linear_a_p.weight", "")
+                        name = name.replace(".linear_b_p.weight", "")
+                        p_in_name = name + ".p_in.weight"
+                        if p_in_name not in pairformer_state_dict:
+                            p0 = state_dict[
+                                f"{prefix}.blocks.{block_number}.pair_stack.{tri_mul_type}.linear_a_p.weight"]
+                            p1 = state_dict[
+                                f"{prefix}.blocks.{block_number}.pair_stack.{tri_mul_type}.linear_b_p.weight"]
+                            pairformer_state_dict[p_in_name] = torch.cat(
+                                [p0, p1], dim=0)
+                        continue
+                    if "linear_a_g" in name or "linear_b_g" in name:
+                        name = name.replace(".linear_a_g.weight", "")
+                        name = name.replace(".linear_b_g.weight", "")
+                        g_in_name = name + ".g_in.weight"
+                        if g_in_name not in pairformer_state_dict:
+                            g0 = state_dict[
+                                f"{prefix}.blocks.{block_number}.pair_stack.{tri_mul_type}.linear_a_g.weight"]
+                            g1 = state_dict[
+                                f"{prefix}.blocks.{block_number}.pair_stack.{tri_mul_type}.linear_b_g.weight"]
+                            pairformer_state_dict[g_in_name] = torch.cat(
+                                [g0, g1], dim=0)
+                        continue
+                    name = name.replace("linear_z", "p_out")
+                    name = name.replace("linear_g", "g_out")
+                    name = name.replace("layer_norm_in", "norm_in")
+                    name = name.replace("layer_norm_out", "norm_out")
+                    pairformer_state_dict[name] = param
+                    continue
+                if "pair_transition" in name:
+                    name = name.replace("pair_transition", "transition_z")
+                    name = name.replace("layer_norm", "norm")
+                    name = name.replace("swiglu.linear_a", "fc1")
+                    name = name.replace("swiglu.linear_b", "fc2")
+                    name = name.replace("linear_out", "fc3")
+                    pairformer_state_dict[name] = param
+                    continue
+                logger.warning(f"Miss converting the weight: {oringal_name}")
+    module_state_dict = {k.replace("pairformer_module.", ""): v for k, v in pairformer_state_dict.items()}
+    tbnm_state_dict = {}
+    for i in range(config.num_blocks):
+        # weight for pairwise attention
+        if f"layers.{i}.attention.norm_s.weight" in module_state_dict:
+            tbnm_state_dict[f"layers.{i}.attention.norm_s"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.attention.norm_s.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.attention.norm_s.bias"]
+            }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_q"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_q.weight"],
+            'bias':
+            module_state_dict[f"layers.{i}.attention.proj_q.bias"]
+        }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_kv"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_k.weight"],
+        }, {
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_v.weight"],
+        }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_g"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_g.weight"],
+        }]
+        if f"layers.{i}.attention.proj_z.0.weight" in module_state_dict:  # for attention pair bias v2
+            tbnm_state_dict[f"layers.{i}.attention.proj_z.0"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.attention.proj_z.0.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.attention.proj_z.0.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.attention.proj_z.1"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.attention.proj_z.1.weight"],
+            }]
+        tbnm_state_dict[f"layers.{i}.attention.proj_o"] = [{
+            'weight':
+            module_state_dict[f"layers.{i}.attention.proj_o.weight"]
+        }]
+
+        # weight for tri_mul_out and tri_mul_in
+        for name in ["tri_mul_out", "tri_mul_in"]:
+            tbnm_state_dict[f"layers.{i}.{name}.norm_in"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.norm_in.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.{name}.norm_in.bias"]
+            }]
+
+            w = module_state_dict[f"layers.{i}.{name}.p_in.weight"]
+            p_in_0_weight, p_in_1_weight = w.chunk(2, dim=0)
+            tbnm_state_dict[f"layers.{i}.{name}.p_in"] = [{
+                'weight':
+                p_in_0_weight,
+            }, {
+                'weight':
+                p_in_1_weight,
+            }]
+
+            w = module_state_dict[f"layers.{i}.{name}.g_in.weight"]
+            g_in_0_weight, g_in_1_weight = w.chunk(2, dim=0)
+            tbnm_state_dict[f"layers.{i}.{name}.g_in"] = [{
+                'weight':
+                g_in_0_weight,
+            }, {
+                'weight':
+                g_in_1_weight,
+            }]
+            tbnm_state_dict[f"layers.{i}.{name}.norm_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.norm_out.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.{name}.norm_out.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.{name}.p_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.p_out.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.{name}.g_out"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.{name}.g_out.weight"],
+            }]
+
+        # weight for tri_attn_start and tri_attn_end
+        for name in ["start", "end"]:
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.layer_norm"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.layer_norm.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.tri_att_{name}.layer_norm.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.linear"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.mha.qkv_proj"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_q.weight"],
+            }, {
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_k.weight"],
+            }, {
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_v.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.mha.o_proj"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_o.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.tri_attn_{name}.mha.g_proj"] = [{
+                'weight':
+                module_state_dict[
+                    f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
+            }]
+        # weight for transition_s and transition_z
+        for name in ["s", "z"]:
+            tbnm_state_dict[f"layers.{i}.transition_{name}.norm"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.norm.weight"],
+                'bias':
+                module_state_dict[f"layers.{i}.transition_{name}.norm.bias"]
+            }]
+            tbnm_state_dict[f"layers.{i}.transition_{name}.fused_fc2_fc1"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.fc2.weight"],
+            }, {
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.fc1.weight"],
+            }]
+            tbnm_state_dict[f"layers.{i}.transition_{name}.fc3"] = [{
+                'weight':
+                module_state_dict[f"layers.{i}.transition_{name}.fc3.weight"],
+            }]
+    return tbnm_state_dict
 
 def get_conditioned_transition_block_weights(mapping: Mapping,
                                              state_dict: dict,

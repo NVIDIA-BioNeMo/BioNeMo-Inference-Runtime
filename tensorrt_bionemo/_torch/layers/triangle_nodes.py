@@ -29,6 +29,7 @@ from tensorrt_bionemo._trt.layers.triangle_nodes import (
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..attention_backend import AttentionMetadata
+from ..custom_ops import get_custom_ops_impl
 from .attention import TriangleAttention
 
 
@@ -228,7 +229,8 @@ class TriangleMultiplicationNode(nn.Module):
             dtype: torch.dtype = None,
             mapping: Optional[Mapping] = None,
             skip_create_weights: bool = False,
-            max_tri_mul_tp_size: bool = True):
+            max_tri_mul_tp_size: bool = True,
+            high_precision: bool = True):
         super().__init__()
         self.mapping = mapping or Mapping()
         if max_tri_mul_tp_size:
@@ -239,6 +241,7 @@ class TriangleMultiplicationNode(nn.Module):
         self.tp_rank = self.mapping.tp_rank
         self.gpus_per_node = self.mapping.gpus_per_node
         self.dtype = dtype
+        self.high_precision = high_precision
 
         self.dp_comm = None
         if self.dcp_size > 1:
@@ -270,13 +273,17 @@ class TriangleMultiplicationNode(nn.Module):
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
                            skip_create_weights=skip_create_weights)
         # Use float32 for the output layers
+        if self.high_precision:
+            self.high_precision_dtype = torch.float32
+        else:
+            self.high_precision_dtype = dtype
         self.norm_out = nn.LayerNorm(self.dim * self.tp_size,
-                                     dtype=torch.float32,
+                                     dtype=self.high_precision_dtype,
                                      eps=eps)
         self.p_out = Linear(self.dim * self.tp_size,
                             self.dim * self.tp_size,
                             bias=bias_flags["p_out"],
-                            dtype=torch.float32,
+                            dtype=self.high_precision_dtype,
                             mapping=self.mapping,
                             tensor_parallel_mode=TensorParallelMode.COLUMN,
                             gather_output=True,
@@ -284,11 +291,39 @@ class TriangleMultiplicationNode(nn.Module):
         self.g_out = Linear(self.dim * self.tp_size,
                             self.dim * self.tp_size,
                             bias=bias_flags["g_out"],
-                            dtype=torch.float32,
+                            dtype=self.high_precision_dtype,
                             mapping=self.mapping,
                             tensor_parallel_mode=TensorParallelMode.COLUMN,
                             gather_output=True,
                             skip_create_weights=skip_create_weights)
+
+    @torch.compiler.disable
+    def _fused_dual_gemm(self, x: torch.Tensor,
+                         mask: torch.Tensor) -> torch.Tensor:
+        fused_ops = get_custom_ops_impl("fused_sigmoid_gated_dual_gemm", x,
+                                        self.g_in.weight, self.p_in.weight,
+                                        mask, self.g_in.bias, self.p_in.bias)
+        if fused_ops is not None:
+            x = fused_ops()
+        else:
+            x = self.p_in(x) * self.g_in(x).sigmoid()
+            x = x * mask.unsqueeze(-1)
+        return x
+
+    @torch.compiler.disable
+    def _fused_dual_gemm_dual_x(self, x_0_out: torch.Tensor,
+                                x_1_out: torch.Tensor) -> torch.Tensor:
+        fused_ops = get_custom_ops_impl("fused_sigmoid_gated_dual_gemm_dual_x",
+                                        x_1_out, x_0_out, self.g_out.weight,
+                                        self.p_out.weight, None,
+                                        self.g_out.bias, self.p_out.bias)
+        if fused_ops is not None:
+            x = fused_ops()
+        else:
+            pout_x = self.p_out(x_0_out)
+            gout_x = self.g_out(x_1_out).sigmoid()
+            x = pout_x * gout_x
+        return x
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -311,12 +346,9 @@ class TriangleMultiplicationNode(nn.Module):
                 x = x[:, :, st:et, ...]
                 mask = mask[:, :, st:et]
         x_in = x
-        # TODO: SwiGLU fused here
-        x = self.p_in(x) * self.g_in(x).sigmoid()
-        x = x * mask.unsqueeze(-1)
-        a, b = x.float().split([self.dim, self.dim], dim=-1)
-        a = a.contiguous()
-        b = b.contiguous()
+        x = self._fused_dual_gemm(x, mask)
+        x = x.to(self.high_precision_dtype)
+        a, b = x.split([self.dim, self.dim], dim=-1)
 
         def _enisum_compute(a_, b_):
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
@@ -326,6 +358,8 @@ class TriangleMultiplicationNode(nn.Module):
 
         # Ring communication
         if self.dcp_size > 1:
+            a = a.contiguous()
+            b = b.contiguous()
             enisum_results = [
                 None,
             ] * self.dcp_size
@@ -360,15 +394,16 @@ class TriangleMultiplicationNode(nn.Module):
                 x = torch.cat(enisum_results, dim=1)
         else:
             x = _enisum_compute(a, b)
-        x = x.contiguous()
         # need to gather here for LayerNorm
         if self.tp_size > 1:
+            x = x.contiguous()
             x = allgather(x, self.mapping, mode=AllGatherMode.TP)
-        pout_x = self.p_out(self.norm_out(x))
-        gout_x = self.g_out(x_in.float()).sigmoid()
-        x = pout_x * gout_x
-        x = x.contiguous()
+
+        x_0_out = self.norm_out(x)
+        x_1_out = x_in.to(self.high_precision_dtype)
+        x = self._fused_dual_gemm_dual_x(x_0_out, x_1_out)
         if self.dcp_size > 1:
+            x = x.contiguous()
             gather_dim = 1 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 2
             x = allgather(x,
                           self.mapping,

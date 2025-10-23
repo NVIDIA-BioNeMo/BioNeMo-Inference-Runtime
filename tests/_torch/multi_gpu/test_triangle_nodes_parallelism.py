@@ -66,21 +66,19 @@ def _generate_attn_node_scenarios() -> list[AttnNodeScenario]:
     ids = []
     total_devs = torch.cuda.device_count()
 
-    for chunk_size in [0, 8, 16]:
-        for node_type in [
-                TriangleAttentionNodeType.STARTING,
-                TriangleAttentionNodeType.ENDING
-        ]:
-            for tp_size, dcp_size in product([1, 2, 4], repeat=2):
-                if tp_size * dcp_size > total_devs:
-                    continue
-                ret.append(
-                    AttnNodeScenario(tp_size=tp_size,
-                                     dcp_size=dcp_size,
-                                     node_type=node_type,
-                                     chunk_size=chunk_size))
-                ids.append(
-                    f"{node_type.name}_{tp_size}_{dcp_size}_{chunk_size}")
+    # for chunk_size in [0, 8, 16]:
+    for node_type in [
+            TriangleAttentionNodeType.STARTING, TriangleAttentionNodeType.ENDING
+    ]:
+        for tp_size, dcp_size in product([1, 2, 4], repeat=2):
+            if tp_size * dcp_size > total_devs:
+                continue
+            ret.append(
+                AttnNodeScenario(tp_size=tp_size,
+                                 dcp_size=dcp_size,
+                                 node_type=node_type,
+                                 chunk_size=0))
+            ids.append(f"{node_type.name}_{tp_size}_{dcp_size}")
 
     return ret, ids
 

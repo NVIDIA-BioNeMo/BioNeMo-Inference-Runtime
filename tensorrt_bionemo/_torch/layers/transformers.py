@@ -62,6 +62,7 @@ class PairformerLayerV1(nn.Module):
                  skip_create_weights: bool = False,
                  attention_initial_norm: bool = False,
                  s_path_dtype: torch.dtype = None,
+                 trimul_high_precision: bool = True,
                  **kwargs):
         super().__init__()
         self.no_update_s = no_update_s
@@ -98,6 +99,7 @@ class PairformerLayerV1(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=max_tri_mul_tp_size,
+            high_precision=trimul_high_precision,
         )
         self.tri_mul_in = TriangleMultiplicationNode(
             layer_idx=layer_idx,
@@ -108,6 +110,7 @@ class PairformerLayerV1(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=max_tri_mul_tp_size,
+            high_precision=trimul_high_precision,
         )
         self.tri_attn_start = TriangleAttentionStartingNode(
             token_z,
@@ -342,6 +345,7 @@ class PairformerModule(nn.Module):
                     post_layer_norm=config.post_layer_norm,
                     attention_initial_norm=config.attention_initial_norm,
                     s_path_dtype=config.s_path_dtype,
+                    trimul_high_precision=config.trimul_high_precision,
                 ))
 
     def load_weights(self, weights: dict):
@@ -738,7 +742,7 @@ class EvoformerBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
-        )
+            high_precision=False)
 
         self.tri_mul_in = TriangleMultiplicationNode(
             layer_idx=local_layer_idx,
@@ -755,7 +759,7 @@ class EvoformerBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
-        )
+            high_precision=False)
 
         self.tri_attn_start = TriangleAttentionStartingNode(
             c_z,

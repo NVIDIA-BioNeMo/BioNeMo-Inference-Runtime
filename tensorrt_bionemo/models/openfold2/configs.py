@@ -154,6 +154,7 @@ class ExtraMSAStackConfig(PretrainedModuleConfig):
                  max_seq_len: int = 2048,
                  padding_inputs: bool = True,
                  triangle_attn_backend: str = 'VANILLA',
+                 trimul_high_precision: bool = False,
                  **kwargs):
         super().__init__(**kwargs)
         self.c_m = c_m
@@ -176,6 +177,7 @@ class ExtraMSAStackConfig(PretrainedModuleConfig):
         self.max_msa_size = max_msa_size
         self.max_seq_len = max_seq_len
         self.padding_inputs = padding_inputs
+        self.trimul_high_precision = trimul_high_precision
 
     @classmethod
     def from_dict(cls, config_dict: dict):
@@ -335,6 +337,7 @@ class OpenFold2Config(PretrainedConfig):
             norm_eps=_c.get("eps", 1e-5),
             mask_inf=_c.get("inf", 1e9),
             max_msa_size=_c.get("max_msa_size", 5120),
+            trimul_high_precision=False,
         )
         return cls(evoformer_stack_config=evoformer_stack_config,
                    extra_msa_stack_config=extra_msa_stack_config,

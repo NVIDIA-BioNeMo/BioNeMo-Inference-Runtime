@@ -52,6 +52,7 @@ class MulNodeScenario:
     seq_len: int = 16
     mul_type: TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.OUTGOING
     torch_dtype: str = "float32"
+    high_precision: bool = True
 
 
 @pytest.mark.parametrize("s", [
@@ -129,6 +130,9 @@ def test_triangle_attention_node(s: AttnNodeScenario):
                     torch_dtype="bfloat16"),
     MulNodeScenario(mul_type=TriangleMultiplicationNodeType.OUTGOING,
                     torch_dtype="bfloat16"),
+    MulNodeScenario(mul_type=TriangleMultiplicationNodeType.OUTGOING,
+                    torch_dtype="bfloat16",
+                    high_precision=False)
 ])
 def test_triangle_multiplication_node(s: MulNodeScenario):
     torch.manual_seed(42)
@@ -149,13 +153,17 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
         multiplication_type=s.mul_type,
         dtype=dtype,
         skip_create_weights=False,
+        high_precision=s.high_precision,
     )
     node.to(device)
     load_triangle_multiplication_node_weights_torch(node, weights_and_biases,
                                                     dtype)
 
-    x = torch.randn(bs, s.seq_len, s.seq_len, ref_node.dim).cuda()
-    mask = torch.randn(bs, s.seq_len, s.seq_len).cuda()
+    x = torch.randn(bs, s.seq_len, s.seq_len, ref_node.dim, device="cuda")
+    mask = torch.randint(0,
+                         2, (1, s.seq_len, s.seq_len),
+                         device="cuda",
+                         dtype=torch.float32)
 
     with torch.inference_mode():
         ref_output_float = ref_node(x, mask)

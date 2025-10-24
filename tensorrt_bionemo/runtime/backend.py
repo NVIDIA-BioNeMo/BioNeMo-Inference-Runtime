@@ -173,7 +173,7 @@ class BackendBuilder(ABC):
                 raise ValueError(f"Invalid backend: {backend}")
             config_path = backend_checkpoint_dir / "config.json"
             with open(config_path, "r") as f:
-                config_dict = json.load(f)
+                config_dict = json.load(f)["pretrained_config"]
             config_dict["backend"] = backend
             assert cls.CONFIG_CLASS is not None, f"CONFIG_CLASS must be set for the backend builder: {cls.__name__}"
             config = cls.CONFIG_CLASS.from_dict(config_dict)

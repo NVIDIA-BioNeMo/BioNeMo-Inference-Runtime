@@ -23,7 +23,7 @@ from test_utils.openfold.create_and_load_weights import (
     create_evoformer_block_weights, load_evoformer_block_weights_torch)
 from test_utils.openfold.ref_layers import RefEvoformerBlock
 
-from tensorrt_bionemo._torch.layers.transformers import EvoformerBlock
+from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
 from tensorrt_bionemo.mapping import Mapping
 
 

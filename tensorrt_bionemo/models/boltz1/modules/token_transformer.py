@@ -20,7 +20,7 @@ from tensorrt_llm._utils import str_dtype_to_trt
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.transformers import TokenTransformer
+from tensorrt_bionemo._torch.layers.transformers import BoltzTokenTransformer
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
@@ -30,7 +30,7 @@ from ..configs import TokenTransformerConfig
 
 
 class TokenTransformerTorch(BackendBase):
-    IMPL_CLASS = TokenTransformer
+    IMPL_CLASS = BoltzTokenTransformer
 
     def __init__(self, config: TokenTransformerConfig, impl: nn.Module = None):
         super().__init__(config, impl)

@@ -24,7 +24,7 @@ from test_utils.boltz.ref_layers import RefAffinityModule
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.affinity import AffinityModule
+from tensorrt_bionemo._torch.layers.aux_heads.boltz import AffinityModule
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz2.configs import AffinityModuleConfig
 
@@ -40,7 +40,7 @@ class Scenario:
 
 
 @pytest.mark.parametrize("sc", [Scenario(), Scenario(seq_len=256)])
-def test_affinity_module(sc: Scenario):
+def test_boltz_affinity_module(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"

@@ -116,6 +116,41 @@ class TriangleAttentionNode(nn.Module):
             attn_backend=attn_backend,
         )
 
+    def _dcp_slice(
+            self, x: torch.Tensor,
+            mask_bias: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """ Deal with the dcp size > 1 """
+        seq_len = x.shape[1]
+        if self.dcp_size > 1:
+            seq_len = seq_len // self.dcp_size
+            start = self.dcp_rank * seq_len
+            end = (self.dcp_rank + 1) * seq_len
+            x = x[:, start:end, ...]
+            mask_bias = mask_bias[:, start:end, ...]
+        if not x.is_contiguous():
+            x = x.contiguous()
+        if not mask_bias.is_contiguous():
+            mask_bias = mask_bias.contiguous()
+        return x, mask_bias
+
+    def _dcp_gather(self, output: torch.Tensor) -> torch.Tensor:
+        """ Gather the input by dcp size """
+        if self.dcp_size > 1:
+            output = allgather(output,
+                               self.mapping,
+                               gather_dim=1,
+                               mode=AllGatherMode.DP)
+        return output
+
+    def _ensure_dtype(self, x: torch.Tensor,
+                      mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """ Ensure the dtype of the input and mask """
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+        if mask.dtype != self.dtype:
+            mask = mask.to(self.dtype)
+        return x, mask
+
     def forward(
             self,
             x: torch.Tensor,
@@ -135,10 +170,7 @@ class TriangleAttentionNode(nn.Module):
         """
         if mask is None:
             mask = x.new_ones(x.shape[:-1])
-        if x.dtype != self.dtype:
-            x = x.to(self.dtype)
-        if mask.dtype != self.dtype:
-            mask = mask.to(self.dtype)
+        x, mask = self._ensure_dtype(x, mask)
         if self.node_type == TriangleAttentionNodeType.ENDING:
             x = x.transpose(1, 2)
             mask = mask.transpose(1, 2)
@@ -151,19 +183,8 @@ class TriangleAttentionNode(nn.Module):
         lx = self.linear(x)  # [B, I, J, H]
         triangle_bias = torch.permute(lx, (0, 3, 1, 2))
 
-        # First if dcp_size > 1, we need to split the input by dcp_size
-        # TODO: move the dcp to attention class implementation
         seq_len = x.shape[1]
-        if self.dcp_size > 1:
-            seq_len = seq_len // self.dcp_size
-            start = self.dcp_rank * seq_len
-            end = (self.dcp_rank + 1) * seq_len
-            x = x[:, start:end, ...]
-            mask_bias = mask_bias[:, start:end, ...]
-        if not x.is_contiguous():
-            x = x.contiguous()
-        if not mask_bias.is_contiguous():
-            mask_bias = mask_bias.contiguous()
+        x, mask_bias = self._dcp_slice(x, mask_bias)
         if self.chunk_size > 0:
             niters = seq_len // self.chunk_size
             outputs = []
@@ -185,12 +206,7 @@ class TriangleAttentionNode(nn.Module):
                               biases=biases,
                               attn_metadata=attn_metadata,
                               all_reduce_params=all_reduce_params)
-        if self.dcp_size > 1:
-            output = allgather(output,
-                               self.mapping,
-                               gather_dim=1,
-                               mode=AllGatherMode.DP)
-
+        output = self._dcp_gather(output)
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)
         return output
@@ -325,15 +341,9 @@ class TriangleMultiplicationNode(nn.Module):
             x = pout_x * gout_x
         return x
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x (torch.Tensor): input tensor, shape [B, I, J, c_in]
-            mask (torch.Tensor): mask tensor [B, I, J]
-        """
-        if x.dtype != self.dtype:
-            x = x.to(self.dtype)
-        x = self.norm_in(x)
+    def _dcp_slice(self, x: torch.Tensor,
+                   mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """ Slice the input by dcp size """
         seq_len = x.shape[1]
         if self.dcp_size > 1:
             seq_len = seq_len // self.dcp_size
@@ -345,10 +355,31 @@ class TriangleMultiplicationNode(nn.Module):
             elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
                 x = x[:, :, st:et, ...]
                 mask = mask[:, :, st:et]
-        x_in = x
-        x = self._fused_dual_gemm(x, mask)
-        x = x.to(self.high_precision_dtype)
-        a, b = x.split([self.dim, self.dim], dim=-1)
+            x = x.contiguous()
+            mask = mask.contiguous()
+        return x, mask
+
+    def _dcp_gather(self, x: torch.Tensor) -> torch.Tensor:
+        """ Gather the input by dcp size """
+        if self.dcp_size > 1:
+            x = x.contiguous()
+            gather_dim = 1 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 2
+            x = allgather(x,
+                          self.mapping,
+                          gather_dim=gather_dim,
+                          mode=AllGatherMode.DP)
+        return x
+
+    def _tp_gather(self, x: torch.Tensor) -> torch.Tensor:
+        """ Gather the input by tp size """
+        if self.tp_size > 1:
+            x = x.contiguous()
+            x = allgather(x, self.mapping, mode=AllGatherMode.TP)
+        return x
+
+    def _ring_enisum_compute(self, a: torch.Tensor,
+                             b: torch.Tensor) -> torch.Tensor:
+        """ Compute the enisum operation in a ring manner """
 
         def _enisum_compute(a_, b_):
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
@@ -394,21 +425,33 @@ class TriangleMultiplicationNode(nn.Module):
                 x = torch.cat(enisum_results, dim=1)
         else:
             x = _enisum_compute(a, b)
-        # need to gather here for LayerNorm
-        if self.tp_size > 1:
-            x = x.contiguous()
-            x = allgather(x, self.mapping, mode=AllGatherMode.TP)
+        return x
 
+    def _ensure_dtype(self, x: torch.Tensor) -> torch.Tensor:
+        """ Ensure the dtype of the input """
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
+        return x
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): input tensor, shape [B, I, J, c_in]
+            mask (torch.Tensor): mask tensor [B, I, J]
+        """
+        x = self._ensure_dtype(x)
+        x = self.norm_in(x)
+        x, mask = self._dcp_slice(x, mask)
+        x_in = x
+        x = self._fused_dual_gemm(x, mask)
+        x = x.to(self.high_precision_dtype)
+        a, b = x.split([self.dim, self.dim], dim=-1)
+        x = self._ring_enisum_compute(a, b)
+        # need to gather here for LayerNorm
+        x = self._tp_gather(x)
         x_0_out = self.norm_out(x)
         x_1_out = x_in.to(self.high_precision_dtype)
         x = self._fused_dual_gemm_dual_x(x_0_out, x_1_out)
-        if self.dcp_size > 1:
-            x = x.contiguous()
-            gather_dim = 1 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 2
-            x = allgather(x,
-                          self.mapping,
-                          gather_dim=gather_dim,
-                          mode=AllGatherMode.DP)
-        if x.dtype != self.dtype:
-            x = x.to(self.dtype)
+        x = self._dcp_gather(x)
+        x = self._ensure_dtype(x)
         return x

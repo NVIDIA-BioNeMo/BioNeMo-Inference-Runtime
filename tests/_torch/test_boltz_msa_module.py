@@ -25,7 +25,7 @@ from test_utils.boltz.ref_layers import RefMSALayer, RefMSAModule
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
-from tensorrt_bionemo._torch.layers.msa_module import MSALayer, MSAModule
+from tensorrt_bionemo._torch.layers.recycling.boltz import MSALayer, MSAModule
 from tensorrt_bionemo.models.boltz1.configs import MSAModuleConfig
 
 

@@ -20,16 +20,16 @@ import torch.nn as nn
 from tensorrt_llm.functional import AllReduceParams
 from tensorrt_llm.llmapi.utils import print_colored_debug
 
+from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
+from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
+from tensorrt_bionemo._torch.layers.transformers.pairformer import \
+    PairformerNoSeqLayer
+from tensorrt_bionemo._torch.layers.transition import Transition
+from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.configs import MSAModuleConfig
 from tensorrt_bionemo.models.boltz1.const import POCKET_CONTACT_INFO
-
-from ..attention_backend import AttentionMetadata
-from .linear import Linear, TensorParallelMode
-from .outer_product_mean import OuterProductMean
-from .pair_averaging import PairWeightedAveraging
-from .transformers import PairformerNoSeqLayer
-from .transition import Transition
 
 
 class MSALayer(nn.Module):
@@ -131,7 +131,7 @@ class MSALayer(nn.Module):
 
 class MSAModule(nn.Module):
 
-    def __init__(self, config: MSAModuleConfig) -> None:
+    def __init__(self, config: PretrainedModuleConfig) -> None:
         """
         Boltz MSAModule
         TODO: add support for subsampling, chunking

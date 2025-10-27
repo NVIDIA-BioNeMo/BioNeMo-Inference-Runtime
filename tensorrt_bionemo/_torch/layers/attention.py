@@ -117,6 +117,19 @@ class TriangleAttention(nn.Module):
             attention_type=AttentionType.TRIANGLE,
         )
 
+    def _slice_biases(self, biases: list[torch.Tensor]) -> list[torch.Tensor]:
+        if self.mapping.tp_size > 1:
+            new_biases = []
+            new_biases.append(biases[0])
+            bias_1_shape = biases[1].shape
+            scatter_size = bias_1_shape[1] // self.mapping.tp_size
+            start = self.mapping.tp_rank * scatter_size
+            end = (self.mapping.tp_rank + 1) * scatter_size
+            scatter_bias = biases[1][:, start:end, :]
+            new_biases.append(scatter_bias)
+            biases = new_biases
+        return biases
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -132,16 +145,7 @@ class TriangleAttention(nn.Module):
                 - triangle_bias: [B, H, J, J]
         # TODO: Need to implement DCP here, 1D-mapping, 2D-mapping context
         """
-        if self.mapping.tp_size > 1:
-            new_biases = []
-            new_biases.append(biases[0])
-            bias_1_shape = biases[1].shape
-            scatter_size = bias_1_shape[1] // self.mapping.tp_size
-            start = self.mapping.tp_rank * scatter_size
-            end = (self.mapping.tp_rank + 1) * scatter_size
-            scatter_bias = biases[1][:, start:end, :]
-            new_biases.append(scatter_bias)
-            biases = new_biases
+        biases = self._slice_biases(biases)
         if not hidden_states.is_contiguous():
             hidden_states = hidden_states.contiguous()
         qkv = self.qkv_proj(hidden_states)
@@ -294,6 +298,7 @@ class SelfAttentionPairBias(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
+        """ Single and TP Distributed version """
         B = s.size(0)
         if self.initial_norm:
             s = self.norm_s(s)
@@ -302,7 +307,7 @@ class SelfAttentionPairBias(nn.Module):
         q = self.proj_q(s)
         kv = self.proj_kv(s)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
-        
+
         if s.ndim == 3:
             mask_bias = (1 - mask[:, None, None, :].float()) * -self.inf
         elif s.ndim == 4:
@@ -312,19 +317,21 @@ class SelfAttentionPairBias(nn.Module):
 
         pair_bias = z
         if compute_pair_bias and self.bias_proj:
-            
+
             pair_bias = self.proj_z(z)
             if mask.ndim == 2:
                 pair_bias = torch.moveaxis(pair_bias, 3,
-                                        1)  # [B, N, N, H] -> [B, H, N, N]
+                                           1)  # [B, N, N, H] -> [B, H, N, N]
 
             if mask.ndim == 3:
-                pair_bias = torch.moveaxis(pair_bias, 3, 1)  # [B, I, I, H] -> [B, H, N, N]
-                pair_bias = pair_bias.unsqueeze(1)  # [B, I, I, H] -> [B, 1, H, I, I]
+                pair_bias = torch.moveaxis(pair_bias, 3,
+                                           1)  # [B, I, I, H] -> [B, H, N, N]
+                pair_bias = pair_bias.unsqueeze(
+                    1)  # [B, I, I, H] -> [B, 1, H, I, I]
 
         if save_to_cache_key is not None and save_to_cache_key not in attn_metadata.bias_cache:
             attn_metadata.bias_cache[save_to_cache_key] = pair_bias
-        biases = [mask_bias, pair_bias] 
+        biases = [mask_bias, pair_bias]
 
         mha_o = self.attn.forward(q.contiguous(),
                                   k.contiguous(),
@@ -335,7 +342,7 @@ class SelfAttentionPairBias(nn.Module):
             o = mha_o.reshape(B, -1, self.num_heads * self.head_dim)
         elif s.ndim == 4:
             o = mha_o.reshape(B, s.shape[1], -1, self.num_heads * self.head_dim)
-        
+
         g = self.proj_g(s).sigmoid()
         o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o

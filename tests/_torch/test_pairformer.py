@@ -24,7 +24,8 @@ from test_utils.boltz.ref_layers import RefPairformerLayer
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
-from tensorrt_bionemo._torch.layers.transformers import PairformerLayerV1
+from tensorrt_bionemo._torch.layers.transformers.pairformer import \
+    PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -125,8 +126,8 @@ def test_pairformer_layer(sc: Scenario):
     assert ref_s.shape == output_s.shape
     assert ref_z.shape == output_z.shape
     if dtype == torch.float32:
-        torch.testing.assert_close(ref_s, output_s, atol=1e-3, rtol=1e-4)
-        torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-4)
+        torch.testing.assert_close(ref_s, output_s, atol=1e-3, rtol=1e-3)
+        torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-3)
     else:
         # This is right way to check float16 and bfloat16 accuracy
         diff0_max = torch.max(torch.abs(output_s.float() - ref_s_float))

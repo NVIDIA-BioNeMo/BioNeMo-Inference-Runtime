@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from typing import Optional
 
 import torch
@@ -21,14 +22,16 @@ from tensorrt_llm._torch.modules.embedding import Embedding
 from tensorrt_llm.functional import AllReduceParams
 from tensorrt_llm.llmapi.utils import print_colored_debug
 
+from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.distributed import allgather
+from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
+                                                   WeightMode,
+                                                   WeightsLoadingConfig)
+from tensorrt_bionemo._torch.layers.transformers.pairformer import \
+    PairformerNoSeqModule
+from tensorrt_bionemo._torch.layers.transition import PairwiseConditioning
 from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping
-
-from ..attention_backend import AttentionMetadata
-from .linear import Linear, TensorParallelMode, WeightMode, WeightsLoadingConfig
-from .transformers import PairformerNoSeqModule
-from .transition import PairwiseConditioning
 
 
 def create_cross_pair_mask(
@@ -218,7 +221,7 @@ class AffinityHeadsTransformer(nn.Module):
 class AffinityModule(nn.Module):
 
     def __init__(self, config: PretrainedModuleConfig):
-        """
+        """ Boltz-2 Affinity Module
         Args:
             config: tensorrt_bionemo.models.boltz2.configs.AffinityModuleConfig
                 The configuration of the affinity module.

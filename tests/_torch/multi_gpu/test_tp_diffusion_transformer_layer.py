@@ -25,7 +25,7 @@ from test_utils.boltz.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
-from tensorrt_bionemo._torch.layers.transformers import \
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     DiffusionTransformerLayer
 from tensorrt_bionemo.mapping import Mapping
 

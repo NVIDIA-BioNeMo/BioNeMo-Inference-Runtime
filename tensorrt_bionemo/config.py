@@ -18,8 +18,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Generic, Optional, TypeVar, Union
 
+import torch
 import transformers
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm._utils import str_dtype_to_torch, torch_dtype_to_str
 from tensorrt_llm.logger import logger
 from tensorrt_llm.lora_manager import LoraConfig
 from tensorrt_llm.plugin import PluginConfig
@@ -139,11 +140,15 @@ class PretrainedModuleConfig:
 
         return output
 
-    def set_dtype(self, value: str):
+    def set_dtype(self, value: Union[str, torch.dtype]):
         if value is None:
             value = "float32"
-        self.torch_dtype = str_dtype_to_torch(value)
-        self.dtype = value
+        if isinstance(value, str):
+            self.torch_dtype = str_dtype_to_torch(value)
+            self.dtype = value
+        else:
+            self.torch_dtype = value
+            self.dtype = torch_dtype_to_str(value)
 
 
 @dataclass

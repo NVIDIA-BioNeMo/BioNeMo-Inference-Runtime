@@ -14,11 +14,15 @@
 # limitations under the License.
 from typing import Optional
 
+import torch
 import torch.nn as nn
 
+from tensorrt_bionemo._torch.layers.recycling.boltz import Recycling
+from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
 from ..helper import AcceleratedModules, build_optimized_module
+from .configs import Boltz1Config
 from .convert import (convert_hf_msa_module_torch, convert_hf_pairformer_torch,
                       convert_hf_token_transformer_torch)
 from .modules import (MSAModuleBackendBuilder, PairformerBackendBuilder,
@@ -34,7 +38,55 @@ class Boltz1AcceleratedModules(AcceleratedModules):
         ]
 
 
-class Boltz1:
+class Boltz1(nn.Module):
+
+    def __init__(self,
+                 config: Boltz1Config = None,
+                 recycling_dtype: torch.dtype = torch.float32,
+                 recycling_mapping: Optional[Mapping] = None):
+        super().__init__()
+        self.model_name = "boltz-1"
+        self.recycling_mapping = recycling_mapping or Mapping()
+        self.config = config or Boltz1Config.from_pretrained()
+        self.recycling_dtype = recycling_dtype
+        self.structure_pairformer_config = self.config.structure_pairformer_config
+        self.msa_module_config = self.config.msa_module_config
+
+        self.structure_pairformer_config.mapping = self.recycling_mapping
+        self.msa_module_config.mapping = self.recycling_mapping
+        self.msa_module_config.set_dtype(self.recycling_dtype)
+        self.structure_pairformer_config.set_dtype(self.recycling_dtype)
+
+        self.recycling = Recycling(
+            msa_module_config=self.msa_module_config,
+            pairformer_module_config=self.structure_pairformer_config,
+            mapping=self.recycling_mapping)
+
+    def load_weights(self, weights: dict):
+        recycling_weights = {}
+        recycling_weights["msa_module"] = convert_hf_msa_module_torch(
+            config=self.msa_module_config,
+            weights=weights,
+            model_name=self.model_name)
+        recycling_weights["pairformer_module"] = convert_hf_pairformer_torch(
+            config=self.structure_pairformer_config,
+            weights=weights,
+            model_name=self.model_name)
+        for k, v in weights.items():
+            if k.startswith("s_norm") or k.startswith("z_norm"):
+                recycling_weights[k] = v
+            elif k.startswith(
+                    "s_recycle") and "s_recycle" not in recycling_weights:
+                recycling_weights[k] = [{
+                    "weight": weights["s_recycle.weight"],
+                    "bias": weights["s_recycle.bias"]
+                }]
+            elif k.startswith(
+                    "z_recycle") and "z_recycle" not in recycling_weights:
+                recycling_weights[k] = [{
+                    "weight": weights["z_recycle.weight"],
+                    "bias": weights["z_recycle.bias"]
+                }]
 
     @staticmethod
     def optimize(

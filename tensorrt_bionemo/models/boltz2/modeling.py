@@ -14,11 +14,17 @@
 # limitations under the License.
 from typing import Optional
 
+import torch
 import torch.nn as nn
+from tensorrt_llm.logger import logger
 
+from tensorrt_bionemo._torch.layers.recycling.boltz import Recycling
+from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
+from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
 from ..helper import AcceleratedModules, build_optimized_module
+from .configs import Boltz2Config
 from .convert import (convert_hf_affinity_module_torch,
                       convert_hf_msa_module_torch, convert_hf_pairformer_torch,
                       convert_hf_token_transformer_torch)
@@ -45,7 +51,64 @@ class Boltz2AffinityAcceleratedModules(AcceleratedModules):
         ]
 
 
-class Boltz2:
+class Boltz2(nn.Module):
+
+    def __init__(
+            self,
+            config: Boltz2Config = None,
+            recycling_dtype: torch.dtype = torch.bfloat16,
+            recycling_mapping: Optional[Mapping] = None,
+            triangle_attn_backend: str = "CUEQUIV",  # VANILLA, TRIFAST, CUEQUIV
+    ):
+        super().__init__()
+        self.model_name = "boltz-2"
+        self.recycling_mapping = recycling_mapping or Mapping()
+        self.config = config or Boltz2Config.from_pretrained()
+        self.recycling_dtype = recycling_dtype
+        self.structure_pairformer_config = self.config.structure_pairformer_config
+        self.structure_pairformer_config.triangle_attn_backend = triangle_attn_backend
+        self.msa_module_config = self.config.msa_module_config
+        self.msa_module_config.triangle_attn_backend = triangle_attn_backend
+
+        self.structure_pairformer_config.mapping = self.recycling_mapping
+        self.msa_module_config.mapping = self.recycling_mapping
+        self.msa_module_config.set_dtype(self.recycling_dtype)
+        self.structure_pairformer_config.set_dtype(self.recycling_dtype)
+
+        self.recycling = Recycling(
+            msa_module_config=self.msa_module_config,
+            pairformer_module_config=self.structure_pairformer_config,
+            mapping=self.recycling_mapping)
+
+    def load_weights(self, weights: dict = None) -> None:
+        """
+        Args:
+            weights: The weights of the model. State dict of the original model.
+        """
+        if weights is None:
+            logger.info(f"Input weights is None, try to load weights from hubs")
+            weights = load_weights_from_hubs(name=self.model_name)
+        assert weights is not None, "Input weights is None"
+        recycling_weights = {}
+        # load the weights for the msa_module and pairformer_module
+        recycling_weights["msa_module"] = convert_hf_msa_module_torch(
+            config=self.msa_module_config,
+            weights=weights,
+            model_name=self.model_name)
+        recycling_weights["pairformer_module"] = convert_hf_pairformer_torch(
+            config=self.structure_pairformer_config,
+            weights=weights,
+            model_name=self.model_name)
+        # construct the remaining weights for the recycling module
+        for subname in ["s_norm", "z_norm", "s_recycle", "z_recycle"]:
+            if subname not in recycling_weights:
+                recycling_weights[subname] = [{
+                    "weight":
+                    weights[subname + ".weight"],
+                    "bias":
+                    weights.get(subname + ".bias", None)
+                }]
+        self.recycling.load_weights(recycling_weights)
 
     @staticmethod
     def optimize(
@@ -185,7 +248,17 @@ class Boltz2:
         return model, opt_m
 
 
-class Boltz2Affinity:
+class Boltz2Affinity(Boltz2):
+
+    def __init__(self,
+                 config: Boltz2Config = None,
+                 recycling_dtype: torch.dtype = torch.float32,
+                 recycling_mapping: Optional[Mapping] = None):
+        config = config or Boltz2Config.from_pretrained(is_affinity=True)
+        super().__init__(config=config,
+                         recycling_dtype=recycling_dtype,
+                         recycling_mapping=recycling_mapping)
+        self.model_name = "boltz-2-affinity"
 
     @staticmethod
     def optimize(

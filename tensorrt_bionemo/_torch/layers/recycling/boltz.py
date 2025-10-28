@@ -18,15 +18,15 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from tensorrt_llm.functional import AllReduceParams
-from tensorrt_llm.llmapi.utils import print_colored_debug
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerNoSeqLayer
+from tensorrt_bionemo._torch.layers.transformers.pairformer import (
+    PairformerModule, PairformerNoSeqLayer)
 from tensorrt_bionemo._torch.layers.transition import Transition
+from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.const import POCKET_CONTACT_INFO
@@ -189,28 +189,7 @@ class MSAModule(nn.Module):
                          mapping=self.mapping))
 
     def load_weights(self, weights: dict):
-        loaded_weight = set()
-
-        for name, module in self.named_modules():
-            if len(module._parameters) > 0:
-                print_colored_debug(f"loading for: {name}")
-                try:
-                    if hasattr(module, 'load_weights'):
-                        module.load_weights(weights=weights[name])
-                    else:
-                        print_colored_debug(f" use copy_ to load {name}")
-                        module_weights = weights[name][0]
-                        for n, p in module._parameters.items():
-                            if p is not None:
-                                weight = module_weights[n][:]
-                                if p.dtype != weight.dtype:
-                                    weight = weight.to(p.dtype)
-                                p.data.copy_(weight)
-
-                except Exception as e:
-                    print(name)
-                    raise e
-            loaded_weight.add(name)
+        loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
@@ -269,3 +248,116 @@ class MSAModule(nn.Module):
             z, m = self.layers[i](z, m, token_mask, msa_mask, attn_metadata,
                                   all_reduce_params)
         return z
+
+
+class Recycling(nn.Module):
+    """ Recycling module for Boltz1-2 """
+
+    def __init__(self,
+                 msa_module_config: PretrainedModuleConfig,
+                 pairformer_module_config: PretrainedModuleConfig,
+                 mapping: Optional[Mapping] = None,
+                 progatation_mapping: bool = False) -> None:
+        super().__init__()
+
+        self.mapping = mapping or Mapping()
+        if progatation_mapping:
+            msa_module_config.mapping = self.mapping
+            pairformer_module_config.mapping = self.mapping
+        self.msa_module = MSAModule(msa_module_config)
+        self.pairformer_module = PairformerModule(pairformer_module_config)
+
+        token_s = pairformer_module_config.token_s
+        token_z = pairformer_module_config.token_z
+        self.dtype = pairformer_module_config.torch_dtype
+
+        self.s_norm = nn.LayerNorm(token_s, dtype=self.dtype)
+        self.z_norm = nn.LayerNorm(token_z, dtype=self.dtype)
+        self.skip_create_weights = pairformer_module_config.skip_create_weights
+
+        self.s_recycle = Linear(token_s,
+                                token_s,
+                                bias=False,
+                                dtype=self.dtype,
+                                mapping=self.mapping,
+                                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                                gather_output=True,
+                                skip_create_weights=self.skip_create_weights)
+        self.z_recycle = Linear(token_z,
+                                token_z,
+                                bias=False,
+                                dtype=self.dtype,
+                                mapping=self.mapping,
+                                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                                gather_output=True,
+                                skip_create_weights=self.skip_create_weights)
+
+    def load_weights(self, weights: dict):
+        """ Load weights for the Recycling module """
+        msa_module_weights = weights.pop("msa_module")
+        pairformer_module_weights = weights.pop("pairformer_module")
+        self.msa_module.load_weights(weights=msa_module_weights)
+        self.pairformer_module.load_weights(weights=pairformer_module_weights)
+        # Skip loading the weights for the msa_module and pairformer_module,
+        # they are already loaded above
+        filter_func = lambda name, _: name.startswith(
+            "msa_module") or name.startswith("pairformer_module")
+        loaded_weight = recursive_calling_load_weights(self, weights,
+                                                       filter_func)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
+
+    def forward(
+        self,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        s_inputs: torch.Tensor,
+        msa: torch.Tensor,
+        has_deletion: torch.Tensor,
+        deletion_value: torch.Tensor,
+        msa_paired: torch.Tensor,
+        msa_mask: torch.Tensor,
+        token_pad_mask: torch.Tensor,
+        recycling_steps: int = 3,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        attn_metadata: Optional[AttentionMetadata] = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """ Recycling forward pass for Boltz1-2
+        Args:
+            s_init(Tensor): The initial sequence embeddings of shape (B, N, token_s).
+            z_init(Tensor): The initial pairwise embeddings of shape (B, N, N, token_z).
+            s_inputs(Tensor): The input embeddings of shape (B, N, token_s).
+            msa(Tensor): The MSA embeddings of shape (B, N_msa, N).
+            has_deletion(Tensor): The has deletion embeddings of shape (B, N_msa, N).
+            deletion_value(Tensor): The deletion value embeddings of shape (B, N_msa, N).
+            msa_paired(Tensor): The MSA paired embeddings of shape (B, N_msa, N).
+            msa_mask(Tensor): The MSA mask of shape (B, N_msa, N).
+            token_pad_mask(Tensor): The token pad mask of shape (B, N).
+            recycling_steps(int): The number of recycling steps.
+            all_reduce_params(Optional[AllReduceParams]): The all reduce parameters.
+            attn_metadata(Optional[AttentionMetadata]): The attention metadata.
+        Returns:
+            Tuple[Tensor, Tensor]: The output sequence and pairwise embeddings of shape (B, N, token_s), (B, N, N, token_z).
+        """
+        s = torch.zeros_like(s_init)
+        z = torch.zeros_like(z_init)
+        mask = token_pad_mask.float()
+        pair_mask = mask[:, :, None] * mask[:, None, :]
+        for _ in range(recycling_steps):
+            s = s_init + self.s_recycle(self.s_norm(s))
+            z = z_init + self.z_recycle(self.z_norm(z))
+
+            z = z + self.msa_module(
+                z, s_inputs, msa, has_deletion, deletion_value, msa_paired,
+                msa_mask, token_pad_mask, attn_metadata, all_reduce_params)
+
+            s, z = self.pairformer_module(s,
+                                          z,
+                                          mask=mask,
+                                          pair_mask=pair_mask,
+                                          attn_metadata=attn_metadata,
+                                          all_reduce_params=all_reduce_params)
+        return s, z

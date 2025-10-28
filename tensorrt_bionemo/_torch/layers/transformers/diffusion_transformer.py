@@ -18,7 +18,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tensorrt_llm.functional import AllReduceParams
-from tensorrt_llm.llmapi.utils import print_colored_debug
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.attention import (
@@ -26,6 +25,7 @@ from tensorrt_bionemo._torch.layers.attention import (
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
+from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping
 
@@ -153,27 +153,7 @@ class BoltzTokenTransformer(nn.Module):
                 ))
 
     def load_weights(self, weights: dict):
-        loaded_weight = set()
-
-        for name, module in self.named_modules():
-            if len(module._parameters) > 0:
-                print_colored_debug(f"loading for: {name}")
-                try:
-                    if hasattr(module, 'load_weights'):
-                        module.load_weights(weights=weights[name])
-                    else:
-                        print_colored_debug(f" use copy_ to load {name}")
-                        module_weights = weights[name][0]
-                        for n, p in module._parameters.items():
-                            if p is not None:
-                                weight = module_weights[n][:]
-                                if p.dtype != weight.dtype:
-                                    weight = weight.to(p.dtype)
-                                p.data.copy_(weight)
-
-                except Exception as e:
-                    raise e
-            loaded_weight.add(name)
+        loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
@@ -238,27 +218,8 @@ class OpenFold3TokenTransformer(nn.Module):
             self.layers.append(layer)
 
     def load_weights(self, weights: dict):
-        loaded_weight = set()
-
-        for name, module in self.named_modules():
-            if len(module._parameters) > 0:
-                print_colored_debug(f"loading for: {name}")
-                try:
-                    if hasattr(module, 'load_weights'):
-                        module.load_weights(weights=weights[name])
-                    else:
-                        print_colored_debug(f" use copy_ to load {name}")
-                        module_weights = weights[name][0]
-                        for n, p in module._parameters.items():
-                            if p is not None:
-                                weight = module_weights[n][:]
-                                if p.dtype != weight.dtype:
-                                    weight = weight.to(p.dtype)
-                                p.data.copy_(weight)
-
-                except Exception as e:
-                    raise e
-            loaded_weight.add(name)
+        loaded_weight = loaded_weight = recursive_calling_load_weights(
+            self, weights)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:

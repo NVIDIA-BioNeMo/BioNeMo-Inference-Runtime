@@ -21,22 +21,6 @@ from einops import rearrange
 
 from .interface import AttentionBackend, AttentionMetadata
 
-def prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
-            head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
-    if q.ndim == 3:
-        q = rearrange(q, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
-        k = rearrange(k, "b j (h d) -> b h d j", h=no_heads, d=head_dim)
-        v = rearrange(v, "b j (h d) -> b h j d", h=no_heads, d=head_dim)
-    elif q.ndim == 4:
-        q = rearrange(q, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
-        k = rearrange(k, "b i j (h d) -> b i h d j", h=no_heads, d=head_dim)
-        v = rearrange(v, "b i j (h d) -> b i h j d", h=no_heads, d=head_dim)
-    else:
-        k = rearrange(k, "b i h j d -> b i h d j", h=no_heads, d=head_dim)
-
-    return q, k, v
-
 
 class VanillaAttentionMetadata(AttentionMetadata):
     pass
@@ -52,6 +36,27 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
         assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
 
+    def _prep_qkv(
+            self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+            no_heads: int,
+            head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        batch_dims = " ".join([f"b_{i}" for i in range(q.ndim - 3)])
+        q = rearrange(q,
+                      f"{batch_dims} i j (h d) -> {batch_dims} i h j d",
+                      h=no_heads,
+                      d=head_dim)
+        k = rearrange(k,
+                      f"{batch_dims} i j (h d) -> {batch_dims} i h d j",
+                      h=no_heads,
+                      d=head_dim)
+        v = rearrange(v,
+                      f"{batch_dims} i j (h d) -> {batch_dims} i h j d",
+                      h=no_heads,
+                      d=head_dim)
+
+        return q, k, v
+
     def forward(
         self,
         q: torch.Tensor,
@@ -65,26 +70,26 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
         Args:
             q (torch.Tensor):
                 Triangle attention:
-                    query tensor, shape [B, I, J, H * D]
+                    query tensor, shape [*, I, J, H * D]
             k (torch.Tensor):
                 Triangle attention:
-                    key tensor, shape [B, I, J, H * D]
+                    key tensor, shape [*, I, J, H * D]
             v (torch.Tensor):
                 Triangle attention:
-                    value tensor, shape [B, I, J, H * D]
+                    value tensor, shape [*, I, J, H * D]
             biases (Optional[list[torch.Tensor]]): list of bias tensors
-                - Triangle bias: [B, I, 1, 1, J], [B, H, J, J]
+                - Triangle bias: [*, I, 1, 1, J], [*, H, J, J]
             metadata (Optional[AttentionMetadata]): attention metadata
         Forward pass for triangle attention
         Triangle bias has two terms:
-            1. Mask over sequence length: [B, I, 1, 1, J]
-            2. Bias for heads: [B, H, J, J]
+            1. Mask over sequence length: [*, I, 1, 1, J]
+            2. Bias for heads: [*, H, J, J]
         To avoid memory allocation, we use a vanilla implementation here.
         """
         mask = biases[0]
         bias = biases[1]
 
-        q, k, v = prep_qkv(q, k, v, self.num_heads, self.head_dim)
+        q, k, v = self._prep_qkv(q, k, v, self.num_heads, self.head_dim)
         a = torch.matmul(q, k)
         a /= math.sqrt(self.head_dim)
 
@@ -95,9 +100,10 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
 
         a = torch.nn.functional.softmax(a, dim=-1)
 
-        a = torch.matmul(a, v)  # [B, I, H, J, D]
-        attn_output = rearrange(a, "b i h j d -> b i j h d").contiguous()
-        return attn_output
+        a = torch.matmul(a, v)  # [*, I, H, J, D]
+        attn_output = a.transpose(-3, -2)  # [*, I, J, H, D]
+        return attn_output.contiguous(
+        )  # This ensure subsequence call on view will be successful
 
 
 class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
@@ -110,6 +116,27 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
         assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
 
+    def _prep_qkv(
+            self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+            no_heads: int,
+            head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        batch_dims = " ".join([f"b_{i}" for i in range(q.ndim - 2)])
+        q = rearrange(q,
+                      f"{batch_dims} j (h d) -> {batch_dims} h j d",
+                      h=no_heads,
+                      d=head_dim)
+        k = rearrange(k,
+                      f"{batch_dims} j (h d) -> {batch_dims} h d j",
+                      h=no_heads,
+                      d=head_dim)
+        v = rearrange(v,
+                      f"{batch_dims} j (h d) -> {batch_dims} h j d",
+                      h=no_heads,
+                      d=head_dim)
+
+        return q, k, v
+
     def forward(
         self,
         q: torch.Tensor,
@@ -123,25 +150,25 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
         Args:
             q (torch.Tensor):
                 Pairwise attention:
-                    query tensor, shape [B, S_Q, H * D]
+                    query tensor, shape [*, S_Q, H * D]
             k (torch.Tensor):
                 Pairwise attention:
-                    key tensor, shape [B, S_KV, H * D]
+                    key tensor, shape [*, S_KV, H * D]
             v (torch.Tensor):
                 Pairwise attention:
-                    value tensor, shape [B, S_KV, H * D]
+                    value tensor, shape [*, S_KV, H * D]
             biases (Optional[list[torch.Tensor]]): list of bias tensors
-                - Pairwise biases: [B, 1, 1, S_KV], [B, H, S_Q, S_KV]
+                - Pairwise biases: [*, 1, 1, S_KV], [*, H, S_Q, S_KV]
             metadata (Optional[AttentionMetadata]): attention metadata
         Forward pass for pairwise attention
         Pairwise bias has two terms:
-            1. Mask over batch size: [B, 1, 1, s_kv]
-            2. Bias with shape equal to the shape of QK^T: [B, h, s_q, s_kv]
+            1. Mask over batch size: [*, 1, 1, s_kv]
+            2. Bias with shape equal to the shape of QK^T: [*, h, s_q, s_kv]
         """
-        
-        q, k, v = prep_qkv(q, k, v, self.num_heads, self.head_dim)
-        
-        a = torch.matmul(q, k)  # [B, H, s_q, s_kv]
+
+        q, k, v = self._prep_qkv(q, k, v, self.num_heads, self.head_dim)
+
+        a = torch.matmul(q, k)  # [*, H, s_q, s_kv]
         a /= math.sqrt(self.head_dim)
 
         if biases is not None:
@@ -154,12 +181,8 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
             a += biases[1]
         a = torch.nn.functional.softmax(a, dim=-1)
 
-        a = torch.matmul(a, v)
-        if q.ndim == 4:
-            a = a.transpose(1, 2).contiguous()
-        elif q.ndim == 5:
-            a = a.transpose(2, 3).contiguous()
-        else:
-            assert False, f"Invalid input shape, not supported number of dimensions {q.ndim}"
-        
-        return a
+        a = torch.matmul(a, v)  # [*, H, s_q, D]
+        a = a.transpose(-3, -2)  # [*, s_q, H, D]
+
+        # This ensure subsequence call on view will be successful
+        return a.contiguous()

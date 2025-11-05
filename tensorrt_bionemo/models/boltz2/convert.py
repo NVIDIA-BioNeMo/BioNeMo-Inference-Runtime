@@ -19,19 +19,19 @@ from tensorrt_llm.logger import logger
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import \
+    convert_hf_diffusion_transformer as boltz1_convert_hf_diffusion_transformer
+from tensorrt_bionemo.models.boltz1.convert import \
+    convert_hf_diffusion_transformer_torch as \
+    boltz1_convert_hf_diffusion_transformer_torch
+from tensorrt_bionemo.models.boltz1.convert import \
     convert_hf_pairformer_torch as boltz1_convert_hf_pairformer_torch
-from tensorrt_bionemo.models.boltz1.convert import \
-    convert_hf_token_transformer as boltz1_convert_hf_token_transformer
-from tensorrt_bionemo.models.boltz1.convert import \
-    convert_hf_token_transformer_torch as \
-    boltz1_convert_hf_token_transformer_torch
 from tensorrt_bionemo.models.boltz1.convert import (get_pairwise_attn_weights,
                                                     get_transition_weights,
                                                     get_tri_attn_node_weights,
                                                     get_tri_mul_node_weights)
 
-from ..boltz1.configs import (MSAModuleConfig, PairformerConfig,
-                              TokenTransformerConfig)
+from ..boltz1.configs import (DiffusionTransformerConfig, InputEmbedderConfig,
+                              MSAModuleConfig, PairformerConfig)
 from .configs import AffinityModuleConfig
 
 
@@ -190,28 +190,30 @@ def convert_hf_pairformer_torch(config: PairformerConfig = None,
     return tbnm_state_dict
 
 
-def convert_hf_token_transformer_torch(config: TokenTransformerConfig = None,
-                                       mapping: Mapping = None,
-                                       local_checkpoint: str = None,
-                                       model_name: str = "boltz-2",
-                                       weights: dict = None,
-                                       **kwargs):
+def convert_hf_diffusion_transformer_torch(
+        config: DiffusionTransformerConfig = None,
+        mapping: Mapping = None,
+        local_checkpoint: str = None,
+        model_name: str = "boltz-2",
+        weights: dict = None,
+        **kwargs):
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     else:
         state_dict = weights
-    tbnm_state_dict = boltz1_convert_hf_token_transformer_torch(
+    tbnm_state_dict = boltz1_convert_hf_diffusion_transformer_torch(
         config=config,
         local_checkpoint=None,
         mapping=mapping,
-        weights=state_dict)
+        weights=state_dict,
+        **kwargs)
     return tbnm_state_dict
 
 
-def convert_hf_token_transformer(*args, **kwargs):
+def convert_hf_diffusion_transformer(*args, **kwargs):
     if kwargs.get("model_name") is None:
         kwargs["model_name"] = "boltz-2"
-    return boltz1_convert_hf_token_transformer(*args, **kwargs)
+    return boltz1_convert_hf_diffusion_transformer(*args, **kwargs)
 
 
 def get_pairwise_conditioner_weights(mapping: Mapping,
@@ -1015,3 +1017,129 @@ def convert_hf_msa_module_torch(config: MSAModuleConfig = None,
             module_state_dict[f"layers.{i}.outer_product_mean.proj_o.bias"]
         }]
     return tbnm_state_dict
+
+
+def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
+                                    mapping: Mapping = None,
+                                    local_checkpoint: str = None,
+                                    model_name: str = "boltz-2",
+                                    weights: dict = None,
+                                    **kwargs):
+    """
+    Convert a Boltz2 input embedder model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+    layer_path = "input_embedder"
+    embedding_layer_path = f"{layer_path}.atom_encoder"
+    transformer_layer_path = f"{layer_path}.atom_attention_encoder"
+
+    atom_transformer_weights = convert_hf_diffusion_transformer_torch(
+        config.diffusion_transformer_config,
+        mapping=mapping,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=state_dict,
+        prefix=f"{transformer_layer_path}.atom_encoder.diffusion_transformer.")
+
+    weights = {
+        "atom_embedding": {},
+        "atom_attention_encoder": {
+            "atom_encoder": {
+                "diffusion_transformer": atom_transformer_weights
+            }
+        }
+    }
+
+    weights["atom_attention_encoder"]["atom_to_token_trans.0"] = [{
+        "weight":
+        state_dict[f"{transformer_layer_path}.atom_to_token_trans.0.weight"],
+        "bias":
+        None
+    }]
+
+    weights_biases_path = {
+        "embed_atom_features":
+        (f"{embedding_layer_path}.embed_atom_features.weight",
+         f"{embedding_layer_path}.embed_atom_features.bias"
+         ),  # bias is present for Boltz2
+        "embed_atompair_ref_pos":
+        (f"{embedding_layer_path}.embed_atompair_ref_pos.weight", None),
+        "embed_atompair_ref_dist":
+        (f"{embedding_layer_path}.embed_atompair_ref_dist.weight", None),
+        "embed_atompair_mask":
+        (f"{embedding_layer_path}.embed_atompair_mask.weight", None),
+        "c_to_p_trans_k.1": (f"{embedding_layer_path}.c_to_p_trans_k.1.weight",
+                             None),
+        "c_to_p_trans_q.1": (f"{embedding_layer_path}.c_to_p_trans_q.1.weight",
+                             None),
+        "p_mlp.1": (f"{embedding_layer_path}.p_mlp.1.weight", None),
+        "p_mlp.3": (f"{embedding_layer_path}.p_mlp.3.weight", None),
+        "p_mlp.5": (f"{embedding_layer_path}.p_mlp.5.weight", None),
+    }
+
+    for name, (weights_path, bias_path) in weights_biases_path.items():
+        weights["atom_embedding"][name] = [{
+            "weight":
+            state_dict[weights_path],
+            "bias":
+            state_dict[bias_path] if bias_path is not None else None
+        }]
+
+    weights["atom_enc_proj_z.0"] = [{
+        "weight":
+        state_dict[f"{layer_path}.atom_enc_proj_z.0.weight"],
+        "bias":
+        state_dict[f"{layer_path}.atom_enc_proj_z.0.bias"],
+    }]
+    weights["atom_enc_proj_z.1"] = [{
+        "weight":
+        state_dict[f"{layer_path}.atom_enc_proj_z.1.weight"],
+        "bias":
+        None,
+    }]
+
+    weights["res_type_encoding"] = [{
+        "weight":
+        state_dict[f"{layer_path}.res_type_encoding.weight"],
+        "bias":
+        None,
+    }]
+    weights["msa_profile_encoding"] = [{
+        "weight":
+        state_dict[f"{layer_path}.msa_profile_encoding.weight"],
+        "bias":
+        None,
+    }]
+
+    if config.add_method_conditioning:
+        weights["method_conditioning_init"] = [{
+            "weight":
+            state_dict[f"{layer_path}.method_conditioning_init.weight"],
+            "bias":
+            None,
+        }]
+    if config.add_modified_flag:
+        weights["modified_conditioning_init"] = [{
+            "weight":
+            state_dict[f"{layer_path}.modified_conditioning_init.weight"],
+            "bias":
+            None,
+        }]
+    if config.add_cyclic_flag:
+        weights["cyclic_conditioning_init"] = [{
+            "weight":
+            state_dict[f"{layer_path}.cyclic_conditioning_init.weight"],
+            "bias":
+            None,
+        }]
+    if config.add_mol_type_feat:
+        weights["mol_type_conditioning_init"] = [{
+            "weight":
+            state_dict[f"{layer_path}.mol_type_conditioning_init.weight"],
+            "bias":
+            None,
+        }]
+    return weights

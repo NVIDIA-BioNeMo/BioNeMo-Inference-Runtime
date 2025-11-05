@@ -21,7 +21,8 @@ from tensorrt_llm.models.convert_utils import split
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
-from .configs import MSAModuleConfig, PairformerConfig, TokenTransformerConfig
+from .configs import (DiffusionTransformerConfig, InputEmbedderConfig,
+                      MSAModuleConfig, PairformerConfig)
 
 
 def get_pairwise_attn_weights(mapping: Mapping,
@@ -616,10 +617,10 @@ def get_post_norm_weights(mapping: Mapping,
     return ret
 
 
-def convert_hf_token_transformer(config: TokenTransformerConfig = None,
-                                 mapping: Mapping = None,
-                                 local_checkpoint: str = None,
-                                 model_name: str = "boltz-1"):
+def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig = None,
+                                     mapping: Mapping = None,
+                                     local_checkpoint: str = None,
+                                     model_name: str = "boltz-1"):
     """
     Convert a token transformer model from a Hugging Face checkpoint to a TensorRT model weights.
     """
@@ -678,12 +679,12 @@ def convert_hf_token_transformer(config: TokenTransformerConfig = None,
     return weights
 
 
-def convert_hf_token_transformer_torch(config: TokenTransformerConfig,
-                                       mapping: Mapping = None,
-                                       local_checkpoint: str = None,
-                                       model_name: str = "boltz-1",
-                                       weights: dict = None,
-                                       **kwargs):
+def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
+                                           mapping: Mapping = None,
+                                           local_checkpoint: str = None,
+                                           model_name: str = "boltz-1",
+                                           weights: dict = None,
+                                           **kwargs):
     """
     Convert a token transformer model from a Hugging Face checkpoint to a PyTorch model weights.
     """
@@ -691,7 +692,10 @@ def convert_hf_token_transformer_torch(config: TokenTransformerConfig,
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     else:
         state_dict = weights
-    prefix = "structure_module.score_model.token_transformer."
+    if "prefix" in kwargs:
+        prefix = kwargs["prefix"]
+    else:
+        prefix = "structure_module.score_model.token_transformer."
     module_state_dict = {}
 
     for k, v in state_dict.items():
@@ -1033,3 +1037,69 @@ def convert_hf_msa_module_torch(config: MSAModuleConfig,
             module_state_dict[f"layers.{i}.outer_product_mean.proj_o.bias"]
         }]
     return tbnm_state_dict
+
+
+def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
+                                    mapping: Mapping = None,
+                                    local_checkpoint: str = None,
+                                    model_name: str = "boltz-1",
+                                    weights: dict = None,
+                                    **kwargs):
+    """
+    Convert a Boltz1x input embedder model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    layer_path = "input_embedder.atom_attention_encoder"
+    atom_transformer_weights = convert_hf_diffusion_transformer_torch(
+        config.diffusion_transformer_config,
+        mapping=mapping,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=state_dict,
+        prefix=f"{layer_path}.atom_encoder.diffusion_transformer.")
+
+    weights = {
+        "atom_embedding": {},
+        "atom_attention_encoder": {
+            "atom_encoder": {
+                "diffusion_transformer": atom_transformer_weights
+            }
+        }
+    }
+
+    weights["atom_attention_encoder"]["atom_to_token_trans.0"] = [{
+        "weight":
+        state_dict[f"{layer_path}.atom_to_token_trans.0.weight"],
+        "bias":
+        None
+    }]
+
+    weights_biases_path = {
+        "embed_atom_features":
+        (f"{layer_path}.embed_atom_features.weight", None),
+        "embed_atompair_ref_pos":
+        (f"{layer_path}.embed_atompair_ref_pos.weight", None),
+        "embed_atompair_ref_dist":
+        (f"{layer_path}.embed_atompair_ref_dist.weight", None),
+        "embed_atompair_mask":
+        (f"{layer_path}.embed_atompair_mask.weight", None),
+        "c_to_p_trans_k.1": (f"{layer_path}.c_to_p_trans_k.1.weight", None),
+        "c_to_p_trans_q.1": (f"{layer_path}.c_to_p_trans_q.1.weight", None),
+        "p_mlp.1": (f"{layer_path}.p_mlp.1.weight", None),
+        "p_mlp.3": (f"{layer_path}.p_mlp.3.weight", None),
+        "p_mlp.5": (f"{layer_path}.p_mlp.5.weight", None),
+    }
+
+    for name, (weights_path, bias_path) in weights_biases_path.items():
+        weights["atom_embedding"][name] = [{
+            "weight":
+            state_dict[weights_path],
+            "bias":
+            state_dict[bias_path] if bias_path is not None else None
+        }]
+
+    return weights

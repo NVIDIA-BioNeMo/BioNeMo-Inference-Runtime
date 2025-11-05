@@ -20,8 +20,12 @@ import torch.nn.functional as F
 from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.layers.attention import (
-    SelfAttentionPairBias, SelfAttentionPairBiasWithCache)
+
+# isort: off
+from tensorrt_bionemo._torch.layers.attention import (AttentionPairBias,
+                                                      AttentionPairBiasWithCache
+                                                      )
+# isort: on
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
@@ -55,9 +59,9 @@ class DiffusionTransformerLayer(nn.Module):
                            mapping=mapping,
                            skip_create_weights=skip_create_weights)
         if with_pair_bias_cache:
-            attn_cls = SelfAttentionPairBiasWithCache
+            attn_cls = AttentionPairBiasWithCache
         else:
-            attn_cls = SelfAttentionPairBias
+            attn_cls = AttentionPairBias
         self.pair_bias_attn = attn_cls(layer_idx=layer_idx,
                                        c_s=dim,
                                        c_z=dim_pairwise,
@@ -121,12 +125,12 @@ class DiffusionTransformerLayer(nn.Module):
         return a
 
 
-class BoltzTokenTransformer(nn.Module):
+class BoltzDiffusionTransformer(nn.Module):
 
     def __init__(self, config: PretrainedModuleConfig):
         """
         Args:
-            config: tensorrt_bionemo.models.boltz1.configs.TokenTransformerConfig
+            config: tensorrt_bionemo.models.boltz1.configs.DiffusionTransformerConfig
                 The configuration of the token transformer module.
         """
         super().__init__()
@@ -168,11 +172,14 @@ class BoltzTokenTransformer(nn.Module):
                 attn_metadata: Optional[AttentionMetadata] = None,
                 all_reduce_params: Optional[AllReduceParams] = None,
                 **kwargs) -> torch.Tensor:
+        L = self.num_blocks
         if self.version == "v2":
-            B, N, M, D = z.shape
-            L = self.num_blocks
-            z = z.view(B, N, M, L, D // L)
-            z = z.permute(0, 4, 1, 2, 3)  # [B, H, N, N, L]
+            # Transformer z -> [*, heads, N, N, L]
+            N, M, D = z.shape[-3:]
+            heads = D // L
+            batch_dims = z.shape[:-3]
+            z = z.view(*batch_dims, N, M, L, heads)  # [*, N, N, L, heads]
+            z = torch.moveaxis(z, -1, -4)  # [*, heads, N, N, L]
         bias = z
         for i, layer in enumerate(self.layers):
             if self.version == "v2":
@@ -181,12 +188,12 @@ class BoltzTokenTransformer(nn.Module):
         return a
 
 
-class OpenFold3TokenTransformer(nn.Module):
+class OpenFold3DiffusionTransformer(nn.Module):
 
     def __init__(self, config: PretrainedModuleConfig):
         """
         Args:
-            config: tensorrt_bionemo.models.boltz1.configs.TokenTransformerConfig
+            config: tensorrt_bionemo.models.boltz1.configs.DiffusionTransformerConfig
                 The configuration of the token transformer module.
         """
         super().__init__()
@@ -218,8 +225,7 @@ class OpenFold3TokenTransformer(nn.Module):
             self.layers.append(layer)
 
     def load_weights(self, weights: dict):
-        loaded_weight = loaded_weight = recursive_calling_load_weights(
-            self, weights)
+        loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:

@@ -55,7 +55,7 @@ PRETRAINED_OF3_CONFIG = {
 }
 
 
-class TokenTransformerConfig(PretrainedModuleConfig):
+class DiffusionTransformerConfig(PretrainedModuleConfig):
     """ TODO: currently, it doesn't support for max_diffusion_samples > 1 """
 
     def __init__(
@@ -157,7 +157,7 @@ class OpenFold3Config(PretrainedConfig):
 
     def __init__(self,
                  pairformer_config: PairformerConfig = None,
-                 token_transformer_config: TokenTransformerConfig = None,
+                 token_transformer_config: DiffusionTransformerConfig = None,
                  **kwargs):
         super().__init__(**kwargs)
         self.pairformer_config = pairformer_config
@@ -191,7 +191,7 @@ class OpenFold3Config(PretrainedConfig):
             dtype="float32")
 
         _c = pretrained_config["model"]["token_transformer"]
-        token_transformer_config = TokenTransformerConfig(
+        token_transformer_config = DiffusionTransformerConfig(
             architecture="token_transformer",
             num_blocks=_c["no_blocks"],
             num_heads=_c["no_heads"],

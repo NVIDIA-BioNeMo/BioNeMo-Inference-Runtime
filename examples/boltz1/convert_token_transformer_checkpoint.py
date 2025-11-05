@@ -9,9 +9,9 @@ from tensorrt_llm import logger
 
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.configs import (Boltz1Config,
-                                                    TokenTransformerConfig)
+                                                    DiffusionTransformerConfig)
 from tensorrt_bionemo.models.boltz1.convert import (
-    convert_hf_token_transformer, convert_hf_token_transformer_torch)
+    convert_hf_diffusion_transformer, convert_hf_diffusion_transformer_torch)
 from tensorrt_bionemo.runtime.backend import BackendType
 
 
@@ -94,7 +94,7 @@ def convert(worker_rank, world_size, configs, args):
                           dcp_size=args.dcp_size,
                           rank=rank)
         if args.backend == 'all' or args.backend == BackendType.TRT:
-            weights = convert_hf_token_transformer(
+            weights = convert_hf_diffusion_transformer(
                 configs[BackendType.TRT],
                 mapping,
                 local_checkpoint=args.local_checkpoint)
@@ -103,7 +103,7 @@ def convert(worker_rank, world_size, configs, args):
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
         if args.backend == 'all' or args.backend == BackendType.TORCH:
             # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
-            weights = convert_hf_token_transformer_torch(
+            weights = convert_hf_diffusion_transformer_torch(
                 config=configs[BackendType.TORCH],
                 mapping=mapping,
                 local_checkpoint=args.local_checkpoint)
@@ -143,8 +143,9 @@ def main():
         "pairwise_attn_backend": args.pairwise_attn_backend,
         "version": "v1"
     }
-    trt_token_transformer_config = TokenTransformerConfig.from_dict(config)
-    torch_token_transformer_config = TokenTransformerConfig.from_dict(config)
+    trt_token_transformer_config = DiffusionTransformerConfig.from_dict(config)
+    torch_token_transformer_config = DiffusionTransformerConfig.from_dict(
+        config)
     torch_token_transformer_config.backend = BackendType.TORCH
 
     configs = {

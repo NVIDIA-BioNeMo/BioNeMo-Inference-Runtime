@@ -172,7 +172,7 @@ class TriangleAttention(nn.Module):
         return attn_output
 
 
-class SelfAttentionPairBias(nn.Module):
+class AttentionPairBias(nn.Module):
     """
     A module that implements the self-attention pair bias mechanism with tensor parallelism in torch.
     This kind of attention is used in the pairformer modules.
@@ -209,8 +209,6 @@ class SelfAttentionPairBias(nn.Module):
         if max_attention_pairwise_tp_size:
             mapping = create_max_tp_mapping(mapping, num_heads)
         tp_size = mapping.tp_size
-        mapping.tp_rank
-        mapping.gpus_per_node
 
         assert self.num_heads % tp_size == 0
         self.num_heads = self.num_heads // tp_size
@@ -298,39 +296,45 @@ class SelfAttentionPairBias(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
-        """ Single and TP Distributed version """
-        B = s.size(0)
+        """ Single and TP Distributed version for AttentionPairBias. I=J if is self-attention.
+        Args:
+            s: [*, I, C_S]
+            z: [*, I, J, C_Z] if compute_pair_bias else [*, H, I, J]
+            mask: [*, I]
+            compute_pair_bias (bool): Whether to compute the pair bias.
+            save_to_cache_key (Optional[str]): The key to save the bias cache.
+            attn_metadata (Optional[AttentionMetadata]): The attention metadata.
+                - query_to_keys (Callable): The function to convert the query to keys.
+                - bias_cache (dict): The bias cache.
+            all_reduce_params (Optional[AllReduceParams]): The all reduce parameters.
+        """
+        s.size(0)
         if self.initial_norm:
             s = self.norm_s(s)
         if not s.is_contiguous():
             s = s.contiguous()
+        kv_in = s
         q = self.proj_q(s)
-        kv = self.proj_kv(s)
+
+        if attn_metadata is not None:
+            # Get key-value from the query for sequence local atom attention
+            query_to_keys = attn_metadata.query_to_keys
+            if query_to_keys is not None:
+                kv_in = query_to_keys(s)
+                mask = query_to_keys(mask.unsqueeze(-1)).squeeze(-1)
+
+        kv = self.proj_kv(kv_in)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
-
-        if s.ndim == 3:
-            mask_bias = (1 - mask[:, None, None, :].float()) * -self.inf
-        elif s.ndim == 4:
-            mask_bias = (1 - mask[:, :, None, None, :].float()) * -self.inf
-
-        # mask_bias = (1 - mask[:, None, None].float()) * -self.inf
-
+        mask = mask[..., None, None, :]
+        mask_bias = (1 - mask.float()) * -self.inf
         pair_bias = z
         if compute_pair_bias and self.bias_proj:
-
-            pair_bias = self.proj_z(z)
-            if mask.ndim == 2:
-                pair_bias = torch.moveaxis(pair_bias, 3,
-                                           1)  # [B, N, N, H] -> [B, H, N, N]
-
-            if mask.ndim == 3:
-                pair_bias = torch.moveaxis(pair_bias, 3,
-                                           1)  # [B, I, I, H] -> [B, H, N, N]
-                pair_bias = pair_bias.unsqueeze(
-                    1)  # [B, I, I, H] -> [B, 1, H, I, I]
-
-        if save_to_cache_key is not None and save_to_cache_key not in attn_metadata.bias_cache:
-            attn_metadata.bias_cache[save_to_cache_key] = pair_bias
+            pair_bias = self.proj_z(z)  # [*, I, J, H]
+            pair_bias = torch.moveaxis(pair_bias, -1, -3)  # [*, H, I, J]
+        if attn_metadata is not None and save_to_cache_key is not None:
+            bias_cache = attn_metadata.bias_cache
+            if bias_cache is not None and save_to_cache_key not in bias_cache:
+                bias_cache[save_to_cache_key] = pair_bias
         biases = [mask_bias, pair_bias]
 
         mha_o = self.attn.forward(q.contiguous(),
@@ -338,17 +342,15 @@ class SelfAttentionPairBias(nn.Module):
                                   v.contiguous(),
                                   biases=biases,
                                   metadata=attn_metadata)
-        if s.ndim == 3:
-            o = mha_o.reshape(B, -1, self.num_heads * self.head_dim)
-        elif s.ndim == 4:
-            o = mha_o.reshape(B, s.shape[1], -1, self.num_heads * self.head_dim)
+        batch_dims = mha_o.shape[:-2]
+        o = mha_o.reshape(*batch_dims, self.num_heads * self.head_dim)
 
         g = self.proj_g(s).sigmoid()
         o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o
 
 
-class SelfAttentionPairBiasWithCache(SelfAttentionPairBias):
+class AttentionPairBiasWithCache(AttentionPairBias):
 
     def __init__(self, *args, **kwargs):
         kwargs["bias_proj"] = True

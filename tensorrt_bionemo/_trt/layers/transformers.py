@@ -26,16 +26,16 @@ from tensorrt_llm.network import Network
 
 from tensorrt_bionemo._trt.functional import identity_sz
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
-from tensorrt_bionemo.models.boltz1.configs import (PairformerBuildConfig,
+from tensorrt_bionemo.models.boltz1.configs import (DiffusionTransformerConfig,
+                                                    PairformerBuildConfig,
                                                     PairformerConfig,
-                                                    TokenTransformerBuildConfig,
-                                                    TokenTransformerConfig)
+                                                    TokenTransformerBuildConfig)
 from tensorrt_bionemo.models.openfold2.configs import (
     EvoformerStackBuildConfig, EvoformerStackConfig)
 from tensorrt_bionemo.models.openfold3.configs import \
-    TokenTransformerBuildConfig as OpenFold3TokenTransformerBuildConfig
+    DiffusionTransformerConfig as OpenFold3DiffusionTransformerConfig
 from tensorrt_bionemo.models.openfold3.configs import \
-    TokenTransformerConfig as OpenFold3TokenTransformerConfig
+    TokenTransformerBuildConfig as OpenFold3DiffusionTransformerBuildConfig
 
 from ..module_utils import PretrainedModule
 from .attention import AttentionParams, MSAAttention, SelfAttentionPairBias
@@ -531,10 +531,10 @@ class DiffusionTransformerLayer(Module):
 
 
 class TokenTransformer(PretrainedModule):
-    config_class = TokenTransformerConfig
+    config_class = DiffusionTransformerConfig
     build_config_class = TokenTransformerBuildConfig
 
-    def __init__(self, config: TokenTransformerConfig):
+    def __init__(self, config: DiffusionTransformerConfig):
         super().__init__(config)
         self.version = config.version
         logger.info(
@@ -596,11 +596,11 @@ class TokenTransformer(PretrainedModule):
         return a
 
 
-class OpenFold3TokenTransformer(PretrainedModule):
-    config_class = OpenFold3TokenTransformerConfig
-    build_config_class = OpenFold3TokenTransformerBuildConfig
+class OpenFold3DiffusionTransformer(PretrainedModule):
+    config_class = OpenFold3DiffusionTransformerConfig
+    build_config_class = OpenFold3DiffusionTransformerBuildConfig
 
-    def __init__(self, config: OpenFold3TokenTransformerConfig):
+    def __init__(self, config: OpenFold3DiffusionTransformerConfig):
         super().__init__(config)
         self.version = config.version
         logger.info(

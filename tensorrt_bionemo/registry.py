@@ -15,7 +15,7 @@
 
 from tensorrt_bionemo._trt.layers.affinity import AffinityModule
 from tensorrt_bionemo._trt.layers.transformers import (
-    EvoformerStack, OpenFold3TokenTransformer, PairformerModule,
+    EvoformerStack, OpenFold3DiffusionTransformer, PairformerModule,
     TokenTransformer)
 
 TRT_BUILDING_MODULES_REGISTRY = {}
@@ -64,7 +64,7 @@ def register_default_building_modules():
         },
         "openfold3": {
             "pairformer": PairformerModule,
-            "token_transformer": OpenFold3TokenTransformer,
+            "token_transformer": OpenFold3DiffusionTransformer,
         }
     })
 

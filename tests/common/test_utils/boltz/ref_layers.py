@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from functools import partial
 from typing import Optional
 
 import torch
@@ -20,6 +21,8 @@ import torch.nn.functional as F
 from test_utils.boltz.ref_attn import (RefPairwiseSelfAttention,
                                        RefTriangleAttention)
 
+from tensorrt_bionemo._torch.layers.sequence_local_atom import (
+    create_indexing_matrix, query_to_keys)
 from tensorrt_bionemo.hubs import load_weights
 
 
@@ -1484,3 +1487,205 @@ class RefMSAModule(nn.Module):
                 msa_mask,
             )
         return z
+
+
+class RefAtomEmbedding(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/encodersv2.py#L245"""
+
+    def __init__(self,
+                 atom_s,
+                 atom_z,
+                 token_s,
+                 token_z,
+                 atoms_per_window_queries,
+                 atoms_per_window_keys,
+                 atom_feature_dim,
+                 structure_prediction=False,
+                 use_no_atom_char=False,
+                 use_atom_backbone_feat=False,
+                 use_residue_feats_atoms=False):
+        """ TODO: Implement for the structure prediction path """
+        super().__init__()
+        self.version = "v2"
+        self.atom_s = atom_s
+        self.atom_z = atom_z
+        self.token_s = token_s
+        self.token_z = token_z
+        self.atoms_per_window_queries = atoms_per_window_queries
+        self.atoms_per_window_keys = atoms_per_window_keys
+        self.atom_feature_dim = atom_feature_dim
+        self.structure_prediction = structure_prediction
+        self.use_no_atom_char = use_no_atom_char
+        self.use_atom_backbone_feat = use_atom_backbone_feat
+        self.use_residue_feats_atoms = use_residue_feats_atoms
+
+        self.embed_atom_features = nn.Linear(atom_feature_dim, atom_s)
+        self.embed_atompair_ref_pos = nn.Linear(3, atom_z, bias=False)
+        self.embed_atompair_ref_dist = nn.Linear(1, atom_z, bias=False)
+        self.embed_atompair_mask = nn.Linear(1, atom_z, bias=False)
+
+        self.structure_prediction = structure_prediction
+
+        self.c_to_p_trans_k = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(atom_s, atom_z, bias=False),
+        )
+        self.c_to_p_trans_q = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(atom_s, atom_z, bias=False),
+        )
+
+        self.p_mlp = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(atom_z, atom_z, bias=False),
+            nn.ReLU(),
+            nn.Linear(atom_z, atom_z, bias=False),
+            nn.ReLU(),
+            nn.Linear(atom_z, atom_z, bias=False),
+        )
+
+    @classmethod
+    def load_weights(cls,
+                     model: str = "boltz-2",
+                     layer_path: str = "input_embedder.atom_encoder",
+                     state_dict: Optional[dict] = None):
+        """ TODO: Implement for the structure prediction path """
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        atom_feature_dim = state_dict[
+            f"{layer_path}.embed_atom_features.weight"].shape[1]
+        atom_s = state_dict[f"{layer_path}.embed_atom_features.weight"].shape[0]
+        atom_z = state_dict[
+            f"{layer_path}.embed_atompair_ref_pos.weight"].shape[0]
+        token_s = None
+        token_z = None
+        atoms_per_window_queries = 32
+        atoms_per_window_keys = 128
+
+        weights_biases_path = [
+            (f"{layer_path}.embed_atom_features.weight",
+             f"{layer_path}.embed_atom_features.bias"),
+            (f"{layer_path}.embed_atompair_ref_pos.weight", None),
+            (f"{layer_path}.embed_atompair_ref_dist.weight", None),
+            (f"{layer_path}.embed_atompair_mask.weight", None),
+            (f"{layer_path}.c_to_p_trans_k.1.weight", None),
+            (f"{layer_path}.c_to_p_trans_q.1.weight", None),
+            (f"{layer_path}.p_mlp.1.weight", None),
+            (f"{layer_path}.p_mlp.3.weight", None),
+            (f"{layer_path}.p_mlp.5.weight", None),
+        ]
+        m = cls(
+            atom_s=atom_s,
+            atom_z=atom_z,
+            token_s=token_s,
+            token_z=token_z,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys,
+            atom_feature_dim=atom_feature_dim,
+            structure_prediction=False,
+            use_no_atom_char=False,
+            use_atom_backbone_feat=False,
+            use_residue_feats_atoms=False,
+        )
+        layers = [
+            m.embed_atom_features,
+            m.embed_atompair_ref_pos,
+            m.embed_atompair_ref_dist,
+            m.embed_atompair_mask,
+            m.c_to_p_trans_k[1],
+            m.c_to_p_trans_q[1],
+            m.p_mlp[1],
+            m.p_mlp[3],
+            m.p_mlp[5],
+        ]
+        for (weights_path, bias_path), layer in zip(weights_biases_path,
+                                                    layers):
+            if bias_path is not None:
+                layer.bias.data.copy_(state_dict[bias_path])
+            layer.weight.data.copy_(state_dict[weights_path])
+        return m
+
+    def forward(self,
+                atom_to_token: torch.Tensor,
+                ref_pos: torch.Tensor,
+                atom_pad_mask: torch.Tensor,
+                ref_space_uid: torch.Tensor,
+                ref_charge: torch.Tensor,
+                ref_element: torch.Tensor,
+                ref_atom_name_chars: Optional[torch.Tensor] = None,
+                atom_backbone_feat: Optional[torch.Tensor] = None,
+                res_type: Optional[torch.Tensor] = None,
+                modified: Optional[torch.Tensor] = None,
+                mol_type: Optional[torch.Tensor] = None):
+
+        B, N, _ = ref_pos.shape
+        atom_mask = atom_pad_mask.bool()  # Bool['b m'],
+
+        atom_ref_pos = ref_pos  # Float['b m 3'],
+        atom_uid = ref_space_uid  # Long['b m'],
+
+        atom_feats = [
+            atom_ref_pos,
+            ref_charge.unsqueeze(-1),
+            ref_element,
+        ]
+        if not self.use_no_atom_char:
+            atom_feats.append(ref_atom_name_chars.reshape(B, N, 4 * 64))
+        if self.use_atom_backbone_feat:
+            atom_feats.append(atom_backbone_feat)
+        if self.use_residue_feats_atoms:
+            res_feats = torch.cat(
+                [
+                    res_type,
+                    modified.unsqueeze(-1),
+                    F.one_hot(mol_type, num_classes=4).float(),
+                ],
+                dim=-1,
+            )
+            atom_to_token = atom_to_token.float()
+            atom_res_feats = torch.bmm(atom_to_token, res_feats)
+            atom_feats.append(atom_res_feats)
+
+        atom_feats = torch.cat(atom_feats, dim=-1)
+
+        c = self.embed_atom_features(atom_feats)
+
+        # note we are already creating the windows to make it more efficient
+        W, H = self.atoms_per_window_queries, self.atoms_per_window_keys
+        B, N = c.shape[:2]
+        K = N // W
+        keys_indexing_matrix = create_indexing_matrix(K, W, H, c.device)
+        to_keys = partial(query_to_keys,
+                          keys_indexing_matrix=keys_indexing_matrix,
+                          W=W,
+                          H=H)
+
+        atom_ref_pos_queries = atom_ref_pos.view(B, K, W, 1, 3)
+        atom_ref_pos_keys = to_keys(atom_ref_pos).view(B, K, 1, H, 3)
+
+        d = atom_ref_pos_keys - atom_ref_pos_queries  # Float['b k w h 3']
+        d_norm = torch.sum(d * d, dim=-1, keepdim=True)  # Float['b k w h 1']
+        d_norm = 1 / (1 + d_norm
+                      )  # AF3 feeds in the reciprocal of the distance norm
+
+        atom_mask_queries = atom_mask.view(B, K, W, 1)
+        atom_mask_keys = (to_keys(atom_mask.unsqueeze(-1).float()).view(
+            B, K, 1, H).bool())
+        atom_uid_queries = atom_uid.view(B, K, W, 1)
+        atom_uid_keys = (to_keys(atom_uid.unsqueeze(-1).float()).view(
+            B, K, 1, H).long())
+        v = ((atom_mask_queries
+              & atom_mask_keys
+              & (atom_uid_queries == atom_uid_keys)).float().unsqueeze(-1)
+             )  # Bool['b k w h 1']
+
+        p = self.embed_atompair_ref_pos(d) * v
+        p = p + self.embed_atompair_ref_dist(d_norm) * v
+        p = p + self.embed_atompair_mask(v) * v
+
+        q = c
+        p = p + self.c_to_p_trans_q(c.view(B, K, W, 1, c.shape[-1]))
+        p = p + self.c_to_p_trans_k(to_keys(c).view(B, K, 1, H, c.shape[-1]))
+        p = p + self.p_mlp(p)
+        return q, c, p, to_keys

@@ -25,7 +25,7 @@ from test_utils.boltz.ref_attn import RefPairwiseSelfAttention
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
-from tensorrt_bionemo._torch.layers.attention import SelfAttentionPairBias
+from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -59,13 +59,13 @@ def test_pairwise_attention_backend(sc: Scenario):
     weights_and_biases = create_self_pairwise_attention_weights(
         from_ref=ref_attn)
 
-    attn = SelfAttentionPairBias(layer_idx=0,
-                                 c_s=sc.c_s,
-                                 c_z=sc.c_z,
-                                 num_heads=ref_attn.num_heads,
-                                 dtype=dtype,
-                                 bias_proj=True,
-                                 initial_norm=True)
+    attn = AttentionPairBias(layer_idx=0,
+                             c_s=sc.c_s,
+                             c_z=sc.c_z,
+                             num_heads=ref_attn.num_heads,
+                             dtype=dtype,
+                             bias_proj=True,
+                             initial_norm=True)
     load_self_pairwise_attention_weights_torch(attn,
                                                weights_and_biases,
                                                dtype=dtype)

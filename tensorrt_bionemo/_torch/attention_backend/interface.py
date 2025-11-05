@@ -15,7 +15,7 @@
 
 import enum
 from dataclasses import dataclass
-from typing import Generic, Optional, Type, TypeVar
+from typing import Callable, Generic, Optional, Type, TypeVar
 
 import torch
 
@@ -28,7 +28,12 @@ class AttentionMetadata:
     Metadata for multi-head attention layer.
     """
     mapping: Optional[Mapping] = None
+
+    # Bias caching for diffusion transformer layers
     bias_cache: Optional[dict[str, torch.Tensor]] = None
+
+    # Function to convert query to keys for sequence local atom attention
+    query_to_keys: Optional[Callable] = None
 
 
 TMetadata = TypeVar("TMetadata", bound=AttentionMetadata)

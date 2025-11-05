@@ -20,7 +20,7 @@ import torch.nn as nn
 from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.layers.attention import SelfAttentionPairBias
+from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionEndingNode, TriangleAttentionStartingNode,
@@ -67,7 +67,7 @@ class PairformerLayerV1(nn.Module):
             s_path_dtype = dtype
 
         if not self.no_update_s:
-            self.attention = SelfAttentionPairBias(
+            self.attention = AttentionPairBias(
                 layer_idx=layer_idx,
                 c_s=token_s,
                 c_z=token_z,

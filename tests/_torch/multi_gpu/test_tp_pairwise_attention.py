@@ -25,7 +25,7 @@ from test_utils.boltz.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
-from tensorrt_bionemo._torch.layers.attention import SelfAttentionPairBias
+from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -61,7 +61,7 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
                                          AttentionType.PAIRWISE).Metadata
     attn_metadata = metadata_cls(mapping=mapping)
 
-    pairwise_attn = SelfAttentionPairBias(
+    pairwise_attn = AttentionPairBias(
         layer_idx=0,
         c_s=c_s,
         c_z=c_z,
@@ -83,7 +83,7 @@ def pairwise_attn_forward(s, z, mask, num_attention_heads, c_s, c_z,
     mapping = Mapping()
 
     attn_metadata = metadata_cls(mapping=mapping)
-    single_dev_pairwise_attn = SelfAttentionPairBias(
+    single_dev_pairwise_attn = AttentionPairBias(
         layer_idx=0,
         c_s=c_s,
         c_z=c_z,

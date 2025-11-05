@@ -26,8 +26,8 @@ from tensorrt_bionemo.models.boltz1.convert import (
     get_adaln_weights, get_output_projection_weights, get_pairwise_attn_weights,
     get_post_norm_weights, get_transition_weights, get_tri_attn_node_weights,
     get_tri_mul_node_weights)
-from tensorrt_bionemo.models.openfold3.configs import (PairformerConfig,
-                                                       TokenTransformerConfig)
+from tensorrt_bionemo.models.openfold3.configs import (
+    DiffusionTransformerConfig, PairformerConfig)
 
 
 def convert_hf_pairformer(config: PairformerConfig,
@@ -178,11 +178,12 @@ def convert_hf_pairformer(config: PairformerConfig,
                                    dtype=config.dtype))
     return weights
 
+
 def convert_hf_pairformer_torch(config: PairformerConfig,
-                          mapping: Mapping = None,
-                          local_checkpoint: str = None,
-                          model_name: str = "openfold3",
-                          weights: dict = None):
+                                mapping: Mapping = None,
+                                local_checkpoint: str = None,
+                                model_name: str = "openfold3",
+                                weights: dict = None):
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     else:
@@ -268,7 +269,10 @@ def convert_hf_pairformer_torch(config: PairformerConfig,
                     pairformer_state_dict[name] = param
                     continue
                 logger.warning(f"Miss converting the weight: {oringal_name}")
-    module_state_dict = {k.replace("pairformer_module.", ""): v for k, v in pairformer_state_dict.items()}
+    module_state_dict = {
+        k.replace("pairformer_module.", ""): v
+        for k, v in pairformer_state_dict.items()
+    }
     tbnm_state_dict = {}
     for i in range(config.num_blocks):
         # weight for pairwise attention
@@ -412,6 +416,7 @@ def convert_hf_pairformer_torch(config: PairformerConfig,
             }]
     return tbnm_state_dict
 
+
 def get_conditioned_transition_block_weights(mapping: Mapping,
                                              state_dict: dict,
                                              prefix: str,
@@ -464,10 +469,10 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
     return ret
 
 
-def convert_hf_token_transformer(config: TokenTransformerConfig,
-                                 mapping: Mapping,
-                                 local_checkpoint: str = None,
-                                 model_name: str = "openfold3"):
+def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
+                                     mapping: Mapping,
+                                     local_checkpoint: str = None,
+                                     model_name: str = "openfold3"):
     state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     assert state_dict is not None
 
@@ -595,18 +600,21 @@ def convert_hf_token_transformer(config: TokenTransformerConfig,
     return weights
 
 
-def convert_hf_token_transformer_torch(config: TokenTransformerConfig,
-                                 mapping: Mapping = None,
-                                 local_checkpoint: str = None,
-                                 model_name: str = "openfold3",
-                                 weights: dict = None):
+def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
+                                           mapping: Mapping = None,
+                                           local_checkpoint: str = None,
+                                           model_name: str = "openfold3",
+                                           weights: dict = None,
+                                           **kwargs):
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     else:
         state_dict = weights
     assert state_dict is not None
-
-    prefix = "sample_diffusion.diffusion_module.diffusion_transformer.blocks"
+    if "prefix" in kwargs:
+        prefix = kwargs["prefix"]
+    else:
+        prefix = "sample_diffusion.diffusion_module.diffusion_transformer.blocks"
     replace_prefix = "layers"
     module_state_dict = {}
 
@@ -671,7 +679,7 @@ def convert_hf_token_transformer_torch(config: TokenTransformerConfig,
                     name = name.replace("conditioned_transition.linear_g",
                                         "transition.output_projection.0")
                     module_state_dict[name] = param
-                    continue    
+                    continue
     tbnm_state_dict = {}
     dim = module_state_dict[f"layers.0.adaln.s_bias.weight"].shape[0]
     dtype = module_state_dict[f"layers.0.adaln.s_bias.weight"].dtype

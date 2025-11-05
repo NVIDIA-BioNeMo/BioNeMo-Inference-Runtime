@@ -15,7 +15,7 @@
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Union
 
 import torch
 from transformers import PretrainedConfig
@@ -199,7 +199,7 @@ class PairformerBuildConfig(BuildModuleConfig):
         return _create_optimization_profiles(self)
 
 
-class TokenTransformerConfig(PretrainedModuleConfig):
+class DiffusionTransformerConfig(PretrainedModuleConfig):
 
     def __init__(self,
                  *,
@@ -229,13 +229,11 @@ class TokenTransformerConfig(PretrainedModuleConfig):
         self.max_diffusion_samples = max_diffusion_samples
         self.max_batch_size = self.max_diffusion_samples * self.max_num_particles
 
+        self.with_pair_bias_cache = self.version == "v1"
+
     @property
     def attention_initial_norm(self):
         return False
-
-    @property
-    def with_pair_bias_cache(self):
-        return self.version == "v1"
 
     @property
     def post_layer_norm(self):
@@ -357,20 +355,81 @@ class MSAModuleConfig(PretrainedModuleConfig):
                             ])
 
 
+class InputEmbedderConfig(PretrainedModuleConfig):
+
+    def __init__(self,
+                 atom_s: int,
+                 atom_z: int,
+                 token_s: int,
+                 token_z: int,
+                 atoms_per_window_queries: int,
+                 atoms_per_window_keys: int,
+                 atom_feature_dim: int,
+                 atom_encoder_depth: int,
+                 atom_encoder_heads: int,
+                 version: str = "v1",
+                 pairwise_attn_backend: str = 'VANILLA',
+                 backend: str = "torch",
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.atom_s = atom_s
+        self.atom_z = atom_z
+        self.token_s = token_s
+        self.token_z = token_z
+        self.atoms_per_window_queries = atoms_per_window_queries
+        self.atoms_per_window_keys = atoms_per_window_keys
+        self.atom_feature_dim = atom_feature_dim
+        self.atom_encoder_depth = atom_encoder_depth
+        self.atom_encoder_heads = atom_encoder_heads
+        self.backend = backend
+
+        self.diffusion_transformer_config = DiffusionTransformerConfig(
+            architecture="diffusion_transformer",
+            dtype=self.dtype,
+            num_blocks=atom_encoder_depth,
+            num_heads=atom_encoder_heads,
+            dim=atom_s,
+            dim_single_cond=atom_s,
+            dim_pairwise=atom_z,
+            pairwise_attn_backend=pairwise_attn_backend,
+            backend=backend,
+            mapping=self.mapping,
+            version=version)
+
+    @classmethod
+    def from_dict(cls, config_dict: dict):
+        return cls(**config_dict)
+
+    def set_dtype(self, value: Union[str, torch.dtype]):
+        super().set_dtype(value)
+        if hasattr(self, "diffusion_transformer_config"):
+            self.diffusion_transformer_config.set_dtype(value)
+
+
 class Boltz1Config(PretrainedConfig):
     model_type = "boltz1"
 
     def __init__(self,
+                 token_s: int,
+                 token_z: int,
+                 atom_s: int,
+                 atom_z: int,
                  structure_pairformer_config: PairformerConfig = None,
                  confidence_pairformer_config: PairformerConfig = None,
-                 token_transformer_config: TokenTransformerConfig = None,
+                 token_transformer_config: DiffusionTransformerConfig = None,
                  msa_module_config: MSAModuleConfig = None,
+                 input_embedder_config: InputEmbedderConfig = None,
                  **kwargs):
         super().__init__(**kwargs)
+        self.token_s = token_s
+        self.token_z = token_z
+        self.atom_s = atom_s
+        self.atom_z = atom_z
         self.structure_pairformer_config = structure_pairformer_config
         self.confidence_pairformer_config = confidence_pairformer_config
         self.token_transformer_config = token_transformer_config
         self.msa_module_config = msa_module_config
+        self.input_embedder_config = input_embedder_config
 
     @classmethod
     def from_pretrained(cls,
@@ -385,6 +444,13 @@ class Boltz1Config(PretrainedConfig):
 
         token_s = hparams["token_s"]
         token_z = hparams["token_z"]
+        atom_s = hparams["atom_s"]
+        atom_z = hparams["atom_z"]
+        atom_feature_dim = hparams["atom_feature_dim"]
+        atoms_per_window_queries = hparams["atoms_per_window_queries"]
+        atoms_per_window_keys = hparams["atoms_per_window_keys"]
+        atom_encoder_depth = hparams["embedder_args"]["atom_encoder_depth"]
+        atom_encoder_heads = hparams["embedder_args"]["atom_encoder_heads"]
         msa_pairwise_head_width = hparams["msa_args"]["pairwise_head_width"]
         msa_pairwise_num_heads = hparams["msa_args"]["pairwise_num_heads"]
 
@@ -408,7 +474,7 @@ class Boltz1Config(PretrainedConfig):
             num_heads=hparams["pairformer_args"]["num_heads"],
             version="v1",
             dtype="float32")
-        token_transformer_config = TokenTransformerConfig(
+        token_transformer_config = DiffusionTransformerConfig(
             architecture="token_transformer",
             dtype="float32",
             num_blocks=hparams["score_model_args"]["token_transformer_depth"],
@@ -429,8 +495,28 @@ class Boltz1Config(PretrainedConfig):
             pairwise_num_heads=msa_pairwise_num_heads,
             use_paired_feature=False,
             version="v1")
-        return cls(structure_pairformer_config=structure_pairformer_config,
+        input_embedder_config = InputEmbedderConfig(
+            architecture="input_embedder",
+            dtype="float32",
+            atom_s=atom_s,
+            atom_z=atom_z,
+            token_s=token_s,
+            token_z=token_z,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys,
+            atom_feature_dim=atom_feature_dim,
+            atom_encoder_depth=atom_encoder_depth,
+            atom_encoder_heads=atom_encoder_heads,
+            pairwise_attn_backend="VANILLA",
+            backend="torch")
+
+        return cls(token_s=token_s,
+                   token_z=token_z,
+                   atom_s=atom_s,
+                   atom_z=atom_z,
+                   structure_pairformer_config=structure_pairformer_config,
                    confidence_pairformer_config=confidence_pairformer_config,
                    token_transformer_config=token_transformer_config,
                    msa_module_config=msa_module_config,
+                   input_embedder_config=input_embedder_config,
                    **kwargs)

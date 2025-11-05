@@ -25,8 +25,8 @@ from tensorrt_bionemo.config import (BuildModuleConfig, DimSpec,
                                      PretrainedModuleConfig)
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.models.boltz1.configs import (
-    MSAModuleConfig, PairformerConfig, TokenTransformerConfig,
-    _create_optimization_profiles)
+    DiffusionTransformerConfig, InputEmbedderConfig, MSAModuleConfig,
+    PairformerConfig, _create_optimization_profiles)
 from tensorrt_bionemo.models.boltz1.const import TOKENS
 
 
@@ -116,19 +116,38 @@ class Boltz2Config(PretrainedConfig):
     model_type = "boltz2"
 
     def __init__(self,
+                 token_s: int,
+                 token_z: int,
+                 atom_s: int,
+                 atom_z: int,
+                 fix_sym_check: bool = True,
+                 cyclic_pos_enc: bool = True,
+                 bond_type_feature: bool = False,
+                 conditioning_cutoff_min: float = 4.0,
+                 conditioning_cutoff_max: float = 20.0,
                  structure_pairformer_config: PairformerConfig = None,
                  confidence_pairformer_config: PairformerConfig = None,
-                 token_transformer_config: TokenTransformerConfig = None,
+                 token_transformer_config: DiffusionTransformerConfig = None,
                  msa_module_config: MSAModuleConfig = None,
                  affinity_module_configs: dict[str, AffinityModuleConfig] = {},
+                 input_embedder_config: InputEmbedderConfig = None,
                  **kwargs):
         super().__init__(**kwargs)
-
+        self.token_s = token_s
+        self.token_z = token_z
+        self.atom_s = atom_s
+        self.atom_z = atom_z
+        self.fix_sym_check = fix_sym_check
+        self.cyclic_pos_enc = cyclic_pos_enc
+        self.bond_type_feature = bond_type_feature
+        self.conditioning_cutoff_min = conditioning_cutoff_min
+        self.conditioning_cutoff_max = conditioning_cutoff_max
         self.structure_pairformer_config = structure_pairformer_config
         self.confidence_pairformer_config = confidence_pairformer_config
         self.token_transformer_config = token_transformer_config
         self.msa_module_config = msa_module_config
         self.affinity_module_configs = affinity_module_configs
+        self.input_embedder_config = input_embedder_config
         if len(affinity_module_configs) > 0:
             self.is_affinity_model = True
         else:
@@ -153,6 +172,28 @@ class Boltz2Config(PretrainedConfig):
 
         token_s = hparams["token_s"]
         token_z = hparams["token_z"]
+        atom_s = hparams["atom_s"]
+        atom_z = hparams["atom_z"]
+        atom_feature_dim = hparams["atom_feature_dim"]
+        atoms_per_window_queries = hparams["atoms_per_window_queries"]
+        atoms_per_window_keys = hparams["atoms_per_window_keys"]
+        use_no_atom_char = hparams["use_no_atom_char"]
+        use_atom_backbone_feat = hparams["use_atom_backbone_feat"]
+        use_residue_feats_atoms = hparams["use_residue_feats_atoms"]
+        fix_sym_check = hparams["fix_sym_check"]
+        cyclic_pos_enc = hparams["cyclic_pos_enc"]
+        bond_type_feature = hparams["bond_type_feature"]
+        conditioning_cutoff_min = hparams["conditioning_cutoff_min"]
+        conditioning_cutoff_max = hparams["conditioning_cutoff_max"]
+
+        atom_encoder_depth = hparams["embedder_args"]["atom_encoder_depth"]
+        atom_encoder_heads = hparams["embedder_args"]["atom_encoder_heads"]
+        add_mol_type_feat = hparams["embedder_args"]["add_mol_type_feat"]
+        add_method_conditioning = hparams["embedder_args"][
+            "add_method_conditioning"]
+        add_modified_flag = hparams["embedder_args"]["add_modified_flag"]
+        add_cyclic_flag = hparams["embedder_args"]["add_cyclic_flag"]
+
         msa_pairwise_head_width = hparams["msa_args"]["pairwise_head_width"]
         msa_pairwise_num_heads = hparams["msa_args"]["pairwise_num_heads"]
 
@@ -180,7 +221,7 @@ class Boltz2Config(PretrainedConfig):
             version="v2",
             dtype="float32")
 
-        token_transformer_config = TokenTransformerConfig(
+        token_transformer_config = DiffusionTransformerConfig(
             architecture="token_transformer",
             dtype="float32",
             num_blocks=hparams["score_model_args"]["token_transformer_depth"],
@@ -202,6 +243,31 @@ class Boltz2Config(PretrainedConfig):
             pairwise_num_heads=msa_pairwise_num_heads,
             use_paired_feature=True,
             version="v2")
+
+        input_embedder_config = InputEmbedderConfig(
+            architecture="input_embedder",
+            dtype="float32",
+            atom_s=atom_s,
+            atom_z=atom_z,
+            token_s=token_s,
+            token_z=token_z,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys,
+            atom_feature_dim=atom_feature_dim,
+            atom_encoder_depth=atom_encoder_depth,
+            atom_encoder_heads=atom_encoder_heads,
+            pairwise_attn_backend="VANILLA",
+            backend="torch",
+            add_method_conditioning=add_method_conditioning,
+            add_modified_flag=add_modified_flag,
+            add_cyclic_flag=add_cyclic_flag,
+            add_mol_type_feat=add_mol_type_feat,
+            use_no_atom_char=use_no_atom_char,
+            use_atom_backbone_feat=use_atom_backbone_feat,
+            use_residue_feats_atoms=use_residue_feats_atoms,
+            version=
+            "v2"  # Need put the version here to select diffusion transformer version
+        )
 
         affinity_module_configs = {}
         if is_affinity:
@@ -225,9 +291,19 @@ class Boltz2Config(PretrainedConfig):
                 key = key.replace("model_args", "module")
                 affinity_module_configs[key] = config
 
-        return cls(structure_pairformer_config=structure_pairformer_config,
+        return cls(token_s=token_s,
+                   token_z=token_z,
+                   atom_s=atom_s,
+                   atom_z=atom_z,
+                   fix_sym_check=fix_sym_check,
+                   cyclic_pos_enc=cyclic_pos_enc,
+                   bond_type_feature=bond_type_feature,
+                   conditioning_cutoff_min=conditioning_cutoff_min,
+                   conditioning_cutoff_max=conditioning_cutoff_max,
+                   structure_pairformer_config=structure_pairformer_config,
                    confidence_pairformer_config=confidence_pairformer_config,
                    token_transformer_config=token_transformer_config,
                    msa_module_config=msa_module_config,
                    affinity_module_configs=affinity_module_configs,
+                   input_embedder_config=input_embedder_config,
                    **kwargs)

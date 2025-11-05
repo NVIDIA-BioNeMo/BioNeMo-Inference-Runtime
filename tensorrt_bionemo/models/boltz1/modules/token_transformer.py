@@ -20,19 +20,22 @@ from tensorrt_llm._utils import str_dtype_to_trt
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.transformers import BoltzTokenTransformer
+from tensorrt_bionemo._torch.layers.transformers import \
+    BoltzDiffusionTransformer
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
 from tensorrt_bionemo.runtime.misc import dtype_context, ensure_contiguous
 
-from ..configs import TokenTransformerConfig
+from ..configs import DiffusionTransformerConfig
 
 
 class TokenTransformerTorch(BackendBase):
-    IMPL_CLASS = BoltzTokenTransformer
+    IMPL_CLASS = BoltzDiffusionTransformer
 
-    def __init__(self, config: TokenTransformerConfig, impl: nn.Module = None):
+    def __init__(self,
+                 config: DiffusionTransformerConfig,
+                 impl: nn.Module = None):
         super().__init__(config, impl)
         self.metadata_cls = get_attention_backend(
             self.config.pairwise_attn_backend).Metadata
@@ -97,7 +100,7 @@ class TokenTransformerTRT(BackendBase):
     IMPL_CLASS = None
 
     def __init__(self,
-                 config: TokenTransformerConfig,
+                 config: DiffusionTransformerConfig,
                  impl: nn.Module = None,
                  context_memory_allocator: BaseContextMemoryManager = None):
         super().__init__(config,
@@ -216,4 +219,4 @@ class TokenTransformerBackendBuilder(BackendBuilder):
         BackendType.TORCH: TokenTransformerTorch,
         BackendType.TRT: TokenTransformerTRT,
     }
-    CONFIG_CLASS = TokenTransformerConfig
+    CONFIG_CLASS = DiffusionTransformerConfig

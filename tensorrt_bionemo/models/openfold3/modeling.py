@@ -15,10 +15,12 @@
 from typing import Optional
 
 import torch.nn as nn
+
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
 from ..helper import AcceleratedModules, build_optimized_module
-from .convert import convert_hf_token_transformer_torch, convert_hf_pairformer_torch
+from .convert import (convert_hf_diffusion_transformer_torch,
+                      convert_hf_pairformer_torch)
 from .modules import PairformerBackendBuilder, TokenTransformerBackendBuilder
 
 
@@ -89,7 +91,7 @@ class OpenFold3:
                 "token_transformer")
             default_config = accelerated_modules.get_default_module_config(
                 "token_transformer")
-            
+
             token_transformer = build_optimized_module(
                 state_dict=state_dict,
                 module_name="token_transformer",
@@ -100,7 +102,7 @@ class OpenFold3:
                 device=device,
                 context_memory_allocator=context_memory_allocator,
                 default_config=default_config,
-                convert_weights_func=convert_hf_token_transformer_torch,
+                convert_weights_func=convert_hf_diffusion_transformer_torch,
                 convert_weights_func_kwargs={
                     "config": default_config,
                     "weights": state_dict

@@ -22,6 +22,7 @@ from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 from .ref_attn import *
 from .ref_layers import *
 
+
 def create_triangle_attention_weights(c_q=None,
                                       c_k=None,
                                       c_v=None,
@@ -300,7 +301,7 @@ def create_self_pairwise_attention_weights(
             if bias_flags.get("z", False):
                 z_bias = from_ref.proj_z[1].bias.data
             norm_z_weight = from_ref.proj_z[0].weight.data
-            
+
             if from_ref.proj_z[0].bias is not None:
                 norm_z_bias = from_ref.proj_z[0].bias.data
             else:
@@ -1184,7 +1185,7 @@ def load_conditioned_transition_block_weights_torch(module,
     adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
         output_projection_weight, output_projection_bias = weights_and_biases
     load_adaln_weights_torch(module.adaln, adaln_weights, dtype)
-    
+
     swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(swish_gate_weight,
                                                            2,
                                                            dim=0)
@@ -1256,11 +1257,11 @@ def load_conditioned_transition_block_weights_trt(module,
     if a_to_b_weight is not None:
         fused_swl_a_to_b_weight = torch.cat(
             [swish_gate_weight_0, swish_gate_weight_1, a_to_b_weight], dim=0)
-    else:   
+    else:
         # In boltz and openfold3 model the position of gate is different.
         fused_swl_a_to_b_weight = torch.cat(
             [swish_gate_weight_1, swish_gate_weight_0], dim=0)
-    
+
     module.fused_swl_a_to_b.weight.value = np.ascontiguousarray(
         fused_swl_a_to_b_weight.cpu().numpy())
     module.b_to_a.weight.value = np.ascontiguousarray(
@@ -1301,13 +1302,13 @@ def create_diffusion_transformer_layer_weights(
                                     output_projection_bias)
     else:
         ret["adaln"] = create_adaln_weights(from_ref=from_ref.adaln)
-        
+
         ret["pair_bias_attn"] = create_self_pairwise_attention_weights(
             from_ref=from_ref.pair_bias_attn)
-        
+
         ret["transition"] = create_conditioned_transition_block_weights(
             from_ref=from_ref.transition)
-        
+
         ret["output_projection"] = (from_ref.output_projection[0].weight.data,
                                     from_ref.output_projection[0].bias.data)
     return ret
@@ -2296,6 +2297,7 @@ def create_msa_module_weights(msa_s: int = None,
                               pairwise_head_width: int = 32,
                               pairwise_num_heads: int = 4,
                               use_paired_feature: bool = True,
+                              torch_dtype: torch.dtype = torch.float32,
                               from_ref: RefMSAModule = None):
     if not from_ref:
         s_proj_weight = torch.empty(size=[msa_s, token_s], dtype=torch_dtype)
@@ -2347,3 +2349,107 @@ def load_msa_module_weights_torch(module,
     for i in range(len(msa_layers_weights)):
         load_msa_layer_weights_torch(module.layers[i], msa_layers_weights[i],
                                      dtype)
+
+
+def create_atom_embedding_weights(from_ref: RefAtomEmbedding = None):
+    """ TODO: Implement for the structure prediction path """
+    embed_atom_features_weight = from_ref.embed_atom_features.weight.data
+    embed_atom_features_bias = from_ref.embed_atom_features.bias.data
+    embed_atompair_ref_pos_weight = from_ref.embed_atompair_ref_pos.weight.data
+    embed_atompair_ref_dist_weight = from_ref.embed_atompair_ref_dist.weight.data
+    embed_atompair_mask_weight = from_ref.embed_atompair_mask.weight.data
+    c_to_p_trans_k_weight = from_ref.c_to_p_trans_k[1].weight.data
+    c_to_p_trans_q_weight = from_ref.c_to_p_trans_q[1].weight.data
+
+    p_mlp_1_weight = from_ref.p_mlp[1].weight.data
+    p_mlp_3_weight = from_ref.p_mlp[3].weight.data
+    p_mlp_5_weight = from_ref.p_mlp[5].weight.data
+
+    return (embed_atom_features_weight, embed_atom_features_bias,
+            embed_atompair_ref_pos_weight, embed_atompair_ref_dist_weight,
+            embed_atompair_mask_weight, c_to_p_trans_k_weight,
+            c_to_p_trans_q_weight, p_mlp_1_weight, p_mlp_3_weight,
+            p_mlp_5_weight)
+
+
+def load_atom_embedding_weights_ref_torch(module, weights_and_biases):
+    """ TODO: Implement for the structure prediction path """
+    (embed_atom_features_weight, embed_atom_features_bias,
+     embed_atompair_ref_pos_weight, embed_atompair_ref_dist_weight,
+     embed_atompair_mask_weight, c_to_p_trans_k_weight, c_to_p_trans_q_weight,
+     p_mlp_1_weight, p_mlp_3_weight, p_mlp_5_weight) = weights_and_biases
+
+    module.embed_atom_features.weight.data.copy_(
+        embed_atom_features_weight.to("cuda"))
+    module.embed_atom_features.bias.data.copy_(
+        embed_atom_features_bias.to("cuda"))
+    module.embed_atompair_ref_pos.weight.data.copy_(
+        embed_atompair_ref_pos_weight.to("cuda"))
+    module.embed_atompair_ref_dist.weight.data.copy_(
+        embed_atompair_ref_dist_weight.to("cuda"))
+    module.embed_atompair_mask.weight.data.copy_(
+        embed_atompair_mask_weight.to("cuda"))
+    module.c_to_p_trans_k[1].weight.data.copy_(c_to_p_trans_k_weight.to("cuda"))
+    module.c_to_p_trans_q[1].weight.data.copy_(c_to_p_trans_q_weight.to("cuda"))
+    module.p_mlp[1].weight.data.copy_(p_mlp_1_weight.to("cuda"))
+    module.p_mlp[3].weight.data.copy_(p_mlp_3_weight.to("cuda"))
+    module.p_mlp[5].weight.data.copy_(p_mlp_5_weight.to("cuda"))
+
+
+def load_atom_embedding_weights_torch(module,
+                                      weights_and_biases,
+                                      dtype=torch.float32):
+    """ TODO: Implement for the structure prediction path """
+    (embed_atom_features_weight, embed_atom_features_bias,
+     embed_atompair_ref_pos_weight, embed_atompair_ref_dist_weight,
+     embed_atompair_mask_weight, c_to_p_trans_k_weight, c_to_p_trans_q_weight,
+     p_mlp_1_weight, p_mlp_3_weight, p_mlp_5_weight) = weights_and_biases
+    module.embed_atom_features.load_weights([{
+        "weight":
+        embed_atom_features_weight.to(dtype).to("cuda"),
+        "bias":
+        embed_atom_features_bias.to(dtype).to("cuda")
+        if embed_atom_features_bias is not None else None
+    }])
+    module.embed_atompair_ref_pos.load_weights([{
+        "weight":
+        embed_atompair_ref_pos_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.embed_atompair_ref_dist.load_weights([{
+        "weight":
+        embed_atompair_ref_dist_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.embed_atompair_mask.load_weights([{
+        "weight":
+        embed_atompair_mask_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.c_to_p_trans_k[1].load_weights([{
+        "weight":
+        c_to_p_trans_k_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.c_to_p_trans_q[1].load_weights([{
+        "weight":
+        c_to_p_trans_q_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.p_mlp[1].load_weights([{
+        "weight": p_mlp_1_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    module.p_mlp[3].load_weights([{
+        "weight": p_mlp_3_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    module.p_mlp[5].load_weights([{
+        "weight": p_mlp_5_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])

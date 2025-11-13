@@ -12,8 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 from functools import partial
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -21,6 +22,7 @@ import torch.nn.functional as F
 from test_utils.boltz.ref_attn import (RefPairwiseSelfAttention,
                                        RefTriangleAttention)
 
+from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_indexing_matrix, query_to_keys)
 from tensorrt_bionemo.hubs import load_weights
@@ -560,7 +562,7 @@ class RefDiffusionTransformerLayer(nn.Module):
 
     def __init__(
         self,
-        heads: int,
+        heads: int = 4,
         dim: int = 384,
         dim_single_cond: Optional[int] = None,
         dim_pairwise: int = 128,
@@ -589,6 +591,7 @@ class RefDiffusionTransformerLayer(nn.Module):
         mask: torch.Tensor,
         compute_pair_bias: bool = True,
         multiplicity: int = 1,
+        attn_metadata: Optional[AttentionMetadata] = None,
     ):
         b = self.adaln(a, s)
         b = self.pair_bias_attn(
@@ -596,6 +599,7 @@ class RefDiffusionTransformerLayer(nn.Module):
             z=bias,
             mask=mask,
             compute_pair_bias=compute_pair_bias,
+            attn_metadata=attn_metadata,
         )
         b = self.output_projection(s) * b
         a = a + b
@@ -1689,3 +1693,754 @@ class RefAtomEmbedding(nn.Module):
         p = p + self.c_to_p_trans_k(to_keys(c).view(B, K, 1, H, c.shape[-1]))
         p = p + self.p_mlp(p)
         return q, c, p, to_keys
+
+
+class BoltzRefDiffusionTransformer(nn.Module):
+
+    def __init__(self,
+                 num_blocks: int = 3,
+                 heads: int = 4,
+                 dim: int = 384,
+                 dim_single_cond: Optional[int] = None,
+                 dim_pairwise: int = 128):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        self.num_blocks = num_blocks
+        self.heads = heads
+        self.dim = dim
+        self.dim_single_cond = dim_single_cond
+        self.dim_pairwise = dim_pairwise
+
+        for i in range(self.num_blocks):
+            layer = RefDiffusionTransformerLayer(
+                heads=heads,
+                dim=dim,
+                dim_single_cond=dim_single_cond,
+                dim_pairwise=dim_pairwise,
+            )
+            self.layers.append(layer)
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2",
+            layer_path: str = "input_embedder.atom_attention_encoder",
+            state_dict: Optional[dict] = None
+    ) -> 'BoltzRefDiffusionTransformer':
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        search = layer_path + ".layers."
+
+        num_blocks = 0
+        for state_key in state_dict.keys():
+            if search in state_key:
+                layer_id = int(state_key.replace(search, "").split(".")[0])
+                num_blocks = max(layer_id, num_blocks)
+
+        num_blocks += 1
+        layers = nn.ModuleList()
+        for i in range(num_blocks):
+            layer = RefDiffusionTransformerLayer.load_weights(
+                model=model, layer_path=search + str(i))
+            layers.append(layer)
+        boltz_ref_diffusion_transformer = cls(
+            num_blocks=num_blocks,
+            heads=layers[0].pair_bias_attn.num_heads,
+            dim=layers[0].adaln.dim,
+            dim_single_cond=layers[0].adaln.dim_single_cond)
+        boltz_ref_diffusion_transformer.layers = layers
+        return boltz_ref_diffusion_transformer
+
+    def forward(self,
+                a: torch.Tensor,
+                s: torch.Tensor = None,
+                z: Optional[torch.Tensor] = None,
+                mask: Optional[torch.Tensor] = None,
+                multiplicity: int = 1,
+                attn_metadata: Optional[AttentionMetadata] = None):
+
+        L = self.num_blocks
+        N, M, D = z.shape[-3:]
+        heads = D // L
+        batch_dims = z.shape[:-3]
+        z = z.view(*batch_dims, N, M, L, heads)  # [*, N, N, L, heads]
+        z = torch.moveaxis(z, -1, -4)  # [*, heads, N, N, L]
+        for i, layer in enumerate(self.layers):
+            bias = z[..., i]
+            a = layer(a=a,
+                      s=s,
+                      bias=bias,
+                      mask=mask,
+                      multiplicity=multiplicity,
+                      attn_metadata=attn_metadata)
+        return a
+
+
+class RefAtomTransformer(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/transformersv2.py#L211"""
+
+    def __init__(self,
+                 attn_window_queries: int,
+                 attn_window_keys: int,
+                 diffusion_transformer: nn.Module = None):
+        super().__init__()
+        self.attn_window_queries = attn_window_queries
+        self.attn_window_keys = attn_window_keys
+        self.diffusion_transformer = diffusion_transformer
+
+    @classmethod
+    def load_weights(
+            cls,
+            attn_window_queries: int = 32,
+            attn_window_keys: int = 128,
+            model: str = "boltz-2",
+            layer_path:
+        str = "structure_module.score_model.atom_attention_encoder",
+            state_dict: Optional[dict] = None):
+        """ TODO: Implement for the structure prediction path """
+
+        diffusion_transformer = BoltzRefDiffusionTransformer().load_weights(
+            model=model, layer_path=layer_path + ".diffusion_transformer")
+        atom_transformer = cls(attn_window_queries=attn_window_queries,
+                               attn_window_keys=attn_window_keys,
+                               diffusion_transformer=diffusion_transformer)
+        return atom_transformer
+
+    def forward(self,
+                q: torch.Tensor,
+                c: torch.Tensor,
+                bias: torch.Tensor,
+                mask: torch.Tensor,
+                multiplicity: int = 1,
+                attn_metadata: Optional[AttentionMetadata] = None):
+
+        assert attn_metadata is not None, "Attention metadata is required for RefAtomTransformer"
+
+        W = self.attn_window_queries
+        H = self.attn_window_keys
+
+        B, multiplicity, N, _ = q.shape
+        NW = N // W
+
+        # reshape tokens
+        q = q.view((B, multiplicity, NW, W, -1))
+        c = c.view((B, 1, NW, W, -1))  # expand dim 1 for broadcasting
+        mask = mask.view(B, 1, NW, W)  # expand dim 1 for broadcasting
+
+        # and repeat at the dim 1, this is different from the original implementation.
+        bias = bias.view((B, 1, NW, W, H, -1))  # expand dim 1 for broadcasting
+        a = self.diffusion_transformer(a=q,
+                                       s=c,
+                                       z=bias,
+                                       mask=mask,
+                                       multiplicity=multiplicity,
+                                       attn_metadata=attn_metadata)
+
+        a = a.view(B * multiplicity, N, -1)
+        return a
+
+
+class RefAtomAttentionEncoder(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/encodersv2.py#L414"""
+
+    def __init__(self,
+                 atom_s: int,
+                 token_s: int,
+                 atoms_per_window_queries: int,
+                 atoms_per_window_keys: int,
+                 diffusion_transformer_cls: Any = None,
+                 structure_prediction=True,
+                 dtype: Optional[torch.dtype] = None):
+        super().__init__()
+        self.token_s = token_s
+        self.atom_s = atom_s
+        self.atoms_per_window_queries = atoms_per_window_queries
+        self.atoms_per_window_keys = atoms_per_window_keys
+        self.structure_prediction = structure_prediction
+
+        self.r_to_q_trans = nn.Linear(3, atom_s, bias=False)
+
+        self.atom_encoder = RefAtomTransformer(
+            attn_window_queries=atoms_per_window_queries,
+            attn_window_keys=atoms_per_window_keys)
+
+        self.atom_to_token_trans = nn.Sequential(
+            nn.Linear(atom_s,
+                      2 * token_s if structure_prediction else token_s,
+                      bias=False), nn.ReLU())
+
+    @classmethod
+    def load_weights(
+            cls,
+            attn_window_queries: int = 32,
+            attn_window_keys: int = 128,
+            structure_prediction: bool = True,
+            model: str = "boltz-2",
+            layer_path:
+        str = "structure_module.score_model.atom_attention_encoder",
+            state_dict: Optional[dict] = None):
+        """ TODO: Implement for the structure prediction path """
+
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        atom_transformer = RefAtomTransformer.load_weights(
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys,
+            model=model,
+            layer_path=layer_path + ".atom_encoder")
+
+        atom_to_token_trans_weights = state_dict[
+            layer_path + ".atom_to_token_trans.0.weight"]
+        if structure_prediction:
+            token_s = atom_to_token_trans_weights.shape[0] // 2
+        else:
+            token_s = atom_to_token_trans_weights.shape[0]
+
+        atom_s = atom_to_token_trans_weights.shape[1]
+
+        atom_attention_encoder = cls(
+            atom_s=atom_s,
+            token_s=token_s,
+            atoms_per_window_queries=attn_window_queries,
+            atoms_per_window_keys=attn_window_keys,
+            structure_prediction=structure_prediction,
+        )
+        r_to_q_trans_weight = state_dict[layer_path + ".r_to_q_trans.weight"]
+        atom_attention_encoder.r_to_q_trans.weight.data.copy_(
+            r_to_q_trans_weight)
+        setattr(atom_attention_encoder, "atom_encoder", atom_transformer)
+
+        atom_attention_encoder.atom_to_token_trans[0].weight.data.copy_(
+            atom_to_token_trans_weights)
+        return atom_attention_encoder
+
+    def forward(self,
+                atom_to_token: torch.Tensor,
+                atom_pad_mask: torch.Tensor,
+                q: torch.Tensor,
+                c: torch.Tensor,
+                atom_enc_bias: torch.Tensor,
+                r=None,
+                multiplicity: int = 1,
+                attn_metadata: Optional[AttentionMetadata] = None):
+
+        atom_mask = atom_pad_mask.bool()
+        if self.structure_prediction:
+            r_to_q = self.r_to_q_trans(r)
+            q = q + r_to_q
+
+        q = q.unsqueeze(1)
+        q = q.repeat_interleave(multiplicity,
+                                1)  # [B, multiplicity, N_atoms, D]
+
+        q = self.atom_encoder(
+            q=q,
+            c=c,
+            mask=atom_mask,
+            bias=atom_enc_bias,
+            multiplicity=multiplicity,
+            attn_metadata=attn_metadata,
+        )
+
+        with torch.autocast("cuda", enabled=False):
+            q_to_a = self.atom_to_token_trans(q)
+            atom_to_token = atom_to_token.repeat_interleave(multiplicity, 0)
+            atom_to_token_mean = atom_to_token / (
+                atom_to_token.sum(dim=1, keepdim=True) + 1e-6)
+            a = torch.bmm(atom_to_token_mean.transpose(1, 2), q_to_a)
+
+        a = a.to(q)
+
+        return a, q, c
+
+
+class RefAtomAttentionDecoder(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/encodersv2.py#L495"""
+
+    def __init__(self,
+                 atom_s: int,
+                 token_s: int,
+                 atoms_per_window_queries: int,
+                 atoms_per_window_keys: int,
+                 diffusion_transformer_cls: Any = None,
+                 dtype: Optional[torch.dtype] = None):
+        super().__init__()
+
+        self.a_to_q_trans = nn.Linear(2 * token_s, atom_s, bias=False)
+        self.token_s = token_s
+        self.atom_s = atom_s
+        self.atoms_per_window_queries = atoms_per_window_queries
+        self.atoms_per_window_keys = atoms_per_window_keys
+
+        self.atom_decoder = RefAtomTransformer(
+            attn_window_queries=atoms_per_window_queries,
+            attn_window_keys=atoms_per_window_keys)
+
+        self.atom_feat_to_atom_pos_update = nn.Sequential(
+            nn.LayerNorm(atom_s), nn.Linear(atom_s, 3, bias=False))
+
+    @classmethod
+    def load_weights(
+            cls,
+            attn_window_queries: int = 32,
+            attn_window_keys: int = 128,
+            model: str = "boltz-2",
+            layer_path:
+        str = "structure_module.score_model.atom_attention_decoder",
+            state_dict: Optional[dict] = None):
+        """ TODO: Implement for the structure prediction path """
+
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        atom_transformer = RefAtomTransformer.load_weights(
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys,
+            model=model,
+            layer_path=layer_path + ".atom_decoder")
+
+        a_to_q_trans_weight = state_dict[layer_path + ".a_to_q_trans.weight"]
+        atom_s = a_to_q_trans_weight.shape[0]
+        token_s = a_to_q_trans_weight.shape[1] // 2
+
+        atom_attention_decoder = cls(
+            atom_s=atom_s,
+            token_s=token_s,
+            atoms_per_window_queries=attn_window_queries,
+            atoms_per_window_keys=attn_window_keys)
+        setattr(atom_attention_decoder, "atom_decoder", atom_transformer)
+
+        atom_attention_decoder.a_to_q_trans.weight.data.copy_(
+            a_to_q_trans_weight)
+
+        atom_feat_to_atom_pos_update_norm_weight = state_dict[
+            layer_path + ".atom_feat_to_atom_pos_update.0.weight"]
+        atom_feat_to_atom_pos_update_norm_bias = state_dict[
+            layer_path + ".atom_feat_to_atom_pos_update.0.bias"]
+        atom_feat_to_atom_pos_update_linear_weight = state_dict[
+            layer_path + ".atom_feat_to_atom_pos_update.1.weight"]
+
+        atom_attention_decoder.atom_feat_to_atom_pos_update[
+            0].weight.data.copy_(atom_feat_to_atom_pos_update_norm_weight)
+        atom_attention_decoder.atom_feat_to_atom_pos_update[0].bias.data.copy_(
+            atom_feat_to_atom_pos_update_norm_bias)
+        atom_attention_decoder.atom_feat_to_atom_pos_update[
+            1].weight.data.copy_(atom_feat_to_atom_pos_update_linear_weight)
+
+        return atom_attention_decoder
+
+    def forward(self,
+                atom_to_token: torch.Tensor,
+                atom_pad_mask: torch.Tensor,
+                a: torch.Tensor,
+                q: torch.Tensor,
+                c: torch.Tensor,
+                atom_dec_bias: torch.Tensor,
+                multiplicity: int = 1,
+                attn_metadata: Optional[AttentionMetadata] = None):
+
+        B = atom_to_token.shape[0]
+        with torch.autocast("cuda", enabled=False):
+            atom_to_token = atom_to_token.repeat_interleave(multiplicity, 0)
+
+            a_to_q = self.a_to_q_trans(a)
+            a_to_q = torch.bmm(atom_to_token, a_to_q)
+        q = q + a_to_q.to(q)
+        atom_mask = atom_pad_mask.bool()
+        N, H = q.shape[-2:]
+        q = q.view(B, multiplicity, N, H)
+
+        q = self.atom_decoder(
+            q=q,
+            c=c,
+            mask=atom_mask,
+            bias=atom_dec_bias,
+            attn_metadata=attn_metadata,
+        )
+        r_update = self.atom_feat_to_atom_pos_update(q)
+        return r_update
+
+
+class RefFourierEmbedding(nn.Module):
+    """Fourier embedding layer."""
+
+    def __init__(self, dim):
+        """Initialize the Fourier Embeddings.
+
+        Args:
+            dim : int
+                The dimension of the embeddings.
+            dtype: torch.dtype
+                The data type of the input features.
+            mapping: Optional[Mapping]
+                The mapping of the input features.
+        """
+        super().__init__()
+        self.proj = nn.Linear(1, dim)
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2",
+            layer_path:
+        str = "structure_module.score_model.single_conditioner.fourier_embed",
+            state_dict: Optional[dict] = None) -> 'RefFourierEmbedding':
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+        proj_weight = state_dict[layer_path + ".proj.weight"]
+        proj_bias = state_dict[layer_path + ".proj.bias"]
+        fourier_embed = cls(dim=proj_weight.shape[0])
+        fourier_embed.proj.weight.data.copy_(proj_weight)
+        fourier_embed.proj.bias.data.copy_(proj_bias)
+        return fourier_embed
+
+    def forward(
+        self,
+        times,
+    ):
+        """
+        Args:
+            times: Input time tensor for diffusion process, shape (batch_size,)
+
+        Returns:
+            Fourier embedded time features with cosine encoding
+        """
+        times = times.unsqueeze(1)
+        rand_proj = self.proj(times)
+        return torch.cos(2 * math.pi * rand_proj)
+
+
+class RefSingleConditioning(nn.Module):
+    """ Reference: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/encodersv2.py#L123"""
+
+    def __init__(self,
+                 token_s: int = 384,
+                 dim_fourier: int = 256,
+                 num_transitions: int = 2,
+                 transition_expansion_factor: int = 2,
+                 eps: float = 1e-20,
+                 disable_times: bool = False) -> None:
+        super().__init__()
+        self.disable_times = disable_times
+
+        self.token_s = token_s
+        self.dim_fourier = dim_fourier
+        self.norm_single = nn.LayerNorm(2 * token_s, eps=eps)
+        self.single_embed = nn.Linear(2 * token_s, 2 * token_s)
+        if not self.disable_times:
+            self.fourier_embed = RefFourierEmbedding(dim_fourier)
+            self.norm_fourier = nn.LayerNorm(dim_fourier, eps=eps)
+            self.fourier_to_single = nn.Linear(dim_fourier,
+                                               2 * token_s,
+                                               bias=False)
+
+        transitions = nn.ModuleList([])
+        for _ in range(num_transitions):
+            transition = RefTransition(dim=2 * token_s,
+                                       hidden=transition_expansion_factor * 2 *
+                                       token_s)
+            transitions.append(transition)
+
+        self.transitions = transitions
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2",
+            layer_path: str = "structure_module.score_model.single_conditioner",
+            state_dict: Optional[dict] = None) -> 'RefSingleConditioning':
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        num_transitions = 0
+        transition_layer_path = layer_path + ".transitions."
+        for state_key in state_dict.keys():
+            if transition_layer_path in state_key:
+                num_layer = int(
+                    state_key.replace(transition_layer_path, "").split(".")[0])
+                num_transitions = max(num_transitions, num_layer + 1)
+        transitions = nn.ModuleList([])
+
+        for i in range(num_transitions):
+            transition = RefTransition.load_weights(
+                model=model,
+                layer_path=transition_layer_path + f"{i}",
+                state_dict=state_dict)
+            transitions.append(transition)
+
+        fourier_embed = RefFourierEmbedding.load_weights(model=model,
+                                                         layer_path=layer_path +
+                                                         ".fourier_embed",
+                                                         state_dict=state_dict)
+        token_s = state_dict[
+            "structure_module.score_model.single_conditioner.norm_single.weight"].shape[
+                0] // 2
+        norm_single_weight = state_dict[
+            "structure_module.score_model.single_conditioner.norm_single.weight"]
+        norm_single_bias = state_dict[
+            "structure_module.score_model.single_conditioner.norm_single.bias"]
+        norm_single = nn.LayerNorm(2 * token_s)
+        norm_single.weight.data.copy_(norm_single_weight)
+        norm_single.bias.data.copy_(norm_single_bias)
+
+        dim_fourier = state_dict[
+            "structure_module.score_model.single_conditioner.norm_fourier.weight"].shape[
+                0]
+        norm_fourier_weight = state_dict[
+            "structure_module.score_model.single_conditioner.norm_fourier.weight"]
+        norm_fourier_bias = state_dict[
+            "structure_module.score_model.single_conditioner.norm_fourier.bias"]
+        norm_fourier = nn.LayerNorm(dim_fourier)
+        norm_fourier.weight.data.copy_(norm_fourier_weight)
+        norm_fourier.bias.data.copy_(norm_fourier_bias)
+
+        fourier_to_single = nn.Linear(dim_fourier, 2 * token_s, bias=False)
+        fourier_to_single.weight.data.copy_(state_dict[
+            "structure_module.score_model.single_conditioner.fourier_to_single.weight"]
+                                            )
+
+        single_embed_weight = state_dict[
+            "structure_module.score_model.single_conditioner.single_embed.weight"]
+        single_embed_bias = state_dict[
+            "structure_module.score_model.single_conditioner.single_embed.bias"]
+        single_embed = nn.Linear(2 * token_s, 2 * token_s)
+        single_embed.weight.data.copy_(single_embed_weight)
+        single_embed.bias.data.copy_(single_embed_bias)
+
+        single_conditioner = cls(token_s=token_s,
+                                 dim_fourier=dim_fourier,
+                                 num_transitions=num_transitions)
+        setattr(single_conditioner, "norm_single", norm_single)
+        setattr(single_conditioner, "single_embed", single_embed)
+        setattr(single_conditioner, "fourier_embed", fourier_embed)
+        setattr(single_conditioner, "norm_fourier", norm_fourier)
+        setattr(single_conditioner, "fourier_to_single", fourier_to_single)
+        setattr(single_conditioner, "transitions", transitions)
+        return single_conditioner
+
+    def forward(
+        self,
+        times,
+        s_trunk,
+        s_inputs,
+    ):
+        """
+        Args:
+            times: [B]
+            s_trunk: [B, N, token_s]
+            s_inputs: [B, N, token_s]
+        Returns:
+            s: [B, N, 2*token_s]
+            normed_fourier: [B, N, dim_fourier] (None if disable_times is True)
+        """
+        s = torch.cat((s_trunk, s_inputs), dim=-1)
+        s = self.single_embed(self.norm_single(s))
+        normed_fourier = None
+
+        if not self.disable_times:
+            fourier_embed = self.fourier_embed(
+                times)  # note: sigma rescaling done in diffusion module
+            normed_fourier = self.norm_fourier(fourier_embed)
+            fourier_to_single = self.fourier_to_single(normed_fourier)
+            s = fourier_to_single.unsqueeze(1) + s
+
+        for transition in self.transitions:
+            s = transition(s) + s
+
+        return s, normed_fourier
+
+
+class RefDiffusionModule(nn.Module):
+
+    def __init__(self, token_s: int, atom_s: int, atoms_per_window_queries: int,
+                 atoms_per_window_keys: int, dim_fourier: int,
+                 atom_encoder_depth: int, atom_encoder_heads: int,
+                 token_transformer_depth: int, token_transformer_heads: int,
+                 atom_decoder_depth: int, atom_decoder_heads: int,
+                 conditioning_transition_layers: int):
+        super().__init__()
+
+        self.token_s = token_s
+        self.atom_s = atom_s
+        self.atoms_per_window_queries = atoms_per_window_queries
+        self.atoms_per_window_keys = atoms_per_window_keys
+        self.dim_fourier = dim_fourier
+        self.atom_encoder_depth = atom_encoder_depth
+        self.atom_encoder_heads = atom_encoder_heads
+        self.token_transformer_depth = token_transformer_depth
+        self.token_transformer_heads = token_transformer_heads
+        self.atom_decoder_depth = atom_decoder_depth
+        self.atom_decoder_heads = atom_decoder_heads
+        self.conditioning_transition_layers = conditioning_transition_layers
+
+        self.single_conditioner = RefSingleConditioning(
+            token_s=token_s,
+            dim_fourier=dim_fourier,
+            num_transitions=conditioning_transition_layers)
+
+        self.atom_attention_encoder = RefAtomAttentionEncoder(
+            atom_s=atom_s,
+            token_s=token_s,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys)
+
+        self.atom_attention_decoder = RefAtomAttentionDecoder(
+            atom_s=atom_s,
+            token_s=token_s,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys)
+
+        self.s_to_a_linear = nn.Sequential(
+            nn.LayerNorm(2 * token_s),
+            nn.Linear(2 * token_s, 2 * token_s, bias=False))
+
+        self.token_transformer = BoltzRefDiffusionTransformer(
+            dim=2 * token_s,
+            dim_single_cond=2 * token_s,
+            heads=token_transformer_heads,
+            num_blocks=token_transformer_depth,
+        )
+
+        self.a_norm = nn.LayerNorm(2 * token_s)
+
+    @classmethod
+    def load_weights(cls,
+                     attn_window_queries: int = 32,
+                     attn_window_keys: int = 128,
+                     model: str = "boltz-2",
+                     layer_path: str = "structure_module.score_model",
+                     state_dict: Optional[dict] = None) -> 'RefDiffusionModule':
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        single_conditioner = RefSingleConditioning.load_weights(
+            model=model, layer_path=layer_path + ".single_conditioner")
+
+        atom_attention_encoder = RefAtomAttentionEncoder.load_weights(
+            model=model,
+            layer_path=layer_path + ".atom_attention_encoder",
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys)
+
+        atom_attention_decoder = RefAtomAttentionDecoder.load_weights(
+            model=model,
+            layer_path=layer_path + ".atom_attention_decoder",
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys)
+
+        token_transformer = BoltzRefDiffusionTransformer.load_weights(
+            model=model, layer_path=layer_path + ".token_transformer")
+
+        s_to_a_linear_layer_norm_weight = state_dict[layer_path +
+                                                     ".s_to_a_linear.0.weight"]
+        s_to_a_linear_layer_norm_bias = state_dict[layer_path +
+                                                   ".s_to_a_linear.0.bias"]
+
+        s_to_a_linear_layer_linear_weight = state_dict[
+            layer_path + ".s_to_a_linear.1.weight"]
+
+        a_norm_weight = state_dict[layer_path + ".a_norm.weight"]
+        a_norm_bias = state_dict[layer_path + ".a_norm.bias"]
+
+        token_s = single_conditioner.token_s
+        atom_s = atom_attention_encoder.atom_s
+
+        atom_encoder_depth = atom_attention_encoder.atom_encoder.diffusion_transformer.num_blocks
+        atom_encoder_heads = atom_attention_encoder.atom_encoder.diffusion_transformer.heads
+
+        atom_decoder_depth = atom_attention_decoder.atom_decoder.diffusion_transformer.num_blocks
+        atom_decoder_heads = atom_attention_decoder.atom_decoder.diffusion_transformer.heads
+
+        token_transformer_depth = token_transformer.num_blocks
+        token_transformer_heads = 16
+        for i in range(token_transformer_depth):
+            token_transformer.layers[i].pair_bias_attn.num_heads = 16
+            token_transformer.layers[i].pair_bias_attn.head_dim = 48
+
+        conditioning_transition_layers = len(single_conditioner.transitions)
+        dim_fourier = single_conditioner.dim_fourier
+        diffusion_module = cls(
+            token_s=token_s,
+            atom_s=atom_s,
+            atoms_per_window_queries=attn_window_queries,
+            atoms_per_window_keys=attn_window_keys,
+            dim_fourier=dim_fourier,
+            atom_encoder_depth=atom_encoder_depth,
+            atom_encoder_heads=atom_encoder_heads,
+            token_transformer_depth=token_transformer_depth,
+            token_transformer_heads=token_transformer_heads,
+            atom_decoder_depth=atom_decoder_depth,
+            atom_decoder_heads=atom_decoder_heads,
+            conditioning_transition_layers=conditioning_transition_layers)
+        setattr(diffusion_module, "single_conditioner", single_conditioner)
+        setattr(diffusion_module, "atom_attention_encoder",
+                atom_attention_encoder)
+        setattr(diffusion_module, "atom_attention_decoder",
+                atom_attention_decoder)
+        setattr(diffusion_module, "token_transformer", token_transformer)
+        diffusion_module.s_to_a_linear[0].weight.data.copy_(
+            s_to_a_linear_layer_norm_weight)
+        diffusion_module.s_to_a_linear[0].bias.data.copy_(
+            s_to_a_linear_layer_norm_bias)
+        diffusion_module.s_to_a_linear[1].weight.data.copy_(
+            s_to_a_linear_layer_linear_weight)
+        diffusion_module.a_norm.weight.data.copy_(a_norm_weight)
+        diffusion_module.a_norm.bias.data.copy_(a_norm_bias)
+        return diffusion_module
+
+    def forward(self,
+                atom_to_token,
+                atom_pad_mask,
+                token_pad_mask,
+                s_inputs,
+                s_trunk,
+                r_noisy,
+                times,
+                diffusion_conditioning_q,
+                diffusion_conditioning_c,
+                diffusion_conditioning_atom_enc_bias,
+                diffusion_conditioning_token_trans_bias,
+                diffusion_conditioning_atom_dec_bias,
+                multiplicity=1,
+                attn_metadata=None):
+
+        s, normed_fourier = self.single_conditioner(
+            times,
+            s_trunk.repeat_interleave(multiplicity, 0),
+            s_inputs.repeat_interleave(multiplicity, 0),
+        )
+
+        a, q_skip, c_skip = self.atom_attention_encoder(
+            atom_to_token=atom_to_token,
+            atom_pad_mask=atom_pad_mask,
+            q=diffusion_conditioning_q,
+            c=diffusion_conditioning_c,
+            atom_enc_bias=diffusion_conditioning_atom_enc_bias,
+            r=r_noisy,
+            multiplicity=multiplicity,
+            attn_metadata=attn_metadata)
+
+        a = a + self.s_to_a_linear(s)
+
+        mask = token_pad_mask.repeat_interleave(multiplicity, 0)
+
+        a = self.token_transformer(a=a,
+                                   mask=mask,
+                                   s=s,
+                                   z=diffusion_conditioning_token_trans_bias)
+
+        a = self.a_norm(a)
+
+        r_update = self.atom_attention_decoder(
+            atom_to_token=atom_to_token,
+            atom_pad_mask=atom_pad_mask,
+            a=a,
+            q=q_skip,
+            c=c_skip,
+            atom_dec_bias=diffusion_conditioning_atom_dec_bias,
+            multiplicity=multiplicity,
+            attn_metadata=attn_metadata)
+
+        return r_update

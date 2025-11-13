@@ -20,12 +20,7 @@ import torch.nn.functional as F
 from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-
-# isort: off
-from tensorrt_bionemo._torch.layers.attention import (AttentionPairBias,
-                                                      AttentionPairBiasWithCache
-                                                      )
-# isort: on
+from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
@@ -42,7 +37,7 @@ class DiffusionTransformerLayer(nn.Module):
                  dim: int = 384,
                  dim_single_cond: Optional[int] = None,
                  dim_pairwise: int = 128,
-                 with_pair_bias_cache: bool = False,
+                 bias_proj: bool = False,
                  dtype: torch.dtype = None,
                  eps: float = 1e-5,
                  inf: float = 1e9,
@@ -58,22 +53,19 @@ class DiffusionTransformerLayer(nn.Module):
                            dtype=dtype,
                            mapping=mapping,
                            skip_create_weights=skip_create_weights)
-        if with_pair_bias_cache:
-            attn_cls = AttentionPairBiasWithCache
-        else:
-            attn_cls = AttentionPairBias
-        self.pair_bias_attn = attn_cls(layer_idx=layer_idx,
-                                       c_s=dim,
-                                       c_z=dim_pairwise,
-                                       num_heads=num_heads,
-                                       initial_norm=attention_initial_norm,
-                                       eps=eps,
-                                       inf=inf,
-                                       dtype=dtype,
-                                       mapping=mapping,
-                                       skip_create_weights=skip_create_weights)
 
-        self.with_pair_bias_cache = with_pair_bias_cache
+        self.pair_bias_attn = AttentionPairBias(
+            layer_idx=layer_idx,
+            c_s=dim,
+            c_z=dim_pairwise,
+            num_heads=num_heads,
+            initial_norm=attention_initial_norm,
+            bias_proj=bias_proj,
+            eps=eps,
+            inf=inf,
+            dtype=dtype,
+            mapping=mapping,
+            skip_create_weights=skip_create_weights)
 
         self.output_projection = Linear(
             dim_single_cond,
@@ -103,20 +95,13 @@ class DiffusionTransformerLayer(nn.Module):
                 all_reduce_params: Optional[AllReduceParams] = None,
                 **kwargs) -> torch.Tensor:
         """ First version of DiffusionTransformerLayer, does not support multiplicity > 1 and atom encoder, decoder"""
+
         b = self.adaln(a, s)
-        if self.with_pair_bias_cache:
-            b = self.pair_bias_attn(s=b,
-                                    z=bias,
-                                    mask=mask,
-                                    attn_metadata=attn_metadata,
-                                    all_reduce_params=all_reduce_params)
-        else:
-            b = self.pair_bias_attn(s=b,
-                                    z=bias,
-                                    mask=mask,
-                                    compute_pair_bias=False,
-                                    attn_metadata=attn_metadata,
-                                    all_reduce_params=all_reduce_params)
+        b = self.pair_bias_attn(s=b,
+                                z=bias,
+                                mask=mask,
+                                attn_metadata=attn_metadata,
+                                all_reduce_params=all_reduce_params)
         b = F.sigmoid(self.output_projection(s)) * b
         a = a + b
         a = a + self.transition(a, s, all_reduce_params=all_reduce_params)
@@ -147,7 +132,7 @@ class BoltzDiffusionTransformer(nn.Module):
                     dim_single_cond=config.dim_single_cond,
                     dim_pairwise=config.dim_pairwise,
                     post_layer_norm=config.post_layer_norm,
-                    with_pair_bias_cache=config.with_pair_bias_cache,
+                    bias_proj=False,
                     dtype=config.torch_dtype,
                     eps=config.norm_epsilon,
                     inf=config.mask_inf,
@@ -173,17 +158,15 @@ class BoltzDiffusionTransformer(nn.Module):
                 all_reduce_params: Optional[AllReduceParams] = None,
                 **kwargs) -> torch.Tensor:
         L = self.num_blocks
-        if self.version == "v2":
-            # Transformer z -> [*, heads, N, N, L]
-            N, M, D = z.shape[-3:]
-            heads = D // L
-            batch_dims = z.shape[:-3]
-            z = z.view(*batch_dims, N, M, L, heads)  # [*, N, N, L, heads]
-            z = torch.moveaxis(z, -1, -4)  # [*, heads, N, N, L]
-        bias = z
+        # Transformer z -> [*, heads, N, N, L]
+        N, M, D = z.shape[-3:]
+        heads = D // L
+        batch_dims = z.shape[:-3]
+        z = z.view(*batch_dims, N, M, L, heads)  # [*, N, N, L, heads]
+        z = torch.moveaxis(z, -1, -4)  # [*, heads, N, N, L]
+
         for i, layer in enumerate(self.layers):
-            if self.version == "v2":
-                bias = z[..., i]
+            bias = z[..., i]
             a = layer(a, s, bias, mask, attn_metadata, all_reduce_params)
         return a
 
@@ -209,7 +192,7 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 dim_single_cond=config.dim_single_cond,
                 dim_pairwise=config.dim_pairwise,
                 post_layer_norm=config.post_layer_norm,
-                with_pair_bias_cache=config.with_pair_bias_cache,
+                bias_proj=True,
                 dtype=config.torch_dtype,
                 eps=config.norm_epsilon,
                 inf=config.mask_inf,

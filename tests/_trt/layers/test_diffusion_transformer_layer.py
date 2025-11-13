@@ -25,7 +25,8 @@ from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_trt)
 from test_utils.boltz.ref_layers import RefDiffusionTransformerLayer
-from test_utils.openfold3.ref_layers import Openfold3RefDiffusionTransformerLayer
+from test_utils.openfold3.ref_layers import \
+    Openfold3RefDiffusionTransformerLayer
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
 from tensorrt_bionemo._trt.layers.transformers import DiffusionTransformerLayer
@@ -45,13 +46,21 @@ class Scenario:
     use_openfold3: bool = False
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dim=768, dim_single_cond=768),
-    Scenario(dim=768, dim_single_cond=768, num_samples=5),
-    Scenario(dim=768, dim_single_cond=384, num_samples=10, using_silu=True, use_openfold3=True)
-], ids=["tensorrt-boltz-diffusion-module-with-single-sample", 
-        "tensorrt-boltz-diffusion-module-with-multi-samples", 
-        "tensorrt-openfold3-diffusion-module-with-multi-samples"])
+@pytest.mark.parametrize(
+    "sc", [
+        Scenario(dim=768, dim_single_cond=768),
+        Scenario(dim=768, dim_single_cond=768, num_samples=5),
+        Scenario(dim=768,
+                 dim_single_cond=384,
+                 num_samples=10,
+                 using_silu=True,
+                 use_openfold3=True)
+    ],
+    ids=[
+        "tensorrt-boltz-diffusion-module-with-single-sample",
+        "tensorrt-boltz-diffusion-module-with-multi-samples",
+        "tensorrt-openfold3-diffusion-module-with-multi-samples"
+    ])
 def test_diffusion_transformer_layer(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
@@ -66,23 +75,37 @@ def test_diffusion_transformer_layer(sc: Scenario):
         ref_module = Openfold3RefDiffusionTransformerLayer.load_weights()
     else:
         ref_module = RefDiffusionTransformerLayer.load_weights()
-    
+
     ref_module = ref_module.to(device)
 
     weights_and_biases = create_diffusion_transformer_layer_weights(
         from_ref=ref_module)
-    
+
     # Create input tensors with appropriate shapes based on num_samples
     if sc.num_samples == 1:
         a = torch.randn(bs, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
-        s = torch.randn(bs, sc.seq_len, sc.dim_single_cond, dtype=torch.float32).cuda()
+        s = torch.randn(bs, sc.seq_len, sc.dim_single_cond,
+                        dtype=torch.float32).cuda()
         mask = torch.randn(bs, sc.seq_len, dtype=torch.float32).cuda()
     else:
-        a = torch.randn(bs, sc.num_samples, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
-        s = torch.randn(bs, 1, sc.seq_len, sc.dim_single_cond, dtype=torch.float32).cuda()
-        mask = torch.randn(bs, sc.num_samples, sc.seq_len, dtype=torch.float32).cuda()
-    
-    z = torch.randn(bs, sc.num_heads, sc.seq_len, sc.seq_len, dtype=torch.float32).cuda()
+        a = torch.randn(bs,
+                        sc.num_samples,
+                        sc.seq_len,
+                        sc.dim,
+                        dtype=torch.float32).cuda()
+        s = torch.randn(bs,
+                        1,
+                        sc.seq_len,
+                        sc.dim_single_cond,
+                        dtype=torch.float32).cuda()
+        mask = torch.randn(bs, sc.num_samples, sc.seq_len,
+                           dtype=torch.float32).cuda()
+
+    z = torch.randn(bs,
+                    sc.num_heads,
+                    sc.seq_len,
+                    sc.seq_len,
+                    dtype=torch.float32).cuda()
 
     # construct trt network
     builder = tensorrt_llm.Builder()
@@ -92,7 +115,9 @@ def test_diffusion_transformer_layer(sc: Scenario):
         input_a = Tensor(name='input_a', shape=a.shape, dtype=trt_dtype)
         input_s = Tensor(name='input_s', shape=s.shape, dtype=trt_dtype)
         input_z = Tensor(name='input_z', shape=z.shape, dtype=trt_dtype)
-        input_mask = Tensor(name='input_mask', shape=mask.shape, dtype=trt_dtype)
+        input_mask = Tensor(name='input_mask',
+                            shape=mask.shape,
+                            dtype=trt_dtype)
 
         layer_kwargs = {
             'local_layer_idx': 0,
@@ -103,15 +128,18 @@ def test_diffusion_transformer_layer(sc: Scenario):
             'dtype': sc.dtype,
             'mapping': Mapping()
         }
-        
+
         if sc.using_silu:
             layer_kwargs['conditioned_transition_using_silu'] = True
-        
+
         layer = DiffusionTransformerLayer(**layer_kwargs)
 
         load_diffusion_transformer_layer_weights_trt(layer, weights_and_biases)
 
-        output_a = layer(input_a, input_s, input_z, input_mask,
+        output_a = layer(input_a,
+                         input_s,
+                         input_z,
+                         input_mask,
                          attention_params=AttentionParams())
         output_a.mark_output("output_a", trt_dtype)
 

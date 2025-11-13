@@ -156,7 +156,7 @@ def main():
     tik = time.time()
     boltz2_config = Boltz2Config.from_pretrained(
         checkpoint_dir=args.local_checkpoint, is_affinity=args.is_affinity)
-    pairformer_config = boltz2_config.structure_pairformer_config
+    pairformer_config = boltz2_config.recycling_config.pairformer_config
     if args.pairformer_type == "confidence":
         pairformer_config = boltz2_config.confidence_pairformer_config
 

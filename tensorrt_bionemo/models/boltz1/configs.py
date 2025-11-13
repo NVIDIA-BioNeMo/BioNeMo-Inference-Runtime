@@ -15,7 +15,7 @@
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 import torch
 from transformers import PretrainedConfig
@@ -23,6 +23,7 @@ from transformers import PretrainedConfig
 from tensorrt_bionemo.config import (BuildModuleConfig, DimSpec,
                                      PretrainedModuleConfig)
 from tensorrt_bionemo.hubs import load_weights
+from tensorrt_bionemo.mapping import Mapping
 
 from .const import TOKENS
 
@@ -229,8 +230,6 @@ class DiffusionTransformerConfig(PretrainedModuleConfig):
         self.max_diffusion_samples = max_diffusion_samples
         self.max_batch_size = self.max_diffusion_samples * self.max_num_particles
 
-        self.with_pair_bias_cache = self.version == "v1"
-
     @property
     def attention_initial_norm(self):
         return False
@@ -302,6 +301,8 @@ class MSAModuleConfig(PretrainedModuleConfig):
                  pairwise_head_width: int = 32,
                  pairwise_num_heads: int = 4,
                  use_paired_feature: bool = True,
+                 opm_chunk_size: Optional[int] = 16,
+                 opm_mask_chunk_size: Optional[int] = 256,
                  version: str = "v1",
                  triangle_attn_backend: str = 'VANILLA',
                  backend: str = "torch",
@@ -317,6 +318,8 @@ class MSAModuleConfig(PretrainedModuleConfig):
         self.use_paired_feature = use_paired_feature
         self.version = version
         self.triangle_attn_backend = triangle_attn_backend
+        self.opm_chunk_size = opm_chunk_size
+        self.opm_mask_chunk_size = opm_mask_chunk_size
         self.backend = backend
 
     @classmethod
@@ -355,6 +358,52 @@ class MSAModuleConfig(PretrainedModuleConfig):
                             ])
 
 
+class AtomDiffusionConfig(PretrainedModuleConfig):
+
+    def __init__(self,
+                 num_sampling_steps: int = 50,
+                 sigma_min: float = 0.0004,
+                 sigma_max: float = 160.0,
+                 sigma_data: float = 16.0,
+                 rho: float = 7,
+                 P_mean: float = -1.2,
+                 P_std: float = 1.5,
+                 gamma_0: float = 0.8,
+                 gamma_min: float = 1.0,
+                 noise_scale: float = 1.003,
+                 coordinate_augmentation: bool = True,
+                 alignment_reverse_diff: bool = False,
+                 synchronize_sigmas: bool = False,
+                 accumulate_token_repr: bool = True,
+                 version: str = "v1",
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.num_sampling_steps = num_sampling_steps
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        self.rho = rho
+        self.P_mean = P_mean
+        self.P_std = P_std
+        self.gamma_0 = gamma_0
+        self.gamma_min = gamma_min
+        self.noise_scale = noise_scale
+        self.step_scale = 1.5 if version == "v1" else 1.638
+        self.coordinate_augmentation = coordinate_augmentation
+        self.alignment_reverse_diff = alignment_reverse_diff
+        self.synchronize_sigmas = synchronize_sigmas
+        self.version = version
+
+        # FIXME: hardcoded for now
+        self.dim_fourier = 256
+        self.token_s = 384
+        self.accumulate_token_repr = accumulate_token_repr and version == "v1"
+
+    @classmethod
+    def from_dict(cls, config_dict: dict):
+        return cls(**config_dict)
+
+
 class InputEmbedderConfig(PretrainedModuleConfig):
 
     def __init__(self,
@@ -383,6 +432,7 @@ class InputEmbedderConfig(PretrainedModuleConfig):
         self.atom_encoder_heads = atom_encoder_heads
         self.backend = backend
 
+        # See the convert.py for why use the version "v2" here.
         self.diffusion_transformer_config = DiffusionTransformerConfig(
             architecture="diffusion_transformer",
             dtype=self.dtype,
@@ -394,7 +444,7 @@ class InputEmbedderConfig(PretrainedModuleConfig):
             pairwise_attn_backend=pairwise_attn_backend,
             backend=backend,
             mapping=self.mapping,
-            version=version)
+            version="v2")
 
     @classmethod
     def from_dict(cls, config_dict: dict):
@@ -406,30 +456,127 @@ class InputEmbedderConfig(PretrainedModuleConfig):
             self.diffusion_transformer_config.set_dtype(value)
 
 
+class TrunkConfig(PretrainedModuleConfig):
+
+    def __init__(self,
+                 pairformer_config: PairformerConfig = None,
+                 msa_module_config: MSAModuleConfig = None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.pairformer_config = pairformer_config
+        self.msa_module_config = msa_module_config
+
+    def set_dtype(self, value: Union[str, torch.dtype]):
+        super().set_dtype(value)
+        if hasattr(self, "pairformer_config"):
+            self.pairformer_config.set_dtype(value)
+        if hasattr(self, "msa_module_config"):
+            self.msa_module_config.set_dtype(value)
+
+    def set_mapping(self, value: Mapping):
+        super().set_mapping(value)
+        if hasattr(self, "pairformer_config"):
+            self.pairformer_config.set_mapping(value)
+        if hasattr(self, "msa_module_config"):
+            self.msa_module_config.set_mapping(value)
+
+    def set_triangle_attn_backend(self, value: str):
+        if hasattr(self, "pairformer_config"):
+            self.pairformer_config.triangle_attn_backend = value
+        if hasattr(self, "msa_module_config"):
+            self.msa_module_config.triangle_attn_backend = value
+
+
+class ScoreModelConfig(PretrainedModuleConfig):
+
+    def __init__(self,
+                 atom_s: int,
+                 atom_z: int,
+                 token_s: int,
+                 token_z: int,
+                 dim_fourier: int,
+                 atoms_per_window_queries: int,
+                 atoms_per_window_keys: int,
+                 conditioning_transition_layers: int,
+                 version: str = "v1",
+                 atom_encoder_config: DiffusionTransformerConfig = None,
+                 token_transformer_config: DiffusionTransformerConfig = None,
+                 atom_decoder_config: DiffusionTransformerConfig = None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.atom_s = atom_s
+        self.atom_z = atom_z
+        self.token_s = token_s
+        self.token_z = token_z
+        self.dim_fourier = dim_fourier
+        self.atoms_per_window_queries = atoms_per_window_queries
+        self.atoms_per_window_keys = atoms_per_window_keys
+        self.conditioning_transition_layers = conditioning_transition_layers
+        self.atom_encoder_config = atom_encoder_config
+        self.token_transformer_config = token_transformer_config
+        self.atom_decoder_config = atom_decoder_config
+        self.version = version
+
+    def set_dtype(self, value: Union[str, torch.dtype]):
+        super().set_dtype(value)
+        if hasattr(self, "atom_encoder_config"):
+            self.atom_encoder_config.set_dtype(value)
+        if hasattr(self, "token_transformer_config"):
+            self.token_transformer_config.set_dtype(value)
+        if hasattr(self, "atom_decoder_config"):
+            self.atom_decoder_config.set_dtype(value)
+
+    def set_mapping(self, value: Mapping):
+        if hasattr(self, "atom_encoder_config"):
+            self.atom_encoder_config.set_mapping(value)
+        if hasattr(self, "token_transformer_config"):
+            self.token_transformer_config.set_mapping(value)
+        if hasattr(self, "atom_decoder_config"):
+            self.atom_decoder_config.set_mapping(value)
+
+
+class StructureModuleConfig(PretrainedModuleConfig):
+
+    def __init__(self,
+                 score_model_config: ScoreModelConfig = None,
+                 atom_diffusion_config: AtomDiffusionConfig = None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.score_model_config = score_model_config
+        self.atom_diffusion_config = atom_diffusion_config
+
+    def set_dtype(self, value: Union[str, torch.dtype]):
+        super().set_dtype(value)
+        if hasattr(self, "score_model_config"):
+            self.score_model_config.set_dtype(value)
+        if hasattr(self, "atom_diffusion_config"):
+            self.atom_diffusion_config.set_dtype(value)
+
+    def set_mapping(self, value: Mapping):
+        if hasattr(self, "score_model_config"):
+            self.score_model_config.set_mapping(value)
+        if hasattr(self, "atom_diffusion_config"):
+            self.atom_diffusion_config.set_mapping(value)
+
+
 class Boltz1Config(PretrainedConfig):
     model_type = "boltz1"
 
     def __init__(self,
-                 token_s: int,
-                 token_z: int,
-                 atom_s: int,
-                 atom_z: int,
-                 structure_pairformer_config: PairformerConfig = None,
-                 confidence_pairformer_config: PairformerConfig = None,
-                 token_transformer_config: DiffusionTransformerConfig = None,
-                 msa_module_config: MSAModuleConfig = None,
+                 global_config: PretrainedModuleConfig = None,
                  input_embedder_config: InputEmbedderConfig = None,
+                 trunk_config: TrunkConfig = None,
+                 structure_module_config: StructureModuleConfig = None,
+                 confidence_pairformer_config: PairformerConfig = None,
                  **kwargs):
         super().__init__(**kwargs)
-        self.token_s = token_s
-        self.token_z = token_z
-        self.atom_s = atom_s
-        self.atom_z = atom_z
-        self.structure_pairformer_config = structure_pairformer_config
-        self.confidence_pairformer_config = confidence_pairformer_config
-        self.token_transformer_config = token_transformer_config
-        self.msa_module_config = msa_module_config
+
+        self.global_config = global_config
         self.input_embedder_config = input_embedder_config
+        self.trunk_config = trunk_config
+        self.structure_module_config = structure_module_config
+
+        self.confidence_pairformer_config = confidence_pairformer_config
 
     @classmethod
     def from_pretrained(cls,
@@ -442,6 +589,7 @@ class Boltz1Config(PretrainedConfig):
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=False)
         hparams = state_dict["hyper_parameters"]
 
+        num_bins = hparams["num_bins"]
         token_s = hparams["token_s"]
         token_z = hparams["token_z"]
         atom_s = hparams["atom_s"]
@@ -454,47 +602,7 @@ class Boltz1Config(PretrainedConfig):
         msa_pairwise_head_width = hparams["msa_args"]["pairwise_head_width"]
         msa_pairwise_num_heads = hparams["msa_args"]["pairwise_num_heads"]
 
-        structure_pairformer_config = PairformerConfig(
-            architecture="structure_pairformer",
-            token_s=token_s,
-            token_z=token_z,
-            pairwise_head_width=msa_pairwise_head_width,
-            pairwise_num_heads=msa_pairwise_num_heads,
-            num_blocks=hparams["pairformer_args"]["num_blocks"],
-            num_heads=hparams["pairformer_args"]["num_heads"],
-            version="v1",
-            dtype="float32")
-        confidence_pairformer_config = PairformerConfig(
-            architecture="confidence_pairformer",
-            token_s=token_s,
-            token_z=token_z,
-            pairwise_head_width=msa_pairwise_head_width,
-            pairwise_num_heads=msa_pairwise_num_heads,
-            num_blocks=hparams["pairformer_args"]["num_blocks"],
-            num_heads=hparams["pairformer_args"]["num_heads"],
-            version="v1",
-            dtype="float32")
-        token_transformer_config = DiffusionTransformerConfig(
-            architecture="token_transformer",
-            dtype="float32",
-            num_blocks=hparams["score_model_args"]["token_transformer_depth"],
-            num_heads=hparams["score_model_args"]["token_transformer_heads"],
-            dim=2 * token_s,
-            dim_single_cond=2 * token_s,
-            dim_pairwise=token_z,
-            version="v1")
-        msa_module_config = MSAModuleConfig(
-            architecture="msa_module",
-            dtype="float32",
-            msa_s=hparams["msa_args"]["msa_s"],
-            token_z=token_z,
-            token_s=token_s,
-            msa_blocks=hparams["msa_args"]["msa_blocks"],
-            num_tokens=len(TOKENS),
-            pairwise_head_width=msa_pairwise_head_width,
-            pairwise_num_heads=msa_pairwise_num_heads,
-            use_paired_feature=False,
-            version="v1")
+        # Conduct input embedder configuration
         input_embedder_config = InputEmbedderConfig(
             architecture="input_embedder",
             dtype="float32",
@@ -510,13 +618,129 @@ class Boltz1Config(PretrainedConfig):
             pairwise_attn_backend="VANILLA",
             backend="torch")
 
-        return cls(token_s=token_s,
-                   token_z=token_z,
-                   atom_s=atom_s,
-                   atom_z=atom_z,
-                   structure_pairformer_config=structure_pairformer_config,
+        # Conduct recycling configuration
+        structure_pairformer_config = PairformerConfig(
+            architecture="structure_pairformer",
+            token_s=token_s,
+            token_z=token_z,
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            num_blocks=hparams["pairformer_args"]["num_blocks"],
+            num_heads=hparams["pairformer_args"]["num_heads"],
+            version="v1",
+            dtype="float32")
+        msa_module_config = MSAModuleConfig(
+            architecture="msa_module",
+            dtype="float32",
+            msa_s=hparams["msa_args"]["msa_s"],
+            token_z=token_z,
+            token_s=token_s,
+            msa_blocks=hparams["msa_args"]["msa_blocks"],
+            num_tokens=len(TOKENS),
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            use_paired_feature=False,
+            version="v1")
+        trunk_config = TrunkConfig(
+            architecture="recycling",
+            dtype="float32",
+            pairformer_config=structure_pairformer_config,
+            msa_module_config=msa_module_config)
+
+        # Conduct score model configuration
+        diffusion_process_args = hparams["diffusion_process_args"]
+        atom_diffusion_config = AtomDiffusionConfig(
+            architecture="atom_diffusion",
+            dtype="float32",
+            sigma_min=diffusion_process_args["sigma_min"],
+            sigma_max=diffusion_process_args["sigma_max"],
+            sigma_data=diffusion_process_args["sigma_data"],
+            rho=diffusion_process_args["rho"],
+            P_mean=diffusion_process_args["P_mean"],
+            P_std=diffusion_process_args["P_std"],
+            gamma_0=diffusion_process_args["gamma_0"],
+            gamma_min=diffusion_process_args["gamma_min"],
+            noise_scale=diffusion_process_args["noise_scale"],
+            coordinate_augmentation=diffusion_process_args[
+                "coordinate_augmentation"],
+            alignment_reverse_diff=diffusion_process_args[
+                "alignment_reverse_diff"],
+            synchronize_sigmas=diffusion_process_args["synchronize_sigmas"],
+            version="v1")
+
+        atom_encoder_config = DiffusionTransformerConfig(
+            architecture="atom_encoder",
+            dtype="float32",
+            num_blocks=hparams["score_model_args"]["atom_encoder_depth"],
+            num_heads=hparams["score_model_args"]["atom_encoder_heads"],
+            dim=atom_s,
+            dim_single_cond=atom_s,
+            dim_pairwise=None,
+            version="v2")
+        token_transformer_config = DiffusionTransformerConfig(
+            architecture="token_transformer",
+            dtype="float32",
+            num_blocks=hparams["score_model_args"]["token_transformer_depth"],
+            num_heads=hparams["score_model_args"]["token_transformer_heads"],
+            dim=2 * token_s,
+            dim_single_cond=2 * token_s,
+            dim_pairwise=token_z,
+            version="v2")
+        atom_decoder_config = DiffusionTransformerConfig(
+            architecture="atom_decoder",
+            dtype="float32",
+            num_blocks=hparams["score_model_args"]["atom_decoder_depth"],
+            num_heads=hparams["score_model_args"]["atom_decoder_heads"],
+            dim=atom_s,
+            dim_single_cond=atom_s,
+            dim_pairwise=None,
+            version="v2")
+        score_model_config = ScoreModelConfig(
+            architecture="score_model",
+            dtype="float32",
+            atom_s=atom_s,
+            atom_z=atom_z,
+            token_s=token_s,
+            token_z=token_z,
+            dim_fourier=hparams["score_model_args"]["dim_fourier"],
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys,
+            conditioning_transition_layers=hparams["score_model_args"]
+            ["conditioning_transition_layers"],
+            version="v1",
+            atom_encoder_config=atom_encoder_config,
+            token_transformer_config=token_transformer_config,
+            atom_decoder_config=atom_decoder_config)
+        structure_module_config = StructureModuleConfig(
+            architecture="structure_module",
+            dtype="float32",
+            score_model_config=score_model_config,
+            atom_diffusion_config=atom_diffusion_config)
+
+        # Conduct confidence module configuration
+        confidence_pairformer_config = PairformerConfig(
+            architecture="confidence_pairformer",
+            token_s=token_s,
+            token_z=token_z,
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            num_blocks=hparams["pairformer_args"]["num_blocks"],
+            num_heads=hparams["pairformer_args"]["num_heads"],
+            version="v1",
+            dtype="float32")
+
+        global_config = PretrainedModuleConfig(architecture="global",
+                                               dtype="float32",
+                                               token_s=token_s,
+                                               token_z=token_z,
+                                               atom_s=atom_s,
+                                               atom_z=atom_z,
+                                               num_bins=num_bins)
+
+        return cls(global_config=global_config,
+                   trunk_config=trunk_config,
                    confidence_pairformer_config=confidence_pairformer_config,
                    token_transformer_config=token_transformer_config,
-                   msa_module_config=msa_module_config,
                    input_embedder_config=input_embedder_config,
+                   structure_module_config=structure_module_config,
                    **kwargs)

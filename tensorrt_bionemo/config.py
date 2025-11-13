@@ -150,6 +150,9 @@ class PretrainedModuleConfig:
             self.torch_dtype = value
             self.dtype = torch_dtype_to_str(value)
 
+    def set_mapping(self, value: Mapping):
+        self.mapping = value
+
 
 @dataclass
 class BuildModuleConfig:

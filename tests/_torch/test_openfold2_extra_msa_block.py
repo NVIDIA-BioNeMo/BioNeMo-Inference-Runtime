@@ -24,7 +24,7 @@ from test_utils.openfold.create_and_load_weights import (
     create_extra_msa_block_weights, load_extra_msa_block_weights_torch)
 from test_utils.openfold.ref_layers import RefExtraMSABlock
 
-from tensorrt_bionemo._torch.layers.recycling.openfold import ExtraMSABlock
+from tensorrt_bionemo._torch.modules.openfold.trunk import ExtraMSABlock
 from tensorrt_bionemo.mapping import Mapping
 
 

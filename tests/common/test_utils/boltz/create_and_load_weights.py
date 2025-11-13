@@ -1278,6 +1278,7 @@ def create_diffusion_transformer_layer_weights(
         dim_single_cond=None,
         dim_pairwise=None,
         torch_dtype=None,
+        compute_pair_bias=True,
         from_ref: RefDiffusionTransformerLayer = None):
     ret = {}
     if not from_ref:
@@ -1304,7 +1305,8 @@ def create_diffusion_transformer_layer_weights(
         ret["adaln"] = create_adaln_weights(from_ref=from_ref.adaln)
 
         ret["pair_bias_attn"] = create_self_pairwise_attention_weights(
-            from_ref=from_ref.pair_bias_attn)
+            from_ref=from_ref.pair_bias_attn,
+            compute_pair_bias=compute_pair_bias)
 
         ret["transition"] = create_conditioned_transition_block_weights(
             from_ref=from_ref.transition)
@@ -2453,3 +2455,239 @@ def load_atom_embedding_weights_torch(module,
         "weight": p_mlp_5_weight.to(dtype).to("cuda"),
         "bias": None
     }])
+
+
+def create_atom_attention_encoder_weights(
+        from_ref: RefAtomAttentionEncoder = None):
+    num_heads = from_ref.atom_encoder.diffusion_transformer.layers[
+        0].pair_bias_attn.num_heads
+    dim = from_ref.atom_encoder.diffusion_transformer.layers[0].adaln.dim
+    dim_single_cond = from_ref.atom_encoder.diffusion_transformer.dim_single_cond
+    dim_pairwise = from_ref.atom_encoder.diffusion_transformer.dim_pairwise
+    compute_pair_bias = from_ref.atom_encoder.diffusion_transformer.layers[
+        0].pair_bias_attn.compute_pair_bias
+    atom_transformer_weights = []
+    for layer in range(len(from_ref.atom_encoder.diffusion_transformer.layers)):
+        diffusion_layers_weight_dict = create_diffusion_transformer_layer_weights(
+            num_heads=num_heads,
+            dim=dim,
+            dim_single_cond=dim_single_cond,
+            dim_pairwise=dim_pairwise,
+            torch_dtype=torch.float32,
+            compute_pair_bias=compute_pair_bias,
+            from_ref=from_ref.atom_encoder.diffusion_transformer.layers[layer])
+        atom_transformer_weights.append(diffusion_layers_weight_dict)
+    atom_to_token_trans_weight = from_ref.atom_to_token_trans[0].weight.data
+    r_to_q_trans_weight = from_ref.r_to_q_trans.weight.data
+    return atom_transformer_weights, atom_to_token_trans_weight, r_to_q_trans_weight
+
+
+def load_atom_attention_encoder_weights_torch(module,
+                                              weights_and_biases,
+                                              dtype=torch.float32):
+    atom_transformer_weights, atom_to_token_trans_weight, r_to_q_trans_weight = weights_and_biases
+    for layer in range(len(atom_transformer_weights)):
+        load_diffusion_transformer_layer_weights_torch(
+            module.atom_encoder.diffusion_transformer.layers[layer],
+            atom_transformer_weights[layer])
+
+    module.atom_to_token_trans[0].load_weights([{
+        "weight":
+        atom_to_token_trans_weight.to(torch.float32).to("cuda"),
+        "bias":
+        None
+    }])
+    module.r_to_q_trans.load_weights([{
+        "weight":
+        r_to_q_trans_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+
+
+def create_atom_attention_decoder_weights(
+        from_ref: RefAtomAttentionDecoder = None):
+    num_heads = from_ref.atom_decoder.diffusion_transformer.layers[
+        0].pair_bias_attn.num_heads
+    dim = from_ref.atom_decoder.diffusion_transformer.layers[0].adaln.dim
+    dim_single_cond = from_ref.atom_decoder.diffusion_transformer.dim_single_cond
+    dim_pairwise = from_ref.atom_decoder.diffusion_transformer.dim_pairwise
+    compute_pair_bias = from_ref.atom_decoder.diffusion_transformer.layers[
+        0].pair_bias_attn.compute_pair_bias
+    atom_transformer_weights = []
+
+    for layer in range(len(from_ref.atom_decoder.diffusion_transformer.layers)):
+        diffusion_layers_weight_dict = create_diffusion_transformer_layer_weights(
+            num_heads=num_heads,
+            dim=dim,
+            dim_single_cond=dim_single_cond,
+            dim_pairwise=dim_pairwise,
+            torch_dtype=torch.float32,
+            compute_pair_bias=compute_pair_bias,
+            from_ref=from_ref.atom_decoder.diffusion_transformer.layers[layer])
+        atom_transformer_weights.append(diffusion_layers_weight_dict)
+
+    a_to_q_trans_weight = from_ref.a_to_q_trans.weight.data
+    atom_feat_to_atom_pos_update_norm_weight = from_ref.atom_feat_to_atom_pos_update[
+        0].weight.data
+    atom_feat_to_atom_pos_update_norm_bias = from_ref.atom_feat_to_atom_pos_update[
+        0].bias.data
+    atom_feat_to_atom_pos_update_linear_weight = from_ref.atom_feat_to_atom_pos_update[
+        1].weight.data
+
+    return (atom_transformer_weights, a_to_q_trans_weight,
+            atom_feat_to_atom_pos_update_norm_weight,
+            atom_feat_to_atom_pos_update_norm_bias,
+            atom_feat_to_atom_pos_update_linear_weight)
+
+
+def load_atom_attention_decoder_weights_torch(module,
+                                              weights_and_biases,
+                                              dtype=torch.float32):
+    (atom_transformer_weights, a_to_q_trans_weight,
+     atom_feat_to_atom_pos_update_norm_weight,
+     atom_feat_to_atom_pos_update_norm_bias,
+     atom_feat_to_atom_pos_update_linear_weight) = weights_and_biases
+
+    for layer in range(len(atom_transformer_weights)):
+        load_diffusion_transformer_layer_weights_torch(
+            module.atom_decoder.diffusion_transformer.layers[layer],
+            atom_transformer_weights[layer])
+    module.a_to_q_trans.load_weights([{
+        "weight":
+        a_to_q_trans_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    module.atom_feat_to_atom_pos_update[0].weight.data.copy_(
+        atom_feat_to_atom_pos_update_norm_weight.to("cuda"))
+    module.atom_feat_to_atom_pos_update[0].bias.data.copy_(
+        atom_feat_to_atom_pos_update_norm_bias.to("cuda"))
+
+    module.atom_feat_to_atom_pos_update[1].load_weights([{
+        "weight":
+        atom_feat_to_atom_pos_update_linear_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+
+
+def create_single_conditioning_weights(from_ref: RefSingleConditioning = None):
+    transition_weights = []
+    for layer in range(len(from_ref.transitions)):
+        transition_weights.append(
+            create_transition_weights(from_ref=from_ref.transitions[layer]))
+
+    norm_single_weight = from_ref.norm_single.weight.data
+    norm_single_bias = from_ref.norm_single.bias.data
+    single_embed_weight = from_ref.single_embed.weight.data
+    single_embed_bias = from_ref.single_embed.bias.data
+    norm_fourier_weight = from_ref.norm_fourier.weight.data
+    norm_fourier_bias = from_ref.norm_fourier.bias.data
+    fourier_embed_weight = from_ref.fourier_embed.proj.weight.data
+    fourier_embed_bias = from_ref.fourier_embed.proj.bias.data
+    fourier_to_single_weight = from_ref.fourier_to_single.weight.data
+
+    return (transition_weights, single_embed_weight, single_embed_bias,
+            norm_single_weight, norm_single_bias, norm_fourier_weight,
+            norm_fourier_bias, fourier_embed_weight, fourier_embed_bias,
+            fourier_to_single_weight)
+
+
+def load_single_conditioning_weights_torch(module,
+                                           weights_and_biases,
+                                           dtype=torch.float32):
+    (transition_weights, single_embed_weight, single_embed_bias,
+     norm_single_weight, norm_single_bias, norm_fourier_weight,
+     norm_fourier_bias, fourier_embed_weight, fourier_embed_bias,
+     fourier_to_single_weight) = weights_and_biases
+
+    module.norm_single.weight.data.copy_(norm_single_weight.to("cuda"))
+    module.norm_single.bias.data.copy_(norm_single_bias.to("cuda"))
+    module.single_embed.load_weights([{
+        "weight":
+        single_embed_weight.to(dtype).to("cuda"),
+        "bias":
+        single_embed_bias.to(dtype).to("cuda")
+        if single_embed_bias is not None else None
+    }])
+
+    module.norm_fourier.weight.data.copy_(norm_fourier_weight.to("cuda"))
+    module.norm_fourier.bias.data.copy_(norm_fourier_bias.to("cuda"))
+
+    module.fourier_embed.proj.load_weights([{
+        "weight":
+        fourier_embed_weight.to(dtype).to("cuda"),
+        "bias":
+        fourier_embed_bias.to(dtype).to("cuda")
+        if fourier_embed_bias is not None else None
+    }])
+    module.fourier_to_single.load_weights([{
+        "weight":
+        fourier_to_single_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+    for layer in range(len(transition_weights)):
+        load_transition_weights_torch(module.transitions[layer],
+                                      transition_weights[layer], dtype)
+
+
+def create_diffusion_module_weights(from_ref: RefDiffusionModule = None):
+
+    token_transformer_weights = []
+    for layer in range(len(from_ref.token_transformer.layers)):
+        token_transformer_weights.append(
+            create_diffusion_transformer_layer_weights(
+                from_ref=from_ref.token_transformer.layers[layer]))
+
+    single_conditioning_weights = create_single_conditioning_weights(
+        from_ref=from_ref.single_conditioner)
+    atom_attention_encoder_weights = create_atom_attention_encoder_weights(
+        from_ref=from_ref.atom_attention_encoder)
+    atom_attention_decoder_weights = create_atom_attention_decoder_weights(
+        from_ref=from_ref.atom_attention_decoder)
+
+    s_to_a_linear_weight = from_ref.s_to_a_linear[0].weight.data
+    s_to_a_linear_bias = from_ref.s_to_a_linear[0].bias.data
+    s_to_a_linear_linear_weight = from_ref.s_to_a_linear[1].weight.data
+
+    a_norm_weight = from_ref.a_norm.weight.data
+    a_norm_bias = from_ref.a_norm.bias.data
+
+    return (single_conditioning_weights, atom_attention_encoder_weights,
+            atom_attention_decoder_weights, token_transformer_weights,
+            s_to_a_linear_weight, s_to_a_linear_bias,
+            s_to_a_linear_linear_weight, a_norm_weight, a_norm_bias)
+
+
+def load_diffusion_module_weights_torch(module,
+                                        weights_and_biases,
+                                        dtype=torch.float32):
+    single_conditioning_weights, atom_attention_encoder_weights, atom_attention_decoder_weights, \
+        token_transformer_weights, s_to_a_linear_weight, s_to_a_linear_bias, s_to_a_linear_linear_weight, a_norm_weight, a_norm_bias = weights_and_biases
+
+    load_single_conditioning_weights_torch(module.single_conditioner,
+                                           single_conditioning_weights)
+    for layer in range(len(token_transformer_weights)):
+        load_diffusion_transformer_layer_weights_torch(
+            module.token_transformer.layers[layer],
+            token_transformer_weights[layer])
+
+    load_atom_attention_encoder_weights_torch(module.atom_attention_encoder,
+                                              atom_attention_encoder_weights)
+    load_atom_attention_decoder_weights_torch(module.atom_attention_decoder,
+                                              atom_attention_decoder_weights)
+
+    module.s_to_a_linear[0].weight.data.copy_(s_to_a_linear_weight.to("cuda"))
+    module.s_to_a_linear[0].bias.data.copy_(s_to_a_linear_bias.to("cuda"))
+
+    module.s_to_a_linear[1].load_weights([{
+        "weight":
+        s_to_a_linear_linear_weight.to(dtype).to("cuda"),
+        "bias":
+        None
+    }])
+
+    module.a_norm.weight.data.copy_(a_norm_weight.to("cuda"))
+    module.a_norm.bias.data.copy_(a_norm_bias.to("cuda"))

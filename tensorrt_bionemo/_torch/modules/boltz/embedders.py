@@ -202,6 +202,36 @@ class AtomEmbedding(nn.Module):
             ),
         )
 
+        self.structure_prediction = structure_prediction
+        if structure_prediction:
+            self.s_to_c_trans = nn.Sequential(
+                nn.LayerNorm(token_s, dtype=dtype, eps=eps),
+                Linear(
+                    token_s,
+                    atom_s,
+                    bias=False,
+                    dtype=dtype,
+                    mapping=mapping,
+                    tensor_parallel_mode=TensorParallelMode.COLUMN,
+                    gather_output=True,
+                    skip_create_weights=skip_create_weights,
+                ),
+            )
+
+            self.z_to_p_trans = nn.Sequential(
+                nn.LayerNorm(token_z, dtype=dtype, eps=eps),
+                Linear(
+                    token_z,
+                    atom_z,
+                    bias=False,
+                    dtype=dtype,
+                    mapping=mapping,
+                    tensor_parallel_mode=TensorParallelMode.COLUMN,
+                    gather_output=True,
+                    skip_create_weights=skip_create_weights,
+                ),
+            )
+
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
@@ -281,7 +311,9 @@ class AtomEmbedding(nn.Module):
         res_type: Optional[torch.Tensor] = None,
         modified: Optional[torch.Tensor] = None,
         mol_type: Optional[torch.Tensor] = None,
-        query_to_keys: Optional[Callable] = None
+        query_to_keys: Optional[Callable] = None,
+        s_trunk: Optional[torch.Tensor] = None,
+        z: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -307,6 +339,12 @@ class AtomEmbedding(nn.Module):
                 The modified flag. Shape [B, N_res]
             mol_type: Optional[torch.Tensor]
                 The mol type. Shape [B, N_res]
+            query_to_keys: Optional[Callable]
+                The query to keys function.
+            s_trunk: Optional[torch.Tensor]
+                The s trunk, used for structure prediction. Shape [B, N_tokens, token_s]
+            z: Optional[torch.Tensor]
+                The z, used for structure prediction. Shape [B, N_tokens, token_z]
         TODO: Support disable or enable torch.autocast.
         """
         B, N, _ = ref_pos.shape
@@ -369,6 +407,28 @@ class AtomEmbedding(nn.Module):
 
         q = c
 
+        if self.structure_prediction:
+            # run only in structure model not in initial encoding
+            atom_to_token = atom_to_token.float()  # Long['b m n'],
+
+            s_to_c = self.s_to_c_trans(s_trunk.float())
+            s_to_c = torch.bmm(atom_to_token, s_to_c)
+            c = c + s_to_c.to(c)
+
+            atom_to_token_queries = atom_to_token.view(B, K, W,
+                                                       atom_to_token.shape[-1])
+            atom_to_token_keys = query_to_keys(atom_to_token)
+            # squeeze the multiplicity dimension
+            atom_to_token_keys = atom_to_token_keys.squeeze(1)
+            z_to_p = self.z_to_p_trans(z.float())
+            z_to_p = torch.einsum(
+                "bijd,bwki,bwlj->bwkld",
+                z_to_p,
+                atom_to_token_queries,
+                atom_to_token_keys,
+            )
+            p = p + z_to_p.to(p)
+
         p = p + self.c_to_p_trans_q(c.view(B, K, W, 1, c.shape[-1]))
         p = p + self.c_to_p_trans_k(
             query_to_keys(c).view(B, K, 1, H, c.shape[-1]))
@@ -400,16 +460,39 @@ class Boltz1InputEmbedder(nn.Module):
             use_no_atom_char=False,
             use_atom_backbone_feat=False,
             use_residue_feats_atoms=False,
-            version="v1")
+            version="v1",
+            dtype=config.torch_dtype,
+            mapping=config.mapping,
+            skip_create_weights=config.skip_create_weights,
+        )
+
+        # This trick is used to avoid call attention with bias caching.
+        self.atom_enc_proj_z = nn.ModuleList()
+        for _ in range(config.atom_encoder_depth):
+            self.atom_enc_proj_z.append(
+                nn.Sequential(
+                    nn.LayerNorm(config.atom_z,
+                                 dtype=config.torch_dtype,
+                                 eps=config.norm_epsilon),
+                    Linear(config.atom_z,
+                           config.atom_encoder_heads,
+                           bias=False,
+                           dtype=config.torch_dtype,
+                           mapping=config.mapping,
+                           tensor_parallel_mode=TensorParallelMode.COLUMN,
+                           gather_output=True,
+                           skip_create_weights=config.skip_create_weights),
+                ))
 
         self.atom_attention_encoder = AtomAttentionEncoder(
+            atom_s=config.atom_s,
             token_s=config.token_s,
             atoms_per_window_queries=config.atoms_per_window_queries,
             atoms_per_window_keys=config.atoms_per_window_keys,
             diffusion_transformer_config=config.diffusion_transformer_config,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             structure_prediction=False,
-            dtype=config.dtype,
+            dtype=config.torch_dtype,
             mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
@@ -418,6 +501,12 @@ class Boltz1InputEmbedder(nn.Module):
         self.atom_embedding.load_weights(weights["atom_embedding"])
         self.atom_attention_encoder.load_weights(
             weights["atom_attention_encoder"])
+        for i, proj_z in enumerate(self.atom_enc_proj_z):
+            proj_z[0].weight.data.copy_(
+                weights[f"atom_enc_proj_z.{i}.0"][0]["weight"])
+            proj_z[0].bias.data.copy_(
+                weights[f"atom_enc_proj_z.{i}.0"][0]["bias"])
+            proj_z[1].load_weights(weights[f"atom_enc_proj_z.{i}.1"])
 
     def forward(
             self,
@@ -474,13 +563,16 @@ class Boltz1InputEmbedder(nn.Module):
             query_to_keys=attn_metadata.query_to_keys,
         )
 
+        atom_enc_bias = torch.cat(
+            [proj_z(bias) for proj_z in self.atom_enc_proj_z], dim=-1)
+
         # [B, 1, N_res, D]
         a, _, _, = self.atom_attention_encoder(
             atom_to_token=atom_to_token,
             atom_pad_mask=atom_pad_mask,
             q=q,
             c=c,
-            bias=bias,
+            bias=atom_enc_bias,
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params,
         )
@@ -518,14 +610,18 @@ class Boltz2InputEmbedder(nn.Module):
             use_no_atom_char=config.use_no_atom_char,
             use_atom_backbone_feat=config.use_atom_backbone_feat,
             use_residue_feats_atoms=config.use_residue_feats_atoms,
-            version="v2")
+            version="v2",
+            dtype=config.torch_dtype,
+            mapping=config.mapping,
+            skip_create_weights=config.skip_create_weights,
+        )
 
         self.atom_enc_proj_z = nn.Sequential(
             nn.LayerNorm(config.atom_z),
             Linear(config.atom_z,
                    config.atom_encoder_depth * config.atom_encoder_heads,
                    bias=False,
-                   dtype=config.dtype,
+                   dtype=config.torch_dtype,
                    mapping=config.mapping,
                    tensor_parallel_mode=TensorParallelMode.COLUMN,
                    gather_output=True,
@@ -533,13 +629,14 @@ class Boltz2InputEmbedder(nn.Module):
         )
 
         self.atom_attention_encoder = AtomAttentionEncoder(
+            atom_s=config.atom_s,
             token_s=config.token_s,
             atoms_per_window_queries=config.atoms_per_window_queries,
             atoms_per_window_keys=config.atoms_per_window_keys,
             diffusion_transformer_config=config.diffusion_transformer_config,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             structure_prediction=False,
-            dtype=config.dtype,
+            dtype=config.torch_dtype,
             mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
@@ -548,7 +645,7 @@ class Boltz2InputEmbedder(nn.Module):
             NUM_TOKENS,
             config.token_s,
             bias=False,
-            dtype=config.dtype,
+            dtype=config.torch_dtype,
             mapping=config.mapping,
             tensor_parallel_mode=TensorParallelMode.COLUMN,
             gather_output=True,
@@ -557,7 +654,7 @@ class Boltz2InputEmbedder(nn.Module):
             NUM_TOKENS + 1,
             config.token_s,
             bias=False,
-            dtype=config.dtype,
+            dtype=config.torch_dtype,
             mapping=config.mapping,
             tensor_parallel_mode=TensorParallelMode.COLUMN,
             gather_output=True,
@@ -570,15 +667,16 @@ class Boltz2InputEmbedder(nn.Module):
 
         if self.add_method_conditioning:
             self.method_conditioning_init = nn.Embedding(
-                NUM_METHOD_TYPES, config.token_s)
+                NUM_METHOD_TYPES, config.token_s, dtype=config.torch_dtype)
         if self.add_modified_flag:
-            self.modified_conditioning_init = nn.Embedding(2, config.token_s)
+            self.modified_conditioning_init = nn.Embedding(
+                2, config.token_s, dtype=config.torch_dtype)
         if self.add_cyclic_flag:
             self.cyclic_conditioning_init = Linear(
                 1,
                 config.token_s,
                 bias=False,
-                dtype=config.dtype,
+                dtype=config.torch_dtype,
                 mapping=config.mapping,
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
                 gather_output=True,

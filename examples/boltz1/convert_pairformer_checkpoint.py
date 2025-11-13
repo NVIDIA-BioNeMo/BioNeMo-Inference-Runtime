@@ -147,7 +147,7 @@ def main():
     tik = time.time()
     boltz1_config = Boltz1Config.from_pretrained(
         checkpoint_dir=args.local_checkpoint)
-    pairformer_config = boltz1_config.structure_pairformer_config
+    pairformer_config = boltz1_config.trunk_config.structure_pairformer_config
     if args.pairformer_type == "confidence":
         pairformer_config = boltz1_config.confidence_pairformer_config
     if args.triangle_attn_backend == "CUEQUIV":

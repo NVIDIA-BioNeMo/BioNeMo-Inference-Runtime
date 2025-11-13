@@ -23,7 +23,7 @@ from test_utils.boltz.create_and_load_weights import (
     create_atom_embedding_weights, load_atom_embedding_weights_torch)
 from test_utils.boltz.ref_layers import RefAtomEmbedding
 
-from tensorrt_bionemo._torch.layers.embedders.boltz import AtomEmbedding
+from tensorrt_bionemo._torch.modules.boltz.embedders import AtomEmbedding
 
 
 @dataclass(kw_only=True, frozen=True)

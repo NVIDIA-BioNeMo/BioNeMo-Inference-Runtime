@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.recycling.openfold import ExtraMSAStack
+from tensorrt_bionemo._torch.modules.openfold.trunk import ExtraMSAStack
 from tensorrt_bionemo._torch.utils import pad_dim
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)

@@ -130,7 +130,7 @@ def main():
     tik = time.time()
     boltz2_config = Boltz2Config.from_pretrained(
         checkpoint_dir=args.local_checkpoint, is_affinity=args.is_affinity)
-    token_transformer_config = boltz2_config.token_transformer_config
+    token_transformer_config = boltz2_config.structure_module_config.score_model_config.token_transformer_config
 
     config = {
         "max_num_particles": args.max_num_particles,

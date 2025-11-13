@@ -13,4 +13,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO: implement the OpenFold structure prediction
+# TODO: implement the OpenFold structure module

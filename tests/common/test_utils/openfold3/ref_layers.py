@@ -16,30 +16,33 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from test_utils.boltz.ref_attn import \
+    RefPairwiseSelfAttention as BoltzRefPairwiseSelfAttention
+from test_utils.boltz.ref_layers import RefAdaLN as BoltzRefAdaLN
+from test_utils.boltz.ref_layers import \
+    RefConditionedTransitionBlock as BoltzRefConditionedTransitionBlock
+from test_utils.boltz.ref_layers import \
+    RefDiffusionTransformerLayer as BoltzRefDiffusionTransformerLayer
+
 from tensorrt_bionemo.hubs import load_weights
 
-from test_utils.boltz.ref_attn import RefPairwiseSelfAttention as BoltzRefPairwiseSelfAttention
-from test_utils.boltz.ref_layers import (
-    RefDiffusionTransformerLayer as BoltzRefDiffusionTransformerLayer,
-    RefConditionedTransitionBlock as BoltzRefConditionedTransitionBlock,
-    RefAdaLN as BoltzRefAdaLN)
 
 class Openfold3RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
+
     @classmethod
     def load_weights(
-            cls,
-            model: str = "openfold3",
-            layer_path: str = "pairformer_module.layers.0.attention",
-            key_layer: str = "attention_pair_bias",
-            state_dict: Optional[dict] = None) -> 'Openfold3RefPairwiseSelfAttention':
+        cls,
+        model: str = "openfold3",
+        layer_path: str = "pairformer_module.layers.0.attention",
+        key_layer: str = "attention_pair_bias",
+        state_dict: Optional[dict] = None
+    ) -> 'Openfold3RefPairwiseSelfAttention':
 
         extract_state_dict = {}
         for key in state_dict.keys():
             if layer_path + '.{}'.format(key_layer) in key:
                 if "mha" in key:
-                    name = key.replace(key_layer + ".mha",
-                                        "pair_bias_attn")
+                    name = key.replace(key_layer + ".mha", "pair_bias_attn")
                     name = name.replace("layer_norm_s", "norm_s")
                     name = name.replace("linear_q", "proj_q")
                     name = name.replace("linear_k", "proj_k")
@@ -48,20 +51,20 @@ class Openfold3RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
                     name = name.replace("linear_z", "proj_z.0")
                     name = name.replace("linear_o", "proj_o")
                     extract_state_dict[name] = state_dict[key]
-                
+
                 if "layer_norm_z" in key:
                     name = key.replace(key_layer + ".layer_norm_z",
-                        "pair_bias_attn.proj_z.0")
+                                       "pair_bias_attn.proj_z.0")
                     extract_state_dict[name] = state_dict[key]
-                
+
                 if "linear_z" in key:
                     name = key.replace(key_layer + ".linear_z",
-                        "pair_bias_attn.proj_z.1")
+                                       "pair_bias_attn.proj_z.1")
                     extract_state_dict[name] = state_dict[key]
 
         assert extract_state_dict != {}, "extract weights is empty"
         layer_path = layer_path + '.pair_bias_attn'
-        
+
         weights_biases_path = [
             (f"{layer_path}.norm_s.weight", f"{layer_path}.norm_s.bias"),
             (f"{layer_path}.proj_q.weight", f"{layer_path}.proj_q.bias"),
@@ -73,10 +76,10 @@ class Openfold3RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
             (f"{layer_path}.proj_o.weight", None),
         ]
         c_s = extract_state_dict[f"{layer_path}.proj_q.weight"].shape[0]
-        
+
         c_z = extract_state_dict[f"{layer_path}.proj_z.1.weight"].shape[1]
         num_heads = extract_state_dict[f"{layer_path}.proj_z.1.weight"].shape[0]
-        
+
         if f"{layer_path}.norm_s.weight" in extract_state_dict:
             attn = cls(c_s, c_z, num_heads, initial_norm=True)
             attn.proj_z[0] = nn.LayerNorm(c_z, bias=False)
@@ -100,20 +103,22 @@ class Openfold3RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
             layer.weight.data.copy_(extract_state_dict[weights_path])
         return attn
 
+
 class Openfold3RefAdaLN(BoltzRefAdaLN):
+
     @classmethod
     def load_weights(
             cls,
             model: str = "openfold3",
-            layer_path: str = "sample_diffusion.diffusion_module.diffusion_transformer.blocks.0",
+            layer_path:
+        str = "sample_diffusion.diffusion_module.diffusion_transformer.blocks.0",
             key_layer: str = "layer_norm_a",
             state_dict: Optional[dict] = None) -> 'Openfold3RefAdaLN':
-        
+
         extract_state_dict = {}
         for key in state_dict.keys():
             if layer_path + '.{}'.format(key_layer) in key:
-                name = key.replace(key_layer,
-                                    "adaln")
+                name = key.replace(key_layer, "adaln")
                 name = name.replace("layer_norm_s", "s_norm")
                 name = name.replace("linear_g", "s_scale")
                 name = name.replace("linear_s", "s_bias")
@@ -145,34 +150,38 @@ class Openfold3RefAdaLN(BoltzRefAdaLN):
             layer.weight.data.copy_(extract_state_dict[weights_path])
         return m
 
-class Openfold3RefConditionedTransitionBlock(BoltzRefConditionedTransitionBlock):
+
+class Openfold3RefConditionedTransitionBlock(BoltzRefConditionedTransitionBlock
+                                             ):
     """
     Key difference from Boltz implementation:
     - Boltz uses: x = silu(fc1(x)) * fc2(x) * fc3(x) (three-way multiplication)
     - OpenFold3 uses: x = silu(fc1(x)) * fc2(x) (two-way multiplication)
     """
-    
+
     def forward(self, a: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         a = self.adaln(a, s)
         b = self.swish_gate(a)
         a = self.output_projection(s) * self.b_to_a(b)
         return a
-    
+
     @classmethod
     def load_weights(
-            cls,
-            model: str = "openfold3",
-            layer_path: str = "sample_diffusion.diffusion_module.diffusion_transformer.blocks.0",
-            key_layer: str = "conditioned_transition",
-            state_dict: Optional[dict] = None
+        cls,
+        model: str = "openfold3",
+        layer_path:
+        str = "sample_diffusion.diffusion_module.diffusion_transformer.blocks.0",
+        key_layer: str = "conditioned_transition",
+        state_dict: Optional[dict] = None
     ) -> 'Openfold3RefConditionedTransitionBlock':
-        
-        adaln = Openfold3RefAdaLN.load_weights(state_dict=state_dict,
-                                      layer_path=layer_path,
-                                      key_layer="conditioned_transition.layer_norm")
-        
+
+        adaln = Openfold3RefAdaLN.load_weights(
+            state_dict=state_dict,
+            layer_path=layer_path,
+            key_layer="conditioned_transition.layer_norm")
+
         m = cls(adaln.dim, adaln.dim_single_cond)
-        
+
         delattr(m, "a_to_b")
 
         setattr(m, "adaln", adaln)
@@ -184,22 +193,23 @@ class Openfold3RefConditionedTransitionBlock(BoltzRefConditionedTransitionBlock)
 
                 if "swiglu" in key:
                     name = key.replace(key_layer + ".swiglu.linear_a.weight",
-                                        "swish_gate.0_a.weight")
+                                       "swish_gate.0_a.weight")
                     name = name.replace(key_layer + ".swiglu.linear_b.weight",
                                         "swish_gate.0_b.weight")
                     extract_state_dict[name] = state_dict[key]
-                    
+
                 if "linear_out" in key or "linear_g" in key:
-                    name = key.replace(key_layer + ".linear_out",
-                                        "b_to_a")
+                    name = key.replace(key_layer + ".linear_out", "b_to_a")
                     name = name.replace(key_layer + ".linear_g",
                                         "output_projection.0")
                     extract_state_dict[name] = state_dict[key]
-                    
 
         assert extract_state_dict != {}, "extract weights is empty"
         weights_biases_path = [
-            ([f"{layer_path}.swish_gate.0_a.weight", f"{layer_path}.swish_gate.0_b.weight"], None),
+            ([
+                f"{layer_path}.swish_gate.0_a.weight",
+                f"{layer_path}.swish_gate.0_b.weight"
+            ], None),
             (f"{layer_path}.b_to_a.weight", None),
             (f"{layer_path}.output_projection.0.weight",
              f"{layer_path}.output_projection.0.bias"),
@@ -213,7 +223,7 @@ class Openfold3RefConditionedTransitionBlock(BoltzRefConditionedTransitionBlock)
                                                     layers):
             if bias_path is not None:
                 layer.bias.data.copy_(extract_state_dict[bias_path])
-            
+
             # Check if merge weights need to be done
             if isinstance(weights_path, str):
                 layer.weight.data.copy_(extract_state_dict[weights_path])
@@ -225,24 +235,31 @@ class Openfold3RefConditionedTransitionBlock(BoltzRefConditionedTransitionBlock)
                 layer.weight.data.copy_(merge_weight)
         return m
 
+
 class Openfold3RefDiffusionTransformerLayer(BoltzRefDiffusionTransformerLayer):
+
     @classmethod
-    def load_weights(cls,
-                     model: str = "openfold3",
-                     layer_path: str = "sample_diffusion.diffusion_module.diffusion_transformer.blocks.0",
-        )-> 'Openfold3RefDiffusionTransformerLayer':
+    def load_weights(
+        cls,
+        model: str = "openfold3",
+        layer_path:
+        str = "sample_diffusion.diffusion_module.diffusion_transformer.blocks.0",
+    ) -> 'Openfold3RefDiffusionTransformerLayer':
 
         state_dict = load_weights(name=model, hub="local")
-        
-        adaln = Openfold3RefAdaLN.load_weights(state_dict=state_dict,
-                                      layer_path=layer_path,
-                                      key_layer="attention_pair_bias.layer_norm_a")
-        pair_bias_attn = Openfold3RefPairwiseSelfAttention.load_weights(state_dict=state_dict, 
-                                                           layer_path=layer_path, 
-                                                           key_layer="attention_pair_bias")
-        
+
+        adaln = Openfold3RefAdaLN.load_weights(
+            state_dict=state_dict,
+            layer_path=layer_path,
+            key_layer="attention_pair_bias.layer_norm_a")
+        pair_bias_attn = Openfold3RefPairwiseSelfAttention.load_weights(
+            state_dict=state_dict,
+            layer_path=layer_path,
+            key_layer="attention_pair_bias")
+
         transition = Openfold3RefConditionedTransitionBlock.load_weights(
-            state_dict=state_dict, layer_path=layer_path,
+            state_dict=state_dict,
+            layer_path=layer_path,
             key_layer="conditioned_transition")
 
         m = cls(heads=pair_bias_attn.num_heads,
@@ -260,7 +277,7 @@ class Openfold3RefDiffusionTransformerLayer(BoltzRefDiffusionTransformerLayer):
             if layer_path + '.{}'.format(key_layer) in key:
                 if "linear_ada_out" in key:
                     name = key.replace(key_layer + ".linear_ada_out",
-                                        "output_projection.0")
+                                       "output_projection.0")
                     extract_state_dict[name] = state_dict[key]
         assert extract_state_dict != {}, "extract weights is empty"
         weights_biases_path = [

@@ -291,8 +291,6 @@ class AttentionPairBias(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        compute_pair_bias: bool = True,
-        save_to_cache_key: Optional[str] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
@@ -301,12 +299,12 @@ class AttentionPairBias(nn.Module):
             s: [*, I, C_S]
             z: [*, I, J, C_Z] if compute_pair_bias else [*, H, I, J]
             mask: [*, I]
-            compute_pair_bias (bool): Whether to compute the pair bias.
-            save_to_cache_key (Optional[str]): The key to save the bias cache.
             attn_metadata (Optional[AttentionMetadata]): The attention metadata.
                 - query_to_keys (Callable): The function to convert the query to keys.
                 - bias_cache (dict): The bias cache.
             all_reduce_params (Optional[AllReduceParams]): The all reduce parameters.
+        Returns:
+            Updated output tensor.
         """
         s.size(0)
         if self.initial_norm:
@@ -328,14 +326,10 @@ class AttentionPairBias(nn.Module):
         mask = mask[..., None, None, :]
         mask_bias = (1 - mask.float()) * -self.inf
         pair_bias = z
-        if compute_pair_bias and self.bias_proj:
+        if self.bias_proj:
             pair_bias = self.proj_z(z)  # [*, I, J, H]
             pair_bias = torch.moveaxis(pair_bias, -1, -3)  # [*, H, I, J]
-        if attn_metadata is not None and save_to_cache_key is not None:
-            bias_cache = attn_metadata.bias_cache
-            if bias_cache is not None and save_to_cache_key not in bias_cache:
-                bias_cache[save_to_cache_key] = pair_bias
-        biases = [mask_bias, pair_bias]
+        biases = [mask_bias.to(pair_bias), pair_bias]
 
         mha_o = self.attn.forward(q.contiguous(),
                                   k.contiguous(),
@@ -348,34 +342,6 @@ class AttentionPairBias(nn.Module):
         g = self.proj_g(s).sigmoid()
         o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o
-
-
-class AttentionPairBiasWithCache(AttentionPairBias):
-
-    def __init__(self, *args, **kwargs):
-        kwargs["bias_proj"] = True
-        super().__init__(*args, **kwargs)
-        self._bias_key = f"{self.__class__.__name__}_{self.layer_idx}"
-
-    def forward(self,
-                s: torch.Tensor,
-                z: torch.Tensor,
-                mask: torch.Tensor,
-                attn_metadata: Optional[AttentionMetadata] = None,
-                all_reduce_params: Optional[AllReduceParams] = None):
-        pair_bias = z
-        compute_pair_bias = True
-        assert attn_metadata is not None, "attn_metadata is required for self attention pair bias with cache"
-        if attn_metadata.bias_cache is not None and self._bias_key in attn_metadata.bias_cache:
-            pair_bias = attn_metadata.bias_cache[self._bias_key]
-            compute_pair_bias = False
-        return super().forward(s=s,
-                               z=pair_bias,
-                               mask=mask,
-                               compute_pair_bias=compute_pair_bias,
-                               save_to_cache_key=self._bias_key,
-                               attn_metadata=attn_metadata,
-                               all_reduce_params=all_reduce_params)
 
 
 class MSAAttention(nn.Module):

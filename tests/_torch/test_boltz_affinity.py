@@ -24,7 +24,7 @@ from test_utils.boltz.ref_layers import RefAffinityModule
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.aux_heads.boltz import AffinityModule
+from tensorrt_bionemo._torch.modules.boltz.affinity import AffinityModule
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz2.configs import AffinityModuleConfig
 

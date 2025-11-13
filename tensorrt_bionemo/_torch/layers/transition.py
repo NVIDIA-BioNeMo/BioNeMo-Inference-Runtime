@@ -141,7 +141,6 @@ class ConditionedTransitionBlock(nn.Module):
                 weights_loading_config=WeightsLoadingConfig(
                     weight_mode=WeightMode.FUSED_KV_LINEAR))
 
-
         self.b_to_a = Linear(self.dim_inner * mapping.tp_size,
                              self.dim_single,
                              bias=False,
@@ -181,8 +180,8 @@ class ConditionedTransitionBlock(nn.Module):
         z = self.fused_swl_a_to_b(a)
 
         if not self.using_silu:
-            x, gate, n = z.split([self.dim_inner, self.dim_inner, self.dim_inner],
-                                 dim=-1)
+            x, gate, n = z.split(
+                [self.dim_inner, self.dim_inner, self.dim_inner], dim=-1)
             b = self.silu(gate) * x * n  # TODO: Fused swiglu here
         else:
             x, gate = z.split([self.dim_inner, self.dim_inner], dim=-1)
@@ -190,68 +189,6 @@ class ConditionedTransitionBlock(nn.Module):
         a = self.output_projection(s)
         a = F.sigmoid(a) * self.b_to_a(b, all_reduce_params=all_reduce_params)
         return a
-
-
-class PairwiseConditioning(nn.Module):
-
-    def __init__(self,
-                 token_z: int,
-                 dim_token_rel_pos_feats: int,
-                 num_transitions: int = 2,
-                 transition_expansion_factor: int = 2,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = None,
-                 mapping: Optional[Mapping] = None,
-                 skip_create_weights: bool = False):
-        super().__init__()
-        mapping = mapping or Mapping()
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
-        self.dtype = dtype
-        self.token_z = token_z
-        self.dim_token_rel_pos_feats = dim_token_rel_pos_feats
-        self.num_transitions = num_transitions
-
-        self.init_proj_norm = nn.LayerNorm(token_z + dim_token_rel_pos_feats,
-                                           eps=eps,
-                                           dtype=dtype)
-
-        self.init_proj_linear = Linear(
-            token_z + dim_token_rel_pos_feats,
-            token_z,
-            bias=False,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
-
-        transitions = []
-        for i in range(num_transitions):
-            transitions.append(
-                Transition(dim=token_z,
-                           hidden=token_z * transition_expansion_factor,
-                           out_dim=token_z,
-                           eps=eps,
-                           dtype=dtype,
-                           mapping=mapping,
-                           layer_idx=i,
-                           skip_create_weights=skip_create_weights))
-        self.transitions = nn.ModuleList(transitions)
-
-    def forward(
-            self,
-            z_trunk: torch.Tensor,
-            token_rel_pos_feats: torch.Tensor,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
-        z = torch.cat((z_trunk, token_rel_pos_feats), dim=-1)
-        z = self.init_proj_norm(z)
-        z = self.init_proj_linear(z)
-        for transition in self.transitions:
-            z = transition(z, all_reduce_params=all_reduce_params) + z
-        return z
 
 
 class PairTransition(nn.Module):

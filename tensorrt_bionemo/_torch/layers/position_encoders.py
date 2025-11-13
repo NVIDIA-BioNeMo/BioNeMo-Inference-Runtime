@@ -19,7 +19,6 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo.mapping import Mapping
@@ -45,7 +44,7 @@ class FourierEmbedding(nn.Module):
         super().__init__()
         self.proj = Linear(1,
                            dim,
-                           bias=False,
+                           bias=True,
                            dtype=dtype,
                            mapping=mapping,
                            tensor_parallel_mode=TensorParallelMode.COLUMN,
@@ -54,9 +53,17 @@ class FourierEmbedding(nn.Module):
 
     def forward(
         self,
-        times,
-    ):
-        times = rearrange(times, "b -> b 1")
+        times: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            times : torch.Tensor
+                Shape [B, multiplicity]. The times of the input features.
+        Returns:
+            torch.Tensor
+                Shape [B, multiplicity, dim_fourier]. The Fourier embedded times.
+        """
+        times = times.unsqueeze(-1)
         rand_proj = self.proj(times)
         return torch.cos(2 * pi * rand_proj)
 

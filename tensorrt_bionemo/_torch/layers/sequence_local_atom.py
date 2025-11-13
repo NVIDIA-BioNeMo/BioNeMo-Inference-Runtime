@@ -80,6 +80,8 @@ def query_to_keys(query: torch.Tensor,
     else:
         raise ValueError("Query tensor must be 3, 4, or 5 dimensions")
     # 2*K: number of areas, W//2: area size
+
     query = query.view(B, multiplicity, 2 * K, W // 2, D)
     return torch.einsum("b m j i d, j k -> b m k i d", query,
-                        keys_indexing_matrix).reshape(B, multiplicity, K, H, D)
+                        keys_indexing_matrix.to(query.dtype)).reshape(
+                            B, multiplicity, K, H, D)

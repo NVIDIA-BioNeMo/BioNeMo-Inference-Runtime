@@ -14,8 +14,8 @@
 # limitations under the License.
 
 from ._trt.plugin import _load_plugin_lib
-from .version import __version__
 from .registry import register_default_building_modules
+from .version import __version__
 
 _inited = False
 

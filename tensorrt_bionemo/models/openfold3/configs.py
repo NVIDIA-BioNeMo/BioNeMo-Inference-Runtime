@@ -94,10 +94,6 @@ class DiffusionTransformerConfig(PretrainedModuleConfig):
         return False
 
     @property
-    def with_pair_bias_cache(self):
-        return self.version == "v1"
-
-    @property
     def post_layer_norm(self):
         return False
 

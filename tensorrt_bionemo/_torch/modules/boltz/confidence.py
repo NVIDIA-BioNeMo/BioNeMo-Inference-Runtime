@@ -13,4 +13,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO: implement the Boltz structure prediction
+# TODO: implement the Boltz confidence module

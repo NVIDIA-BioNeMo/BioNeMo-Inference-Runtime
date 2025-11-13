@@ -92,7 +92,7 @@ def test_diffusion_transformer_layer(sc: Scenario):
         dim=sc.dim,
         dim_single_cond=sc.dim_single_cond,
         dim_pairwise=sc.dim_pairwise,
-        with_pair_bias_cache=True,
+        bias_proj=True,
         dtype=dtype,
         conditioned_transition_using_silu=sc.conditioned_transition_using_silu)
 

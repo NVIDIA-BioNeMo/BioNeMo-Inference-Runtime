@@ -820,3 +820,196 @@ class RefExtraMSABlock(RefEvoformerBlock):
         setattr(m, "tri_attn_end", tri_attn_end)
         setattr(m, "pair_transition", pair_transition)
         return m
+
+
+class RefDiffusionModule(nn.Module):
+
+    def __init__(self, token_s: int, atom_s: int, atoms_per_window_queries: int,
+                 atoms_per_window_keys: int, dim_fourier: int,
+                 atom_encoder_depth: int, atom_encoder_heads: int,
+                 token_transformer_depth: int, token_transformer_heads: int,
+                 atom_decoder_depth: int, atom_decoder_heads: int,
+                 conditioning_transition_layers: int):
+        super().__init__()
+
+        self.token_s = token_s
+        self.atom_s = atom_s
+        self.atoms_per_window_queries = atoms_per_window_queries
+        self.atoms_per_window_keys = atoms_per_window_keys
+        self.dim_fourier = dim_fourier
+        self.atom_encoder_depth = atom_encoder_depth
+        self.atom_encoder_heads = atom_encoder_heads
+        self.token_transformer_depth = token_transformer_depth
+        self.token_transformer_heads = token_transformer_heads
+        self.atom_decoder_depth = atom_decoder_depth
+        self.atom_decoder_heads = atom_decoder_heads
+        self.conditioning_transition_layers = conditioning_transition_layers
+
+        self.single_conditioner = RefSingleConditioning(
+            token_s=token_s,
+            dim_fourier=dim_fourier,
+            num_transitions=conditioning_transition_layers)
+
+        self.atom_attention_encoder = RefAtomAttentionEncoder(
+            atom_s=atom_s,
+            token_s=token_s,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys)
+
+        self.atom_attention_decoder = RefAtomAttentionDecoder(
+            atom_s=atom_s,
+            token_s=token_s,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys)
+
+        self.s_to_a_linear = nn.Sequential(
+            nn.LayerNorm(2 * token_s),
+            nn.Linear(2 * token_s, 2 * token_s, bias=False))
+
+        self.token_transformer = BoltzRefDiffusionTransformer(
+            dim=2 * token_s,
+            dim_single_cond=2 * token_s,
+            heads=token_transformer_heads,
+            num_blocks=token_transformer_depth,
+        )
+
+        self.a_norm = nn.LayerNorm(2 * token_s)
+
+    @classmethod
+    def load_weights(cls,
+                     attn_window_queries: int = 32,
+                     attn_window_keys: int = 128,
+                     model: str = "boltz-2",
+                     layer_path: str = "structure_module.score_model",
+                     state_dict: Optional[dict] = None) -> 'RefDiffusionModule':
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        single_conditioner = RefSingleConditioning.load_weights(
+            model=model, layer_path=layer_path + ".single_conditioner")
+
+        atom_attention_encoder = RefAtomAttentionEncoder.load_weights(
+            model=model,
+            layer_path=layer_path + ".atom_attention_encoder",
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys)
+
+        atom_attention_decoder = RefAtomAttentionDecoder.load_weights(
+            model=model,
+            layer_path=layer_path + ".atom_attention_decoder",
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys)
+
+        token_transformer = BoltzRefDiffusionTransformer.load_weights(
+            model=model, layer_path=layer_path + ".token_transformer")
+
+        s_to_a_linear_layer_norm_weight = state_dict[layer_path +
+                                                     ".s_to_a_linear.0.weight"]
+        s_to_a_linear_layer_norm_bias = state_dict[layer_path +
+                                                   ".s_to_a_linear.0.bias"]
+
+        s_to_a_linear_layer_linear_weight = state_dict[
+            layer_path + ".s_to_a_linear.1.weight"]
+
+        a_norm_weight = state_dict[layer_path + ".a_norm.weight"]
+        a_norm_bias = state_dict[layer_path + ".a_norm.bias"]
+
+        token_s = single_conditioner.token_s
+        atom_s = atom_attention_encoder.atom_s
+
+        atom_encoder_depth = atom_attention_encoder.atom_encoder.diffusion_transformer.num_blocks
+        atom_encoder_heads = atom_attention_encoder.atom_encoder.diffusion_transformer.heads
+
+        atom_decoder_depth = atom_attention_decoder.atom_decoder.diffusion_transformer.num_blocks
+        atom_decoder_heads = atom_attention_decoder.atom_decoder.diffusion_transformer.heads
+
+        token_transformer_depth = token_transformer.num_blocks
+        token_transformer_heads = 16
+        for i in range(token_transformer_depth):
+            token_transformer.layers[i].pair_bias_attn.num_heads = 16
+            token_transformer.layers[i].pair_bias_attn.head_dim = 48
+
+        conditioning_transition_layers = len(single_conditioner.transitions)
+        dim_fourier = single_conditioner.dim_fourier
+        diffusion_module = cls(
+            token_s=token_s,
+            atom_s=atom_s,
+            atoms_per_window_queries=attn_window_queries,
+            atoms_per_window_keys=attn_window_keys,
+            dim_fourier=dim_fourier,
+            atom_encoder_depth=atom_encoder_depth,
+            atom_encoder_heads=atom_encoder_heads,
+            token_transformer_depth=token_transformer_depth,
+            token_transformer_heads=token_transformer_heads,
+            atom_decoder_depth=atom_decoder_depth,
+            atom_decoder_heads=atom_decoder_heads,
+            conditioning_transition_layers=conditioning_transition_layers)
+        setattr(diffusion_module, "single_conditioner", single_conditioner)
+        setattr(diffusion_module, "atom_attention_encoder",
+                atom_attention_encoder)
+        setattr(diffusion_module, "atom_attention_decoder",
+                atom_attention_decoder)
+        setattr(diffusion_module, "token_transformer", token_transformer)
+        diffusion_module.s_to_a_linear[0].weight.data.copy_(
+            s_to_a_linear_layer_norm_weight)
+        diffusion_module.s_to_a_linear[0].bias.data.copy_(
+            s_to_a_linear_layer_norm_bias)
+        diffusion_module.s_to_a_linear[1].weight.data.copy_(
+            s_to_a_linear_layer_linear_weight)
+        diffusion_module.a_norm.weight.data.copy_(a_norm_weight)
+        diffusion_module.a_norm.bias.data.copy_(a_norm_bias)
+        return diffusion_module
+
+    def forward(
+            self,
+            atom_to_token,
+            atom_pad_mask,
+            token_pad_mask,
+            s_inputs,  # Float['b n ts']
+            s_trunk,  # Float['b n ts']
+            r_noisy,  # Float['bm m 3']
+            times,  # Float['bm 1 1']
+            diffusion_conditioning_q,
+            diffusion_conditioning_c,
+            diffusion_conditioning_atom_enc_bias,
+            diffusion_conditioning_token_trans_bias,
+            diffusion_conditioning_atom_dec_bias,
+            multiplicity=1,
+            attn_metadata=None):
+
+        s, _ = self.single_conditioner(
+            times,
+            s_trunk.repeat_interleave(multiplicity, 0),
+            s_inputs.repeat_interleave(multiplicity, 0),
+        )
+
+        a, q_skip, c_skip = self.atom_attention_encoder(
+            atom_to_token=atom_to_token,
+            atom_pad_mask=atom_pad_mask,
+            q=diffusion_conditioning_q,
+            c=diffusion_conditioning_c,
+            atom_enc_bias=diffusion_conditioning_atom_enc_bias,
+            r=r_noisy,
+            multiplicity=multiplicity,
+            attn_metadata=attn_metadata)
+
+        a = a + self.s_to_a_linear(s)
+
+        mask = token_pad_mask.repeat_interleave(multiplicity, 0)
+        a = self.token_transformer(a=a,
+                                   mask=mask,
+                                   s=s,
+                                   z=diffusion_conditioning_token_trans_bias)
+
+        a = self.a_norm(a)
+
+        r_update = self.atom_attention_decoder(
+            atom_to_token=atom_to_token,
+            atom_pad_mask=atom_pad_mask,
+            a=a,
+            q=q_skip,
+            c=c_skip,
+            atom_dec_bias=diffusion_conditioning_atom_dec_bias,
+            multiplicity=multiplicity,
+            attn_metadata=attn_metadata)
+        return r_update

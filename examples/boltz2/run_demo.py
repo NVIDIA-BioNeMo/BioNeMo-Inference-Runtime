@@ -384,7 +384,7 @@ def main(args):
             "structure_pairformer":
             AcceleratedConfig(checkpoint=args.structure_pairformer_ckpt,
                               backend=args.structure_pairformer_backend,
-                              default=config.structure_pairformer_config),
+                              default=config.trunk_config.pairformer_config),
             "confidence_pairformer":
             AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
                               backend=args.confidence_pairformer_backend,
@@ -392,11 +392,12 @@ def main(args):
             "token_transformer":
             AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
                               backend=args.token_transformer_backend,
-                              default=config.token_transformer_config),
+                              default=config.structure_module_config.
+                              score_model_config.token_transformer_config),
             "msa_module":
             AcceleratedConfig(checkpoint=None,
                               backend=BackendType.TORCH,
-                              default=config.msa_module_config),
+                              default=config.trunk_config.msa_module_config),
         })
     model, opt_m = Boltz2Opt.optimize(model, acc_m, manager)
 

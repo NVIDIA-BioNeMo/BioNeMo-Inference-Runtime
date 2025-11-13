@@ -25,8 +25,9 @@ from tensorrt_bionemo.config import (BuildModuleConfig, DimSpec,
                                      PretrainedModuleConfig)
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.models.boltz1.configs import (
-    DiffusionTransformerConfig, InputEmbedderConfig, MSAModuleConfig,
-    PairformerConfig, _create_optimization_profiles)
+    AtomDiffusionConfig, DiffusionTransformerConfig, InputEmbedderConfig,
+    MSAModuleConfig, PairformerConfig, ScoreModelConfig, StructureModuleConfig,
+    TrunkConfig, _create_optimization_profiles)
 from tensorrt_bionemo.models.boltz1.const import TOKENS
 
 
@@ -116,38 +117,21 @@ class Boltz2Config(PretrainedConfig):
     model_type = "boltz2"
 
     def __init__(self,
-                 token_s: int,
-                 token_z: int,
-                 atom_s: int,
-                 atom_z: int,
-                 fix_sym_check: bool = True,
-                 cyclic_pos_enc: bool = True,
-                 bond_type_feature: bool = False,
-                 conditioning_cutoff_min: float = 4.0,
-                 conditioning_cutoff_max: float = 20.0,
-                 structure_pairformer_config: PairformerConfig = None,
-                 confidence_pairformer_config: PairformerConfig = None,
-                 token_transformer_config: DiffusionTransformerConfig = None,
-                 msa_module_config: MSAModuleConfig = None,
-                 affinity_module_configs: dict[str, AffinityModuleConfig] = {},
+                 global_config: PretrainedModuleConfig = None,
                  input_embedder_config: InputEmbedderConfig = None,
+                 trunk_config: TrunkConfig = None,
+                 structure_module_config: StructureModuleConfig = None,
+                 confidence_pairformer_config: PairformerConfig = None,
+                 affinity_module_configs: dict[str, AffinityModuleConfig] = {},
                  **kwargs):
         super().__init__(**kwargs)
-        self.token_s = token_s
-        self.token_z = token_z
-        self.atom_s = atom_s
-        self.atom_z = atom_z
-        self.fix_sym_check = fix_sym_check
-        self.cyclic_pos_enc = cyclic_pos_enc
-        self.bond_type_feature = bond_type_feature
-        self.conditioning_cutoff_min = conditioning_cutoff_min
-        self.conditioning_cutoff_max = conditioning_cutoff_max
-        self.structure_pairformer_config = structure_pairformer_config
-        self.confidence_pairformer_config = confidence_pairformer_config
-        self.token_transformer_config = token_transformer_config
-        self.msa_module_config = msa_module_config
-        self.affinity_module_configs = affinity_module_configs
+        self.global_config = global_config
         self.input_embedder_config = input_embedder_config
+        self.trunk_config = trunk_config
+        self.structure_module_config = structure_module_config
+
+        self.confidence_pairformer_config = confidence_pairformer_config
+        self.affinity_module_configs = affinity_module_configs
         if len(affinity_module_configs) > 0:
             self.is_affinity_model = True
         else:
@@ -170,6 +154,7 @@ class Boltz2Config(PretrainedConfig):
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=False)
         hparams = state_dict["hyper_parameters"]
 
+        num_bins = hparams["num_bins"]
         token_s = hparams["token_s"]
         token_z = hparams["token_z"]
         atom_s = hparams["atom_s"]
@@ -185,6 +170,7 @@ class Boltz2Config(PretrainedConfig):
         bond_type_feature = hparams["bond_type_feature"]
         conditioning_cutoff_min = hparams["conditioning_cutoff_min"]
         conditioning_cutoff_max = hparams["conditioning_cutoff_max"]
+        num_distograms = hparams["num_distograms"]
 
         atom_encoder_depth = hparams["embedder_args"]["atom_encoder_depth"]
         atom_encoder_heads = hparams["embedder_args"]["atom_encoder_heads"]
@@ -197,53 +183,7 @@ class Boltz2Config(PretrainedConfig):
         msa_pairwise_head_width = hparams["msa_args"]["pairwise_head_width"]
         msa_pairwise_num_heads = hparams["msa_args"]["pairwise_num_heads"]
 
-        structure_pairformer_config = PairformerConfig(
-            architecture="structure_pairformer",
-            token_s=token_s,
-            token_z=token_z,
-            pairwise_head_width=msa_pairwise_head_width,
-            pairwise_num_heads=msa_pairwise_num_heads,
-            num_blocks=hparams["pairformer_args"]["num_blocks"],
-            num_heads=hparams["pairformer_args"]["num_heads"],
-            version="v2",
-            dtype="float32")
-
-        confidence_pairformer_config = PairformerConfig(
-            architecture="confidence_pairformer",
-            token_s=token_s,
-            token_z=token_z,
-            pairwise_head_width=msa_pairwise_head_width,
-            pairwise_num_heads=msa_pairwise_num_heads,
-            num_blocks=hparams["confidence_model_args"]["pairformer_args"]
-            ["num_blocks"],
-            num_heads=hparams["confidence_model_args"]["pairformer_args"]
-            ["num_heads"],
-            version="v2",
-            dtype="float32")
-
-        token_transformer_config = DiffusionTransformerConfig(
-            architecture="token_transformer",
-            dtype="float32",
-            num_blocks=hparams["score_model_args"]["token_transformer_depth"],
-            num_heads=hparams["score_model_args"]["token_transformer_heads"],
-            dim=2 * token_s,
-            dim_single_cond=2 * token_s,
-            dim_pairwise=token_z,
-            version="v2")
-
-        msa_module_config = MSAModuleConfig(
-            architecture="msa_module",
-            dtype="float32",
-            msa_s=hparams["msa_args"]["msa_s"],
-            token_z=token_z,
-            token_s=token_s,
-            msa_blocks=hparams["msa_args"]["msa_blocks"],
-            num_tokens=len(TOKENS),
-            pairwise_head_width=msa_pairwise_head_width,
-            pairwise_num_heads=msa_pairwise_num_heads,
-            use_paired_feature=True,
-            version="v2")
-
+        # Conduct input embedder configuration
         input_embedder_config = InputEmbedderConfig(
             architecture="input_embedder",
             dtype="float32",
@@ -265,9 +205,119 @@ class Boltz2Config(PretrainedConfig):
             use_no_atom_char=use_no_atom_char,
             use_atom_backbone_feat=use_atom_backbone_feat,
             use_residue_feats_atoms=use_residue_feats_atoms,
-            version=
-            "v2"  # Need put the version here to select diffusion transformer version
-        )
+            # Need put the version here to select diffusion transformer version
+            version="v2")
+
+        # Conduct recycling configuration
+        structure_pairformer_config = PairformerConfig(
+            architecture="structure_pairformer",
+            token_s=token_s,
+            token_z=token_z,
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            num_blocks=hparams["pairformer_args"]["num_blocks"],
+            num_heads=hparams["pairformer_args"]["num_heads"],
+            version="v2",
+            dtype="float32")
+        msa_module_config = MSAModuleConfig(
+            architecture="msa_module",
+            dtype="float32",
+            msa_s=hparams["msa_args"]["msa_s"],
+            token_z=token_z,
+            token_s=token_s,
+            msa_blocks=hparams["msa_args"]["msa_blocks"],
+            num_tokens=len(TOKENS),
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            use_paired_feature=True,
+            version="v2")
+        trunk_config = TrunkConfig(
+            architecture="recycling",
+            dtype="float32",
+            pairformer_config=structure_pairformer_config,
+            msa_module_config=msa_module_config)
+
+        confidence_pairformer_config = PairformerConfig(
+            architecture="confidence_pairformer",
+            token_s=token_s,
+            token_z=token_z,
+            pairwise_head_width=msa_pairwise_head_width,
+            pairwise_num_heads=msa_pairwise_num_heads,
+            num_blocks=hparams["confidence_model_args"]["pairformer_args"]
+            ["num_blocks"],
+            num_heads=hparams["confidence_model_args"]["pairformer_args"]
+            ["num_heads"],
+            version="v2",
+            dtype="float32")
+
+        # Conduct score model configuration
+        diffusion_process_args = hparams["diffusion_process_args"]
+        atom_diffusion_config = AtomDiffusionConfig(
+            architecture="atom_diffusion",
+            dtype="float32",
+            sigma_min=diffusion_process_args["sigma_min"],
+            sigma_max=diffusion_process_args["sigma_max"],
+            sigma_data=diffusion_process_args["sigma_data"],
+            rho=diffusion_process_args["rho"],
+            P_mean=diffusion_process_args["P_mean"],
+            P_std=diffusion_process_args["P_std"],
+            gamma_0=diffusion_process_args["gamma_0"],
+            gamma_min=diffusion_process_args["gamma_min"],
+            noise_scale=diffusion_process_args["noise_scale"],
+            coordinate_augmentation=diffusion_process_args[
+                "coordinate_augmentation"],
+            alignment_reverse_diff=diffusion_process_args[
+                "alignment_reverse_diff"],
+            synchronize_sigmas=diffusion_process_args["synchronize_sigmas"],
+            version="v2")
+        atom_encoder_config = DiffusionTransformerConfig(
+            architecture="atom_encoder",
+            dtype="float32",
+            num_blocks=hparams["score_model_args"]["atom_encoder_depth"],
+            num_heads=hparams["score_model_args"]["atom_encoder_heads"],
+            dim=atom_s,
+            dim_single_cond=atom_s,
+            dim_pairwise=None,
+            version="v2")
+        token_transformer_config = DiffusionTransformerConfig(
+            architecture="token_transformer",
+            dtype="float32",
+            num_blocks=hparams["score_model_args"]["token_transformer_depth"],
+            num_heads=hparams["score_model_args"]["token_transformer_heads"],
+            dim=2 * token_s,
+            dim_single_cond=2 * token_s,
+            dim_pairwise=token_z,
+            version="v2")
+        atom_decoder_config = DiffusionTransformerConfig(
+            architecture="atom_decoder",
+            dtype="float32",
+            num_blocks=hparams["score_model_args"]["atom_decoder_depth"],
+            num_heads=hparams["score_model_args"]["atom_decoder_heads"],
+            dim=atom_s,
+            dim_single_cond=atom_s,
+            dim_pairwise=None,
+            version="v2")
+        score_model_config = ScoreModelConfig(
+            architecture="score_model",
+            dtype="float32",
+            atom_s=atom_s,
+            atom_z=atom_z,
+            token_s=token_s,
+            token_z=token_z,
+            atoms_per_window_queries=atoms_per_window_queries,
+            atoms_per_window_keys=atoms_per_window_keys,
+            dim_fourier=hparams["score_model_args"]["dim_fourier"],
+            conditioning_transition_layers=hparams["score_model_args"]
+            ["conditioning_transition_layers"],
+            atom_encoder_config=atom_encoder_config,
+            token_transformer_config=token_transformer_config,
+            atom_decoder_config=atom_decoder_config,
+            version="v2")
+        structure_module_config = StructureModuleConfig(
+            architecture="structure_module",
+            dtype="float32",
+            score_model_config=score_model_config,
+            atom_diffusion_config=atom_diffusion_config)
 
         affinity_module_configs = {}
         if is_affinity:
@@ -291,19 +341,26 @@ class Boltz2Config(PretrainedConfig):
                 key = key.replace("model_args", "module")
                 affinity_module_configs[key] = config
 
-        return cls(token_s=token_s,
-                   token_z=token_z,
-                   atom_s=atom_s,
-                   atom_z=atom_z,
-                   fix_sym_check=fix_sym_check,
-                   cyclic_pos_enc=cyclic_pos_enc,
-                   bond_type_feature=bond_type_feature,
-                   conditioning_cutoff_min=conditioning_cutoff_min,
-                   conditioning_cutoff_max=conditioning_cutoff_max,
-                   structure_pairformer_config=structure_pairformer_config,
-                   confidence_pairformer_config=confidence_pairformer_config,
-                   token_transformer_config=token_transformer_config,
-                   msa_module_config=msa_module_config,
-                   affinity_module_configs=affinity_module_configs,
+        global_config = PretrainedModuleConfig(
+            architecture="global",
+            dtype="float32",
+            num_bins=num_bins,
+            token_s=token_s,
+            token_z=token_z,
+            atom_s=atom_s,
+            atom_z=atom_z,
+            fix_sym_check=fix_sym_check,
+            cyclic_pos_enc=cyclic_pos_enc,
+            bond_type_feature=bond_type_feature,
+            conditioning_cutoff_min=conditioning_cutoff_min,
+            conditioning_cutoff_max=conditioning_cutoff_max,
+            num_distograms=num_distograms,
+        )
+
+        return cls(global_config,
                    input_embedder_config=input_embedder_config,
+                   trunk_config=trunk_config,
+                   structure_module_config=structure_module_config,
+                   confidence_pairformer_config=confidence_pairformer_config,
+                   affinity_module_configs=affinity_module_configs,
                    **kwargs)

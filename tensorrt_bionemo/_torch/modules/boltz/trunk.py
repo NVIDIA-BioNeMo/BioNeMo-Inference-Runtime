@@ -39,6 +39,8 @@ class MSALayer(nn.Module):
                  token_z: int,
                  pairwise_head_width: int = 32,
                  pairwise_num_heads: int = 4,
+                 opm_chunk_size: Optional[int] = None,
+                 opm_mask_chunk_size: Optional[int] = None,
                  layer_idx: int = 0,
                  eps: float = 1e-5,
                  inf: float = 1e9,
@@ -92,6 +94,8 @@ class MSALayer(nn.Module):
             c_in=msa_s,
             c_hidden=32,
             c_out=token_z,
+            chunk_size=opm_chunk_size,
+            mask_chunk_size=opm_mask_chunk_size,
             eps=eps,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
@@ -147,6 +151,8 @@ class MSAModule(nn.Module):
         self.pairwise_head_width = config.pairwise_head_width
         self.pairwise_num_heads = config.pairwise_num_heads
         self.use_paired_feature = config.use_paired_feature
+        self.opm_chunk_size = config.opm_chunk_size
+        self.opm_mask_chunk_size = config.opm_mask_chunk_size
         self.dtype = config.torch_dtype
         self.version = config.version
 
@@ -183,6 +189,8 @@ class MSAModule(nn.Module):
                          pairwise_num_heads=self.pairwise_num_heads,
                          eps=config.norm_epsilon,
                          inf=config.mask_inf,
+                         opm_chunk_size=self.opm_chunk_size,
+                         opm_mask_chunk_size=self.opm_mask_chunk_size,
                          dtype=self.dtype,
                          skip_create_weights=config.skip_create_weights,
                          triangle_attn_backend=config.triangle_attn_backend,
@@ -250,30 +258,23 @@ class MSAModule(nn.Module):
         return z
 
 
-class Recycling(nn.Module):
-    """ Recycling module for Boltz1-2 """
+class Trunk(nn.Module):
+    """ Trunk module for Boltz1-2 """
 
-    def __init__(self,
-                 msa_module_config: PretrainedModuleConfig,
-                 pairformer_module_config: PretrainedModuleConfig,
-                 mapping: Optional[Mapping] = None,
-                 progatation_mapping: bool = False) -> None:
+    def __init__(self, config: PretrainedModuleConfig) -> None:
         super().__init__()
 
-        self.mapping = mapping or Mapping()
-        if progatation_mapping:
-            msa_module_config.mapping = self.mapping
-            pairformer_module_config.mapping = self.mapping
-        self.msa_module = MSAModule(msa_module_config)
-        self.pairformer_module = PairformerModule(pairformer_module_config)
+        self.msa_module = MSAModule(config.msa_module_config)
+        self.pairformer_module = PairformerModule(config.pairformer_config)
 
-        token_s = pairformer_module_config.token_s
-        token_z = pairformer_module_config.token_z
-        self.dtype = pairformer_module_config.torch_dtype
+        token_s = config.pairformer_config.token_s
+        token_z = config.pairformer_config.token_z
+        self.dtype = config.torch_dtype
+        self.mapping = config.mapping or Mapping()
 
         self.s_norm = nn.LayerNorm(token_s, dtype=self.dtype)
         self.z_norm = nn.LayerNorm(token_z, dtype=self.dtype)
-        self.skip_create_weights = pairformer_module_config.skip_create_weights
+        self.skip_create_weights = config.pairformer_config.skip_create_weights
 
         self.s_recycle = Linear(token_s,
                                 token_s,
@@ -293,7 +294,7 @@ class Recycling(nn.Module):
                                 skip_create_weights=self.skip_create_weights)
 
     def load_weights(self, weights: dict):
-        """ Load weights for the Recycling module """
+        """ Load weights for the Trunk module """
         msa_module_weights = weights.pop("msa_module")
         pairformer_module_weights = weights.pop("pairformer_module")
         self.msa_module.load_weights(weights=msa_module_weights)

@@ -21,7 +21,7 @@ from tensorrt_llm._utils import str_dtype_to_trt
 
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
-from tensorrt_bionemo._torch.layers.aux_heads.boltz import (
+from tensorrt_bionemo._torch.modules.boltz.affinity import (
     AffinityModule, compute_distogram, create_cross_pair_mask)
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,

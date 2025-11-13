@@ -23,12 +23,12 @@ from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.distributed import allgather
+from tensorrt_bionemo._torch.layers.conditioning import PairwiseConditioning
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerNoSeqModule
-from tensorrt_bionemo._torch.layers.transition import PairwiseConditioning
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.config import PretrainedModuleConfig
 from tensorrt_bionemo.mapping import Mapping

@@ -7,12 +7,11 @@ import safetensors
 import torch
 from tensorrt_llm import logger
 
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.configs import (Boltz1Config,
-                                                    DiffusionTransformerConfig)
+from tensorrt_bionemo.models.boltz1 import Boltz1Config
 from tensorrt_bionemo.models.boltz1.convert import (
     convert_hf_diffusion_transformer, convert_hf_diffusion_transformer_torch)
-from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def parse_arguments():
@@ -119,10 +118,9 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz1_config = Boltz1Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint)
-    score_model_config = boltz1_config.structure_module_config.score_model_config
-    token_transformer_config = score_model_config.token_transformer_config
+    boltz1_config = Boltz1Config()
+    score_model_config = boltz1_config.structure_module.score_model
+    token_transformer_config = score_model_config.token_transformer
 
     config = {
         "max_num_particles": args.max_num_particles,
@@ -144,10 +142,11 @@ def main():
         "pairwise_attn_backend": args.pairwise_attn_backend,
         "version": "v1"
     }
-    trt_token_transformer_config = DiffusionTransformerConfig.from_dict(config)
-    torch_token_transformer_config = DiffusionTransformerConfig.from_dict(
-        config)
-    torch_token_transformer_config.backend = BackendType.TORCH
+    trt_token_transformer_config = token_transformer_config.model_copy(
+        update=config)
+    torch_token_transformer_config = token_transformer_config.model_copy(
+        update=config)
+    torch_token_transformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_token_transformer_config,

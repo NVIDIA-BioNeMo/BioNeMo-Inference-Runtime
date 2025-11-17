@@ -30,7 +30,7 @@ from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerNoSeqModule
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -220,7 +220,7 @@ class AffinityHeadsTransformer(nn.Module):
 
 class AffinityModule(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         """ Boltz-2 Affinity Module
         Args:
             config: tensorrt_bionemo.models.boltz2.configs.AffinityModuleConfig
@@ -254,7 +254,7 @@ class AffinityModule(nn.Module):
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR))
         self.z_norm = nn.LayerNorm(config.token_z,
-                                   eps=config.eps,
+                                   eps=config.norm_epsilon,
                                    dtype=config.torch_dtype)
         self.z_linear = Linear(config.token_z,
                                config.token_z,
@@ -269,7 +269,7 @@ class AffinityModule(nn.Module):
             token_z=config.token_z,
             dim_token_rel_pos_feats=config.token_z,
             num_transitions=2,
-            eps=config.eps,
+            eps=config.norm_epsilon,
             dtype=config.torch_dtype,
             mapping=config.mapping)
 
@@ -279,16 +279,16 @@ class AffinityModule(nn.Module):
             pairwise_head_width=config.pairwise_head_width,
             pairwise_num_heads=config.pairwise_num_heads,
             dtype=config.torch_dtype,
-            eps=config.eps,
-            inf=config.inf,
+            eps=config.norm_epsilon,
+            inf=config.mask_inf,
             mapping=config.mapping,
-            triangle_attn_backend=config.triangle_attn_backend)
+            triangle_attn_backend=config.triangle_attention_backend)
 
         self.affinity_heads = AffinityHeadsTransformer(
             token_z=config.token_z,
             token_s=config.token_s,
             dtype=config.torch_dtype,
-            eps=config.eps,
+            eps=config.norm_epsilon,
             mapping=config.mapping,
             skip_create_weights=skip_create_weights)
 

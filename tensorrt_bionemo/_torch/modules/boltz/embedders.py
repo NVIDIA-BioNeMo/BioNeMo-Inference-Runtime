@@ -26,10 +26,10 @@ from tensorrt_bionemo._torch.layers.transformers.atom import \
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     BoltzDiffusionTransformer
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.const import (NUM_CHAIN_TYPES,
-                                                  NUM_METHOD_TYPES, NUM_TOKENS)
+from tensorrt_bionemo.pipeline.boltz.const import (NUM_CHAIN_TYPES,
+                                                   NUM_METHOD_TYPES, NUM_TOKENS)
 
 
 class AtomEmbedding(nn.Module):
@@ -439,10 +439,10 @@ class AtomEmbedding(nn.Module):
 
 class Boltz1InputEmbedder(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         """
         Args:
-            config: PretrainedModuleConfig
+            config: BaseConfig
                 The configuration for the Boltz1InputEmbedder.
         """
         super().__init__()
@@ -468,14 +468,15 @@ class Boltz1InputEmbedder(nn.Module):
 
         # This trick is used to avoid call attention with bias caching.
         self.atom_enc_proj_z = nn.ModuleList()
-        for _ in range(config.atom_encoder_depth):
+        diffusion_transformer_config = config.diffusion_transformer
+        for _ in range(diffusion_transformer_config.num_blocks):
             self.atom_enc_proj_z.append(
                 nn.Sequential(
                     nn.LayerNorm(config.atom_z,
                                  dtype=config.torch_dtype,
                                  eps=config.norm_epsilon),
                     Linear(config.atom_z,
-                           config.atom_encoder_heads,
+                           diffusion_transformer_config.num_heads,
                            bias=False,
                            dtype=config.torch_dtype,
                            mapping=config.mapping,
@@ -489,7 +490,7 @@ class Boltz1InputEmbedder(nn.Module):
             token_s=config.token_s,
             atoms_per_window_queries=config.atoms_per_window_queries,
             atoms_per_window_keys=config.atoms_per_window_keys,
-            diffusion_transformer_config=config.diffusion_transformer_config,
+            diffusion_transformer_config=diffusion_transformer_config,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             structure_prediction=False,
             dtype=config.torch_dtype,
@@ -589,10 +590,10 @@ class Boltz1InputEmbedder(nn.Module):
 
 class Boltz2InputEmbedder(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         """
         Args:
-            config: PretrainedModuleConfig
+            config: BaseConfig
                 The configuration for the Boltz2InputEmbedder.
         """
         super().__init__()
@@ -619,7 +620,8 @@ class Boltz2InputEmbedder(nn.Module):
         self.atom_enc_proj_z = nn.Sequential(
             nn.LayerNorm(config.atom_z),
             Linear(config.atom_z,
-                   config.atom_encoder_depth * config.atom_encoder_heads,
+                   config.diffusion_transformer.num_blocks *
+                   config.diffusion_transformer.num_heads,
                    bias=False,
                    dtype=config.torch_dtype,
                    mapping=config.mapping,
@@ -633,7 +635,7 @@ class Boltz2InputEmbedder(nn.Module):
             token_s=config.token_s,
             atoms_per_window_queries=config.atoms_per_window_queries,
             atoms_per_window_keys=config.atoms_per_window_keys,
-            diffusion_transformer_config=config.diffusion_transformer_config,
+            diffusion_transformer_config=config.diffusion_transformer,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             structure_prediction=False,
             dtype=config.torch_dtype,

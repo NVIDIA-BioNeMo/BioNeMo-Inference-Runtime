@@ -25,17 +25,12 @@ from tensorrt_llm.module import Module, ModuleList
 from tensorrt_llm.network import Network
 
 from tensorrt_bionemo._trt.functional import identity_sz
+from tensorrt_bionemo.configs import (DiffusionTransformerBuildConfig,
+                                      DiffusionTransformerConfig,
+                                      EvoformerStackBuildConfig,
+                                      EvoformerStackConfig,
+                                      PairformerBuildConfig, PairformerConfig)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
-from tensorrt_bionemo.models.boltz1.configs import (DiffusionTransformerConfig,
-                                                    PairformerBuildConfig,
-                                                    PairformerConfig,
-                                                    TokenTransformerBuildConfig)
-from tensorrt_bionemo.models.openfold2.configs import (
-    EvoformerStackBuildConfig, EvoformerStackConfig)
-from tensorrt_bionemo.models.openfold3.configs import \
-    DiffusionTransformerConfig as OpenFold3DiffusionTransformerConfig
-from tensorrt_bionemo.models.openfold3.configs import \
-    TokenTransformerBuildConfig as OpenFold3DiffusionTransformerBuildConfig
 
 from ..module_utils import PretrainedModule
 from .attention import AttentionParams, MSAAttention, SelfAttentionPairBias
@@ -309,7 +304,7 @@ class PairformerModule(PretrainedModule):
         super().__init__(config)
         layer_cls = PairformerLayerV1 if config.version == "v1" else PairformerLayerV2
         logger.info(
-            f"Using triangle_attn_backend: {config.triangle_attn_backend}, cueq threshold: {config.triangle_attn_cueq_fallback_threshold}, trimul_high_precision: {config.trimul_high_precision}"
+            f"Using triangle_attn_backend: {config.triangle_attention_backend}, trimul_high_precision: {config.trimul_high_precision}"
         )
         self.layers = ModuleList([
             layer_cls(
@@ -328,7 +323,7 @@ class PairformerModule(PretrainedModule):
                 max_attention_pairwise_tp_size=config.
                 max_attention_pairwise_tp_size,
                 max_tri_mul_tp_size=config.max_tri_mul_tp_size,
-                triangle_attn_backend=config.triangle_attn_backend,
+                triangle_attn_backend=config.triangle_attention_backend,
                 support_batch=config.support_batch,
                 mapping=config.mapping,
                 fallback_threshold=config.triangle_attn_cueq_fallback_threshold,
@@ -532,7 +527,7 @@ class DiffusionTransformerLayer(Module):
 
 class TokenTransformer(PretrainedModule):
     config_class = DiffusionTransformerConfig
-    build_config_class = TokenTransformerBuildConfig
+    build_config_class = DiffusionTransformerBuildConfig
 
     def __init__(self, config: DiffusionTransformerConfig):
         super().__init__(config)
@@ -597,10 +592,10 @@ class TokenTransformer(PretrainedModule):
 
 
 class OpenFold3DiffusionTransformer(PretrainedModule):
-    config_class = OpenFold3DiffusionTransformerConfig
-    build_config_class = OpenFold3DiffusionTransformerBuildConfig
+    config_class = DiffusionTransformerConfig
+    build_config_class = DiffusionTransformerBuildConfig
 
-    def __init__(self, config: OpenFold3DiffusionTransformerConfig):
+    def __init__(self, config: DiffusionTransformerConfig):
         super().__init__(config)
         self.version = config.version
         logger.info(
@@ -893,26 +888,26 @@ class EvoformerStack(PretrainedModule):
     def __init__(self, config: EvoformerStackConfig):
         super().__init__(config)
         self.blocks = ModuleList([
-            EvoformerBlock(local_layer_idx=i,
-                           c_m=config.c_m,
-                           c_z=config.c_z,
-                           c_hidden_msa_att=config.c_hidden_msa_att,
-                           c_hidden_opm=config.c_hidden_opm,
-                           c_hidden_mul=config.c_hidden_mul,
-                           c_hidden_pair_att=config.c_hidden_pair_att,
-                           no_heads_msa=config.no_heads_msa,
-                           no_heads_pair=config.no_heads_pair,
-                           transition_n=config.transition_n,
-                           no_column_attention=config.no_column_attention,
-                           opm_first=config.opm_first,
-                           triangle_attn_backend=config.triangle_attn_backend,
-                           support_batch=config.support_batch,
-                           dtype=config.dtype,
-                           eps=config.norm_epsilon,
-                           inf=config.mask_inf,
-                           chunk_size=config.chunk_size,
-                           mapping=config.mapping)
-            for i in range(config.no_blocks)
+            EvoformerBlock(
+                local_layer_idx=i,
+                c_m=config.c_m,
+                c_z=config.c_z,
+                c_hidden_msa_att=config.c_hidden_msa_att,
+                c_hidden_opm=config.c_hidden_opm,
+                c_hidden_mul=config.c_hidden_mul,
+                c_hidden_pair_att=config.c_hidden_pair_att,
+                no_heads_msa=config.no_heads_msa,
+                no_heads_pair=config.no_heads_pair,
+                transition_n=config.transition_n,
+                no_column_attention=config.no_column_attention,
+                opm_first=config.opm_first,
+                triangle_attn_backend=config.triangle_attention_backend,
+                support_batch=config.support_batch,
+                dtype=config.dtype,
+                eps=config.norm_epsilon,
+                inf=config.mask_inf,
+                chunk_size=config.chunk_size,
+                mapping=config.mapping) for i in range(config.no_blocks)
         ])
         self.linear = ColumnLinear(
             config.c_m,

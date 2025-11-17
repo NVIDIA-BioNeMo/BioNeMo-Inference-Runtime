@@ -25,8 +25,8 @@ from test_utils.boltz.ref_layers import RefAffinityModule
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.modules.boltz.affinity import AffinityModule
+from tensorrt_bionemo.configs import AffinityModuleConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz2.configs import AffinityModuleConfig
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -76,13 +76,12 @@ def test_boltz_affinity_module(sc: Scenario):
             num_dist_bins=sc.num_dist_bins,
             pairformer_num_blocks=ref_module.pairformer_num_blocks,
             pairwise_head_width=ref_module.pairwise_head_width,
+            pairwise_num_heads=4,
             dtype=sc.dtype,
             mapping=Mapping(),
             architecture="boltz2_affinity_module")).to(device)
 
-    attn_metadatas = {
-        "triangle_attn": triangle_metadata_cls(mapping=Mapping()),
-    }
+    attn_metadatas = {}
     load_affinity_module_weights_torch(affinity_module, weights_and_biases)
 
     with torch.no_grad():

@@ -1,5 +1,4 @@
 import argparse
-import copy
 import json
 import time
 from pathlib import Path
@@ -8,12 +7,11 @@ import safetensors
 import torch
 from tensorrt_llm import logger
 
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz2.configs import (Boltz2Config,
-                                                    PairformerConfig)
+from tensorrt_bionemo.models.boltz2 import Boltz2AffinityConfig, Boltz2Config
 from tensorrt_bionemo.models.boltz2.convert import (convert_hf_pairformer,
                                                     convert_hf_pairformer_torch)
-from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def parse_arguments():
@@ -111,14 +109,14 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
     # Dump for torch config
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
@@ -154,11 +152,12 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz2_config = Boltz2Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint, is_affinity=args.is_affinity)
-    pairformer_config = boltz2_config.recycling_config.pairformer_config
+    boltz2_config = Boltz2Config()
+    if args.is_affinity:
+        boltz2_config = Boltz2AffinityConfig()
+    pairformer_config = boltz2_config.trunk.pairformer
     if args.pairformer_type == "confidence":
-        pairformer_config = boltz2_config.confidence_pairformer_config
+        pairformer_config = boltz2_config.confidence.pairformer
 
     if args.triangle_attn_backend == "CUEQUIV":
         args.support_batch = True
@@ -215,9 +214,9 @@ def main():
         "support_batch":
         args.support_batch,
     }
-    trt_pairformer_config = PairformerConfig.from_dict(config)
-    torch_pairformer_config = copy.deepcopy(trt_pairformer_config)
-    torch_pairformer_config.backend = "torch"
+    trt_pairformer_config = pairformer_config.model_copy(update=config)
+    torch_pairformer_config = pairformer_config.model_copy(update=config)
+    torch_pairformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_pairformer_config,

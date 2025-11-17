@@ -21,7 +21,7 @@ from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -30,7 +30,7 @@ class AtomTransformer(nn.Module):
     def __init__(self,
                  attn_window_queries: int = None,
                  attn_window_keys: int = None,
-                 diffusion_transformer_config: PretrainedModuleConfig = None,
+                 diffusion_transformer_config: BaseConfig = None,
                  diffusion_transformer_cls: Any = None):
         """
         Args:
@@ -38,7 +38,7 @@ class AtomTransformer(nn.Module):
                 The number of atoms per window for queries.
             attn_window_keys: int
                 The number of atoms per window for keys.
-            diffusion_transformer_config: PretrainedModuleConfig
+            diffusion_transformer_config: BaseConfig
                 The configuration for the DiffusionTransformer.
             diffusion_transformer_cls: nn.Module
                 The implementation class of the DiffusionTransformer.
@@ -136,7 +136,7 @@ class AtomAttentionEncoder(nn.Module):
                  token_s: int,
                  atoms_per_window_queries: int,
                  atoms_per_window_keys: int,
-                 diffusion_transformer_config: PretrainedModuleConfig = None,
+                 diffusion_transformer_config: BaseConfig = None,
                  diffusion_transformer_cls: Any = None,
                  structure_prediction=True,
                  version: str = "v1",
@@ -151,7 +151,7 @@ class AtomAttentionEncoder(nn.Module):
                 The number of atoms per window for queries.
             atoms_per_window_keys: int
                 The number of atoms per window for keys.
-            diffusion_transformer_config: PretrainedModuleConfig
+            diffusion_transformer_config: BaseConfig
                 The configuration for the DiffusionTransformer.
             diffusion_transformer_cls: nn.Module
                 The implementation class of the DiffusionTransformer.
@@ -295,7 +295,7 @@ class AtomAttentionDecoder(nn.Module):
                  atom_s: int,
                  atoms_per_window_queries: int,
                  atoms_per_window_keys: int,
-                 diffusion_transformer_config: PretrainedModuleConfig,
+                 diffusion_transformer_config: BaseConfig,
                  diffusion_transformer_cls: Any = None,
                  structure_prediction=True,
                  dtype: Optional[torch.dtype] = None,
@@ -309,7 +309,7 @@ class AtomAttentionDecoder(nn.Module):
                 The number of atoms per window for queries.
             atoms_per_window_keys: int
                 The number of atoms per window for keys.
-            diffusion_transformer_config: PretrainedModuleConfig
+            diffusion_transformer_config: BaseConfig
                 The configuration for the DiffusionTransformer.
             diffusion_transformer_cls: nn.Module
                 The implementation class of the DiffusionTransformer.

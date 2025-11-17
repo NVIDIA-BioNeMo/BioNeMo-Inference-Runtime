@@ -17,6 +17,7 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import \
@@ -30,11 +31,6 @@ from tensorrt_bionemo.models.boltz1.convert import (get_pairwise_attn_weights,
                                                     get_transition_weights,
                                                     get_tri_attn_node_weights,
                                                     get_tri_mul_node_weights)
-
-from ..boltz1.configs import (DiffusionTransformerConfig, InputEmbedderConfig,
-                              MSAModuleConfig, PairformerConfig,
-                              ScoreModelConfig, StructureModuleConfig)
-from .configs import AffinityModuleConfig
 
 
 def get_post_pre_norm_weights(state_dict: dict,
@@ -59,7 +55,7 @@ def get_post_pre_norm_weights(state_dict: dict,
     return ret
 
 
-def convert_hf_pairformer(config: PairformerConfig,
+def convert_hf_pairformer(config: BaseConfig,
                           mapping: Mapping,
                           pairformer_type: str = "structure",
                           local_checkpoint: str = None,
@@ -144,7 +140,7 @@ def convert_hf_pairformer(config: PairformerConfig,
     return weights
 
 
-def convert_hf_pairformer_torch(config: PairformerConfig = None,
+def convert_hf_pairformer_torch(config: BaseConfig = None,
                                 mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-2",
@@ -192,13 +188,12 @@ def convert_hf_pairformer_torch(config: PairformerConfig = None,
     return tbnm_state_dict
 
 
-def convert_hf_diffusion_transformer_torch(
-        config: DiffusionTransformerConfig = None,
-        mapping: Mapping = None,
-        local_checkpoint: str = None,
-        model_name: str = "boltz-2",
-        weights: dict = None,
-        **kwargs):
+def convert_hf_diffusion_transformer_torch(config: BaseConfig = None,
+                                           mapping: Mapping = None,
+                                           local_checkpoint: str = None,
+                                           model_name: str = "boltz-2",
+                                           weights: dict = None,
+                                           **kwargs):
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     else:
@@ -435,7 +430,7 @@ def get_affinity_heads_weights(mapping: Mapping,
 
 
 def convert_hf_affinity_module_torch(
-        config: AffinityModuleConfig = None,
+        config: BaseConfig = None,
         mapping: Mapping = None,
         local_checkpoint: str = None,
         model_name: str = "boltz-2-affinity",
@@ -715,7 +710,7 @@ def convert_hf_affinity_module_torch(
     return tbnm_state_dict
 
 
-def convert_hf_affinity_module(config: AffinityModuleConfig = None,
+def convert_hf_affinity_module(config: BaseConfig = None,
                                mapping: Mapping = None,
                                affinity_module_name: str = "affinity_module1",
                                local_checkpoint: str = None,
@@ -794,7 +789,7 @@ def convert_hf_affinity_module(config: AffinityModuleConfig = None,
     return weights
 
 
-def convert_hf_msa_module_torch(config: MSAModuleConfig = None,
+def convert_hf_msa_module_torch(config: BaseConfig = None,
                                 mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-2",
@@ -1021,7 +1016,7 @@ def convert_hf_msa_module_torch(config: MSAModuleConfig = None,
     return tbnm_state_dict
 
 
-def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
+def convert_hf_input_embedder_torch(config: BaseConfig,
                                     mapping: Mapping = None,
                                     local_checkpoint: str = None,
                                     model_name: str = "boltz-2",
@@ -1039,7 +1034,7 @@ def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
     transformer_layer_path = f"{layer_path}.atom_attention_encoder"
 
     atom_transformer_weights = convert_hf_diffusion_transformer_torch(
-        config.diffusion_transformer_config,
+        config.diffusion_transformer,
         mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
@@ -1147,7 +1142,7 @@ def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
     return weights
 
 
-def convert_hf_structure_module_torch(config: StructureModuleConfig,
+def convert_hf_structure_module_torch(config: BaseConfig,
                                       mapping: Mapping = None,
                                       local_checkpoint: str = None,
                                       model_name: str = "boltz-2",
@@ -1164,7 +1159,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     weights = {"score_model": {}}
 
     # Convert for score model
-    score_model_config = config.score_model_config
+    score_model_config = config.score_model
     layer_path = "structure_module.score_model"
     ws = weights["score_model"]
 
@@ -1257,7 +1252,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     ws["atom_attention_encoder"]["atom_encoder"] = {
         "diffusion_transformer":
         convert_hf_diffusion_transformer_torch(
-            score_model_config.atom_encoder_config,
+            score_model_config.atom_encoder,
             mapping=mapping,
             local_checkpoint=local_checkpoint,
             model_name=model_name,
@@ -1284,7 +1279,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     ws["atom_attention_decoder"]["atom_decoder"] = {
         "diffusion_transformer":
         convert_hf_diffusion_transformer_torch(
-            score_model_config.atom_decoder_config,
+            score_model_config.atom_decoder,
             mapping=mapping,
             local_checkpoint=local_checkpoint,
             model_name=model_name,
@@ -1316,7 +1311,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     }]
     # Load for token transformer
     ws["token_transformer"] = convert_hf_diffusion_transformer_torch(
-        score_model_config.token_transformer_config,
+        score_model_config.token_transformer,
         mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
@@ -1326,7 +1321,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     return weights
 
 
-def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
+def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
                                             mapping: Mapping = None,
                                             local_checkpoint: str = None,
                                             model_name: str = "boltz-2",
@@ -1421,7 +1416,7 @@ def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
 
     # Add weights for computing biases
     layer_path = "atom_enc_proj_z"
-    for i in range(config.atom_encoder_config.num_blocks):
+    for i in range(config.atom_encoder.num_blocks):
         tbnm_state_dict[f"atom_enc_proj_z.{i}.0"] = [{
             "weight":
             module_state_dict[f"{layer_path}.{i}.0.weight"],
@@ -1436,7 +1431,7 @@ def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
         }]
 
     layer_path = "atom_dec_proj_z"
-    for i in range(config.atom_decoder_config.num_blocks):
+    for i in range(config.atom_decoder.num_blocks):
         tbnm_state_dict[f"atom_dec_proj_z.{i}.0"] = [{
             "weight":
             module_state_dict[f"{layer_path}.{i}.0.weight"],
@@ -1451,7 +1446,7 @@ def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
         }]
 
     layer_path = "token_trans_proj_z"
-    for i in range(config.token_transformer_config.num_blocks):
+    for i in range(config.token_transformer.num_blocks):
         tbnm_state_dict[f"token_trans_proj_z.{i}.0"] = [{
             "weight":
             module_state_dict[f"{layer_path}.{i}.0.weight"],

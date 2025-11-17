@@ -37,7 +37,7 @@ from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
 from ..helper import AcceleratedModules, build_optimized_module
-from .configs import Boltz1Config
+from .config import Boltz1Config
 from .const import NUM_POCKET_CONTACT_INFO, NUM_TOKENS
 from .convert import (convert_hf_diffusion_conditioning_torch,
                       convert_hf_diffusion_transformer_torch,
@@ -62,23 +62,22 @@ class Boltz1(nn.Module):
     def __init__(self, config: Boltz1Config = None):
         super().__init__()
         self.model_name = "boltz-1"
-        self.config = config or Boltz1Config.from_pretrained()
-        self.global_config = self.config.global_config
+        self.config = config or Boltz1Config()
 
         # Setup for input embedder
-        self.input_embedder_dtype = self.config.input_embedder_config.torch_dtype
-        self.input_embedder_mapping = self.config.input_embedder_config.mapping
-        self.input_embedder_config = self.config.input_embedder_config
+        self.input_embedder_dtype = self.config.input_embedder.torch_dtype
+        self.input_embedder_mapping = self.config.input_embedder.mapping
+        self.input_embedder_config = self.config.input_embedder
 
         # Setup for trunk
-        self.trunk_mapping = self.config.trunk_config.mapping
-        self.trunk_dtype = self.config.trunk_config.torch_dtype
-        self.trunk_config = self.config.trunk_config
+        self.trunk_mapping = self.config.trunk.mapping
+        self.trunk_dtype = self.config.trunk.torch_dtype
+        self.trunk_config = self.config.trunk
 
         # Setup for atom diffusion
-        self.structure_module_dtype = self.config.structure_module_config.torch_dtype
-        self.structure_module_mapping = self.config.structure_module_config.mapping
-        self.structure_module_config = self.config.structure_module_config
+        self.structure_module_dtype = self.config.structure_module.torch_dtype
+        self.structure_module_mapping = self.config.structure_module.mapping
+        self.structure_module_config = self.config.structure_module
 
         # Setup steering params:
         self.steering_args = BoltzSteeringParams(contact_guidance_update=False)
@@ -89,10 +88,10 @@ class Boltz1(nn.Module):
         self.input_embedder = Boltz1InputEmbedder(self.input_embedder_config)
 
         ### Input projections ###
-        s_input_dim = (self.global_config.token_s + 2 * NUM_TOKENS + 1 +
+        s_input_dim = (self.config.token_s + 2 * NUM_TOKENS + 1 +
                        NUM_POCKET_CONTACT_INFO)
         self.s_init = Linear(s_input_dim,
-                             self.global_config.token_s,
+                             self.config.token_s,
                              bias=False,
                              dtype=self.input_embedder_dtype,
                              mapping=self.input_embedder_mapping,
@@ -100,7 +99,7 @@ class Boltz1(nn.Module):
                              gather_output=True,
                              skip_create_weights=False)
         self.z_init_1 = Linear(s_input_dim,
-                               self.global_config.token_z,
+                               self.config.token_z,
                                bias=False,
                                dtype=self.input_embedder_dtype,
                                mapping=self.input_embedder_mapping,
@@ -108,7 +107,7 @@ class Boltz1(nn.Module):
                                gather_output=True,
                                skip_create_weights=False)
         self.z_init_2 = Linear(s_input_dim,
-                               self.global_config.token_z,
+                               self.config.token_z,
                                bias=False,
                                dtype=self.input_embedder_dtype,
                                mapping=self.input_embedder_mapping,
@@ -116,7 +115,7 @@ class Boltz1(nn.Module):
                                gather_output=True,
                                skip_create_weights=False)
         self.rel_pos = RelativePositionEncoder(
-            token_z=self.global_config.token_z,
+            token_z=self.config.token_z,
             fix_sym_check=False,
             cyclic_pos_enc=True,
             period_broadcast=True,
@@ -125,7 +124,7 @@ class Boltz1(nn.Module):
             skip_create_weights=False)
         self.token_bonds = Linear(
             1,
-            self.global_config.token_z,
+            self.config.token_z,
             bias=False,
             dtype=self.input_embedder_dtype,
             mapping=self.input_embedder_mapping,
@@ -138,23 +137,23 @@ class Boltz1(nn.Module):
 
         ### Distogram ###
         self.distogram_module = DistogramModule(
-            token_z=self.global_config.token_z,
-            num_bins=self.global_config.num_bins,
+            token_z=self.config.token_z,
+            num_bins=self.config.num_bins,
             version="v1",
             dtype=self.structure_module_config.torch_dtype,
             mapping=self.structure_module_config.mapping,
             skip_create_weights=False)
 
         ### Atom diffusion ###
-        score_model_config = self.structure_module_config.score_model_config
-        atom_encoder_config = score_model_config.atom_encoder_config
-        token_transformer_config = score_model_config.token_transformer_config
-        atom_decoder_config = score_model_config.atom_decoder_config
+        score_model_config = self.structure_module_config.score_model
+        atom_encoder_config = score_model_config.atom_encoder
+        token_transformer_config = score_model_config.token_transformer
+        atom_decoder_config = score_model_config.atom_decoder
         self.diffusion_conditioning = DiffusionConditioning(
-            token_s=self.global_config.token_s,
-            token_z=self.global_config.token_z,
-            atom_s=self.global_config.atom_s,
-            atom_z=self.global_config.atom_z,
+            token_s=self.config.token_s,
+            token_z=self.config.token_z,
+            atom_s=self.config.atom_s,
+            atom_z=self.config.atom_z,
             atoms_per_window_queries=self.input_embedder_config.
             atoms_per_window_queries,
             atoms_per_window_keys=self.input_embedder_config.
@@ -221,8 +220,8 @@ class Boltz1(nn.Module):
         }])
 
         # Load weights for trunk
-        msa_module_config = self.trunk_config.msa_module_config
-        pairformer_config = self.trunk_config.pairformer_config
+        msa_module_config = self.trunk_config.msa_module
+        pairformer_config = self.trunk_config.pairformer
         trunk_weights = {}
         trunk_weights["msa_module"] = convert_hf_msa_module_torch(
             config=msa_module_config,
@@ -253,7 +252,7 @@ class Boltz1(nn.Module):
 
         # Load weights for atom diffusion
         diffusion_conditioning_weights = convert_hf_diffusion_conditioning_torch(
-            config=self.structure_module_config.score_model_config,
+            config=self.structure_module_config.score_model,
             weights=weights,
             model_name=self.model_name)
         self.diffusion_conditioning.load_weights(diffusion_conditioning_weights)
@@ -286,6 +285,9 @@ class Boltz1(nn.Module):
         else:
             raise ValueError(f"Module name {module_name} not supported")
         return {key: feed_dict.get(key, None) for key in keys}
+
+    def get_pretrained_config() -> Boltz1Config:
+        return Boltz1Config()
 
     def forward(
         self,

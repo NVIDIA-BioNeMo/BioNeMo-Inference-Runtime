@@ -21,12 +21,11 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
     AttentionType, get_attention_backend)
 from tensorrt_bionemo._torch.layers.transformers import \
     OpenFold3DiffusionTransformer
+from tensorrt_bionemo.configs import DiffusionTransformerConfig
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
 from tensorrt_bionemo.runtime.misc import ensure_contiguous
-
-from ..configs import DiffusionTransformerConfig
 
 
 class TokenTransformerTorch(BackendBase):

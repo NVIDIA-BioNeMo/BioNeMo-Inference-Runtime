@@ -26,8 +26,7 @@ from tensorrt_llm.network import Network
 from tensorrt_llm.plugin import (current_all_reduce_helper,
                                  init_all_reduce_helper)
 
-from tensorrt_bionemo._trt.layers.attention import AttentionParams
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig, BuildConfig
 
 
 class PretrainedModule(Module):
@@ -36,7 +35,7 @@ class PretrainedModule(Module):
     It is used only in the building engines progress
     """
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
         init_all_reduce_helper()
@@ -46,14 +45,16 @@ class PretrainedModule(Module):
         cls,
         ckpt_dir: str,
         rank: Optional[int] = None,
-        config: Optional[PretrainedModuleConfig] = None,
+        config: Optional[BaseConfig] = None,
         *,
         preprocess_weights_hook: Optional[Callable[[Dict[str, Tensor]],
                                                    Dict[str, Tensor]]] = None
     ) -> 'PretrainedModule':
         if config is None:
-            config = PretrainedModuleConfig.from_json_file(
-                cls, os.path.join(ckpt_dir, 'config.json'))
+            config_path = os.path.join(ckpt_dir, 'config.json')
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+                config = BaseConfig.model_validate(data)
         if rank is not None:
             config.set_rank(rank)
         rank = config.mapping.rank
@@ -127,12 +128,12 @@ class PretrainedModule(Module):
 
     def prepare_inputs(
             self,
-            opt_profiles: list[dict] = None,
-            has_attention: bool = False,
+            build_config: BuildConfig = None,
             disable_custom_all_reduce: bool = False) -> dict[str, Any]:
-        input_shapes = self.config.get_input_shapes()
-        if hasattr(self.config, "get_input_dtypes"):
-            input_dtypes = self.config.get_input_dtypes()
+        input_shapes = build_config.get_input_shapes()
+        opt_profiles = build_config.get_optimization_profiles()
+        if hasattr(build_config, "get_input_dtypes"):
+            input_dtypes = build_config.get_input_dtypes()
         else:
             input_dtypes = {}
         mapping = self.config.mapping
@@ -183,8 +184,4 @@ class PretrainedModule(Module):
                                          dtype=input_dtypes.get(k, dtype),
                                          shape=shape,
                                          dim_range=dim_ranges)
-
-        if has_attention:
-            # TODO: Modify attention params for each module
-            basic_inputs["attention_params"] = AttentionParams()
         return basic_inputs

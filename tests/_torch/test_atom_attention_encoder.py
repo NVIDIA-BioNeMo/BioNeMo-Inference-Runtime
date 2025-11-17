@@ -32,7 +32,7 @@ from tensorrt_bionemo._torch.layers.transformers.atom import \
     AtomAttentionEncoder
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     BoltzDiffusionTransformer
-from tensorrt_bionemo.models.boltz1.configs import DiffusionTransformerConfig
+from tensorrt_bionemo.configs import DiffusionTransformerConfig
 
 
 @dataclass(kw_only=True, frozen=True)

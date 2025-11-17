@@ -20,12 +20,11 @@ from tensorrt_llm._utils import str_dtype_to_trt
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.layers.transformers import PairformerModule
+from tensorrt_bionemo.configs import PairformerConfig
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
 from tensorrt_bionemo.runtime.misc import dtype_context, ensure_contiguous
-
-from ..configs import PairformerConfig
 
 # TODO: this is very similar to the boltz1 pairformer, but the mask is called single_mask instead of mask
 # in the future, we should merge the two pairformers and remove this class

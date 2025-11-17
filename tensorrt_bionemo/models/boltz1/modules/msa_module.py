@@ -19,11 +19,10 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.modules.boltz.trunk import MSAModule
+from tensorrt_bionemo.configs import MSAModuleConfig
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
 from tensorrt_bionemo.runtime.misc import dtype_context
-
-from ..configs import MSAModuleConfig
 
 
 class MSAModuleTorch(BackendBase):

@@ -28,8 +28,7 @@ from tensorrt_llm._utils import str_dtype_to_trt
 from tensorrt_llm.layers.linear import Linear
 from tensorrt_llm.profiler import device_memory_info, host_memory_info
 
-from tensorrt_bionemo.config import PretrainedModuleConfig
-from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.runtime.allocator import (BaseContextMemoryManager,
                                                 OnDemandContextMemoryManager,
                                                 SharedContextMemoryManager,
@@ -67,7 +66,7 @@ def save_engine_buffer_to_disk(engine_buffer, config, engine_dir):
     config_path = os.path.join(engine_dir, "config.json")
     logger.info(f"Saving config to: {config_path}")
     with open(config_path, 'w') as f:
-        json.dump(config.to_dict(), f)
+        json.dump(config.model_dump(), f)
     logger.info(f"Config saved: {os.path.exists(config_path)}")
 
     logger.info(f"Returning engine_dir: {engine_dir}")
@@ -79,7 +78,7 @@ class DummyBackend(BackendBase):
 
     def __init__(
             self,
-            config: PretrainedModuleConfig,
+            config: BaseConfig,
             impl: nn.Module = None,
             context_memory_allocator: Optional[BaseContextMemoryManager] = None
     ):
@@ -100,23 +99,9 @@ class DummyBackend(BackendBase):
         return outputs
 
 
-class DummyConfig(PretrainedModuleConfig):
-
-    def __init__(self,
-                 in_features: int = 256,
-                 out_features: int = 256,
-                 **kwargs):
-        # Filter out keys that we're explicitly setting
-        filtered_kwargs = {
-            k: v
-            for k, v in kwargs.items() if k not in ['architecture', 'dtype']
-        }
-        super().__init__(architecture="dummy",
-                         dtype="float32",
-                         **filtered_kwargs)
-        self.in_features = in_features
-        self.out_features = out_features
-        self.mapping = Mapping()
+class DummyConfig(BaseConfig):
+    in_features: int = 256
+    out_features: int = 256
 
     def get_input_names(self):
         """Return the input tensor names for this config"""
@@ -231,9 +216,12 @@ def run_allocator_test(allocator_class: BaseContextMemoryManager,
         f"Creating multiple dummy engines for {allocator_name.lower()} test...")
 
     # Create engines with different configurations
-    engine_dir_0 = create_dummy_net0(DummyConfig(512, 512))  # 2-layer network
-    engine_dir_1 = create_dummy_net1(DummyConfig(512, 512))  # 3-layer network
-    engine_dir_2 = create_dummy_net2(DummyConfig(512, 512))  # 13-layer network
+    engine_dir_0 = create_dummy_net0(
+        DummyConfig(in_features=512, out_features=512))  # 2-layer network
+    engine_dir_1 = create_dummy_net1(
+        DummyConfig(in_features=512, out_features=512))  # 3-layer network
+    engine_dir_2 = create_dummy_net2(
+        DummyConfig(in_features=512, out_features=512))  # 13-layer network
 
     # Load configs for all engines
     configs = []
@@ -243,7 +231,7 @@ def run_allocator_test(allocator_class: BaseContextMemoryManager,
         config_path = os.path.join(engine_dir, "config.json")
         with open(config_path, "r") as f:
             config_dict = json.load(f)
-        config = DummyConfig(**config_dict)
+        config = DummyConfig().copy_and_validate(**config_dict)
         configs.append(config)
         logger.info(f"Loaded config for engine {i}")
 
@@ -330,9 +318,12 @@ def test_ondemand_context_memory_manager():
     )
 
     # Create multiple engines with different configurations
-    engine_dir_0 = create_dummy_net0(DummyConfig(512, 512))
-    engine_dir_1 = create_dummy_net1(DummyConfig(512, 512))
-    engine_dir_2 = create_dummy_net2(DummyConfig(512, 512))
+    engine_dir_0 = create_dummy_net0(
+        DummyConfig(in_features=512, out_features=512))
+    engine_dir_1 = create_dummy_net1(
+        DummyConfig(in_features=512, out_features=512))
+    engine_dir_2 = create_dummy_net2(
+        DummyConfig(in_features=512, out_features=512))
 
     # Load configs for all engines
     configs = []
@@ -341,7 +332,7 @@ def test_ondemand_context_memory_manager():
         config_path = os.path.join(engine_dir, "config.json")
         with open(config_path, "r") as f:
             config_dict = json.load(f)
-        config = DummyConfig(**config_dict)
+        config = DummyConfig().copy_and_validate(**config_dict)
         configs.append(config)
 
     # Create allocator and backends
@@ -455,9 +446,12 @@ def test_custom_stream():
     )
 
     # Create all three engines
-    engine_dir_0 = create_dummy_net0(DummyConfig(512, 512))
-    engine_dir_1 = create_dummy_net1(DummyConfig(512, 512))
-    engine_dir_2 = create_dummy_net2(DummyConfig(512, 512))
+    engine_dir_0 = create_dummy_net0(
+        DummyConfig(in_features=512, out_features=512))
+    engine_dir_1 = create_dummy_net1(
+        DummyConfig(in_features=512, out_features=512))
+    engine_dir_2 = create_dummy_net2(
+        DummyConfig(in_features=512, out_features=512))
 
     # Load configs for all engines
     configs = []
@@ -469,7 +463,7 @@ def test_custom_stream():
         config_path = os.path.join(engine_dir, "config.json")
         with open(config_path, "r") as f:
             config_dict = json.load(f)
-        config = DummyConfig(**config_dict)
+        config = DummyConfig().copy_and_validate(**config_dict)
         configs.append(config)
         logger.info(f"Loaded config for engine {i}")
 
@@ -560,7 +554,7 @@ def test_optimization_profile_switching():
     logger.info("Testing optimization profile switching...")
 
     # Create a simple engine with multiple optimization profiles
-    config = DummyConfig(256, 256)
+    config = DummyConfig(in_features=256, out_features=256)
     builder = tensorrt_llm.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()

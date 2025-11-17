@@ -21,31 +21,22 @@ import torch
 import torch.nn as nn
 from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BackendType, BaseConfig
 
 from .allocator import BaseContextMemoryManager, SimpleContextMemoryManager
-
-
-class BackendType:
-    TRT = "trt"
-    TORCH = "torch"
-
-    @classmethod
-    def is_supported(cls, backend: str) -> bool:
-        return backend in [cls.TRT, cls.TORCH]
 
 
 class BackendBase(nn.Module):
     IMPL_CLASS = None
 
     def __init__(self,
-                 config: PretrainedModuleConfig,
+                 config: BaseConfig,
                  impl: nn.Module = None,
                  context_memory_allocator: BaseContextMemoryManager = None):
         """ BackendBase is the base class for all backends.
         It provides the basic functionality for all backends.
         Args:
-            config(PretrainedModuleConfig): The configuration for the backend.
+            config(BaseConfig): The configuration for the backend.
             impl(nn.Module): The implementation of the backend.
                              If None, the implementation will be created by the IMPL_CLASS.
                              This is to use for debugging purposes.
@@ -152,7 +143,7 @@ class BackendBuilder(ABC):
               context_memory_allocator: BaseContextMemoryManager = None,
               compile: bool = True,
               weights: dict = None,
-              config: PretrainedModuleConfig = None,
+              config: BaseConfig = None,
               **kwargs) -> nn.Module:
         """
         Build the backend module from the checkpoint directory.

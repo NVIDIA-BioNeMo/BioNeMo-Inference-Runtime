@@ -17,10 +17,9 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.openfold2.configs import (EvoformerStackConfig,
-                                                       ExtraMSAStackConfig)
 
 
 def get_linear_weights(state_dict: dict,
@@ -343,7 +342,7 @@ def get_pair_transition_weights(state_dict: dict,
     return ret
 
 
-def convert_hf_evoformer(config: EvoformerStackConfig,
+def convert_hf_evoformer(config: BaseConfig,
                          mapping: Mapping = None,
                          local_checkpoint: str = None,
                          model_name: str = "openfold2_ptm_1"):
@@ -431,7 +430,7 @@ def convert_hf_evoformer(config: EvoformerStackConfig,
     return weights
 
 
-def convert_hf_evoformer_torch(config: EvoformerStackConfig,
+def convert_hf_evoformer_torch(config: BaseConfig,
                                mapping: Mapping = None,
                                local_checkpoint: str = None,
                                model_name: str = "openfold2_ptm_1",
@@ -728,7 +727,7 @@ def convert_hf_evoformer_torch(config: EvoformerStackConfig,
     return tbnm_state_dict
 
 
-def convert_hf_extra_msa_stack_torch(config: ExtraMSAStackConfig,
+def convert_hf_extra_msa_stack_torch(config: BaseConfig,
                                      mapping: Mapping = None,
                                      local_checkpoint: str = None,
                                      model_name: str = "openfold2_ptm_1",

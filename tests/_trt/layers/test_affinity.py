@@ -29,8 +29,8 @@ from test_utils.boltz.ref_layers import RefAffinityModule
 # isort: on
 
 from tensorrt_bionemo._trt.layers.affinity import AffinityModule
+from tensorrt_bionemo.configs import AffinityModuleConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz2.configs import AffinityModuleConfig
 
 
 @dataclass(kw_only=True, frozen=True)

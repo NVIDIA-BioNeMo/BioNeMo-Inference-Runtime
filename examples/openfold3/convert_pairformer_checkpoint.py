@@ -1,18 +1,17 @@
 import argparse
-import copy
 import json
 import time
 from pathlib import Path
 
-import torch
 import safetensors
+import torch
 from tensorrt_llm import logger
 
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.openfold3.configs import (OpenFold3Config,
-                                                       PairformerConfig)
-from tensorrt_bionemo.models.openfold3.convert import convert_hf_pairformer, convert_hf_pairformer_torch
-from tensorrt_bionemo.runtime.backend import BackendType
+from tensorrt_bionemo.models.openfold3 import OpenFold3Config
+from tensorrt_bionemo.models.openfold3.convert import (
+    convert_hf_pairformer, convert_hf_pairformer_torch)
 
 
 def parse_arguments():
@@ -98,15 +97,15 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
     # Dump for torch config
-    
+
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
@@ -122,7 +121,7 @@ def convert(worker_rank, world_size, configs, args):
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
-        
+
         if args.backend == 'all' or args.backend == BackendType.TORCH:
             # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
             weights = convert_hf_pairformer_torch(
@@ -132,7 +131,6 @@ def convert(worker_rank, world_size, configs, args):
                 model_name=model_name)
             torch.save(weights,
                        args.output_dir / f'{BackendType.TORCH}/weights.pt')
-        
 
 
 def main():
@@ -142,9 +140,8 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    openfold3_config = OpenFold3Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint)
-    pairformer_config = openfold3_config.pairformer_config
+    openfold3_config = OpenFold3Config()
+    pairformer_config = openfold3_config.trunk.pairformer
 
     if args.triangle_attn_backend == "CUEQUIV":
         args.support_batch = True
@@ -203,9 +200,9 @@ def main():
         "support_batch":
         args.support_batch,
     }
-    trt_pairformer_config = PairformerConfig.from_dict(config)
-    torch_pairformer_config = copy.deepcopy(trt_pairformer_config)
-    torch_pairformer_config.backend = "torch"
+    trt_pairformer_config = pairformer_config.model_copy(update=config)
+    torch_pairformer_config = pairformer_config.model_copy(update=config)
+    torch_pairformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_pairformer_config,

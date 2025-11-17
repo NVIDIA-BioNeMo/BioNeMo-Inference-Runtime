@@ -71,8 +71,7 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
 
     with net_guard(network):
         prepare_input_args = {
-            "opt_profiles": build_config.optimization_profiles,
-            "has_attention": build_config.has_attention,
+            "build_config": build_config,
             "disable_custom_all_reduce": module_config.disable_custom_all_reduce
         }
         inputs = module.prepare_inputs(**prepare_input_args)
@@ -80,8 +79,8 @@ def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
         if not isinstance(outputs, tuple) and not isinstance(outputs, list):
             outputs = (outputs, )
 
-        output_names = module.config.get_output_names()
-        for output, output_name in zip(outputs, output_names):
+        output_tensors = build_config.get_output_shapes()
+        for output, output_name in zip(outputs, output_tensors.keys()):
             output.mark_output(output_name,
                                str_dtype_to_trt(module.config.dtype))
 

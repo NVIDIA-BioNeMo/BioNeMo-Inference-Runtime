@@ -18,12 +18,9 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.convert_utils import split
 
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
-
-from .configs import (DiffusionTransformerConfig, InputEmbedderConfig,
-                      MSAModuleConfig, PairformerConfig, ScoreModelConfig,
-                      StructureModuleConfig)
 
 
 def get_pairwise_attn_weights(mapping: Mapping,
@@ -215,7 +212,7 @@ def get_transition_weights(mapping: Mapping,
     return ret
 
 
-def convert_hf_pairformer(config: PairformerConfig,
+def convert_hf_pairformer(config: BaseConfig,
                           mapping: Mapping,
                           pairformer_type: str = "structure",
                           local_checkpoint: str = None,
@@ -296,7 +293,7 @@ def convert_hf_pairformer(config: PairformerConfig,
     return weights
 
 
-def convert_hf_pairformer_torch(config: PairformerConfig = None,
+def convert_hf_pairformer_torch(config: BaseConfig = None,
                                 mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-1",
@@ -307,6 +304,8 @@ def convert_hf_pairformer_torch(config: PairformerConfig = None,
     """
     This function is used to convert PyTorch weights to dict for pairformer v1 torch backend.
     Args:
+        config: The configuration for the pairformer module.
+        mapping: The mapping for the pairformer.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         world_size: The number of processes to use.
         rank: The rank of the process.
@@ -618,12 +617,17 @@ def get_post_norm_weights(mapping: Mapping,
     return ret
 
 
-def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig = None,
+def convert_hf_diffusion_transformer(config: BaseConfig = None,
                                      mapping: Mapping = None,
                                      local_checkpoint: str = None,
                                      model_name: str = "boltz-1"):
     """
     Convert a token transformer model from a Hugging Face checkpoint to a TensorRT model weights.
+    Args:
+        config: The configuration for the diffusion transformer module.
+        mapping: The mapping for the diffusion transformer.
+        local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
+        model_name: The name of the model to load.
     """
     mapping = mapping if mapping is not None else Mapping()
     prefix = "structure_module.score_model.token_transformer.layers"
@@ -680,7 +684,7 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig = None,
     return weights
 
 
-def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
+def convert_hf_diffusion_transformer_torch(config: BaseConfig,
                                            mapping: Mapping = None,
                                            local_checkpoint: str = None,
                                            model_name: str = "boltz-1",
@@ -688,6 +692,13 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
                                            **kwargs):
     """
     Convert a token transformer model from a Hugging Face checkpoint to a PyTorch model weights.
+    Args:
+        config: The configuration for the diffusion transformer module.
+        mapping: The mapping for the diffusion transformer.
+        local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
+        model_name: The name of the model to load.
+        weights: The weights to load. If weights is None, the function will load from HuggingFace
+        kwargs: Additional arguments for the conversion.
     """
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -823,7 +834,7 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
     return tbnm_state_dict
 
 
-def convert_hf_msa_module_torch(config: MSAModuleConfig,
+def convert_hf_msa_module_torch(config: BaseConfig,
                                 mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-1",
@@ -831,6 +842,13 @@ def convert_hf_msa_module_torch(config: MSAModuleConfig,
                                 **kwargs):
     """
     Convert a msa module model from a Hugging Face checkpoint to a PyTorch model weights.
+    Args:
+        config: The configuration for the msa module.
+        mapping: The mapping for the msa module.
+        local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
+        model_name: The name of the model to load.
+        weights: The weights to load. If weights is None, the function will load from HuggingFace
+        kwargs: Additional arguments for the conversion.
     """
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -1040,7 +1058,7 @@ def convert_hf_msa_module_torch(config: MSAModuleConfig,
     return tbnm_state_dict
 
 
-def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
+def convert_hf_input_embedder_torch(config: BaseConfig,
                                     mapping: Mapping = None,
                                     local_checkpoint: str = None,
                                     model_name: str = "boltz-1",
@@ -1048,6 +1066,13 @@ def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
                                     **kwargs):
     """
     Convert a Boltz1x input embedder model from a Hugging Face checkpoint to a PyTorch model weights.
+    Args:
+        config: The configuration for the input embedder module. Boltz1Config.input_embedder
+        mapping: The mapping for the input embedder.
+        local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
+        model_name: The name of the model to load.
+        weights: The weights to load. If weights is None, the function will load from HuggingFace
+        kwargs: Additional arguments for the conversion.
     """
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -1056,7 +1081,7 @@ def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
 
     layer_path = "input_embedder.atom_attention_encoder"
     atom_transformer_weights = convert_hf_diffusion_transformer_torch(
-        config.diffusion_transformer_config,
+        config.diffusion_transformer,
         mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
@@ -1102,8 +1127,8 @@ def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
             "bias":
             state_dict[bias_path] if bias_path is not None else None
         }]
-    assert config.diffusion_transformer_config.version == "v2", "Need version 2 here"
-    for i in range(config.atom_encoder_depth):
+    assert config.diffusion_transformer.version == "v2", "Need version 2 here"
+    for i in range(config.diffusion_transformer.num_blocks):
         weights[f"atom_enc_proj_z.{i}.0"] = [{
             "weight":
             state_dict[
@@ -1122,7 +1147,7 @@ def convert_hf_input_embedder_torch(config: InputEmbedderConfig,
     return weights
 
 
-def convert_hf_structure_module_torch(config: StructureModuleConfig,
+def convert_hf_structure_module_torch(config: BaseConfig,
                                       mapping: Mapping = None,
                                       local_checkpoint: str = None,
                                       model_name: str = "boltz-1",
@@ -1130,6 +1155,13 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
                                       **kwargs):
     """
     Convert a atom diffusion model from a Hugging Face checkpoint to a PyTorch model weights.
+    Args:
+        config: The configuration for the atom diffusion module. Boltz1Config.structure_module.atom_diffusion
+        mapping: The mapping for the atom diffusion.
+        local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
+        model_name: The name of the model to load.
+        weights: The weights to load. If weights is None, the function will load from HuggingFace
+        kwargs: Additional arguments for the conversion.
     """
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -1139,7 +1171,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
 
     weights = {"out_token_feat_update": {}, "score_model": {}}
 
-    atom_diffusion_config = config.atom_diffusion_config
+    atom_diffusion_config = config.atom_diffusion
     ws = weights["out_token_feat_update"]
     ws["norm_next"] = [{
         "weight": state_dict[f"{layer_path}.norm_next.weight"],
@@ -1207,7 +1239,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     }]
 
     # Convert for score model
-    score_model_config = config.score_model_config
+    score_model_config = config.score_model
     layer_path = "structure_module.score_model"
     ws = weights["score_model"]
 
@@ -1299,7 +1331,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     ws["atom_attention_encoder"]["atom_encoder"] = {
         "diffusion_transformer":
         convert_hf_diffusion_transformer_torch(
-            score_model_config.atom_encoder_config,
+            score_model_config.atom_encoder,
             mapping=mapping,
             local_checkpoint=local_checkpoint,
             model_name=model_name,
@@ -1326,7 +1358,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     ws["atom_attention_decoder"]["atom_decoder"] = {
         "diffusion_transformer":
         convert_hf_diffusion_transformer_torch(
-            score_model_config.atom_decoder_config,
+            score_model_config.atom_decoder,
             mapping=mapping,
             local_checkpoint=local_checkpoint,
             model_name=model_name,
@@ -1358,7 +1390,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     }]
     # Load for token transformer
     ws["token_transformer"] = convert_hf_diffusion_transformer_torch(
-        score_model_config.token_transformer_config,
+        score_model_config.token_transformer,
         mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
@@ -1368,7 +1400,7 @@ def convert_hf_structure_module_torch(config: StructureModuleConfig,
     return weights
 
 
-def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
+def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
                                             mapping: Mapping = None,
                                             local_checkpoint: str = None,
                                             model_name: str = "boltz-1",
@@ -1376,6 +1408,13 @@ def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
                                             **kwargs):
     """
     Convert a diffusion conditioning model from a Hugging Face checkpoint to a PyTorch model weights.
+    Args:
+        config: The configuration for the diffusion conditioning module. Boltz1Config.structure_module.score_model
+        mapping: The mapping for the diffusion conditioning.
+        local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
+        model_name: The name of the model to load.
+        weights: The weights to load. If weights is None, the function will load from HuggingFace
+        kwargs: Additional arguments for the conversion.
     """
     if weights is None:
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -1466,7 +1505,7 @@ def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
 
     # Add weights for computing biases
     layer_path = "atom_attention_encoder.atom_encoder"
-    for i in range(config.atom_encoder_config.num_blocks):
+    for i in range(config.atom_encoder.num_blocks):
         tbnm_state_dict[f"atom_enc_proj_z.{i}.0"] = [{
             "weight":
             module_state_dict[
@@ -1483,7 +1522,7 @@ def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
             None,
         }]
     layer_path = "token_transformer"
-    for i in range(config.token_transformer_config.num_blocks):
+    for i in range(config.token_transformer.num_blocks):
         tbnm_state_dict[f"token_trans_proj_z.{i}.0"] = [{
             "weight":
             module_state_dict[
@@ -1500,7 +1539,7 @@ def convert_hf_diffusion_conditioning_torch(config: ScoreModelConfig,
             None,
         }]
     layer_path = "atom_attention_decoder.atom_decoder"
-    for i in range(config.atom_decoder_config.num_blocks):
+    for i in range(config.atom_decoder.num_blocks):
         tbnm_state_dict[f"atom_dec_proj_z.{i}.0"] = [{
             "weight":
             module_state_dict[

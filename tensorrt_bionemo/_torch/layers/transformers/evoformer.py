@@ -28,7 +28,7 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionEndingNode, TriangleAttentionStartingNode,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -286,7 +286,7 @@ class EvoformerBlock(nn.Module):
 
 class EvoformerStack(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         """
         Args:
             config: tensorrt_bionemo.models.openfold2.configs.EvoformerStackConfig

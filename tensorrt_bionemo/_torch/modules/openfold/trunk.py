@@ -22,7 +22,7 @@ from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.attention import MSAColumnGlobalAttention
 from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -157,7 +157,7 @@ class ExtraMSABlock(EvoformerBlock):
 
 class ExtraMSAStack(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig) -> None:
+    def __init__(self, config: BaseConfig) -> None:
         """
         OpenFold2 ExtraMSAModule
         TODO: add support for subsampling, chunking

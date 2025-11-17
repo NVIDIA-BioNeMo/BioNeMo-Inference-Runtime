@@ -1,5 +1,4 @@
 import argparse
-import copy
 import json
 import time
 from pathlib import Path
@@ -8,12 +7,11 @@ import safetensors
 import torch
 from tensorrt_llm import logger
 
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.configs import (Boltz1Config,
-                                                    PairformerConfig)
+from tensorrt_bionemo.models.boltz1 import Boltz1Config
 from tensorrt_bionemo.models.boltz1.convert import (convert_hf_pairformer,
                                                     convert_hf_pairformer_torch)
-from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def parse_arguments():
@@ -79,7 +77,7 @@ def parse_arguments():
                         help='The type of pairformer to convert')
     parser.add_argument('--triangle_attn_backend',
                         type=str,
-                        default='VANILLA',
+                        default='CUEQUIV',
                         choices=['VANILLA', 'CUEQUIV'],
                         help='The backend of triangle attention')
     parser.add_argument('--backend',
@@ -104,14 +102,14 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
     # Dump for torch config
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
@@ -145,11 +143,11 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz1_config = Boltz1Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint)
-    pairformer_config = boltz1_config.trunk_config.structure_pairformer_config
+    boltz1_config = Boltz1Config()
+    pairformer_config = boltz1_config.trunk.pairformer
     if args.pairformer_type == "confidence":
-        pairformer_config = boltz1_config.confidence_pairformer_config
+        # FIXME
+        pairformer_config = boltz1_config.confidence.pairformer
     if args.triangle_attn_backend == "CUEQUIV":
         args.support_batch = True
     config = {
@@ -185,11 +183,10 @@ def main():
         args.dtype,
         "architecture":
         f"{args.pairformer_type}_pairformer",
-        'mapping': {
-            'world_size': world_size,
-            'tp_size': args.tp_size,
-            'dcp_size': args.dcp_size,
-        },
+        'mapping':
+        Mapping(world_size=world_size,
+                tp_size=args.tp_size,
+                dcp_size=args.dcp_size),
         "disable_custom_all_reduce":
         args.max_transition_tp_size or args.max_attention_pairwise_tp_size
         or args.max_tri_mul_tp_size,
@@ -200,9 +197,9 @@ def main():
         "version":
         "v1"
     }
-    trt_pairformer_config = PairformerConfig.from_dict(config)
-    torch_pairformer_config = copy.deepcopy(trt_pairformer_config)
-    torch_pairformer_config.backend = "torch"
+    trt_pairformer_config = pairformer_config.model_copy(update=config)
+    torch_pairformer_config = pairformer_config.model_copy(update=config)
+    torch_pairformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_pairformer_config,

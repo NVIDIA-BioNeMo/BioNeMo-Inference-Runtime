@@ -7,12 +7,11 @@ import safetensors
 import torch
 from tensorrt_llm import logger
 
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz2.configs import (AffinityModuleConfig,
-                                                    Boltz2Config)
+from tensorrt_bionemo.models.boltz2 import Boltz2AffinityConfig
 from tensorrt_bionemo.models.boltz2.convert import (
     convert_hf_affinity_module, convert_hf_affinity_module_torch)
-from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def parse_arguments():
@@ -74,14 +73,14 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
     # Dump for torch config
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
@@ -118,20 +117,19 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz2_config = Boltz2Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint, is_affinity=True)
-    affinity_module_configs = boltz2_config.affinity_module_configs.get(
-        args.affinity_module_name, None)
-    assert affinity_module_configs is not None, f"Affinity module {args.affinity_module_name} not found"
+    boltz2_config = Boltz2AffinityConfig()
+    affinity_module_config = boltz2_config.affinity.module1
+    if args.affinity_module_name == 'affinity_module2':
+        affinity_module_config = boltz2_config.affinity.module2
 
     config = {
-        "token_s": affinity_module_configs.token_s,
-        "token_z": affinity_module_configs.token_z,
-        "num_dist_bins": affinity_module_configs.num_dist_bins,
-        "max_dist": affinity_module_configs.max_dist,
-        "pairformer_num_blocks": affinity_module_configs.pairformer_num_blocks,
-        "pairwise_head_width": affinity_module_configs.pairwise_head_width,
-        "pairwise_num_heads": affinity_module_configs.pairwise_num_heads,
+        "token_s": affinity_module_config.token_s,
+        "token_z": affinity_module_config.token_z,
+        "num_dist_bins": affinity_module_config.num_dist_bins,
+        "max_dist": affinity_module_config.max_dist,
+        "pairformer_num_blocks": affinity_module_config.pairformer_num_blocks,
+        "pairwise_head_width": affinity_module_config.pairwise_head_width,
+        "pairwise_num_heads": affinity_module_config.pairwise_num_heads,
         "max_batch_size": 1,
         "dtype": args.dtype,
         "architecture": "affinity_module",
@@ -145,9 +143,11 @@ def main():
         "backend": BackendType.TRT,
         "version": "v2"
     }
-    trt_affinity_module_config = AffinityModuleConfig.from_dict(config)
-    torch_affinity_module_config = AffinityModuleConfig.from_dict(config)
-    torch_affinity_module_config.backend = BackendType.TORCH
+    trt_affinity_module_config = affinity_module_config.model_copy(
+        update=config)
+    torch_affinity_module_config = affinity_module_config.model_copy(
+        update=config)
+    torch_affinity_module_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_affinity_module_config,

@@ -32,7 +32,7 @@ class Mapping(object):
             world_size (int): total number of GPUs
             rank (int): global rank of the current GPU
             gpus_per_node (int): number of GPUs per node
-            dcp_size (int): number of data parallel groups
+            dcp_size (int): number of distributed context parallel groups
             tp_size (int): number of tensor parallel groups
             pp_size (int): number of pipeline parallel groups
         """

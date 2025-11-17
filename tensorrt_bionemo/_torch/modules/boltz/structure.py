@@ -41,10 +41,10 @@ from tensorrt_bionemo._torch.modules.boltz.physical.potentials import \
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.const import (NUM_POCKET_CONTACT_INFO,
-                                                  NUM_TOKENS)
+from tensorrt_bionemo.pipeline.boltz.const import (NUM_POCKET_CONTACT_INFO,
+                                                   NUM_TOKENS)
 
 
 class DiffusionConditioning(nn.Module):
@@ -220,7 +220,7 @@ class DiffusionModule(nn.Module):
 
     def __init__(
         self,
-        config: PretrainedModuleConfig = None,
+        config: BaseConfig = None,
     ) -> None:
         super().__init__()
         # Set the dtype and mapping for the token transformer
@@ -252,7 +252,7 @@ class DiffusionModule(nn.Module):
             atoms_per_window_queries=config.atoms_per_window_queries,
             atoms_per_window_keys=config.atoms_per_window_keys,
             structure_prediction=True,
-            diffusion_transformer_config=config.atom_encoder_config,
+            diffusion_transformer_config=config.atom_encoder,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             version=config.version,
             dtype=dtype,
@@ -271,7 +271,7 @@ class DiffusionModule(nn.Module):
                    skip_create_weights=config.skip_create_weights))
 
         self.token_transformer = BoltzDiffusionTransformer(
-            config=config.token_transformer_config)
+            config=config.token_transformer)
 
         self.a_norm = nn.LayerNorm(
             2 * config.token_s, dtype=dtype,
@@ -282,7 +282,7 @@ class DiffusionModule(nn.Module):
             atom_s=config.atom_s,
             atoms_per_window_queries=config.atoms_per_window_queries,
             atoms_per_window_keys=config.atoms_per_window_keys,
-            diffusion_transformer_config=config.atom_decoder_config,
+            diffusion_transformer_config=config.atom_decoder,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             dtype=dtype,
             mapping=mapping,
@@ -690,7 +690,7 @@ class AtomDiffusion(nn.Module):
 
     def __init__(
         self,
-        config: PretrainedModuleConfig = None,
+        config: BaseConfig = None,
     ):
         """
         Initialize the AtomDiffusion module.
@@ -699,9 +699,9 @@ class AtomDiffusion(nn.Module):
                 The configuration of the atom diffusion module.
         """
         super().__init__()
-        self.score_model = DiffusionModule(config=config.score_model_config, )
-
-        atom_diffusion_config = config.atom_diffusion_config
+        atom_diffusion_config = config.atom_diffusion
+        score_model_config = config.score_model
+        self.score_model = DiffusionModule(config=score_model_config)
 
         # parameters
         self.sigma_min = atom_diffusion_config.sigma_min
@@ -720,11 +720,11 @@ class AtomDiffusion(nn.Module):
         self.alignment_reverse_diff = atom_diffusion_config.alignment_reverse_diff
         self.synchronize_sigmas = atom_diffusion_config.synchronize_sigmas
 
-        # FIXME: load from score model config, hardcoded for now
-        self.dim_fourier = atom_diffusion_config.dim_fourier
-        self.token_s = atom_diffusion_config.token_s
         self.accumulate_token_repr = atom_diffusion_config.accumulate_token_repr
         self.out_token_feat_update = None
+
+        self.dim_fourier = score_model_config.dim_fourier
+        self.token_s = score_model_config.token_s
 
         if self.accumulate_token_repr and self.version == "v1":
             self.out_token_feat_update = OutTokenFeatUpdate(

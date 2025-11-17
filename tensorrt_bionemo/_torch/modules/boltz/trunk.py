@@ -27,9 +27,9 @@ from tensorrt_bionemo._torch.layers.transformers.pairformer import (
     PairformerModule, PairformerNoSeqLayer)
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.const import POCKET_CONTACT_INFO
+from tensorrt_bionemo.pipeline.boltz.const import POCKET_CONTACT_INFO
 
 
 class MSALayer(nn.Module):
@@ -135,7 +135,7 @@ class MSALayer(nn.Module):
 
 class MSAModule(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig) -> None:
+    def __init__(self, config: BaseConfig) -> None:
         """
         Boltz MSAModule
         TODO: add support for subsampling, chunking
@@ -182,19 +182,20 @@ class MSAModule(nn.Module):
         self.layers = nn.ModuleList()
         for layer_idx in range(self.msa_blocks):
             self.layers.append(
-                MSALayer(msa_s=self.msa_s,
-                         token_z=self.token_z,
-                         layer_idx=layer_idx,
-                         pairwise_head_width=self.pairwise_head_width,
-                         pairwise_num_heads=self.pairwise_num_heads,
-                         eps=config.norm_epsilon,
-                         inf=config.mask_inf,
-                         opm_chunk_size=self.opm_chunk_size,
-                         opm_mask_chunk_size=self.opm_mask_chunk_size,
-                         dtype=self.dtype,
-                         skip_create_weights=config.skip_create_weights,
-                         triangle_attn_backend=config.triangle_attn_backend,
-                         mapping=self.mapping))
+                MSALayer(
+                    msa_s=self.msa_s,
+                    token_z=self.token_z,
+                    layer_idx=layer_idx,
+                    pairwise_head_width=self.pairwise_head_width,
+                    pairwise_num_heads=self.pairwise_num_heads,
+                    eps=config.norm_epsilon,
+                    inf=config.mask_inf,
+                    opm_chunk_size=self.opm_chunk_size,
+                    opm_mask_chunk_size=self.opm_mask_chunk_size,
+                    dtype=self.dtype,
+                    skip_create_weights=config.skip_create_weights,
+                    triangle_attn_backend=config.triangle_attention_backend,
+                    mapping=self.mapping))
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -261,20 +262,20 @@ class MSAModule(nn.Module):
 class Trunk(nn.Module):
     """ Trunk module for Boltz1-2 """
 
-    def __init__(self, config: PretrainedModuleConfig) -> None:
+    def __init__(self, config: BaseConfig) -> None:
         super().__init__()
 
-        self.msa_module = MSAModule(config.msa_module_config)
-        self.pairformer_module = PairformerModule(config.pairformer_config)
+        self.msa_module = MSAModule(config.msa_module)
+        self.pairformer_module = PairformerModule(config.pairformer)
 
-        token_s = config.pairformer_config.token_s
-        token_z = config.pairformer_config.token_z
+        token_s = config.pairformer.token_s
+        token_z = config.pairformer.token_z
         self.dtype = config.torch_dtype
         self.mapping = config.mapping or Mapping()
 
         self.s_norm = nn.LayerNorm(token_s, dtype=self.dtype)
         self.z_norm = nn.LayerNorm(token_z, dtype=self.dtype)
-        self.skip_create_weights = config.pairformer_config.skip_create_weights
+        self.skip_create_weights = config.pairformer.skip_create_weights
 
         self.s_recycle = Linear(token_s,
                                 token_s,

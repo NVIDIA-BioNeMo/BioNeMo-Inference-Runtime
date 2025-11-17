@@ -5,7 +5,7 @@ import torch
 
 from tensorrt_bionemo._torch.modules.boltz.loss.diffusion import \
     weighted_rigid_align
-from tensorrt_bionemo.models.boltz1.const import NUM_ELEMENTS, VDW_RADII
+from tensorrt_bionemo.pipeline.boltz.const import NUM_ELEMENTS, VDW_RADII
 
 from .schedules import (ExponentialInterpolation, ParameterSchedule,
                         PiecewiseStepFunction)

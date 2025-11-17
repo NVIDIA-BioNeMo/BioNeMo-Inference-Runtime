@@ -7,12 +7,11 @@ import safetensors
 import torch
 from tensorrt_llm import logger
 
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.openfold3.configs import (
-    DiffusionTransformerConfig, OpenFold3Config)
+from tensorrt_bionemo.models.openfold3 import OpenFold3Config
 from tensorrt_bionemo.models.openfold3.convert import (
     convert_hf_diffusion_transformer, convert_hf_diffusion_transformer_torch)
-from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def parse_arguments():
@@ -79,14 +78,14 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
     # Dump for torch config
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
@@ -120,9 +119,8 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz1_config = OpenFold3Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint)
-    token_transformer_config = boltz1_config.token_transformer_config
+    openfold3_config = OpenFold3Config()
+    token_transformer_config = openfold3_config.structure_module.score_model.token_transformer
 
     config = {
         # "max_num_particles": args.max_num_particles,
@@ -146,10 +144,11 @@ def main():
         "pairwise_attn_backend": args.pairwise_attn_backend,
         "version": "v1"
     }
-    trt_token_transformer_config = DiffusionTransformerConfig.from_dict(config)
-    torch_token_transformer_config = DiffusionTransformerConfig.from_dict(
-        config)
-    torch_token_transformer_config.backend = BackendType.TORCH
+    trt_token_transformer_config = token_transformer_config.model_copy(
+        update=config)
+    torch_token_transformer_config = token_transformer_config.model_copy(
+        update=config)
+    torch_token_transformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_token_transformer_config,

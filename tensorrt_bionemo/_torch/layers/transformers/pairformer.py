@@ -26,7 +26,7 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionEndingNode, TriangleAttentionStartingNode,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -300,7 +300,7 @@ class PairformerLayerV2(PairformerLayerV1):
 
 class PairformerModule(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         """
         Args:
             config: tensorrt_bionemo.models.boltz1.configs.PairformerConfig
@@ -332,8 +332,8 @@ class PairformerModule(nn.Module):
                     max_tri_mul_tp_size=config.max_tri_mul_tp_size,
                     mapping=config.mapping,
                     skip_create_weights=config.skip_create_weights,
-                    triangle_attn_backend=config.triangle_attn_backend,
-                    pairwise_attn_backend=config.pairwise_attn_backend,
+                    triangle_attn_backend=config.triangle_attention_backend,
+                    pairwise_attn_backend=config.pairwise_attention_backend,
                     post_layer_norm=config.post_layer_norm,
                     attention_initial_norm=config.attention_initial_norm,
                     s_path_dtype=config.s_path_dtype,

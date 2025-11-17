@@ -36,12 +36,12 @@ from tensorrt_bionemo._torch.modules.boltz.structure import (
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1.const import (CONTACT_CONDITIONING_INFO,
-                                                  NUM_BOND_TYPES)
+from tensorrt_bionemo.pipeline.boltz.const import (CONTACT_CONDITIONING_INFO,
+                                                   NUM_BOND_TYPES)
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
 from ..helper import AcceleratedModules, build_optimized_module
-from .configs import Boltz2Config
+from .config import Boltz2Config
 from .convert import (convert_hf_affinity_module_torch,
                       convert_hf_diffusion_conditioning_torch,
                       convert_hf_diffusion_transformer_torch,
@@ -77,47 +77,45 @@ class Boltz2(nn.Module):
         super().__init__()
         self.model_name = "boltz-2"
         # Model level config
-        self.config = config or Boltz2Config.from_pretrained()
-        # Global config for model's modules
-        self.global_config = self.config.global_config
+        self.config = config or Boltz2Config()
 
         # Setup for input embedder
-        self.input_embedder_dtype = self.config.input_embedder_config.torch_dtype
-        self.input_embedder_mapping = self.config.input_embedder_config.mapping
-        self.input_embedder_config = self.config.input_embedder_config
+        self.input_embedder_dtype = self.config.input_embedder.torch_dtype
+        self.input_embedder_mapping = self.config.input_embedder.mapping
+        self.input_embedder_config = self.config.input_embedder
 
         # Setup for trunk
-        self.trunk_mapping = self.config.trunk_config.mapping
-        self.trunk_dtype = self.config.trunk_config.torch_dtype
-        self.trunk_config = self.config.trunk_config
+        self.trunk_mapping = self.config.trunk.mapping
+        self.trunk_dtype = self.config.trunk.torch_dtype
+        self.trunk_config = self.config.trunk
 
         # Setup for atom diffusion
-        self.structure_module_dtype = self.config.structure_module_config.torch_dtype
-        self.structure_module_mapping = self.config.structure_module_config.mapping
-        self.structure_module_config = self.config.structure_module_config
+        self.structure_module_dtype = self.config.structure_module.torch_dtype
+        self.structure_module_mapping = self.config.structure_module.mapping
+        self.structure_module_config = self.config.structure_module
 
         # Build up modules
         self.input_embedder = Boltz2InputEmbedder(self.input_embedder_config)
 
         ### Input projections ###
-        self.s_init = Linear(self.global_config.token_s,
-                             self.global_config.token_s,
+        self.s_init = Linear(self.config.token_s,
+                             self.config.token_s,
                              bias=False,
                              dtype=self.input_embedder_dtype,
                              mapping=self.input_embedder_mapping,
                              tensor_parallel_mode=TensorParallelMode.COLUMN,
                              gather_output=True,
                              skip_create_weights=False)
-        self.z_init_1 = Linear(self.global_config.token_s,
-                               self.global_config.token_z,
+        self.z_init_1 = Linear(self.config.token_s,
+                               self.config.token_z,
                                bias=False,
                                dtype=self.input_embedder_dtype,
                                mapping=self.input_embedder_mapping,
                                tensor_parallel_mode=TensorParallelMode.COLUMN,
                                gather_output=True,
                                skip_create_weights=False)
-        self.z_init_2 = Linear(self.global_config.token_s,
-                               self.global_config.token_z,
+        self.z_init_2 = Linear(self.config.token_s,
+                               self.config.token_z,
                                bias=False,
                                dtype=self.input_embedder_dtype,
                                mapping=self.input_embedder_mapping,
@@ -125,29 +123,29 @@ class Boltz2(nn.Module):
                                gather_output=True,
                                skip_create_weights=False)
         self.rel_pos = RelativePositionEncoder(
-            token_z=self.global_config.token_z,
-            fix_sym_check=self.global_config.fix_sym_check,
-            cyclic_pos_enc=self.global_config.cyclic_pos_enc,
+            token_z=self.config.token_z,
+            fix_sym_check=self.config.fix_sym_check,
+            cyclic_pos_enc=self.config.cyclic_pos_enc,
             period_broadcast=False,
             dtype=self.input_embedder_dtype,
             mapping=self.input_embedder_mapping,
             skip_create_weights=False)
         self.token_bonds = Linear(
             1,
-            self.global_config.token_z,
+            self.config.token_z,
             bias=False,
             dtype=self.input_embedder_dtype,
             mapping=self.input_embedder_mapping,
             tensor_parallel_mode=TensorParallelMode.COLUMN,
             gather_output=True,
             skip_create_weights=False)
-        if self.global_config.bond_type_feature:
+        if self.config.bond_type_feature:
             self.token_bonds_type = nn.Embedding(NUM_BOND_TYPES + 1,
-                                                 self.global_config.token_z)
+                                                 self.config.token_z)
         self.contact_conditioning = ContactConditioning(
-            token_z=self.global_config.token_z,
-            cutoff_min=self.global_config.conditioning_cutoff_min,
-            cutoff_max=self.global_config.conditioning_cutoff_max,
+            token_z=self.config.token_z,
+            cutoff_min=self.config.conditioning_cutoff_min,
+            cutoff_max=self.config.conditioning_cutoff_max,
             contact_conditioning_info=CONTACT_CONDITIONING_INFO)
 
         ### Trunk ###
@@ -155,24 +153,24 @@ class Boltz2(nn.Module):
 
         ### Distogram ###
         self.distogram_module = DistogramModule(
-            token_z=self.global_config.token_z,
-            num_bins=self.global_config.num_bins,
-            num_distograms=self.global_config.num_distograms,
+            token_z=self.config.token_z,
+            num_bins=self.config.num_bins,
+            num_distograms=self.config.num_distograms,
             version="v2",
             dtype=self.structure_module_dtype,
             mapping=self.structure_module_mapping,
             skip_create_weights=False)
 
         ### Atom diffusion ###
-        score_model_config = self.structure_module_config.score_model_config
-        atom_encoder_config = score_model_config.atom_encoder_config
-        token_transformer_config = score_model_config.token_transformer_config
-        atom_decoder_config = score_model_config.atom_decoder_config
+        score_model_config = self.structure_module_config.score_model
+        atom_encoder_config = score_model_config.atom_encoder
+        token_transformer_config = score_model_config.token_transformer
+        atom_decoder_config = score_model_config.atom_decoder
         self.diffusion_conditioning = DiffusionConditioning(
-            token_s=self.global_config.token_s,
-            token_z=self.global_config.token_z,
-            atom_s=self.global_config.atom_s,
-            atom_z=self.global_config.atom_z,
+            token_s=self.config.token_s,
+            token_z=self.config.token_z,
+            atom_s=self.config.atom_s,
+            atom_z=self.config.atom_z,
             atoms_per_window_queries=self.input_embedder_config.
             atoms_per_window_queries,
             atoms_per_window_keys=self.input_embedder_config.
@@ -200,9 +198,8 @@ class Boltz2(nn.Module):
 
         #### End of building up modules ####
 
-    @staticmethod
     def get_pretrained_config() -> Boltz2Config:
-        return Boltz2Config.from_pretrained()
+        return Boltz2Config()
 
     def load_weights(self, weights: dict = None) -> None:
         """
@@ -248,7 +245,7 @@ class Boltz2(nn.Module):
             "bias":
             weights.get("token_bonds.bias", None)
         }])
-        if self.global_config.bond_type_feature:
+        if self.config.bond_type_feature:
             self.token_bonds_type.weight.data.copy_(
                 weights["token_bonds_type.weight"])
 
@@ -274,11 +271,11 @@ class Boltz2(nn.Module):
         trunk_weights = {}
         # load the weights for the msa_module and pairformer_module
         trunk_weights["msa_module"] = convert_hf_msa_module_torch(
-            config=self.trunk_config.msa_module_config,
+            config=self.trunk_config.msa_module,
             weights=weights,
             model_name=self.model_name)
         trunk_weights["pairformer_module"] = convert_hf_pairformer_torch(
-            config=self.trunk_config.pairformer_config,
+            config=self.trunk_config.pairformer,
             weights=weights,
             model_name=self.model_name)
         # construct the remaining weights for the trunk module
@@ -302,7 +299,7 @@ class Boltz2(nn.Module):
 
         # Load weights for atom diffusion
         diffusion_conditioning_weights = convert_hf_diffusion_conditioning_torch(
-            config=self.structure_module_config.score_model_config,
+            config=self.structure_module_config.score_model,
             weights=weights,
             model_name=self.model_name)
         self.diffusion_conditioning.load_weights(diffusion_conditioning_weights)
@@ -387,7 +384,7 @@ class Boltz2(nn.Module):
 
         z_init = z_init + self.token_bonds(feed_dict["token_bonds"].float())
 
-        if self.global_config.bond_type_feature:
+        if self.config.bond_type_feature:
             z_init = z_init + self.token_bonds_type(
                 feed_dict["type_bonds"].long())
         z_init = z_init + self.contact_conditioning(

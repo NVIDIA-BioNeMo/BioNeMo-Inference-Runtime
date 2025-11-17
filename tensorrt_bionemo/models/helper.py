@@ -20,7 +20,7 @@ from typing import Callable, Optional
 import torch
 from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.runtime import (BackendBuilder, BackendType,
                                       BaseContextMemoryManager)
 
@@ -29,7 +29,7 @@ from tensorrt_bionemo.runtime import (BackendBuilder, BackendType,
 class AcceleratedConfig:
     checkpoint: str = None
     backend: BackendType = None
-    default: PretrainedModuleConfig = None
+    default: BaseConfig = None
     warmup: bool = False
     compile: bool = False
 
@@ -62,8 +62,8 @@ class AcceleratedModules(ABC):
     def get_module_names(self) -> list[str]:
         return list(self._configs.keys())
 
-    def get_default_module_config(
-            self, module_name: str) -> Optional[PretrainedModuleConfig]:
+    def get_default_module_config(self,
+                                  module_name: str) -> Optional[BaseConfig]:
         return self._configs.get(module_name, None).default
 
     @abstractmethod
@@ -77,7 +77,7 @@ def build_optimized_module(
         backend_builder: BackendBuilder,
         checkpoint_dir: str = None,
         backend: BackendType = BackendType.TORCH,
-        default_config: PretrainedModuleConfig = None,
+        default_config: BaseConfig = None,
         convert_weights_func: Callable = None,
         convert_weights_func_kwargs: dict = {},
         context_memory_allocator: Optional[BaseContextMemoryManager] = None,

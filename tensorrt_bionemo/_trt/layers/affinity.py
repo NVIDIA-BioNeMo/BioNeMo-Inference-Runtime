@@ -16,15 +16,16 @@ from typing import Optional, Tuple
 
 import tensorrt as trt
 from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
-                                     constant_to_tensor_, flatten, split, sum)
+                                     allgather, constant_to_tensor_, flatten,
+                                     split, sum)
 from tensorrt_llm.layers.embedding import Embedding
 from tensorrt_llm.layers.linear import ColumnLinear, Linear, RowLinear
 from tensorrt_llm.layers.normalization import LayerNorm
 from tensorrt_llm.module import Module
 
+from tensorrt_bionemo.configs import (AffinityModuleBuildConfig,
+                                      AffinityModuleConfig)
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz2.configs import (AffinityModuleBuildConfig,
-                                                    AffinityModuleConfig)
 
 from ..module_utils import PretrainedModule
 from .attention import AttentionParams
@@ -166,8 +167,8 @@ class AffinityModule(PretrainedModule):
         token_z = self.config.token_z
         token_s = self.config.token_s
         self.dtype = self.config.dtype
-        eps = self.config.eps
-        inf = self.config.inf
+        eps = self.config.norm_epsilon
+        inf = self.config.mask_inf
         pairformer_num_blocks = self.config.pairformer_num_blocks
         pairwise_head_width = self.config.pairwise_head_width
         pairwise_num_heads = self.config.pairwise_num_heads
@@ -210,7 +211,7 @@ class AffinityModule(PretrainedModule):
             token_z=token_z,
             pairwise_head_width=pairwise_head_width,
             pairwise_num_heads=pairwise_num_heads,
-            triangle_attn_backend=config.triangle_attn_backend,
+            triangle_attn_backend=config.triangle_attention_backend,
             dtype=self.dtype,
             eps=eps,
             inf=inf,

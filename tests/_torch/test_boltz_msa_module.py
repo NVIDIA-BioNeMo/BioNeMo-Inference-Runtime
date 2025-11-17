@@ -26,7 +26,7 @@ from test_utils.boltz.ref_layers import RefMSALayer, RefMSAModule
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
 from tensorrt_bionemo._torch.modules.boltz.trunk import MSALayer, MSAModule
-from tensorrt_bionemo.models.boltz1.configs import MSAModuleConfig
+from tensorrt_bionemo.configs import MSAModuleConfig
 
 
 @dataclass(kw_only=True, frozen=True)

@@ -8,12 +8,12 @@ import safetensors
 import torch
 from tensorrt_llm import logger
 
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.openfold2.configs import (EvoformerStackConfig,
-                                                       OpenFold2Config)
+from tensorrt_bionemo.models.openfold2 import (OpenFold2Config,
+                                               OpenFold2MultimerConfig)
 from tensorrt_bionemo.models.openfold2.convert import (
     convert_hf_evoformer, convert_hf_evoformer_torch)
-from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def parse_arguments():
@@ -98,7 +98,10 @@ def parse_arguments():
         type=int,
         default=1,
         help='The number of workers for converting checkpoint in parallel')
-
+    parser.add_argument('--n_seq',
+                        type=int,
+                        default=516,
+                        help='The number of sequences')
     args = parser.parse_args()
     return args
 
@@ -111,14 +114,14 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
     # Dump for torch config
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
                           tp_size=args.tp_size,
@@ -150,9 +153,10 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    openfold2_config = OpenFold2Config.from_pretrained(
-        checkpoint_dir=args.local_checkpoint, is_multimer=args.is_multimer)
-    evoformer_stack_config = openfold2_config.evoformer_stack_config
+    config = OpenFold2Config()
+    if args.is_multimer:
+        config = OpenFold2MultimerConfig()
+    evoformer_stack_config = config.trunk.evoformer_stack
 
     if args.triangle_attn_backend == "CUEQUIV":
         args.support_batch = True
@@ -180,10 +184,12 @@ def main():
         True,
         "backend":
         "trt",
+        "n_seq":
+        args.n_seq,
     })
-    trt_evoformer_config = EvoformerStackConfig.from_dict(config)
-    torch_evoformer_config = copy.deepcopy(trt_evoformer_config)
-    torch_evoformer_config.backend = "torch"
+    trt_evoformer_config = evoformer_stack_config.model_copy(update=config)
+    torch_evoformer_config = evoformer_stack_config.model_copy(update=config)
+    torch_evoformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_evoformer_config,

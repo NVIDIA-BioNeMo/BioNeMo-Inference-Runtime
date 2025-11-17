@@ -28,8 +28,7 @@ from tensorrt_bionemo._torch.attention_backend.interface import \
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_indexing_matrix, query_to_keys)
 from tensorrt_bionemo._torch.modules.boltz.structure import DiffusionModule
-from tensorrt_bionemo.config import PretrainedModuleConfig
-from tensorrt_bionemo.models.boltz1.configs import DiffusionTransformerConfig
+from tensorrt_bionemo.configs import DiffusionTransformerConfig
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -75,7 +74,7 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
         dim_single_cond=ref_module.atom_s,
         dtype=sc.dtype)
 
-    diffusion_module_config = PretrainedModuleConfig(
+    diffusion_module_config = DiffusionTransformerConfig(
         architecture="boltz_diffusion_module",
         version="v2",
         token_s=ref_module.token_s,
@@ -85,9 +84,9 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
         dim_fourier=ref_module.dim_fourier,
         conditioning_transition_layers=ref_module.
         conditioning_transition_layers,
-        atom_encoder_config=atom_attention_encoder_diff_transformer_config,
-        atom_decoder_config=atom_attention_decoder_diff_transformer_config,
-        token_transformer_config=token_transformer_config,
+        atom_encoder=atom_attention_encoder_diff_transformer_config,
+        atom_decoder=atom_attention_decoder_diff_transformer_config,
+        token_transformer=token_transformer_config,
         dtype=sc.dtype,
     )
 

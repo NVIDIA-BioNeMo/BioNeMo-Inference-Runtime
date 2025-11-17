@@ -23,12 +23,11 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
     get_attention_backend
 from tensorrt_bionemo._torch.modules.boltz.affinity import (
     AffinityModule, compute_distogram, create_cross_pair_mask)
+from tensorrt_bionemo.configs import AffinityModuleConfig
 from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo.runtime.backend import (BackendBase, BackendBuilder,
                                               BackendType)
 from tensorrt_bionemo.runtime.misc import ensure_contiguous
-
-from ..configs import AffinityModuleConfig
 
 
 class AffinityModuleTorch(BackendBase):

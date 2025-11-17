@@ -25,7 +25,7 @@ from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
-from tensorrt_bionemo.config import PretrainedModuleConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -112,7 +112,7 @@ class DiffusionTransformerLayer(nn.Module):
 
 class BoltzDiffusionTransformer(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         """
         Args:
             config: tensorrt_bionemo.models.boltz1.configs.DiffusionTransformerConfig
@@ -173,7 +173,7 @@ class BoltzDiffusionTransformer(nn.Module):
 
 class OpenFold3DiffusionTransformer(nn.Module):
 
-    def __init__(self, config: PretrainedModuleConfig):
+    def __init__(self, config: BaseConfig):
         """
         Args:
             config: tensorrt_bionemo.models.boltz1.configs.DiffusionTransformerConfig
@@ -192,14 +192,15 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 dim_single_cond=config.dim_single_cond,
                 dim_pairwise=config.dim_pairwise,
                 post_layer_norm=config.post_layer_norm,
-                bias_proj=True,
+                bias_proj=config.bias_proj,
                 dtype=config.torch_dtype,
                 eps=config.norm_epsilon,
                 inf=config.mask_inf,
                 attention_initial_norm=config.attention_initial_norm,
                 mapping=config.mapping,
                 skip_create_weights=config.skip_create_weights,
-                conditioned_transition_using_silu=True,
+                conditioned_transition_using_silu=config.
+                conditioned_transition_using_silu,
             )
             dim = layer.pair_bias_attn.proj_z[0].weight.shape
             eps = layer.pair_bias_attn.proj_z[0].eps

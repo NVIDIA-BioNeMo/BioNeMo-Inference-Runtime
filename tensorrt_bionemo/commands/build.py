@@ -14,6 +14,7 @@
 # limitations under the License.
 import argparse
 import copy
+import json
 import os
 import shutil
 import time
@@ -31,9 +32,8 @@ from tensorrt_llm.plugin import PluginConfig, add_plugin_argument
 
 from tensorrt_bionemo import __version__
 from tensorrt_bionemo._trt.builder import build
-from tensorrt_bionemo.config import BuildModuleConfig, PretrainedModuleConfig
+from tensorrt_bionemo.configs import BackendType, BaseConfig, BuildConfig
 from tensorrt_bionemo.registry import get_building_module_class
-from tensorrt_bionemo.runtime.backend import BackendType
 
 
 def get_backend_names(directory_path: str) -> list[str]:
@@ -98,20 +98,20 @@ def parse_arguments():
                         choices=severity_map.keys(),
                         help="The logging level.")
     parser.add_argument('--enable_debug_output',
-                        default=BuildModuleConfig.enable_debug_output,
+                        default=False,
                         action='store_true',
                         help="Enable debug output.")
     parser.add_argument(
         '--profiling_verbosity',
         type=str,
-        default=BuildModuleConfig.profiling_verbosity,
+        default='layer_names_only',
         choices=['layer_names_only', 'detailed', 'none'],
         help=
         "The profiling verbosity for the generated TensorRT engine. Setting to detailed allows inspecting tactic choices and kernel parameters."
     )
     parser.add_argument(
         '--dry_run',
-        default=BuildModuleConfig.dry_run,
+        default=False,
         action='store_true',
         help=
         "Run through the build process except the actual Engine build for debugging."
@@ -119,13 +119,13 @@ def parse_arguments():
     parser.add_argument(
         '--input_timing_cache',
         type=str,
-        default=BuildModuleConfig.input_timing_cache,
+        default=None,
         help=
         "The file path to read the timing cache. This option is ignored if the file does not exist."
     )
     parser.add_argument('--output_timing_cache',
                         type=str,
-                        default=BuildModuleConfig.output_timing_cache,
+                        default='model.cache',
                         help="The file path to write the timing cache.")
     parser.add_argument('--monitor_memory',
                         default=False,
@@ -162,18 +162,17 @@ def parse_arguments():
     return parser
 
 
-def build_module(build_config: BuildModuleConfig,
+def build_module(build_config: BuildConfig,
                  rank: int = 0,
                  ckpt_dir: str = None,
-                 module_config: Union[str, PretrainedModuleConfig] = None,
+                 module_config: Union[str, BaseConfig] = None,
                  module_cls=None,
                  dry_run: bool = False,
                  weakly_dtype: str = None,
-                 **kwargs) -> Union[Engine, BuildModuleConfig]:
+                 **kwargs) -> Union[Engine, BuildConfig]:
     module_config = copy.deepcopy(module_config)
-    module_config.update_from_dict(kwargs)
+    module_config.model_copy(update=kwargs)
 
-    module_config.architecture
     assert rank < module_config.mapping.world_size
 
     rank_config = copy.deepcopy(module_config)
@@ -212,8 +211,7 @@ def build_and_save(rank, gpu_id, ckpt_dir, build_config, output_dir, log_level,
         else:
             logger.warning(
                 f"Weights file for torch backend not found in {ckpt_dir}")
-        engine_config = EngineConfig(module_config, BuildModuleConfig(),
-                                     __version__)
+        engine_config = EngineConfig(module_config, BuildConfig(), __version__)
         engine = Engine(engine_config, None, None)
         engine.save(output_dir)
     else:
@@ -221,9 +219,9 @@ def build_and_save(rank, gpu_id, ckpt_dir, build_config, output_dir, log_level,
     return True
 
 
-def parallel_build(module_config: PretrainedModuleConfig,
+def parallel_build(module_config: BaseConfig,
                    ckpt_dir: Optional[str],
-                   build_config: BuildModuleConfig,
+                   build_config: BuildConfig,
                    output_dir: str,
                    workers: int = 1,
                    log_level: str = 'info',
@@ -309,8 +307,9 @@ def main():
         backend_dir = os.path.join(ckpt_dir, backend)
         config_path = os.path.join(backend_dir, 'config.json')
         module_cls = get_building_module_class(args.model, args.module)
-        module_config = PretrainedModuleConfig.from_json_file(
-            module_cls, config_path)
+        with open(config_path, 'r') as f:
+            data = json.load(f)
+            module_config = BaseConfig.model_validate(data)
 
         output_dir = os.path.join(args.output_dir, backend)
         os.makedirs(output_dir, exist_ok=True)
@@ -336,6 +335,9 @@ def main():
                     f"Building weakly-typed engine with dtype {args.weakly_dtype}."
                 )
 
+            module_config.set_max_seq_len(args.max_seqlen)
+            module_config.set_min_seq_len(args.min_seqlen)
+
             build_config_dict = {
                 'strongly_typed': strongly_typed,
                 'weakly_dtype': args.weakly_dtype,
@@ -346,11 +348,11 @@ def main():
                 'output_timing_cache': args.output_timing_cache,
                 'dry_run': args.dry_run,
                 'monitor_memory': args.monitor_memory,
-                'max_seqlen': args.max_seqlen,
-                'min_seqlen': args.min_seqlen
+                'plugin_config': plugin_config,
+                'module_config': module_config,
             }
-            build_config = module_cls.build_config_class.from_dict(
-                build_config_dict, plugin_config=plugin_config)
+            build_config = module_cls.build_config_class.model_validate(
+                build_config_dict)
 
             parallel_build(module_config, backend_dir, build_config, output_dir,
                            workers, args.log_level, module_cls, **kwargs)

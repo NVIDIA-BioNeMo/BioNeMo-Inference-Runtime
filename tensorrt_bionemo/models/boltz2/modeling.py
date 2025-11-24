@@ -28,6 +28,8 @@ from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_indexing_matrix, query_to_keys)
+from tensorrt_bionemo._torch.modules.boltz.confidence import \
+    Boltz2ConfidenceModule
 from tensorrt_bionemo._torch.modules.boltz.embedders import Boltz2InputEmbedder
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
@@ -43,6 +45,7 @@ from tensorrt_bionemo.runtime import BaseContextMemoryManager
 from ..helper import AcceleratedModules, build_optimized_module
 from .config import Boltz2Config
 from .convert import (convert_hf_affinity_module_torch,
+                      convert_hf_confidence_module_torch,
                       convert_hf_diffusion_conditioning_torch,
                       convert_hf_diffusion_transformer_torch,
                       convert_hf_input_embedder_torch,
@@ -78,7 +81,8 @@ class Boltz2(nn.Module):
         self.model_name = "boltz-2"
         # Model level config
         self.config = config or Boltz2Config()
-
+        self.confidence_prediction = self.config.confidence_prediction
+        self.skip_run_structure = self.config.skip_run_structure
         # Setup for input embedder
         self.input_embedder_dtype = self.config.input_embedder.torch_dtype
         self.input_embedder_mapping = self.config.input_embedder.mapping
@@ -93,6 +97,10 @@ class Boltz2(nn.Module):
         self.structure_module_dtype = self.config.structure_module.torch_dtype
         self.structure_module_mapping = self.config.structure_module.mapping
         self.structure_module_config = self.config.structure_module
+
+        #Setup for confidence module
+        self.confidence_module_dtype = self.config.confidence_module.torch_dtype
+        self.confidence_module_mapping = self.config.confidence_module.mapping
 
         # Build up modules
         self.input_embedder = Boltz2InputEmbedder(self.input_embedder_config)
@@ -195,6 +203,12 @@ class Boltz2(nn.Module):
             skip_create_weights=False,
         )
         self.structure_module = AtomDiffusion(self.structure_module_config)
+
+        self.confidence_module = Boltz2ConfidenceModule(
+            self.config.confidence_module,
+            dtype=self.confidence_module_dtype,
+            mapping=self.confidence_module_mapping,
+            skip_create_weights=False)
 
         #### End of building up modules ####
 
@@ -309,6 +323,12 @@ class Boltz2(nn.Module):
             weights=weights,
             model_name=self.model_name)
         self.structure_module.load_weights(structure_module_weights)
+
+        confidence_module_weights = convert_hf_confidence_module_torch(
+            config=self.config.confidence_module,
+            weights=weights,
+            model_name=self.model_name)
+        self.confidence_module.load_weights(confidence_module_weights)
 
     def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor],
                              module_name: str) -> dict[str, Any]:
@@ -436,15 +456,53 @@ class Boltz2(nn.Module):
             "z": z,
         }
         ret.update(struct_module_output)
+        x_pred = struct_module_output["sample_atom_coords"]
 
-        remain = {
-            "s_init": s_init,
-            "z_init": z_init,
-            "s_inputs": s_inputs,
-            "relative_position_encoding": relative_position_encoding,
+        feed_dict["frames_idx"] = feed_dict["frames_idx"].squeeze(1)
+
+        confidence_module_output = self.confidence_module(
+            s_inputs=s_inputs,
+            s=s,
+            z=z,
+            x_pred=x_pred,
+            feats=feed_dict,
+            pred_distogram_logits=pair_distogram[:, :, :, 0],
+            multiplicity=diffusion_samples,
+            run_sequentially=True,
+            max_parallel_samples=max_parallel_samples
+            if max_parallel_samples is not None else 1,
+        )
+
+        ret = {
+            "confidence_score": (4 * confidence_module_output["complex_plddt"] +
+                                 confidence_module_output["iptm"]) / 5,
+            "masks":
+            feed_dict["atom_pad_mask"],
+            "coords":
+            struct_module_output["sample_atom_coords"],
+            "complex_plddt":
+            confidence_module_output["complex_plddt"],
+            "complex_iplddt":
+            confidence_module_output["complex_iplddt"],
+            "complex_pde":
+            confidence_module_output["complex_pde"],
+            "complex_ipde":
+            confidence_module_output["complex_ipde"],
+            "plddt":
+            confidence_module_output["plddt"],
+            "ptm":
+            confidence_module_output["ptm"],
+            "iptm":
+            confidence_module_output["iptm"],
+            "ligand_iptm":
+            confidence_module_output["ligand_iptm"],
+            "protein_iptm":
+            confidence_module_output["protein_iptm"],
+            "pair_chains_iptm":
+            confidence_module_output["pair_chains_iptm"],
         }
-        # TODO: to be continued
-        return ret, remain
+
+        return ret
 
     @staticmethod
     def optimize(

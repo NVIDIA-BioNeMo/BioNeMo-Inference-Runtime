@@ -1460,3 +1460,152 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
             None,
         }]
     return tbnm_state_dict
+
+
+def convert_hf_confidence_module_torch(config: BaseConfig,
+                                       mapping: Mapping = None,
+                                       local_checkpoint: str = None,
+                                       model_name: str = "boltz-2",
+                                       weights: dict = None,
+                                       **kwargs):
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    prefix = "confidence_module."
+    tbnm_state_dict = {}
+    extracted_weights = {}
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            tbnm_state_dict[k.replace(prefix, "")] = v
+
+    dist_bin_pairwise_embed_weights = [{
+        "weight":
+        state_dict[f"{prefix}dist_bin_pairwise_embed.weight"]
+    }]
+
+    s_to_z_weights = [{
+        "weight": state_dict[f"{prefix}s_to_z.weight"],
+        "bias": state_dict.get(f"{prefix}s_to_z.bias", None)
+    }]
+    s_to_z_transpose_weights = [{
+        "weight":
+        state_dict[f"{prefix}s_to_z_transpose.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_to_z_transpose.bias", None)
+    }]
+    s_to_z_prod_in1_weights = [{
+        "weight":
+        state_dict[f"{prefix}s_to_z_prod_in1.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_to_z_prod_in1.bias", None)
+    }]
+    s_to_z_prod_in2_weights = [{
+        "weight":
+        state_dict[f"{prefix}s_to_z_prod_in2.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_to_z_prod_in2.bias", None)
+    }]
+    s_to_z_prod_out_weights = [{
+        "weight":
+        state_dict[f"{prefix}s_to_z_prod_out.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_to_z_prod_out.bias", None)
+    }]
+    s_to_z_prod_out_weights = [{
+        "weight":
+        state_dict[f"{prefix}s_to_z_prod_out.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_to_z_prod_out.bias", None)
+    }]
+
+    s_inputs_norm_weights = [{
+        "weight":
+        state_dict[f"{prefix}s_inputs_norm.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_inputs_norm.bias", None)
+    }]
+    s_norm_weights = [{
+        "weight": state_dict[f"{prefix}s_norm.weight"],
+        "bias": state_dict.get(f"{prefix}s_norm.bias", None)
+    }]
+    z_norm_weights = [{
+        "weight": state_dict[f"{prefix}z_norm.weight"],
+        "bias": state_dict.get(f"{prefix}z_norm.bias", None)
+    }]
+
+    s_input_to_s_weights = [{
+        "weight":
+        state_dict[f"{prefix}s_input_to_s.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_input_to_s.bias", None)
+    }]
+
+    token_bonds_weights = [{
+        "weight":
+        state_dict[f"{prefix}token_bonds.weight"],
+        "bias":
+        state_dict.get(f"{prefix}token_bonds.bias", None)
+    }]
+
+    token_bonds_type_weights = [{
+        "weight":
+        state_dict[f"{prefix}token_bonds_type.weight"]
+    }]
+
+    relative_position_encoder_weights = [{
+        "weight":
+        state_dict[f"{prefix}rel_pos.linear_layer.weight"],
+        "bias":
+        state_dict.get(f"{prefix}rel_pos.linear_layer.bias", None)
+    }]
+    contact_conditioning_weights = {
+        "fourier_embedding": [{
+            "weight":
+            state_dict[
+                f"{prefix}contact_conditioning.fourier_embedding.proj.weight"],
+            "bias":
+            state_dict[
+                f"{prefix}contact_conditioning.fourier_embedding.proj.bias"]
+        }],
+        "encoder": [{
+            "weight":
+            state_dict[f"{prefix}contact_conditioning.encoder.weight"],
+            "bias":
+            state_dict[f"{prefix}contact_conditioning.encoder.bias"]
+        }]
+    }
+
+    pair_former_weights = convert_hf_pairformer_torch(
+        config.pairformer, model_name=model_name, pairformer_type="confidence")
+
+    confidence_heads_weights = {}
+    confidence_prefix = "confidence_module.confidence_heads."
+    for key in state_dict.keys():
+        if "confidence_heads" in key:
+            confidence_heads_weights[key.replace(confidence_prefix, "").replace(
+                ".weight", "")] = [{
+                    "weight": state_dict[key],
+                    "bias": None
+                }]
+
+    extracted_weights[
+        "dist_bin_pairwise_embed"] = dist_bin_pairwise_embed_weights
+    extracted_weights["s_to_z"] = s_to_z_weights
+    extracted_weights["s_to_z_transpose"] = s_to_z_transpose_weights
+    extracted_weights["s_to_z_prod_in1"] = s_to_z_prod_in1_weights
+    extracted_weights["s_to_z_prod_in2"] = s_to_z_prod_in2_weights
+    extracted_weights["s_to_z_prod_out"] = s_to_z_prod_out_weights
+    extracted_weights["s_inputs_norm"] = s_inputs_norm_weights
+    extracted_weights["s_norm"] = s_norm_weights
+    extracted_weights["z_norm"] = z_norm_weights
+    extracted_weights["s_input_to_s"] = s_input_to_s_weights
+    extracted_weights["rel_pos"] = relative_position_encoder_weights
+    extracted_weights["token_bonds"] = token_bonds_weights
+    extracted_weights["token_bonds_type"] = token_bonds_type_weights
+    extracted_weights["contact_conditioning"] = contact_conditioning_weights
+    extracted_weights["pairformer"] = pair_former_weights
+    extracted_weights["confidence_heads"] = confidence_heads_weights
+
+    return extracted_weights

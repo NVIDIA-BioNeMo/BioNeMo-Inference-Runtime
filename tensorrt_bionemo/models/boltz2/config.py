@@ -29,12 +29,16 @@ class Boltz2Config(BaseConfig):
     fix_sym_check: bool = True
     cyclic_pos_enc: bool = True
     bond_type_feature: bool = True
+    min_dist: float = 2.0,
+    max_dist: float = 22.0,
     conditioning_cutoff_min: float = 4.0
     conditioning_cutoff_max: float = 20.0
     num_distograms: int = 1
     use_no_atom_char: bool = False
     use_atom_backbone_feat: bool = False
     use_residue_feats_atoms: bool = False
+    confidence_prediction: bool = True
+    skip_run_structure: bool = False
 
     input_embedder: BaseConfig = BaseConfig(
         atom_s=atom_s,
@@ -156,17 +160,45 @@ class Boltz2Config(BaseConfig):
             version="v2",
         ))
 
-    confidence: BaseConfig = BaseConfig(pairformer=PairformerConfig(
+    confidence_module: BaseConfig = BaseConfig(
         token_s=token_s,
         token_z=token_z,
-        pairwise_head_width=32,
-        pairwise_num_heads=4,
-        num_blocks=8,
-        num_heads=16,
-        trimul_high_precision=False,
-        attention_initial_norm=False,
-        version="v2",
-    ))
+        num_dist_bins=64,
+        token_level_confidence=True,
+        max_dist=22,
+        no_update_s=False,
+        add_s_to_z_prod=True,
+        add_s_input_to_s=True,
+        add_z_input_to_z=True,
+        fix_sym_check=fix_sym_check,
+        cyclic_pos_enc=cyclic_pos_enc,
+        maximum_bond_distance=0,
+        bond_type_feature=True,
+        conditioning_cutoff_min=conditioning_cutoff_min,
+        conditioning_cutoff_max=conditioning_cutoff_max,
+        return_latent_feats=False,
+        relative_position_encoder=BaseConfig(period_broadcast=False),
+        pairformer=PairformerConfig(
+            token_s=token_s,
+            token_z=token_z,
+            pairwise_head_width=32,
+            pairwise_num_heads=4,
+            num_blocks=8,
+            num_heads=16,
+            trimul_high_precision=False,
+            attention_initial_norm=False,
+            version="v2",
+        ),
+        confidence_heads=BaseConfig(
+            token_s=token_s,
+            token_z=token_z,
+            num_plddt_bins=50,
+            num_pde_bins=64,
+            num_pae_bins=64,
+            token_level_confidence=True,
+            use_separate_heads=True,
+        ),
+    )
 
 
 class Boltz2AffinityConfig(Boltz2Config):

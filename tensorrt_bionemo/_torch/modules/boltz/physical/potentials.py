@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Union
 
@@ -106,7 +121,6 @@ class Potential(ABC):
                 unpad_coords,
                 "mean",
             )
-            torch.bincount(com_index[atom_pad_mask])
         else:
             com_index, atom_pad_mask = None, None
 
@@ -125,7 +139,6 @@ class Potential(ABC):
             negation_mask, union_index = operator_args
         else:
             negation_mask, union_index = None, None
-
         value, grad_value = self.compute_variable(
             coords,
             index,
@@ -161,8 +174,6 @@ class Potential(ABC):
             prod = dSoftmax.tile(
                 grad_value.shape[-3]).unsqueeze(-1) * grad_value.flatten(
                     start_dim=-3, end_dim=-2)
-            if prod.dim() > 3:
-                prod = prod.sum(dim=list(range(1, prod.dim() - 2)))
             grad_atom = torch.zeros_like(coords).scatter_reduce(
                 -2,
                 index.flatten(start_dim=0, end_dim=1).unsqueeze(-1).expand(
@@ -174,8 +185,6 @@ class Potential(ABC):
             prod = dEnergy.tile(
                 grad_value.shape[-3]).unsqueeze(-1) * grad_value.flatten(
                     start_dim=-3, end_dim=-2)
-            if prod.dim() > 3:
-                prod = prod.sum(dim=list(range(1, prod.dim() - 2)))
             grad_atom = torch.zeros_like(coords).scatter_reduce(
                 -2,
                 index.flatten(start_dim=0, end_dim=1).unsqueeze(-1).expand(
@@ -308,6 +317,11 @@ class DistancePotential(Potential):
                          ref_coords=None,
                          ref_mask=None,
                          compute_gradient=False):
+        """
+        Args:
+            coords: [B, multiplicity, N, 3]
+            index: [2, 3]
+        """
         r_ij = coords.index_select(-2, index[0]) - coords.index_select(
             -2, index[1])
         r_ij_norm = torch.linalg.norm(r_ij, dim=-1)
@@ -318,7 +332,7 @@ class DistancePotential(Potential):
 
         grad_i = r_hat_ij
         grad_j = -1 * r_hat_ij
-        grad = torch.stack((grad_i, grad_j), dim=1)
+        grad = torch.stack((grad_i, grad_j), dim=-3)
         return r_ij_norm, grad
 
 
@@ -367,7 +381,7 @@ class DihedralPotential(Potential):
         grad_l = -1 * n_jkl * (r_kj_norm / n_jkl_norm**2).unsqueeze(-1)
         grad_j = (a - 1) * grad_i - b * grad_l
         grad_k = (b - 1) * grad_l - a * grad_i
-        grad = torch.stack((grad_i, grad_j, grad_k, grad_l), dim=1)
+        grad = torch.stack((grad_i, grad_j, grad_k, grad_l), dim=-3)
         return phi, grad
 
 

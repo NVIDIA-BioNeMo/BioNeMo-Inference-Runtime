@@ -6,6 +6,7 @@ from tensorrt_bionemo.mapping import Mapping
 
 
 def compute_random_augmentation(
+        batch_size: int = 1,
         multiplicity: int = 1,
         s_trans: float = 1.0,
         device: Optional[torch.device] = None,
@@ -30,11 +31,12 @@ def compute_random_augmentation(
     TODO: For the multiple gpus, need a distributed version of this function.
     """
     # Using quaternion to create random rotation matrix shape [*, 3, 3]
-    R = random_rotations(multiplicity, dtype=dtype, device=device)
+    R = random_rotations(multiplicity * batch_size, dtype=dtype,
+                         device=device).view(batch_size, multiplicity, 3, 3)
 
     # Using randn to create random translation matrix shape [*, 1, 3]
     random_trans = (torch.randn(
-        (multiplicity, 1, 3), dtype=dtype, device=device) * s_trans)
+        (batch_size, multiplicity, 1, 3), dtype=dtype, device=device) * s_trans)
     return R, random_trans
 
 

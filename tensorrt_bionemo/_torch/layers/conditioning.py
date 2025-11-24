@@ -184,14 +184,16 @@ class SingleConditioning(nn.Module):
             skip_create_weights=skip_create_weights)
         if not self.disable_times:
             self.fourier_embed = FourierEmbedding(dim_fourier,
-                                                  dtype=dtype,
+                                                  dtype=torch.float32,
                                                   mapping=mapping)
-            self.norm_fourier = nn.LayerNorm(dim_fourier, dtype=dtype, eps=eps)
+            self.norm_fourier = nn.LayerNorm(dim_fourier,
+                                             dtype=torch.float32,
+                                             eps=eps)
             self.fourier_to_single = Linear(
                 dim_fourier,
                 2 * token_s,
                 bias=False,
-                dtype=dtype,
+                dtype=torch.float32,
                 mapping=mapping,
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
                 gather_output=True,
@@ -237,7 +239,7 @@ class SingleConditioning(nn.Module):
             normed_fourier = self.norm_fourier(fourier_embed)
             # [B, multiplicity, 2*token_s]
             fourier_to_single = self.fourier_to_single(normed_fourier)
-            s = fourier_to_single.unsqueeze(2) + s.unsqueeze(1)
+            s = fourier_to_single.unsqueeze(2).to(s) + s.unsqueeze(1)
 
         for transition in self.transitions:
             s = transition(s) + s

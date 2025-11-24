@@ -255,7 +255,7 @@ class DiffusionModule(nn.Module):
             diffusion_transformer_config=config.atom_encoder,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             version=config.version,
-            dtype=dtype,
+            dtype=config.atom_encoder.torch_dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights)
 
@@ -284,7 +284,7 @@ class DiffusionModule(nn.Module):
             atoms_per_window_keys=config.atoms_per_window_keys,
             diffusion_transformer_config=config.atom_decoder,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
-            dtype=dtype,
+            dtype=config.atom_decoder.torch_dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights)
 
@@ -382,7 +382,7 @@ class DiffusionModule(nn.Module):
             q=q,
             c=c,
             bias=atom_enc_bias,
-            r=r_noisy,
+            r=r_noisy.to(q),
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params,
         )
@@ -393,7 +393,7 @@ class DiffusionModule(nn.Module):
         # Full self-attention on token level, expand dims for broadcasting
         mask = token_pad_mask.unsqueeze(1)
         token_trans_bias = token_trans_bias.unsqueeze(1)
-        a = a + self.s_to_a_linear(s)
+        a = a + self.s_to_a_linear(s.to(a))
 
         # Token transformer doesn't need query to keys, it's self-attention on token level.
         token_transformer_attn_metadata = AttentionMetadata()
@@ -478,16 +478,18 @@ class OutTokenFeatUpdate(nn.Module):
     ):
         """
         Args:
-            times: [B, 1]
+            times: [B, multiplicity]
             acc_a: [B, multiplicity, N, 2 * token_s]
             next_a: [B, multiplicity, N, 2 * token_s]
         Returns:
             acc_a: [B, multiplicity, N, 2 * token_s]
         """
+        # [B, multiplicity, N, 2 * token_s]
         next_a = self.norm_next(next_a)
+        # [B, multiplicity, dim_fourier]
         fourier_embed = self.fourier_embed(times)
-        normed_fourier = (self.norm_fourier(fourier_embed).unsqueeze(1).expand(
-            -1, next_a.shape[1], -1))
+        normed_fourier = (self.norm_fourier(fourier_embed).unsqueeze(2).expand(
+            -1, -1, next_a.shape[2], -1))
         cond_a = torch.cat((acc_a, normed_fourier), dim=-1)
 
         acc_a = acc_a + self.transition_block(
@@ -506,7 +508,18 @@ class PotentialGuidance:
                  step_scale: float = 1.0,
                  boltz2: bool = False,
                  device: torch.device = None) -> None:
-        """ Initialize the BoltzPotentialGuidance """
+        """ Initialize the BoltzPotentialGuidance
+        Args:
+            steering_args: BoltzSteeringParams
+                The steering arguments.
+            atom_mask: torch.Tensor
+                The atom mask. Shape (B, N_atoms)
+            multiplicity: int
+                The multiplicity.
+            num_sampling_steps: int
+                The number of sampling steps.
+            step_scale: float
+        """
         self.steering_args = steering_args
         self.boltz2 = boltz2
         self.multiplicity = multiplicity
@@ -517,6 +530,7 @@ class PotentialGuidance:
         self.num_sampling_steps = num_sampling_steps
         self.step_scale = step_scale
         self.device = device
+        self.batch_size = atom_mask.shape[0]
 
         self.need_guidance_update = False
 
@@ -531,14 +545,18 @@ class PotentialGuidance:
         self.potentials = get_potentials(steering_args, boltz2=boltz2)
         if self.steering_args.fk_steering:
             self.multiplicity = multiplicity * self.steering_args.num_particles
-            self.energy_traj = torch.empty((self.multiplicity, 0),
-                                           device=device)
-            self.resample_weights = torch.ones(
-                self.multiplicity,
-                device=device).reshape(-1, self.steering_args.num_particles)
+            # [B, multiplicity*num_particles, 0]
+            self.energy_traj = torch.empty(
+                (self.batch_size, self.multiplicity, 0), device=device)
+            # [B, multiplicity, num_particles]
+            self.resample_weights = torch.ones(self.batch_size,
+                                               multiplicity,
+                                               self.steering_args.num_particles,
+                                               device=device)
         if self.need_guidance_update:
+            # [B, multiplicity*num_particles, N_atoms, 3]
             self.scaled_guidance_update = torch.zeros(
-                (self.multiplicity, *atom_mask.shape[1:], 3),
+                (self.batch_size, self.multiplicity, atom_mask.shape[1], 3),
                 dtype=torch.float32,
                 device=device,
             )
@@ -571,13 +589,13 @@ class PotentialGuidance:
         """
         Args:
             random_R(torch.Tensor):
-                The random rotation matrix. Shape (B, 3, 3)
+                The random rotation matrix. Shape (B, mult, 3, 3)
         """
         if self.steering_args is None:
             return
         if self.need_guidance_update:
             self.scaled_guidance_update = torch.einsum(
-                "bij,bjk->bik", self.scaled_guidance_update, random_R)
+                "bmij,bmjk->bmik", self.scaled_guidance_update, random_R)
 
     def update_resampling_weights(self, atom_coords_denoised: torch.Tensor,
                                   eps: torch.Tensor, steering_t: float,
@@ -587,7 +605,9 @@ class PotentialGuidance:
         if not self.need_fk_resampling(noise_var):
             return
 
-        energy = torch.zeros(self.multiplicity, device=self.device)
+        energy = torch.zeros(self.batch_size,
+                             self.multiplicity,
+                             device=self.device)
         for potential in self.potentials:
             parameters = potential.compute_parameters(steering_t)
             if parameters["resampling_weight"] > 0:
@@ -597,13 +617,13 @@ class PotentialGuidance:
                     parameters,
                 )
                 energy += parameters["resampling_weight"] * component_energy
-        self.energy_traj = torch.cat((self.energy_traj, energy.unsqueeze(1)),
-                                     dim=1)
+        self.energy_traj = torch.cat((self.energy_traj, energy.unsqueeze(-1)),
+                                     dim=-1)
         # Compute log G values
         if self.step_idx == 0:
             log_G = -1 * energy
         else:
-            log_G = self.energy_traj[:, -2] - self.energy_traj[:, -1]
+            log_G = self.energy_traj[..., -2] - self.energy_traj[..., -1]
 
         # Compute ll difference between guided and unguided transition distribution
         if (self.steering_args.physical_guidance_update or
@@ -615,10 +635,11 @@ class PotentialGuidance:
             ll_difference = torch.zeros_like(energy)
 
         # Compute resampling weights
+        # [B, multiplicity, num_particles]
         self.resample_weights = F.softmax(
             (ll_difference + self.steering_args.fk_lambda * log_G).reshape(
-                -1, self.steering_args.num_particles),
-            dim=1,
+                self.batch_size, -1, self.steering_args.num_particles),
+            dim=-1,
         )
 
     def apply_guidance_update(
@@ -661,28 +682,38 @@ class PotentialGuidance:
         if not self.need_fk_resampling(noise_var):
             return atom_coords, atom_coords_noisy, atom_mask, atom_coords_denoised, token_repr, token_a
 
-        resample_indices = (torch.multinomial(
-            self.resample_weights,
-            self.resample_weights.shape[1]
-            if self.step_idx < self.num_sampling_steps - 1 else 1,
-            replacement=True,
-        ) + self.resample_weights.shape[1] * torch.arange(
-            self.resample_weights.shape[0],
-            device=self.resample_weights.device).unsqueeze(-1)).flatten()
+        # [B, multiplicity, num_particles] when in diffusion loop
+        # [B, multiplicity, 1] when exiting diffusion loop
 
-        atom_coords = atom_coords[resample_indices]
-        atom_coords_noisy = atom_coords_noisy[resample_indices]
-        atom_mask = atom_mask[resample_indices]
+        sample_size = self.steering_args.num_particles if self.step_idx < self.num_sampling_steps - 1 else 1
+        resample_indices = torch.multinomial(
+            self.resample_weights.view(-1, self.steering_args.num_particles),
+            sample_size,
+            replacement=True,
+        ).view(self.batch_size, -1, sample_size)
+        resample_indices = resample_indices + self.steering_args.num_particles * torch.arange(
+            self.resample_weights.shape[1],
+            device=self.resample_weights.device)[None, :, None]
+        resample_indices = resample_indices.view(
+            self.batch_size, -1)  # [B, multiplicity*sample_size]
+
+        batch_indices = torch.arange(self.batch_size,
+                                     device=self.device).unsqueeze(1)
+
+        atom_coords = atom_coords[batch_indices, resample_indices]
+        atom_coords_noisy = atom_coords_noisy[batch_indices, resample_indices]
+        atom_mask = atom_mask[batch_indices, resample_indices]
         if atom_coords_denoised is not None:
-            atom_coords_denoised = atom_coords_denoised[resample_indices]
-        self.energy_traj = self.energy_traj[resample_indices]
+            atom_coords_denoised = atom_coords_denoised[batch_indices,
+                                                        resample_indices]
+        self.energy_traj = self.energy_traj[batch_indices, resample_indices]
         if self.need_guidance_update:
             self.scaled_guidance_update = self.scaled_guidance_update[
-                resample_indices]
+                batch_indices, resample_indices]
         if token_repr is not None:
-            token_repr = token_repr[resample_indices]
+            token_repr = token_repr[batch_indices, resample_indices]
         if token_a is not None:
-            token_a = token_a[resample_indices]
+            token_a = token_a[batch_indices, resample_indices]
         return atom_coords, atom_coords_noisy, atom_mask, atom_coords_denoised, token_repr, token_a
 
 
@@ -758,9 +789,6 @@ class AtomDiffusion(nn.Module):
         return torch.log(t) * 0.25
 
     def load_weights(self, weights: dict):
-        """
-        TODO: Implement the load weights method.
-        """
         if self.out_token_feat_update is not None:
             self.out_token_feat_update.load_weights(
                 weights["out_token_feat_update"])
@@ -781,20 +809,17 @@ class AtomDiffusion(nn.Module):
         batch, device = noised_atom_coords.shape[0], noised_atom_coords.device
 
         if isinstance(sigma, float):
-            sigma = torch.full((batch, ), sigma, device=device)
+            sigma = torch.full((batch, multiplicity), sigma, device=device)
 
-        padded_sigma = rearrange(sigma, "b -> b 1 1")
+        padded_sigma = rearrange(sigma, "b m -> b m 1 1")
         r_noisy = self.c_in(padded_sigma) * noised_atom_coords
 
-        # un-fuse B and multiplicity dimension
-        bs = batch // multiplicity
-        r_noisy = r_noisy.view(bs, multiplicity, -1, 3)
-
+        # [B, mult, N_atoms, 3]
         r_update, token_a = self.score_model(
             s_trunk=s_trunk,
             s_inputs=s_inputs,
             r_noisy=r_noisy,
-            times=self.c_noise(sigma.view(bs, multiplicity)),
+            times=self.c_noise(sigma),
             atom_to_token=feature_dict["atom_to_token"],
             atom_pad_mask=feature_dict["atom_pad_mask"],
             token_pad_mask=feature_dict["token_pad_mask"],
@@ -802,13 +827,11 @@ class AtomDiffusion(nn.Module):
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params,
         )
-        # fuse back B and multiplicity dimension
-        r_update = r_update.view(batch, -1, 3)
+        # token_a: [B, mult, N_tokens, dim]
         if self.version == "v2":
             # Boltz2 does not use token_a
             token_a = None
-        else:
-            token_a = token_a.view(batch, *token_a.shape[2:])
+
         denoised_coords = (self.c_skip(padded_sigma) * noised_atom_coords +
                            self.c_out(padded_sigma) * r_update)
         return denoised_coords, token_a
@@ -867,7 +890,7 @@ class AtomDiffusion(nn.Module):
         # Sanity check
         atom_mask = feature_dict["atom_pad_mask"]
         B, _ = atom_mask.shape
-        assert B == 1, "Boltz atom diffusion only supports batch size 1"
+        # assert B == 1, "Boltz atom diffusion only supports batch size 1"
 
         num_sampling_steps = num_sampling_steps if num_sampling_steps is not None else self.num_sampling_steps
 
@@ -884,11 +907,10 @@ class AtomDiffusion(nn.Module):
         if max_parallel_samples is None:
             max_parallel_samples = multiplicity
 
-        # TODO: This should be [B, multiplicity, N_atoms] for batching support
-        # For now, we take from the original code to run with potentials_guidance
-        atom_mask = atom_mask.repeat_interleave(
-            multiplicity, 0)  # [B, N_atoms] -> [B * multiplicity, N_atoms]
+        # [B, N_atoms] -> [B, multiplicity*num_particles, N_atoms]
+        atom_mask = atom_mask.unsqueeze(1).repeat_interleave(multiplicity, 1)
 
+        # [B, multiplicity*num_particles, N_atoms, 3]
         coords_shape = (*atom_mask.shape, 3)
 
         sigmas = self.sample_schedule(num_sampling_steps)
@@ -906,19 +928,22 @@ class AtomDiffusion(nn.Module):
                        gamma) in enumerate(sigmas_and_gammas):
             potentials_guidance.set_diffusion_reverse_step(step_idx)
             random_R, random_tr = compute_random_augmentation(
-                multiplicity,
+                batch_size=B,
+                multiplicity=multiplicity,
                 device=atom_coords.device,
                 dtype=atom_coords.dtype)
             atom_coords = atom_coords - atom_coords.mean(dim=-2, keepdims=True)
-            atom_coords = (torch.einsum("bmd,bds->bms", atom_coords, random_R) +
-                           random_tr)
+            atom_coords = (
+                torch.einsum("bmnd,bmds->bmns", atom_coords, random_R) +
+                random_tr)
 
             if atom_coords_denoised is not None:
                 # Apply the random rotation and translation to the denoised coordinates
                 atom_coords_denoised -= atom_coords_denoised.mean(dim=-2,
                                                                   keepdims=True)
                 atom_coords_denoised = (torch.einsum(
-                    "bmd,bds->bms", atom_coords_denoised, random_R) + random_tr)
+                    "bmnd,bmds->bmns", atom_coords_denoised, random_R) +
+                                        random_tr)
             potentials_guidance.apply_random_rotation(random_R)
             sigma_tm, sigma_t, gamma = sigma_tm.item(), sigma_t.item(
             ), gamma.item()
@@ -938,12 +963,12 @@ class AtomDiffusion(nn.Module):
                 n_chunks = (multiplicity + max_parallel_samples -
                             1) // max_parallel_samples
                 sample_ids_chunks = sample_ids.chunk(n_chunks)
-
                 for sample_ids_chunk in sample_ids_chunks:
                     atom_coords_denoised_chunk, token_a_chunk = self.preconditioned_network_forward(
                         s_trunk=s_trunk,
                         s_inputs=s_inputs,
-                        noised_atom_coords=atom_coords_noisy[sample_ids_chunk],
+                        noised_atom_coords=atom_coords_noisy[:,
+                                                             sample_ids_chunk],
                         sigma=t_hat,
                         feature_dict=feature_dict,
                         network_condition_kwargs=network_condition_kwargs,
@@ -951,16 +976,16 @@ class AtomDiffusion(nn.Module):
                         attn_metadata=attn_metadata,
                         all_reduce_params=all_reduce_params,
                     )
-                    atom_coords_denoised[
-                        sample_ids_chunk] = atom_coords_denoised_chunk
+                    atom_coords_denoised[:,
+                                         sample_ids_chunk] = atom_coords_denoised_chunk
                     if token_a_chunk is not None:
                         # Boltz1 requires token_a
                         if token_a is None:
-                            token_a = torch.zeros(multiplicity,
-                                                  *token_a_chunk.shape[1:],
+                            token_a = torch.zeros(B,
+                                                  multiplicity,
+                                                  *token_a_chunk.shape[2:],
                                                   device=self.device)
-                        token_a[sample_ids_chunk] = token_a_chunk
-
+                        token_a[:, sample_ids_chunk] = token_a_chunk
                 potentials_guidance.update_resampling_weights(
                     atom_coords_denoised,
                     eps,
@@ -968,6 +993,7 @@ class AtomDiffusion(nn.Module):
                     noise_var,
                     feature_dict,
                 )
+
                 atom_coords_denoised = potentials_guidance.apply_guidance_update(
                     atom_coords_denoised,
                     steering_t,
@@ -991,7 +1017,8 @@ class AtomDiffusion(nn.Module):
                     token_repr = torch.zeros_like(token_a)
 
                 sigma = torch.full(
-                    (atom_coords_denoised.shape[0], ),
+                    (atom_coords_denoised.shape[0],
+                     atom_coords_denoised.shape[1]),
                     t_hat,
                     device=atom_coords_denoised.device,
                 )

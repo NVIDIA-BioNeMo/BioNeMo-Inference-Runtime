@@ -263,7 +263,7 @@ class AtomAttentionEncoder(nn.Module):
             r_to_q = self.r_to_q_trans(r_input)
             # q: [B, multiplicity, N_atoms, atom_s]
             q = q + r_to_q
-
+        q = q.to(c)
         q = self.atom_encoder(q=q,
                               c=c,
                               bias=bias,

@@ -95,9 +95,15 @@ class BaseConfig(BaseModel):
         return str_dtype_to_torch(self.dtype)
 
     def _recursive_set(self, setter_func: Callable):
-        for field_name in self.model_fields:
+        for field_name in self.__dict__.keys():
             field = getattr(self, field_name)
-            if isinstance(field, BaseConfig):
+            if isinstance(field, BaseConfig) or issubclass(
+                    field.__class__, BaseConfig):
+                field._recursive_set(setter_func)
+        for field_name in self.__pydantic_extra__.keys():
+            field = getattr(self, field_name)
+            if isinstance(field, BaseConfig) or issubclass(
+                    field.__class__, BaseConfig):
                 field._recursive_set(setter_func)
         setter_func(self)
 
@@ -107,6 +113,8 @@ class BaseConfig(BaseModel):
         def setter(x):
             if isinstance(value, torch.dtype):
                 x.dtype = torch_dtype_to_str(value)
+            else:
+                x.dtype = value
 
         self._recursive_set(setter)
 

@@ -439,8 +439,8 @@ class Boltz2(nn.Module):
 
         # Run structure module
         struct_module_output = self.structure_module.sample(
-            s_trunk=s.float(),
-            s_inputs=s_inputs.float(),
+            s_trunk=s,
+            s_inputs=s_inputs,
             feature_dict=feed_dict,
             num_sampling_steps=num_sampling_steps,
             multiplicity=diffusion_samples,
@@ -450,12 +450,6 @@ class Boltz2(nn.Module):
             all_reduce_params=all_reduce_params,
             steering_args=steering_args,
         )
-        ret = {
-            "pdistogram": pair_distogram,
-            "s": s,
-            "z": z,
-        }
-        ret.update(struct_module_output)
         x_pred = struct_module_output["sample_atom_coords"]
 
         feed_dict["frames_idx"] = feed_dict["frames_idx"].squeeze(1)
@@ -478,8 +472,14 @@ class Boltz2(nn.Module):
                                  confidence_module_output["iptm"]) / 5,
             "masks":
             feed_dict["atom_pad_mask"],
+            "token_masks":
+            feed_dict["token_pad_mask"],
             "coords":
-            struct_module_output["sample_atom_coords"],
+            x_pred,
+            "pde":
+            confidence_module_output["pde"],
+            "pae":
+            confidence_module_output["pae"],
             "complex_plddt":
             confidence_module_output["complex_plddt"],
             "complex_iplddt":
@@ -501,7 +501,6 @@ class Boltz2(nn.Module):
             "pair_chains_iptm":
             confidence_module_output["pair_chains_iptm"],
         }
-
         return ret
 
     @staticmethod

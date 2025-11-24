@@ -180,13 +180,13 @@ def test_diffusion_module(sc: Scenario):
         atom_dec_bias = atom_dec_bias.to(dtype)
         s_inputs = s_inputs.to(dtype)
         s_trunk = s_trunk.to(dtype)
-        times = times.to(dtype)
 
         ref_module = ref_module.to(dtype)
-        ref_output = ref_module(atom_to_token, atom_pad_mask, token_pad_mask,
-                                s_inputs, s_trunk, r_noisy, times, q, c,
-                                atom_enc_bias, atom_token_bias, atom_dec_bias,
-                                sc.multiplicity, attn_metadata)
+        ref_output = ref_module(atom_to_token, atom_pad_mask,
+                                token_pad_mask, s_inputs, s_trunk, r_noisy,
+                                times.to(dtype), q, c, atom_enc_bias,
+                                atom_token_bias, atom_dec_bias, sc.multiplicity,
+                                attn_metadata)
         r_noisy = r_noisy.unsqueeze(1)
         r_noisy = r_noisy.repeat_interleave(sc.multiplicity, 1)
         diffusion_conditioning_kwargs = {

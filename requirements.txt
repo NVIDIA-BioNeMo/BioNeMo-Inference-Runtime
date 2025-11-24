@@ -2,7 +2,7 @@
 
 # omegaconf==2.3.0
 # Update later
-cuequivariance-ops>=0.6.1rc0,<=0.6.1
-cuequivariance_ops_torch>=0.6.1rc0,<=0.6.1
-cuequivariance_torch>=0.6.1rc0,<=0.6.1
+cuequivariance_ops==0.7.0
+cuequivariance_ops_torch==0.7.0
+cuequivariance_torch==0.7.0
 tensorrt-llm==1.1.0rc5

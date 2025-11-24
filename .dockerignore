@@ -85,9 +85,6 @@ venv/
 .vscode/
 
 # Project-specific build artifacts
-packages/
-trt_bionemo_wheels*/
-*.whl
 job.log
 
 # C++ build artifacts

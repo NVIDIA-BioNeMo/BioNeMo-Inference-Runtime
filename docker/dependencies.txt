@@ -70,9 +70,9 @@ ninja
 etcd3
 blake3
 soundfile
-triton==3.3.1; platform_machine == "x86_64"
+#triton==3.3.1; platform_machine == "x86_64"
 tiktoken
 blobfile
 openai-harmony==0.0.4
 #nvidia-cutlass-dsl==4.2.0; python_version >= "3.12"
-cuequivariance_torch==0.6.1
+cuequivariance_torch==0.7.0

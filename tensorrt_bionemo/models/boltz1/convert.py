@@ -855,7 +855,10 @@ def convert_hf_msa_module_torch(config: BaseConfig,
     else:
         state_dict = weights
 
-    prefix = "msa_module."
+    if "prefix" in kwargs:
+        prefix = kwargs["prefix"]
+    else:
+        prefix = "msa_module."
     module_state_dict = {}
 
     for k, v in state_dict.items():
@@ -1078,8 +1081,12 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     else:
         state_dict = weights
+    if "prefix" in kwargs:
+        prefix = kwargs["prefix"]
+    else:
+        prefix = "input_embedder."
 
-    layer_path = "input_embedder.atom_attention_encoder"
+    layer_path = f"{prefix}atom_attention_encoder"
     atom_transformer_weights = convert_hf_diffusion_transformer_torch(
         config.diffusion_transformer,
         mapping=mapping,
@@ -1405,7 +1412,7 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
                                             local_checkpoint: str = None,
                                             model_name: str = "boltz-1",
                                             weights: dict = None,
-                                            **kwargs):
+                                            **kwargs) -> dict:
     """
     Convert a diffusion conditioning model from a Hugging Face checkpoint to a PyTorch model weights.
     Args:
@@ -1555,4 +1562,208 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
             "bias":
             None,
         }]
+    return tbnm_state_dict
+
+
+def convert_hf_confidence_torch(config: BaseConfig,
+                                mapping: Mapping = None,
+                                local_checkpoint: str = None,
+                                model_name: str = "boltz-1",
+                                weights: dict = None,
+                                **kwargs) -> dict:
+    """
+    Convert a confidence model from a Hugging Face checkpoint to a PyTorch model weights.
+    Args:
+        config: The configuration for the confidence module.
+        mapping: The mapping for the confidence module.
+        local_checkpoint: The directory to load the checkpoint from.
+        model_name: The name of the model to load.
+        weights: The weights to load. If weights is None, the function will load from HuggingFace
+        kwargs: Additional arguments for the conversion.
+    Returns:
+        dict: [
+           "pairformer": dict,
+           "msa_module": dict,
+           "heads": dict,
+           ...
+        ]
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+    tbnm_state_dict = {}
+    prefix = "confidence_module."
+    tbnm_state_dict["dist_bin_pairwise_embed"] = [{
+        "weight":
+        state_dict[f"{prefix}dist_bin_pairwise_embed.weight"],
+        "bias":
+        None
+    }]
+    tbnm_state_dict["s_diffusion_norm"] = [{
+        "weight":
+        state_dict[f"{prefix}s_diffusion_norm.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_diffusion_norm.bias", None)
+    }]
+    tbnm_state_dict["s_diffusion_to_s"] = [{
+        "weight":
+        state_dict[f"{prefix}s_diffusion_to_s.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_diffusion_to_s.bias", None)
+    }]
+    tbnm_state_dict["s_to_z"] = [{
+        "weight":
+        state_dict[f"{prefix}s_to_z.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_to_z.bias", None)
+    }]
+    tbnm_state_dict["s_to_z_transpose"] = [{
+        "weight":
+        state_dict[f"{prefix}s_to_z_transpose.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_to_z_transpose.bias", None)
+    }]
+    if config.add_s_to_z_prod:
+        tbnm_state_dict["s_to_z_prod_in1"] = [{
+            "weight":
+            state_dict[f"{prefix}s_to_z_prod_in1.weight"],
+            "bias":
+            state_dict.get(f"{prefix}s_to_z_prod_in1.bias", None)
+        }]
+        tbnm_state_dict["s_to_z_prod_in2"] = [{
+            "weight":
+            state_dict[f"{prefix}s_to_z_prod_in2.weight"],
+            "bias":
+            state_dict.get(f"{prefix}s_to_z_prod_in2.bias", None)
+        }]
+        tbnm_state_dict["s_to_z_prod_out"] = [{
+            "weight":
+            state_dict[f"{prefix}s_to_z_prod_out.weight"],
+            "bias":
+            state_dict.get(f"{prefix}s_to_z_prod_out.bias", None)
+        }]
+    tbnm_state_dict["s_init"] = [{
+        "weight":
+        state_dict[f"{prefix}s_init.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_init.bias", None)
+    }]
+    tbnm_state_dict["z_init_1"] = [{
+        "weight":
+        state_dict[f"{prefix}z_init_1.weight"],
+        "bias":
+        state_dict.get(f"{prefix}z_init_1.bias", None)
+    }]
+    tbnm_state_dict["z_init_2"] = [{
+        "weight":
+        state_dict[f"{prefix}z_init_2.weight"],
+        "bias":
+        state_dict.get(f"{prefix}z_init_2.bias", None)
+    }]
+    input_embedder_weights = convert_hf_input_embedder_torch(
+        config=config.input_embedder,
+        mapping=mapping,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=state_dict,
+        prefix=f"{prefix}input_embedder.")
+    tbnm_state_dict["input_embedder"] = input_embedder_weights
+    tbnm_state_dict["rel_pos.linear"] = [{
+        "weight":
+        state_dict[f"{prefix}rel_pos.linear_layer.weight"],
+        "bias":
+        state_dict.get(f"{prefix}rel_pos.linear_layer.bias", None)
+    }]
+    tbnm_state_dict["token_bonds"] = [{
+        "weight":
+        state_dict[f"{prefix}token_bonds.weight"],
+        "bias":
+        state_dict.get(f"{prefix}token_bonds.bias", None)
+    }]
+    tbnm_state_dict["s_norm"] = [{
+        "weight":
+        state_dict[f"{prefix}s_norm.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_norm.bias", None)
+    }]
+    tbnm_state_dict["z_norm"] = [{
+        "weight":
+        state_dict[f"{prefix}z_norm.weight"],
+        "bias":
+        state_dict.get(f"{prefix}z_norm.bias", None)
+    }]
+    tbnm_state_dict["s_recycle"] = [{
+        "weight":
+        state_dict[f"{prefix}s_recycle.weight"],
+        "bias":
+        state_dict.get(f"{prefix}s_recycle.bias", None)
+    }]
+    tbnm_state_dict["z_recycle"] = [{
+        "weight":
+        state_dict[f"{prefix}z_recycle.weight"],
+        "bias":
+        state_dict.get(f"{prefix}z_recycle.bias", None)
+    }]
+
+    pairformer_weights = convert_hf_pairformer_torch(
+        config=config.pairformer,
+        mapping=mapping,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=state_dict,
+        pairformer_type="confidence",
+    )
+    tbnm_state_dict["pairformer"] = pairformer_weights
+    msa_module_weights = convert_hf_msa_module_torch(
+        config=config.msa_module,
+        mapping=mapping,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=state_dict,
+        prefix=f"{prefix}msa_module.")
+    tbnm_state_dict["msa_module"] = msa_module_weights
+    tbnm_state_dict["final_s_norm"] = [{
+        "weight":
+        state_dict[f"{prefix}final_s_norm.weight"],
+        "bias":
+        state_dict.get(f"{prefix}final_s_norm.bias", None)
+    }]
+    tbnm_state_dict["final_z_norm"] = [{
+        "weight":
+        state_dict[f"{prefix}final_z_norm.weight"],
+        "bias":
+        state_dict.get(f"{prefix}final_z_norm.bias", None)
+    }]
+
+    # Convert for heads
+    head_weights = {}
+    head_prefix = f"{prefix}confidence_heads."
+
+    head_weights["to_pde_logits"] = [{
+        "weight":
+        state_dict[f"{head_prefix}to_pde_logits.weight"],
+        "bias":
+        state_dict.get(f"{head_prefix}to_pde_logits.bias", None)
+    }]
+    head_weights["to_plddt_logits"] = [{
+        "weight":
+        state_dict[f"{head_prefix}to_plddt_logits.weight"],
+        "bias":
+        state_dict.get(f"{head_prefix}to_plddt_logits.bias", None)
+    }]
+    head_weights["to_resolved_logits"] = [{
+        "weight":
+        state_dict[f"{head_prefix}to_resolved_logits.weight"],
+        "bias":
+        state_dict.get(f"{head_prefix}to_resolved_logits.bias", None)
+    }]
+    if config.heads.compute_pae:
+        head_weights["to_pae_logits"] = [{
+            "weight":
+            state_dict[f"{head_prefix}to_pae_logits.weight"],
+            "bias":
+            state_dict.get(f"{head_prefix}to_pae_logits.bias", None)
+        }]
+    tbnm_state_dict["heads"] = head_weights
     return tbnm_state_dict

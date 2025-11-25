@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
-from tensorrt_bionemo.config import Mapping
+from tensorrt_bionemo.mapping import Mapping
 
 
 class DistogramModule(nn.Module):

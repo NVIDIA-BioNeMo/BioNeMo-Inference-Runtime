@@ -295,7 +295,14 @@ class Trunk(nn.Module):
                                 skip_create_weights=self.skip_create_weights)
 
     def load_weights(self, weights: dict):
-        """ Load weights for the Trunk module """
+        """ Load weights for the Trunk module
+        Args:
+            dict: {
+                "msa_module": dict,
+                "pairformer_module": dict,
+                ...
+            }
+        """
         msa_module_weights = weights.pop("msa_module")
         pairformer_module_weights = weights.pop("pairformer_module")
         self.msa_module.load_weights(weights=msa_module_weights)

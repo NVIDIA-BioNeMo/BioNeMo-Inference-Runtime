@@ -27,6 +27,8 @@ from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_indexing_matrix, query_to_keys)
+from tensorrt_bionemo._torch.modules.boltz.confidence import \
+    Boltz1ConfidenceModule
 from tensorrt_bionemo._torch.modules.boltz.embedders import Boltz1InputEmbedder
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
@@ -34,12 +36,14 @@ from tensorrt_bionemo._torch.modules.boltz.structure import (
     AtomDiffusion, DiffusionConditioning)
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
+from tensorrt_bionemo.pipeline.boltz.const import (NUM_POCKET_CONTACT_INFO,
+                                                   NUM_TOKENS)
 from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
 from ..helper import AcceleratedModules, build_optimized_module
 from .config import Boltz1Config
-from .const import NUM_POCKET_CONTACT_INFO, NUM_TOKENS
-from .convert import (convert_hf_diffusion_conditioning_torch,
+from .convert import (convert_hf_confidence_torch,
+                      convert_hf_diffusion_conditioning_torch,
                       convert_hf_diffusion_transformer_torch,
                       convert_hf_input_embedder_torch,
                       convert_hf_msa_module_torch, convert_hf_pairformer_torch,
@@ -74,13 +78,19 @@ class Boltz1(nn.Module):
         self.trunk_dtype = self.config.trunk.torch_dtype
         self.trunk_config = self.config.trunk
 
+        # Setup steering params:
+        self.steering_args = BoltzSteeringParams(contact_guidance_update=False)
+
         # Setup for atom diffusion
         self.structure_module_dtype = self.config.structure_module.torch_dtype
         self.structure_module_mapping = self.config.structure_module.mapping
         self.structure_module_config = self.config.structure_module
 
-        # Setup steering params:
-        self.steering_args = BoltzSteeringParams(contact_guidance_update=False)
+        # Setup for confidence module
+        self.confidence_module_config = self.config.confidence_module
+        self.confidence_module_dtype = self.config.confidence_module.torch_dtype
+        self.confidence_module_mapping = self.config.confidence_module.mapping
+        self.confidence_module_config = self.config.confidence_module
 
         #### Build up modules ####
 
@@ -176,6 +186,9 @@ class Boltz1(nn.Module):
         )
         self.structure_module = AtomDiffusion(self.structure_module_config)
 
+        ### Confidence module ###
+        self.confidence_module = Boltz1ConfidenceModule(
+            self.confidence_module_config)
         #### End of building up modules ####
 
     def load_weights(self, weights: dict = None):
@@ -263,6 +276,13 @@ class Boltz1(nn.Module):
             model_name=self.model_name)
         self.structure_module.load_weights(structure_module_weights)
 
+        # Load weights for confidence module
+        confidence_module_weights = convert_hf_confidence_torch(
+            config=self.confidence_module_config,
+            weights=weights,
+            model_name=self.model_name)
+        self.confidence_module.load_weights(confidence_module_weights)
+
     def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor],
                              module_name: str) -> dict[str, Any]:
         keys = []
@@ -289,6 +309,19 @@ class Boltz1(nn.Module):
     def get_pretrained_config() -> Boltz1Config:
         return Boltz1Config()
 
+    def create_attn_metadata(self, n_atoms: int) -> AttentionMetadata:
+        W = self.input_embedder_config.atoms_per_window_queries
+        H = self.input_embedder_config.atoms_per_window_keys
+        K = n_atoms // W
+        keys_indexing_matrix = create_indexing_matrix(
+            K, W, H, device=torch.device("cuda"))
+        query_to_keys_func = partial(query_to_keys,
+                                     keys_indexing_matrix=keys_indexing_matrix,
+                                     W=W,
+                                     H=H)
+        return AttentionMetadata(query_to_keys=query_to_keys_func,
+                                 bias_cache=None)
+
     def forward(
         self,
         feed_dict: dict[str, torch.Tensor],
@@ -305,16 +338,7 @@ class Boltz1(nn.Module):
 
         # Setup query to keys function for sequence local attention
         B, N_atoms, N_tokens = feed_dict["atom_to_token"].shape
-        W = self.input_embedder_config.atoms_per_window_queries
-        H = self.input_embedder_config.atoms_per_window_keys
-        K = N_atoms // W
-        keys_indexing_matrix = create_indexing_matrix(
-            K, W, H, device=torch.device("cuda"))
-        query_to_keys_func = partial(query_to_keys,
-                                     keys_indexing_matrix=keys_indexing_matrix,
-                                     W=W,
-                                     H=H)
-        attn_metadata = AttentionMetadata(query_to_keys=query_to_keys_func)
+        attn_metadata = self.create_attn_metadata(N_atoms)
 
         # Run input embedder step
         s_inputs = self.input_embedder(
@@ -348,7 +372,7 @@ class Boltz1(nn.Module):
             z_trunk=z,
             relative_position_encoding=relative_position_encoding,
             feature_dict=feed_dict,
-            query_to_keys=query_to_keys_func,
+            query_to_keys=attn_metadata.query_to_keys,
         )
 
         network_condition_kwargs = {
@@ -372,20 +396,53 @@ class Boltz1(nn.Module):
             all_reduce_params=all_reduce_params,
             steering_args=steering_args,
         )
+        confidence_module_output = self.confidence_module(
+            s=s,
+            z=z,
+            s_diffusion=(struct_module_output["diff_token_repr"]
+                         if self.confidence_module_config.use_s_diffusion else
+                         None),
+            x_pred=struct_module_output["sample_atom_coords"],
+            feature_dict=feed_dict,
+            pred_distogram_logits=pair_distogram,
+            multiplicity=diffusion_samples,
+            attn_metadata=attn_metadata,
+            all_reduce_params=all_reduce_params,
+        )
+
+        iptm_score = confidence_module_output["iptm"]
+        if torch.allclose(iptm_score, torch.zeros_like(iptm_score)):
+            iptm_score = confidence_module_output["ptm"]
 
         ret = {
-            "pdistogram": pair_distogram,
-            "s": s,
-            "z": z,
+            "confidence_score":
+            (4 * confidence_module_output["complex_plddt"] + iptm_score) / 5,
+            "masks":
+            feed_dict["atom_pad_mask"],
+            "coords":
+            struct_module_output["sample_atom_coords"],
+            "complex_plddt":
+            confidence_module_output["complex_plddt"],
+            "complex_iplddt":
+            confidence_module_output["complex_iplddt"],
+            "complex_pde":
+            confidence_module_output["complex_pde"],
+            "complex_ipde":
+            confidence_module_output["complex_ipde"],
+            "plddt":
+            confidence_module_output["plddt"],
+            "ptm":
+            confidence_module_output["ptm"],
+            "iptm":
+            confidence_module_output["iptm"],
+            "ligand_iptm":
+            confidence_module_output["ligand_iptm"],
+            "protein_iptm":
+            confidence_module_output["protein_iptm"],
+            "pair_chains_iptm":
+            confidence_module_output["pair_chains_iptm"],
         }
-        ret.update(struct_module_output)
-
-        remain = {
-            "s_inputs": s_inputs,
-            "relative_position_encoding": relative_position_encoding,
-        }
-        # TODO: to be continued
-        return ret, remain
+        return ret
 
     @staticmethod
     def optimize(

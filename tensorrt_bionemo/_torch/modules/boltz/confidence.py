@@ -13,23 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import torch
+from tensorrt_llm.functional import AllReduceParams
 from torch import nn
 
+from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import ContactConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerModule
-from tensorrt_bionemo._torch.modules.boltz.confidence_utils import (
-    compute_aggregated_metric, compute_ptms)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.boltz import const
+from tensorrt_bionemo.pipeline.boltz.const import (BOND_TYPES, CHAIN_TYPE_IDS,
+                                                   CONTACT_CONDITIONING_INFO,
+                                                   NUM_POCKET_CONTACT_INFO,
+                                                   NUM_TOKENS)
+
+from .confidence_utils import (compute_aggregated_metric, compute_distogram,
+                               compute_ptms, concat_out_dicts,
+                               repeat_with_multiplicity)
+from .embedders import Boltz1InputEmbedder
+from .trunk import MSAModule, PairformerModule
 
 
 class Boltz2ConfidenceHeads(nn.Module):
@@ -243,8 +250,7 @@ class Boltz2ConfidenceHeads(nn.Module):
         token_type = feats["mol_type"]
 
         token_type = repeat_with_multiplicity(token_type, multiplicity)
-        is_ligand_token = (
-            token_type == const.CHAIN_TYPE_IDS["NONPOLYMER"]).float()
+        is_ligand_token = (token_type == CHAIN_TYPE_IDS["NONPOLYMER"]).float()
 
         assert self.token_level_confidence, "Only support for token level confidence"
 
@@ -335,12 +341,6 @@ class Boltz2ConfidenceHeads(nn.Module):
             out_dict["pair_chains_iptm"] = torch.zeros_like(complex_plddt)
 
         return out_dict
-
-
-def repeat_with_multiplicity(tensor: torch.Tensor,
-                             multiplicity: int) -> torch.Tensor:
-    """Repeat a tensor with multiplicity."""
-    return tensor.unsqueeze(1).repeat_interleave(multiplicity, 1)
 
 
 class Boltz2ConfidenceModule(nn.Module):
@@ -463,13 +463,13 @@ class Boltz2ConfidenceModule(nn.Module):
             self.bond_type_feature = config.bond_type_feature
             if config.bond_type_feature:
                 self.token_bonds_type = nn.Embedding(
-                    len(const.BOND_TYPES) + 1, config.token_z)
+                    len(BOND_TYPES) + 1, config.token_z)
 
             self.contact_conditioning = ContactConditioning(
                 token_z=config.token_z,
                 cutoff_min=config.conditioning_cutoff_min,
                 cutoff_max=config.conditioning_cutoff_max,
-                contact_conditioning_info=const.CONTACT_CONDITIONING_INFO,
+                contact_conditioning_info=CONTACT_CONDITIONING_INFO,
                 dtype=self.dtype,
                 mapping=self.mapping,
                 skip_create_weights=self.skip_create_weights)
@@ -509,28 +509,6 @@ class Boltz2ConfidenceModule(nn.Module):
         if not_loaded_weight:
             raise ValueError(
                 f"The following weights are not loaded: {not_loaded_weight}")
-
-    def _concat_out_dicts(self, out_dicts):
-        out_dict = {}
-        for key in out_dicts[0]:
-            if key != "pair_chains_iptm":
-                out_dict[key] = torch.cat([out[key] for out in out_dicts],
-                                          dim=1)
-            else:
-                pair_chains_iptm = {}
-                for chain_idx1 in out_dicts[0][key]:
-                    chains_iptm = {}
-                    for chain_idx2 in out_dicts[0][key][chain_idx1]:
-                        chains_iptm[chain_idx2] = torch.cat(
-                            [
-                                out[key][chain_idx1][chain_idx2]
-                                for out in out_dicts
-                            ],
-                            dim=1,
-                        )
-                    pair_chains_iptm[chain_idx1] = chains_iptm
-                out_dict[key] = pair_chains_iptm
-        return out_dict
 
     def forward(
         self,
@@ -645,13 +623,9 @@ class Boltz2ConfidenceModule(nn.Module):
         x_chunks = x_pred.chunk(niter, dim=1)
         for x_pred_chunk in x_chunks:
             current_multiplicity = x_pred_chunk.shape[1]
-            x_pred_repr = torch.einsum(
-                'bdhw,bdwk->bdhk',
-                repeat_with_multiplicity(token_to_rep_atom.float(),
-                                         current_multiplicity), x_pred_chunk)
-
-            d = torch.cdist(x_pred_repr, x_pred_repr)
-            distogram = (d.unsqueeze(-1) > self.boundaries).sum(dim=-1).long()
+            d, distogram = compute_distogram(x_pred_chunk, self.boundaries,
+                                             token_to_rep_atom,
+                                             current_multiplicity)
             distogram = self.dist_bin_pairwise_embed(distogram)
             pair_z = repeat_with_multiplicity(z,
                                               current_multiplicity) + distogram
@@ -686,5 +660,554 @@ class Boltz2ConfidenceModule(nn.Module):
                 ))
             out_dicts_chunks.append(out_dict)
 
-        out_dict = self._concat_out_dicts(out_dicts_chunks)
+        out_dict = concat_out_dicts(out_dicts_chunks)
         return out_dict
+
+
+class Boltz1ConfidenceHeads(nn.Module):
+    """Confidence heads.
+    The compute_pae flag isn't supported in the current implementation.
+    """
+
+    def __init__(self, config: BaseConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.token_s = config.token_s
+        self.token_z = config.token_z
+        self.num_plddt_bins = config.num_plddt_bins
+        self.num_pde_bins = config.num_pde_bins
+        self.num_pae_bins = config.num_pae_bins
+
+        contacts = torch.zeros((1, 1, 1, 1, 64), dtype=self.config.torch_dtype)
+        contacts[:, :, :, :, :20] = 1.0
+
+        self.register_buffer("contacts", contacts, persistent=False)
+
+        self.max_num_atoms_per_token = 23
+        self.to_pde_logits = Linear(
+            self.token_z,
+            self.num_pde_bins,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+        self.to_plddt_logits = Linear(
+            self.token_s,
+            self.num_plddt_bins,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+        self.to_resolved_logits = Linear(
+            self.token_s,
+            2,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+        if self.config.compute_pae:
+            self.to_pae_logits = Linear(
+                self.token_z,
+                self.num_pae_bins,
+                bias=False,
+                dtype=self.config.torch_dtype,
+                mapping=self.config.mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=True,
+                skip_create_weights=self.config.skip_create_weights)
+
+    def load_weights(self, weights: dict) -> None:
+        loaded_weight = recursive_calling_load_weights(self, weights)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
+
+    def forward(
+        self,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        x_pred: torch.Tensor,
+        d: torch.Tensor,
+        pred_distogram_logits: torch.Tensor,
+        feature_dict: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        """
+        Args:
+            s: torch.Tensor
+                s from the confidence module. Shape, [B, mult, N_tokens, token_s].
+            z: torch.Tensor
+                z from the confidence module. Shape, [B, mult, N_tokens, N_tokens, token_z].
+            pred_distogram_logits: torch.Tensor
+                pred_distogram_logits from the confidence module. Shape, [B, N_tokens, N_tokens, num_dist_bins].
+        Return:
+            dict[str, torch.Tensor]
+                Output dictionary containing scores for the predicted structures.
+        """
+        B, multiplicity, N_tokens, _ = s.shape
+        asym_id = feature_dict["asym_id"]
+        token_pad_mask = repeat_with_multiplicity(
+            feature_dict["token_pad_mask"], multiplicity)
+        token_type = repeat_with_multiplicity(feature_dict["mol_type"],
+                                              multiplicity)
+
+        # Compute the pLDDT, PDE, PAE, and resolved logits
+        plddt_logits = self.to_plddt_logits(s)
+        pde_logits = self.to_pde_logits(z + z.transpose(-3, -2))
+        resolved_logits = self.to_resolved_logits(s)
+
+        # Weights used to compute the interface pLDDT
+        ligand_weight = 2
+        interface_weight = 1
+
+        # Retrieve relevant features
+        is_ligand_token = (token_type == CHAIN_TYPE_IDS["NONPOLYMER"]).float()
+
+        # Compute the aggregated pLDDT and iPLDDT
+        plddt = compute_aggregated_metric(plddt_logits)
+        complex_plddt = (plddt * token_pad_mask).sum(
+            dim=-1) / token_pad_mask.sum(dim=-1)
+
+        is_contact = (d < 8).float()
+        is_different_chain = (asym_id.unsqueeze(-1)
+                              != asym_id.unsqueeze(-2)).float()
+        is_different_chain = repeat_with_multiplicity(is_different_chain,
+                                                      multiplicity)
+        token_interface_mask = torch.max(
+            is_contact * is_different_chain *
+            (1 - is_ligand_token).unsqueeze(-1),
+            dim=-1,
+        ).values
+        iplddt_weight = (is_ligand_token * ligand_weight +
+                         token_interface_mask * interface_weight)
+        complex_iplddt = (plddt * token_pad_mask * iplddt_weight).sum(
+            dim=-1) / (torch.sum(token_pad_mask * iplddt_weight, dim=-1) + 1e-5)
+
+        # Compute the aggregated PDE and iPDE
+        pde = compute_aggregated_metric(pde_logits, end=32)
+        pred_distogram_prob = nn.functional.softmax(pred_distogram_logits,
+                                                    dim=-1)
+        pred_distogram_prob = repeat_with_multiplicity(pred_distogram_prob,
+                                                       multiplicity)
+        prob_contact = (pred_distogram_prob * self.contacts).sum(-1)
+        token_pad_pair_mask = (
+            token_pad_mask.unsqueeze(-1) * token_pad_mask.unsqueeze(-2) *
+            (1 - torch.eye(N_tokens, device=token_pad_mask.device)[None,
+                                                                   None, :, :]))
+
+        token_pair_mask = token_pad_pair_mask * prob_contact
+        complex_pde = (pde * token_pair_mask).sum(
+            dim=(-2, -1)) / token_pair_mask.sum(dim=(-2, -1))
+        asym_id = repeat_with_multiplicity(asym_id, multiplicity)
+        token_interface_pair_mask = token_pair_mask * (asym_id.unsqueeze(-1)
+                                                       != asym_id.unsqueeze(-2))
+        complex_ipde = (pde * token_interface_pair_mask).sum(
+            dim=(-2, -1)) / (token_interface_pair_mask.sum(dim=(-2, -1)) + 1e-5)
+
+        out_dict = dict(
+            pde_logits=pde_logits,
+            plddt_logits=plddt_logits,
+            resolved_logits=resolved_logits,
+            pde=pde,
+            plddt=plddt,
+            complex_plddt=complex_plddt,
+            complex_iplddt=complex_iplddt,
+            complex_pde=complex_pde,
+            complex_ipde=complex_ipde,
+        )
+        if self.config.compute_pae:
+            pae_logits = self.to_pae_logits(z)
+            out_dict["pae_logits"] = pae_logits
+            out_dict["pae"] = compute_aggregated_metric(pae_logits, end=32)
+            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
+                pae_logits, x_pred, feature_dict)
+            out_dict["ptm"] = ptm
+            out_dict["iptm"] = iptm
+            out_dict["ligand_iptm"] = ligand_iptm
+            out_dict["protein_iptm"] = protein_iptm
+            out_dict["pair_chains_iptm"] = pair_chains_iptm
+        return out_dict
+
+
+class Boltz1ConfidenceModule(nn.Module):
+
+    def __init__(self, config: BaseConfig):
+        super().__init__()
+        self.config = config
+        self.input_embedder_config = config.input_embedder
+        self.pairformer_config = config.pairformer
+        self.msa_module_config = config.msa_module
+
+        self.max_num_atoms_per_token = 23
+        self.no_update_s = self.pairformer_config.no_update_s
+
+        self.max_dist = self.config.max_dist
+        self.num_dist_bins = self.config.num_dist_bins
+        self.token_z = self.config.token_z
+        self.token_s = self.config.token_s
+        self.s_input_dim = (self.token_s + 2 * NUM_TOKENS + 1 +
+                            NUM_POCKET_CONTACT_INFO)
+        boundaries = torch.linspace(2, self.max_dist, self.num_dist_bins - 1)
+
+        # TODO: Replace nn.Embedding with tensorrt_llm.Embedding
+        self.dist_bin_pairwise_embed = nn.Embedding(self.num_dist_bins,
+                                                    self.token_z)
+
+        self.register_buffer("boundaries", boundaries)
+
+        # Use s diffusion
+        self.s_diffusion_norm = nn.LayerNorm(2 * self.token_s)
+        self.s_diffusion_to_s = Linear(
+            2 * self.token_s,
+            self.token_s,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+
+        self.s_to_z = Linear(
+            self.s_input_dim,
+            self.token_z,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+        self.s_to_z_transpose = Linear(
+            self.s_input_dim,
+            self.token_z,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+
+        self.add_s_to_z_prod = self.config.add_s_to_z_prod
+        if self.add_s_to_z_prod:
+            self.s_to_z_prod_in1 = Linear(
+                self.s_input_dim,
+                self.token_z,
+                bias=False,
+                dtype=self.config.torch_dtype,
+                mapping=self.config.mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=True,
+                skip_create_weights=self.config.skip_create_weights)
+            self.s_to_z_prod_in2 = Linear(
+                self.s_input_dim,
+                self.token_z,
+                bias=False,
+                dtype=self.config.torch_dtype,
+                mapping=self.config.mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=True,
+                skip_create_weights=self.config.skip_create_weights)
+            self.s_to_z_prod_out = Linear(
+                self.token_z,
+                self.token_z,
+                bias=False,
+                dtype=self.config.torch_dtype,
+                mapping=self.config.mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=True,
+                skip_create_weights=self.config.skip_create_weights)
+
+        self.s_init = Linear(
+            self.s_input_dim,
+            self.token_s,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+        self.z_init_1 = Linear(
+            self.s_input_dim,
+            self.token_z,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+        self.z_init_2 = Linear(
+            self.s_input_dim,
+            self.token_z,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+
+        self.input_embedder = Boltz1InputEmbedder(self.input_embedder_config)
+        self.rel_pos = RelativePositionEncoder(
+            token_z=self.token_z,
+            fix_sym_check=False,
+            cyclic_pos_enc=True,
+            period_broadcast=True,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            skip_create_weights=self.config.skip_create_weights)
+        self.token_bonds = Linear(
+            1,
+            self.token_z,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+
+        # Normalization layers
+        self.s_norm = nn.LayerNorm(self.token_s,
+                                   dtype=self.config.torch_dtype,
+                                   eps=self.config.norm_epsilon)
+        self.z_norm = nn.LayerNorm(self.token_z,
+                                   dtype=self.config.torch_dtype,
+                                   eps=self.config.norm_epsilon)
+
+        # Recycling projections
+        self.s_recycle = Linear(
+            self.token_s,
+            self.token_s,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+        self.z_recycle = Linear(
+            self.token_z,
+            self.token_z,
+            bias=False,
+            dtype=self.config.torch_dtype,
+            mapping=self.config.mapping,
+            tensor_parallel_mode=TensorParallelMode.COLUMN,
+            gather_output=True,
+            skip_create_weights=self.config.skip_create_weights)
+
+        self.msa_module = MSAModule(self.msa_module_config)
+        self.pairformer_module = PairformerModule(self.pairformer_config)
+
+        self.final_s_norm = nn.LayerNorm(self.token_s,
+                                         dtype=self.config.torch_dtype,
+                                         eps=self.config.norm_epsilon)
+        self.final_z_norm = nn.LayerNorm(self.token_z,
+                                         dtype=self.config.torch_dtype,
+                                         eps=self.config.norm_epsilon)
+
+        self.confidence_heads = Boltz1ConfidenceHeads(self.config.heads)
+
+    def load_weights(self, weights: dict) -> None:
+        self.input_embedder.load_weights(weights.pop("input_embedder"))
+        self.pairformer_module.load_weights(weights.pop("pairformer"))
+        self.msa_module.load_weights(weights.pop("msa_module"))
+        self.confidence_heads.load_weights(weights.pop("heads"))
+
+        filter_func = lambda name, _: name.startswith(
+            "msa_module") or name.startswith("pairformer") or name.startswith(
+                "confidence_heads") or name.startswith("input_embedder")
+        loaded_weight = recursive_calling_load_weights(self, weights,
+                                                       filter_func)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
+
+    def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor],
+                             module_name: str) -> dict[str, Any]:
+        keys = []
+        if module_name == "input_embedder":
+            keys = [
+                "atom_to_token", "ref_pos", "atom_pad_mask", "ref_space_uid",
+                "ref_charge", "ref_element", "ref_atom_name_chars", "res_type",
+                "profile", "deletion_mean", "pocket_feature"
+            ]
+        elif module_name == "relative_position_encoding":
+            keys = [
+                "asym_id", "residue_index", "entity_id", "cyclic_period",
+                "token_index", "sym_id"
+            ]
+        elif module_name == "msa_module":
+            keys = [
+                "msa", "has_deletion", "deletion_value", "msa_paired",
+                "msa_mask", "token_pad_mask"
+            ]
+        else:
+            raise ValueError(f"Module name {module_name} not supported")
+        return {key: feed_dict.get(key, None) for key in keys}
+
+    def forward(
+        self,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        x_pred: torch.Tensor,
+        feature_dict: dict[str, torch.Tensor],
+        pred_distogram_logits: torch.Tensor,
+        multiplicity: int = 1,
+        s_diffusion: Optional[torch.Tensor] = None,
+        max_parallel_samples: Optional[int] = None,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None
+    ) -> dict[str, torch.Tensor]:
+        """
+        Forward pass for the confidence module with imitate_trunk=True.
+        Args:
+            s: torch.Tensor
+                s from the trunk module. Shape, [B, N_tokens, token_s].
+            z: torch.Tensor
+                z from the trunk module. Shape, [B, N_tokens, N_tokens, token_z].
+            x_pred: torch.Tensor
+                x_pred from the structure module. Shape, [B, mult, N_atoms, 3] or [B*mult, N_atoms, 3].
+            d: torch.Tensor
+                d from the structure module.
+            feature_dict: dict
+                feature_dict from the dataloader.
+            pred_distogram_logits: torch.Tensor
+                pred_distogram_logits from the distogram module.
+            multiplicity: int
+                multiplicity from the structure module.
+            s_diffusion: Optional[torch.Tensor]
+                s_diffusion from the diffusion conditioning module.
+            max_parallel_samples: Optional[int]
+                max_parallel_samples from the structure module.
+        return: dict[str, torch.Tensor]
+            Output dictionary containing the confidence heads.
+        """
+        if max_parallel_samples is None:
+            max_parallel_samples = 1
+        if x_pred.ndim == 3:
+            B = x_pred.shape[
+                0] // multiplicity  # [B*mult, N_atoms, 3] -> [B, mult, N_atoms, 3]
+            x_pred = x_pred.reshape(B, multiplicity, *x_pred.shape[1:])
+        else:
+            B, multiplicity, _, _ = x_pred.shape
+
+        niter = (multiplicity + max_parallel_samples -
+                 1) // max_parallel_samples
+        x_chunks = x_pred.chunk(niter, dim=1)
+        if s_diffusion is not None:
+            if s_diffusion.ndim == 3:
+                # [B, mult, ...]
+                s_diffusion = s_diffusion.reshape(B, multiplicity,
+                                                  *s_diffusion.shape[1:])
+            s_diffusion_chunks = s_diffusion.chunk(niter, dim=1)
+        else:
+            s_diffusion_chunks = [None] * niter
+
+        s_inputs = self.input_embedder(**self.get_module_feed_dict(
+            feature_dict, "input_embedder"),
+                                       attn_metadata=attn_metadata,
+                                       all_reduce_params=all_reduce_params)
+        s_init = self.s_init(s_inputs)
+        z_init = (self.z_init_1(s_inputs)[:, :, None] +
+                  self.z_init_2(s_inputs)[:, None, :])
+
+        relative_position_encoding = self.rel_pos(
+            **self.get_module_feed_dict(feature_dict,
+                                        "relative_position_encoding"), )
+        z_init = z_init + relative_position_encoding
+        z_init = z_init + self.token_bonds(feature_dict["token_bonds"].float())
+
+        # Apply recycling
+        s = s_init + self.s_recycle(self.s_norm(s))
+        z = z_init + self.z_recycle(self.z_norm(z))
+
+        z = (z + (self.s_to_z(s_inputs)[:, :, None, :] +
+                  self.s_to_z_transpose(s_inputs)[:, None, :, :]))
+
+        if self.config.add_s_to_z_prod:
+            z = z + self.s_to_z_prod_out(
+                (self.s_to_z_prod_in1(s_inputs)[:, :, None, :] *
+                 self.s_to_z_prod_in2(s_inputs)[:, None, :, :]))
+
+        s = repeat_with_multiplicity(s, multiplicity)
+        z = repeat_with_multiplicity(z, multiplicity)
+        s_inputs = repeat_with_multiplicity(s_inputs, multiplicity)
+
+        s_chunks = s.chunk(niter, dim=1)
+        z_chunks = z.chunk(niter, dim=1)
+        s_inputs_chunks = s_inputs.chunk(niter, dim=1)
+        out_dicts = []
+        for s_inputs_chunk, s_chunk, z_chunk, x_chunk, s_diffusion_chunk in zip(
+                s_inputs_chunks, s_chunks, z_chunks, x_chunks,
+                s_diffusion_chunks):
+            n_samples = x_chunk.shape[1]
+
+            if self.config.use_s_diffusion:
+                assert s_diffusion is not None
+                s_diffusion_chunk = self.s_diffusion_norm(s_diffusion_chunk)
+                s_chunk = s_chunk + self.s_diffusion_to_s(s_diffusion_chunk)
+            token_to_rep_atom = feature_dict["token_to_rep_atom"]
+            d, distogram = compute_distogram(x_chunk,
+                                             self.boundaries,
+                                             token_to_rep_atom,
+                                             n_samples,
+                                             dtype=self.config.torch_dtype)
+
+            distogram = self.dist_bin_pairwise_embed(distogram)
+            z_chunk = z_chunk + distogram  # [B, mult, N_tokens, N_tokens, token_z]
+
+            mask = feature_dict["token_pad_mask"]
+            pair_mask = mask[:, :,
+                             None] * mask[:, None, :]  # [B, N_tokens, N_tokens]
+            pair_mask = repeat_with_multiplicity(
+                pair_mask, n_samples)  # [B, mult, N_tokens, N_tokens]
+
+            # Currently, MSAModule and Pairformer doesn't support multiplicity > 1, so we reshape here
+            # This won't dont change the result for batching
+            s_chunk = s_chunk.flatten(0, 1)
+            z_chunk = z_chunk.flatten(0, 1)
+            s_inputs_chunk = s_inputs_chunk.flatten(0, 1)
+            mask = repeat_with_multiplicity(mask,
+                                            n_samples)  # [B, mult, N_tokens]
+            mask = mask.flatten(0, 1)
+            pair_mask = pair_mask.flatten(0, 1)
+
+            z_chunk = z_chunk + self.msa_module(
+                z=z_chunk,
+                emb=s_inputs_chunk,
+                **self.get_module_feed_dict(feature_dict, "msa_module"),
+                attn_metadata=attn_metadata,
+                all_reduce_params=all_reduce_params)
+
+            s_chunk, z_chunk = self.pairformer_module(
+                s=s_chunk,
+                z=z_chunk,
+                mask=mask,
+                pair_mask=pair_mask,
+                attn_metadata=attn_metadata,
+                all_reduce_params=all_reduce_params)
+
+            s_chunk, z_chunk = self.final_s_norm(s_chunk), self.final_z_norm(
+                z_chunk)
+
+            # Recover multiplicity dimension for heads
+            s_chunk = s_chunk.unflatten(0, (B, n_samples))
+            z_chunk = z_chunk.unflatten(0, (B, n_samples))
+
+            out_dict = self.confidence_heads(
+                s=s_chunk,
+                z=z_chunk,
+                x_pred=x_chunk,
+                d=d,
+                feature_dict=feature_dict,
+                pred_distogram_logits=pred_distogram_logits,
+            )
+            out_dicts.append(out_dict)
+
+        ret = concat_out_dicts(out_dicts)
+        return ret

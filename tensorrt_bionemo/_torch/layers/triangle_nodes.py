@@ -377,11 +377,11 @@ class TriangleMultiplicationNode(nn.Module):
             x = allgather(x, self.mapping, mode=AllGatherMode.TP)
         return x
 
-    def _ring_enisum_compute(self, a: torch.Tensor,
+    def _ring_einsum_compute(self, a: torch.Tensor,
                              b: torch.Tensor) -> torch.Tensor:
         """ Compute the enisum operation in a ring manner """
 
-        def _enisum_compute(a_, b_):
+        def _einsum_compute(a_, b_):
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
                 return torch.einsum("bikd,bjkd->bijd", a_, b_)
             else:
@@ -394,7 +394,7 @@ class TriangleMultiplicationNode(nn.Module):
             enisum_results = [
                 None,
             ] * self.dcp_size
-            enisum_results[self.dcp_rank] = _enisum_compute(a, b)
+            enisum_results[self.dcp_rank] = _einsum_compute(a, b)
             if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
                 b_recv = torch.zeros_like(b)
                 buffers = [b, b_recv]  # double buffers
@@ -404,7 +404,7 @@ class TriangleMultiplicationNode(nn.Module):
                     self.dp_comm.batch_isend_irecv(buffers[send_idx],
                                                    buffers[recv_idx])
                     enisum_results[(self.dcp_rank - i) %
-                                   self.dcp_size] = _enisum_compute(
+                                   self.dcp_size] = _einsum_compute(
                                        a, buffers[recv_idx])
                     recv_idx = send_idx
                     send_idx = (send_idx + 1) % 2
@@ -418,13 +418,13 @@ class TriangleMultiplicationNode(nn.Module):
                     self.dp_comm.batch_isend_irecv(buffers[send_idx],
                                                    buffers[recv_idx])
                     enisum_results[(self.dcp_rank - i) %
-                                   self.dcp_size] = _enisum_compute(
+                                   self.dcp_size] = _einsum_compute(
                                        buffers[recv_idx], b)
                     recv_idx = send_idx
                     send_idx = (send_idx + 1) % 2
                 x = torch.cat(enisum_results, dim=1)
         else:
-            x = _enisum_compute(a, b)
+            x = _einsum_compute(a, b)
         return x
 
     def _ensure_dtype(self, x: torch.Tensor) -> torch.Tensor:
@@ -446,7 +446,7 @@ class TriangleMultiplicationNode(nn.Module):
         x = self._fused_dual_gemm(x, mask)
         x = x.to(self.high_precision_dtype)
         a, b = x.split([self.dim, self.dim], dim=-1)
-        x = self._ring_enisum_compute(a, b)
+        x = self._ring_einsum_compute(a, b)
         # need to gather here for LayerNorm
         x = self._tp_gather(x)
         x_0_out = self.norm_out(x)

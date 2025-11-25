@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
+from typing import Any, Optional
 import torch
 from torch import nn
 
@@ -25,6 +24,7 @@ def repeat_with_multiplicity(tensor: torch.Tensor,
                              multiplicity: int) -> torch.Tensor:
     """Repeat a tensor with multiplicity."""
     return tensor.unsqueeze(1).repeat_interleave(multiplicity, 1)
+
 
 
 def compute_distogram(x_pred: torch.Tensor,
@@ -280,7 +280,6 @@ def compute_frame_pred(
     asym_id_atom = torch.bmm(feats["atom_to_token"].float(),
                              asym_id_token.unsqueeze(-1).float()).squeeze(-1)
     B, multiplicity, N, _ = pred_atom_coords.shape
-
     frames_idx_pred = repeat_with_multiplicity(frames_idx_true, multiplicity)
 
     # Iterate through the batch and update the frames for nonpolymers
@@ -335,7 +334,6 @@ def compute_frame_pred(
     ].reshape(-1, 3, 3)
 
     # Compute masks for collinear or overlapping atoms in the frame
-
     mask_collinear_pred = compute_collinear_mask(
         frames_expanded[:, 1] - frames_expanded[:, 0],
         frames_expanded[:, 1] - frames_expanded[:, 2],
@@ -343,3 +341,35 @@ def compute_frame_pred(
 
     return frames_idx_pred, mask_collinear_pred * feats[
         "token_pad_mask"][:, None, :]
+
+
+def concat_out_dicts(out_dicts: dict[str, Any]) -> dict[str, Any]:
+    """Concatenate the output dictionaries.
+
+    Args:
+        out_dicts: dict[str, Any]
+            The output dictionaries.
+    Returns:
+        out_dict: dict[str, Any]
+            The concatenated output dictionary.
+    """
+    out_dict = {}
+    for key in out_dicts[0]:
+        if key != "pair_chains_iptm":
+            out_dict[key] = torch.cat([out[key] for out in out_dicts],
+                                        dim=1)
+        else:
+            pair_chains_iptm = {}
+            for chain_idx1 in out_dicts[0][key]:
+                chains_iptm = {}
+                for chain_idx2 in out_dicts[0][key][chain_idx1]:
+                    chains_iptm[chain_idx2] = torch.cat(
+                        [
+                            out[key][chain_idx1][chain_idx2]
+                            for out in out_dicts
+                        ],
+                        dim=1,
+                    )
+                pair_chains_iptm[chain_idx1] = chains_iptm
+            out_dict[key] = pair_chains_iptm
+    return out_dict

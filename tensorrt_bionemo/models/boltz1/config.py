@@ -12,10 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pydantic import model_validator
 
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       MSAModuleConfig, PairformerConfig)
-from tensorrt_bionemo.models.boltz1.const import NUM_TOKENS
+from tensorrt_bionemo.pipeline.boltz.const import NUM_TOKENS
 
 
 class Boltz1Config(BaseConfig):
@@ -138,14 +139,34 @@ class Boltz1Config(BaseConfig):
             ),
             version="v1",
         ))
-    confidence: BaseConfig = BaseConfig(pairformer=PairformerConfig(
+    confidence_module: BaseConfig = BaseConfig(
         token_s=token_s,
         token_z=token_z,
-        pairwise_head_width=32,
-        pairwise_num_heads=4,
-        num_blocks=48,
-        num_heads=16,
-        trimul_high_precision=False,
-        attention_initial_norm=True,
-        version="v1",
-    ))
+        num_dist_bins=64,
+        max_dist=22,
+        add_s_to_z_prod=True,
+        add_s_input_to_s=True,
+        use_s_diffusion=True,
+        add_z_input_to_z=True,
+        heads=BaseConfig(
+            token_s=token_s,
+            token_z=token_z,
+            num_plddt_bins=50,
+            num_pde_bins=64,
+            num_pae_bins=64,
+            compute_pae=True,
+        ),
+        msa_module=None,
+        pairformer=None,
+        input_embedder=None,
+    )
+
+    @model_validator(mode="after")
+    def fill_confidence_config(self) -> "Boltz1Config":
+        if self.confidence_module.input_embedder is None:
+            self.confidence_module.input_embedder = self.input_embedder
+        if self.confidence_module.msa_module is None:
+            self.confidence_module.msa_module = self.trunk.msa_module
+        if self.confidence_module.pairformer is None:
+            self.confidence_module.pairformer = self.trunk.pairformer
+        return self

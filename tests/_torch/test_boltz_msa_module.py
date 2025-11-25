@@ -154,6 +154,7 @@ def test_msa_module(sc: Scenario):
     msa_paired = torch.randint(0, 2, (B, N_msa, N), dtype=torch.float32).cuda()
     msa_mask = torch.randint(0, 2, (B, N_msa, N), dtype=torch.float32).cuda()
     token_pad_mask = torch.randint(0, 2, (B, N), dtype=torch.float32).cuda()
+    pair_mask = token_pad_mask[:, :, None] * token_pad_mask[:, None, :]
 
     triangle_metadata_cls = get_attention_backend(
         "VANILLA", AttentionType.TRIANGLE).Metadata
@@ -172,7 +173,7 @@ def test_msa_module(sc: Scenario):
         ref_z = ref_mod(z, emb, msa, has_deletion, deletion_value, msa_paired,
                         msa_mask, token_pad_mask)
         output_z = msa_module(z, emb, msa, has_deletion, deletion_value,
-                              msa_paired, msa_mask, token_pad_mask)
+                              msa_paired, msa_mask, pair_mask)
 
     assert ref_z.shape == output_z.shape
     torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-4)

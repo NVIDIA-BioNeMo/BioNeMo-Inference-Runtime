@@ -57,6 +57,7 @@ class PairformerLayerV1(nn.Module):
                  trimul_high_precision: bool = True,
                  **kwargs):
         super().__init__()
+        self.dtype = dtype
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
         self.token_s = token_s
@@ -159,8 +160,10 @@ class PairformerLayerV1(nn.Module):
     ) -> torch.Tensor:
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
-        if z.dtype != pair_mask.dtype:
-            z = z.to(pair_mask.dtype)
+        if z.dtype != self.dtype:
+            z = z.to(self.dtype)
+        if pair_mask.dtype != self.dtype:
+            pair_mask = pair_mask.to(self.dtype)
         z = z + self.tri_attn_start(
             z,
             mask=pair_mask,

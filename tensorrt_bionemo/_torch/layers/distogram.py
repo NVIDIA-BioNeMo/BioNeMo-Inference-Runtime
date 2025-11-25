@@ -42,6 +42,7 @@ class DistogramModule(nn.Module):
                 The number of bins.
         """
         super().__init__()
+        self.dtype = dtype
         self.version = version
         self.num_bins = num_bins
         self.num_distograms = num_distograms
@@ -64,6 +65,7 @@ class DistogramModule(nn.Module):
             torch.Tensor: The predicted distogram.
 
         """
+        z = z.to(self.dtype)
         z = z + z.transpose(1, 2)
         if self.version == "v1":
             return self.distogram(z)

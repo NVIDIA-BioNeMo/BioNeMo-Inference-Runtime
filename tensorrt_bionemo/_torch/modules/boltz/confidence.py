@@ -199,15 +199,24 @@ class Boltz2ConfidenceHeads(nn.Module):
         multiplicity: int = 1,
     ):
         """
-        Inputs:
-        s: (Batch_size, Diffusion_samples, N_atoms, token_s)
-        z: (Batch_size, Diffusion_samples, N_atoms, N_atoms, token_z)
-        x_pred: (Batch_size, Diffusion_samples, N_atoms, 3)
-        d: (Batch_size, Diffusion_samples, N_atoms, N_atoms)
-        feats: Dict[str, torch.Tensor]
-        pred_distogram_logits: (Batch_size, N_atoms, N_atoms, num_dist_bins)
-        multiplicity: int
-        Returned Dict[str, torch.Tensor]:
+        Args:
+            s: torch.Tensor
+                s from the confidence module. Shape, [B, mult, N_tokens, token_s].
+            z: torch.Tensor
+                z from the confidence module. Shape, [B, mult, N_tokens, N_tokens, token_z].
+            x_pred: torch.Tensor
+                x_pred from the confidence module. Shape, [B, mult, N_atoms, 3].
+            d: torch.Tensor
+                d from the confidence module. Shape, [B, mult, N_atoms, N_atoms].
+            feats: Dict[str, torch.Tensor]
+                feats from the confidence module. Shape, [B, mult, N_tokens, N_atoms].
+            pred_distogram_logits: torch.Tensor
+                pred_distogram_logits from the confidence module. Shape, [B, mult, N_atoms, N_atoms, num_dist_bins].
+            multiplicity: int
+                multiplicity from the confidence module.
+        Returns:
+            dict[str, torch.Tensor]
+                Output dictionary containing the confidence heads.
         """
 
         if self.use_separate_heads:
@@ -510,18 +519,18 @@ class Boltz2ConfidenceModule(nn.Module):
             raise ValueError(
                 f"The following weights are not loaded: {not_loaded_weight}")
 
-    def forward(
-        self,
-        s_inputs,
-        s,
-        z,
-        x_pred,
-        feats,
-        pred_distogram_logits,
-        multiplicity=1,
-        max_parallel_samples: int = 1,
-        run_sequentially=True,
-    ):
+    def forward(self,
+                s_inputs,
+                s,
+                z,
+                x_pred,
+                feats,
+                pred_distogram_logits,
+                multiplicity=1,
+                max_parallel_samples: int = 1,
+                run_sequentially=True,
+                attn_metadata: Optional[AttentionMetadata] = None,
+                all_reduce_params: Optional[AllReduceParams] = None):
         """
         Inputs:
         s_inputs: (Batch_size, N_atoms, token_s)
@@ -632,16 +641,24 @@ class Boltz2ConfidenceModule(nn.Module):
 
             mask = repeat_with_multiplicity(feats["token_pad_mask"],
                                             current_multiplicity)
+            mask = mask.flatten(0, 1).to(self.pairformer_stack.dtype)
 
             pair_mask = mask[:, :, :, None] * mask[:, :, None, :]
+            pair_mask = pair_mask.flatten(0, 1).to(self.pairformer_stack.dtype)
 
-            s_t, z_t = self.pairformer_stack(repeat_with_multiplicity(
-                s, current_multiplicity).flatten(0, 1),
-                                             pair_z.flatten(0, 1),
-                                             mask=mask.flatten(0, 1),
-                                             pair_mask=pair_mask.flatten(0, 1))
-            s_t = s_t.unflatten(0, (batch_size, -1))
-            z_t = z_t.unflatten(0, (batch_size, -1))
+            s_t = repeat_with_multiplicity(s, current_multiplicity).flatten(
+                0, 1).to(self.pairformer_stack.dtype)
+            z_t = pair_z.flatten(0, 1).to(self.pairformer_stack.dtype)
+
+            s_t, z_t = self.pairformer_stack(
+                s_t,
+                z_t,
+                mask=mask,
+                pair_mask=pair_mask,
+                attn_metadata=attn_metadata,
+                all_reduce_params=all_reduce_params)
+            s_t = s_t.unflatten(0, (batch_size, -1)).to(self.dtype)
+            z_t = z_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             out_dict = {}
 
             if self.return_latent_feats:
@@ -844,6 +861,7 @@ class Boltz1ConfidenceModule(nn.Module):
         self.input_embedder_config = config.input_embedder
         self.pairformer_config = config.pairformer
         self.msa_module_config = config.msa_module
+        assert self.pairformer_config.torch_dtype == self.msa_module_config.torch_dtype, f"Boltz1ConfidenceModule pairformer dtype: {self.pairformer_config.torch_dtype}, msa dtype: {self.msa_module_config.torch_dtype}"
 
         self.max_num_atoms_per_token = 23
         self.no_update_s = self.pairformer_config.no_update_s
@@ -1044,7 +1062,7 @@ class Boltz1ConfidenceModule(nn.Module):
         elif module_name == "msa_module":
             keys = [
                 "msa", "has_deletion", "deletion_value", "msa_paired",
-                "msa_mask", "token_pad_mask"
+                "msa_mask"
             ]
         else:
             raise ValueError(f"Module name {module_name} not supported")
@@ -1087,6 +1105,8 @@ class Boltz1ConfidenceModule(nn.Module):
         return: dict[str, torch.Tensor]
             Output dictionary containing the confidence heads.
         """
+        s = s.to(self.config.torch_dtype)
+        z = z.to(self.config.torch_dtype)
         if max_parallel_samples is None:
             max_parallel_samples = 1
         if x_pred.ndim == 3:
@@ -1169,19 +1189,21 @@ class Boltz1ConfidenceModule(nn.Module):
 
             # Currently, MSAModule and Pairformer doesn't support multiplicity > 1, so we reshape here
             # This won't dont change the result for batching
-            s_chunk = s_chunk.flatten(0, 1)
-            z_chunk = z_chunk.flatten(0, 1)
-            s_inputs_chunk = s_inputs_chunk.flatten(0, 1)
+            input_dtype = self.config.pairformer.torch_dtype
+            s_chunk = s_chunk.flatten(0, 1).to(input_dtype)
+            z_chunk = z_chunk.flatten(0, 1).to(input_dtype)
+            s_inputs_chunk = s_inputs_chunk.flatten(0, 1).to(input_dtype)
             mask = repeat_with_multiplicity(mask,
                                             n_samples)  # [B, mult, N_tokens]
-            mask = mask.flatten(0, 1)
-            pair_mask = pair_mask.flatten(0, 1)
+            mask = mask.flatten(0, 1).to(input_dtype)
+            pair_mask = pair_mask.flatten(0, 1).to(input_dtype)
 
+            # FIXME: create attn_metadata for msa_module and pairformer_module
             z_chunk = z_chunk + self.msa_module(
                 z=z_chunk,
                 emb=s_inputs_chunk,
+                token_pad_mask=pair_mask,
                 **self.get_module_feed_dict(feature_dict, "msa_module"),
-                attn_metadata=attn_metadata,
                 all_reduce_params=all_reduce_params)
 
             s_chunk, z_chunk = self.pairformer_module(
@@ -1189,8 +1211,11 @@ class Boltz1ConfidenceModule(nn.Module):
                 z=z_chunk,
                 mask=mask,
                 pair_mask=pair_mask,
-                attn_metadata=attn_metadata,
                 all_reduce_params=all_reduce_params)
+
+            # Recover dtype for the final output
+            s_chunk = s_chunk.to(self.config.torch_dtype)
+            z_chunk = z_chunk.to(self.config.torch_dtype)
 
             s_chunk, z_chunk = self.final_s_norm(s_chunk), self.final_z_norm(
                 z_chunk)

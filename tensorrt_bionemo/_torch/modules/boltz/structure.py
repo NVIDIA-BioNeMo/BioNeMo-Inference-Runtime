@@ -224,7 +224,13 @@ class DiffusionModule(nn.Module):
     ) -> None:
         super().__init__()
         # Set the dtype and mapping for the token transformer
-        dtype = config.torch_dtype
+        self.dtype = config.torch_dtype
+
+        # Ensure the dtype is consistent for all the modules
+        assert self.dtype == config.atom_encoder.torch_dtype, f"DiffusionModule dtype: {self.dtype}, atom_encoder dtype: {config.atom_encoder.torch_dtype}"
+        assert self.dtype == config.atom_decoder.torch_dtype, f"DiffusionModule dtype: {self.dtype}, atom_decoder dtype: {config.atom_decoder.torch_dtype}"
+        assert self.dtype == config.token_transformer.torch_dtype, f"DiffusionModule dtype: {self.dtype}, token_transformer dtype: {config.token_transformer.torch_dtype}"
+
         mapping = config.mapping
         skip_create_weights = config.skip_create_weights
         eps = config.norm_epsilon
@@ -243,7 +249,7 @@ class DiffusionModule(nn.Module):
             num_transitions=config.conditioning_transition_layers,
             additional_input_dim=additional_input_dim,
             eps=eps,
-            dtype=dtype,
+            dtype=self.dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights)
         self.atom_attention_encoder = AtomAttentionEncoder(
@@ -260,11 +266,11 @@ class DiffusionModule(nn.Module):
             skip_create_weights=skip_create_weights)
 
         self.s_to_a_linear = nn.Sequential(
-            nn.LayerNorm(2 * config.token_s, dtype=dtype, eps=eps),
+            nn.LayerNorm(2 * config.token_s, dtype=self.dtype, eps=eps),
             Linear(2 * config.token_s,
                    2 * config.token_s,
                    bias=False,
-                   dtype=dtype,
+                   dtype=self.dtype,
                    mapping=mapping,
                    tensor_parallel_mode=TensorParallelMode.COLUMN,
                    gather_output=True,
@@ -274,7 +280,7 @@ class DiffusionModule(nn.Module):
             config=config.token_transformer)
 
         self.a_norm = nn.LayerNorm(
-            2 * config.token_s, dtype=dtype,
+            2 * config.token_s, dtype=self.dtype,
             eps=eps)  # if not transformer_post_ln else nn.Identity()
 
         self.atom_attention_decoder = AtomAttentionDecoder(
@@ -368,6 +374,9 @@ class DiffusionModule(nn.Module):
         token_trans_bias = diffusion_conditioning_kwargs["token_trans_bias"]
         atom_dec_bias = diffusion_conditioning_kwargs["atom_dec_bias"]
 
+        s_trunk = s_trunk.to(self.dtype)
+        s_inputs = s_inputs.to(self.dtype)
+
         s, normed_fourier = self.single_conditioner(
             times,
             s_trunk,
@@ -382,7 +391,7 @@ class DiffusionModule(nn.Module):
             q=q,
             c=c,
             bias=atom_enc_bias,
-            r=r_noisy.to(q),
+            r=r_noisy.to(self.dtype),
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params,
         )
@@ -393,7 +402,7 @@ class DiffusionModule(nn.Module):
         # Full self-attention on token level, expand dims for broadcasting
         mask = token_pad_mask.unsqueeze(1)
         token_trans_bias = token_trans_bias.unsqueeze(1)
-        a = a + self.s_to_a_linear(s.to(a))
+        a = a + self.s_to_a_linear(s.to(self.dtype))
 
         # Token transformer doesn't need query to keys, it's self-attention on token level.
         token_transformer_attn_metadata = AttentionMetadata()
@@ -448,7 +457,7 @@ class OutTokenFeatUpdate(nn.Module):
 
         super().__init__()
         self.sigma_data = sigma_data
-
+        self.dtype = dtype
         self.norm_next = nn.LayerNorm(2 * token_s, dtype=dtype)
         self.fourier_embed = FourierEmbedding(dim_fourier,
                                               dtype=dtype,
@@ -484,6 +493,9 @@ class OutTokenFeatUpdate(nn.Module):
         Returns:
             acc_a: [B, multiplicity, N, 2 * token_s]
         """
+        next_a = next_a.to(self.dtype)
+        acc_a = acc_a.to(self.dtype)
+
         # [B, multiplicity, N, 2 * token_s]
         next_a = self.norm_next(next_a)
         # [B, multiplicity, dim_fourier]
@@ -924,6 +936,18 @@ class AtomDiffusion(nn.Module):
         token_a = None
         atom_coords_denoised = None
 
+        # Casting dtype for score model before run the loop, this ensure for both with and without autocast modes.
+        network_condition_kwargs["q"] = network_condition_kwargs["q"].to(
+            self.score_model.dtype)
+        network_condition_kwargs["c"] = network_condition_kwargs["c"].to(
+            self.score_model.dtype)
+        network_condition_kwargs["atom_enc_bias"] = network_condition_kwargs[
+            "atom_enc_bias"].to(self.score_model.dtype)
+        network_condition_kwargs["token_trans_bias"] = network_condition_kwargs[
+            "token_trans_bias"].to(self.score_model.dtype)
+        network_condition_kwargs["atom_dec_bias"] = network_condition_kwargs[
+            "atom_dec_bias"].to(self.score_model.dtype)
+
         for step_idx, (sigma_tm, sigma_t,
                        gamma) in enumerate(sigmas_and_gammas):
             potentials_guidance.set_diffusion_reverse_step(step_idx)
@@ -984,7 +1008,8 @@ class AtomDiffusion(nn.Module):
                             token_a = torch.zeros(B,
                                                   multiplicity,
                                                   *token_a_chunk.shape[2:],
-                                                  device=self.device)
+                                                  device=self.device,
+                                                  dtype=token_a_chunk.dtype)
                         token_a[:, sample_ids_chunk] = token_a_chunk
                 potentials_guidance.update_resampling_weights(
                     atom_coords_denoised,

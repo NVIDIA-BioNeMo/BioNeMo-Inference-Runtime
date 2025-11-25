@@ -235,12 +235,12 @@ class MSAModule(nn.Module):
         """
         if self.version == "v2":
             msa = torch.nn.functional.one_hot(msa, num_classes=self.num_tokens)
-        msa = msa.to(self.dtype)
         has_deletion = has_deletion.unsqueeze(-1)
         deletion_value = deletion_value.unsqueeze(-1)
         is_paired = msa_paired.unsqueeze(-1)
-        token_mask = token_pad_mask.to(self.dtype)
-        token_mask = token_mask[:, :, None] * token_mask[:, None, :]
+        # Optimized here: token_pad_mask is already in the begin of trunk module
+        # token_mask = token_pad_mask.to(self.dtype)
+        # token_mask = token_mask[:, :, None] * token_mask[:, None, :]
 
         # Compute MSA embeddings
         if self.use_paired_feature:
@@ -250,11 +250,11 @@ class MSAModule(nn.Module):
             m = torch.cat([msa, has_deletion, deletion_value], dim=-1)
 
         # Compute input projections
-        m = self.msa_proj(m)
+        m = self.msa_proj(m.to(self.dtype))
         m = m + self.s_proj(emb).unsqueeze(1)
 
         for i in range(self.msa_blocks):
-            z, m = self.layers[i](z, m, token_mask, msa_mask, attn_metadata,
+            z, m = self.layers[i](z, m, token_pad_mask, msa_mask, attn_metadata,
                                   all_reduce_params)
         return z
 
@@ -271,11 +271,19 @@ class Trunk(nn.Module):
         token_s = config.pairformer.token_s
         token_z = config.pairformer.token_z
         self.dtype = config.torch_dtype
+
+        assert self.dtype == config.msa_module.torch_dtype, f"Trunk dtype: {self.dtype}, msa_module dtype: {config.msa_module.torch_dtype}"
+        assert self.dtype == config.pairformer.torch_dtype, f"Trunk dtype: {self.dtype}, pairformer dtype: {config.pairformer.torch_dtype}"
+
         self.mapping = config.mapping or Mapping()
 
-        self.s_norm = nn.LayerNorm(token_s, dtype=self.dtype)
-        self.z_norm = nn.LayerNorm(token_z, dtype=self.dtype)
-        self.skip_create_weights = config.pairformer.skip_create_weights
+        self.s_norm = nn.LayerNorm(token_s,
+                                   dtype=self.dtype,
+                                   eps=config.norm_epsilon)
+        self.z_norm = nn.LayerNorm(token_z,
+                                   dtype=self.dtype,
+                                   eps=config.norm_epsilon)
+        self.skip_create_weights = config.skip_create_weights
 
         self.s_recycle = Linear(token_s,
                                 token_s,
@@ -351,17 +359,31 @@ class Trunk(nn.Module):
         Returns:
             Tuple[Tensor, Tensor]: The output sequence and pairwise embeddings of shape (B, N, token_s), (B, N, N, token_z).
         """
+        # Ensure the inputs are in the correct dtype
+        s_init = s_init.to(self.dtype)
+        z_init = z_init.to(self.dtype)
+        mask = token_pad_mask.to(self.dtype)
+        pair_mask = mask[:, :, None] * mask[:, None, :]
+        s_inputs = s_inputs.to(self.dtype)
+        msa_mask = msa_mask.to(self.dtype)
+
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
-        mask = token_pad_mask.float()
-        pair_mask = mask[:, :, None] * mask[:, None, :]
+
         for _ in range(recycling_steps):
             s = s_init + self.s_recycle(self.s_norm(s))
             z = z_init + self.z_recycle(self.z_norm(z))
 
-            z = z + self.msa_module(
-                z, s_inputs, msa, has_deletion, deletion_value, msa_paired,
-                msa_mask, token_pad_mask, attn_metadata, all_reduce_params)
+            z = z + self.msa_module(z,
+                                    s_inputs,
+                                    msa,
+                                    has_deletion,
+                                    deletion_value,
+                                    msa_paired,
+                                    msa_mask=msa_mask,
+                                    token_pad_mask=pair_mask,
+                                    attn_metadata=attn_metadata,
+                                    all_reduce_params=all_reduce_params)
 
             s, z = self.pairformer_module(s,
                                           z,

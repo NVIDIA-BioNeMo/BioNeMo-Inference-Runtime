@@ -404,7 +404,7 @@ class Boltz1(nn.Module):
                          None),
             x_pred=struct_module_output["sample_atom_coords"],
             feature_dict=feed_dict,
-            pred_distogram_logits=pair_distogram,
+            pred_distogram_logits=pair_distogram.float(),
             multiplicity=diffusion_samples,
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params,

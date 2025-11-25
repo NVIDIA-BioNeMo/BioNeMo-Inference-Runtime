@@ -465,6 +465,7 @@ class Boltz2(nn.Module):
             run_sequentially=True,
             max_parallel_samples=max_parallel_samples
             if max_parallel_samples is not None else 1,
+            all_reduce_params=all_reduce_params,
         )
 
         ret = {

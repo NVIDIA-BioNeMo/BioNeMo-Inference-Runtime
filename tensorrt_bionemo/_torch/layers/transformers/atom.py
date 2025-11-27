@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
@@ -158,12 +157,10 @@ class AtomAttentionEncoder(nn.Module):
         """
         super().__init__()
         self.structure_prediction = structure_prediction
-        atom_s = atom_s or diffusion_transformer_config.dim
-        dtype = dtype or diffusion_transformer_config.dtype
-        mapping = mapping or diffusion_transformer_config.mapping
-        skip_create_weights = skip_create_weights or diffusion_transformer_config.skip_create_weights
-        dtype = str_dtype_to_torch(dtype) if isinstance(dtype, str) else dtype
+        self.dtype = dtype
+        self.mapping = mapping
         self.version = version
+        atom_s = atom_s or diffusion_transformer_config.dim
 
         if self.structure_prediction:
             self.r_to_q_trans = Linear(
@@ -176,6 +173,7 @@ class AtomAttentionEncoder(nn.Module):
                 gather_output=True,
                 skip_create_weights=skip_create_weights)
 
+        self.atom_encoder_dtype = diffusion_transformer_config.torch_dtype
         self.atom_encoder = AtomTransformer(
             attn_window_queries=atoms_per_window_queries,
             attn_window_keys=atoms_per_window_keys,
@@ -263,14 +261,14 @@ class AtomAttentionEncoder(nn.Module):
             r_to_q = self.r_to_q_trans(r_input)
             # q: [B, multiplicity, N_atoms, atom_s]
             q = q + r_to_q
-        q = q.to(c)
-        q = self.atom_encoder(q=q,
-                              c=c,
-                              bias=bias,
-                              mask=atom_mask,
+
+        q = self.atom_encoder(q=q.to(self.atom_encoder_dtype),
+                              c=c.to(self.atom_encoder_dtype),
+                              bias=bias.to(self.atom_encoder_dtype),
+                              mask=atom_mask.to(self.atom_encoder_dtype),
                               attn_metadata=attn_metadata,
                               all_reduce_params=all_reduce_params)
-
+        q = q.to(self.dtype)
         with torch.autocast("cuda", enabled=False):
             # [B, multiplicity, N_atoms, 2 * token_s]
             q_to_a = self.atom_to_token_trans(q.float())
@@ -316,8 +314,8 @@ class AtomAttentionDecoder(nn.Module):
         """
         super().__init__()
 
-        dtype = dtype or diffusion_transformer_config.torch_dtype
-        mapping = mapping or diffusion_transformer_config.mapping
+        self.dtype = dtype
+        self.mapping = mapping
         skip_create_weights = skip_create_weights or diffusion_transformer_config.skip_create_weights
 
         self.token_s = token_s
@@ -333,6 +331,7 @@ class AtomAttentionDecoder(nn.Module):
             gather_output=True,
             skip_create_weights=skip_create_weights)
 
+        self.atom_decoder_dtype = diffusion_transformer_config.torch_dtype
         self.atom_decoder = AtomTransformer(
             attn_window_queries=atoms_per_window_queries,
             attn_window_keys=atoms_per_window_keys,
@@ -418,13 +417,13 @@ class AtomAttentionDecoder(nn.Module):
         atom_mask = atom_pad_mask.bool()
 
         # [B, multiplicity, N_atoms, atom_s]
-        q = self.atom_decoder(q=q,
-                              c=c,
-                              bias=bias,
-                              mask=atom_mask,
+        q = self.atom_decoder(q=q.to(self.atom_decoder_dtype),
+                              c=c.to(self.atom_decoder_dtype),
+                              bias=bias.to(self.atom_decoder_dtype),
+                              mask=atom_mask.to(self.atom_decoder_dtype),
                               attn_metadata=attn_metadata,
                               all_reduce_params=all_reduce_params)
-
+        q = q.to(self.dtype)
         # [B, multiplicity, N_atoms, 3]
         r_update = self.atom_feat_to_atom_pos_update(q)
         return r_update

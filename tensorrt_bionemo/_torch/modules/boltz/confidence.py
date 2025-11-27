@@ -364,7 +364,7 @@ class Boltz2ConfidenceModule(nn.Module):
         **kwargs,
     ):
         super().__init__()
-
+        self.config = config
         self.max_num_atoms_per_token = 23
         self.no_update_s = config.no_update_s
         boundaries = torch.linspace(2, config.max_dist,
@@ -430,10 +430,16 @@ class Boltz2ConfidenceModule(nn.Module):
                 gather_output=True,
                 skip_create_weights=self.skip_create_weights)
 
-        self.s_inputs_norm = nn.LayerNorm(self.token_s)
+        self.s_inputs_norm = nn.LayerNorm(self.token_s,
+                                          dtype=self.dtype,
+                                          eps=config.norm_epsilon)
         if not self.no_update_s:
-            self.s_norm = nn.LayerNorm(self.token_s)
-        self.z_norm = nn.LayerNorm(self.token_z)
+            self.s_norm = nn.LayerNorm(self.token_s,
+                                       dtype=self.dtype,
+                                       eps=config.norm_epsilon)
+        self.z_norm = nn.LayerNorm(self.token_z,
+                                   dtype=self.dtype,
+                                   eps=config.norm_epsilon)
 
         self.add_s_input_to_s = config.add_s_input_to_s
         if self.add_s_input_to_s:
@@ -575,7 +581,8 @@ class Boltz2ConfidenceModule(nn.Module):
              - protein_iptm:         (Batch_size, Diffusion_samples)
              - pair_chains_iptm:     dict("0": (Batch_size, Diffusion_samples), "1": (Batch_size, Diffusion_samples), ...)
         """
-
+        s = s.to(self.dtype)
+        z = z.to(self.dtype)
         if x_pred.ndim == 3:
             BM, N, _ = x_pred.shape
             batch_size = BM // multiplicity
@@ -641,14 +648,18 @@ class Boltz2ConfidenceModule(nn.Module):
 
             mask = repeat_with_multiplicity(feats["token_pad_mask"],
                                             current_multiplicity)
-            mask = mask.flatten(0, 1).to(self.pairformer_stack.dtype)
+            mask = mask.flatten(0, 1).to(self.config.pairformer.torch_dtype)
 
-            pair_mask = mask[:, :, :, None] * mask[:, :, None, :]
-            pair_mask = pair_mask.flatten(0, 1).to(self.pairformer_stack.dtype)
+            pair_mask = feats["token_pad_mask"][:, :, None] * feats[
+                "token_pad_mask"][:, None, :]
+            pair_mask = repeat_with_multiplicity(pair_mask,
+                                                 current_multiplicity)
+            pair_mask = pair_mask.flatten(0, 1).to(
+                self.config.pairformer.torch_dtype)
 
             s_t = repeat_with_multiplicity(s, current_multiplicity).flatten(
-                0, 1).to(self.pairformer_stack.dtype)
-            z_t = pair_z.flatten(0, 1).to(self.pairformer_stack.dtype)
+                0, 1).to(self.config.pairformer.torch_dtype)
+            z_t = pair_z.flatten(0, 1).to(self.config.pairformer.torch_dtype)
 
             s_t, z_t = self.pairformer_stack(
                 s_t,

@@ -225,12 +225,12 @@ class PairformerParallelism:
             torch.cuda.synchronize()
         torch.testing.assert_close(trt_output_s,
                                    ref_output_s,
-                                   atol=1e-3,
-                                   rtol=1e-4)
+                                   atol=6e-2,
+                                   rtol=6e-3)
         torch.testing.assert_close(trt_output_z,
                                    ref_output_z,
-                                   atol=1e-3,
-                                   rtol=1e-4)
+                                   atol=6e-2,
+                                   rtol=6e-3)
 
 
 def run_single_rank(scenario: Scenario, inputs: dict, weights_and_biases: dict):

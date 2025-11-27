@@ -112,6 +112,7 @@ def test_atom_attention_encoder(sc: Scenario):
         atoms_per_window_keys=sc.atom_window_keys,
         diffusion_transformer_config=diffusion_transformer_config,
         diffusion_transformer_cls=BoltzDiffusionTransformer,
+        dtype=dtype,
         version="v2").to(device)
     model.eval()
 

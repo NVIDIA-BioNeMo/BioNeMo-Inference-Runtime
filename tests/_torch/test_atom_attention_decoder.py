@@ -107,7 +107,8 @@ def test_atom_attention_encoder(sc: Scenario):
         atoms_per_window_queries=sc.atom_window_queries,
         atoms_per_window_keys=sc.atom_window_keys,
         diffusion_transformer_config=diffusion_transformer_config,
-        diffusion_transformer_cls=BoltzDiffusionTransformer).to(device)
+        diffusion_transformer_cls=BoltzDiffusionTransformer,
+        dtype=dtype).to(device)
     model.eval()
 
     weights_and_biases = create_atom_attention_decoder_weights(

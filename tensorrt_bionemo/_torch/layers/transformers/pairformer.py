@@ -339,6 +339,7 @@ class PairformerModule(nn.Module):
                     pairwise_attn_backend=config.pairwise_attention_backend,
                     post_layer_norm=config.post_layer_norm,
                     attention_initial_norm=config.attention_initial_norm,
+                    trimul_high_precision=config.trimul_high_precision,
                     s_path_dtype=config.s_path_dtype,
                 ))
 

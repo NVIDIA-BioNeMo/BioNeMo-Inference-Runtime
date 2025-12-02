@@ -13,188 +13,82 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import glob
-import json
 import time
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
-import boltz.data.const as const
-import numpy as np
-import pandas as pd
 import torch
-import torch.nn as nn
-from boltz.data.pad import pad_dim
-from boltz.model.models.boltz2 import Boltz2
-# isort: on
-from pytorch_lightning import seed_everything
-from score import kabsch_torch, lddt
+from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
+from boltz.data.types import Manifest
+from boltz.data.write.writer import BoltzWriter
+from boltz.main import BoltzProcessedInput
 from tensorrt_llm.logger import logger
 
-from tensorrt_bionemo.hubs import load_hf_weights
-from tensorrt_bionemo.models.boltz2 import Boltz2 as Boltz2Opt
-from tensorrt_bionemo.models.boltz2 import (Boltz2AcceleratedModules,
-                                            Boltz2Config)
+from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
+    BoltzSteeringParams
+from tensorrt_bionemo.models.boltz2 import Boltz2, Boltz2AcceleratedModules
 from tensorrt_bionemo.models.helper import AcceleratedConfig
-from tensorrt_bionemo.runtime import BackendType, SharedContextMemoryManager
-
-SEED = 42
-"""
-NOTE:
-    This script is used to run the demo of the Boltz2 model along with torch backbone from the original repo.
-    It is used to verify the correctness of the TensorRT-BNM implementation. The inputs to model is dumped by `boltz predict`.
-    For usage TRT-engines in production, please use _torch.backend for models.
-"""
+from tensorrt_bionemo.runtime import BackendType, OnDemandContextMemoryManager
 
 
-@dataclass
-class PairformerArgsV2:
-    """Pairformer arguments."""
+class PathSetterMixin:
+    """
+    Mixin class to set data and output directories for Boltz writers.
+    """
 
-    num_blocks: int = 64
-    num_heads: int = 16
-    dropout: float = 0.0
-    activation_checkpointing: bool = False
-    offload_to_cpu: bool = False
-    v2: bool = True
+    def set_data_dir(self, data_dir: Path):
+        self.data_dir = data_dir
 
-
-@dataclass
-class Boltz2DiffusionParams:
-    """Diffusion process parameters."""
-
-    gamma_0: float = 0.8
-    gamma_min: float = 1.0
-    noise_scale: float = 1.003
-    rho: float = 7
-    step_scale: float = 1.5
-    sigma_min: float = 0.0001
-    sigma_max: float = 160.0
-    sigma_data: float = 16.0
-    P_mean: float = -1.2
-    P_std: float = 1.5
-    coordinate_augmentation: bool = True
-    alignment_reverse_diff: bool = True
-    synchronize_sigmas: bool = True
+    def set_output_dir(self, output_dir: Path):
+        self.output_dir = output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
-@dataclass
-class BoltzPredictionParams:
-    recycling_steps: int = 3
-    sampling_steps: int = 50
-    diffusion_samples: int = 1
-    write_confidence_summary: bool = True
-    write_full_pae: bool = False
-    write_full_pde: bool = False
-    max_parallel_samples: Optional[int] = None
+class GeneralBoltzWriter(BoltzWriter, PathSetterMixin):
+    """
+    General Boltz writer that can be used for the structure prediction.
+    """
+
+    def __init__(self,
+                 data_dir: str = "/tmp/boltz_writer",
+                 output_dir: str = "/tmp/boltz_output",
+                 output_format: str = "mmcif",
+                 boltz2: bool = False):
+        BoltzWriter.__init__(self, data_dir, output_dir, output_format, boltz2)
+
+    def set_output_format(self, output_format: str):
+        self.output_format = output_format
 
 
-@dataclass
-class MSAModuleArgs:
-    """MSA module arguments."""
-
-    msa_s: int = 64
-    msa_blocks: int = 4
-    msa_dropout: float = 0.0
-    z_dropout: float = 0.0
-    use_paired_feature: bool = True
-    pairwise_head_width: int = 32
-    pairwise_num_heads: int = 4
-    activation_checkpointing: bool = False
-    offload_to_cpu: bool = False
-    subsample_msa: bool = False
-    num_subsampled_msa: int = 1024
-
-
-@dataclass
-class BoltzSteeringParams:
-    """Steering parameters."""
-
-    fk_steering: bool = False
-    num_particles: int = 3
-    fk_lambda: float = 4.0
-    fk_resampling_interval: int = 3
-    physical_guidance_update: bool = False
-    contact_guidance_update: bool = True
-    num_gd_steps: int = 20
+def squeeze_output_dict(output: dict):
+    """
+    Squeeze the output dictionary to remove the batch dimension.
+    """
+    pair_chains_iptm = output.pop("pair_chains_iptm")
+    ret = {
+        k: v.squeeze(0)
+        for k, v in output.items() if k not in {"masks", "token_masks"}
+    }
+    ret["masks"] = output["masks"]
+    ret["token_masks"] = output.get("token_masks")
+    ret["pair_chains_iptm"] = {}
+    for chain1 in pair_chains_iptm.keys():
+        ret["pair_chains_iptm"][chain1] = {}
+        for chain2 in pair_chains_iptm[chain1].keys():
+            ret["pair_chains_iptm"][chain1][chain2] = pair_chains_iptm[chain1][
+                chain2].squeeze(0)
+    return ret
 
 
-def create_original_model(
-    checkpoint: str = None,
-    device: torch.device = torch.device("cuda")
-) -> nn.Module:
-    if checkpoint is None:
-        cached_file = load_hf_weights("boltz-2", return_raw=True)
-    else:
-        cached_file = checkpoint
-    predict_params = BoltzPredictionParams()
-    diffusion_params = Boltz2DiffusionParams()
-    pairformer_args = PairformerArgsV2()
-    msa_module_args = MSAModuleArgs()
-    steering_args = BoltzSteeringParams()
-
-    # trainer = Trainer(accelerator="gpu", devices=1, precision="bf16-mixed")
-    # with trainer.init_module():
-    model: Boltz2 = Boltz2.load_from_checkpoint(
-        cached_file,
-        strict=True,
-        predict_args=asdict(predict_params),
-        map_location=device,
-        diffusion_process_args=asdict(diffusion_params),
-        ema=False,
-        pairformer_args=asdict(pairformer_args),
-        msa_module_args=asdict(msa_module_args),
-        steering_args=asdict(steering_args),
-    )
-    model.eval()
-
-    return model, predict_params
-
-
-def pad_batch(batch: dict, pad_seqlen: int, seqlen: int):
-    # TODO: modify this function to pad the batch for the Boltz2
-    pad_len = pad_seqlen - seqlen
-    if pad_len == 0:
-        return batch
-
-    # Padding for msa features
-    batch["msa"] = pad_dim(batch["msa"], 2, pad_len, const.token_ids["-"])
-    batch["msa_paired"] = pad_dim(batch["msa_paired"], 2, pad_len)
-    batch["deletion_value"] = pad_dim(batch["deletion_value"], 2, pad_len)
-    batch["has_deletion"] = pad_dim(batch["has_deletion"], 2, pad_len)
-    batch["deletion_mean"] = pad_dim(batch["deletion_mean"], 1, pad_len)
-    batch["profile"] = pad_dim(batch["profile"], 1, pad_len)
-    batch["msa_mask"] = pad_dim(batch["msa_mask"], 2, pad_len)
-
-    # Padding for atom features
-    batch["atom_to_token"] = pad_dim(batch["atom_to_token"], 2, pad_len)
-    batch["token_to_rep_atom"] = pad_dim(batch["token_to_rep_atom"], 1, pad_len)
-    batch["r_set_to_rep_atom"] = pad_dim(batch["r_set_to_rep_atom"], 1, pad_len)
-    batch["disto_target"] = pad_dim(pad_dim(batch["disto_target"], 1, pad_len),
-                                    2, pad_len)
-    batch["frames_idx"] = pad_dim(batch["frames_idx"], 1, pad_len)
-    batch["frame_resolved_mask"] = pad_dim(batch["frame_resolved_mask"], 1,
-                                           pad_len)
-
-    # Padding for token features
-    batch["token_index"] = pad_dim(batch["token_index"], 1, pad_len)
-    batch["residue_index"] = pad_dim(batch["residue_index"], 1, pad_len)
-    batch["asym_id"] = pad_dim(batch["asym_id"], 1, pad_len)
-    batch["entity_id"] = pad_dim(batch["entity_id"], 1, pad_len)
-    batch["sym_id"] = pad_dim(batch["sym_id"], 1, pad_len)
-    batch["mol_type"] = pad_dim(batch["mol_type"], 1, pad_len)
-    batch["res_type"] = pad_dim(batch["res_type"], 1, pad_len)
-    batch["disto_center"] = pad_dim(batch["disto_center"], 1, pad_len)
-    batch["token_bonds"] = pad_dim(pad_dim(batch["token_bonds"], 1, pad_len), 2,
-                                   pad_len)
-    batch["token_pad_mask"] = pad_dim(batch["token_pad_mask"], 1, pad_len)
-    batch["token_resolved_mask"] = pad_dim(batch["token_resolved_mask"], 1,
-                                           pad_len)
-    batch["token_disto_mask"] = pad_dim(batch["token_disto_mask"], 1, pad_len)
-    batch["pocket_feature"] = pad_dim(batch["pocket_feature"], 1, pad_len)
-
-    return batch
+def write_cif(writer, model, batch: dict, output: dict, output_dir: Path,
+              dataloader_idx: int):
+    writer.set_output_dir(output_dir)
+    writer.write_on_batch_end(None,
+                              model,
+                              prediction=output,
+                              batch_indices=[0],
+                              batch=batch,
+                              batch_idx=0,
+                              dataloader_idx=dataloader_idx)
 
 
 def parse_arguments():
@@ -202,20 +96,20 @@ def parse_arguments():
     parser.add_argument(
         '--structure_pairformer_ckpt',
         type=Path,
-        default=None,
+        default="engines/structure_pairformer",
         help=
         'The path to the directory containing the structure pairformer engines')
     parser.add_argument(
         '--confidence_pairformer_ckpt',
         type=Path,
-        default=None,
+        default="engines/confidence_pairformer",
         help=
         'The path to the directory containing the confidence pairformer engines'
     )
     parser.add_argument(
         '--token_transformer_ckpt',
         type=Path,
-        default=None,
+        default="engines/token_transformer",
         help='The path to the directory containing the token transformer engines'
     )
     parser.add_argument('--structure_pairformer_backend',
@@ -230,134 +124,86 @@ def parse_arguments():
                         type=str,
                         default=BackendType.TORCH,
                         help='The backend to use for the token transformer')
-    parser.add_argument('--sample_dir',
+    parser.add_argument('--processed_dir',
                         type=Path,
-                        default='sample',
+                        default='boltz_processed_data',
                         help='The path to the directory containing the sample')
+    parser.add_argument('--cache_dir',
+                        type=Path,
+                        default='.cache',
+                        help='The path to the directory containing the cache')
     parser.add_argument('--gpu_per_node',
                         type=int,
                         default=8,
                         help='The number of GPUs per node')
-    parser.add_argument('--repeat',
-                        type=int,
-                        default=2,
-                        help='The number of times to repeat the inference')
-    parser.add_argument('--max_seq_len',
-                        type=int,
-                        default=100000,
-                        help='The maximum sequence length to run')
-    parser.add_argument('--min_seq_len',
-                        type=int,
-                        default=-1,
-                        help='The minimum sequence length to run')
-    parser.add_argument('--strategy',
-                        type=str,
-                        default="test",
-                        help='The strategy to run')
     return parser.parse_args()
 
 
-def run_single_rank(sample_dir: Path, model: nn.Module, rank: int,
-                    dcp_size: int, device: torch.device,
-                    predict_params: BoltzPredictionParams, strategy: str):
-    # TODO: write docs for sample dir
-    # torch.backends.cuda.matmul.allow_tf32 = True
-    # torch.backends.cudnn.allow_tf32 = True
-    torch.set_float32_matmul_precision("highest")
-    # os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+def run_single_rank(model: Boltz2,
+                    processed_dir: Path,
+                    cache_dir: Path,
+                    num_workers: int = 1,
+                    rank: int = 0,
+                    device: torch.device = torch.device("cuda")):
+    method = None
+    mol_dir = cache_dir / "mols"
+    manifest = Manifest.load(processed_dir / "manifest.json")
+    processed = BoltzProcessedInput(
+        manifest=manifest,
+        targets_dir=processed_dir / "structures",
+        msa_dir=processed_dir / "msa",
+        constraints_dir=(processed_dir / "constraints") if
+        (processed_dir / "constraints").exists() else None,
+        template_dir=(processed_dir / "templates") if
+        (processed_dir / "templates").exists() else None,
+        extra_mols_dir=(processed_dir / "mols") if
+        (processed_dir / "mols").exists() else None,
+    )
+    data_module = Boltz2InferenceDataModule(
+        manifest=processed.manifest,
+        target_dir=processed.targets_dir,
+        msa_dir=processed.msa_dir,
+        mol_dir=mol_dir,
+        num_workers=num_workers,
+        constraints_dir=processed.constraints_dir,
+        template_dir=processed.template_dir,
+        extra_mols_dir=processed.extra_mols_dir,
+        override_method=method,
+    )
 
-    torch.cuda.set_device(rank)
+    writer = GeneralBoltzWriter(boltz2=True)
+    writer.set_data_dir(processed.targets_dir)
 
-    pdb_ids = [
-        ele.split('/feats_')[1][:4]
-        for ele in glob.glob(f"{sample_dir.as_posix()}/feats*.pt")
-    ]
-    seqlens = []
-    new_pdb_ids = []
-    ids = json.load(open("sample/ids.json"))
-
-    # for pdb_id in pdb_ids:
-    for pdb_id, seqlen in ids.items():
-        if seqlen <= args.max_seq_len and seqlen >= args.min_seq_len:
-            seqlens.append(seqlen)
-            new_pdb_ids.append(pdb_id)
-            if rank == 0:
-                logger.info(f"Load pdb_id: {pdb_id} with seqlen: {seqlen}")
-
-    report_df = pd.DataFrame(columns=[
-        "strategy", "pdb_id", "inference_time", "rmsd", "lddt", "seqlen"
-    ])
-    pdb_ids = new_pdb_ids
-    v = sorted(zip(pdb_ids, seqlens), key=lambda x: x[1])
-    pdb_ids = [x[0] for x in v]
-    seqlens = [x[1] for x in v]
-    for i, pdb_id in enumerate(pdb_ids):
-        feats_path = f"{sample_dir.as_posix()}/feats_{pdb_id}.pt"
-        batch = torch.load(feats_path, weights_only=False)
-        for key, val in batch.items():
-            if hasattr(val, "to"):
-                batch[key] = val.to(device)
-        pad_seqlen = (seqlens[i] + dcp_size - 1) // dcp_size * dcp_size
-        batch = pad_batch(batch, pad_seqlen, seqlens[i])
-        for l in range(args.repeat):
-            if hasattr(model.structure_module.score_model.token_transformer,
-                       "reset"):
-                """ TODO: Refactor for all backends to call reset method. """
-                model.structure_module.score_model.token_transformer.reset()
-            torch.cuda.empty_cache()
-            seed_everything(SEED)
-            np.random.default_rng(SEED)
-            torch.cuda.synchronize()
-            start_time = time.time()
-            with torch.no_grad(), torch.amp.autocast(device_type="cuda",
-                                                     dtype=torch.bfloat16):
-                # with torch.no_grad():
-                output = model(
-                    batch,
-                    recycling_steps=predict_params.recycling_steps,
-                    num_sampling_steps=predict_params.sampling_steps,
-                    diffusion_samples=predict_params.diffusion_samples,
-                    run_confidence_sequentially=True)
-            torch.cuda.synchronize()
-            end_time = time.time()
-            inference_time = end_time - start_time
-            if rank == 0 and l == args.repeat - 1:
-                logger.info(
-                    f"Sample {pdb_id} Sequence length: {seqlens[i]} - Loop {l} with inference time (GPU): {inference_time:.4f} seconds"
+    stats = {}
+    for idx, batch in enumerate(data_module.predict_dataloader()):
+        record_id = batch["record"][0].id
+        _, N_atoms, N_tokens = batch["atom_to_token"].shape
+        batch = data_module.transfer_batch_to_device(batch, device, idx)
+        stats[record_id] = {"n_tokens": N_tokens, "n_atoms": N_atoms}
+        # Run optimized model
+        with torch.no_grad():
+            try:
+                torch.cuda.synchronize()
+                start = time.time()
+                output = model(feed_dict=batch,
+                               recycling_steps=3,
+                               num_sampling_steps=50,
+                               diffusion_samples=1,
+                               max_parallel_samples=None,
+                               steering_args=BoltzSteeringParams())
+                torch.cuda.synchronize()
+                end = time.time()
+                stats[record_id]["optimized_time"] = end - start
+                output = squeeze_output_dict(output)
+                print(
+                    f"Processed batch {record_id}, n_tokens: {N_tokens}, n_atoms: {N_atoms} time: {end - start}"
                 )
-                ref_output = torch.load(
-                    f"{sample_dir.as_posix()}/pred_dict_{pdb_id}.pt",
-                    weights_only=False)
-                for key, val in ref_output.items():
-                    if key == 'sample_atom_coords':
-                        ref_output[key] = val.to(device)
-                rmsd_value = kabsch_torch(
-                    output['sample_atom_coords'].squeeze(0),
-                    ref_output['sample_atom_coords'].squeeze(0))
-                lddt_value = lddt(output['sample_atom_coords'],
-                                  ref_output['sample_atom_coords'],
-                                  batch['atom_resolved_mask'])
-                logger.info(
-                    f"Sample {pdb_id} Sequence length: {seqlens[i]} with RMSD: {rmsd_value:.4f} and LDDT: {lddt_value.mean().cpu().numpy():.4f}"
-                )
-                row = pd.DataFrame([{
-                    "strategy":
-                    strategy,
-                    "pdb_id":
-                    pdb_id,
-                    "inference_time":
-                    round(inference_time, 4),
-                    "rmsd":
-                    round(float(rmsd_value.cpu().numpy()), 4),
-                    "lddt":
-                    round(float(lddt_value.mean().cpu().numpy()), 4),
-                    "seqlen":
-                    seqlens[i],
-                }])
-                report_df = pd.concat([report_df, row], ignore_index=True)
+            except:
+                print(f"Warning: Error running optimized model")
+                stats[record_id]["error"] = f"optimized: error"
 
-    if rank == 0:
-        report_df.to_csv(f"report_{strategy}.csv", index=False)
+        output["exception"] = False
+        write_cif(writer, model, batch, output, Path(f"output"), idx)
 
 
 def main(args):
@@ -366,48 +212,33 @@ def main(args):
     rank = tensorrt_llm.mpi_rank()
     tensorrt_llm.mpi_world_size()
     torch.cuda.set_device(rank % args.gpu_per_node)
-    model, predict_params = create_original_model(device=torch.device("cuda"))
+    model = Boltz2()
+    model = model.cuda()
+    model.load_weights()
     logger.set_level("info")
-    dcp_size = 1
 
     # Create optimized model with TensorRT backends
-    manager = SharedContextMemoryManager()
-    config = Boltz2Config.from_pretrained()
-
-    config.structure_pairformer_config.set_dtype("bfloat16")
-    config.token_transformer_config.set_dtype("bfloat16")
-    config.confidence_pairformer_config.set_dtype("bfloat16")
-    config.msa_module_config.set_dtype("bfloat16")
+    manager = OnDemandContextMemoryManager()
 
     acc_m = Boltz2AcceleratedModules(
         configs={
             "structure_pairformer":
             AcceleratedConfig(checkpoint=args.structure_pairformer_ckpt,
-                              backend=args.structure_pairformer_backend,
-                              default=config.trunk_config.pairformer_config),
+                              backend=args.structure_pairformer_backend),
             "confidence_pairformer":
             AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
-                              backend=args.confidence_pairformer_backend,
-                              default=config.confidence_pairformer_config),
+                              backend=args.confidence_pairformer_backend),
             "token_transformer":
             AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
-                              backend=args.token_transformer_backend,
-                              default=config.structure_module_config.
-                              score_model_config.token_transformer_config),
-            "msa_module":
-            AcceleratedConfig(checkpoint=None,
-                              backend=BackendType.TORCH,
-                              default=config.trunk_config.msa_module_config),
+                              backend=args.token_transformer_backend)
         })
-    model, opt_m = Boltz2Opt.optimize(model, acc_m, manager)
+    model = model.optimize(acc_m, manager)
 
-    run_single_rank(sample_dir=args.sample_dir,
+    run_single_rank(processed_dir=args.processed_dir,
                     model=model,
+                    cache_dir=args.cache_dir,
                     rank=rank,
-                    dcp_size=dcp_size,
-                    device=torch.device("cuda"),
-                    predict_params=predict_params,
-                    strategy=args.strategy)
+                    device=torch.device("cuda"))
 
 
 if __name__ == "__main__":

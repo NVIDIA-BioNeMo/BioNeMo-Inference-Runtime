@@ -15,14 +15,13 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Optional
 
-import torch
+import torch.nn as nn
 from tensorrt_llm.logger import logger
 
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.runtime import (BackendBuilder, BackendType,
-                                      BaseContextMemoryManager)
+from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
 
 
 @dataclass
@@ -44,7 +43,7 @@ class AcceleratedModules(ABC):
         """
         self._configs = {}
         for k, v in configs.items():
-            if k not in self.get_supported_module_names():
+            if k not in self.get_supported_modules().keys():
                 logger.warning(f"Unknown module: {k}")
             else:
                 self._configs[k] = v
@@ -67,38 +66,37 @@ class AcceleratedModules(ABC):
         return self._configs.get(module_name, None).default
 
     @abstractmethod
-    def get_supported_module_names(self):
+    def get_supported_modules(self) -> dict[str, nn.Module]:
         raise NotImplementedError("Subclass must implement this method")
 
 
-def build_optimized_module(
-        state_dict: dict,
-        module_name: str,
-        backend_builder: BackendBuilder,
-        checkpoint_dir: str = None,
-        backend: BackendType = BackendType.TORCH,
-        default_config: BaseConfig = None,
-        convert_weights_func: Callable = None,
-        convert_weights_func_kwargs: dict = {},
-        context_memory_allocator: Optional[BaseContextMemoryManager] = None,
-        compile: bool = False,
-        device: torch.device = None):
-    if checkpoint_dir is not None:
-        return backend_builder.build(
-            checkpoint_dir=checkpoint_dir,
-            backend=backend,
-            context_memory_allocator=context_memory_allocator)
-    if backend == BackendType.TORCH:
-        config = default_config
-        weights = convert_weights_func(**convert_weights_func_kwargs)
-        module = backend_builder.build(checkpoint_dir=None,
-                                       config=config,
-                                       backend=BackendType.TORCH,
-                                       compile=compile,
-                                       weights=weights).to(device).eval()
-        logger.info(f"Using default Torch Backend for {module_name}")
-    else:
-        raise ValueError(
-            f"`{module_name}`: Default accelerated module config is not provided for {backend} backend"
-        )
-    return module
+class OptimizedModuleSetterMixin:
+
+    def optimize(
+            self,
+            accelerated_modules: AcceleratedModules,
+            context_memory_allocator: Optional[BaseContextMemoryManager] = None,
+            **kwargs) -> nn.Module:
+        """
+        This function is used to build the optimized version of Boltz1 model from the original.
+        Args:
+            accelerated_modules: A dictionary of modules to be accelerated.
+            context_memory_allocator: The context memory allocator to be used for each module.
+        Returns:
+            The optimized model.
+        """
+        supported_modules = accelerated_modules.get_supported_modules()
+
+        for module_name, (cls_, setter_func) in supported_modules.items():
+            backend = accelerated_modules.get_module_backend(module_name)
+            if backend != BackendType.TRT:
+                # Only support for TRT backend for now
+                continue
+            checkpoint_dir = accelerated_modules.get_module_checkpoint(
+                module_name)
+            opt_m = cls_.load_weights(
+                checkpoint_dir=checkpoint_dir,
+                context_memory_allocator=context_memory_allocator,
+                **kwargs)
+            setter_func(self, opt_m)
+        return self

@@ -17,12 +17,12 @@ import gc
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import tensorrt_llm
 import torch
-import torch.nn as nn
 from tensorrt_llm import Tensor
 from tensorrt_llm._utils import str_dtype_to_trt
 from tensorrt_llm.layers.linear import Linear
@@ -73,32 +73,6 @@ def save_engine_buffer_to_disk(engine_buffer, config, engine_dir):
     return engine_dir
 
 
-class DummyBackend(BackendBase):
-    IMPL_CLASS = None
-
-    def __init__(
-            self,
-            config: BaseConfig,
-            impl: nn.Module = None,
-            context_memory_allocator: Optional[BaseContextMemoryManager] = None
-    ):
-        # Pass context_memory_allocator to parent, handling None case
-
-        super().__init__(config,
-                         impl,
-                         context_memory_allocator=context_memory_allocator)
-        self.trt_dtype = str_dtype_to_trt(config.dtype)
-
-    def forward(self, x: torch.Tensor):
-        # Use the allocator from the base class
-        inputs = {"input": x}
-        # Cast to memory manager since it has the forward method
-        allocator = self._context_memory_allocator
-
-        outputs = allocator.forward(self, inputs)
-        return outputs
-
-
 class DummyConfig(BaseConfig):
     in_features: int = 256
     out_features: int = 256
@@ -110,6 +84,30 @@ class DummyConfig(BaseConfig):
     def get_output_names(self):
         """Return the output tensor names for this config"""
         return ["output"]
+
+
+class DummyBackend(BackendBase):
+    CONFIG_CLASS = DummyConfig
+
+    def __init__(
+            self,
+            config: BaseConfig,
+            context_memory_allocator: Optional[BaseContextMemoryManager] = None
+    ):
+        # Pass context_memory_allocator to parent, handling None case
+
+        super().__init__(config,
+                         context_memory_allocator=context_memory_allocator)
+        self.trt_dtype = str_dtype_to_trt(config.dtype)
+
+    def forward(self, x: torch.Tensor):
+        # Use the allocator from the base class
+        inputs = {"input": x}
+        # Cast to memory manager since it has the forward method
+        allocator = self._context_memory_allocator
+
+        outputs = allocator.forward(self, inputs)
+        return outputs
 
 
 def create_dummy_engine(config: DummyConfig, layer_configs: list,
@@ -240,11 +238,9 @@ def run_allocator_test(allocator_class: BaseContextMemoryManager,
     backends = []
 
     for i, (config, engine_dir) in enumerate(zip(configs, engine_dirs)):
-        backend = DummyBackend(config, context_memory_allocator=allocator)
-        backend.load_weights(engine_dir,
-                             world_size=1,
-                             rank=0,
-                             loaded_by_manager=True)
+        backend = DummyBackend.load_weights(Path(engine_dir),
+                                            context_memory_allocator=allocator,
+                                            loaded_by_manager=True)
         backends.append(backend)
         logger.info(
             f"Registered backend {i} with {allocator_name.lower()} allocator")
@@ -339,11 +335,9 @@ def test_ondemand_context_memory_manager():
     allocator = OnDemandContextMemoryManager()
     backends = []
     for config, engine_dir in zip(configs, engine_dirs):
-        backend = DummyBackend(config, context_memory_allocator=allocator)
-        backend.load_weights(engine_dir,
-                             world_size=1,
-                             rank=0,
-                             loaded_by_manager=True)
+        backend = DummyBackend.load_weights(Path(engine_dir),
+                                            context_memory_allocator=allocator,
+                                            loaded_by_manager=True)
         backends.append(backend)
 
     # Load engines (should NOT allocate memory)
@@ -474,15 +468,11 @@ def test_custom_stream():
     # Create backends with different streams
     for i, (config, engine_dir, stream, stream_handle) in enumerate(
             zip(configs, engine_dirs, streams, stream_handles)):
-        backend = DummyBackend(config, context_memory_allocator=allocator)
-        backend._pytorch_stream = stream
-        backend._stream_handle = stream_handle
         # Pass the custom stream handle to the allocator
-        backend.load_weights(engine_dir,
-                             world_size=1,
-                             rank=0,
-                             stream=stream_handle,
-                             loaded_by_manager=True)
+        backend = DummyBackend.load_weights(Path(engine_dir),
+                                            context_memory_allocator=allocator,
+                                            stream=stream_handle,
+                                            loaded_by_manager=True)
         backends.append(backend)
         logger.info(
             f"Registered backend {i} with custom stream handle {stream_handle}")
@@ -603,11 +593,9 @@ def test_optimization_profile_switching():
 
     # Test with SimpleContextMemoryManager
     allocator = SimpleContextMemoryManager()
-    backend = DummyBackend(config, context_memory_allocator=allocator)
-    backend.load_weights(engine_dir,
-                         world_size=1,
-                         rank=0,
-                         loaded_by_manager=True)
+    backend = DummyBackend.load_weights(Path(engine_dir),
+                                        context_memory_allocator=allocator,
+                                        loaded_by_manager=True)
     allocator.load()
 
     # Test different sequence lengths to trigger profile switching

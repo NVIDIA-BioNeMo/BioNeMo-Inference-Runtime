@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from functools import partial
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
@@ -35,35 +35,59 @@ from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
 from tensorrt_bionemo._torch.modules.boltz.structure import (
     AtomDiffusion, DiffusionConditioning)
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
+from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
+                                                   TokenTransformerTRT)
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.pipeline.boltz.const import (NUM_POCKET_CONTACT_INFO,
                                                    NUM_TOKENS)
-from tensorrt_bionemo.runtime import BaseContextMemoryManager
 
-from ..helper import AcceleratedModules, build_optimized_module
+from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
 from .config import Boltz1Config
 from .convert import (convert_hf_confidence_torch,
                       convert_hf_diffusion_conditioning_torch,
-                      convert_hf_diffusion_transformer_torch,
                       convert_hf_input_embedder_torch,
                       convert_hf_msa_module_torch, convert_hf_pairformer_torch,
                       convert_hf_structure_module_torch)
-from .modules import (MSAModuleBackendBuilder, PairformerBackendBuilder,
-                      TokenTransformerBackendBuilder)
 
 
 class Boltz1AcceleratedModules(AcceleratedModules):
 
-    def get_supported_module_names(self):
-        return [
-            "structure_pairformer", "confidence_pairformer",
-            "token_transformer", "msa_module"
-        ]
+    def get_supported_modules(self) -> dict[str, tuple[nn.Module, Callable]]:
+
+        def structure_pairformer_setter(mod: nn.Module,
+                                        optimized: nn.Module) -> nn.Module:
+            org = mod.trunk.pairformer_module
+            setattr(mod.trunk, "pairformer_module", optimized)
+            return org
+
+        def confidence_pairformer_setter(mod: nn.Module,
+                                         optimized: nn.Module) -> nn.Module:
+            org = mod.confidence_module.pairformer_module
+            setattr(mod.confidence_module, "pairformer_module", optimized)
+            return org
+
+        def token_transformer_setter(mod: nn.Module,
+                                     optimized: nn.Module) -> nn.Module:
+            org = mod.structure_module.score_model.token_transformer
+            setattr(mod.structure_module.score_model, "token_transformer",
+                    optimized)
+            return org
+
+        return {
+            "structure_pairformer":
+            (PairformerTRT, structure_pairformer_setter),
+            "confidence_pairformer":
+            (PairformerTRT, confidence_pairformer_setter),
+            "token_transformer":
+            (TokenTransformerTRT, token_transformer_setter),
+        }
 
 
-class Boltz1(nn.Module):
+class Boltz1(nn.Module, OptimizedModuleSetterMixin):
 
-    def __init__(self, config: Boltz1Config = None):
+    def __init__(self,
+                 config: Boltz1Config = None,
+                 include_load_weights: bool = True):
         super().__init__()
         self.model_name = "boltz-1"
         self.config = config or Boltz1Config()
@@ -191,6 +215,11 @@ class Boltz1(nn.Module):
             self.confidence_module_config)
         #### End of building up modules ####
 
+        if include_load_weights:
+            self.load_weights()
+
+        self.eval()
+
     def load_weights(self, weights: dict = None):
         if weights is None:
             logger.info(f"Input weights is None, try to load weights from hubs")
@@ -307,7 +336,16 @@ class Boltz1(nn.Module):
         return {key: feed_dict.get(key, None) for key in keys}
 
     def get_pretrained_config() -> Boltz1Config:
-        return Boltz1Config()
+        # Set default optimization configs
+        config = Boltz1Config()
+        config.trunk.set_dtype(torch.bfloat16)
+        config.trunk.set_triangle_attention_backend("CUEQUIV")
+        config.structure_module.score_model.set_dtype(torch.bfloat16)
+
+        config.confidence_module.set_triangle_attention_backend("CUEQUIV")
+        config.confidence_module.msa_module.set_dtype(torch.bfloat16)
+        config.confidence_module.pairformer.set_dtype(torch.bfloat16)
+        return config
 
     def create_attn_metadata(self, n_atoms: int) -> AttentionMetadata:
         W = self.input_embedder_config.atoms_per_window_queries
@@ -443,135 +481,3 @@ class Boltz1(nn.Module):
             confidence_module_output["pair_chains_iptm"],
         }
         return ret
-
-    @staticmethod
-    def optimize(
-        model: nn.Module,
-        accelerated_modules: Boltz1AcceleratedModules,
-        context_memory_allocator: Optional[BaseContextMemoryManager] = None
-    ) -> nn.Module:
-        """
-        This function is used to build the optimized version of Boltz1 model from the original.
-        Args:
-            model: The original model to be optimized.
-            accelerated_modules: A dictionary of modules to be accelerated.
-            context_memory_allocator: The context memory allocator to be used for each module.
-        Returns:
-            The Boltz1 optimized model.
-        """
-        if accelerated_modules is None:
-            return model
-
-        module_names = accelerated_modules.get_module_names()
-        device = next(model.parameters()).device
-        state_dict = model.state_dict()
-
-        opt_m = {}
-
-        if "structure_pairformer" in module_names:
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
-                "structure_pairformer")
-            backend = accelerated_modules.get_module_backend(
-                "structure_pairformer")
-            default_config = accelerated_modules.get_default_module_config(
-                "structure_pairformer")
-            structure_pairformer = build_optimized_module(
-                state_dict=state_dict,
-                module_name="structure_pairformer",
-                backend_builder=PairformerBackendBuilder,
-                checkpoint_dir=checkpoint_dir,
-                backend=backend,
-                compile=False,  # TODO: Whether to compile the module
-                device=device,
-                context_memory_allocator=context_memory_allocator,
-                default_config=default_config,
-                convert_weights_func=convert_hf_pairformer_torch,
-                convert_weights_func_kwargs={
-                    "config": default_config,
-                    "pairformer_type": "structure",
-                    "weights": state_dict
-                },
-            )
-            opt_m["structure_pairformer"] = structure_pairformer
-            setattr(model, "pairformer_module", structure_pairformer)
-
-        if "confidence_pairformer" in module_names:
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
-                "confidence_pairformer")
-            backend = accelerated_modules.get_module_backend(
-                "confidence_pairformer")
-            default_config = accelerated_modules.get_default_module_config(
-                "confidence_pairformer")
-            confidence_pairformer = build_optimized_module(
-                state_dict=state_dict,
-                module_name="confidence_pairformer",
-                backend_builder=PairformerBackendBuilder,
-                checkpoint_dir=checkpoint_dir,
-                backend=backend,
-                compile=False,  # TODO: Whether to compile the module
-                device=device,
-                context_memory_allocator=context_memory_allocator,
-                default_config=default_config,
-                convert_weights_func=convert_hf_pairformer_torch,
-                convert_weights_func_kwargs={
-                    "config": default_config,
-                    "pairformer_type": "confidence",
-                    "weights": state_dict
-                },
-            )
-            opt_m["confidence_pairformer"] = confidence_pairformer
-            setattr(model.confidence_module, "pairformer_module",
-                    confidence_pairformer)
-
-        if "token_transformer" in module_names:
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
-                "token_transformer")
-            backend = accelerated_modules.get_module_backend(
-                "token_transformer")
-            default_config = accelerated_modules.get_default_module_config(
-                "token_transformer")
-            token_transformer = build_optimized_module(
-                state_dict=state_dict,
-                module_name="token_transformer",
-                backend_builder=TokenTransformerBackendBuilder,
-                checkpoint_dir=checkpoint_dir,
-                backend=backend,
-                compile=False,  # TODO: Whether to compile the module
-                device=device,
-                context_memory_allocator=context_memory_allocator,
-                default_config=default_config,
-                convert_weights_func=convert_hf_diffusion_transformer_torch,
-                convert_weights_func_kwargs={
-                    "config": default_config,
-                    "weights": state_dict
-                },
-            )
-            opt_m["token_transformer"] = token_transformer
-            setattr(model.structure_module.score_model, "token_transformer",
-                    token_transformer)
-
-        if "msa_module" in module_names:
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
-                "msa_module")
-            backend = accelerated_modules.get_module_backend("msa_module")
-            default_config = accelerated_modules.get_default_module_config(
-                "msa_module")
-            msa_module = build_optimized_module(
-                state_dict=state_dict,
-                module_name="msa_module",
-                backend_builder=MSAModuleBackendBuilder,
-                checkpoint_dir=checkpoint_dir,
-                backend=backend,
-                compile=False,  # TODO: Whether to compile the module
-                device=device,
-                context_memory_allocator=context_memory_allocator,
-                default_config=default_config,
-                convert_weights_func=convert_hf_msa_module_torch,
-                convert_weights_func_kwargs={
-                    "config": default_config,
-                    "weights": state_dict
-                },
-            )
-            opt_m["msa_module"] = msa_module
-            setattr(model, "msa_module", msa_module)
-        return model, opt_m

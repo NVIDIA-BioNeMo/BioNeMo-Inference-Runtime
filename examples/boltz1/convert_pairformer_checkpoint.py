@@ -75,14 +75,14 @@ def parse_arguments():
                         default='structure',
                         choices=['structure', 'confidence'],
                         help='The type of pairformer to convert')
-    parser.add_argument('--triangle_attn_backend',
+    parser.add_argument('--triangle_attention_backend',
                         type=str,
                         default='CUEQUIV',
                         choices=['VANILLA', 'CUEQUIV'],
                         help='The backend of triangle attention')
     parser.add_argument('--backend',
                         type=str,
-                        default='all',
+                        default='trt',
                         choices=['all', 'trt', 'torch'],
                         help='The backend to convert')
     parser.add_argument(
@@ -146,9 +146,8 @@ def main():
     boltz1_config = Boltz1Config()
     pairformer_config = boltz1_config.trunk.pairformer
     if args.pairformer_type == "confidence":
-        # FIXME
-        pairformer_config = boltz1_config.confidence.pairformer
-    if args.triangle_attn_backend == "CUEQUIV":
+        pairformer_config = boltz1_config.confidence_module.pairformer
+    if args.triangle_attention_backend == "CUEQUIV":
         args.support_batch = True
     config = {
         "max_batch_size":
@@ -190,12 +189,14 @@ def main():
         "disable_custom_all_reduce":
         args.max_transition_tp_size or args.max_attention_pairwise_tp_size
         or args.max_tri_mul_tp_size,
-        "triangle_attn_backend":
-        args.triangle_attn_backend,
+        "triangle_attention_backend":
+        args.triangle_attention_backend,
         "support_batch":
         args.support_batch,
         "version":
-        "v1"
+        "v1",
+        "trimul_high_precision":
+        False
     }
     trt_pairformer_config = pairformer_config.model_copy(update=config)
     torch_pairformer_config = pairformer_config.model_copy(update=config)

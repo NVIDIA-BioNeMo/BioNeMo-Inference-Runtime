@@ -655,7 +655,8 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
                 max_attention_pairwise_tp_size=True,
                 num_heads=config.num_heads,
                 attention_initial_norm=config.attention_initial_norm,
-                compute_pair_bias=config.version == "v1",
+                # compute_pair_bias=config.version == "v1",
+                compute_pair_bias=False,
                 dtype=config.dtype))
         weights.update(
             get_conditioned_transition_block_weights(

@@ -22,11 +22,11 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.network import net_guard
 
 from tensorrt_bionemo._trt.module_utils import PretrainedModule
-from tensorrt_bionemo.config import BuildModuleConfig
+from tensorrt_bionemo.configs.base import BuildConfig
 from tensorrt_bionemo.version import __version__
 
 
-def build(module: PretrainedModule, build_config: BuildModuleConfig = None):
+def build(module: PretrainedModule, build_config: BuildConfig = None):
     tic = time.time()
 
     build_config = copy.deepcopy(build_config)

@@ -25,16 +25,10 @@ def parse_arguments():
                         type=int,
                         default=1,
                         help='N-way data-context parallelism size')
-    parser.add_argument(
-        '--max_num_particles',
-        type=int,
-        default=1,
-        help='The max number of particles for the token transformer')
-    parser.add_argument(
-        '--max_diffusion_samples',
-        type=int,
-        default=1,
-        help='The max number of diffusion samples for the token transformer')
+    parser.add_argument('--multiplicity',
+                        type=int,
+                        default=1,
+                        help='The multiplicity for the token transformer')
     parser.add_argument('--dtype',
                         type=str,
                         default='float32',
@@ -64,7 +58,7 @@ def parse_arguments():
         help='The number of workers for converting checkpoint in parallel')
     parser.add_argument('--backend',
                         type=str,
-                        default='all',
+                        default='trt',
                         choices=['all', 'trt', 'torch'],
                         help='The backend to convert')
     args = parser.parse_args()
@@ -123,8 +117,7 @@ def main():
     token_transformer_config = score_model_config.token_transformer
 
     config = {
-        "max_num_particles": args.max_num_particles,
-        "max_diffusion_samples": args.max_diffusion_samples,
+        "multiplicity": args.multiplicity,
         "backend": "trt",
         "num_blocks": token_transformer_config.num_blocks,
         "num_heads": token_transformer_config.num_heads,
@@ -140,7 +133,7 @@ def main():
         },
         "disable_custom_all_reduce": args.disable_custom_all_reduce,
         "pairwise_attn_backend": args.pairwise_attn_backend,
-        "version": "v1"
+        "version": "v2"
     }
     trt_token_transformer_config = token_transformer_config.model_copy(
         update=config)

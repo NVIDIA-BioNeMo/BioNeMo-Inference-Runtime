@@ -34,8 +34,8 @@ class PairformerConfig(BaseConfig):
     triangle_attn_node_chunk_size: int = 0
     no_update_s: bool = False
     no_update_z: bool = False
-    s_path_dtype: str = None
-    post_layer_norm: bool = False
+    s_path_dtype: Optional[str] = None
+    post_layer_norm: Optional[bool] = False
     triangle_attn_cueq_fallback_threshold: int = 0
     trimul_high_precision: bool = False
     attention_initial_norm: Optional[bool] = True
@@ -86,11 +86,11 @@ class DiffusionTransformerConfig(BaseConfig):
     dim_single_cond: int = None
     dim_pairwise: Optional[int] = None
     expansion_factor: int = None
-    multiplicity: int = None
-    attention_initial_norm: bool = None
-    post_layer_norm: bool = None
-    conditioned_transition_using_silu: bool = None
-    bias_proj: bool = None
+    multiplicity: Optional[int] = 1
+    attention_initial_norm: Optional[bool] = None
+    post_layer_norm: Optional[bool] = None
+    conditioned_transition_using_silu: Optional[bool] = None
+    bias_proj: Optional[bool] = None
 
 
 class DiffusionTransformerBuildConfig(BuildConfig):
@@ -127,6 +127,9 @@ class DiffusionTransformerBuildConfig(BuildConfig):
         batch_size = DimSpec(name="batch_size", dynamic=True)
         dim = DimSpec(name="dim", size=mc.dim)
         return OrderedDict([("output_a", (batch_size, seqlen, dim))])
+
+    def get_optimization_profiles(self) -> list[Any]:
+        return create_optimization_profiles(self)
 
 
 class MSAModuleConfig(BaseConfig):
@@ -229,6 +232,9 @@ class EvoformerStackBuildConfig(BuildConfig):
             ("output_s", (n_res, c_m)),
         ])
 
+    def get_optimization_profiles(self) -> list[Any]:
+        return create_optimization_profiles(self)
+
 
 class ExtraMSAStackConfig(BaseConfig):
     c_m: int = None
@@ -295,3 +301,6 @@ class AffinityModuleBuildConfig(BuildConfig):
             ("pred_value", (batch_size, 1)),
             ("logits_binary", (batch_size, 1)),
         ])
+
+    def get_optimization_profiles(self) -> list[Any]:
+        return create_optimization_profiles(self)

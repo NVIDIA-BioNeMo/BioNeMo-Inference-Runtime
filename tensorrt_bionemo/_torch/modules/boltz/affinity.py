@@ -34,22 +34,35 @@ from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
 
+def get_best_coords(coords: torch.Tensor, iptm: torch.Tensor) -> torch.Tensor:
+    """
+    Get the best coordinates from the predicted coordinates.
+    Args:
+        coords: (B, I, 3)
+        iptm: (B, I)
+    Returns:
+        best_coords: (B, 3)
+    """
+    argsort = torch.argsort(iptm, descending=True, dim=1)
+    best_idx = argsort[:, 0]
+    best_coords = coords[torch.arange(len(best_idx)), best_idx]
+
+    return best_coords
+
+
 def create_cross_pair_mask(
         token_pad_mask: torch.Tensor,
         mol_type: torch.Tensor,
         affinity_token_mask: torch.Tensor,
-        multiplicity: int = 1,
         include_mask_for_head: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Create a cross-pair mask for affinity prediction.
     """
-    pad_token_mask = (token_pad_mask.repeat_interleave(multiplicity, 0))
-    rec_mask = ((mol_type == 0).repeat_interleave(multiplicity, 0))
-    rec_mask = rec_mask * pad_token_mask
-    lig_mask = (affinity_token_mask.repeat_interleave(multiplicity, 0).to(
-        torch.bool)) * pad_token_mask
-    lig_mask = lig_mask * pad_token_mask
+    rec_mask = ((mol_type == 0))
+    rec_mask = rec_mask * token_pad_mask
+    lig_mask = (affinity_token_mask.to(torch.bool)) * token_pad_mask
+    lig_mask = lig_mask * token_pad_mask
     cross_pair_mask = (lig_mask[:, :, None] * rec_mask[:, None, :] +
                        rec_mask[:, :, None] * lig_mask[:, None, :] +
                        lig_mask[:, :, None] * lig_mask[:, None, :])
@@ -179,21 +192,17 @@ class AffinityHeadsTransformer(nn.Module):
 
         self.to_affinity_logits_binary = nn.Linear(1, 1, bias=True, dtype=dtype)
 
-    def forward(self,
-                z: torch.Tensor,
-                cross_pair_mask: torch.Tensor,
-                multiplicity: int = 1) -> torch.Tensor:
+    def forward(self, z: torch.Tensor,
+                cross_pair_mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
             z: (B, I, token_s)
             cross_pair_mask: (B, num_dist_bins, num_dist_bins, 1)
-            multiplicity(int): default 1, unsupported for now (TODO: support multiplicity > 1)
 
         Returns:
             pred_value: (batch_size, 1)
             logits_binary: (batch_size, 1)
         """
-        assert multiplicity == 1, "Multiplicity > 1 is not supported yet"
         g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
             torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7)
         g = self.affinity_out_mlp_linear_0(g)
@@ -309,7 +318,6 @@ class AffinityModule(nn.Module):
         distogram: torch.Tensor,
         cross_pair_mask_0: torch.Tensor,
         cross_pair_mask_1: torch.Tensor,
-        multiplicity: int = 1,
         attn_metadatas: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -320,9 +328,9 @@ class AffinityModule(nn.Module):
             distogram: (B, num_dist_bins, num_dist_bins)
             cross_pair_mask_0: (B, num_dist_bins, num_dist_bins)
             cross_pair_mask_1: (B, num_dist_bins, num_dist_bins, 1)
-            multiplicity(int): default 1, unsupported for now (TODO: support multiplicity > 1)
         """
-        assert multiplicity == 1, "Multiplicity > 1 is not supported yet"
+        assert len(s.shape) == 3, "s must be (B, I, token_s)"
+        assert len(z.shape) == 4, "z must be (B, I, I, token_z)"
 
         z = self.z_norm(z)
         z = self.z_linear(z)
@@ -336,12 +344,10 @@ class AffinityModule(nn.Module):
             z = allgather(z, self.tp_group, gather_dim=-1)
         z = z + self.pairwise_conditioner(z_trunk=z,
                                           token_rel_pos_feats=embed_distogram)
-
         z = self.pairformer_stack(z,
                                   pair_mask=cross_pair_mask_0,
                                   attn_metadatas=attn_metadatas,
                                   all_reduce_params=all_reduce_params)
-        pred_value, logits_binary = self.affinity_heads(
-            z, cross_pair_mask_1, multiplicity=multiplicity)
+        pred_value, logits_binary = self.affinity_heads(z, cross_pair_mask_1)
 
         return pred_value, logits_binary

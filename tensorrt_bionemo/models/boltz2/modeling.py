@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tensorrt_llm.functional import AllReduceParams
 from tensorrt_llm.logger import logger
 
@@ -28,6 +29,8 @@ from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_indexing_matrix, query_to_keys)
+from tensorrt_bionemo._torch.modules.boltz.affinity import (
+    AffinityModule, compute_distogram, create_cross_pair_mask, get_best_coords)
 from tensorrt_bionemo._torch.modules.boltz.confidence import \
     Boltz2ConfidenceModule
 from tensorrt_bionemo._torch.modules.boltz.embedders import Boltz2InputEmbedder
@@ -43,8 +46,9 @@ from tensorrt_bionemo.pipeline.boltz.const import (CONTACT_CONDITIONING_INFO,
                                                    NUM_BOND_TYPES)
 
 from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
-from .config import Boltz2Config
-from .convert import (convert_hf_confidence_module_torch,
+from .config import Boltz2AffinityConfig, Boltz2Config
+from .convert import (convert_hf_affinity_module_torch,
+                      convert_hf_confidence_module_torch,
                       convert_hf_diffusion_conditioning_torch,
                       convert_hf_input_embedder_torch,
                       convert_hf_msa_module_torch, convert_hf_pairformer_torch,
@@ -370,6 +374,14 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
                 "atom_backbone_feat", "method_feature", "modified",
                 "cyclic_period", "mol_type"
             ]
+        elif module_name == "input_embedder_affinity":
+            keys = [
+                "atom_to_token", "ref_pos", "atom_pad_mask", "ref_space_uid",
+                "ref_charge", "ref_element", "ref_atom_name_chars", "res_type",
+                "profile_affinity", "deletion_mean_affinity", "pocket_feature",
+                "atom_backbone_feat", "method_feature", "modified",
+                "cyclic_period", "mol_type"
+            ]
         elif module_name == "relative_position_encoding":
             keys = [
                 "asym_id", "residue_index", "entity_id", "cyclic_period",
@@ -382,7 +394,13 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             ]
         else:
             raise ValueError(f"Module name {module_name} not supported")
-        return {key: feed_dict.get(key, None) for key in keys}
+        dict_ret = {key: feed_dict.get(key, None) for key in keys}
+
+        if module_name == "input_embedder_affinity":
+            dict_ret['profile'] = dict_ret.pop('profile_affinity')
+            dict_ret['deletion_mean'] = dict_ret.pop('deletion_mean_affinity')
+
+        return dict_ret
 
     def create_attn_metadata(self, n_atoms: int) -> AttentionMetadata:
         W = self.input_embedder_config.atoms_per_window_queries
@@ -405,8 +423,10 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         diffusion_samples: int = 1,
         max_parallel_samples: Optional[int] = None,
         steering_args: BoltzSteeringParams = None,
+        affinity: bool = False,
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> dict[str, torch.Tensor]:
+
         if steering_args is None:
             steering_args = self.steering_args
 
@@ -497,7 +517,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             all_reduce_params=all_reduce_params,
         )
 
-        ret = {
+        boltz2_output_dictionary = {
             "confidence_score": (4 * confidence_module_output["complex_plddt"] +
                                  confidence_module_output["iptm"]) / 5,
             "masks":
@@ -531,16 +551,153 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             "pair_chains_iptm":
             confidence_module_output["pair_chains_iptm"],
         }
-        return ret
+        if affinity:
+            affinity_output_dictionary = {
+                'z': z,
+                'attention_metadata': attn_metadata
+            }
+            return boltz2_output_dictionary, affinity_output_dictionary
+
+        return boltz2_output_dictionary
 
 
 class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
 
     def __init__(self,
-                 config: Boltz2Config = None,
+                 config: Boltz2AffinityConfig = None,
                  include_load_weights: bool = True):
-        # FIXME: add affinity constructor
-        config = config or Boltz2.get_pretrained_config()
-        super().__init__(config=config,
-                         include_load_weights=include_load_weights)
+
+        if config is None:
+            config = Boltz2.get_pretrained_config()
+
+        super().__init__(config=config, include_load_weights=False)
+
         self.model_name = "boltz-2-affinity"
+        self.config = config
+        self.affinity_module1 = AffinityModule(self.config.affinity.module1)
+        self.affinity_module2 = AffinityModule(self.config.affinity.module2)
+
+        boundaries = torch.linspace(
+            2, self.config.affinity.module1.max_dist,
+            self.config.affinity.module1.num_dist_bins - 1)
+        self.register_buffer("boundaries_1", boundaries)
+        boundaries = torch.linspace(
+            2, self.config.affinity.module2.max_dist,
+            self.config.affinity.module2.num_dist_bins - 1)
+        self.register_buffer("boundaries_2", boundaries)
+
+        if include_load_weights:
+            self.load_weights()
+
+    def get_pretrained_config() -> Boltz2AffinityConfig:
+        config = Boltz2AffinityConfig()
+        config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
+        config.trunk.set_dtype(torch.bfloat16)
+        config.trunk.set_triangle_attention_backend("CUEQUIV")
+        config.structure_module.score_model.set_dtype(torch.bfloat16)
+
+        config.confidence_module.set_triangle_attention_backend("CUEQUIV")
+        config.confidence_module.pairformer.set_dtype(torch.bfloat16)
+
+        config.affinity.module1.set_dtype(torch.bfloat16)
+        config.affinity.module2.set_dtype(torch.bfloat16)
+        return config
+
+    def load_weights(self, weights: dict = None) -> None:
+        if weights is None:
+            weights = load_weights_from_hubs(name=self.model_name)
+        super().load_weights(weights)
+        self.load_affinity_weights(weights)
+
+    def load_affinity_weights(self, weights: dict = None) -> None:
+        if weights is None:
+            logger.info(f"Input weights is None, try to load weights from hubs")
+            weights = load_weights_from_hubs(name=self.model_name)
+        affinity_weights_1 = convert_hf_affinity_module_torch(
+            config=self.config.affinity.module1,
+            weights=weights,
+            model_name=self.model_name,
+            affinity_module_name="affinity_module1")
+        affinity_weights_2 = convert_hf_affinity_module_torch(
+            config=self.config.affinity.module2,
+            weights=weights,
+            model_name=self.model_name,
+            affinity_module_name="affinity_module2")
+        self.affinity_module1.load_weights(affinity_weights_1)
+        self.affinity_module2.load_weights(affinity_weights_2)
+
+    def forward(
+        self,
+        feed_dict: dict[str, torch.Tensor],
+        recycling_steps: int = 0,
+        num_sampling_steps: Optional[int] = 200,
+        diffusion_samples: int = 1,
+        max_parallel_samples: Optional[int] = None,
+        steering_args: BoltzSteeringParams = None,
+        all_reduce_params: Optional[AllReduceParams] = None
+    ) -> dict[str, torch.Tensor]:
+
+        if steering_args is not None:
+            steering_args.physical_guidance_update = False
+            steering_args.contact_guidance_update = False
+
+        boltz2_output_dictionary, affinity_output_dictionary = super().forward(
+            feed_dict,
+            recycling_steps,
+            num_sampling_steps,
+            diffusion_samples,
+            max_parallel_samples,
+            steering_args,
+            affinity=True,
+            all_reduce_params=all_reduce_params)
+
+        s_inputs_affinity = self.input_embedder(
+            **self.get_module_feed_dict(feed_dict, "input_embedder_affinity"),
+            attn_metadata=affinity_output_dictionary['attention_metadata'],
+            all_reduce_params=all_reduce_params,
+        )
+
+        # Get the best coordinates to get the affinity prediction.
+        best_coords = get_best_coords(boltz2_output_dictionary['coords'],
+                                      boltz2_output_dictionary['iptm'])
+        distogram = compute_distogram(best_coords, self.boundaries_1,
+                                      feed_dict["token_to_rep_atom"])
+
+        cross_pair_mask_0, cross_pair_mask_1 = create_cross_pair_mask(
+            feed_dict["token_pad_mask"],
+            feed_dict["mol_type"],
+            feed_dict["affinity_token_mask"],
+            include_mask_for_head=True)
+
+        z_affinity = affinity_output_dictionary[
+            'z'] * cross_pair_mask_0.unsqueeze(-1)
+
+        affinity_probabilities = []
+        affinity_pred_values = []
+        for boundaries, affinity_module in zip(
+            [self.boundaries_1, self.boundaries_2],
+            [self.affinity_module1, self.affinity_module2]):
+            distogram = compute_distogram(best_coords, boundaries,
+                                          feed_dict["token_to_rep_atom"])
+
+            affinity_module_output = affinity_module(
+                s=s_inputs_affinity,
+                z=z_affinity,
+                distogram=distogram,
+                cross_pair_mask_0=cross_pair_mask_0,
+                cross_pair_mask_1=cross_pair_mask_1,
+                attn_metadatas={},
+                all_reduce_params=all_reduce_params,
+            )
+
+            affinity_pred_values.append(affinity_module_output[0])
+            affinity_probabilities.append(F.sigmoid(affinity_module_output[1]))
+
+        boltz2_output_dictionary.update({
+            "affinity_pred_value":
+            torch.concat(affinity_pred_values).mean(),
+            "affinity_probability_binary":
+            torch.concat(affinity_probabilities).mean()
+        })
+
+        return boltz2_output_dictionary

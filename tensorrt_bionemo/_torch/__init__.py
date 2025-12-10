@@ -43,7 +43,21 @@ def _load_kernels_lib():
         raise ImportError('TensorRT-BioNemo Kernels library is unavailable')
 
 
+def _load_torch_ext_lib():
+    # TODO: consider rpath to load the library
+    project_dir = Path(__file__).parent.parent.absolute()
+    dyn_lib = "libtorch_crsc_tensorrt_bionemo.so"
+    handle = None
+    TORCH_EXT_PKG_LIB = project_dir / "libs" / dyn_lib
+    if TORCH_EXT_PKG_LIB.exists():
+        handle = ctypes.CDLL(TORCH_EXT_PKG_LIB.as_posix())
+    if handle is None:
+        raise ImportError(
+            'TensorRT-BioNemo Torch Extension library is unavailable')
+
+
 __all__ = [
     "_load_cuequivariance_lib",
     "_load_kernels_lib",
+    "_load_torch_ext_lib",
 ]

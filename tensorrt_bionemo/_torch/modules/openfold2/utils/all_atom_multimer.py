@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 import tensorrt_bionemo._torch.tensor_utils as tensor_utils
-import tensorrt_bionemo.pipeline.models.openfold2.const as rc
+import tensorrt_bionemo.pipeline.openfold2.const as rc
 from tensorrt_bionemo._torch.modules.openfold2.utils import geometry
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rigid_matrix_vector import \
     Rigid3Array
@@ -54,8 +54,7 @@ def atom14_to_atom37(
 
 def atom37_to_atom14(aatype, all_atom_pos, all_atom_mask):
     """Convert Atom37 positions to Atom14 positions."""
-    residx_atom14_to_atom37 = get_rc_tensor(rc.RESTYPE_ATOM14_TO_ATOM37,
-                                            aatype)
+    residx_atom14_to_atom37 = get_rc_tensor(rc.RESTYPE_ATOM14_TO_ATOM37, aatype)
     no_batch_dims = len(aatype.shape)
     atom14_mask = tensor_utils.batched_gather(
         all_atom_mask,
@@ -146,15 +145,14 @@ def atom37_to_frames(
     rots[0, 0, 0] = -1
     rots[0, 2, 2] = -1
     gt_frames = gt_frames.compose_rotation(
-        geometry.Rot3Array.from_array(torch.tensor(rots,
-                                                   device=aatype.device)))
+        geometry.Rot3Array.from_array(torch.tensor(rots, device=aatype.device)))
 
     # The frames for ambiguous rigid groups are just rotated by 180 degree around
     # the x-axis. The ambiguous group is always the last chi-group.
     restype_rigidgroup_is_ambiguous = np.zeros([21, 8],
                                                dtype=all_atom_positions.dtype)
-    restype_rigidgroup_rots = np.tile(
-        np.eye(3, dtype=all_atom_positions.dtype), [21, 8, 1, 1])
+    restype_rigidgroup_rots = np.tile(np.eye(3, dtype=all_atom_positions.dtype),
+                                      [21, 8, 1, 1])
 
     for resname, _ in rc.residue_atom_renaming_swaps.items():
         restype = rc.restype_order[rc.restype_3to1[resname]]
@@ -419,8 +417,7 @@ def make_transform_from_reference(
         reference frame, will give coordinates approximately equal
         the original coordinates (in the global frame).
     """
-    rotation = geometry.Rot3Array.from_two_vectors(c_xyz - b_xyz,
-                                                   a_xyz - b_xyz)
+    rotation = geometry.Rot3Array.from_two_vectors(c_xyz - b_xyz, a_xyz - b_xyz)
     return geometry.Rigid3Array(rotation, b_xyz)
 
 

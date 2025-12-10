@@ -40,11 +40,10 @@ from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.pipeline.models.boltz.const import (
-    NUM_POCKET_CONTACT_INFO, NUM_TOKENS)
+from tensorrt_bionemo.pipeline.boltz.const import (NUM_POCKET_CONTACT_INFO,
+                                                   NUM_TOKENS)
 
-from ..helper import (AcceleratedConfig, AcceleratedModules,
-                      OptimizedModuleSetterMixin)
+from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (convert_hf_confidence_torch,
                       convert_hf_diffusion_conditioning_torch,
@@ -223,11 +222,6 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             self.load_weights()
 
         self.eval()
-
-    def get_optimized_modules(
-        self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> Boltz1AcceleratedModules:
-        return Boltz1AcceleratedModules(accelerated_configs)
 
     def load_weights(self, weights: dict = None):
         if weights is None:

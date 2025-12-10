@@ -639,7 +639,7 @@ class EvoformerBlock(Module):
             mask_eps=1e-3,
             norm_mask_by_eps=True,
             norm_before_output=False,
-            cast_to_float_before_einsum=False,
+            cast_to_float_before_einsum=True,
             bias_flags={
                 "proj_a": True,
                 "proj_b": True,
@@ -658,8 +658,7 @@ class EvoformerBlock(Module):
                 "g_in": True,
                 "p_out": True,
                 "g_out": True
-            },
-            high_precision=False)
+            })
         self.tri_mul_in = TriangleMultiplicationNode(
             local_layer_idx=local_layer_idx,
             dim=c_z,
@@ -672,8 +671,7 @@ class EvoformerBlock(Module):
                 "g_in": True,
                 "p_out": True,
                 "g_out": True
-            },
-            high_precision=False)
+            })
         self.tri_attn_start = TriangleAttentionNode(
             local_layer_idx=local_layer_idx,
             c_in=c_z,

@@ -19,7 +19,7 @@ import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
 # isort: off
-import tensorrt_bionemo.pipeline.models.openfold2.const as residue_constants
+import tensorrt_bionemo.pipeline.openfold2.const as residue_constants
 from tensorrt_bionemo._torch.attention_backend import get_attention_backend
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.modules.openfold2.confidence import AuxiliaryHeads
@@ -38,7 +38,7 @@ from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
-from ..helper import AcceleratedModules, OptimizedModuleSetterMixin, AcceleratedConfig
+from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_hf_confidence_module_torch, convert_hf_evoformer_torch,
@@ -108,11 +108,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
 
         if include_load_weights:
             self.load_weights()
-
-    def get_optimized_modules(
-        self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> OpenFold2AcceleratedModules:
-        return OpenFold2AcceleratedModules(accelerated_configs)
 
     def load_weights(self, weights: dict = None):
         if weights is None:
@@ -257,9 +252,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             k: v
             for k, v in feats.items() if k.startswith("template_")
         }
-        logger.debug(
-            f"skip_template_pair_stack: {self.config.skip_template_pair_stack}, is_multimer: {self.is_multimer}"
-        )
         if self.is_multimer:
             asym_id = feats["asym_id"]
             multichain_mask_2d = (asym_id[..., None] == asym_id[..., None, :])
@@ -269,7 +261,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 pair_mask,
                 templ_dim,
                 multichain_mask_2d=multichain_mask_2d,
-                skip_template_pair_stack=self.config.skip_template_pair_stack,
                 all_reduce_params=all_reduce_params,
             )
             feats["template_torsion_angles_mask"] = (
@@ -280,7 +271,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 z,
                 pair_mask,
                 templ_dim,
-                skip_template_pair_stack=self.config.skip_template_pair_stack,
                 all_reduce_params=all_reduce_params,
             )
         return template_embeds

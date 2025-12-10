@@ -4,12 +4,14 @@ import time
 from pathlib import Path
 
 import safetensors
+import torch
 from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.openfold3 import OpenFold3Config
-from tensorrt_bionemo.models.openfold3.convert import convert_hf_diffusion_transformer
+from tensorrt_bionemo.models.openfold3.convert import (
+    convert_hf_diffusion_transformer, convert_hf_diffusion_transformer_torch)
 
 
 def parse_arguments():
@@ -24,10 +26,15 @@ def parse_arguments():
                         default=1,
                         help='N-way data-context parallelism size')
     parser.add_argument(
-        '--multiplicity',
+        '--max_num_particles',
         type=int,
         default=1,
-        help='The multiplicity for the token transformer')
+        help='The max number of particles for the token transformer')
+    parser.add_argument(
+        '--max_diffusion_samples',
+        type=int,
+        default=1,
+        help='The max number of diffusion samples for the token transformer')
     parser.add_argument('--dtype',
                         type=str,
                         default='float32',
@@ -66,19 +73,26 @@ def parse_arguments():
 
 def convert(worker_rank, world_size, configs, args):
     # Dump for tensorrt config
-    if args.backend == "all" or args.backend == BackendType.TRT:
+    if args.backend == 'all' or args.backend == BackendType.TRT:
         (args.output_dir / f'{BackendType.TRT}').mkdir(parents=True,
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
             json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
+    # Dump for torch config
+    if args.backend == 'all' or args.backend == BackendType.TORCH:
+        (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
+                                                         exist_ok=True)
+        with (args.output_dir /
+              f'{BackendType.TORCH}/config.json').open('w') as f:
+            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
                           tp_size=args.tp_size,
                           dcp_size=args.dcp_size,
                           rank=rank)
-        if args.backend == "all" or args.backend == BackendType.TRT:
+        if args.backend == 'all' or args.backend == BackendType.TRT:
             weights = convert_hf_diffusion_transformer(
                 configs[BackendType.TRT],
                 mapping,
@@ -86,6 +100,15 @@ def convert(worker_rank, world_size, configs, args):
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
+
+        if args.backend == 'all' or args.backend == BackendType.TORCH:
+            # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
+            weights = convert_hf_diffusion_transformer_torch(
+                config=configs[BackendType.TORCH],
+                mapping=mapping,
+                local_checkpoint=args.local_checkpoint)
+            torch.save(weights,
+                       args.output_dir / f'{BackendType.TORCH}/weights.pt')
 
 
 def main():
@@ -101,7 +124,9 @@ def main():
 
     config = {
         # "max_num_particles": args.max_num_particles,
-        "multiplicity": args.multiplicity,
+        "max_num_particles": 1,
+        "max_diffusion_samples": args.max_diffusion_samples,
+        # "max_diffusion_samples": 1,
         "backend": "trt",
         "num_blocks": token_transformer_config.num_blocks,
         "num_heads": token_transformer_config.num_heads,
@@ -121,9 +146,13 @@ def main():
     }
     trt_token_transformer_config = token_transformer_config.model_copy(
         update=config)
+    torch_token_transformer_config = token_transformer_config.model_copy(
+        update=config)
+    torch_token_transformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_token_transformer_config,
+        BackendType.TORCH: torch_token_transformer_config
     }
     if args.workers == 1:
         convert(0, world_size, configs, args)

@@ -27,9 +27,10 @@ from tensorrt_bionemo._torch.layers.position_encoders import \
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.models.boltz.const import (
-    BOND_TYPES, CHAIN_TYPE_IDS, CONTACT_CONDITIONING_INFO,
-    NUM_POCKET_CONTACT_INFO, NUM_TOKENS)
+from tensorrt_bionemo.pipeline.boltz.const import (BOND_TYPES, CHAIN_TYPE_IDS,
+                                                   CONTACT_CONDITIONING_INFO,
+                                                   NUM_POCKET_CONTACT_INFO,
+                                                   NUM_TOKENS)
 
 from .confidence_utils import (compute_aggregated_metric, compute_distogram,
                                compute_ptms, concat_out_dicts,

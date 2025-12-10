@@ -34,7 +34,8 @@ from openfold.utils.tensor_utils import tensor_tree_map
 from scripts.utils import add_data_args
 
 from tensorrt_bionemo.models.helper import AcceleratedConfig
-from tensorrt_bionemo.models.openfold2 import OpenFold2
+from tensorrt_bionemo.models.openfold2 import (OpenFold2,
+                                               OpenFold2AcceleratedModules)
 from tensorrt_bionemo.runtime import OnDemandContextMemoryManager
 
 logging.basicConfig()
@@ -128,7 +129,6 @@ def run_model_opt(model, batch, tag, output_dir, dtype=torch.float32):
             else:
                 cast_batch[k] = v
         out = model(cast_batch)
-        torch.cuda.synchronize()
         inference_time = time.perf_counter() - t
         logger.info(f"Inference time: {inference_time}")
         update_timings({tag: {
@@ -159,26 +159,21 @@ class NeedFallbackEvoformer:
 def create_model_opt(model_name: str,
                      evoformer_backend: str,
                      evoformer_ckpt: str,
-                     evoformer_fallback_threshold: int = 1536,
-                     dont_skip_template_pair_stack: bool = False) -> OpenFold2:
+                     evoformer_fallback_threshold: int = 1536) -> OpenFold2:
     manager = OnDemandContextMemoryManager()
 
     model = OpenFold2(model_name=model_name)
     model.cuda()
     model.eval()
 
-    if model.config.is_multimer:
-        # For multimer, if no template available, we should skip the template pair stack to improve the performance and accuracy.
-        model.config.skip_template_pair_stack = not dont_skip_template_pair_stack
-
-    acc_m = {
+    acc_m = OpenFold2AcceleratedModules({
         "evoformer":
         AcceleratedConfig(
             checkpoint=evoformer_ckpt,
             backend=evoformer_backend,
             need_fallback=NeedFallbackEvoformer(evoformer_fallback_threshold),
         )
-    }
+    })
     model = model.optimize(acc_m, manager)
     return model
 
@@ -295,8 +290,7 @@ def main(args):
 
     model_opt = create_model_opt(args.model_name, args.evoformer_backend,
                                  args.evoformer_ckpt,
-                                 args.evoformer_fallback_threshold,
-                                 args.dont_skip_template_pair_stack)
+                                 args.evoformer_fallback_threshold)
 
     # Initialize timing records list
     timing_records = []
@@ -309,22 +303,19 @@ def main(args):
         # Timing: Feature preparation
         t_prep_start = time.perf_counter()
         # Does nothing if the alignments have already been computed
-        try:
-            precompute_alignments(tags, seqs, alignment_dir, args)
-            feature_dict = feature_dicts.get(tag, None)
-            if feature_dict is None:
-                feature_dict = generate_feature_dict(
-                    tags,
-                    seqs,
-                    alignment_dir,
-                    data_processor,
-                    args,
-                )
+        precompute_alignments(tags, seqs, alignment_dir, args)
 
-                feature_dicts[tag] = feature_dict
-        except Exception as e:
-            logger.error(f"Error processing {tag}: {e}")
-            continue
+        feature_dict = feature_dicts.get(tag, None)
+        if feature_dict is None:
+            feature_dict = generate_feature_dict(
+                tags,
+                seqs,
+                alignment_dir,
+                data_processor,
+                args,
+            )
+
+            feature_dicts[tag] = feature_dict
 
         processed_feature_dict = feature_processor.process_features(
             feature_dict, mode='predict', is_multimer=is_multimer)
@@ -503,7 +494,7 @@ if __name__ == "__main__":
                 "torch" uses the original torch implementation.
                 "trt" uses the TRT backend.""")
     parser.add_argument("--evoformer_ckpt",
-                        type=str,
+                        type=Path,
                         default=None,
                         help="""Path to the evoformer checkpoint.""")
     parser.add_argument(
@@ -518,11 +509,6 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="""Maximum number of recycling iterations to use.""")
-    parser.add_argument(
-        "--dont_skip_template_pair_stack",
-        action="store_true",
-        default=False,
-        help="""Whether to not skip the template pair stack.""")
     add_data_args(parser)
     args = parser.parse_args()
 

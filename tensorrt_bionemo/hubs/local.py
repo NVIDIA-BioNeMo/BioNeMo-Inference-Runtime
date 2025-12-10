@@ -226,7 +226,7 @@ def load_local_weights(
     cached_file = open(filepath, 'rb')
     if return_raw:
         return cached_file
-    cached_file.close()
+
     if name == "openfold3":  # OpenFold3 has a different structure, we specifically extract the model weights
         state_dict = _load_of3_state_dict(filepath)
     else:

@@ -6,7 +6,7 @@ BASE_IMAGE := tensorrt-llm
 BASE_TAG := base
 RELEASE_IMAGE ?= trtbnm
 RELEASE_TAG ?= release
-TORCH_BASE_TAG ?= 25.10-py3
+TORCH_BASE_TAG ?= 25.08-py3
 CPU_ARCH := $(shell uname -m)
 
 ifeq ($(CPU_ARCH),x86_64)
@@ -26,8 +26,6 @@ base: submodules
 		--file $(TRTLLM_DIR)/docker/Dockerfile.multi \
 		--build-arg BASE_TAG=$(TORCH_BASE_TAG) \
 		--build-arg BASE_IMAGE=nvcr.io/nvidia/pytorch \
-		--build-arg TRT_LLM_VER=1.2.0 \
-		--build-arg TARGETARCH=$(CPU_ARCH) \
 		--tag $(BASE_IMAGE):$(BASE_TAG) $(TRTLLM_DIR)
 
 submodules:

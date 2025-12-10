@@ -111,7 +111,7 @@ class EvoformerBlock(nn.Module):
             mask_eps=1e-3,
             norm_mask_by_eps=True,
             norm_before_output=False,
-            cast_to_float_before_einsum=False,
+            cast_to_float_before_einsum=True,
             bias_flags={
                 "proj_a": True,
                 "proj_b": True,
@@ -322,8 +322,6 @@ class EvoformerStack(nn.Module):
                     skip_create_weights=config.skip_create_weights,
                     mapping=config.mapping,
                     trimul_high_precision=config.trimul_high_precision,
-                    opm_chunk_size=config.opm_chunk_size,
-                    opm_mask_chunk_size=config.opm_mask_chunk_size,
                 ))
         self.linear = Linear(config.c_m,
                              config.c_s,

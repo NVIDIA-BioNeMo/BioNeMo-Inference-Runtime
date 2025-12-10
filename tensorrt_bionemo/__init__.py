@@ -13,9 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._torch import _load_cuequivariance_lib, _load_kernels_lib
+from ._torch import (_load_cuequivariance_lib, _load_kernels_lib,
+                     _load_torch_ext_lib)
 from ._trt.plugin import _load_plugin_lib
-from .registry import register_all_factories
+from .registry import register_default_building_modules
 from .version import __version__
 
 _inited = False
@@ -30,9 +31,11 @@ def _init() -> None:
     _load_cuequivariance_lib()
     # load TensorRT-BioNemo Kernels library
     _load_kernels_lib()
+    # load TensorRT-BioNemo Torch Extension library
+    _load_torch_ext_lib()
     # load Tensorrt plugins library
     _load_plugin_lib()
-    register_all_factories()
+    register_default_building_modules()
 
 
 _init()

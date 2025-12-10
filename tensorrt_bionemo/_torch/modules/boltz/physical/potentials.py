@@ -20,8 +20,7 @@ import torch
 
 from tensorrt_bionemo._torch.modules.boltz.loss.diffusion import \
     weighted_rigid_align
-from tensorrt_bionemo.pipeline.models.boltz.const import (NUM_ELEMENTS,
-                                                          VDW_RADII)
+from tensorrt_bionemo.pipeline.boltz.const import NUM_ELEMENTS, VDW_RADII
 
 from .schedules import (ExponentialInterpolation, ParameterSchedule,
                         PiecewiseStepFunction)
@@ -89,8 +88,7 @@ class Potential(ABC):
                                        compute_derivative=False)
 
         if union_index is not None:
-            neg_exp_energy = torch.exp(-1 * parameters["union_lambda"] *
-                                       energy)
+            neg_exp_energy = torch.exp(-1 * parameters["union_lambda"] * energy)
             Z = torch.zeros((*energy.shape[:-1], union_index.max() + 1),
                             device=union_index.device).scatter_reduce(
                                 -1,
@@ -153,8 +151,7 @@ class Potential(ABC):
                                                 negation_mask=negation_mask,
                                                 compute_derivative=True)
         if union_index is not None:
-            neg_exp_energy = torch.exp(-1 * parameters["union_lambda"] *
-                                       energy)
+            neg_exp_energy = torch.exp(-1 * parameters["union_lambda"] * energy)
             Z = torch.zeros((*energy.shape[:-1], union_index.max() + 1),
                             device=union_index.device).scatter_reduce(
                                 -1,
@@ -264,8 +261,7 @@ class FlatBottomPotential(Potential):
             upper_bounds[~unbounded_below_mask *
                          ~negation_mask] = lower_bounds[~unbounded_below_mask *
                                                         ~negation_mask]
-            lower_bounds[~unbounded_below_mask *
-                         ~negation_mask] = float("-inf")
+            lower_bounds[~unbounded_below_mask * ~negation_mask] = float("-inf")
 
         neg_overflow_mask = value < lower_bounds
         pos_overflow_mask = value > upper_bounds
@@ -422,10 +418,8 @@ class PoseBustersPotential(FlatBottomPotential, DistancePotential):
         bond_mask = feats["rdkit_bounds_bond_mask"][0]
         angle_mask = feats["rdkit_bounds_angle_mask"][0]
 
-        lower_bounds[bond_mask *
-                     ~angle_mask] *= 1.0 - parameters["bond_buffer"]
-        upper_bounds[bond_mask *
-                     ~angle_mask] *= 1.0 + parameters["bond_buffer"]
+        lower_bounds[bond_mask * ~angle_mask] *= 1.0 - parameters["bond_buffer"]
+        upper_bounds[bond_mask * ~angle_mask] *= 1.0 + parameters["bond_buffer"]
         lower_bounds[~bond_mask *
                      angle_mask] *= 1.0 - parameters["angle_buffer"]
         upper_bounds[~bond_mask *
@@ -565,8 +559,7 @@ class StereoBondPotential(FlatBottomPotential, AbsDihedralPotential):
                                    device=stereo_bond_orientations.device)
         upper_bounds = torch.zeros(stereo_bond_orientations.shape,
                                    device=stereo_bond_orientations.device)
-        lower_bounds[
-            stereo_bond_orientations] = torch.pi - parameters["buffer"]
+        lower_bounds[stereo_bond_orientations] = torch.pi - parameters["buffer"]
         upper_bounds[stereo_bond_orientations] = float("inf")
         lower_bounds[~stereo_bond_orientations] = float("-inf")
         upper_bounds[~stereo_bond_orientations] = parameters["buffer"]
@@ -619,8 +612,7 @@ class PlanarBondPotential(FlatBottomPotential, AbsDihedralPotential):
         )
         k = torch.ones_like(upper_bounds)
 
-        return improper_index, (k, lower_bounds,
-                                upper_bounds), None, None, None
+        return improper_index, (k, lower_bounds, upper_bounds), None, None, None
 
 
 class TemplateReferencePotential(FlatBottomPotential, ReferencePotential):
@@ -709,11 +701,10 @@ def get_potentials(steering_args: BoltzSteeringParams,
                     "guidance_interval":
                     5,
                     "guidance_weight": (PiecewiseStepFunction(
-                        thresholds=[0.4], values=[0.125, 0.0]
-                    ) if steering_args.physical_guidance_update else 0.0),
+                        thresholds=[0.4], values=[0.125, 0.0]) if steering_args.
+                                        physical_guidance_update else 0.0),
                     "resampling_weight":
-                    PiecewiseStepFunction(thresholds=[0.6], values=[0.01, 0.0
-                                                                    ]),
+                    PiecewiseStepFunction(thresholds=[0.6], values=[0.01, 0.0]),
                     "buffer":
                     0.225,
                 }),

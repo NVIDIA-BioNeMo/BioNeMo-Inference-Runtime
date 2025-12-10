@@ -15,11 +15,10 @@
 
 import json
 from collections import OrderedDict
-from typing import Any, Callable, Literal, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
-from pydantic import (BaseModel, Field, SkipValidation, field_serializer,
-                      field_validator, model_validator)
+from pydantic import BaseModel, Field, field_serializer, field_validator
 from tensorrt_llm_lite._utils import str_dtype_to_torch, torch_dtype_to_str
 from tensorrt_llm_lite.plugin import PluginConfig
 
@@ -314,57 +313,3 @@ def print_model_tree(model: BaseModel, indent: int = 0):
             print_model_tree(value, indent + 1)
         else:
             print(f"{prefix}{name}: {value}")
-
-
-class AcceleratedConfig(BaseModel):
-    checkpoint: Optional[str] = None
-    backend: Optional[str] = None
-    default: Optional[BaseConfig] = None
-    warmup: bool = False
-    compile: bool = False
-    need_fallback: Optional[Callable[..., bool]] = None
-
-    class Config:
-        arbitrary_types_allowed = True
-
-
-class PostProcessorConfig(BaseModel):
-
-    class Config:
-        extra = "allow"
-        arbitrary_types_allowed = True
-
-
-Device = Literal["auto", "cuda", "cpu"]
-
-
-class DeviceConfig(BaseModel):
-    device: SkipValidation[Device | torch.device | None] = "auto"
-    device_type: Optional[str] = None
-
-    class Config:
-        arbitrary_types_allowed = True
-
-    @model_validator(mode="after")
-    def auto_set_device(self):
-        if self.device == "auto":
-            if torch.cuda.is_available():
-                self.device_type = "cuda"
-            else:
-                self.device_type = "cpu"
-        else:
-            # Device type is assigned explicitly
-            if isinstance(self.device, str):
-                self.device_type = self.device
-            elif isinstance(self.device, torch.device):
-                self.device_type = self.device.type
-        self.device = torch.device(self.device_type)
-        return self
-
-
-class EngineConfig(BaseModel):
-    name: Optional[str] = None
-    model: Optional[BaseConfig] = None
-    device: Optional[DeviceConfig] = None
-    accelerated: Optional[dict[str, AcceleratedConfig]] = None
-    postprocessor: Optional[PostProcessorConfig] = None

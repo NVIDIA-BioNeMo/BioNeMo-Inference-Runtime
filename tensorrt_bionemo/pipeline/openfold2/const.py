@@ -874,10 +874,7 @@ restype_num = len(restypes)  # := 20.
 unk_restype_index = restype_num  # Catch-all index for unknown restypes.
 
 restypes_with_x = restypes + ["X"]
-restype_order_with_x = {
-    restype: i
-    for i, restype in enumerate(restypes_with_x)
-}
+restype_order_with_x = {restype: i for i, restype in enumerate(restypes_with_x)}
 
 
 def sequence_to_onehot(sequence: str,
@@ -1246,10 +1243,8 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5,
                                             atom2_idx] = upper
             restype_atom14_bond_upper_bound[restype, atom2_idx,
                                             atom1_idx] = upper
-            restype_atom14_bond_stddev[restype, atom1_idx,
-                                       atom2_idx] = b.stddev
-            restype_atom14_bond_stddev[restype, atom2_idx,
-                                       atom1_idx] = b.stddev
+            restype_atom14_bond_stddev[restype, atom1_idx, atom2_idx] = b.stddev
+            restype_atom14_bond_stddev[restype, atom2_idx, atom1_idx] = b.stddev
     return {
         "lower_bound": restype_atom14_bond_lower_bound,  # shape (21,14,14)
         "upper_bound": restype_atom14_bond_upper_bound,  # shape (21,14,14)
@@ -1432,8 +1427,8 @@ def _make_restype_rigidgroup_base_atom37_idx():
     # Translate atom names into atom37 indices.
     lookuptable = atom_order.copy()
     lookuptable[''] = 0
-    restype_rigidgroup_base_atom37_idx = np.vectorize(
-        lambda x: lookuptable[x])(base_atom_names)
+    restype_rigidgroup_base_atom37_idx = np.vectorize(lambda x: lookuptable[x])(
+        base_atom_names)
     return restype_rigidgroup_base_atom37_idx
 
 

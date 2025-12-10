@@ -14,18 +14,29 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
+
+
+@dataclass
+class AcceleratedConfig:
+    checkpoint: str = None
+    backend: BackendType = None
+    default: BaseConfig = None
+    warmup: bool = False
+    compile: bool = False
+    need_fallback: Optional[Callable[..., bool]] = None
 
 
 class AcceleratedModules(ABC):
 
-    def __init__(self, configs: dict[str, AcceleratedConfig | dict] = {}):
+    def __init__(self, configs: dict[str, AcceleratedConfig] = {}):
         """
         This class is used to store the checkpoints and module configs for the accelerated modules.
         Args:
@@ -36,8 +47,6 @@ class AcceleratedModules(ABC):
             if k not in self.get_supported_modules().keys():
                 logger.warning(f"Unknown module: {k}")
             else:
-                if isinstance(v, dict):
-                    v = AcceleratedConfig(**v)
                 self._configs[k] = v
 
     def get_module_config(self,
@@ -65,37 +74,29 @@ class AcceleratedModules(ABC):
         raise NotImplementedError("Subclass must implement this method")
 
 
-class OptimizedModuleSetterMixin(ABC):
-
-    @abstractmethod
-    def get_optimized_modules(
-        self,
-        accelerated_configs: dict[str,
-                                  AcceleratedConfig]) -> AcceleratedModules:
-        raise NotImplementedError("Subclass must implement this method")
+class OptimizedModuleSetterMixin:
 
     def optimize(self,
-                 accelerated_configs: dict[str, AcceleratedConfig],
+                 accelerated_modules: AcceleratedModules,
                  context_memory_allocator: Optional[
                      BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
         """
         This function is used to build the optimized version of Boltz1 model from the original.
         Args:
-            accelerated_configs: A dictionary of modules to be accelerated.
+            accelerated_modules: A dictionary of modules to be accelerated.
             context_memory_allocator: The context memory allocator to be used for each module.
         Returns:
             The optimized model.
         """
-        optimized_modules = self.get_optimized_modules(accelerated_configs)
-        supported_modules = optimized_modules.get_supported_modules()
+        supported_modules = accelerated_modules.get_supported_modules()
 
         for module_name, (cls_, setter_func) in supported_modules.items():
-            backend = optimized_modules.get_module_backend(module_name)
+            backend = accelerated_modules.get_module_backend(module_name)
             if backend != BackendType.TRT:
                 # Only support for TRT backend for now
                 continue
-            checkpoint_dir = optimized_modules.get_module_checkpoint(
+            checkpoint_dir = accelerated_modules.get_module_checkpoint(
                 module_name)
             opt_m = cls_.load_weights(
                 checkpoint_dir=checkpoint_dir,
@@ -103,6 +104,6 @@ class OptimizedModuleSetterMixin(ABC):
                 **kwargs)
             org = setter_func(self, opt_m)
             opt_m.set_fallback_module(org)
-            opt_m.config.need_fallback = optimized_modules.get_module_need_fallback(
+            opt_m.config.need_fallback = accelerated_modules.get_module_need_fallback(
                 module_name)
         return self

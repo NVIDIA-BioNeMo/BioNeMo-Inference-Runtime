@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-import tensorrt_bionemo.ops as ops # noqa: F401
+import tensorrt_bionemo  # noqa: F401
 
 
 def test_generation_matrix():
@@ -18,6 +18,5 @@ def test_generation_matrix():
     flat_buffer = torch.from_numpy(flat_buffer).cuda()
     offsets = torch.from_numpy(offsets).cuda()
     lengths = torch.from_numpy(lengths).cuda()
-    output = torch.zeros(len(sequences), N, dtype=torch.int32).cuda()
 
-    ops.generate_deletion_matrix(flat_buffer, offsets, lengths, output)
+    torch.ops.trtbnm.generate_deletion_matrix(flat_buffer, offsets, lengths, N)

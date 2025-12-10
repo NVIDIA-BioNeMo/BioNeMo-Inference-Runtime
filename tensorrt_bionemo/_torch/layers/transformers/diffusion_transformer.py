@@ -44,24 +44,16 @@ class DiffusionTransformerLayer(nn.Module):
                  inf: float = 1e9,
                  attention_initial_norm: bool = False,
                  post_layer_norm: bool = False,
-                 use_ada_layer_norm: bool = True,
-                 use_seperate_layer_norm: bool = False,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
-                 initial_norm: bool = True,
                  conditioned_transition_using_silu: bool = False):
         super().__init__()
-
-        self.initial_norm = initial_norm
-        self.use_seperate_layer_norm = use_seperate_layer_norm
-
-        if initial_norm:
-            self.adaln = AdaLN(dim,
-                               dim_single_cond,
-                               eps=eps,
-                               dtype=dtype,
-                               mapping=mapping,
-                               skip_create_weights=skip_create_weights)
+        self.adaln = AdaLN(dim,
+                           dim_single_cond,
+                           eps=eps,
+                           dtype=dtype,
+                           mapping=mapping,
+                           skip_create_weights=skip_create_weights)
 
         self.pair_bias_attn = AttentionPairBias(
             layer_idx=layer_idx,
@@ -70,8 +62,6 @@ class DiffusionTransformerLayer(nn.Module):
             num_heads=num_heads,
             initial_norm=attention_initial_norm,
             bias_proj=bias_proj,
-            use_ada_layer_norm=use_ada_layer_norm,
-            use_seperate_layer_norm=use_seperate_layer_norm,
             eps=eps,
             inf=inf,
             dtype=dtype,
@@ -106,18 +96,13 @@ class DiffusionTransformerLayer(nn.Module):
                 all_reduce_params: Optional[AllReduceParams] = None,
                 **kwargs) -> torch.Tensor:
         """ First version of DiffusionTransformerLayer, does not support multiplicity > 1 and atom encoder, decoder"""
-        if self.initial_norm:
-            b = self.adaln(a, s)
-        else:
-            b = a
 
-        b = self.pair_bias_attn(
-            s=b,
-            z=bias,
-            single_embedding=s if self.use_seperate_layer_norm else None,
-            mask=mask,
-            attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params)
+        b = self.adaln(a, s)
+        b = self.pair_bias_attn(s=b,
+                                z=bias,
+                                mask=mask,
+                                attn_metadata=attn_metadata,
+                                all_reduce_params=all_reduce_params)
         b = F.sigmoid(self.output_projection(s)) * b
         a = a + b
         a = a + self.transition(a, s, all_reduce_params=all_reduce_params)
@@ -200,7 +185,6 @@ class OpenFold3DiffusionTransformer(nn.Module):
         self.layers = nn.ModuleList()
         self.version = config.version
         self.num_blocks = config.num_blocks
-
         for i in range(config.num_blocks):
             layer = DiffusionTransformerLayer(
                 layer_idx=i,
@@ -218,14 +202,7 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 skip_create_weights=config.skip_create_weights,
                 conditioned_transition_using_silu=config.
                 conditioned_transition_using_silu,
-                initial_norm=True if not hasattr(config, 'initial_norm') else
-                config.initial_norm,
-                use_ada_layer_norm=True
-                if not hasattr(config, 'use_ada_layer_norm') else
-                config.use_ada_layer_norm,
-                use_seperate_layer_norm=False
-                if not hasattr(config, 'use_seperate_layer_norm') else
-                config.use_seperate_layer_norm)
+            )
             dim = layer.pair_bias_attn.proj_z[0].weight.shape
             eps = layer.pair_bias_attn.proj_z[0].eps
             new_layer = nn.LayerNorm(dim, bias=False, eps=eps)

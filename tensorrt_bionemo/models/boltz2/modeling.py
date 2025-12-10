@@ -44,11 +44,10 @@ from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.pipeline.models.boltz.const import (
-    CONTACT_CONDITIONING_INFO, NUM_BOND_TYPES)
+from tensorrt_bionemo.pipeline.boltz.const import (CONTACT_CONDITIONING_INFO,
+                                                   NUM_BOND_TYPES)
 
-from ..helper import (AcceleratedConfig, AcceleratedModules,
-                      OptimizedModuleSetterMixin)
+from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY, Boltz2AffinityConfig
 from .convert import (convert_hf_affinity_module_torch,
                       convert_hf_confidence_module_torch,
@@ -241,11 +240,6 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             self.load_weights()
 
         self.eval()
-
-    def get_optimized_modules(
-        self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> Boltz2AcceleratedModules:
-        return Boltz2AcceleratedModules(accelerated_configs)
 
     @staticmethod
     def get_pretrained_config(model_name: str = SupMat.Boltz2) -> BaseConfig:

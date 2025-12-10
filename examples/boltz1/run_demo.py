@@ -25,7 +25,7 @@ from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
-from tensorrt_bionemo.models.boltz1 import Boltz1
+from tensorrt_bionemo.models.boltz1 import Boltz1, Boltz1AcceleratedModules
 from tensorrt_bionemo.models.helper import AcceleratedConfig
 from tensorrt_bionemo.runtime import BackendType, OnDemandContextMemoryManager
 
@@ -95,21 +95,21 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--structure_pairformer_ckpt',
-        type=str,
+        type=Path,
         default="engines/structure_pairformer",
         help=
         'The path to the directory containing the structure pairformer engines'
     )
     parser.add_argument(
         '--confidence_pairformer_ckpt',
-        type=str,
+        type=Path,
         default="engines/confidence_pairformer",
         help=
         'The path to the directory containing the confidence pairformer engines'
     )
     parser.add_argument(
         '--token_transformer_ckpt',
-        type=str,
+        type=Path,
         default="engines/token_transformer",
         help=
         'The path to the directory containing the token transformer engines')
@@ -220,19 +220,20 @@ def main(args):
     model = model.cuda()
     model.load_weights()
 
-    acc_m = {
-        "structure_pairformer":
-        AcceleratedConfig(
-            checkpoint=args.structure_pairformer_ckpt,
-            backend=args.structure_pairformer_backend,
-        ),
-        "confidence_pairformer":
-        AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
-                          backend=args.confidence_pairformer_backend),
-        "token_transformer":
-        AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
-                          backend=args.token_transformer_backend)
-    }
+    acc_m = Boltz1AcceleratedModules(
+        configs={
+            "structure_pairformer":
+            AcceleratedConfig(
+                checkpoint=args.structure_pairformer_ckpt,
+                backend=args.structure_pairformer_backend,
+            ),
+            "confidence_pairformer":
+            AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
+                              backend=args.confidence_pairformer_backend),
+            "token_transformer":
+            AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
+                              backend=args.token_transformer_backend)
+        })
     model = model.optimize(acc_m, manager)
 
     run_single_rank(processed_dir=args.processed_dir,

@@ -428,6 +428,14 @@ def test_custom_stream():
     stream_2 = torch.cuda.Stream()
     logger.info(f"Created custom streams: {stream_0}, {stream_1}, {stream_2}")
 
+    # Get the CUDA stream handles (integers) for TensorRT
+    stream_handle_0 = stream_0.cuda_stream
+    stream_handle_1 = stream_1.cuda_stream
+    stream_handle_2 = stream_2.cuda_stream
+    logger.info(
+        f"CUDA stream handles: {stream_handle_0}, {stream_handle_1}, {stream_handle_2}"
+    )
+
     # Get initial memory usage
     start_host_memory, start_device_memory = get_memory_usage()
     logger.info(
@@ -446,6 +454,7 @@ def test_custom_stream():
     configs = []
     engine_dirs = [engine_dir_0, engine_dir_1, engine_dir_2]
     streams = [stream_0, stream_1, stream_2]
+    stream_handles = [stream_handle_0, stream_handle_1, stream_handle_2]
 
     for i, engine_dir in enumerate(engine_dirs):
         config_path = os.path.join(engine_dir, "config.json")
@@ -460,15 +469,17 @@ def test_custom_stream():
     backends = []
 
     # Create backends with different streams
-    for i, (config, engine_dir,
-            stream) in enumerate(zip(configs, engine_dirs, streams)):
+    for i, (config, engine_dir, stream, stream_handle) in enumerate(
+            zip(configs, engine_dirs, streams, stream_handles)):
         # Pass the custom stream handle to the allocator
         backend = DummyBackend.load_weights(Path(engine_dir),
                                             context_memory_allocator=allocator,
-                                            stream=stream,
+                                            stream=stream_handle,
                                             loaded_by_manager=True)
         backends.append(backend)
-        logger.info(f"Registered backend {i} with custom stream {stream}")
+        logger.info(
+            f"Registered backend {i} with custom stream handle {stream_handle}"
+        )
 
     # Load all engines
     allocator.load()
@@ -482,12 +493,11 @@ def test_custom_stream():
     # Test forward pass through each engine with its custom stream
     input_tensor = torch.randn(1, 512).cuda()
 
-    for i, (
-            backend,
-            stream,
-    ) in enumerate(zip(backends, streams)):
+    for i, (backend, stream,
+            stream_handle) in enumerate(zip(backends, streams,
+                                            stream_handles)):
         logger.info(
-            f"Running forward pass for engine {i} with custom stream handle {stream}"
+            f"Running forward pass for engine {i} with custom stream handle {stream_handle}"
         )
 
         # Run forward pass with custom stream using the allocator
@@ -504,7 +514,9 @@ def test_custom_stream():
             1, 1
         ), f"Engine {i} output shape incorrect, expected (1,1), got {outputs['output'].shape}"
 
-        logger.info(f"Engine {i} forward pass successful with stream {stream}")
+        logger.info(
+            f"Engine {i} forward pass successful with stream handle {stream_handle}"
+        )
 
     # Get final memory usage
     end_host_memory, end_device_memory = get_memory_usage()

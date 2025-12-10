@@ -4,7 +4,7 @@ import json
 import time
 from pathlib import Path
 
-from safetensors.torch import save_file
+import safetensors
 from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo.configs import BackendType
@@ -134,7 +134,7 @@ def convert(worker_rank, world_size, configs, args):
                 mapping,
                 local_checkpoint=args.local_checkpoint,
                 model_name=model_name)
-            save_file(
+            safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
 

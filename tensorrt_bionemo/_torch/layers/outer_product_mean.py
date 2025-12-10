@@ -44,7 +44,6 @@ class OuterProductMean(nn.Module):
                  },
                  chunk_size: Optional[int] = None,
                  mask_chunk_size: Optional[int] = None,
-                 efficient_memory_threshold: Optional[int] = None,
                  dtype: Optional[torch.dtype] = None,
                  skip_create_weights: bool = False,
                  mapping: Optional[Mapping] = None) -> None:
@@ -99,8 +98,6 @@ class OuterProductMean(nn.Module):
             self.group_comm = get_default_tp_group_coordinator()
             assert self.group_comm is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
 
-        self._efficient_memory_threshold = efficient_memory_threshold or 2048
-
     @torch.compiler.disable
     def _compute_mask_with_chunking(self, mask: torch.Tensor) -> torch.Tensor:
         for i in range(0, mask.shape[1], self.mask_chunk_size):
@@ -118,41 +115,6 @@ class OuterProductMean(nn.Module):
             num_mask = num_mask.clamp(min=1)
         return num_mask
 
-    def _low_latency_z_mat_proj_o(
-            self,
-            z_out: torch.Tensor = None,
-            z: torch.Tensor = None,
-            sliced_weight: torch.Tensor = None) -> torch.Tensor:
-        # This will create a double memory copy, because z is not contiguous
-        z = z.reshape(*z.shape[:3], -1)
-
-        # The matmul here also create a memory buffer approx to z
-        if z_out is None:
-            z_out = z @ sliced_weight
-        else:
-            z_out.add_(z @ sliced_weight)
-        return z_out
-
-    def _efficient_memory_z_mat_proj_o(
-            self,
-            z_out: torch.Tensor = None,
-            z: torch.Tensor = None,
-            sliced_weight: torch.Tensor = None) -> torch.Tensor:
-        if z_out is None:
-            z_out = torch.zeros(*z.shape[:3],
-                                sliced_weight.shape[1],
-                                device=z.device,
-                                dtype=z.dtype)
-
-        c = z.shape[-2]
-        d = z.shape[-1]
-        sliced_weight = sliced_weight.reshape(c, d, -1)
-
-        # Quite similar to K-Stream GEMM algorithm.
-        for i in range(0, c):
-            z_out.add_((z[:, :, :, i, :] @ sliced_weight[i, ...]).contiguous())
-        return z_out
-
     @torch.compiler.disable
     def _compute_output_with_chunking(self, m: torch.Tensor, a: torch.Tensor,
                                       b: torch.Tensor,
@@ -160,36 +122,25 @@ class OuterProductMean(nn.Module):
         """ This is similar to split on TP but for single device
         See: https://github.com/jwohlwend/boltz/blob/v2.2.0/src/boltz/model/layers/outer_product_mean.py
         """
+
         for i in range(0, self.c_hidden, self.chunk_size):
             a_chunk = a[:, :, :, i:i + self.chunk_size]
             proj_o_sliced_weight = self.proj_o.weight[:, i * self.c_hidden:
                                                       (i + self.chunk_size) *
                                                       self.c_hidden]
-            # The enisum consume very large memory
-            # if I=J=3000, C=16, D=32, the memory about 8.6GB
-            # So we implement two different functions to compute the output
-            # The first function is efficient memory but low latency
-            # The second function is low memory but higher latency
             z = torch.einsum("bsic,bsjd->bijcd", a_chunk, b)
+            z = z.reshape(*z.shape[:3], -1)
             if self.norm_before_output:
-                z.div_(num_mask.unsqueeze(-1))
-            di = z.shape[-4]
-            dj = z.shape[-3]
-            if di * dj > self._efficient_memory_threshold**2:
-                compute_z_out_func = self._efficient_memory_z_mat_proj_o
-            else:
-                compute_z_out_func = self._low_latency_z_mat_proj_o
+                z = z / num_mask
             # Project to output
             if i == 0:
-                z_out = compute_z_out_func(None, z.to(m),
-                                           proj_o_sliced_weight.T)
+                z_out = z.to(m) @ proj_o_sliced_weight.T
             else:
-                z_out = compute_z_out_func(z_out, z.to(m),
-                                           proj_o_sliced_weight.T)
+                z_out = z_out + z.to(m) @ proj_o_sliced_weight.T
         if self.proj_o.bias is not None:
-            z_out.add_(self.proj_o.bias)  # add bias
+            z_out = z_out + self.proj_o.bias  # add bias
         if not self.norm_before_output:
-            z_out.div_(num_mask)
+            z_out = z_out / num_mask
         return z_out
 
     def forward(
@@ -237,14 +188,11 @@ class OuterProductMean(nn.Module):
         else:
             return self._compute_output_with_chunking(m, a, b, num_mask)
 
-        if z.is_contiguous():
-            z = z.view(*z.shape[:3], -1)
-        else:
-            z = z.reshape(*z.shape[:3], -1)
+        z = z.reshape(*z.shape[:3], -1)
         if self.norm_before_output:
-            z.div_(num_mask)
+            z = z / num_mask
 
         z = self.proj_o(z.to(m.dtype), all_reduce_params=all_reduce_params)
         if not self.norm_before_output:
-            z.div_(num_mask)
+            z = z / num_mask
         return z

@@ -15,6 +15,8 @@
 
 import numpy as np
 import torch
+
+# isort: off
 from tensorrt_llm.models.convert_utils import split
 from test_utils.boltz.create_and_load_weights import (
     create_outer_product_mean_weights, create_self_pairwise_attention_weights,
@@ -31,11 +33,12 @@ from test_utils.boltz.create_and_load_weights import (
     load_triangle_multiplication_node_weights_ref_torch,
     load_triangle_multiplication_node_weights_torch,
     load_triangle_multiplication_node_weights_trt)
-from test_utils.openfold.ref_layers import (RefEvoformerBlock, RefExtraMSABlock,
-                                            RefMSAAttention,
-                                            RefMSAColumnGlobalAttention,
-                                            RefMSATransition, RefPairTransition)
-
+from test_utils.openfold.ref_layers import (
+    RefEvoformerBlock, RefExtraMSABlock, RefInputEmbedder, RefMSAAttention,
+    RefMSAColumnGlobalAttention, RefMSATransition, RefPairTransition,
+    RefRecyclingEmbedder, RefTemplatePairStackBlock,
+    RefTemplatePointwiseAttention)
+# isort: on
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -527,3 +530,118 @@ def load_extra_msa_block_weights_torch(module, weights_and_biases):
                                                tri_attn_end_weights)
     load_pair_transition_weights_torch(module.pair_transition,
                                        pair_transition_weights)
+
+
+def create_input_embedder_weights(from_ref: RefInputEmbedder = None):
+    linear_tf_z_i_weight = from_ref.linear_tf_z_i.weight.data
+    linear_tf_z_i_bias = from_ref.linear_tf_z_i.bias.data
+    linear_tf_z_j_weight = from_ref.linear_tf_z_j.weight.data
+    linear_tf_z_j_bias = from_ref.linear_tf_z_j.bias.data
+    linear_tf_m_weight = from_ref.linear_tf_m.weight.data
+    linear_tf_m_bias = from_ref.linear_tf_m.bias.data
+    linear_msa_m_weight = from_ref.linear_msa_m.weight.data
+    linear_msa_m_bias = from_ref.linear_msa_m.bias.data
+    linear_relpos_weight = from_ref.linear_relpos.weight.data
+    linear_relpos_bias = from_ref.linear_relpos.bias.data
+
+    return linear_tf_z_i_weight, linear_tf_z_i_bias, \
+        linear_tf_z_j_weight, linear_tf_z_j_bias, \
+        linear_tf_m_weight, linear_tf_m_bias, \
+        linear_msa_m_weight, linear_msa_m_bias, \
+        linear_relpos_weight, linear_relpos_bias
+
+
+def load_input_embedder_weights_torch(module, weights_and_biases):
+    linear_tf_z_i_weight, linear_tf_z_i_bias, \
+    linear_tf_z_j_weight, linear_tf_z_j_bias, \
+    linear_tf_m_weight, linear_tf_m_bias, \
+    linear_msa_m_weight, linear_msa_m_bias, \
+    linear_relpos_weight, linear_relpos_bias = weights_and_biases
+
+    module.fused_linear_tf_z.load_weights([{
+        "weight":
+        linear_tf_z_i_weight.to("cuda"),
+        "bias":
+        linear_tf_z_i_bias.to("cuda")
+    }, {
+        "weight":
+        linear_tf_z_j_weight.to("cuda"),
+        "bias":
+        linear_tf_z_j_bias.to("cuda")
+    }])
+    module.linear_tf_m.load_weights([{
+        "weight": linear_tf_m_weight.to("cuda"),
+        "bias": linear_tf_m_bias.to("cuda")
+    }])
+    module.linear_msa_m.load_weights([{
+        "weight": linear_msa_m_weight.to("cuda"),
+        "bias": linear_msa_m_bias.to("cuda")
+    }])
+    module.linear_relpos.load_weights([{
+        "weight": linear_relpos_weight.to("cuda"),
+        "bias": linear_relpos_bias.to("cuda")
+    }])
+
+
+def create_recycling_embedder_weights(from_ref: RefRecyclingEmbedder = None):
+    linear_weight = from_ref.linear.weight.data
+    linear_bias = from_ref.linear.bias.data
+    layer_norm_m_weight = from_ref.layer_norm_m.weight.data
+    layer_norm_m_bias = from_ref.layer_norm_m.bias.data
+    layer_norm_z_weight = from_ref.layer_norm_z.weight.data
+    layer_norm_z_bias = from_ref.layer_norm_z.bias.data
+
+    return linear_weight, linear_bias, layer_norm_m_weight, layer_norm_m_bias, layer_norm_z_weight, layer_norm_z_bias
+
+
+def load_recycling_embedder_weights_torch(module, weights_and_biases):
+    linear_weight, linear_bias, layer_norm_m_weight, layer_norm_m_bias, layer_norm_z_weight, layer_norm_z_bias = weights_and_biases
+
+    module.linear.load_weights([{
+        "weight": linear_weight.to("cuda"),
+        "bias": linear_bias.to("cuda")
+    }])
+    module.layer_norm_m.weight.data.copy_(layer_norm_m_weight.to("cuda"))
+    module.layer_norm_m.bias.data.copy_(layer_norm_m_bias.to("cuda"))
+    module.layer_norm_z.weight.data.copy_(layer_norm_z_weight.to("cuda"))
+    module.layer_norm_z.bias.data.copy_(layer_norm_z_bias.to("cuda"))
+
+
+def create_template_pair_stack_block_weights(
+        from_ref: RefTemplatePairStackBlock = None):
+    tri_mul_out_weights = create_triangle_multiplication_node_weights(
+        from_ref=from_ref.tri_mul_out)
+    tri_mul_in_weights = create_triangle_multiplication_node_weights(
+        from_ref=from_ref.tri_mul_in)
+    tri_attn_start_weights = create_triangle_attention_node_weights(
+        from_ref=from_ref.tri_attn_start)
+    tri_attn_end_weights = create_triangle_attention_node_weights(
+        from_ref=from_ref.tri_attn_end)
+    pair_transition_weights = create_pair_transition_weights(
+        from_ref=from_ref.pair_transition)
+    return tri_mul_out_weights, tri_mul_in_weights, tri_attn_start_weights, tri_attn_end_weights, pair_transition_weights
+
+
+def load_template_pair_stack_block_weights_torch(module, weights_and_biases):
+    tri_mul_out_weights, tri_mul_in_weights, tri_attn_start_weights, tri_attn_end_weights, pair_transition_weights = weights_and_biases
+    load_triangle_multiplication_node_weights_torch(module.tri_mul_out,
+                                                    tri_mul_out_weights)
+    load_triangle_multiplication_node_weights_torch(module.tri_mul_in,
+                                                    tri_mul_in_weights)
+    load_triangle_attention_node_weights_torch(module.tri_attn_start,
+                                               tri_attn_start_weights)
+    load_triangle_attention_node_weights_torch(module.tri_attn_end,
+                                               tri_attn_end_weights)
+    load_pair_transition_weights_torch(module.pair_transition,
+                                       pair_transition_weights)
+
+
+def create_template_pointwise_attention_weights(
+        from_ref: RefTemplatePointwiseAttention = None):
+    mha_weights = create_triangle_attention_weights(from_ref=from_ref.mha)
+    return mha_weights
+
+
+def load_template_pointwise_attention_weights_torch(module, weights_and_biases):
+    mha_weights = weights_and_biases
+    load_triangle_attention_weights_torch(module.mha, mha_weights)

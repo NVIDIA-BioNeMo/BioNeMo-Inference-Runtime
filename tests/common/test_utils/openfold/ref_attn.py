@@ -82,8 +82,15 @@ class RefTriangleAttention(BoltzRefTriangleAttention):
             (f"{layer_path}.linear_g.weight", f"{layer_path}.linear_g.bias"),
             (f"{layer_path}.linear_o.weight", f"{layer_path}.linear_o.bias"),
         ]
-        c_q = c_k = c_v = state_dict[f"{layer_path}.linear_q.weight"].shape[1]
-        c_hidden = c_q // num_heads
+        c_q = state_dict[f"{layer_path}.linear_q.weight"].shape[1]
+        c_k = state_dict[f"{layer_path}.linear_k.weight"].shape[1]
+        c_v = state_dict[f"{layer_path}.linear_v.weight"].shape[1]
+        c_hidden = state_dict[f"{layer_path}.linear_q.weight"].shape[
+            0] // num_heads
+        if state_dict.get(f"{layer_path}.linear_g.weight") is not None:
+            gating = True
+        else:
+            gating = False
         m = cls(c_q=c_q,
                 c_k=c_k,
                 c_v=c_v,
@@ -95,10 +102,18 @@ class RefTriangleAttention(BoltzRefTriangleAttention):
                     "v": False,
                     "g": True,
                     "o": True
-                })
-        layers = [m.linear_q, m.linear_k, m.linear_v, m.linear_g, m.linear_o]
+                },
+                gating=gating)
+        if gating:
+            layers = [
+                m.linear_q, m.linear_k, m.linear_v, m.linear_g, m.linear_o
+            ]
+        else:
+            layers = [m.linear_q, m.linear_k, m.linear_v, None, m.linear_o]
         for (weights_path, bias_path), layer in zip(weights_biases_path,
                                                     layers):
+            if layer is None:
+                continue
             if bias_path is not None:
                 layer.bias.data.copy_(state_dict[bias_path])
             layer.weight.data.copy_(state_dict[weights_path])

@@ -16,7 +16,7 @@ import os
 
 import pytest
 import torch
-from test_utils.boltz.ref_attn import plain_pairwise_mhca, plain_triangle_mha
+from test_utils.boltz.ref_attn import plain_mha
 
 from tensorrt_bionemo._torch.attention_backend.interface import \
     AttentionMetadata
@@ -46,16 +46,16 @@ def test_vanilla_attention_for_triangle(seq_len, dtype):
 
     biases = [
         torch.randn(bs, seq_len, 1, 1, seq_len).cuda().to(dtype),
-        torch.randn(bs, num_heads, seq_len, seq_len).cuda().to(dtype)
+        torch.randn(bs, 1, num_heads, seq_len, seq_len).cuda().to(dtype)
     ]
     metadata = AttentionMetadata()
     vanilla_out = vanilla_attn.forward(q,
                                        k,
                                        v,
-                                       biases=biases,
+                                       biases=[biases[0], biases[1].squeeze(1)],
                                        metadata=metadata)
     assert vanilla_out.shape == (bs, seq_len, seq_len, num_heads, head_dim)
-    plain_out = plain_triangle_mha(q, k, v, num_heads, head_dim, biases)
+    plain_out = plain_mha(q, k, v, num_heads, head_dim, biases)
     assert vanilla_out.shape == plain_out.shape
     if dtype == torch.float32:
         torch.testing.assert_close(vanilla_out, plain_out)
@@ -95,7 +95,7 @@ def test_vanilla_attention_for_pairwise(batch_size, dtype):
                                        biases=biases,
                                        metadata=metadata)
     assert vanilla_out.shape == (batch_size, q_size, num_heads, head_dim)
-    plain_out = plain_pairwise_mhca(q, k, v, num_heads, head_dim, biases)
+    plain_out = plain_mha(q, k, v, num_heads, head_dim, biases)
     assert vanilla_out.shape == plain_out.shape
 
     if dtype == torch.float32:

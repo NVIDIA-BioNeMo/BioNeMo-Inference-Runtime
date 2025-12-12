@@ -872,7 +872,8 @@ class Boltz1ConfidenceModule(nn.Module):
         self.input_embedder_config = config.input_embedder
         self.pairformer_config = config.pairformer
         self.msa_module_config = config.msa_module
-        assert self.pairformer_config.torch_dtype == self.msa_module_config.torch_dtype, f"Boltz1ConfidenceModule pairformer dtype: {self.pairformer_config.torch_dtype}, msa dtype: {self.msa_module_config.torch_dtype}"
+        assert self.pairformer_config.torch_dtype == self.msa_module_config.torch_dtype, \
+            f"Boltz1ConfidenceModule pairformer dtype: {self.pairformer_config.torch_dtype}, msa dtype: {self.msa_module_config.torch_dtype}"
 
         self.max_num_atoms_per_token = 23
         self.no_update_s = self.pairformer_config.no_update_s

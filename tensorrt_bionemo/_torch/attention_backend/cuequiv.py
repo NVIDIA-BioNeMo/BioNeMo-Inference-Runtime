@@ -17,8 +17,8 @@ from typing import Optional
 
 import torch
 from cuequivariance_torch.primitives.triangle import triangle_attention
-from einops import rearrange
 
+from ..tensor_utils import permute_final_dims
 from .interface import AttentionBackend, AttentionMetadata
 
 
@@ -58,35 +58,52 @@ class CuEquivAttention(AttentionBackend[CuEquivAttentionMetadata]):
         metadata: Optional[AttentionMetadata] = None,
         **kwargs,
     ) -> torch.Tensor:
-        """Implementation of trifast attention."""
+        """Implementation of cuequiv attention."""
         mask = biases[0]
         bias = biases[1]
         if metadata is None:
             metadata = CuEquivAttentionMetadata()
         assert q.ndim == k.ndim == v.ndim, "q, k, v must have the same number of dimensions"
-        q.ndim
-        if q.ndim == 3:
+        # Steps:
+        # 1. Flatten the batch dimensions
+        # 2. Permute q, k, v to the correct shape
+        # 3. Flatten the bias and mask - expand the bias to the broadcasting-able shape
+        # 4. Cast mask to boolean, invert if needed
+        # 5. Unflatten batch dimensions for output
+        n_batch_dims = q.ndim - 3
+        if n_batch_dims == 0:
             q = q.unsqueeze(0)
             k = k.unsqueeze(0)
             v = v.unsqueeze(0)
-        if mask.ndim == 4:
             mask = mask.unsqueeze(0)
-        if bias.ndim == 3:
             bias = bias.unsqueeze(0)
+        batch_dims = q.shape[:-3]
+        n_batch_dims = len(batch_dims)
+        i, j, hd = q.shape[-3:]
+        d = hd // self.num_heads
 
-        bs, i, j, hd = q.shape
-        q = rearrange(q, "b i j (h d) -> b i h j d",
-                      h=self.num_heads).contiguous()
-        k = rearrange(k, "b i j (h d) -> b i h j d",
-                      h=self.num_heads).contiguous()
-        v = rearrange(v, "b i j (h d) -> b i h j d",
-                      h=self.num_heads).contiguous()
-        bias = rearrange(bias, "b h i j -> b () h i j").contiguous()
+        # b i j (h d) -> b i h j d
+        bijhd = list(batch_dims) + [i, j, self.num_heads, d]
+        q = q.view(*bijhd).flatten(0, n_batch_dims - 1)
+        q = permute_final_dims(q, (0, 2, 1, 3)).contiguous()
+        k = k.view(*bijhd).flatten(0, n_batch_dims - 1)
+        k = permute_final_dims(k, (0, 2, 1, 3)).contiguous()
+        v = v.view(*bijhd).flatten(0, n_batch_dims - 1)
+        v = permute_final_dims(v, (0, 2, 1, 3)).contiguous()
+
+        bias = bias.flatten(0, n_batch_dims - 1)
+        # b h i j -> b () h i j
+        bias = bias.unsqueeze(-4).contiguous()
+
+        mask = mask.flatten(0, n_batch_dims - 1)
         mask = mask.bool().contiguous()
         if metadata.flip_mask:
             mask = ~mask
 
         sm_scale = self.head_dim**-0.5
         o = _invoke_triangle_attention_kernel(q, k, v, bias, mask, sm_scale)
-        o = rearrange(o, " b i h j d -> b i j h d").contiguous()
+        #  b i h j d -> b i j h d
+        o = permute_final_dims(o, (0, 2, 1, 3)).contiguous()
+        if n_batch_dims > 1:
+            o = o.view(*batch_dims, *o.shape[-4:])
         return o

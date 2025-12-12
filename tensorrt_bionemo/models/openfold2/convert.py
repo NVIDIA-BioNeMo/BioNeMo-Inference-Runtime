@@ -206,14 +206,25 @@ def get_tri_mul_node_weights(state_dict: dict,
     norm_out_weight = state_dict[f"{prefix}.layer_norm_out.weight"]
     norm_out_bias = state_dict[f"{prefix}.layer_norm_out.bias"]
 
-    p_in_0_weight = state_dict[f"{prefix}.linear_a_p.weight"]
-    p_in_0_bias = state_dict[f"{prefix}.linear_a_p.bias"]
-    p_in_1_weight = state_dict[f"{prefix}.linear_b_p.weight"]
-    p_in_1_bias = state_dict[f"{prefix}.linear_b_p.bias"]
-    g_in_0_weight = state_dict[f"{prefix}.linear_a_g.weight"]
-    g_in_0_bias = state_dict[f"{prefix}.linear_a_g.bias"]
-    g_in_1_weight = state_dict[f"{prefix}.linear_b_g.weight"]
-    g_in_1_bias = state_dict[f"{prefix}.linear_b_g.bias"]
+    is_fused = f"{prefix}.linear_ab_p.weight" in state_dict
+    if not is_fused:
+        p_in_0_weight = state_dict[f"{prefix}.linear_a_p.weight"]
+        p_in_0_bias = state_dict[f"{prefix}.linear_a_p.bias"]
+        p_in_1_weight = state_dict[f"{prefix}.linear_b_p.weight"]
+        p_in_1_bias = state_dict[f"{prefix}.linear_b_p.bias"]
+        g_in_0_weight = state_dict[f"{prefix}.linear_a_g.weight"]
+        g_in_0_bias = state_dict[f"{prefix}.linear_a_g.bias"]
+        g_in_1_weight = state_dict[f"{prefix}.linear_b_g.weight"]
+        g_in_1_bias = state_dict[f"{prefix}.linear_b_g.bias"]
+    else:
+        linear_ab_p_weight = state_dict[f"{prefix}.linear_ab_p.weight"]
+        linear_ab_p_bias = state_dict[f"{prefix}.linear_ab_p.bias"]
+        p_in_0_weight, p_in_1_weight = linear_ab_p_weight.chunk(2, dim=0)
+        p_in_0_bias, p_in_1_bias = linear_ab_p_bias.chunk(2, dim=0)
+        linear_ab_g_weight = state_dict[f"{prefix}.linear_ab_g.weight"]
+        linear_ab_g_bias = state_dict[f"{prefix}.linear_ab_g.bias"]
+        g_in_0_weight, g_in_1_weight = linear_ab_g_weight.chunk(2, dim=0)
+        g_in_0_bias, g_in_1_bias = linear_ab_g_bias.chunk(2, dim=0)
 
     p_out_weight = state_dict[f"{prefix}.linear_z.weight"]
     p_out_bias = state_dict[f"{prefix}.linear_z.bias"]
@@ -430,6 +441,132 @@ def convert_hf_evoformer(config: BaseConfig,
     return weights
 
 
+def get_trimul_torch_weights(state_dict: dict,
+                             prefix: str,
+                             tbm_prefix: str,
+                             dtype: str = "float32",
+                             mapping: Mapping = None):
+    mapping if mapping else Mapping()
+    str_dtype_to_torch(dtype)
+
+    is_fused = f"{prefix}.linear_ab_p.weight" in state_dict
+    if not is_fused:
+        p_in_0_weight = state_dict[f"{prefix}.linear_a_p.weight"]
+        p_in_0_bias = state_dict[f"{prefix}.linear_a_p.bias"]
+        p_in_1_weight = state_dict[f"{prefix}.linear_b_p.weight"]
+        p_in_1_bias = state_dict[f"{prefix}.linear_b_p.bias"]
+        g_in_0_weight = state_dict[f"{prefix}.linear_a_g.weight"]
+        g_in_0_bias = state_dict[f"{prefix}.linear_a_g.bias"]
+        g_in_1_weight = state_dict[f"{prefix}.linear_b_g.weight"]
+        g_in_1_bias = state_dict[f"{prefix}.linear_b_g.bias"]
+    else:
+        linear_ab_p_weight = state_dict[f"{prefix}.linear_ab_p.weight"]
+        linear_ab_p_bias = state_dict[f"{prefix}.linear_ab_p.bias"]
+        p_in_0_weight, p_in_1_weight = linear_ab_p_weight.chunk(2, dim=0)
+        p_in_0_bias, p_in_1_bias = linear_ab_p_bias.chunk(2, dim=0)
+        linear_ab_g_weight = state_dict[f"{prefix}.linear_ab_g.weight"]
+        linear_ab_g_bias = state_dict[f"{prefix}.linear_ab_g.bias"]
+        g_in_0_weight, g_in_1_weight = linear_ab_g_weight.chunk(2, dim=0)
+        g_in_0_bias, g_in_1_bias = linear_ab_g_bias.chunk(2, dim=0)
+
+    ret = {}
+    ret[f"{tbm_prefix}.norm_in"] = [{
+        "weight":
+        state_dict[f"{prefix}.layer_norm_in.weight"],
+        "bias":
+        state_dict[f"{prefix}.layer_norm_in.bias"],
+    }]
+
+    ret[f"{tbm_prefix}.p_in"] = [{
+        "weight": p_in_0_weight,
+        "bias": p_in_0_bias,
+    }, {
+        "weight": p_in_1_weight,
+        "bias": p_in_1_bias,
+    }]
+
+    ret[f"{tbm_prefix}.g_in"] = [{
+        "weight": g_in_0_weight,
+        "bias": g_in_0_bias,
+    }, {
+        "weight": g_in_1_weight,
+        "bias": g_in_1_bias,
+    }]
+
+    ret[f"{tbm_prefix}.p_out"] = [{
+        "weight":
+        state_dict[f"{prefix}.linear_z.weight"],
+        "bias":
+        state_dict[f"{prefix}.linear_z.bias"],
+    }]
+    ret[f"{tbm_prefix}.g_out"] = [{
+        "weight":
+        state_dict[f"{prefix}.linear_g.weight"],
+        "bias":
+        state_dict[f"{prefix}.linear_g.bias"],
+    }]
+
+    ret[f"{tbm_prefix}.norm_out"] = [{
+        "weight":
+        state_dict[f"{prefix}.layer_norm_out.weight"],
+        "bias":
+        state_dict[f"{prefix}.layer_norm_out.bias"],
+    }]
+
+    return ret
+
+
+def get_triattn_torch_weights(state_dict: dict,
+                              prefix: str,
+                              tbm_prefix: str,
+                              dtype: str = "float32",
+                              mapping: Mapping = None):
+    mapping if mapping else Mapping()
+    str_dtype_to_torch(dtype)
+    ret = {}
+    ret[f"{tbm_prefix}.layer_norm"] = [{
+        "weight":
+        state_dict[f"{prefix}.layer_norm.weight"],
+        "bias":
+        state_dict[f"{prefix}.layer_norm.bias"],
+    }]
+    ret[f"{tbm_prefix}.linear"] = [{
+        "weight":
+        state_dict[f"{prefix}.linear.weight"],
+        "bias":
+        None
+    }]
+    ret[f"{tbm_prefix}.mha.qkv_proj"] = [{
+        "weight":
+        state_dict[f"{prefix}.mha.linear_q.weight"],
+        "bias":
+        None
+    }, {
+        "weight":
+        state_dict[f"{prefix}.mha.linear_k.weight"],
+        "bias":
+        None
+    }, {
+        "weight":
+        state_dict[f"{prefix}.mha.linear_v.weight"],
+        "bias":
+        None
+    }]
+    ret[f"{tbm_prefix}.mha.o_proj"] = [{
+        "weight":
+        state_dict[f"{prefix}.mha.linear_o.weight"],
+        "bias":
+        state_dict[f"{prefix}.mha.linear_o.bias"],
+    }]
+    ret[f"{tbm_prefix}.mha.g_proj"] = [{
+        "weight":
+        state_dict[f"{prefix}.mha.linear_g.weight"],
+        "bias":
+        state_dict[f"{prefix}.mha.linear_g.bias"],
+    }]
+    return ret
+
+
 def convert_hf_evoformer_torch(config: BaseConfig,
                                mapping: Mapping = None,
                                local_checkpoint: str = None,
@@ -608,103 +745,26 @@ def convert_hf_evoformer_torch(config: BaseConfig,
 
         # Update weights for tri_mul_out, tri_mul_in
         for name in ["tri_mul_out", "tri_mul_in"]:
-            tbnm_state_dict[f"blocks.{i}.{name}.norm_in"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_in.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_in.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.p_in"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_p.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_p.bias"],
-            }, {
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_p.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_p.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.g_in"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_g.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_g.bias"],
-            }, {
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_g.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_g.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.p_out"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_z.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_z.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.g_out"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_g.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_g.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.norm_out"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_out.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_out.bias"],
-            }]
+            tbm_prefix = f"blocks.{i}.{name}"
+            original_prefix = f"blocks.{i}.{name}"
+            tbnm_state_dict.update(
+                get_trimul_torch_weights(module_state_dict,
+                                         original_prefix,
+                                         tbm_prefix,
+                                         dtype=config.dtype,
+                                         mapping=mapping))
 
         # weight for tri_attn_start and tri_attn_end
         for name in ["start", "end"]:
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.layer_norm"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.layer_norm.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.tri_att_{name}.layer_norm.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.linear"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.tri_att_{name}.linear.weight"],
-                "bias":
-                None
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.mha.qkv_proj"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_q.weight"],
-                "bias":
-                None
-            }, {
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_k.weight"],
-                "bias":
-                None
-            }, {
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_v.weight"],
-                "bias":
-                None
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.mha.o_proj"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_o.weight"],
-                "bias":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_o.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.mha.g_proj"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_g.weight"],
-                "bias":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_g.bias"],
-            }]
+            tbm_prefix = f"blocks.{i}.tri_attn_{name}"
+            original_prefix = f"blocks.{i}.tri_att_{name}"
+            tbnm_state_dict.update(
+                get_triattn_torch_weights(module_state_dict,
+                                          original_prefix,
+                                          tbm_prefix,
+                                          dtype=config.dtype,
+                                          mapping=mapping))
+
         # weight for pair_transition
         tbnm_state_dict[f"blocks.{i}.pair_transition.layer_norm"] = [{
             "weight":
@@ -893,103 +953,26 @@ def convert_hf_extra_msa_stack_torch(config: BaseConfig,
 
         # Update weights for tri_mul_out, tri_mul_in
         for name in ["tri_mul_out", "tri_mul_in"]:
-            tbnm_state_dict[f"blocks.{i}.{name}.norm_in"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_in.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_in.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.p_in"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_p.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_p.bias"],
-            }, {
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_p.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_p.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.g_in"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_g.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_a_g.bias"],
-            }, {
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_g.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_b_g.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.p_out"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_z.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_z.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.g_out"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.linear_g.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.linear_g.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.{name}.norm_out"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_out.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.{name}.layer_norm_out.bias"],
-            }]
+            tbm_prefix = f"blocks.{i}.{name}"
+            original_prefix = f"blocks.{i}.{name}"
+            tbnm_state_dict.update(
+                get_trimul_torch_weights(module_state_dict,
+                                         original_prefix,
+                                         tbm_prefix,
+                                         dtype=config.dtype,
+                                         mapping=mapping))
 
         # weight for tri_attn_start and tri_attn_end
         for name in ["start", "end"]:
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.layer_norm"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.layer_norm.weight"],
-                "bias":
-                module_state_dict[f"blocks.{i}.tri_att_{name}.layer_norm.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.linear"] = [{
-                "weight":
-                module_state_dict[f"blocks.{i}.tri_att_{name}.linear.weight"],
-                "bias":
-                None
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.mha.qkv_proj"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_q.weight"],
-                "bias":
-                None
-            }, {
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_k.weight"],
-                "bias":
-                None
-            }, {
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_v.weight"],
-                "bias":
-                None
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.mha.o_proj"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_o.weight"],
-                "bias":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_o.bias"],
-            }]
-            tbnm_state_dict[f"blocks.{i}.tri_attn_{name}.mha.g_proj"] = [{
-                "weight":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_g.weight"],
-                "bias":
-                module_state_dict[
-                    f"blocks.{i}.tri_att_{name}.mha.linear_g.bias"],
-            }]
+            tbm_prefix = f"blocks.{i}.tri_attn_{name}"
+            original_prefix = f"blocks.{i}.tri_att_{name}"
+            tbnm_state_dict.update(
+                get_triattn_torch_weights(module_state_dict,
+                                          original_prefix,
+                                          tbm_prefix,
+                                          dtype=config.dtype,
+                                          mapping=mapping))
+
         # weight for pair_transition
         tbnm_state_dict[f"blocks.{i}.pair_transition.layer_norm"] = [{
             "weight":
@@ -1009,4 +992,375 @@ def convert_hf_extra_msa_stack_torch(config: BaseConfig,
             "bias":
             module_state_dict[f"blocks.{i}.pair_transition.linear_2.bias"],
         }]
+    return tbnm_state_dict
+
+
+def convert_hf_input_embedder_torch(config: BaseConfig,
+                                    mapping: Mapping = None,
+                                    local_checkpoint: str = None,
+                                    model_name: str = "openfold2_ptm_1",
+                                    weights: dict = None):
+    """
+    Convert a input embedder model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    prefix = "input_embedder."
+
+    module_state_dict = {}
+
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            module_state_dict[k.replace(prefix, "")] = v
+
+    tbnm_state_dict = {}
+    tbnm_state_dict["fused_linear_tf_z"] = [{
+        "weight":
+        module_state_dict["linear_tf_z_i.weight"],
+        "bias":
+        module_state_dict["linear_tf_z_i.bias"],
+    }, {
+        "weight":
+        module_state_dict["linear_tf_z_j.weight"],
+        "bias":
+        module_state_dict["linear_tf_z_j.bias"],
+    }]
+    tbnm_state_dict["linear_tf_m"] = [{
+        "weight":
+        module_state_dict["linear_tf_m.weight"],
+        "bias":
+        module_state_dict["linear_tf_m.bias"],
+    }]
+    tbnm_state_dict["linear_msa_m"] = [{
+        "weight":
+        module_state_dict["linear_msa_m.weight"],
+        "bias":
+        module_state_dict["linear_msa_m.bias"],
+    }]
+    tbnm_state_dict["linear_relpos"] = [{
+        "weight":
+        module_state_dict["linear_relpos.weight"],
+        "bias":
+        module_state_dict["linear_relpos.bias"],
+    }]
+    return tbnm_state_dict
+
+
+def convert_hf_recycling_embedder_torch(config: BaseConfig,
+                                        mapping: Mapping = None,
+                                        local_checkpoint: str = None,
+                                        model_name: str = "openfold2_ptm_1",
+                                        weights: dict = None):
+    """
+    Convert a recycling embedder model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    prefix = "recycling_embedder."
+    module_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            module_state_dict[k.replace(prefix, "")] = v
+
+    tbnm_state_dict = {}
+    tbnm_state_dict["linear"] = [{
+        "weight": module_state_dict["linear.weight"],
+        "bias": module_state_dict["linear.bias"],
+    }]
+    tbnm_state_dict["layer_norm_m"] = [{
+        "weight":
+        module_state_dict["layer_norm_m.weight"],
+        "bias":
+        module_state_dict["layer_norm_m.bias"],
+    }]
+    tbnm_state_dict["layer_norm_z"] = [{
+        "weight":
+        module_state_dict["layer_norm_z.weight"],
+        "bias":
+        module_state_dict["layer_norm_z.bias"],
+    }]
+    return tbnm_state_dict
+
+
+def convert_hf_extra_msa_embedder_torch(config: BaseConfig,
+                                        mapping: Mapping = None,
+                                        local_checkpoint: str = None,
+                                        model_name: str = "openfold2_ptm_1",
+                                        weights: dict = None):
+    """
+    Convert a extra msa embedder model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    prefix = "extra_msa_embedder."
+    module_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            module_state_dict[k.replace(prefix, "")] = v
+
+    tbnm_state_dict = {}
+    tbnm_state_dict["linear"] = [{
+        "weight": module_state_dict["linear.weight"],
+        "bias": module_state_dict["linear.bias"],
+    }]
+    return tbnm_state_dict
+
+
+def convert_hf_template_embedder_torch(config: BaseConfig,
+                                       mapping: Mapping = None,
+                                       local_checkpoint: str = None,
+                                       model_name: str = "openfold2_ptm_1",
+                                       weights: dict = None):
+    """
+    Convert a template embedder model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+    module_state_dict = {}
+    for k, v in state_dict.items():
+        if "template" in k:
+            module_state_dict[k.replace("template_embedder.", "")] = v
+
+    tbnm_state_dict = {}
+    # Weight for template single embedder
+    prefix = "template_angle_embedder"
+    tbnm_state_dict[f"template_single_embedder.linear_1"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.linear_1.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.linear_1.bias"],
+    }]
+    tbnm_state_dict[f"template_single_embedder.linear_2"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.linear_2.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.linear_2.bias"],
+    }]
+
+    # Weight for template pair embedder
+    prefix = "template_pair_embedder"
+    tbnm_state_dict[f"{prefix}.linear"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.linear.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.linear.bias"],
+    }]
+
+    # Weight for template pair stack
+    prefix = "template_pair_stack"
+    no_blocks = config.template_pair_stack.no_blocks
+    for i in range(no_blocks):
+        # Update weights for tri_mul_out, tri_mul_in
+        # TODO: Refactor this to use a single function for loading trimul and triattn weights
+        for name in ["tri_mul_out", "tri_mul_in"]:
+            tbm_prefix = f"{prefix}.blocks.{i}.{name}"
+            original_prefix = f"{prefix}.blocks.{i}.{name}"
+            tbnm_state_dict.update(
+                get_trimul_torch_weights(module_state_dict,
+                                         original_prefix,
+                                         tbm_prefix,
+                                         dtype=config.dtype,
+                                         mapping=mapping))
+
+        # weight for tri_attn_start and tri_attn_end
+        for name in ["start", "end"]:
+            tbm_prefix = f"{prefix}.blocks.{i}.tri_attn_{name}"
+            original_prefix = f"{prefix}.blocks.{i}.tri_att_{name}"
+            tbnm_state_dict.update(
+                get_triattn_torch_weights(module_state_dict,
+                                          original_prefix,
+                                          tbm_prefix,
+                                          dtype=config.dtype,
+                                          mapping=mapping))
+
+        # weight for pair_transition
+        tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.layer_norm"] = [{
+            "weight":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.layer_norm.weight"],
+            "bias":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.layer_norm.bias"],
+        }]
+        tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.linear_1"] = [{
+            "weight":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_1.weight"],
+            "bias":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_1.bias"],
+        }]
+        tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.linear_2"] = [{
+            "weight":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_2.weight"],
+            "bias":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_2.bias"],
+        }]
+    tbnm_state_dict[f"{prefix}.layer_norm"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.layer_norm.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.layer_norm.bias"],
+    }]
+
+    # Weight for template pointwise attention
+    prefix = "template_pointwise_att"
+    tbnm_state_dict[f"{prefix}.mha.q_proj"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.mha.linear_q.weight"],
+        "bias":
+        None
+    }]
+    tbnm_state_dict[f"{prefix}.mha.kv_proj"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.mha.linear_k.weight"],
+        "bias":
+        None
+    }, {
+        "weight":
+        module_state_dict[f"{prefix}.mha.linear_v.weight"],
+        "bias":
+        None
+    }]
+    tbnm_state_dict[f"{prefix}.mha.o_proj"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.mha.linear_o.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.mha.linear_o.bias"],
+    }]
+
+    return tbnm_state_dict
+
+
+def convert_hf_template_embedder_multimer_torch(
+        config: BaseConfig,
+        mapping: Mapping = None,
+        local_checkpoint: str = None,
+        model_name: str = "alphafold2_multimer_1",
+        weights: dict = None):
+
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    module_state_dict = {}
+    for k, v in state_dict.items():
+        if "template" in k:
+            module_state_dict[k.replace("template_embedder.", "")] = v
+
+    tbnm_state_dict = {}
+    # Weight for template single embedder
+    prefix = "template_single_embedder"
+    tbnm_state_dict[f"template_single_embedder.template_single_embedder"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.template_single_embedder.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.template_single_embedder.bias"],
+    }]
+    tbnm_state_dict[f"template_single_embedder.template_projector"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.template_projector.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.template_projector.bias"],
+    }]
+    # Weight for template pair embedder
+    prefix = "template_pair_embedder"
+    sub_names = [
+        "dgram_linear",
+        "aatype_linear_1",
+        "aatype_linear_2",
+        "query_embedding_layer_norm",
+        "query_embedding_linear",
+        "pseudo_beta_mask_linear",
+        "x_linear",
+        "y_linear",
+        "z_linear",
+        "backbone_mask_linear",
+    ]
+    for name in sub_names:
+        tbnm_state_dict[f"{prefix}.{name}"] = [{
+            "weight":
+            module_state_dict[f"{prefix}.{name}.weight"],
+            "bias":
+            module_state_dict[f"{prefix}.{name}.bias"],
+        }]
+    # Weight for template pair stack
+    prefix = "template_pair_stack"
+    no_blocks = config.template_pair_stack.no_blocks
+    for i in range(no_blocks):
+        # Update weights for tri_mul_out, tri_mul_in
+        # TODO: Refactor this to use a single function for loading trimul and triattn weights
+        for name in ["tri_mul_out", "tri_mul_in"]:
+            tbm_prefix = f"{prefix}.blocks.{i}.{name}"
+            original_prefix = f"{prefix}.blocks.{i}.{name}"
+            tbnm_state_dict.update(
+                get_trimul_torch_weights(module_state_dict,
+                                         original_prefix,
+                                         tbm_prefix,
+                                         dtype=config.dtype,
+                                         mapping=mapping))
+
+        # weight for tri_attn_start and tri_attn_end
+        for name in ["start", "end"]:
+            tbm_prefix = f"{prefix}.blocks.{i}.tri_attn_{name}"
+            original_prefix = f"{prefix}.blocks.{i}.tri_att_{name}"
+            tbnm_state_dict.update(
+                get_triattn_torch_weights(module_state_dict,
+                                          original_prefix,
+                                          tbm_prefix,
+                                          dtype=config.dtype,
+                                          mapping=mapping))
+        # weight for pair_transition
+        tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.layer_norm"] = [{
+            "weight":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.layer_norm.weight"],
+            "bias":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.layer_norm.bias"],
+        }]
+        tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.linear_1"] = [{
+            "weight":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_1.weight"],
+            "bias":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_1.bias"],
+        }]
+        tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.linear_2"] = [{
+            "weight":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_2.weight"],
+            "bias":
+            module_state_dict[
+                f"{prefix}.blocks.{i}.pair_transition.linear_2.bias"],
+        }]
+    tbnm_state_dict[f"{prefix}.layer_norm"] = [{
+        "weight":
+        module_state_dict[f"{prefix}.layer_norm.weight"],
+        "bias":
+        module_state_dict[f"{prefix}.layer_norm.bias"],
+    }]
+
+    tbnm_state_dict[f"linear_t"] = [{
+        "weight":
+        module_state_dict[f"linear_t.weight"],
+        "bias":
+        module_state_dict[f"linear_t.bias"],
+    }]
+
     return tbnm_state_dict

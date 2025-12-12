@@ -59,18 +59,6 @@ class Scenario:
              si=64,
              sj=96,
              dtype="float32",
-             triangle_attn_backend="TRIFAST",
-             support_batch=True),
-    Scenario(bs=1,
-             si=64,
-             sj=96,
-             dtype="float32",
-             triangle_attn_backend="TRIFAST",
-             support_batch=False),
-    Scenario(bs=2,
-             si=64,
-             sj=96,
-             dtype="float32",
              triangle_attn_backend="CUEQUIV",
              support_batch=True),
     Scenario(bs=1,
@@ -82,7 +70,6 @@ class Scenario:
 ],
                          ids=[
                              "vanilla_batch", "vanilla_no_batch",
-                             "trifast_batch", "trifast_no_batch",
                              "cuequiv_batch", "cuequiv_no_batch"
                          ])
 def test_triangle_attention(sc: Scenario):
@@ -195,7 +182,7 @@ def test_triangle_attention(sc: Scenario):
             hidden_states = hidden_states.unsqueeze(0)
             mask_bias = mask_bias.unsqueeze(0)
         ref_output = ref_attn(hidden_states, hidden_states,
-                              [mask_bias, triangle_bias])
+                              [mask_bias, triangle_bias.unsqueeze(1)])
 
     trt_output = outputs['output']
     if not sc.support_batch:

@@ -21,9 +21,39 @@ from tensorrt_llm.functional import AllReduceParams
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.attention import MSAColumnGlobalAttention
 from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
+from tensorrt_bionemo._torch.layers.transformers.evoformer import \
+    EvoformerStack as _EvoformerStack
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
+
+
+class EvoformerStack(_EvoformerStack):
+    """ Overriding the forward method to support batch dimension. OF2 may pass tensors without batch dimension. """
+
+    def forward(
+        self,
+        m: torch.Tensor,
+        z: torch.Tensor,
+        msa_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        n_dims = m.ndim
+        if n_dims == 3:
+            m = m.unsqueeze(0)
+            z = z.unsqueeze(0)
+            msa_mask = msa_mask.unsqueeze(0)
+            pair_mask = pair_mask.unsqueeze(0)
+
+        m, z, s = super().forward(m, z, msa_mask, pair_mask, attn_metadata,
+                                  all_reduce_params)
+        if n_dims == 3:
+            m = m.squeeze(0)
+            z = z.squeeze(0)
+            s = s.squeeze(0)
+        return m, z, s
 
 
 class ExtraMSABlock(EvoformerBlock):
@@ -184,7 +214,7 @@ class ExtraMSAStack(nn.Module):
                     transition_n=config.transition_n,
                     opm_first=config.opm_first,
                     support_batch=config.support_batch,
-                    triangle_attn_backend=config.triangle_attn_backend,
+                    triangle_attn_backend=config.triangle_attention_backend,
                     opm_chunk_size=config.opm_chunk_size,
                     opm_mask_chunk_size=config.opm_mask_chunk_size,
                     dtype=config.torch_dtype,
@@ -211,7 +241,33 @@ class ExtraMSAStack(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            m:
+                [*, N_seq, N_res, C_m] MSA embedding
+            z:
+                [*, N_res, N_res, C_z] pair embedding
+            msa_mask:
+                [*, N_seq, N_res] MSA mask
+            pair_mask:
+                [*, N_res, N_res] pair mask
+            attn_metadata:
+                Attention metadata
+            all_reduce_params:
+                AllReduce parameters
+        """
+        # Expand the batch dimensions if needed
+        n_dims = m.ndim
+        if n_dims == 3:
+            m = m.unsqueeze(0)
+            z = z.unsqueeze(0)
+            msa_mask = msa_mask.unsqueeze(0)
+            pair_mask = pair_mask.unsqueeze(0)
+
         for block in self.blocks:
             m, z = block(m, z, msa_mask, pair_mask, attn_metadata,
                          all_reduce_params)
+        if n_dims == 3:
+            m = m.squeeze(0)
+            z = z.squeeze(0)
         return z

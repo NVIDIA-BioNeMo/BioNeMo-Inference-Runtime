@@ -62,6 +62,7 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
 
     tri_attn = TriangleAttention(
         hidden_size=hidden_size,
+        head_dim=hidden_size // num_attention_heads,
         num_attention_heads=num_attention_heads,
         num_key_value_heads=num_attention_heads,
         layer_idx=0,
@@ -84,6 +85,7 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
     attn_metadata = metadata_cls(mapping=mapping)
     single_dev_tri_attn = TriangleAttention(
         hidden_size=hidden_size,
+        head_dim=hidden_size // num_attention_heads,
         num_attention_heads=num_attention_heads,
         num_key_value_heads=num_attention_heads,
         layer_idx=0,

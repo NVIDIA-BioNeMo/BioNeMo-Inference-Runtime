@@ -22,88 +22,90 @@ import torch
 from huggingface_hub import hf_hub_download
 from tensorrt_llm.logger import logger
 
+from tensorrt_bionemo.hubs.support_matrix import FoldingSupportMatrix as SupMat
+
 HFCheckpoint = namedtuple(
     "HFCheckpoint", ["repo_id", "filename", "weights_only", "state_dict_key"])
 
 HF_CHECKPOINTS = {
-    "boltz-1":
+    SupMat.Boltz1:
     HFCheckpoint(
         repo_id="boltz-community/boltz-1",
         filename="boltz1_conf.ckpt",
         weights_only=False,
         state_dict_key="state_dict",
     ),
-    "boltz-2":
+    SupMat.Boltz2:
     HFCheckpoint(
         repo_id="boltz-community/boltz-2",
         filename="boltz2_conf.ckpt",
         weights_only=False,
         state_dict_key="state_dict",
     ),
-    "boltz-2-affinity":
+    SupMat.Boltz2Affinity:
     HFCheckpoint(
         repo_id="boltz-community/boltz-2",
         filename="boltz2_aff.ckpt",
         weights_only=False,
         state_dict_key="state_dict",
     ),
-    "openfold2_finetuning_2":
+    SupMat.OpenFold2_FT2:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_2.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_finetuning_3":
+    SupMat.OpenFold2_FT3:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_3.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_finetuning_4":
+    SupMat.OpenFold2_FT4:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_4.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_finetuning_5":
+    SupMat.OpenFold2_FT5:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_5.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_no_templ_1":
+    SupMat.OpenFold2_NoTempl1:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_no_templ_1.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_no_templ_2":
+    SupMat.OpenFold2_NoTempl2:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_no_templ_2.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_no_templ_ptm_1":
+    SupMat.OpenFold2_NoTempl_PTM1:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_no_templ_ptm_1.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_ptm_1":
+    SupMat.OpenFold2_PTM1:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_ptm_1.pt",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_ptm_2":
+    SupMat.OpenFold2_PTM2:
     HFCheckpoint(
         repo_id="nz/OpenFold",
         filename="finetuning_ptm_2.pt",
@@ -150,6 +152,7 @@ def load_hf_weights(
         repo_id: Optional[Union[str,
                                 Path]] = None) -> Union[io.BytesIO, dict[str]]:
     """ Load a checkpoint from the Hugging Face Hub """
+    assert name in HF_CHECKPOINTS, f"Checkpoint {name} not found in HF_CHECKPOINTS"
     checkpoint = HF_CHECKPOINTS[name]
     default_repo_id = checkpoint.repo_id
     if repo_id is None:

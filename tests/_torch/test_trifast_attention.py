@@ -17,7 +17,7 @@ import os
 import numpy as np
 import pytest
 import torch
-from test_utils.boltz.ref_attn import plain_triangle_mha
+from test_utils.boltz.ref_attn import plain_mha
 
 from tensorrt_bionemo._torch.attention_backend.trifast import (
     TrifastAttention, TrifastAttentionMetadata)
@@ -62,8 +62,8 @@ def test_trifast_attention_for_triangle(seq_len, i_factor, dtype):
         # biases=[original_mask.bool(), biases[1].to(dtype)],
         biases=[biases[0], biases[1].to(dtype)],
         metadata=metadata)
-    plain_out = plain_triangle_mha(q, k, v, num_heads, head_dim,
-                                   [biases[0].float(), biases[1].float()])
+    plain_out = plain_mha(q, k, v, num_heads, head_dim,
+                          [biases[0].float(), biases[1].float().unsqueeze(1)])
 
     assert trifast_out.shape == plain_out.shape
     if dtype == torch.float32:

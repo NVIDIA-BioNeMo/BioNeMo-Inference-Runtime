@@ -112,6 +112,10 @@ class CuEquivFusedSigmoidGatedDualGemmDualX:
                      mask: Optional[torch.Tensor] = None,
                      b1: Optional[torch.Tensor] = None,
                      b2: Optional[torch.Tensor] = None) -> bool:
+        if w1.shape != w2.shape:
+            return False
+        if x1.shape != x2.shape:
+            return False
         M = 1
         for dim in x1.shape[:-1]:
             M *= dim
@@ -122,8 +126,6 @@ class CuEquivFusedSigmoidGatedDualGemmDualX:
         if N not in [128, 256]:
             return False
         if K not in [128]:
-            return False
-        if x1.shape[-1] != x2.shape[-1]:
             return False
         if not x1.dtype in [torch.float16, torch.bfloat16]:
             return False

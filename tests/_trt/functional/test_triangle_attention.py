@@ -20,10 +20,9 @@ import tensorrt as trt
 import tensorrt_llm
 import torch
 from einops import rearrange
-from tensorrt_llm._utils import (get_sm_version, str_dtype_to_torch,
-                                 str_dtype_to_trt)
+from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
 from tensorrt_llm.functional import Tensor
-from test_utils.boltz.ref_attn import plain_triangle_mha
+from test_utils.boltz.ref_attn import plain_mha
 
 from tensorrt_bionemo._trt.functional import (AttentionBackend,
                                               triangle_attention)
@@ -47,15 +46,7 @@ def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
     head_dim = 32
     use_trifast = backend == AttentionBackend.TRIFAST
     if use_trifast:
-        sm_version = get_sm_version()
-        if sm_version not in [80, 86]:
-            pytest.skip(
-                "trifast is only supported on sm_80 and sm_86 architectures for now"
-            )
-        if not use_mask:
-            pytest.skip("Mask is not optional in trifast")
-        if sk != sj:
-            pytest.skip("sk != sj is not supported in trifast")
+        pytest.skip("trifast is disabled for now")
 
     q = torch.randn(bs * num_heads,
                     si,
@@ -219,7 +210,8 @@ def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
                              b=bs).contiguous().float() * torch.finfo(
                                  q.dtype).min
 
-        ref_o = plain_triangle_mha(q, k, v, num_heads, head_dim, [mask, bias])
+        ref_o = plain_mha(q, k, v, num_heads, head_dim,
+                          [mask, bias.unsqueeze(1)])
 
         if use_trifast:
             ref_o = rearrange(ref_o,

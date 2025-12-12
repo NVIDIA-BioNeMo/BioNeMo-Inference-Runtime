@@ -106,6 +106,7 @@ class TriangleAttentionNode(nn.Module):
         self.mha = TriangleAttention(
             layer_idx=layer_idx,
             hidden_size=self.c_in,
+            head_dim=c_hidden,
             num_attention_heads=self.num_heads * self.tp_size,
             num_key_value_heads=self.num_heads * self.tp_size,
             gating=True,
@@ -232,6 +233,7 @@ class TriangleMultiplicationNode(nn.Module):
             self,
             layer_idx: int = 0,
             dim: int = 128,
+            hidden_dim: Optional[int] = None,
             eps: float = 1e-5,
             multiplication_type:
         TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
@@ -248,6 +250,8 @@ class TriangleMultiplicationNode(nn.Module):
             max_tri_mul_tp_size: bool = True,
             high_precision: bool = True):
         super().__init__()
+        if hidden_dim is None:
+            hidden_dim = dim
         self.mapping = mapping or Mapping()
         if max_tri_mul_tp_size:
             self.mapping = create_max_tp_mapping(self.mapping, dim)
@@ -264,12 +268,13 @@ class TriangleMultiplicationNode(nn.Module):
             DPCommManager.init_dp_comm(self.mapping)
             self.dp_comm = DPCommManager()
         self.dim = dim // self.tp_size
+        self.hidden_dim = hidden_dim // self.tp_size
         self.multiplication_type = multiplication_type
         self.norm_in = nn.LayerNorm(self.dim * self.tp_size,
                                     dtype=dtype,
                                     eps=eps)
         self.p_in = Linear(self.dim * self.tp_size,
-                           2 * self.dim * self.tp_size,
+                           2 * self.hidden_dim * self.tp_size,
                            bias=bias_flags["p_in"],
                            dtype=dtype,
                            mapping=self.mapping,
@@ -279,7 +284,7 @@ class TriangleMultiplicationNode(nn.Module):
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
                            skip_create_weights=skip_create_weights)
         self.g_in = Linear(self.dim * self.tp_size,
-                           2 * self.dim * self.tp_size,
+                           2 * self.hidden_dim * self.tp_size,
                            bias=bias_flags["g_in"],
                            dtype=dtype,
                            mapping=self.mapping,
@@ -293,10 +298,10 @@ class TriangleMultiplicationNode(nn.Module):
             self.high_precision_dtype = torch.float32
         else:
             self.high_precision_dtype = dtype
-        self.norm_out = nn.LayerNorm(self.dim * self.tp_size,
+        self.norm_out = nn.LayerNorm(self.hidden_dim * self.tp_size,
                                      dtype=self.high_precision_dtype,
                                      eps=eps)
-        self.p_out = Linear(self.dim * self.tp_size,
+        self.p_out = Linear(self.hidden_dim * self.tp_size,
                             self.dim * self.tp_size,
                             bias=bias_flags["p_out"],
                             dtype=self.high_precision_dtype,

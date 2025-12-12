@@ -22,85 +22,147 @@ from typing import Optional, Union
 
 import torch
 
+from tensorrt_bionemo.hubs.support_matrix import FoldingSupportMatrix as SupMat
+
 logger = logging.getLogger(__name__)
 
 LocalCheckpoint = namedtuple("LocalCheckpoint",
                              ["env", "weights_only", "state_dict_key"])
 
 LOCAL_CHECKPOINTS = {
-    "boltz-1":
+    SupMat.Boltz1:
     LocalCheckpoint(
         env="BOLTZ1_CKPT",
         weights_only=False,
         state_dict_key="state_dict",
     ),
-    "boltz-2":
+    SupMat.Boltz2:
     LocalCheckpoint(
         env="BOLTZ2_CKPT",
         weights_only=False,
         state_dict_key="state_dict",
     ),
-    "boltz-2-affinity":
+    SupMat.Boltz2Affinity:
     LocalCheckpoint(
         env="BOLTZ2_AFFINITY_CKPT",
         weights_only=False,
         state_dict_key="state_dict",
     ),
-    "openfold2_finetuning_2":
+    SupMat.OpenFold2_FT2:
     LocalCheckpoint(
         env="OPENFOLD2_FINETUNING_2_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_finetuning_3":
+    SupMat.OpenFold2_FT3:
     LocalCheckpoint(
         env="OPENFOLD2_FINETUNING_3_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_finetuning_4":
+    SupMat.OpenFold2_FT4:
     LocalCheckpoint(
         env="OPENFOLD2_FINETUNING_4_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_finetuning_5":
+    SupMat.OpenFold2_FT5:
     LocalCheckpoint(
         env="OPENFOLD2_FINETUNING_5_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_no_templ_1":
+    SupMat.OpenFold2_NoTempl1:
     LocalCheckpoint(
         env="OPENFOLD2_NO_TEMPL_1_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_no_templ_2":
+    SupMat.OpenFold2_NoTempl2:
     LocalCheckpoint(
         env="OPENFOLD2_NO_TEMPL_2_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_no_templ_ptm_1":
+    SupMat.OpenFold2_NoTempl_PTM1:
     LocalCheckpoint(
         env="OPENFOLD2_NO_TEMPL_PTM_1_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_ptm_1":
+    SupMat.OpenFold2_PTM1:
     LocalCheckpoint(
         env="OPENFOLD2_PTM_1_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold2_ptm_2":
+    SupMat.OpenFold2_PTM2:
     LocalCheckpoint(
         env="OPENFOLD2_PTM_2_CKPT",
         weights_only=True,
         state_dict_key=None,
     ),
-    "openfold3":
+    SupMat.AlphaFold2_1:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_1_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_2:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_2_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_3:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_3_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_4:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_4_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_5:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_5_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_Multimer_1:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_MULTIMER_1_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_Multimer_2:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_MULTIMER_2_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_Multimer_3:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_MULTIMER_3_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_Multimer_4:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_MULTIMER_4_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.AlphaFold2_Multimer_5:
+    LocalCheckpoint(
+        env="ALPHAFOLD2_MULTIMER_5_CKPT",
+        weights_only=True,
+        state_dict_key=None,
+    ),
+    SupMat.OpenFold3:
     LocalCheckpoint(
         env="OPENFOLD3_CKPT",
         weights_only=True,

@@ -158,7 +158,7 @@ class EvoformerBlock(nn.Module):
 
         self.tri_attn_start = TriangleAttentionStartingNode(
             c_z,
-            no_heads_pair,
+            c_hidden_pair_att,
             no_heads_pair,
             inf=inf,
             layer_idx=local_layer_idx,
@@ -177,7 +177,7 @@ class EvoformerBlock(nn.Module):
             skip_create_weights=skip_create_weights)
         self.tri_attn_end = TriangleAttentionEndingNode(
             c_z,
-            no_heads_pair,
+            c_hidden_pair_att,
             no_heads_pair,
             inf=inf,
             layer_idx=local_layer_idx,
@@ -311,7 +311,7 @@ class EvoformerStack(nn.Module):
                     transition_n=config.transition_n,
                     no_column_attention=config.no_column_attention,
                     opm_first=config.opm_first,
-                    triangle_attn_backend=config.triangle_attn_backend,
+                    triangle_attn_backend=config.triangle_attention_backend,
                     support_batch=config.support_batch,
                     dtype=config.torch_dtype,
                     eps=config.norm_epsilon,

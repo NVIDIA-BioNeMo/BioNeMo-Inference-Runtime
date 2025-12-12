@@ -65,6 +65,7 @@ def test_triangle_attention_backend(s: Scenario):
 
     attn = TriangleAttention(layer_idx=0,
                              hidden_size=s.hidden_size,
+                             head_dim=s.hidden_size // s.num_attention_heads,
                              num_attention_heads=s.num_attention_heads,
                              num_key_value_heads=s.num_key_value_heads,
                              gating=s.gating,

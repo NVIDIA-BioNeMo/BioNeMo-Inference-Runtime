@@ -26,6 +26,26 @@ class VanillaAttentionMetadata(AttentionMetadata):
     pass
 
 
+def _prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
+              head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    batch_dims = " ".join([f"b_{i}" for i in range(q.ndim - 2)])
+    q = rearrange(q,
+                  f"{batch_dims} j (h d) -> {batch_dims} h j d",
+                  h=no_heads,
+                  d=head_dim)
+    k = rearrange(k,
+                  f"{batch_dims} j (h d) -> {batch_dims} h d j",
+                  h=no_heads,
+                  d=head_dim)
+    v = rearrange(v,
+                  f"{batch_dims} j (h d) -> {batch_dims} h j d",
+                  h=no_heads,
+                  d=head_dim)
+
+    return q, k, v
+
+
 class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
 
     def __init__(self,
@@ -35,27 +55,6 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
                  num_kv_heads: Optional[int] = None):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
         assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
-
-    def _prep_qkv(
-            self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-            no_heads: int,
-            head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
-        batch_dims = " ".join([f"b_{i}" for i in range(q.ndim - 3)])
-        q = rearrange(q,
-                      f"{batch_dims} i j (h d) -> {batch_dims} i h j d",
-                      h=no_heads,
-                      d=head_dim)
-        k = rearrange(k,
-                      f"{batch_dims} i j (h d) -> {batch_dims} i h d j",
-                      h=no_heads,
-                      d=head_dim)
-        v = rearrange(v,
-                      f"{batch_dims} i j (h d) -> {batch_dims} i h j d",
-                      h=no_heads,
-                      d=head_dim)
-
-        return q, k, v
 
     def forward(
         self,
@@ -87,15 +86,14 @@ class VanillaTriangleAttention(AttentionBackend[VanillaAttentionMetadata]):
         To avoid memory allocation, we use a vanilla implementation here.
         """
         mask = biases[0]
-        bias = biases[1]
 
-        q, k, v = self._prep_qkv(q, k, v, self.num_heads, self.head_dim)
+        q, k, v = _prep_qkv(q, k, v, self.num_heads, self.head_dim)
         a = torch.matmul(q, k)
         a /= math.sqrt(self.head_dim)
 
         a += mask
-        if bias is not None:
-            bias = bias.unsqueeze(1)
+        if len(biases) > 1 and biases[1] is not None:
+            bias = biases[1].unsqueeze(1)
             a += bias
 
         a = torch.nn.functional.softmax(a, dim=-1)
@@ -115,27 +113,6 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
                  num_kv_heads: Optional[int] = None):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
         assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
-
-    def _prep_qkv(
-            self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-            no_heads: int,
-            head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
-        batch_dims = " ".join([f"b_{i}" for i in range(q.ndim - 2)])
-        q = rearrange(q,
-                      f"{batch_dims} j (h d) -> {batch_dims} h j d",
-                      h=no_heads,
-                      d=head_dim)
-        k = rearrange(k,
-                      f"{batch_dims} j (h d) -> {batch_dims} h d j",
-                      h=no_heads,
-                      d=head_dim)
-        v = rearrange(v,
-                      f"{batch_dims} j (h d) -> {batch_dims} h j d",
-                      h=no_heads,
-                      d=head_dim)
-
-        return q, k, v
 
     def forward(
         self,
@@ -166,7 +143,7 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
             2. Bias with shape equal to the shape of QK^T: [*, h, s_q, s_kv]
         """
 
-        q, k, v = self._prep_qkv(q, k, v, self.num_heads, self.head_dim)
+        q, k, v = _prep_qkv(q, k, v, self.num_heads, self.head_dim)
 
         a = torch.matmul(q, k)  # [*, H, s_q, s_kv]
         a /= math.sqrt(self.head_dim)

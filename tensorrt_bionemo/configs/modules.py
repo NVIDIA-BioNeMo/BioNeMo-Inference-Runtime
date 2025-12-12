@@ -162,27 +162,6 @@ class EvoformerStackConfig(BaseConfig):
     opm_first: bool = False
     chunk_size: int = 0
     n_seq: int = 516
-
-
-class EvoformerStackConfig(BaseConfig):
-    c_m: int = None
-    c_z: int = None
-    c_hidden_msa_att: int = None
-    c_hidden_opm: int = None
-    c_hidden_mul: int = None
-    c_hidden_pair_att: int = None
-    no_heads_msa: int = None
-    no_heads_pair: int = None
-    no_blocks: int = None
-    transition_n: int = None
-    opm_first: bool = False
-    support_batch: bool = True
-    chunk_size: int = 0
-    opm_chunk_size: int = None
-    opm_mask_chunk_size: int = None
-    max_msa_size: int = 5120
-    max_seq_len: int = 2048
-    padding_inputs: bool = True
     trimul_high_precision: bool = False
 
 

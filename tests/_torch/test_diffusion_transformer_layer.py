@@ -74,6 +74,8 @@ def test_diffusion_transformer_layer(sc: Scenario):
 
     # Load reference module based on whether it's OpenFold3 or Boltz
     if sc.test_with_openfold3:
+        if os.environ.get("OPENFOLD3_CKPT") is None:
+            pytest.skip("OPENFOLD3_CKPT environment variable is not set")
         ref_module = Openfold3RefDiffusionTransformerLayer.load_weights()
     else:
         ref_module = BoltzRefDiffusionTransformerLayer.load_weights()

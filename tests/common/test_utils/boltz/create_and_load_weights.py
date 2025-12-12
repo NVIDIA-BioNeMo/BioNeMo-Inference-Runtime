@@ -85,10 +85,12 @@ def create_triangle_attention_weights(c_q=None,
         out_bias = None
         if bias_flags.get("o", False):
             out_bias = from_ref.linear_o.bias.data
-        gating_weight = from_ref.linear_g.weight.data
+        gating_weight = None
         gating_bias = None
-        if bias_flags.get("g", False):
-            gating_bias = from_ref.linear_g.bias.data
+        if from_ref.linear_g is not None:
+            gating_weight = from_ref.linear_g.weight.data
+            if bias_flags.get("g", False):
+                gating_bias = from_ref.linear_g.bias.data
     return q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias
 
 
@@ -97,35 +99,65 @@ def load_triangle_attention_weights_torch(module,
                                           dtype=torch.float32):
     # Load for _torch module
     q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = weights_and_biases
-    qkv_weights = [
-        {
-            "weight": q_weight.to(dtype).to("cuda"),
-            "bias": q_bias.to(dtype).to("cuda") if q_bias is not None else None
-        },
-        {
-            "weight": k_weight.to(dtype).to("cuda"),
-            "bias": k_bias.to(dtype).to("cuda") if k_bias is not None else None
-        },
-        {
-            "weight": v_weight.to(dtype).to("cuda"),
-            "bias": v_bias.to(dtype).to("cuda") if v_bias is not None else None
-        },
-    ]
+    if getattr(module, "qkv_proj", None) is not None:
+        qkv_weights = [
+            {
+                "weight": q_weight.to(dtype).to("cuda"),
+                "bias":
+                q_bias.to(dtype).to("cuda") if q_bias is not None else None
+            },
+            {
+                "weight": k_weight.to(dtype).to("cuda"),
+                "bias":
+                k_bias.to(dtype).to("cuda") if k_bias is not None else None
+            },
+            {
+                "weight": v_weight.to(dtype).to("cuda"),
+                "bias":
+                v_bias.to(dtype).to("cuda") if v_bias is not None else None
+            },
+        ]
+        module.qkv_proj.load_weights(qkv_weights)
+    else:
+        q_weights = [{
+            "weight":
+            q_weight.to(dtype).to("cuda"),
+            "bias":
+            q_bias.to(dtype).to("cuda") if q_bias is not None else None
+        }]
+        kv_weights = [{
+            "weight":
+            k_weight.to(dtype).to("cuda"),
+            "bias":
+            k_bias.to(dtype).to("cuda") if k_bias is not None else None
+        }, {
+            "weight":
+            v_weight.to(dtype).to("cuda"),
+            "bias":
+            v_bias.to(dtype).to("cuda") if v_bias is not None else None
+        }]
+        module.q_proj.load_weights(q_weights)
+        module.kv_proj.load_weights(kv_weights)
+
     o_proj_weights = [{
         "weight":
         out_weight.to(dtype).to("cuda"),
         "bias":
         out_bias.to(dtype).to("cuda") if out_bias is not None else None
     }]
-    g_proj_weights = [{
-        "weight":
-        gating_weight.to(dtype).to("cuda"),
-        "bias":
-        gating_bias.to(dtype).to("cuda") if gating_bias is not None else None
-    }]
-    module.qkv_proj.load_weights(qkv_weights)
+    g_proj_weights = None
+    if gating_weight is not None:
+        g_proj_weights = [{
+            "weight":
+            gating_weight.to(dtype).to("cuda"),
+            "bias":
+            gating_bias.to(dtype).to("cuda")
+            if gating_bias is not None else None
+        }]
+
     module.o_proj.load_weights(o_proj_weights)
-    module.g_proj.load_weights(g_proj_weights)
+    if g_proj_weights is not None:
+        module.g_proj.load_weights(g_proj_weights)
 
 
 def load_triangle_attention_weights_ref_torch(module, weights_and_biases):

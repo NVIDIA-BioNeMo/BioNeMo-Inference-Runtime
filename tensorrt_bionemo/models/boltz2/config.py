@@ -15,10 +15,11 @@
 
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       MSAModuleConfig, PairformerConfig)
+from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.pipeline.boltz.const import NUM_TOKENS
 
 
-class Boltz2Config(BaseConfig):
+class _Default:
     token_s: int = 384
     token_z: int = 128
     atom_s: int = 128
@@ -26,199 +27,236 @@ class Boltz2Config(BaseConfig):
     num_bins: int = 64
     atoms_per_window_queries: int = 32
     atoms_per_window_keys: int = 128
+    use_no_atom_char: bool = False
+    use_atom_backbone_feat: bool = False
+    use_residue_feats_atoms: bool = False
     fix_sym_check: bool = True
     cyclic_pos_enc: bool = True
     bond_type_feature: bool = True
+
+
+class InputEmbedderConfig(BaseConfig):
+    atom_s: int = _Default.atom_s
+    atom_z: int = _Default.atom_z
+    token_s: int = _Default.token_s
+    token_z: int = _Default.token_z
+    atoms_per_window_queries: int = _Default.atoms_per_window_queries
+    atoms_per_window_keys: int = _Default.atoms_per_window_keys
+    atom_feature_dim: int = 388
+    add_method_conditioning: bool = True
+    add_modified_flag: bool = True
+    add_cyclic_flag: bool = True
+    add_mol_type_feat: bool = True
+    use_no_atom_char: bool = _Default.use_no_atom_char
+    use_atom_backbone_feat: bool = _Default.use_atom_backbone_feat
+    use_residue_feats_atoms: bool = _Default.use_residue_feats_atoms
+    diffusion_transformer: DiffusionTransformerConfig = DiffusionTransformerConfig(
+        num_blocks=3,
+        num_heads=4,
+        dim=_Default.atom_s,
+        dim_single_cond=_Default.atom_s,
+        dim_pairwise=_Default.atom_z,
+        bias_proj=False,
+        conditioned_transition_using_silu=False,
+        expansion_factor=2,
+        version="v2",
+    )
+
+
+class TrunkConfig(BaseConfig):
+    msa_module: MSAModuleConfig = MSAModuleConfig(
+        msa_s=64,
+        token_z=_Default.token_z,
+        token_s=_Default.token_s,
+        msa_blocks=4,
+        pairwise_head_width=32,
+        pairwise_num_heads=4,
+        num_tokens=NUM_TOKENS,
+        use_paired_feature=True,
+        opm_chunk_size=16,
+        opm_mask_chunk_size=256,
+        trimul_high_precision=False,
+        version="v2",
+    )
+    pairformer: PairformerConfig = PairformerConfig(
+        token_s=_Default.token_s,
+        token_z=_Default.token_z,
+        pairwise_head_width=32,
+        pairwise_num_heads=4,
+        num_blocks=64,
+        num_heads=16,
+        trimul_high_precision=False,
+        attention_initial_norm=False,
+        version="v2",
+    )
+
+
+class AtomDiffusionConfig(BaseConfig):
+    sigma_min: float = 0.0004
+    sigma_max: float = 10.0
+    sigma_data: int = 16
+    rho: int = 7
+    P_mean: float = -1.2
+    P_std: float = 1.5
+    gamma_0: float = 0.8
+    gamma_min: float = 1.0
+    noise_scale: float = 1.0
+    step_scale: float = 1.638
+    coordinate_augmentation: bool = True
+    alignment_reverse_diff: bool = True
+    synchronize_sigmas: bool = False
+    accumulate_token_repr: bool = False
+    num_sampling_steps: int = 50
+    token_s: int = _Default.token_s
+    dim_fourier: int = 256
+    version: str = "v2"
+
+
+class ScoreModelConfig(BaseConfig):
+    atom_s: int = _Default.atom_s
+    atom_z: int = _Default.atom_z
+    token_s: int = _Default.token_s
+    token_z: int = _Default.token_z
+    dim_fourier: int = 256
+    atoms_per_window_queries: int = _Default.atoms_per_window_queries
+    atoms_per_window_keys: int = _Default.atoms_per_window_keys
+    conditioning_transition_layers: int = 2
+
+    atom_encoder: DiffusionTransformerConfig = DiffusionTransformerConfig(
+        num_blocks=3,
+        num_heads=4,
+        dim=_Default.atom_s,
+        dim_single_cond=_Default.atom_s,
+        bias_proj=False,
+        conditioned_transition_using_silu=False,
+        expansion_factor=2,
+        version="v2",
+    )
+    token_transformer: DiffusionTransformerConfig = DiffusionTransformerConfig(
+        num_blocks=24,
+        num_heads=16,
+        dim=2 * _Default.token_s,
+        dim_single_cond=2 * _Default.token_s,
+        dim_pairwise=_Default.token_z,
+        bias_proj=False,
+        conditioned_transition_using_silu=False,
+        expansion_factor=2,
+        version="v2",
+    )
+    atom_decoder: DiffusionTransformerConfig = DiffusionTransformerConfig(
+        num_blocks=3,
+        num_heads=4,
+        dim=_Default.atom_s,
+        dim_single_cond=_Default.atom_s,
+        bias_proj=False,
+        conditioned_transition_using_silu=False,
+        expansion_factor=2,
+        version="v2",
+    )
+    version: str = "v2"
+
+
+class StructureModuleConfig(BaseConfig):
+    atom_diffusion: AtomDiffusionConfig = AtomDiffusionConfig()
+    score_model: ScoreModelConfig = ScoreModelConfig()
+    version: str = "v2"
+
+
+class ConfidenceHeadsConfig(BaseConfig):
+    token_s: int = _Default.token_s
+    token_z: int = _Default.token_z
+    num_plddt_bins: int = 50
+    num_pde_bins: int = 64
+    num_pae_bins: int = 64
+    token_level_confidence: bool = True
+    use_separate_heads: bool = True
+
+
+class ConfidenceModuleConfig(BaseConfig):
+    token_s: int = _Default.token_s
+    token_z: int = _Default.token_z
+    num_dist_bins: int = 64
+    token_level_confidence: bool = True
+    max_dist: int = 22
+    no_update_s: bool = False
+    add_s_to_z_prod: bool = True
+    add_s_input_to_s: bool = True
+    add_z_input_to_z: bool = True
+    fix_sym_check: bool = _Default.fix_sym_check
+    cyclic_pos_enc: bool = _Default.cyclic_pos_enc
+    maximum_bond_distance: int = 0
+    bond_type_feature: bool = _Default.bond_type_feature
+    conditioning_cutoff_min: float = 4.0
+    conditioning_cutoff_max: float = 20.0
+    return_latent_feats: bool = False
+    relative_position_encoder: BaseConfig = BaseConfig(period_broadcast=False)
+    pairformer: PairformerConfig = PairformerConfig(
+        token_s=token_s,
+        token_z=token_z,
+        pairwise_head_width=32,
+        pairwise_num_heads=4,
+        num_blocks=8,
+        num_heads=16,
+        trimul_high_precision=False,
+        attention_initial_norm=False,
+        version="v2",
+    )
+    confidence_heads: ConfidenceHeadsConfig = ConfidenceHeadsConfig()
+
+
+class Boltz2Config(BaseConfig):
+    token_s: int = _Default.token_s
+    token_z: int = _Default.token_z
+    atom_s: int = _Default.atom_s
+    atom_z: int = _Default.atom_z
+    num_bins: int = _Default.num_bins
+    atoms_per_window_queries: int = _Default.atoms_per_window_queries
+    atoms_per_window_keys: int = _Default.atoms_per_window_keys
+    fix_sym_check: bool = _Default.fix_sym_check
+    cyclic_pos_enc: bool = _Default.cyclic_pos_enc
+    bond_type_feature: bool = _Default.bond_type_feature
     min_dist: float = 2.0,
     max_dist: float = 22.0,
     conditioning_cutoff_min: float = 4.0
     conditioning_cutoff_max: float = 20.0
     num_distograms: int = 1
-    use_no_atom_char: bool = False
-    use_atom_backbone_feat: bool = False
-    use_residue_feats_atoms: bool = False
+    use_no_atom_char: bool = _Default.use_no_atom_char
+    use_atom_backbone_feat: bool = _Default.use_atom_backbone_feat
+    use_residue_feats_atoms: bool = _Default.use_residue_feats_atoms
     confidence_prediction: bool = True
     skip_run_structure: bool = False
 
-    input_embedder: BaseConfig = BaseConfig(
-        atom_s=atom_s,
-        atom_z=atom_z,
-        token_s=token_s,
-        token_z=token_z,
-        atoms_per_window_queries=atoms_per_window_queries,
-        atoms_per_window_keys=atoms_per_window_keys,
-        atom_feature_dim=388,
-        add_method_conditioning=True,
-        add_modified_flag=True,
-        add_cyclic_flag=True,
-        add_mol_type_feat=True,
-        use_no_atom_char=use_no_atom_char,
-        use_atom_backbone_feat=use_atom_backbone_feat,
-        use_residue_feats_atoms=use_residue_feats_atoms,
-        diffusion_transformer=DiffusionTransformerConfig(
-            num_blocks=3,
-            num_heads=4,
-            dim=atom_s,
-            dim_single_cond=atom_s,
-            dim_pairwise=atom_z,
-            bias_proj=False,
-            conditioned_transition_using_silu=False,
-            expansion_factor=2,
-            version="v2",
-        ),
-    )
+    input_embedder: InputEmbedderConfig = InputEmbedderConfig()
 
-    trunk: BaseConfig = BaseConfig(
-        msa_module=MSAModuleConfig(
-            msa_s=64,
-            token_z=token_z,
-            token_s=token_s,
-            msa_blocks=4,
-            pairwise_head_width=32,
-            pairwise_num_heads=4,
-            num_tokens=NUM_TOKENS,
-            use_paired_feature=True,
-            opm_chunk_size=16,
-            opm_mask_chunk_size=256,
-            trimul_high_precision=False,
-            version="v2",
-        ),
-        pairformer=PairformerConfig(
-            token_s=token_s,
-            token_z=token_z,
-            pairwise_head_width=32,
-            pairwise_num_heads=4,
-            num_blocks=64,
-            num_heads=16,
-            trimul_high_precision=False,
-            attention_initial_norm=False,
-            version="v2",
-        ),
-    )
+    trunk: TrunkConfig = TrunkConfig()
 
-    structure_module: BaseConfig = BaseConfig(
-        atom_diffusion=BaseConfig(
-            sigma_min=0.0004,
-            sigma_max=10.0,
-            sigma_data=16,
-            rho=7,
-            P_mean=-1.2,
-            P_std=1.5,
-            gamma_0=0.8,
-            gamma_min=1.0,
-            noise_scale=1.0,
-            step_scale=1.638,
-            coordinate_augmentation=True,
-            alignment_reverse_diff=True,
-            synchronize_sigmas=False,
-            accumulate_token_repr=False,
-            num_sampling_steps=50,
-            token_s=token_s,
-            dim_fourier=256,
-            version="v2",
-        ),
-        score_model=BaseConfig(
-            atom_s=atom_s,
-            atom_z=atom_z,
-            token_s=token_s,
-            token_z=token_z,
-            dim_fourier=256,
-            atoms_per_window_queries=atoms_per_window_queries,
-            atoms_per_window_keys=atoms_per_window_keys,
-            conditioning_transition_layers=2,
-            atom_encoder=DiffusionTransformerConfig(
-                num_blocks=3,
-                num_heads=4,
-                dim=atom_s,
-                dim_single_cond=atom_s,
-                bias_proj=False,
-                conditioned_transition_using_silu=False,
-                expansion_factor=2,
-                version="v2",
-            ),
-            token_transformer=DiffusionTransformerConfig(
-                num_blocks=24,
-                num_heads=16,
-                dim=2 * token_s,
-                dim_single_cond=2 * token_s,
-                dim_pairwise=token_z,
-                bias_proj=False,
-                conditioned_transition_using_silu=False,
-                expansion_factor=2,
-                version="v2",
-            ),
-            atom_decoder=DiffusionTransformerConfig(
-                num_blocks=3,
-                num_heads=4,
-                dim=atom_s,
-                dim_single_cond=atom_s,
-                bias_proj=False,
-                conditioned_transition_using_silu=False,
-                expansion_factor=2,
-                version="v2",
-            ),
-            version="v2",
-        ))
+    structure_module: StructureModuleConfig = StructureModuleConfig()
 
-    confidence_module: BaseConfig = BaseConfig(
-        token_s=token_s,
-        token_z=token_z,
-        num_dist_bins=64,
-        token_level_confidence=True,
-        max_dist=22,
-        no_update_s=False,
-        add_s_to_z_prod=True,
-        add_s_input_to_s=True,
-        add_z_input_to_z=True,
-        fix_sym_check=fix_sym_check,
-        cyclic_pos_enc=cyclic_pos_enc,
-        maximum_bond_distance=0,
-        bond_type_feature=True,
-        conditioning_cutoff_min=conditioning_cutoff_min,
-        conditioning_cutoff_max=conditioning_cutoff_max,
-        return_latent_feats=False,
-        relative_position_encoder=BaseConfig(period_broadcast=False),
-        pairformer=PairformerConfig(
-            token_s=token_s,
-            token_z=token_z,
-            pairwise_head_width=32,
-            pairwise_num_heads=4,
-            num_blocks=8,
-            num_heads=16,
-            trimul_high_precision=False,
-            attention_initial_norm=False,
-            version="v2",
-        ),
-        confidence_heads=BaseConfig(
-            token_s=token_s,
-            token_z=token_z,
-            num_plddt_bins=50,
-            num_pde_bins=64,
-            num_pae_bins=64,
-            token_level_confidence=True,
-            use_separate_heads=True,
-        ),
-    )
+    confidence_module: ConfidenceModuleConfig = ConfidenceModuleConfig()
+
+
+class AffinityModuleConfig(BaseConfig):
+    token_s: int = _Default.token_s
+    token_z: int = _Default.token_z
+    num_dist_bins: int = 64
+    max_dist: int = 22
+    pairformer_num_blocks: int = 8
+    pairwise_head_width: int = 32
+    pairwise_num_heads: int = 4
+
+
+class AffinityEnsembleConfig(AffinityModuleConfig):
+    module1: AffinityModuleConfig = AffinityModuleConfig(
+        pairformer_num_blocks=8)
+    module2: AffinityModuleConfig = AffinityModuleConfig(
+        pairformer_num_blocks=4)
 
 
 class Boltz2AffinityConfig(Boltz2Config):
-    affinity: BaseConfig = BaseConfig(
-        module1=BaseConfig(
-            token_s=Boltz2Config().token_s,
-            token_z=Boltz2Config().token_z,
-            num_dist_bins=64,
-            max_dist=22,
-            pairformer_num_blocks=8,
-            pairwise_head_width=32,
-            pairwise_num_heads=4,
-        ),
-        module2=BaseConfig(
-            token_s=Boltz2Config().token_s,
-            token_z=Boltz2Config().token_z,
-            num_dist_bins=64,
-            max_dist=22,
-            pairformer_num_blocks=4,
-            pairwise_head_width=32,
-            pairwise_num_heads=4,
-        ),
-    )
+    affinity: AffinityEnsembleConfig = AffinityEnsembleConfig()
+
+
+PRETRAINED_CONFIG_REGISTRY = {
+    SupMat.Boltz2: Boltz2Config,
+    SupMat.Boltz2Affinity: Boltz2AffinityConfig,
+}

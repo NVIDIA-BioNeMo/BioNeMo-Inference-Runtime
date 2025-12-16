@@ -1029,6 +1029,7 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
         state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
     else:
         state_dict = weights
+    weights = {}
     layer_path = "input_embedder"
     embedding_layer_path = f"{layer_path}.atom_encoder"
     transformer_layer_path = f"{layer_path}.atom_attention_encoder"
@@ -1041,16 +1042,11 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
         weights=state_dict,
         prefix=f"{transformer_layer_path}.atom_encoder.diffusion_transformer.")
 
-    weights = {
-        "atom_embedding": {},
-        "atom_attention_encoder": {
-            "atom_encoder": {
-                "diffusion_transformer": atom_transformer_weights
-            }
-        }
-    }
+    for k, v in atom_transformer_weights.items():
+        weights[
+            f"atom_attention_encoder.atom_encoder.diffusion_transformer.{k}"] = v
 
-    weights["atom_attention_encoder"]["atom_to_token_trans.0"] = [{
+    weights["atom_attention_encoder.atom_to_token_trans.0"] = [{
         "weight":
         state_dict[f"{transformer_layer_path}.atom_to_token_trans.0.weight"],
         "bias":
@@ -1078,7 +1074,7 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
     }
 
     for name, (weights_path, bias_path) in weights_biases_path.items():
-        weights["atom_embedding"][name] = [{
+        weights[f"atom_embedding.{name}"] = [{
             "weight":
             state_dict[weights_path],
             "bias":
@@ -1156,29 +1152,28 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     else:
         state_dict = weights
 
-    weights = {"score_model": {}}
+    weights = {}
 
     # Convert for score model
     score_model_config = config.score_model
     layer_path = "structure_module.score_model"
-    ws = weights["score_model"]
 
     # Load for single conditioner, s_to_a_linear and a_norm
-    ws["single_conditioner.norm_single"] = [{
+    weights["score_model.single_conditioner.norm_single"] = [{
         "weight":
         state_dict[f"{layer_path}.single_conditioner.norm_single.weight"],
         "bias":
         state_dict[f"{layer_path}.single_conditioner.norm_single.bias"]
     }]
 
-    ws["single_conditioner.single_embed"] = [{
+    weights["score_model.single_conditioner.single_embed"] = [{
         "weight":
         state_dict[f"{layer_path}.single_conditioner.single_embed.weight"],
         "bias":
         state_dict.get(f"{layer_path}.single_conditioner.single_embed.bias",
                        None)
     }]
-    ws["single_conditioner.fourier_embed.proj"] = [{
+    weights["score_model.single_conditioner.fourier_embed.proj"] = [{
         "weight":
         state_dict[
             f"{layer_path}.single_conditioner.fourier_embed.proj.weight"],
@@ -1186,13 +1181,13 @@ def convert_hf_structure_module_torch(config: BaseConfig,
         state_dict.get(
             f"{layer_path}.single_conditioner.fourier_embed.proj.bias", None)
     }]
-    ws["single_conditioner.norm_fourier"] = [{
+    weights["score_model.single_conditioner.norm_fourier"] = [{
         "weight":
         state_dict[f"{layer_path}.single_conditioner.norm_fourier.weight"],
         "bias":
         state_dict[f"{layer_path}.single_conditioner.norm_fourier.bias"]
     }]
-    ws["single_conditioner.fourier_to_single"] = [{
+    weights["score_model.single_conditioner.fourier_to_single"] = [{
         "weight":
         state_dict[f"{layer_path}.single_conditioner.fourier_to_single.weight"],
         "bias":
@@ -1200,7 +1195,7 @@ def convert_hf_structure_module_torch(config: BaseConfig,
             f"{layer_path}.single_conditioner.fourier_to_single.bias", None)
     }]
     for i in range(score_model_config.conditioning_transition_layers):
-        ws[f"single_conditioner.transitions.{i}.norm"] = [{
+        weights[f"score_model.single_conditioner.transitions.{i}.norm"] = [{
             "weight":
             state_dict[
                 f"{layer_path}.single_conditioner.transitions.{i}.norm.weight"],
@@ -1208,7 +1203,7 @@ def convert_hf_structure_module_torch(config: BaseConfig,
             state_dict[
                 f"{layer_path}.single_conditioner.transitions.{i}.norm.bias"]
         }]
-        ws[f"single_conditioner.transitions.{i}.fused_fc2_fc1"] = [{
+        weights[f"score_model.single_conditioner.transitions.{i}.fused_fc2_fc1"] = [{
             "weight":
             state_dict[
                 f"{layer_path}.single_conditioner.transitions.{i}.fc2.weight"],
@@ -1225,76 +1220,79 @@ def convert_hf_structure_module_torch(config: BaseConfig,
                 f"{layer_path}.single_conditioner.transitions.{i}.fc1.bias",
                 None)
         }]
-        ws[f"single_conditioner.transitions.{i}.fc3"] = [{
+        weights[f"score_model.single_conditioner.transitions.{i}.fc3"] = [{
             'weight':
             state_dict[
                 f"{layer_path}.single_conditioner.transitions.{i}.fc3.weight"],
         }]
-    ws["s_to_a_linear.0"] = [{
+    weights["score_model.s_to_a_linear.0"] = [{
         "weight":
         state_dict[f"{layer_path}.s_to_a_linear.0.weight"],
         "bias":
         state_dict[f"{layer_path}.s_to_a_linear.0.bias"]
     }]
-    ws["s_to_a_linear.1"] = [{
+    weights["score_model.s_to_a_linear.1"] = [{
         "weight":
         state_dict[f"{layer_path}.s_to_a_linear.1.weight"],
         "bias":
         None
     }]
-    ws["a_norm"] = [{
-        "weight": state_dict[f"{layer_path}.a_norm.weight"],
-        "bias": state_dict[f"{layer_path}.a_norm.bias"]
+    weights["score_model.a_norm"] = [{
+        "weight":
+        state_dict[f"{layer_path}.a_norm.weight"],
+        "bias":
+        state_dict[f"{layer_path}.a_norm.bias"]
     }]
 
     # Load for atom attention encoder
-    ws["atom_attention_encoder"] = {}
-    ws["atom_attention_encoder"]["atom_encoder"] = {
-        "diffusion_transformer":
-        convert_hf_diffusion_transformer_torch(
-            score_model_config.atom_encoder,
-            mapping=mapping,
-            local_checkpoint=local_checkpoint,
-            model_name=model_name,
-            weights=state_dict,
-            prefix=
-            f"{layer_path}.atom_attention_encoder.atom_encoder.diffusion_transformer."
-        )
-    }
-    ws["atom_attention_encoder"]["atom_to_token_trans.0"] = [{
+    # ws["atom_attention_encoder"] = {}
+    DiT_weights = convert_hf_diffusion_transformer_torch(
+        score_model_config.atom_encoder,
+        mapping=mapping,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=state_dict,
+        prefix=
+        f"{layer_path}.atom_attention_encoder.atom_encoder.diffusion_transformer."
+    )
+    for k, v in DiT_weights.items():
+        weights[
+            f"score_model.atom_attention_encoder.atom_encoder.diffusion_transformer.{k}"] = v
+
+    weights["score_model.atom_attention_encoder.atom_to_token_trans.0"] = [{
         "weight":
         state_dict[
             f"{layer_path}.atom_attention_encoder.atom_to_token_trans.0.weight"],
         "bias":
         None
     }]
-    ws["atom_attention_encoder"]["r_to_q_trans"] = [{
+    weights["score_model.atom_attention_encoder.r_to_q_trans"] = [{
         "weight":
         state_dict[f"{layer_path}.atom_attention_encoder.r_to_q_trans.weight"],
         "bias":
         None
     }]
     # Load for atom attention decoder
-    ws["atom_attention_decoder"] = {}
-    ws["atom_attention_decoder"]["atom_decoder"] = {
-        "diffusion_transformer":
-        convert_hf_diffusion_transformer_torch(
-            score_model_config.atom_decoder,
-            mapping=mapping,
-            local_checkpoint=local_checkpoint,
-            model_name=model_name,
-            weights=state_dict,
-            prefix=
-            f"{layer_path}.atom_attention_decoder.atom_decoder.diffusion_transformer."
-        )
-    }
-    ws["atom_attention_decoder"]["a_to_q_trans"] = [{
+    DiT_weights = convert_hf_diffusion_transformer_torch(
+        score_model_config.atom_decoder,
+        mapping=mapping,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=state_dict,
+        prefix=
+        f"{layer_path}.atom_attention_decoder.atom_decoder.diffusion_transformer."
+    )
+    for k, v in DiT_weights.items():
+        weights[
+            f"score_model.atom_attention_decoder.atom_decoder.diffusion_transformer.{k}"] = v
+
+    weights["score_model.atom_attention_decoder.a_to_q_trans"] = [{
         "weight":
         state_dict[f"{layer_path}.atom_attention_decoder.a_to_q_trans.weight"],
         "bias":
         None
     }]
-    ws["atom_attention_decoder"]["atom_feat_to_atom_pos_update.0"] = [{
+    weights["score_model.atom_attention_decoder.atom_feat_to_atom_pos_update.0"] = [{
         "weight":
         state_dict[
             f"{layer_path}.atom_attention_decoder.atom_feat_to_atom_pos_update.0.weight"],
@@ -1302,7 +1300,7 @@ def convert_hf_structure_module_torch(config: BaseConfig,
         state_dict[
             f"{layer_path}.atom_attention_decoder.atom_feat_to_atom_pos_update.0.bias"]
     }]
-    ws["atom_attention_decoder"]["atom_feat_to_atom_pos_update.1"] = [{
+    weights["score_model.atom_attention_decoder.atom_feat_to_atom_pos_update.1"] = [{
         "weight":
         state_dict[
             f"{layer_path}.atom_attention_decoder.atom_feat_to_atom_pos_update.1.weight"],
@@ -1310,13 +1308,16 @@ def convert_hf_structure_module_torch(config: BaseConfig,
         None
     }]
     # Load for token transformer
-    ws["token_transformer"] = convert_hf_diffusion_transformer_torch(
+    DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.token_transformer,
         mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
         prefix=f"{layer_path}.token_transformer.")
+
+    for k, v in DiT_weights.items():
+        weights[f"score_model.token_transformer.{k}"] = v
 
     return weights
 
@@ -1474,11 +1475,7 @@ def convert_hf_confidence_module_torch(config: BaseConfig,
         state_dict = weights
 
     prefix = "confidence_module."
-    tbnm_state_dict = {}
     extracted_weights = {}
-    for k, v in state_dict.items():
-        if k.startswith(prefix):
-            tbnm_state_dict[k.replace(prefix, "")] = v
 
     dist_bin_pairwise_embed_weights = [{
         "weight":
@@ -1561,7 +1558,7 @@ def convert_hf_confidence_module_torch(config: BaseConfig,
         state_dict.get(f"{prefix}rel_pos.linear_layer.bias", None)
     }]
     contact_conditioning_weights = {
-        "fourier_embedding": [{
+        "fourier_embedding.proj": [{
             "weight":
             state_dict[
                 f"{prefix}contact_conditioning.fourier_embedding.proj.weight"],
@@ -1577,7 +1574,7 @@ def convert_hf_confidence_module_torch(config: BaseConfig,
         }]
     }
 
-    pair_former_weights = convert_hf_pairformer_torch(
+    pairformer_weights = convert_hf_pairformer_torch(
         config.pairformer, model_name=model_name, pairformer_type="confidence")
 
     confidence_heads_weights = {}
@@ -1601,11 +1598,22 @@ def convert_hf_confidence_module_torch(config: BaseConfig,
     extracted_weights["s_norm"] = s_norm_weights
     extracted_weights["z_norm"] = z_norm_weights
     extracted_weights["s_input_to_s"] = s_input_to_s_weights
-    extracted_weights["rel_pos"] = relative_position_encoder_weights
+    extracted_weights["rel_pos.linear"] = relative_position_encoder_weights
     extracted_weights["token_bonds"] = token_bonds_weights
     extracted_weights["token_bonds_type"] = token_bonds_type_weights
-    extracted_weights["contact_conditioning"] = contact_conditioning_weights
-    extracted_weights["pairformer"] = pair_former_weights
-    extracted_weights["confidence_heads"] = confidence_heads_weights
+    # This because the contact conditioning has nn.Parameter,
+    # so we need to convert it to a dict for encoding_unspecified and encoding_unselected
+    extracted_weights["contact_conditioning"] = [{
+        "encoding_unspecified":
+        state_dict[f"{prefix}contact_conditioning.encoding_unspecified"],
+        "encoding_unselected":
+        state_dict[f"{prefix}contact_conditioning.encoding_unselected"]
+    }]
+    for k, v in contact_conditioning_weights.items():
+        extracted_weights[f"contact_conditioning.{k}"] = v
+    for k, v in pairformer_weights.items():
+        extracted_weights[f"pairformer_stack.{k}"] = v
+    for k, v in confidence_heads_weights.items():
+        extracted_weights[f"confidence_heads.{k}"] = v
 
     return extracted_weights

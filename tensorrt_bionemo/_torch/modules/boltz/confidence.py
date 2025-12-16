@@ -504,21 +504,7 @@ class Boltz2ConfidenceModule(nn.Module):
         Args:
             weights: The weights of the model. State dict of the original model.
         """
-        self.pairformer_stack.load_weights(weights.pop("pairformer"))
-        self.confidence_heads.load_weights(weights.pop("confidence_heads"))
-
-        if self.add_z_input_to_z:
-            self.rel_pos.linear.load_weights(weights.pop("rel_pos"))
-            self.contact_conditioning.load_weights(
-                weights.pop("contact_conditioning"))
-
-        filter_func = lambda name, _: name.startswith("rel_pos") or \
-                         name.startswith("pairformer") or \
-                         name.startswith("confidence_heads") or \
-                         name.startswith("contact_conditioning")
-
-        loaded_weight = recursive_calling_load_weights(self, weights,
-                                                       filter_func)
+        loaded_weight = recursive_calling_load_weights(self, weights)
 
         not_loaded_weight = set(weights.keys()) - loaded_weight
         if not_loaded_weight:
@@ -749,14 +735,6 @@ class Boltz1ConfidenceHeads(nn.Module):
                 tensor_parallel_mode=TensorParallelMode.COLUMN,
                 gather_output=True,
                 skip_create_weights=self.config.skip_create_weights)
-
-    def load_weights(self, weights: dict) -> None:
-        loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
-        not_loaded_weights = set(weights.keys()) - loaded_weight
-        if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -1041,16 +1019,7 @@ class Boltz1ConfidenceModule(nn.Module):
         self.confidence_heads = Boltz1ConfidenceHeads(self.config.heads)
 
     def load_weights(self, weights: dict) -> None:
-        self.input_embedder.load_weights(weights.pop("input_embedder"))
-        self.pairformer_module.load_weights(weights.pop("pairformer"))
-        self.msa_module.load_weights(weights.pop("msa_module"))
-        self.confidence_heads.load_weights(weights.pop("heads"))
-
-        filter_func = lambda name, _: name.startswith(
-            "msa_module") or name.startswith("pairformer") or name.startswith(
-                "confidence_heads") or name.startswith("input_embedder")
-        loaded_weight = recursive_calling_load_weights(self, weights,
-                                                       filter_func)
+        loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:

@@ -8,8 +8,9 @@ import torch
 from tensorrt_llm import logger
 
 from tensorrt_bionemo.configs import BackendType
+from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1 import Boltz1Config
+from tensorrt_bionemo.models.boltz1 import PRETRAINED_CONFIG_REGISTRY
 from tensorrt_bionemo.models.boltz1.convert import (convert_hf_pairformer,
                                                     convert_hf_pairformer_torch)
 
@@ -143,7 +144,7 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz1_config = Boltz1Config()
+    boltz1_config = PRETRAINED_CONFIG_REGISTRY[SupMat.Boltz1]()
     pairformer_config = boltz1_config.trunk.pairformer
     if args.pairformer_type == "confidence":
         pairformer_config = boltz1_config.confidence_module.pairformer

@@ -55,14 +55,6 @@ class ContactConditioning(nn.Module):
 
         self.contact_conditioning_info = contact_conditioning_info
 
-    def load_weights(self, weights: dict = None):
-        """
-        Args:
-            weights: The weights of the model. State dict of the original model.
-        """
-        self.fourier_embedding.proj.load_weights(weights["fourier_embedding"])
-        self.encoder.load_weights(weights["encoder"])
-
     def forward(self, contact_conditioning: torch.Tensor,
                 contact_threshold: torch.Tensor):
         assert self.contact_conditioning_info["UNSPECIFIED"] == 0

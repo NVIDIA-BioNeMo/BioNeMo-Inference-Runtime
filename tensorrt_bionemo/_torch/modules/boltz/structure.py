@@ -294,26 +294,6 @@ class DiffusionModule(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights)
 
-    def load_weights(self, weights: dict):
-        self.atom_attention_encoder.load_weights(
-            weights.pop("atom_attention_encoder"))
-        self.atom_attention_decoder.load_weights(
-            weights.pop("atom_attention_decoder"))
-        self.token_transformer.load_weights(weights.pop("token_transformer"))
-
-        filter_func = lambda name, _: name.startswith(
-            "atom_attention_encoder") or name.startswith(
-                "atom_attention_decoder") or name.startswith("token_transformer"
-                                                             )
-
-        loaded_weight = recursive_calling_load_weights(self, weights,
-                                                       filter_func)
-        # verify whether all the weights are loaded
-        not_loaded_weights = set(weights.keys()) - loaded_weight
-        if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
-
     def forward(
         self,
         atom_to_token: torch.Tensor,
@@ -469,14 +449,6 @@ class OutTokenFeatUpdate(nn.Module):
             dtype=dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights)
-
-    def load_weights(self, weights: dict):
-        loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
-        not_loaded_weights = set(weights.keys()) - loaded_weight
-        if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -801,10 +773,12 @@ class AtomDiffusion(nn.Module):
         return torch.log(t) * 0.25
 
     def load_weights(self, weights: dict):
-        if self.out_token_feat_update is not None:
-            self.out_token_feat_update.load_weights(
-                weights["out_token_feat_update"])
-        self.score_model.load_weights(weights["score_model"])
+        loaded_weight = recursive_calling_load_weights(self, weights)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
 
     def preconditioned_network_forward(
         self,

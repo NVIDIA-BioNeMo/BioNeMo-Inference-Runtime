@@ -41,12 +41,14 @@ from tensorrt_bionemo._torch.modules.boltz.structure import (
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
 from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
                                                    TokenTransformerTRT)
+from tensorrt_bionemo.configs import BaseConfig
+from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.pipeline.boltz.const import (CONTACT_CONDITIONING_INFO,
                                                    NUM_BOND_TYPES)
 
 from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
-from .config import Boltz2AffinityConfig, Boltz2Config
+from .config import PRETRAINED_CONFIG_REGISTRY, Boltz2AffinityConfig
 from .convert import (convert_hf_affinity_module_torch,
                       convert_hf_confidence_module_torch,
                       convert_hf_diffusion_conditioning_torch,
@@ -95,12 +97,14 @@ class Boltz2AffinityAcceleratedModules(Boltz2AcceleratedModules):
 class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
     def __init__(self,
-                 config: Boltz2Config = None,
+                 config: BaseConfig = None,
+                 model_name: Optional[str] = None,
                  include_load_weights: bool = True):
         super().__init__()
-        self.model_name = "boltz-2"
-        # Model level config
-        self.config = config or Boltz2Config()
+
+        self.model_name = model_name or SupMat.Boltz2
+        self.config = config or self.get_pretrained_config(self.model_name)
+
         self.confidence_prediction = self.config.confidence_prediction
         self.skip_run_structure = self.config.skip_run_structure
         # Setup for input embedder
@@ -237,8 +241,15 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
         self.eval()
 
-    def get_pretrained_config() -> Boltz2Config:
-        config = Boltz2Config()
+    @staticmethod
+    def get_pretrained_config(model_name: str = SupMat.Boltz2) -> BaseConfig:
+        # Set default optimization configs
+        config_class = PRETRAINED_CONFIG_REGISTRY.get(model_name)
+        if config_class is None:
+            raise ValueError(
+                f"Boltz1 pretrained config not found for model name: {model_name}"
+            )
+        config = config_class()
         config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
         config.trunk.set_dtype(torch.bfloat16)
         config.trunk.set_triangle_attention_backend("CUEQUIV")
@@ -589,8 +600,10 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
         if include_load_weights:
             self.load_weights()
 
-    def get_pretrained_config() -> Boltz2AffinityConfig:
-        config = Boltz2AffinityConfig()
+    @staticmethod
+    def get_pretrained_config(
+            model_name: str = SupMat.Boltz2Affinity) -> Boltz2AffinityConfig:
+        config = Boltz2.get_pretrained_config(model_name)
         config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
         config.trunk.set_dtype(torch.bfloat16)
         config.trunk.set_triangle_attention_backend("CUEQUIV")

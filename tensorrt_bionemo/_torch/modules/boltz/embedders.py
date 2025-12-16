@@ -232,14 +232,6 @@ class AtomEmbedding(nn.Module):
                 ),
             )
 
-    def load_weights(self, weights: dict):
-        loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
-        not_loaded_weights = set(weights.keys()) - loaded_weight
-        if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
-
     def _compute_atom_feats_v1(self,
                                ref_pos: torch.Tensor,
                                ref_charge: torch.Tensor,
@@ -499,15 +491,12 @@ class Boltz1InputEmbedder(nn.Module):
         )
 
     def load_weights(self, weights: dict):
-        self.atom_embedding.load_weights(weights["atom_embedding"])
-        self.atom_attention_encoder.load_weights(
-            weights["atom_attention_encoder"])
-        for i, proj_z in enumerate(self.atom_enc_proj_z):
-            proj_z[0].weight.data.copy_(
-                weights[f"atom_enc_proj_z.{i}.0"][0]["weight"])
-            proj_z[0].bias.data.copy_(
-                weights[f"atom_enc_proj_z.{i}.0"][0]["bias"])
-            proj_z[1].load_weights(weights[f"atom_enc_proj_z.{i}.1"])
+        loaded_weight = recursive_calling_load_weights(self, weights)
+        # verify whether all the weights are loaded
+        not_loaded_weights = set(weights.keys()) - loaded_weight
+        if not_loaded_weights:
+            raise ValueError(
+                f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
             self,
@@ -688,16 +677,7 @@ class Boltz2InputEmbedder(nn.Module):
                 NUM_CHAIN_TYPES, config.token_s)
 
     def load_weights(self, weights: dict):
-        """ Load weights for the Boltz2InputEmbedder """
-        self.atom_embedding.load_weights(weights.pop("atom_embedding"))
-        self.atom_attention_encoder.load_weights(
-            weights.pop("atom_attention_encoder"))
-
-        filter_func = lambda name, _: name.startswith(
-            "atom_embedding") or name.startswith("atom_attention_encoder")
-
-        loaded_weight = recursive_calling_load_weights(self, weights,
-                                                       filter_func)
+        loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:

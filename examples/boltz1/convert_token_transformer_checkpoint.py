@@ -8,8 +8,9 @@ import torch
 from tensorrt_llm import logger
 
 from tensorrt_bionemo.configs import BackendType
+from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.boltz1 import Boltz1Config
+from tensorrt_bionemo.models.boltz1 import PRETRAINED_CONFIG_REGISTRY
 from tensorrt_bionemo.models.boltz1.convert import (
     convert_hf_diffusion_transformer, convert_hf_diffusion_transformer_torch)
 
@@ -112,7 +113,7 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    boltz1_config = Boltz1Config()
+    boltz1_config = PRETRAINED_CONFIG_REGISTRY[SupMat.Boltz1]()
     score_model_config = boltz1_config.structure_module.score_model
     token_transformer_config = score_model_config.token_transformer
 

@@ -37,12 +37,14 @@ from tensorrt_bionemo._torch.modules.boltz.structure import (
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
 from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
                                                    TokenTransformerTRT)
+from tensorrt_bionemo.configs import BaseConfig
+from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.pipeline.boltz.const import (NUM_POCKET_CONTACT_INFO,
                                                    NUM_TOKENS)
 
 from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
-from .config import Boltz1Config
+from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (convert_hf_confidence_torch,
                       convert_hf_diffusion_conditioning_torch,
                       convert_hf_input_embedder_torch,
@@ -86,11 +88,12 @@ class Boltz1AcceleratedModules(AcceleratedModules):
 class Boltz1(nn.Module, OptimizedModuleSetterMixin):
 
     def __init__(self,
-                 config: Boltz1Config = None,
-                 include_load_weights: bool = True):
+                 config: BaseConfig = None,
+                 include_load_weights: bool = True,
+                 model_name: Optional[str] = None):
         super().__init__()
-        self.model_name = "boltz-1"
-        self.config = config or Boltz1Config()
+        self.model_name = model_name or SupMat.Boltz1
+        self.config = config or self.get_pretrained_config(self.model_name)
 
         # Setup for input embedder
         self.input_embedder_dtype = self.config.input_embedder.torch_dtype
@@ -335,9 +338,15 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             raise ValueError(f"Module name {module_name} not supported")
         return {key: feed_dict.get(key, None) for key in keys}
 
-    def get_pretrained_config() -> Boltz1Config:
+    @staticmethod
+    def get_pretrained_config(model_name: str = SupMat.Boltz1) -> BaseConfig:
         # Set default optimization configs
-        config = Boltz1Config()
+        config_class = PRETRAINED_CONFIG_REGISTRY.get(model_name)
+        if config_class is None:
+            raise ValueError(
+                f"Boltz1 pretrained config not found for model name: {model_name}"
+            )
+        config = config_class()
         config.trunk.set_dtype(torch.bfloat16)
         config.trunk.set_triangle_attention_backend("CUEQUIV")
         config.structure_module.score_model.set_dtype(torch.bfloat16)

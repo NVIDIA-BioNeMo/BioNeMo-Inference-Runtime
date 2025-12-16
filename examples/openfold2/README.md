@@ -8,6 +8,35 @@ For Pairformer and TokenTransformer modules, the building progress is similar to
 
 ## Evoformer
 
+### Convert AlphaFold jax checkpoints
+
+Need to install the OpenFold2 original code, and download AlphaFold2 JAX checkpoints. \[See\](# https://openfold.readthedocs.io/en/latest/Inference.html#download-model-parameters):
+Run:
+
+```bash
+$ python jax_to_pt.py --jax_path params_model_1.npz --config_preset  model_1 --output_dir output
+```
+
+Configurations Refer Table:
+
+```
+Setting                         config_preset          AlphaFold params                    OpenFold params
+---------------------------------------------------------------------------------------------------------------
+With template, no ptm           model_1                params_model_1.npz                  finetuning_[2-5].pt
+                                model_2                params_model_2.npz
+
+With template, with ptm         model_1_ptm            params_model_1_ptm.npz              finetuning_ptm_[1-2].pt
+                                model_2_ptm            params_model_2_ptm.npz
+
+Without template, no ptm        model_3                params_model_3.npz                  finetuning_no_templ_[1-2].pt
+                                model_4                params_model_4.npz
+                                model_5                params_model_5.npz
+
+Without template, with ptm      model_3_ptm            params_model_3_ptm.npz              finetuning_no_templ_ptm_1.pt
+                                model_4_ptm            params_model_4_ptm.npz
+                                model_5_ptm            params_model_5_ptm.npz
+```
+
 ### Convert and Split Weights
 
 This will export for both of `torch` and `trt` backends.

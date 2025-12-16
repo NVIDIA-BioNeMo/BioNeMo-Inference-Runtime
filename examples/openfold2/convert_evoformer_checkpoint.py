@@ -5,15 +5,13 @@ import time
 from pathlib import Path
 
 import safetensors
-import torch
 from tensorrt_llm import logger
 
 from tensorrt_bionemo.configs import BackendType
+from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.models.openfold2 import (OpenFold2Config,
-                                               OpenFold2MultimerConfig)
-from tensorrt_bionemo.models.openfold2.convert import (
-    convert_hf_evoformer, convert_hf_evoformer_torch)
+from tensorrt_bionemo.models.openfold2 import PRETRAINED_CONFIG_REGISTRY
+from tensorrt_bionemo.models.openfold2.convert import convert_hf_evoformer
 
 
 def parse_arguments():
@@ -66,13 +64,27 @@ def parse_arguments():
 
     parser.add_argument('--model_name',
                         type=str,
-                        default='openfold2_ptm_1',
+                        default=SupMat.OpenFold2_PTM1,
                         choices=[
-                            'openfold2_finetuning_2', 'openfold2_finetuning_3',
-                            'openfold2_finetuning_4', 'openfold2_finetuning_5',
-                            'openfold2_no_templ_1', 'openfold2_no_templ_2',
-                            'openfold2_no_templ_ptm_1', 'openfold2_ptm_1',
-                            'openfold2_ptm_2'
+                            SupMat.OpenFold2_FT2,
+                            SupMat.OpenFold2_FT3,
+                            SupMat.OpenFold2_FT4,
+                            SupMat.OpenFold2_FT5,
+                            SupMat.OpenFold2_NoTempl1,
+                            SupMat.OpenFold2_NoTempl2,
+                            SupMat.OpenFold2_NoTempl_PTM1,
+                            SupMat.OpenFold2_PTM1,
+                            SupMat.OpenFold2_PTM2,
+                            SupMat.AlphaFold2_1,
+                            SupMat.AlphaFold2_2,
+                            SupMat.AlphaFold2_3,
+                            SupMat.AlphaFold2_4,
+                            SupMat.AlphaFold2_5,
+                            SupMat.AlphaFold2_Multimer_1,
+                            SupMat.AlphaFold2_Multimer_2,
+                            SupMat.AlphaFold2_Multimer_3,
+                            SupMat.AlphaFold2_Multimer_4,
+                            SupMat.AlphaFold2_Multimer_5,
                         ],
                         help='The name of the model to convert')
     parser.add_argument('--triangle_attn_backend',
@@ -91,17 +103,13 @@ def parse_arguments():
     parser.add_argument('--backend',
                         type=str,
                         default='all',
-                        choices=['all', 'trt', 'torch'],
+                        choices=['all', 'trt'],
                         help='The backend to convert')
     parser.add_argument(
         '--workers',
         type=int,
         default=1,
         help='The number of workers for converting checkpoint in parallel')
-    parser.add_argument('--n_seq',
-                        type=int,
-                        default=516,
-                        help='The number of sequences')
     args = parser.parse_args()
     return args
 
@@ -115,13 +123,6 @@ def convert(worker_rank, world_size, configs, args):
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
             json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
-    # Dump for torch config
-    if args.backend == 'all' or args.backend == BackendType.TORCH:
-        (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
-                                                         exist_ok=True)
-        with (args.output_dir /
-              f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
                           tp_size=args.tp_size,
@@ -136,14 +137,6 @@ def convert(worker_rank, world_size, configs, args):
             safetensors.torch.save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
-        if args.backend == 'all' or args.backend == BackendType.TORCH:
-            # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
-            weights = convert_hf_evoformer_torch(
-                config=configs[BackendType.TORCH],
-                local_checkpoint=args.local_checkpoint,
-                model_name=model_name)
-            torch.save(weights,
-                       args.output_dir / f'{BackendType.TORCH}/weights.pt')
 
 
 def main():
@@ -153,13 +146,15 @@ def main():
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     tik = time.time()
-    config = OpenFold2Config()
-    if args.is_multimer:
-        config = OpenFold2MultimerConfig()
+    config = PRETRAINED_CONFIG_REGISTRY[args.model_name]()
     evoformer_stack_config = config.trunk.evoformer_stack
 
     if args.triangle_attn_backend == "CUEQUIV":
         args.support_batch = True
+
+    n_seq = 516
+    if not config.enable_template:
+        n_seq = 512
 
     config = copy.deepcopy(evoformer_stack_config.to_dict())
     config.update({
@@ -178,22 +173,21 @@ def main():
         },
         "disable_custom_all_reduce":
         args.max_attention_pairwise_tp_size or args.max_tri_mul_tp_size,
-        "triangle_attn_backend":
+        "triangle_attention_backend":
         args.triangle_attn_backend,
         "support_batch":
         True,
         "backend":
         "trt",
         "n_seq":
-        args.n_seq,
+        n_seq,
+        "trimul_high_precision":
+        False,
     })
     trt_evoformer_config = evoformer_stack_config.model_copy(update=config)
-    torch_evoformer_config = evoformer_stack_config.model_copy(update=config)
-    torch_evoformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_evoformer_config,
-        BackendType.TORCH: torch_evoformer_config
     }
     if args.workers == 1:
         convert(0, world_size, configs, args)

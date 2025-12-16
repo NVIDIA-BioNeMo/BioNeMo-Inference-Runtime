@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorrt_bionemo._trt.layers.affinity import AffinityModule
 from tensorrt_bionemo._trt.layers.transformers import (
     EvoformerStack, OpenFold3DiffusionTransformer, PairformerModule,
     TokenTransformer)
+from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 
 TRT_BUILDING_MODULES_REGISTRY = {}
 
@@ -48,21 +48,79 @@ def register_building_modules(models_modules: dict | list):
 
 def register_default_building_modules():
     register_building_modules({
-        "boltz-1": {
+        SupMat.Boltz1: {
             "structure_pairformer": PairformerModule,
             "confidence_pairformer": PairformerModule,
             "token_transformer": TokenTransformer,
         },
-        "boltz-2": {
+        SupMat.Boltz2: {
             "structure_pairformer": PairformerModule,
             "confidence_pairformer": PairformerModule,
             "token_transformer": TokenTransformer,
-            "affinity_module": AffinityModule,
         },
-        "openfold2": {
+        SupMat.Boltz2Affinity: {
+            "structure_pairformer": PairformerModule,
+            "confidence_pairformer": PairformerModule,
+            "token_transformer": TokenTransformer,
+        },
+        SupMat.OpenFold2_FT2: {
             "evoformer": EvoformerStack,
         },
-        "openfold3": {
+        SupMat.OpenFold2_FT3: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold2_FT4: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold2_FT5: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold2_NoTempl1: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold2_NoTempl2: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold2_NoTempl_PTM1: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold2_PTM1: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold2_PTM2: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_1: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_2: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_3: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_4: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_5: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_Multimer_1: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_Multimer_2: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_Multimer_3: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_Multimer_4: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.AlphaFold2_Multimer_5: {
+            "evoformer": EvoformerStack,
+        },
+        SupMat.OpenFold3: {
             "pairformer": PairformerModule,
             "token_transformer": OpenFold3DiffusionTransformer,
         }
@@ -71,4 +129,6 @@ def register_default_building_modules():
 
 def get_building_module_class(model_name: str, module_name: str):
     """Get a registered module class for a specific model and module type"""
-    return TRT_BUILDING_MODULES_REGISTRY.get(model_name, {}).get(module_name)
+    ret = TRT_BUILDING_MODULES_REGISTRY.get(model_name, {}).get(module_name)
+    assert ret is not None, f"Module class for {model_name} and {module_name} not found"
+    return ret

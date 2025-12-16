@@ -1135,6 +1135,8 @@ def convert_hf_template_embedder_torch(config: BaseConfig,
     tbnm_state_dict = {}
     # Weight for template single embedder
     prefix = "template_angle_embedder"
+    if f"{prefix}.linear_1.weight" not in module_state_dict:
+        prefix = "template_single_embedder"
     tbnm_state_dict[f"template_single_embedder.linear_1"] = [{
         "weight":
         module_state_dict[f"{prefix}.linear_1.weight"],

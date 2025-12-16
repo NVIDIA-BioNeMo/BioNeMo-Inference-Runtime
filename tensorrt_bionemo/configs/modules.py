@@ -175,7 +175,7 @@ class EvoformerStackBuildConfig(BuildConfig):
         c_m = DimSpec(size=mc.c_m, name="c_m")
         c_z = DimSpec(size=mc.c_z, name="c_z")
 
-        if self.support_batch:
+        if mc.support_batch:
             batch_size = DimSpec(name="batch_size", dynamic=True)
             return OrderedDict([
                 ("m", (batch_size, n_seq, n_res, c_m)),
@@ -212,7 +212,7 @@ class EvoformerStackBuildConfig(BuildConfig):
         ])
 
     def get_optimization_profiles(self) -> list[Any]:
-        return create_optimization_profiles(self)
+        return create_optimization_profiles(self, seqlen_key_names=["n_res"])
 
 
 class ExtraMSAStackConfig(BaseConfig):

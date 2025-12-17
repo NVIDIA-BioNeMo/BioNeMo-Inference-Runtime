@@ -1366,3 +1366,71 @@ def convert_hf_template_embedder_multimer_torch(
     }]
 
     return tbnm_state_dict
+
+
+def convert_hf_confidence_module_torch(config: BaseConfig,
+                                       mapping: Mapping = None,
+                                       local_checkpoint: str = None,
+                                       model_name: str = "openfold2_ptm_1",
+                                       weights: dict = None):
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+    prefix = "aux_heads."
+    tbnm_state_dict = {}
+    tbnm_state_dict["plddt.linear_1"] = [{
+        "weight":
+        state_dict[f"{prefix}plddt.linear_1.weight"],
+        "bias":
+        state_dict[f"{prefix}plddt.linear_1.bias"],
+    }]
+    tbnm_state_dict["plddt.linear_2"] = [{
+        "weight":
+        state_dict[f"{prefix}plddt.linear_2.weight"],
+        "bias":
+        state_dict[f"{prefix}plddt.linear_2.bias"],
+    }]
+    tbnm_state_dict["plddt.linear_3"] = [{
+        "weight":
+        state_dict[f"{prefix}plddt.linear_3.weight"],
+        "bias":
+        state_dict[f"{prefix}plddt.linear_3.bias"],
+    }]
+    tbnm_state_dict["plddt.layer_norm"] = [{
+        "weight":
+        state_dict[f"{prefix}plddt.layer_norm.weight"],
+        "bias":
+        state_dict[f"{prefix}plddt.layer_norm.bias"],
+    }]
+
+    tbnm_state_dict["distogram.linear"] = [{
+        "weight":
+        state_dict[f"{prefix}distogram.linear.weight"],
+        "bias":
+        state_dict[f"{prefix}distogram.linear.bias"],
+    }]
+
+    tbnm_state_dict["masked_msa.linear"] = [{
+        "weight":
+        state_dict[f"{prefix}masked_msa.linear.weight"],
+        "bias":
+        state_dict[f"{prefix}masked_msa.linear.bias"],
+    }]
+
+    tbnm_state_dict["experimentally_resolved.linear"] = [{
+        "weight":
+        state_dict[f"{prefix}experimentally_resolved.linear.weight"],
+        "bias":
+        state_dict[f"{prefix}experimentally_resolved.linear.bias"],
+    }]
+
+    if config.tm.enabled:
+        tbnm_state_dict["tm.linear"] = [{
+            "weight":
+            state_dict[f"{prefix}tm.linear.weight"],
+            "bias":
+            state_dict[f"{prefix}tm.linear.bias"],
+        }]
+
+    return tbnm_state_dict

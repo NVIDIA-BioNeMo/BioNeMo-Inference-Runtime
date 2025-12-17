@@ -170,6 +170,44 @@ class TrunkConfig(BaseConfig):
     )
 
 
+class PerResidueLddtConfig(BaseConfig):
+    no_bins: int = 50
+    c_in: int = 384
+    c_hidden: int = 128
+
+
+class ConfidenceDistogramConfig(BaseConfig):
+    c_z: int = 128
+    no_bins: int = 64
+
+
+class MaskedMsaConfig(BaseConfig):
+    c_m: int = 256
+    c_out: int = 23
+
+
+class ExperimentallyResolvedConfig(BaseConfig):
+    c_s: int = 384
+    c_out: int = 37
+
+
+class TmConfig(BaseConfig):
+    enabled: bool = True
+    c_z: int = 128
+    no_bins: int = 64
+    iptm_weight: float = 0.8
+    ptm_weight: float = 0.2
+
+
+class ConfidenceModuleConfig(BaseConfig):
+    per_residue_lddt: PerResidueLddtConfig = PerResidueLddtConfig()
+    distogram: ConfidenceDistogramConfig = ConfidenceDistogramConfig()
+    masked_msa: MaskedMsaConfig = MaskedMsaConfig()
+    experimentally_resolved: ExperimentallyResolvedConfig = ExperimentallyResolvedConfig(
+    )
+    tm: TmConfig = TmConfig()
+
+
 class OpenFold2Config(BaseConfig):
     c_z: int = _Default.c_z
     c_s: int = _Default.c_s
@@ -185,6 +223,7 @@ class OpenFold2Config(BaseConfig):
     extra_msa_embedder: ExtraMsaEmbedderConfig = ExtraMsaEmbedderConfig()
     template_embedder: TemplateEmbedderConfig = TemplateEmbedderConfig()
     trunk: TrunkConfig = TrunkConfig()
+    confidence_module: ConfidenceModuleConfig = ConfidenceModuleConfig()
 
 
 class OpenFold2MultimerConfig(OpenFold2Config):
@@ -227,19 +266,32 @@ class OpenFold2_FT2_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_FT2_Config":
         self.enable_template = True
+        self.confidence_module.tm.enabled = False
         return self
 
 
 class OpenFold2_FT3_Config(OpenFold2_FT2_Config):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "OpenFold2_FT3_Config":
+        self.confidence_module.tm.enabled = False
+        return self
 
 
 class OpenFold2_FT4_Config(OpenFold2_FT2_Config):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "OpenFold2_FT4_Config":
+        self.confidence_module.tm.enabled = False
+        return self
 
 
 class OpenFold2_FT5_Config(OpenFold2_FT2_Config):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "OpenFold2_FT5_Config":
+        self.confidence_module.tm.enabled = False
+        return self
 
 
 class OpenFold2_PTM1_Config(OpenFold2Config):
@@ -260,6 +312,7 @@ class OpenFold2_NoTempl1_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_NoTempl1_Config":
         self.enable_template = False
+        self.confidence_module.tm.enabled = False
         return self
 
 
@@ -285,6 +338,7 @@ class AlphaFold2_1_Config(OpenFold2Config):
     def fill_config(self) -> "AlphaFold2_1_Config":
         self.enable_template = True
         self.max_extra_msa = 5120
+        self.confidence_module.tm.enabled = False
         return self
 
 
@@ -293,6 +347,7 @@ class AlphaFold2_2_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_2_Config":
         self.enable_template = True
+        self.confidence_module.tm.enabled = False
         return self
 
 
@@ -302,6 +357,7 @@ class AlphaFold2_3_Config(OpenFold2Config):
     def fill_config(self) -> "AlphaFold2_3_Config":
         self.enable_template = False
         self.max_extra_msa = 5120
+        self.confidence_module.tm.enabled = False
         return self
 
 
@@ -311,6 +367,7 @@ class AlphaFold2_4_Config(OpenFold2Config):
     def fill_config(self) -> "AlphaFold2_4_Config":
         self.enable_template = False
         self.max_extra_msa = 5120
+        self.confidence_module.tm.enabled = False
         return self
 
 
@@ -319,27 +376,48 @@ class AlphaFold2_5_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_5_Config":
         self.enable_template = False
+        self.confidence_module.tm.enabled = False
         return self
 
 
 class AlphaFold2_Multimer_1_Config(OpenFold2MultimerConfig):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "AlphaFold2_Multimer_1_Config":
+        self.confidence_module.masked_msa.c_out = 22
+        return self
 
 
 class AlphaFold2_Multimer_2_Config(OpenFold2MultimerConfig):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "AlphaFold2_Multimer_2_Config":
+        self.confidence_module.masked_msa.c_out = 22
+        return self
 
 
 class AlphaFold2_Multimer_3_Config(OpenFold2MultimerConfig):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "AlphaFold2_Multimer_3_Config":
+        self.confidence_module.masked_msa.c_out = 22
+        return self
 
 
 class AlphaFold2_Multimer_4_Config(OpenFold2MultimerConfig):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "AlphaFold2_Multimer_4_Config":
+        self.confidence_module.masked_msa.c_out = 22
+        return self
 
 
 class AlphaFold2_Multimer_5_Config(OpenFold2MultimerConfig):
-    pass
+
+    @model_validator(mode="after")
+    def fill_config(self) -> "AlphaFold2_Multimer_5_Config":
+        self.confidence_module.masked_msa.c_out = 22
+        return self
 
 
 PRETRAINED_CONFIG_REGISTRY = {

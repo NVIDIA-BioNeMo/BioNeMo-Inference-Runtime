@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch.nn as nn
-from tensorrt_llm.logger import logger
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
@@ -72,11 +72,11 @@ class AcceleratedModules(ABC):
 
 class OptimizedModuleSetterMixin:
 
-    def optimize(
-            self,
-            accelerated_modules: AcceleratedModules,
-            context_memory_allocator: Optional[BaseContextMemoryManager] = None,
-            **kwargs) -> nn.Module:
+    def optimize(self,
+                 accelerated_modules: AcceleratedModules,
+                 context_memory_allocator: Optional[
+                     BaseContextMemoryManager] = None,
+                 **kwargs) -> nn.Module:
         """
         This function is used to build the optimized version of Boltz1 model from the original.
         Args:

@@ -19,8 +19,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from tensorrt_llm.functional import AllReduceParams
 
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import (PairwiseConditioning,
                                                          SingleConditioning)
@@ -32,7 +32,8 @@ from tensorrt_bionemo._torch.layers.transformers.atom import (
     AtomAttentionDecoder, AtomAttentionEncoder)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     BoltzDiffusionTransformer
-from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
+from tensorrt_bionemo._torch.layers.transition import \
+    ConditionedTransitionBlock
 from tensorrt_bionemo._torch.modules.boltz.embedders import AtomEmbedding
 from tensorrt_bionemo._torch.modules.boltz.loss.diffusion import \
     weighted_rigid_align
@@ -533,10 +534,11 @@ class PotentialGuidance:
             self.energy_traj = torch.empty(
                 (self.batch_size, self.multiplicity, 0), device=device)
             # [B, multiplicity, num_particles]
-            self.resample_weights = torch.ones(self.batch_size,
-                                               multiplicity,
-                                               self.steering_args.num_particles,
-                                               device=device)
+            self.resample_weights = torch.ones(
+                self.batch_size,
+                multiplicity,
+                self.steering_args.num_particles,
+                device=device)
         if self.need_guidance_update:
             # [B, multiplicity*num_particles, N_atoms, 3]
             self.scaled_guidance_update = torch.zeros(
@@ -661,8 +663,8 @@ class PotentialGuidance:
         atom_coords_denoised: Optional[torch.Tensor] = None,
         token_repr: Optional[torch.Tensor] = None,
         token_a: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor],
-               Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+               Optional[torch.Tensor], Optional[torch.Tensor]]:
         if not self.need_fk_resampling(noise_var):
             return atom_coords, atom_coords_noisy, atom_mask, atom_coords_denoised, token_repr, token_a
 
@@ -828,8 +830,9 @@ class AtomDiffusion(nn.Module):
         steps = torch.arange(num_sampling_steps,
                              device=self.device,
                              dtype=torch.float32)
-        sigmas = (self.sigma_max**inv_rho + steps / (num_sampling_steps - 1) *
-                  (self.sigma_min**inv_rho - self.sigma_max**inv_rho))**self.rho
+        sigmas = (
+            self.sigma_max**inv_rho + steps / (num_sampling_steps - 1) *
+            (self.sigma_min**inv_rho - self.sigma_max**inv_rho))**self.rho
 
         sigmas = sigmas * self.sigma_data
 
@@ -905,7 +908,8 @@ class AtomDiffusion(nn.Module):
 
         # atom position is noise at the beginning
         init_sigma = sigmas[0]
-        atom_coords = init_sigma * torch.randn(coords_shape, device=self.device)
+        atom_coords = init_sigma * torch.randn(coords_shape,
+                                               device=self.device)
         token_repr = None
         token_a = None
         atom_coords_denoised = None
@@ -917,8 +921,9 @@ class AtomDiffusion(nn.Module):
             self.score_model.dtype)
         network_condition_kwargs["atom_enc_bias"] = network_condition_kwargs[
             "atom_enc_bias"].to(self.score_model.dtype)
-        network_condition_kwargs["token_trans_bias"] = network_condition_kwargs[
-            "token_trans_bias"].to(self.score_model.dtype)
+        network_condition_kwargs[
+            "token_trans_bias"] = network_condition_kwargs[
+                "token_trans_bias"].to(self.score_model.dtype)
         network_condition_kwargs["atom_dec_bias"] = network_condition_kwargs[
             "atom_dec_bias"].to(self.score_model.dtype)
 
@@ -937,8 +942,8 @@ class AtomDiffusion(nn.Module):
 
             if atom_coords_denoised is not None:
                 # Apply the random rotation and translation to the denoised coordinates
-                atom_coords_denoised -= atom_coords_denoised.mean(dim=-2,
-                                                                  keepdims=True)
+                atom_coords_denoised -= atom_coords_denoised.mean(
+                    dim=-2, keepdims=True)
                 atom_coords_denoised = (torch.einsum(
                     "bmnd,bmds->bmns", atom_coords_denoised, random_R) +
                                         random_tr)
@@ -1022,7 +1027,9 @@ class AtomDiffusion(nn.Module):
                     device=atom_coords_denoised.device,
                 )
                 token_repr = self.out_token_feat_update(
-                    times=self.c_noise(sigma), acc_a=token_repr, next_a=token_a)
+                    times=self.c_noise(sigma),
+                    acc_a=token_repr,
+                    next_a=token_a)
 
             if self.alignment_reverse_diff:
                 with torch.autocast("cuda", enabled=False):

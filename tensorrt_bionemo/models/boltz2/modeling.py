@@ -18,10 +18,10 @@ from typing import Any, Callable, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm.functional import AllReduceParams
-from tensorrt_llm.logger import logger
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.conditioning import ContactConditioning
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
@@ -265,7 +265,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             weights: The weights of the model. State dict of the original model.
         """
         if weights is None:
-            logger.info(f"Input weights is None, try to load weights from hubs")
+            logger.info(
+                f"Input weights is None, try to load weights from hubs")
             weights = load_weights_from_hubs(name=self.model_name)
         # Load weights for input embedder
         input_embedder_weights = convert_hf_input_embedder_torch(
@@ -360,7 +361,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             config=self.structure_module_config.score_model,
             weights=weights,
             model_name=self.model_name)
-        self.diffusion_conditioning.load_weights(diffusion_conditioning_weights)
+        self.diffusion_conditioning.load_weights(
+            diffusion_conditioning_weights)
 
         structure_module_weights = convert_hf_structure_module_torch(
             config=self.structure_module_config,
@@ -529,8 +531,9 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         )
 
         boltz2_output_dictionary = {
-            "confidence_score": (4 * confidence_module_output["complex_plddt"] +
-                                 confidence_module_output["iptm"]) / 5,
+            "confidence_score":
+            (4 * confidence_module_output["complex_plddt"] +
+             confidence_module_output["iptm"]) / 5,
             "masks":
             feed_dict["atom_pad_mask"],
             "token_masks":
@@ -576,6 +579,7 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
 
     def __init__(self,
                  config: Boltz2AffinityConfig = None,
+                 model_name: Optional[str] = None,
                  include_load_weights: bool = True):
 
         if config is None:
@@ -583,7 +587,7 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
 
         super().__init__(config=config, include_load_weights=False)
 
-        self.model_name = "boltz-2-affinity"
+        self.model_name = model_name or SupMat.Boltz2Affinity
         self.config = config
         self.affinity_module1 = AffinityModule(self.config.affinity.module1)
         self.affinity_module2 = AffinityModule(self.config.affinity.module2)
@@ -624,7 +628,8 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
 
     def load_affinity_weights(self, weights: dict = None) -> None:
         if weights is None:
-            logger.info(f"Input weights is None, try to load weights from hubs")
+            logger.info(
+                f"Input weights is None, try to load weights from hubs")
             weights = load_weights_from_hubs(name=self.model_name)
         affinity_weights_1 = convert_hf_affinity_module_torch(
             config=self.config.affinity.module1,

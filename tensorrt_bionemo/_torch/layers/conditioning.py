@@ -17,8 +17,8 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
 from tensorrt_bionemo._torch.layers.transition import Transition
@@ -60,8 +60,8 @@ class ContactConditioning(nn.Module):
         assert self.contact_conditioning_info["UNSPECIFIED"] == 0
         assert self.contact_conditioning_info["UNSELECTED"] == 1
         final_contact_conditioning = contact_conditioning[:, :, :, 2:]
-        contact_threshold_normalized = (contact_threshold - self.cutoff_min) / (
-            self.cutoff_max - self.cutoff_min)
+        contact_threshold_normalized = (contact_threshold - self.cutoff_min
+                                        ) / (self.cutoff_max - self.cutoff_min)
         contact_threshold_fourier = self.fourier_embedding(
             contact_threshold_normalized.flatten()).reshape(
                 contact_threshold_normalized.shape + (-1, ))
@@ -78,8 +78,8 @@ class ContactConditioning(nn.Module):
 
         final_contact_conditioning = (
             final_contact_conditioning *
-            (1 - contact_conditioning[:, :, :, 0:2].sum(dim=-1, keepdim=True)) +
-            self.encoding_unspecified * contact_conditioning[:, :, :, 0:1] +
+            (1 - contact_conditioning[:, :, :, 0:2].sum(dim=-1, keepdim=True))
+            + self.encoding_unspecified * contact_conditioning[:, :, :, 0:1] +
             self.encoding_unselected * contact_conditioning[:, :, :, 1:2])
         return final_contact_conditioning
 

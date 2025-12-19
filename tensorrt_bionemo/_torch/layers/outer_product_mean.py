@@ -16,12 +16,13 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
-from tensorrt_bionemo._torch.distributed import allgather
+from tensorrt_bionemo._torch.distributed import (
+    AllReduceParams, get_default_tp_group_coordinator)
 from tensorrt_bionemo.mapping import Mapping
 
-from .linear import Linear, TensorParallelMode, WeightMode, WeightsLoadingConfig
+from .linear import (Linear, TensorParallelMode, WeightMode,
+                     WeightsLoadingConfig)
 
 
 class OuterProductMean(nn.Module):
@@ -92,13 +93,18 @@ class OuterProductMean(nn.Module):
                              tensor_parallel_mode=TensorParallelMode.ROW,
                              reduce_output=True,
                              skip_create_weights=skip_create_weights)
+        self.group_comm = None
+        if self.mapping.tp_size > 1:
+            self.group_comm = get_default_tp_group_coordinator()
+            assert self.group_comm is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
 
     @torch.compiler.disable
     def _compute_mask_with_chunking(self, mask: torch.Tensor) -> torch.Tensor:
         for i in range(0, mask.shape[1], self.mask_chunk_size):
             if i == 0:
-                num_mask = (mask[:, i:i + self.mask_chunk_size, None, :] *
-                            mask[:, i:i + self.mask_chunk_size, :, None]).sum(1)
+                num_mask = (
+                    mask[:, i:i + self.mask_chunk_size, None, :] *
+                    mask[:, i:i + self.mask_chunk_size, :, None]).sum(1)
             else:
                 num_mask += (
                     mask[:, i:i + self.mask_chunk_size, None, :] *
@@ -164,7 +170,7 @@ class OuterProductMean(nn.Module):
             a = a * mask
             b = b * mask
         if self.mapping.tp_size > 1:
-            b = allgather(b, self.mapping, dim=-1)
+            b = self.group_comm.all_gather(b, dim=-1)
 
         if self.mask_chunk_size is not None:
             num_mask = self._compute_mask_with_chunking(mask)

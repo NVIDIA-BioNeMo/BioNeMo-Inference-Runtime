@@ -16,14 +16,13 @@
 from typing import Optional
 
 import tensorrt as trt
-from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
-                                     concat, relu, silu, split, swiglu)
-from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
-from tensorrt_llm.layers.normalization import LayerNorm
-from tensorrt_llm.module import Module, ModuleList
+from tensorrt_llm_lite.functional import (Tensor, activation, concat, relu,
+                                          silu, split, swiglu)
+from tensorrt_llm_lite.layers.linear import Linear
+from tensorrt_llm_lite.layers.normalization import LayerNorm
+from tensorrt_llm_lite.module import Module, ModuleList
 
 from tensorrt_bionemo._trt.layers.normalization import AdaLN
-from tensorrt_bionemo.mapping import Mapping
 
 
 class Transition(Module):
@@ -35,36 +34,22 @@ class Transition(Module):
                  hidden: int = 512,
                  out_dim: Optional[int] = None,
                  eps: float = 1e-05,
-                 dtype: str = None,
-                 mapping: Mapping = Mapping()) -> None:
+                 dtype: str = None) -> None:
         super().__init__()
         if out_dim is None:
             out_dim = dim
 
-        self.mapping = mapping
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
-
         self.local_layer_idx = local_layer_idx
         self.dim = dim
-        self.hidden = hidden // self.tp_size
+        self.hidden = hidden
         self.out_dim = out_dim
 
         self.norm = LayerNorm(normalized_shape=[dim], eps=eps, dtype=dtype)
-        self.fused_fc2_fc1 = ColumnLinear(self.dim,
-                                          2 * self.tp_size * self.hidden,
-                                          bias=False,
-                                          dtype=dtype,
-                                          tp_group=self.tp_group,
-                                          tp_size=self.tp_size,
-                                          gather_output=False)
-        self.fc3 = RowLinear(self.tp_size * self.hidden,
-                             self.out_dim,
-                             bias=False,
-                             dtype=dtype,
-                             tp_group=self.tp_group,
-                             tp_size=self.tp_size)
+        self.fused_fc2_fc1 = Linear(self.dim,
+                                    2 * self.hidden,
+                                    bias=False,
+                                    dtype=dtype)
+        self.fc3 = Linear(self.hidden, self.out_dim, bias=False, dtype=dtype)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.norm(x)
@@ -77,71 +62,48 @@ class Transition(Module):
 class ConditionedTransitionBlock(Module):
     """Algorithm 25"""
 
-    def __init__(
-        self,
-        dim_single: int,
-        dim_single_cond: int,
-        expansion_factor: int = 2,
-        eps: float = 1e-5,
-        dtype: str = None,
-        using_silu: bool = False,  # using silu instead of swiglu
-        mapping: Mapping = Mapping()):
+    def __init__(self,
+                 dim_single: int,
+                 dim_single_cond: int,
+                 expansion_factor: int = 2,
+                 eps: float = 1e-5,
+                 dtype: str = None,
+                 using_silu: bool = False):  # using silu instead of swiglu
         super().__init__()
-        self.mapping = mapping
+
         self.using_silu = using_silu
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
 
         self.dim_single = dim_single
         self.dim_single_cond = dim_single_cond
         self.expansion_factor = expansion_factor
 
-        self.adaln = AdaLN(dim_single,
-                           dim_single_cond,
-                           eps=eps,
-                           dtype=dtype,
-                           mapping=mapping)
-        self.dim_inner = int(dim_single * expansion_factor) // mapping.tp_size
+        self.adaln = AdaLN(dim_single, dim_single_cond, eps=eps, dtype=dtype)
+        self.dim_inner = int(dim_single * expansion_factor)
         # Fused swiglu_gate linear and a_to_b
         if not using_silu:
             # Boltz1, Boltz2 uses swiglu instead of silu
-            self.fused_swl_a_to_b = ColumnLinear(self.dim_single,
-                                                 self.dim_inner * 3,
-                                                 bias=False,
-                                                 dtype=dtype,
-                                                 tp_group=self.tp_group,
-                                                 tp_size=self.tp_size,
-                                                 gather_output=False,
-                                                 is_qkv=True)
+            self.fused_swl_a_to_b = Linear(self.dim_single,
+                                           self.dim_inner * 3,
+                                           bias=False,
+                                           dtype=dtype,
+                                           is_qkv=True)
         else:
             # OF3 uses silu instead of swiglu, so we need to use a different column linear
-            self.fused_swl_a_to_b = ColumnLinear(self.dim_single,
-                                                 self.dim_inner * 2,
-                                                 bias=False,
-                                                 dtype=dtype,
-                                                 tp_group=self.tp_group,
-                                                 tp_size=self.tp_size,
-                                                 gather_output=False,
-                                                 is_qkv=True)
-        self.b_to_a = RowLinear(self.dim_inner,
-                                self.dim_single,
-                                bias=False,
-                                dtype=dtype,
-                                tp_group=self.tp_group,
-                                tp_size=self.tp_size)
-        self.output_projection = ColumnLinear(self.dim_single_cond,
-                                              self.dim_single,
-                                              bias=True,
-                                              dtype=dtype,
-                                              tp_group=self.tp_group,
-                                              tp_size=self.tp_size,
-                                              gather_output=True)
+            self.fused_swl_a_to_b = Linear(self.dim_single,
+                                           self.dim_inner * 2,
+                                           bias=False,
+                                           dtype=dtype,
+                                           is_qkv=True)
+        self.b_to_a = Linear(self.dim_inner,
+                             self.dim_single,
+                             bias=False,
+                             dtype=dtype)
+        self.output_projection = Linear(self.dim_single_cond,
+                                        self.dim_single,
+                                        bias=True,
+                                        dtype=dtype)
 
-    def forward(self,
-                a: Tensor,
-                s: Tensor,
-                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+    def forward(self, a: Tensor, s: Tensor) -> Tensor:
         """
         Args:
             a: [B, I, d]
@@ -159,8 +121,7 @@ class ConditionedTransitionBlock(Module):
             m, n = split(z, [self.dim_inner, self.dim_inner], dim=-1)
             b = silu(m) * n
         a = self.output_projection(s)
-        a = activation(a, trt.ActivationType.SIGMOID) * self.b_to_a(
-            b, all_reduce_params=all_reduce_params)
+        a = activation(a, trt.ActivationType.SIGMOID) * self.b_to_a(b)
         return a
 
 
@@ -173,13 +134,8 @@ class PairwiseConditioning(Module):
                  num_transitions: int = 2,
                  transition_expansion_factor: int = 2,
                  eps: float = 1e-5,
-                 dtype: str = None,
-                 mapping: Mapping = Mapping()):
+                 dtype: str = None):
         super().__init__()
-        self.mapping = mapping
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
         self.dtype = dtype
         self.token_z = token_z
         self.dim_token_rel_pos_feats = dim_token_rel_pos_feats
@@ -190,13 +146,10 @@ class PairwiseConditioning(Module):
             eps=eps,
             dtype=dtype)
 
-        self.init_proj_linear = ColumnLinear(token_z + dim_token_rel_pos_feats,
-                                             token_z,
-                                             bias=False,
-                                             dtype=dtype,
-                                             tp_group=self.tp_group,
-                                             tp_size=self.tp_size,
-                                             gather_output=True)
+        self.init_proj_linear = Linear(token_z + dim_token_rel_pos_feats,
+                                       token_z,
+                                       bias=False,
+                                       dtype=dtype)
 
         transitions = []
         for i in range(num_transitions):
@@ -205,8 +158,7 @@ class PairwiseConditioning(Module):
                            dim=token_z,
                            hidden=token_z * transition_expansion_factor,
                            eps=eps,
-                           dtype=self.dtype,
-                           mapping=self.mapping))
+                           dtype=self.dtype))
         self.transitions = ModuleList(transitions)
 
     def forward(self, z_trunk: Tensor, token_rel_pos_feats: Tensor) -> Tensor:
@@ -231,12 +183,7 @@ class PairTransition(Module):
     Implements Algorithm 15.
     """
 
-    def __init__(self,
-                 c_z: int,
-                 n: int,
-                 dtype: str,
-                 mapping: Mapping,
-                 eps: float = 1e-5):
+    def __init__(self, c_z: int, n: int, dtype: str, eps: float = 1e-5):
         """
         Args:
             c_z:
@@ -247,27 +194,18 @@ class PairTransition(Module):
         """
         super().__init__()
         self.dtype = dtype
-        self.mapping = mapping
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
         self.c_z = c_z
         self.n = n
 
         self.layer_norm = LayerNorm([self.c_z], dtype=dtype, eps=eps)
-        self.linear_1 = ColumnLinear(self.c_z,
-                                     self.n * self.c_z,
-                                     bias=True,
-                                     dtype=dtype,
-                                     tp_group=self.tp_group,
-                                     tp_size=self.tp_size,
-                                     gather_output=False)
-        self.linear_2 = RowLinear(self.n * self.c_z,
-                                  self.c_z,
-                                  bias=True,
-                                  dtype=dtype,
-                                  tp_group=self.tp_group,
-                                  tp_size=self.tp_size)
+        self.linear_1 = Linear(self.c_z,
+                               self.n * self.c_z,
+                               bias=True,
+                               dtype=dtype)
+        self.linear_2 = Linear(self.n * self.c_z,
+                               self.c_z,
+                               bias=True,
+                               dtype=dtype)
 
     def forward(self, z: Tensor, mask: Tensor):
         mask = mask.unsqueeze(-1)
@@ -290,12 +228,7 @@ class MSATransition(Module):
     Implements Algorithm 15.
     """
 
-    def __init__(self,
-                 c_m: int,
-                 n: int,
-                 dtype: str,
-                 mapping: Mapping,
-                 eps: float = 1e-5):
+    def __init__(self, c_m: int, n: int, dtype: str, eps: float = 1e-5):
         """
         Args:
             c_m:
@@ -306,27 +239,18 @@ class MSATransition(Module):
         """
         super().__init__()
         self.dtype = dtype
-        self.mapping = mapping
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
         self.c_m = c_m
         self.n = n
 
         self.layer_norm = LayerNorm([self.c_m], dtype=dtype, eps=eps)
-        self.linear_1 = ColumnLinear(self.c_m,
-                                     self.n * self.c_m,
-                                     bias=True,
-                                     dtype=dtype,
-                                     tp_group=self.tp_group,
-                                     tp_size=self.tp_size,
-                                     gather_output=False)
-        self.linear_2 = RowLinear(self.n * self.c_m,
-                                  self.c_m,
-                                  bias=True,
-                                  dtype=dtype,
-                                  tp_group=self.tp_group,
-                                  tp_size=self.tp_size)
+        self.linear_1 = Linear(self.c_m,
+                               self.n * self.c_m,
+                               bias=True,
+                               dtype=dtype)
+        self.linear_2 = Linear(self.n * self.c_m,
+                               self.c_m,
+                               bias=True,
+                               dtype=dtype)
 
     def forward(self, m: Tensor, mask: Tensor):
         # Similar to PairTransition, but with different names

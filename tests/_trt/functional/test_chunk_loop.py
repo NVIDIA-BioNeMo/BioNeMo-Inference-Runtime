@@ -17,9 +17,9 @@ import os
 
 import pytest
 import tensorrt as trt
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm.functional import Tensor, matmul
+from tensorrt_llm_lite.functional import Tensor, matmul
 
 from tensorrt_bionemo._trt.functional import chunk_loop
 
@@ -47,10 +47,10 @@ def test_chunk_loop(chunk_size: int, niters: int):
     y.normal_(mean=0.0, std=1.0)
     weight.normal_(mean=0.0, std=1.0)
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
 
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         input_x = Tensor(name="x", shape=x.shape, dtype=trt.float32)
         input_y = Tensor(name="y", shape=y.shape, dtype=trt.float32)
         input_weight = Tensor(name="weight", shape=[4, 128], dtype=trt.float32)
@@ -59,14 +59,16 @@ def test_chunk_loop(chunk_size: int, niters: int):
             chunk_size=chunk_size,
             loop_body=lambda xy: matmul(xy[0], input_weight, transb=True) +
             matmul(xy[1], input_weight, transb=True))
-        output.mark_output("output", tensorrt_llm.str_dtype_to_trt("float32"))
+        output.mark_output("output",
+                           tensorrt_llm_lite.str_dtype_to_trt("float32"))
 
     # Build engine
     builder_config = builder.create_builder_config(name="chunk_loop",
                                                    precision="float32")
     # builder_config.trt_builder_config.add_optimization_profile(profile)
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     # Verify result
@@ -77,9 +79,10 @@ def test_chunk_loop(chunk_size: int, niters: int):
     }
     outputs = {
         'output':
-        torch.empty([chunk_size * niters, 32, 4],
-                    dtype=tensorrt_llm._utils.str_dtype_to_torch("float32"),
-                    device="cuda")
+        torch.empty(
+            [chunk_size * niters, 32, 4],
+            dtype=tensorrt_llm_lite._utils.str_dtype_to_torch("float32"),
+            device="cuda")
     }
     session.run(inputs=inputs, outputs=outputs, stream=stream)
     torch.cuda.synchronize()

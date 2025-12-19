@@ -17,11 +17,11 @@ import os
 
 import pytest
 import tensorrt as trt
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
 from einops import rearrange
-from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
-from tensorrt_llm.functional import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_torch, str_dtype_to_trt
+from tensorrt_llm_lite.functional import Tensor
 from test_utils.boltz.ref_attn import plain_mha
 
 from tensorrt_bionemo._trt.functional import (AttentionBackend,
@@ -29,9 +29,8 @@ from tensorrt_bionemo._trt.functional import (AttentionBackend,
 
 
 @pytest.mark.parametrize("use_mask", [True, False], ids=["mask", "nomask"])
-@pytest.mark.parametrize("backend",
-                         [AttentionBackend.TRIFAST, AttentionBackend.CUEQUIV],
-                         ids=["trifast", "cuequiv"])
+@pytest.mark.parametrize("backend", [AttentionBackend.CUEQUIV],
+                         ids=["cuequiv"])
 @pytest.mark.parametrize("use_tf32", [False])
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
 @pytest.mark.parametrize("si", [64, 128])
@@ -128,16 +127,17 @@ def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
         input_mask_shape = nmask.shape
         input_bias_shape = nbias.shape
 
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
 
     trt_dtype = str_dtype_to_trt(dtype)
     trt_dtype_bias = str_dtype_to_trt(dtype if use_trifast else "float32")
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         input_q = Tensor(name="q", shape=input_q_shape, dtype=trt_dtype)
         input_k = Tensor(name="k", shape=input_k_shape, dtype=trt_dtype)
         input_v = Tensor(name="v", shape=input_v_shape, dtype=trt_dtype)
-        input_mask = Tensor(name="mask", shape=input_mask_shape,
+        input_mask = Tensor(name="mask",
+                            shape=input_mask_shape,
                             dtype=trt.bool) if use_mask else None
         input_bias = Tensor(name="bias",
                             shape=input_bias_shape,
@@ -159,7 +159,8 @@ def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
     builder_config = builder.create_builder_config(name="tri_attn",
                                                    precision=dtype)
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     if use_trifast:

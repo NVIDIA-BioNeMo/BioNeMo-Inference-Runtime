@@ -17,10 +17,10 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
-from tensorrt_llm.functional import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_torch, str_dtype_to_trt
+from tensorrt_llm_lite.functional import Tensor
 from test_utils.openfold.create_and_load_weights import (
     create_evoformer_block_weights, load_evoformer_block_weights_trt)
 from test_utils.openfold.ref_layers import RefEvoformerBlock
@@ -56,9 +56,15 @@ def test_evoformer_block(sc: Scenario):
     ref_module = ref_module.to(device)
 
     weights_and_biases = create_evoformer_block_weights(from_ref=ref_module)
-    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_module.c_m,
+    m = torch.randn(bs,
+                    sc.n_seq,
+                    sc.n_res,
+                    ref_module.c_m,
                     dtype=torch.float32).cuda()
-    z = torch.randn(bs, sc.n_res, sc.n_res, ref_module.c_z,
+    z = torch.randn(bs,
+                    sc.n_res,
+                    sc.n_res,
+                    ref_module.c_z,
                     dtype=torch.float32).cuda()
     msa_mask = torch.randint(0,
                              2, (bs, sc.n_seq, sc.n_res),
@@ -68,10 +74,10 @@ def test_evoformer_block(sc: Scenario):
                               dtype=torch.float32).cuda()
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         input_m = Tensor(name='input_m', shape=m.shape, dtype=trt_dtype)
         input_z = Tensor(name='input_z', shape=z.shape, dtype=trt_dtype)
         input_msa_mask = Tensor(name='input_msa_mask',
@@ -118,7 +124,8 @@ def test_evoformer_block(sc: Scenario):
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
     assert engine_buffer is not None
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
 
     stream = torch.cuda.current_stream().cuda_stream
 
@@ -142,5 +149,11 @@ def test_evoformer_block(sc: Scenario):
 
     trt_output_m = outputs['output_m']
     trt_output_z = outputs['output_z']
-    torch.testing.assert_close(trt_output_m, ref_output_m, atol=1e-3, rtol=1e-4)
-    torch.testing.assert_close(trt_output_z, ref_output_z, atol=1e-3, rtol=1e-4)
+    torch.testing.assert_close(trt_output_m,
+                               ref_output_m,
+                               atol=1e-3,
+                               rtol=1e-4)
+    torch.testing.assert_close(trt_output_z,
+                               ref_output_z,
+                               atol=1e-3,
+                               rtol=1e-4)

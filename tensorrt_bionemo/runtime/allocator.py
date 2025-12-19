@@ -19,11 +19,10 @@ from typing import TYPE_CHECKING, Any, Union
 
 import tensorrt as trt
 import torch
-from tensorrt_llm._utils import torch_dtype_to_trt, trt_dtype_to_torch
-from tensorrt_llm.logger import logger
-from tensorrt_llm.plugin.plugin import CustomAllReduceHelper
-from tensorrt_llm.runtime import Session, TensorInfo
-from tensorrt_llm.runtime.session import _scoped_stream
+from tensorrt_llm_lite._utils import torch_dtype_to_trt, trt_dtype_to_torch
+from tensorrt_llm_lite.logger import logger
+from tensorrt_llm_lite.runtime.session import (Session, TensorInfo,
+                                               _scoped_stream)
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
@@ -296,9 +295,8 @@ class BaseContextMemoryManager:
                 profile_max):
             return False
 
-        for i, (input_dim, min_dim,
-                max_dim) in enumerate(zip(input_shape, profile_min,
-                                          profile_max)):
+        for i, (input_dim, min_dim, max_dim) in enumerate(
+                zip(input_shape, profile_min, profile_max)):
             if not (min_dim <= input_dim <= max_dim):
                 return False
 
@@ -541,7 +539,8 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
 
             # Allocate the shared memory buffer
             if self._shared_memory_address is not None:
-                torch.cuda.caching_allocator_delete(self._shared_memory_address)
+                torch.cuda.caching_allocator_delete(
+                    self._shared_memory_address)
             self._shared_memory_address = torch.cuda.caching_allocator_alloc(
                 self._shared_memory_size)
 
@@ -575,7 +574,8 @@ class SharedContextMemoryManager(BaseContextMemoryManager):
                 # This does not actually free the memory,
                 # it just move the memory to the free list for post-processing (merge blocks memory) on torch caching allocator
                 # So it's fast for almost usecases
-                torch.cuda.caching_allocator_delete(self._shared_memory_address)
+                torch.cuda.caching_allocator_delete(
+                    self._shared_memory_address)
             except:
                 pass
 

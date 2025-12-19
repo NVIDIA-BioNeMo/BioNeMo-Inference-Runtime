@@ -17,14 +17,12 @@ import os
 from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional
 
-import safetensors
-from tensorrt_llm._utils import str_dtype_to_trt
-from tensorrt_llm.functional import Tensor
-from tensorrt_llm.logger import logger
-from tensorrt_llm.module import Module
-from tensorrt_llm.network import Network
-from tensorrt_llm.plugin import (current_all_reduce_helper,
-                                 init_all_reduce_helper)
+from safetensors.torch import load_file, save_file
+from tensorrt_llm_lite._utils import str_dtype_to_trt
+from tensorrt_llm_lite.functional import Tensor
+from tensorrt_llm_lite.logger import logger
+from tensorrt_llm_lite.module import Module
+from tensorrt_llm_lite.network import Network
 
 from tensorrt_bionemo.configs import BaseConfig, BuildConfig
 
@@ -38,13 +36,12 @@ class PretrainedModule(Module):
     def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
-        init_all_reduce_helper()
 
     @classmethod
     def from_checkpoint(
         cls,
         ckpt_dir: str,
-        rank: Optional[int] = None,
+        rank: Optional[int] = 0,
         config: Optional[BaseConfig] = None,
         *,
         preprocess_weights_hook: Optional[Callable[[Dict[str, Tensor]],
@@ -55,13 +52,9 @@ class PretrainedModule(Module):
             with open(config_path, 'r') as f:
                 data = json.load(f)
                 config = BaseConfig.model_validate(data)
-        if rank is not None:
-            config.set_rank(rank)
-        rank = config.mapping.rank
-        # TODO:If has cp for attention, modify rank
         weights_path = os.path.join(ckpt_dir, f'rank{rank}.safetensors')
         assert os.path.isfile(weights_path)
-        weights = safetensors.torch.load_file(weights_path)
+        weights = load_file(weights_path)
         if preprocess_weights_hook is not None:
             weights = preprocess_weights_hook(weights)
         module = cls(config)
@@ -100,7 +93,7 @@ class PretrainedModule(Module):
     def save_checkpoint(self, output_dir, save_config=True):
         # multiple ranks could share same config.json,
         # so adding a save_config parameter to let user avoiding writing config.json in all ranks
-        rank = self.config.mapping.rank
+        rank = 0
         weights = {
             name: numpy_to_torch(param.raw_value)
             for name, param in self.named_parameters()
@@ -112,8 +105,7 @@ class PretrainedModule(Module):
             if param.data_ptr() in data_ptrs:
                 weights[name] = param.clone()
             data_ptrs.add(weights[name].data_ptr())
-        safetensors.torch.save_file(
-            weights, os.path.join(output_dir, f'rank{rank}.safetensors'))
+        save_file(weights, os.path.join(output_dir, f'rank{rank}.safetensors'))
         if save_config:
             self.config.to_json_file(os.path.join(output_dir, 'config.json'))
 
@@ -126,25 +118,15 @@ class PretrainedModule(Module):
         """
         return network
 
-    def prepare_inputs(
-            self,
-            build_config: BuildConfig = None,
-            disable_custom_all_reduce: bool = False) -> dict[str, Any]:
+    def prepare_inputs(self,
+                       build_config: BuildConfig = None) -> dict[str, Any]:
         input_shapes = build_config.get_input_shapes()
         opt_profiles = build_config.get_optimization_profiles()
         if hasattr(build_config, "get_input_dtypes"):
             input_dtypes = build_config.get_input_dtypes()
         else:
             input_dtypes = {}
-        mapping = self.config.mapping
         dtype = str_dtype_to_trt(self.config.dtype)
-
-        if mapping.tp_size > 1 and not disable_custom_all_reduce:
-            if len(opt_profiles) > 0:
-                current_all_reduce_helper().set_workspace_tensor(
-                    mapping, len(opt_profiles))
-            else:
-                current_all_reduce_helper().set_workspace_tensor(mapping, 1)
 
         basic_inputs = {}
 

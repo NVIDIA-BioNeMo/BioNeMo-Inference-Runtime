@@ -42,6 +42,9 @@ repos:
         additional_dependencies:
         - tomli
         args: ['--config', 'pyproject.toml']
+        exclude: (?x)^(
+            .*const.*\.py |
+            .*tensorrt_llm_lite/.*)$
 -   repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v16.0.0
     hooks:
@@ -59,7 +62,9 @@ repos:
     -   id: codespell
         additional_dependencies:
         - tomli
-        exclude: ^(.*const.*\.py)$
+        exclude: (?x)^(
+            .*const.*\.py |
+            .*tensorrt_llm_lite/.*)$
 -   repo: https://github.com/executablebooks/mdformat
     rev: 0.7.17
     hooks:

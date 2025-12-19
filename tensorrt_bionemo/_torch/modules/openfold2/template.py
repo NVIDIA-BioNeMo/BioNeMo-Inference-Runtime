@@ -19,9 +19,9 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from einops import rearrange
-from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import CrossTriangleAttention
 from tensorrt_bionemo._torch.layers.transition import PairTransition
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
@@ -174,10 +174,11 @@ class TemplatePairStackBlock(nn.Module):
             single_mask,
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params)
-        single = single + self.tri_attn_end(single,
-                                            single_mask,
-                                            attn_metadata=attn_metadata,
-                                            all_reduce_params=all_reduce_params)
+        single = single + self.tri_attn_end(
+            single,
+            single_mask,
+            attn_metadata=attn_metadata,
+            all_reduce_params=all_reduce_params)
         return single
 
     def forward(

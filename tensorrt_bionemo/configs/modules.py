@@ -16,9 +16,10 @@
 from collections import OrderedDict
 from typing import Any, Optional
 
-from tensorrt_llm._utils import str_dtype_to_trt
+from tensorrt_llm_lite._utils import str_dtype_to_trt
 
-from .base import BaseConfig, BuildConfig, DimSpec, create_optimization_profiles
+from .base import (BaseConfig, BuildConfig, DimSpec,
+                   create_optimization_profiles)
 
 
 class PairformerConfig(BaseConfig):

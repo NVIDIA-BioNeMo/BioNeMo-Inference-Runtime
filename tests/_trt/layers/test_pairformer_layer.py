@@ -17,10 +17,10 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm import Tensor
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import *
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
@@ -49,7 +49,8 @@ class Scenario:
     Scenario(seq_len=64, support_batch=False),
     Scenario(seq_len=256, support_batch=False),
     Scenario(seq_len=64, triangle_attn_backend="CUEQUIV", support_batch=False),
-    Scenario(seq_len=256, triangle_attn_backend="CUEQUIV", support_batch=False),
+    Scenario(seq_len=256, triangle_attn_backend="CUEQUIV",
+             support_batch=False),
 ],
                          ids=[
                              "64_vanilla", "256_vanilla", "64_cuequiv",
@@ -103,22 +104,23 @@ def test_pairformer_layer(sc: Scenario):
         create_pairformer_layer_weights(sc.token_s, sc.token_z, sc.num_heads, sc.pairwise_head_width, sc.pairwise_num_heads, torch_dtype)
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         trt_s = Tensor(name='s',
                        shape=s.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_z = Tensor(name='z',
                        shape=z.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_mask = Tensor(name='mask',
                           shape=mask.shape,
-                          dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                          dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_pairmask = Tensor(name='pairmask',
                               shape=pairmask.shape,
-                              dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                              dtype=tensorrt_llm_lite.str_dtype_to_trt(
+                                  sc.dtype))
 
         pairformer_layer = PairformerLayerV1(
             local_layer_idx=0,
@@ -140,9 +142,9 @@ def test_pairformer_layer(sc: Scenario):
             attention_params=AttentionParams())
 
         output_s.mark_output("output_s",
-                             tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                             tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         output_z.mark_output("output_z",
-                             tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                             tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
     builder_config = builder.create_builder_config(name="pairformer_layer",
                                                    precision=sc.dtype)
@@ -150,7 +152,8 @@ def test_pairformer_layer(sc: Scenario):
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
     assert engine_buffer is not None
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
 
     stream = torch.cuda.current_stream().cuda_stream
 
@@ -188,5 +191,11 @@ def test_pairformer_layer(sc: Scenario):
     trt_output_s = outputs['output_s']
     trt_output_z = outputs['output_z']
 
-    torch.testing.assert_close(trt_output_s, ref_output_s, atol=1e-3, rtol=1e-4)
-    torch.testing.assert_close(trt_output_z, ref_output_z, atol=1e-3, rtol=1e-4)
+    torch.testing.assert_close(trt_output_s,
+                               ref_output_s,
+                               atol=1e-3,
+                               rtol=1e-4)
+    torch.testing.assert_close(trt_output_z,
+                               ref_output_z,
+                               atol=1e-3,
+                               rtol=1e-4)

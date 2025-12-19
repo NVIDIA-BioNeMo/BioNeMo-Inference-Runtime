@@ -16,10 +16,10 @@
 from typing import Any, Dict, Optional
 
 import torch
-from tensorrt_llm.functional import AllReduceParams
 from torch import nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.conditioning import ContactConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import \
@@ -58,10 +58,10 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         self.register_buffer("contacts", contacts, persistent=False)
 
-        self.register_buffer('arange_max_num_atoms',
-                             torch.arange(self.max_num_atoms_per_token).reshape(
-                                 1, 1, -1),
-                             persistent=False)
+        self.register_buffer(
+            'arange_max_num_atoms',
+            torch.arange(self.max_num_atoms_per_token).reshape(1, 1, -1),
+            persistent=False)
 
         # Weight values for iplddt computation
         self.ligand_weight: int = 20
@@ -303,9 +303,9 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         token_pad_pair_mask = (
             token_pad_mask.unsqueeze(-1) * token_pad_mask.unsqueeze(-2) *
-            (1 -
-             torch.eye(token_pad_mask.shape[2],
-                       device=token_pad_mask.device).unsqueeze(0).unsqueeze(0)))
+            (1 - torch.eye(
+                token_pad_mask.shape[2],
+                device=token_pad_mask.device).unsqueeze(0).unsqueeze(0)))
 
         token_pair_mask = token_pad_pair_mask * prob_contact
 
@@ -314,8 +314,8 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         asym_id = repeat_with_multiplicity(feats["asym_id"], multiplicity)
 
-        token_interface_pair_mask = token_pair_mask * (asym_id.unsqueeze(-1)
-                                                       != asym_id.unsqueeze(-2))
+        token_interface_pair_mask = token_pair_mask * (
+            asym_id.unsqueeze(-1) != asym_id.unsqueeze(-2))
         complex_ipde = (pde * token_interface_pair_mask).sum(
             dim=(2, 3)) / (token_interface_pair_mask.sum(dim=(2, 3)) + 1e-5)
 
@@ -572,7 +572,8 @@ class Boltz2ConfidenceModule(nn.Module):
         if x_pred.ndim == 3:
             BM, N, _ = x_pred.shape
             batch_size = BM // multiplicity
-            x_pred = x_pred.reshape(batch_size, multiplicity, *x_pred.shape[1:])
+            x_pred = x_pred.reshape(batch_size, multiplicity,
+                                    *x_pred.shape[1:])
         elif x_pred.ndim == 4:
             batch_size, multiplicity, _, _ = x_pred.shape
 
@@ -794,7 +795,8 @@ class Boltz1ConfidenceHeads(nn.Module):
         iplddt_weight = (is_ligand_token * ligand_weight +
                          token_interface_mask * interface_weight)
         complex_iplddt = (plddt * token_pad_mask * iplddt_weight).sum(
-            dim=-1) / (torch.sum(token_pad_mask * iplddt_weight, dim=-1) + 1e-5)
+            dim=-1) / (torch.sum(token_pad_mask * iplddt_weight, dim=-1) +
+                       1e-5)
 
         # Compute the aggregated PDE and iPDE
         pde = compute_aggregated_metric(pde_logits, end=32)
@@ -805,17 +807,17 @@ class Boltz1ConfidenceHeads(nn.Module):
         prob_contact = (pred_distogram_prob * self.contacts).sum(-1)
         token_pad_pair_mask = (
             token_pad_mask.unsqueeze(-1) * token_pad_mask.unsqueeze(-2) *
-            (1 - torch.eye(N_tokens, device=token_pad_mask.device)[None,
-                                                                   None, :, :]))
+            (1 - torch.eye(N_tokens,
+                           device=token_pad_mask.device)[None, None, :, :]))
 
         token_pair_mask = token_pad_pair_mask * prob_contact
         complex_pde = (pde * token_pair_mask).sum(
             dim=(-2, -1)) / token_pair_mask.sum(dim=(-2, -1))
         asym_id = repeat_with_multiplicity(asym_id, multiplicity)
-        token_interface_pair_mask = token_pair_mask * (asym_id.unsqueeze(-1)
-                                                       != asym_id.unsqueeze(-2))
-        complex_ipde = (pde * token_interface_pair_mask).sum(
-            dim=(-2, -1)) / (token_interface_pair_mask.sum(dim=(-2, -1)) + 1e-5)
+        token_interface_pair_mask = token_pair_mask * (
+            asym_id.unsqueeze(-1) != asym_id.unsqueeze(-2))
+        complex_ipde = (pde * token_interface_pair_mask).sum(dim=(-2, -1)) / (
+            token_interface_pair_mask.sum(dim=(-2, -1)) + 1e-5)
 
         out_dict = dict(
             pde_logits=pde_logits,
@@ -1164,7 +1166,8 @@ class Boltz1ConfidenceModule(nn.Module):
 
             mask = feature_dict["token_pad_mask"]
             pair_mask = mask[:, :,
-                             None] * mask[:, None, :]  # [B, N_tokens, N_tokens]
+                             None] * mask[:,
+                                          None, :]  # [B, N_tokens, N_tokens]
             pair_mask = repeat_with_multiplicity(
                 pair_mask, n_samples)  # [B, mult, N_tokens, N_tokens]
 

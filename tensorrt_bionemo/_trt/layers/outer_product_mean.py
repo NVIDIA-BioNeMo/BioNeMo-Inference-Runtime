@@ -13,17 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
 import tensorrt as trt
-from tensorrt_llm.functional import (AllReduceParams, Tensor, cast, concat,
-                                     einsum, elementwise_binary, shape, split,
-                                     sum)
-from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
-from tensorrt_llm.layers.normalization import LayerNorm
-from tensorrt_llm.module import Module
-
-from tensorrt_bionemo.mapping import Mapping
+from tensorrt_llm_lite.functional import (Tensor, cast, concat, einsum,
+                                          elementwise_binary, shape, split,
+                                          sum)
+from tensorrt_llm_lite.layers.linear import Linear
+from tensorrt_llm_lite.layers.normalization import LayerNorm
+from tensorrt_llm_lite.module import Module
 
 
 class OuterProductMean(Module):
@@ -42,8 +38,7 @@ class OuterProductMean(Module):
                      "proj_b": False,
                      "proj_o": True
                  },
-                 dtype: str = None,
-                 mapping: Optional[Mapping] = None):
+                 dtype: str = None):
         super().__init__()
         self.c_in = c_in
         self.c_hidden = c_hidden
@@ -54,33 +49,19 @@ class OuterProductMean(Module):
         self.norm_before_output = norm_before_output
         self.cast_to_float_before_einsum = cast_to_float_before_einsum
         self.dtype = dtype
-        self.mapping = mapping or Mapping()
-
-        assert self.c_hidden % self.mapping.tp_size == 0, \
-            "c_hidden must be divisible by tp_size"
-        self.c_hidden = self.c_hidden // self.mapping.tp_size
 
         self.norm = LayerNorm([c_in], eps=eps, dtype=dtype)
-        self.fused_proj_a_b = ColumnLinear(
-            c_in,
-            2 * self.c_hidden * self.mapping.tp_size,
-            bias=bias_flags["proj_a"] or bias_flags["proj_b"],
-            dtype=dtype,
-            tp_group=self.mapping.tp_group,
-            tp_size=self.mapping.tp_size,
-            gather_output=True)
-        self.proj_o = RowLinear(self.c_hidden * self.c_hidden *
-                                self.mapping.tp_size * self.mapping.tp_size,
-                                c_out,
-                                bias=bias_flags["proj_o"],
-                                dtype=dtype,
-                                tp_group=self.mapping.tp_group,
-                                tp_size=self.mapping.tp_size)
+        self.fused_proj_a_b = Linear(c_in,
+                                     2 * self.c_hidden,
+                                     bias=bias_flags["proj_a"]
+                                     or bias_flags["proj_b"],
+                                     dtype=dtype)
+        self.proj_o = Linear(self.c_hidden * self.c_hidden,
+                             c_out,
+                             bias=bias_flags["proj_o"],
+                             dtype=dtype)
 
-    def forward(self,
-                m: Tensor,
-                mask: Tensor,
-                all_reduce_params: Optional[AllReduceParams] = None) -> Tensor:
+    def forward(self, m: Tensor, mask: Tensor) -> Tensor:
         """
         Note: For TRT side, we need to re-work for a distributed gemm with ring-commnication.
               At now, linear layers will be reduced at the end.
@@ -94,11 +75,7 @@ class OuterProductMean(Module):
         mask = mask.unsqueeze(-1)
 
         ab = self.fused_proj_a_b(m)  # At here, ab is reduced.
-        a, b = split(ab, [
-            self.c_hidden * self.mapping.tp_size,
-            self.c_hidden * self.mapping.tp_size
-        ],
-                     dim=-1)
+        a, b = split(ab, [self.c_hidden, self.c_hidden], dim=-1)
 
         if self.cast_to_float_before_einsum:
             a = cast(a * mask, "float32")
@@ -121,8 +98,7 @@ class OuterProductMean(Module):
 
         z = einsum("bsic,bsjd->bijcd", [a, b])
 
-        cxd = (self.c_hidden * self.mapping.tp_size) * (self.c_hidden *
-                                                        self.mapping.tp_size)
+        cxd = self.c_hidden * self.c_hidden
         new_shape = concat([shape(z, 0), shape(z, 1), shape(z, 2), cxd])
         z = z.view(new_shape)
         if z.dtype != m.dtype:
@@ -130,7 +106,7 @@ class OuterProductMean(Module):
             num_mask = cast(num_mask, m.dtype)
         if self.norm_before_output:
             z = z / num_mask
-        z = self.proj_o(z, all_reduce_params=all_reduce_params)
+        z = self.proj_o(z)
         if not self.norm_before_output:
             z = z / num_mask
         return z

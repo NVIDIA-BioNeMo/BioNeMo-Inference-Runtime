@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.openfold.create_and_load_weights import (
     create_template_pair_stack_block_weights,
     create_template_pointwise_attention_weights,
@@ -130,7 +130,10 @@ def test_template_pointwise_attention(sc: Scenario):
                     sc.n_res,
                     ref_module.c_t,
                     dtype=torch.float32).cuda()
-    z = torch.randn(bs, sc.n_res, sc.n_res, ref_module.c_z,
+    z = torch.randn(bs,
+                    sc.n_res,
+                    sc.n_res,
+                    ref_module.c_z,
                     dtype=torch.float32).cuda()
     template_mask = torch.randint(0, 2, (bs, sc.n_templ),
                                   dtype=torch.float32).cuda()

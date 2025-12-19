@@ -16,11 +16,12 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import MSAColumnGlobalAttention
-from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
+from tensorrt_bionemo._torch.layers.transformers.evoformer import \
+    EvoformerBlock
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerStack as _EvoformerStack
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights

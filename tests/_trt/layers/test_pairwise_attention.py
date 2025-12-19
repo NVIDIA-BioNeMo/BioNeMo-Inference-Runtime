@@ -17,10 +17,10 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm import Tensor
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import *
 from test_utils.boltz.ref_attn import RefPairwiseSelfAttention
 
@@ -73,19 +73,19 @@ def test_self_pairwise_attention(sc: Scenario):
     mask.normal_(mean=mean, std=std_dev)
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         trt_s = Tensor(name='input_s',
                        shape=s.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_z = Tensor(name='input_z',
                        shape=z.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_mask = Tensor(name='mask',
                           shape=mask.shape,
-                          dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                          dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
         attn_layer = tensorrt_bionemo._trt.layers.SelfAttentionPairBias(
             c_s=ref_attn.c_s,
@@ -93,7 +93,8 @@ def test_self_pairwise_attention(sc: Scenario):
             num_heads=ref_attn.num_heads,
             initial_norm=True,
             local_layer_idx=0)
-        load_self_pairwise_attention_weights_trt(attn_layer, weights_and_biases)
+        load_self_pairwise_attention_weights_trt(attn_layer,
+                                                 weights_and_biases)
 
         attention_params = tensorrt_bionemo._trt.layers.attention.AttentionParams(
         )
@@ -101,13 +102,15 @@ def test_self_pairwise_attention(sc: Scenario):
                             trt_z,
                             mask=trt_mask,
                             attention_params=attention_params)
-        output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
+        output.mark_output("output",
+                           tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
     builder_config = builder.create_builder_config(
         name="self_pairwise_attention", precision=sc.dtype)
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     # Verify results
@@ -115,7 +118,8 @@ def test_self_pairwise_attention(sc: Scenario):
     outputs = {
         'output':
         torch.empty(s.shape,
-                    dtype=tensorrt_llm._utils.str_dtype_to_torch(sc.dtype),
+                    dtype=tensorrt_llm_lite._utils.str_dtype_to_torch(
+                        sc.dtype),
                     device="cuda")
     }
     session.run(inputs=inputs, outputs=outputs, stream=stream)

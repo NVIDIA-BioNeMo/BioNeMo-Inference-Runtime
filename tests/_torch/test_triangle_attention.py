@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
 from test_utils.boltz.ref_attn import RefTriangleAttention
@@ -58,7 +58,8 @@ def test_triangle_attention_backend(s: Scenario):
     dtype = str_dtype_to_torch(s.torch_dtype)
     device = torch.device('cuda')
 
-    ref_attn = RefTriangleAttention.load_weights(no_heads=s.num_attention_heads)
+    ref_attn = RefTriangleAttention.load_weights(
+        no_heads=s.num_attention_heads)
     ref_attn = ref_attn.to(device)
 
     weights_and_biases = create_triangle_attention_weights(from_ref=ref_attn)
@@ -70,7 +71,9 @@ def test_triangle_attention_backend(s: Scenario):
                              num_key_value_heads=s.num_key_value_heads,
                              gating=s.gating,
                              dtype=dtype)
-    load_triangle_attention_weights_torch(attn, weights_and_biases, dtype=dtype)
+    load_triangle_attention_weights_torch(attn,
+                                          weights_and_biases,
+                                          dtype=dtype)
     attn.to(device)
     attn_metadata = metadata_cls(mapping=Mapping())
     hidden_states = torch.randn(bs,
@@ -96,12 +99,16 @@ def test_triangle_attention_backend(s: Scenario):
     ]
 
     with torch.inference_mode():
-        ref_output_float = ref_attn(hidden_states, hidden_states, biases=biases)
+        ref_output_float = ref_attn(hidden_states,
+                                    hidden_states,
+                                    biases=biases)
         hidden_states = hidden_states.to(dtype)
         biases = [bias.to(dtype) for bias in biases]
         ref_attn = ref_attn.to(dtype)
         ref_output = ref_attn(hidden_states, hidden_states, biases=biases)
-        output = attn(hidden_states, biases=biases, attn_metadata=attn_metadata)
+        output = attn(hidden_states,
+                      biases=biases,
+                      attn_metadata=attn_metadata)
 
     assert output.shape == ref_output.shape
     if dtype == torch.float32:
@@ -111,8 +118,8 @@ def test_triangle_attention_backend(s: Scenario):
         diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
-        diff1_mean = torch.mean(torch.abs(ref_output.float() -
-                                          ref_output_float))
+        diff1_mean = torch.mean(
+            torch.abs(ref_output.float() - ref_output_float))
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.6
         assert abs(diff0_mean - diff1_mean) <= 0.2

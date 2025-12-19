@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_single_conditioning_weights, load_single_conditioning_weights_torch)
 from test_utils.boltz.ref_layers import RefSingleConditioning
@@ -45,7 +45,8 @@ def test_single_conditioning(sc: Scenario):
     ref_module = RefSingleConditioning.load_weights().to(device)
     ref_module.eval()
 
-    weights_and_biases = create_single_conditioning_weights(from_ref=ref_module)
+    weights_and_biases = create_single_conditioning_weights(
+        from_ref=ref_module)
     token_s = ref_module.token_s
     dim_fourier = ref_module.dim_fourier
     num_transitions = len(ref_module.transitions)
@@ -83,13 +84,13 @@ def test_single_conditioning(sc: Scenario):
         else:
             # This is right way to check float16 and bfloat16 accuracy
             diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
-            diff0_mean = torch.mean(torch.abs(output.float() -
-                                              ref_output_float))
+            diff0_mean = torch.mean(
+                torch.abs(output.float() - ref_output_float))
             diff1_max = torch.max(
                 torch.abs(ref_output.float() - ref_output_float))
             diff1_mean = torch.mean(
                 torch.abs(ref_output.float() - ref_output_float))
 
-            assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                          diff1_max) <= 0.5
+            assert abs(diff0_max - diff1_max) / torch.min(
+                diff0_max, diff1_max) <= 0.5
             assert abs(diff0_mean - diff1_mean) <= 0.2

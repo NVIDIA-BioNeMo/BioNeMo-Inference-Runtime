@@ -17,7 +17,6 @@ import numpy as np
 import torch
 
 # isort: off
-from tensorrt_llm.models.convert_utils import split
 from test_utils.boltz.create_and_load_weights import (
     create_outer_product_mean_weights, create_self_pairwise_attention_weights,
     create_triangle_attention_node_weights, create_triangle_attention_weights,
@@ -157,10 +156,6 @@ def load_msa_attention_weights_trt(module,
         module.proj_z_norm.bias.value = np.ascontiguousarray(
             layer_norm_z_bias.cpu().numpy())
     if linear_z_weight is not None:
-        linear_z_weight = split(linear_z_weight,
-                                mapping.tp_size,
-                                mapping.tp_rank,
-                                dim=0)
         module.proj_z.weight.value = np.ascontiguousarray(
             linear_z_weight.cpu().numpy())
 
@@ -212,14 +207,6 @@ def load_msa_transition_weights_trt(module,
         layer_norm_weight.cpu().numpy())
     module.layer_norm.bias.value = np.ascontiguousarray(
         layer_norm_bias.cpu().numpy())
-    if mapping.tp_size > 1:
-        linear_1_weight = split(linear_1_weight, mapping.tp_size,
-                                mapping.tp_rank, 0)
-        linear_1_bias = split(linear_1_bias, mapping.tp_size, mapping.tp_rank,
-                              0)
-        linear_2_weight = split(linear_2_weight, mapping.tp_size,
-                                mapping.tp_rank, 1)
-
     module.linear_1.weight.value = np.ascontiguousarray(
         linear_1_weight.cpu().numpy())
     module.linear_1.bias.value = np.ascontiguousarray(
@@ -277,14 +264,6 @@ def load_pair_transition_weights_trt(module,
         layer_norm_weight.cpu().numpy())
     module.layer_norm.bias.value = np.ascontiguousarray(
         layer_norm_bias.cpu().numpy())
-    if mapping.tp_size > 1:
-        linear_1_weight = split(linear_1_weight, mapping.tp_size,
-                                mapping.tp_rank, 0)
-        linear_1_bias = split(linear_1_bias, mapping.tp_size, mapping.tp_rank,
-                              0)
-        linear_2_weight = split(linear_2_weight, mapping.tp_size,
-                                mapping.tp_rank, 1)
-
     module.linear_1.weight.value = np.ascontiguousarray(
         linear_1_weight.cpu().numpy())
     module.linear_1.bias.value = np.ascontiguousarray(
@@ -330,10 +309,10 @@ def load_evoformer_block_weights_ref_torch(module, weights_and_biases):
                                           msa_transition_weights)
     load_outer_product_mean_weights_ref_torch(module.outer_product_mean,
                                               outer_product_mean_weights)
-    load_triangle_multiplication_node_weights_ref_torch(module.tri_mul_out,
-                                                        tri_mul_out_weights)
-    load_triangle_multiplication_node_weights_ref_torch(module.tri_mul_in,
-                                                        tri_mul_in_weights)
+    load_triangle_multiplication_node_weights_ref_torch(
+        module.tri_mul_out, tri_mul_out_weights)
+    load_triangle_multiplication_node_weights_ref_torch(
+        module.tri_mul_in, tri_mul_in_weights)
     load_triangle_attention_node_weights_ref_torch(module.tri_attn_start,
                                                    tri_attn_start_weights)
     load_triangle_attention_node_weights_ref_torch(module.tri_attn_end,
@@ -498,10 +477,10 @@ def load_extra_msa_block_weights_ref_torch(module, weights_and_biases):
                                           msa_transition_weights)
     load_outer_product_mean_weights_ref_torch(module.outer_product_mean,
                                               outer_product_mean_weights)
-    load_triangle_multiplication_node_weights_ref_torch(module.tri_mul_out,
-                                                        tri_mul_out_weights)
-    load_triangle_multiplication_node_weights_ref_torch(module.tri_mul_in,
-                                                        tri_mul_in_weights)
+    load_triangle_multiplication_node_weights_ref_torch(
+        module.tri_mul_out, tri_mul_out_weights)
+    load_triangle_multiplication_node_weights_ref_torch(
+        module.tri_mul_in, tri_mul_in_weights)
     load_triangle_attention_node_weights_ref_torch(module.tri_attn_start,
                                                    tri_attn_start_weights)
     load_triangle_attention_node_weights_ref_torch(module.tri_attn_end,
@@ -578,8 +557,10 @@ def load_input_embedder_weights_torch(module, weights_and_biases):
         "bias": linear_msa_m_bias.to("cuda")
     }])
     module.linear_relpos.load_weights([{
-        "weight": linear_relpos_weight.to("cuda"),
-        "bias": linear_relpos_bias.to("cuda")
+        "weight":
+        linear_relpos_weight.to("cuda"),
+        "bias":
+        linear_relpos_bias.to("cuda")
     }])
 
 
@@ -642,6 +623,7 @@ def create_template_pointwise_attention_weights(
     return mha_weights
 
 
-def load_template_pointwise_attention_weights_torch(module, weights_and_biases):
+def load_template_pointwise_attention_weights_torch(module,
+                                                    weights_and_biases):
     mha_weights = weights_and_biases
     load_triangle_attention_weights_torch(module.mha, mha_weights)

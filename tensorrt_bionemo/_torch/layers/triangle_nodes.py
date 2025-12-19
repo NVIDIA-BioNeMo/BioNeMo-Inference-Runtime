@@ -17,10 +17,10 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
-from tensorrt_bionemo._torch.distributed import (AllGatherMode, DPCommManager,
-                                                 allgather)
+from tensorrt_bionemo._torch.distributed import (
+    AllReduceParams, get_default_dcp_group_coordinator,
+    get_default_tp_group_coordinator)
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
@@ -117,6 +117,12 @@ class TriangleAttentionNode(nn.Module):
             attn_backend=attn_backend,
         )
 
+        self.dcp_group_comm = None
+        if self.dcp_size > 1:
+            self.dcp_group_comm = get_default_dcp_group_coordinator()
+            assert self.dcp_group_comm(
+            ) is not None, "DP group coordinator is not initialized"
+
     def _dcp_slice(
             self, x: torch.Tensor,
             mask_bias: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -137,10 +143,7 @@ class TriangleAttentionNode(nn.Module):
     def _dcp_gather(self, output: torch.Tensor) -> torch.Tensor:
         """ Gather the input by dcp size """
         if self.dcp_size > 1:
-            output = allgather(output,
-                               self.mapping,
-                               gather_dim=1,
-                               mode=AllGatherMode.DP)
+            output = self.dcp_group_comm().all_gather(output, dim=1)
         return output
 
     def _ensure_dtype(self, x: torch.Tensor,
@@ -247,7 +250,7 @@ class TriangleMultiplicationNode(nn.Module):
             dtype: torch.dtype = None,
             mapping: Optional[Mapping] = None,
             skip_create_weights: bool = False,
-            max_tri_mul_tp_size: bool = True,
+            max_tri_mul_tp_size: bool = False,
             high_precision: bool = True):
         super().__init__()
         if hidden_dim is None:
@@ -263,10 +266,6 @@ class TriangleMultiplicationNode(nn.Module):
         self.dtype = dtype
         self.high_precision = high_precision
 
-        self.dp_comm = None
-        if self.dcp_size > 1:
-            DPCommManager.init_dp_comm(self.mapping)
-            self.dp_comm = DPCommManager()
         self.dim = dim // self.tp_size
         self.hidden_dim = hidden_dim // self.tp_size
         self.multiplication_type = multiplication_type
@@ -318,6 +317,17 @@ class TriangleMultiplicationNode(nn.Module):
                             gather_output=True,
                             skip_create_weights=skip_create_weights)
 
+        self.tp_group_comm = None
+        self.dcp_group_comm = None
+        if self.tp_size > 1:
+            self.tp_group_comm = get_default_tp_group_coordinator()
+            assert self.tp_group_comm(
+            ) is not None, "TP group coordinator is not initialized"
+        if self.dcp_size > 1:
+            self.dcp_group_comm = get_default_dcp_group_coordinator()
+            assert self.dcp_group_comm(
+            ) is not None, "DP group coordinator is not initialized"
+
     @torch.compiler.disable
     def _fused_dual_gemm(self, x: torch.Tensor,
                          mask: torch.Tensor) -> torch.Tensor:
@@ -367,19 +377,16 @@ class TriangleMultiplicationNode(nn.Module):
     def _dcp_gather(self, x: torch.Tensor) -> torch.Tensor:
         """ Gather the input by dcp size """
         if self.dcp_size > 1:
-            x = x.contiguous()
             gather_dim = 1 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 2
-            x = allgather(x,
-                          self.mapping,
-                          gather_dim=gather_dim,
-                          mode=AllGatherMode.DP)
+            self.dcp_group_comm().barrier()
+            x = self.dcp_group_comm().all_gather(x, dim=gather_dim)
         return x
 
     def _tp_gather(self, x: torch.Tensor) -> torch.Tensor:
         """ Gather the input by tp size """
         if self.tp_size > 1:
-            x = x.contiguous()
-            x = allgather(x, self.mapping, mode=AllGatherMode.TP)
+            self.tp_group_comm().barrier()
+            x = self.tp_group_comm().all_gather(x)
         return x
 
     def _ring_einsum_compute(self, a: torch.Tensor,
@@ -406,8 +413,8 @@ class TriangleMultiplicationNode(nn.Module):
                 send_idx = 0
                 recv_idx = 1
                 for i in range(1, self.dcp_size):
-                    self.dp_comm.batch_isend_irecv(buffers[send_idx],
-                                                   buffers[recv_idx])
+                    self.dcp_group_comm().batch_isend_irecv(
+                        buffers[send_idx], buffers[recv_idx])
                     enisum_results[(self.dcp_rank - i) %
                                    self.dcp_size] = _einsum_compute(
                                        a, buffers[recv_idx])
@@ -420,8 +427,8 @@ class TriangleMultiplicationNode(nn.Module):
                 send_idx = 0
                 recv_idx = 1
                 for i in range(1, self.dcp_size):
-                    self.dp_comm.batch_isend_irecv(buffers[send_idx],
-                                                   buffers[recv_idx])
+                    self.dcp_group_comm().batch_isend_irecv(
+                        buffers[send_idx], buffers[recv_idx])
                     enisum_results[(self.dcp_rank - i) %
                                    self.dcp_size] = _einsum_compute(
                                        buffers[recv_idx], b)

@@ -16,10 +16,10 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm import Tensor
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (create_adaln_weights,
                                                       load_adaln_weights_trt)
 from test_utils.boltz.ref_layers import RefAdaLN
@@ -57,35 +57,39 @@ def test_adaln(sc: Scenario):
                     dtype=torch.float32).cuda()
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         trt_a = Tensor(name='input_a',
                        shape=a.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_s = Tensor(name='input_s',
                        shape=s.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
         adaln = AdaLN(dim=sc.dim,
                       dim_single_cond=sc.dim_single_cond,
                       dtype=sc.dtype)
         load_adaln_weights_trt(adaln, weights_and_biases, mapping=Mapping())
         output = adaln(trt_a, trt_s)
-        output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
+        output.mark_output("output",
+                           tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
     builder_config = builder.create_builder_config(name="adaln",
                                                    precision=sc.dtype)
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     # Verify results
     inputs = {'input_a': a.to(torch_dtype), 'input_s': s.to(torch_dtype)}
-    outputs = {'output': torch.empty(a.shape, dtype=torch_dtype, device="cuda")}
+    outputs = {
+        'output': torch.empty(a.shape, dtype=torch_dtype, device="cuda")
+    }
     session.run(inputs=inputs, outputs=outputs, stream=stream)
 
     ref_output = ref_adaln(a.to(torch_dtype), s.to(torch_dtype))

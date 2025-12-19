@@ -30,30 +30,6 @@ read_version(TRT_LLM_VERSION "${_TRT_LLM_VERSION_FILE}")
 message(STATUS "TRT_LLM_VERSION: ${TRT_LLM_VERSION}, ${TRT_LLM_INCLUDE_DIR}")
 unset(_TRT_LLM_VERSION_FILE)
 
-macro(find_trtllm_library libname)
-  if(NOT TARGET TRT_LLM::${libname})
-    find_library(
-      TRT_LLM_${libname}_LIBRARY
-      NAMES ${libname} REQUIRED
-      PATHS ${TRT_LLM_LIBS_DIR})
-    add_library(TRT_LLM::${libname} SHARED IMPORTED GLOBAL)
-    list(APPEND _include_dirs "${TRT_LLM_INCLUDE_DIR}"
-         "${TRT_LLM_INCLUDE_DIR}/include")
-    set_target_properties(
-      TRT_LLM::${libname}
-      PROPERTIES IMPORTED_LOCATION "${TRT_LLM_${libname}_LIBRARY}"
-                 INTERFACE_INCLUDE_DIRECTORIES "${_include_dirs}")
-  endif()
-endmacro()
-
-find_trtllm_library(tensorrt_llm)
-find_trtllm_library(th_common)
-find_trtllm_library(nvinfer_plugin_tensorrt_llm)
-find_trtllm_library(tensorrt_llm_ucx_wrapper)
-#find_trtllm_library(tensorrt_llm_nvrtc_wrapper)
-find_trtllm_library(decoder_attention_0)
-find_trtllm_library(decoder_attention_1)
-
 # Generate TRT_LLM_FOUND
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(

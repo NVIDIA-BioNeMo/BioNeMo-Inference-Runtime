@@ -1,7 +1,20 @@
-"""
-Copy from tensorrt_llm/_torch/modules/linear.py
-Refactored to remove all unused code
-"""
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Adapt from tensorrt_llm/_torch/modules/linear.py
+
 import enum
 import math
 from dataclasses import dataclass
@@ -9,12 +22,26 @@ from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
-from tensorrt_llm._torch.modules.linear import TensorParallelMode
-from tensorrt_llm.functional import AllReduceParams, AllReduceStrategy
 from torch import nn
 from torch.nn.parameter import Parameter
 
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo.mapping import Mapping
+
+
+class TensorParallelMode(str, enum.Enum):
+    COLUMN = 'column'
+    ROW = 'row'
+
+    @classmethod
+    def split_dim(cls, mode):
+        return 1 if mode == cls.ROW else 0
+
+    # Helper to shard the corresponding per-channel activation scales
+    # Which shard along the dimension orthogonal to the weights
+    @classmethod
+    def flip(cls, mode):
+        return cls.ROW if mode == cls.COLUMN else cls.COLUMN
 
 
 class WeightMode(str, enum.Enum):
@@ -93,9 +120,10 @@ class Linear(nn.Module):
             reduce_output: bool = True,  # ROW parallel only
             weights_loading_config: Optional[WeightsLoadingConfig] = None,
             skip_create_weights: bool = False):
-        from tensorrt_bionemo._torch.distributed import AllReduce
-
         super().__init__()
+        # TODO: support custom tensor parallel group
+        from tensorrt_bionemo._torch.distributed import \
+            get_default_tp_group_coordinator
         self.has_bias = bias
         self.dtype = dtype
         self.mapping = mapping or Mapping()
@@ -110,6 +138,12 @@ class Linear(nn.Module):
 
         local_in_features = in_features
         local_out_features = out_features
+
+        self.group_comm = None
+        if self.tp_size > 1:
+            self.group_comm = get_default_tp_group_coordinator()
+            assert self.group_comm(
+            ) is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
 
         if self.tp_mode == TensorParallelMode.ROW:
             assert in_features % self.tp_size == 0, (
@@ -129,8 +163,6 @@ class Linear(nn.Module):
         self.out_features = local_out_features
 
         # The default strategy is NCCL, MIN_LATENCY has some errors
-        self.all_reduce = AllReduce(
-            self.mapping, AllReduceStrategy.NCCL) if reduce_output else None
         self._weights_created = False
 
         if not skip_create_weights:
@@ -166,21 +198,20 @@ class Linear(nn.Module):
             *,
             all_reduce_params: Optional[AllReduceParams] = None
     ) -> torch.Tensor:
-        from tensorrt_bionemo._torch.distributed import allgather
 
         if self.tp_mode == TensorParallelMode.ROW:
             bias = None if (self.tp_rank > 0) else self.bias
             output = self.apply_linear(input, self.weight, bias)
             if self.tp_size > 1:
-                output = self.all_reduce(
+                output = self.group_comm().all_reduce(
                     output,
-                    all_reduce_params=all_reduce_params,
+                    params=all_reduce_params,
                 )
 
         elif self.tp_mode == TensorParallelMode.COLUMN:
             output = self.apply_linear(input, self.weight, self.bias)
             if self.gather_output and self.tp_size > 1:
-                output = allgather(output, self.mapping)
+                output = self.group_comm().all_gather(output)
         else:
             output = self.apply_linear(input, self.weight, self.bias)
 

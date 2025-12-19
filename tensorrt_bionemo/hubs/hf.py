@@ -20,7 +20,7 @@ from typing import Optional, Union
 
 import torch
 from huggingface_hub import hf_hub_download
-from tensorrt_llm.logger import logger
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
@@ -145,12 +145,12 @@ def load_state_dict_from_hf(
 
 
 def load_hf_weights(
-        name: str,
-        return_raw: bool = False,
-        local_files_only: bool = False,
-        cache_path: Optional[Union[str, Path]] = None,
-        repo_id: Optional[Union[str,
-                                Path]] = None) -> Union[io.BytesIO, dict[str]]:
+    name: str,
+    return_raw: bool = False,
+    local_files_only: bool = False,
+    cache_path: Optional[Union[str, Path]] = None,
+    repo_id: Optional[Union[str,
+                            Path]] = None) -> Union[io.BytesIO, dict[str]]:
     """ Load a checkpoint from the Hugging Face Hub """
     assert name in HF_CHECKPOINTS, f"Checkpoint {name} not found in HF_CHECKPOINTS"
     checkpoint = HF_CHECKPOINTS[name]

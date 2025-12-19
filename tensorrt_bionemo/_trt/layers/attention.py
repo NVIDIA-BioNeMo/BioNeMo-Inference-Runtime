@@ -20,19 +20,18 @@ from typing import Optional
 import tensorrt as trt
 # isort: on
 
-from tensorrt_llm import functional as trt_f
-from tensorrt_llm.functional import (AllReduceParams, Tensor, activation, cast,
-                                     concat, constant_to_tensor_, expand_dims,
-                                     matmul, not_op, shape, slice, softmax,
-                                     split, squeeze)
-from tensorrt_llm.layers.linear import ColumnLinear, RowLinear
-from tensorrt_llm.layers.normalization import LayerNorm
-from tensorrt_llm.logger import logger
-from tensorrt_llm.module import Module
+from tensorrt_llm_lite import functional as trt_f
+from tensorrt_llm_lite.functional import (Tensor, activation, cast, concat,
+                                          constant_to_tensor_, expand_dims,
+                                          matmul, not_op, shape, slice,
+                                          softmax, split)
+from tensorrt_llm_lite.layers.linear import Linear
+from tensorrt_llm_lite.layers.normalization import LayerNorm
+from tensorrt_llm_lite.logger import logger
+from tensorrt_llm_lite.module import Module
 
 from tensorrt_bionemo._trt.functional import (dynamic_const_tensor,
                                               triangle_attention)
-from tensorrt_bionemo.mapping import Mapping
 
 
 class AttentionParams(object):
@@ -62,7 +61,6 @@ class TriangleAttention(Module):
                  dtype: str = None,
                  triangle_attn_backend: str = 'VANILLA',
                  support_batch: bool = False,
-                 mapping: Mapping = Mapping(),
                  fallback_threshold=0):
         super().__init__()
         self.local_layer_idx = local_layer_idx
@@ -70,20 +68,14 @@ class TriangleAttention(Module):
         self.support_batch = support_batch
         self.attention_head_size = hidden_size // num_attention_heads
         self.num_kv_heads = num_kv_heads
-        assert num_attention_heads % mapping.tp_size == 0, \
-            "num_attention_heads must be divisible by tp_size"
-        self.num_attention_heads = num_attention_heads // mapping.tp_size
-        self.num_attention_kv_heads = (
-            num_kv_heads + mapping.tp_size - 1
-        ) // mapping.tp_size if num_kv_heads is not None else self.num_attention_heads
+
+        self.num_attention_heads = num_attention_heads
+        self.num_attention_kv_heads = num_kv_heads if num_kv_heads is not None else self.num_attention_heads
         assert self.num_attention_heads == self.num_attention_kv_heads, \
             "num_attention_heads must be equal to num_attention_kv_heads for the triangular attention"
         self.hidden_size = hidden_size
         self.attention_hidden_size = self.attention_head_size * self.num_attention_heads
 
-        self.tp_group = mapping.tp_group
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
         self.dtype = dtype
         self.bias_flags = bias_flags
         self.fallback_threshold = fallback_threshold
@@ -92,37 +84,28 @@ class TriangleAttention(Module):
         self.q_size = self.num_attention_heads * self.attention_head_size
         self.kv_size = self.num_attention_kv_heads * self.attention_head_size
 
-        self.qkv_proj = ColumnLinear(
-            hidden_size,
-            mapping.tp_size * self.q_size + 2 * mapping.tp_size * self.kv_size,
-            bias=bias_flags["q"] or bias_flags["k"] or bias_flags["v"],
-            dtype=dtype,
-            tp_group=mapping.tp_group,
-            tp_size=mapping.tp_size,
-            gather_output=False,
-            is_qkv=True)
-        self.o_proj = RowLinear(mapping.tp_size * self.q_size,
-                                hidden_size,
-                                bias=bias_flags["o"],
-                                dtype=dtype,
-                                tp_group=mapping.tp_group,
-                                tp_size=mapping.tp_size)
+        self.qkv_proj = Linear(hidden_size,
+                               self.q_size + 2 * self.kv_size,
+                               bias=bias_flags["q"] or bias_flags["k"]
+                               or bias_flags["v"],
+                               dtype=dtype,
+                               is_qkv=True)
+        self.o_proj = Linear(self.q_size,
+                             hidden_size,
+                             bias=bias_flags["o"],
+                             dtype=dtype)
         self.g_proj = None
         if gating:
-            self.g_proj = ColumnLinear(hidden_size,
-                                       mapping.tp_size * self.q_size,
-                                       bias=bias_flags["g"],
-                                       dtype=dtype,
-                                       tp_group=mapping.tp_group,
-                                       tp_size=mapping.tp_size,
-                                       gather_output=False)
+            self.g_proj = Linear(hidden_size,
+                                 self.q_size,
+                                 bias=bias_flags["g"],
+                                 dtype=dtype)
 
     def forward(self,
                 hidden_states: Tensor,
                 biases: Optional[list[Tensor]] = None,
                 norm_before_bmm1: bool = False,
-                attention_params: AttentionParams = None,
-                all_reduce_params: Optional[AllReduceParams] = None):
+                attention_params: AttentionParams = None):
         """
         Implementation of the triangle attention in TensorRT.
 
@@ -146,8 +129,7 @@ class TriangleAttention(Module):
             batch_dims = 0
         si = shape(hidden_states, batch_dims + 0)
         sj = shape(hidden_states, batch_dims + 1)
-        qkv = self.qkv_proj(hidden_states,
-                            None)  # [B, I, J, 3*H*D] or [I, J, 3*H*D]
+        qkv = self.qkv_proj(hidden_states)  # [B, I, J, 3*H*D] or [I, J, 3*H*D]
         mask_bias = None
         triangle_bias = None
 
@@ -155,12 +137,6 @@ class TriangleAttention(Module):
             mask_bias = biases[0]
             triangle_bias = biases[1]
             if triangle_bias is not None:
-                # slice the triangle bias for tp by the head dimension
-                if self.tp_size > 1:
-                    starts = concat(
-                        [0, self.num_attention_heads * self.tp_rank, 0, 0])
-                    ends = concat([bs, self.num_attention_heads, sj, sj])
-                    triangle_bias = slice(triangle_bias, starts, ends)
                 if self.support_batch:
                     triangle_bias = triangle_bias.unsqueeze(1)
 
@@ -178,7 +154,8 @@ class TriangleAttention(Module):
             else:
                 new_x_shape = concat(
                     [si, sj, _num_attention_heads, self.attention_head_size])
-                return x.view(new_x_shape).permute([0, 2, 1, 3])  # [I, H, J, D]
+                return x.view(new_x_shape).permute([0, 2, 1,
+                                                    3])  # [I, H, J, D]
 
         def vanilla_attention(query, key, value, triangle_bias, mask_bias):
             query = transpose_for_scores(
@@ -203,16 +180,16 @@ class TriangleAttention(Module):
                 attention_scores += mask_bias
             if triangle_bias is not None:
                 attention_scores += triangle_bias
-            attention_probs = softmax(attention_scores,
-                                      dim=-1)  # [B, I, H, J, J] or [I, H, J, J]
+            attention_probs = softmax(
+                attention_scores, dim=-1)  # [B, I, H, J, J] or [I, H, J, J]
             if self.support_batch:
                 context = matmul(attention_probs, value,
                                  use_fp32_acc=False).permute(
                                      [0, 1, 3, 2, 4])  # [B, I, J, H, D]
             else:
                 context = matmul(attention_probs, value,
-                                 use_fp32_acc=False).permute([0, 2, 1, 3
-                                                              ])  # [I, J, H, D]
+                                 use_fp32_acc=False).permute(
+                                     [0, 2, 1, 3])  # [I, J, H, D]
             return context
 
         query, key, value = split(
@@ -246,71 +223,7 @@ class TriangleAttention(Module):
 
             context = None
 
-            if self.triangle_attn_backend == "TRIFAST":
-
-                def transpose_for_bh(x, is_kv: bool = False):
-                    _num_attention_heads = self.num_attention_kv_heads if is_kv else self.num_attention_heads
-                    if self.support_batch:
-                        new_x_shape = concat([
-                            bs, si, sj, _num_attention_heads,
-                            self.attention_head_size
-                        ])
-                        x = x.view(new_x_shape).permute([0, 3, 1, 2, 4])
-                        bh_shape = concat([
-                            bs * _num_attention_heads, si, sj,
-                            self.attention_head_size
-                        ])
-                        return x.view(bh_shape)
-                    else:
-                        new_x_shape = concat([
-                            si, sj, _num_attention_heads,
-                            self.attention_head_size
-                        ])
-                        x = x.view(new_x_shape).permute([2, 0, 1, 3])
-                        return x
-
-                query = transpose_for_bh(query, is_kv=False)  # [B*H, I, J, D]
-                key = transpose_for_bh(key, is_kv=True)  # [B*H, I, J, D]
-                value = transpose_for_bh(value, is_kv=True)  # [B*H, I, J, D]
-                assert triangle_bias is not None, "Triangle bias is required for triangle attention"
-                assert mask_bias is not None, "Mask bias is required for triangle attention"
-
-                if not self.support_batch:
-                    mask_bias = mask_bias.unsqueeze(0)
-                mask_bias = squeeze(mask_bias, (2, 3))
-                mask_bias = cast(mask_bias, "bool")
-                if self.support_batch:
-                    bias_shape = concat([bs * self.num_attention_heads, sj, sj])
-                    triangle_bias = triangle_bias.view(bias_shape)
-                else:
-                    triangle_bias = triangle_bias.squeeze(0, False)
-
-                context, _ = triangle_attention(
-                    query,
-                    key,
-                    value,
-                    triangle_bias,
-                    mask_bias,
-                    self.num_attention_heads,
-                    self.attention_head_size,
-                    dtype=query.dtype,
-                    backend=self.triangle_attn_backend)  # [B*H, I, J, D]
-                if self.support_batch:
-                    context = context.view(
-                        concat([
-                            bs, self.num_attention_heads, si, sj,
-                            self.attention_head_size
-                        ]))  # [B, H, I, J, D]
-                    context = context.permute([0, 2, 3, 1,
-                                               4])  # [B, I, J, H, D]
-                else:
-                    context = context.view(
-                        concat([
-                            self.num_attention_heads, si, sj,
-                            self.attention_head_size
-                        ]))  # [H, I, J, D]
-                    context = context.permute([1, 2, 0, 3])  # [I, J, H, D]
-            elif self.triangle_attn_backend == "CUEQUIV":
+            if self.triangle_attn_backend == "CUEQUIV":
                 query = transpose_for_scores(
                     query, is_kv=False)  # [B, I, H, J, D] or [I, H, J, D]
                 key = transpose_for_scores(
@@ -378,38 +291,35 @@ class TriangleAttention(Module):
                 concat([
                     si, sj, self.num_attention_heads * self.attention_head_size
                 ]))  # [I, J, H*D]
-        context = self.o_proj(
-            context,
-            all_reduce_params=all_reduce_params)  # [B, I, J, F] or [I, J, F]
+        context = self.o_proj(context)  # [B, I, J, F] or [I, J, F]
         return context
 
 
 class SelfAttentionPairBias(Module):
 
     def __init__(
-        self,
-        *,
-        local_layer_idx: int,
-        c_s: int,
-        c_z: int,
-        num_heads: int,
-        initial_norm: bool = True,
-        bias_flags: dict[str, bool] = {
-            "q": True,
-            "k": False,
-            "v": False,
-            "g": False,
-            "z": False,
-            "norm_z": True,
-            "o": False,
-        },
-        transform_mask: bool = True,
-        inf: float = 1e9,
-        eps: float = 1e-05,
-        dtype: str = None,
-        need_project_z: bool = True,
-        max_batch_size: int = 1,
-        mapping: Mapping = Mapping()):
+            self,
+            *,
+            local_layer_idx: int,
+            c_s: int,
+            c_z: int,
+            num_heads: int,
+            initial_norm: bool = True,
+            bias_flags: dict[str, bool] = {
+                "q": True,
+                "k": False,
+                "v": False,
+                "g": False,
+                "z": False,
+                "norm_z": True,
+                "o": False,
+            },
+            transform_mask: bool = True,
+            inf: float = 1e9,
+            eps: float = 1e-05,
+            dtype: str = None,
+            need_project_z: bool = True,
+            max_batch_size: int = 1):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.c_s = c_s
@@ -424,15 +334,11 @@ class SelfAttentionPairBias(Module):
         # This equal to 1 for self-attention
         self.num_key_value_groups = num_heads // self.num_attention_kv_heads
 
-        assert num_heads % mapping.tp_size == 0
-        self.num_attention_heads = num_heads // mapping.tp_size
-        self.num_attention_kv_heads = self.num_attention_kv_heads // mapping.tp_size
+        self.num_attention_heads = num_heads
+        self.num_attention_kv_heads = self.num_attention_kv_heads
         self.q_size = self.num_attention_heads * self.attention_head_size
         self.kv_size = self.num_attention_kv_heads * self.attention_head_size
 
-        self.tp_group = mapping.tp_group
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
         self.dtype = dtype
 
         self.norm_factor = math.sqrt(self.attention_head_size)
@@ -441,56 +347,37 @@ class SelfAttentionPairBias(Module):
         if initial_norm:
             self.norm_s = LayerNorm(normalized_shape=[c_s],
                                     eps=eps,
-                                    dtype=dtype,
-                                    tp_size=1,
-                                    tp_dim=0)
+                                    dtype=dtype)
 
         # Couldn't fused q,k,v as one because of the different bias
-        self.proj_q = ColumnLinear(self.c_s,
-                                   mapping.tp_size * self.q_size,
-                                   bias=bias_flags["q"],
-                                   dtype=dtype,
-                                   tp_group=mapping.tp_group,
-                                   tp_size=mapping.tp_size,
-                                   gather_output=False)
+        self.proj_q = Linear(self.c_s,
+                             self.q_size,
+                             bias=bias_flags["q"],
+                             dtype=dtype)
         # Fused k,v at here.
         # TODO: potential for fused q,k,v here, if bias_flags["q"] = bias_flags["k"] = bias_flags["v"]
-        self.proj_kv = ColumnLinear(self.c_s,
-                                    2 * mapping.tp_size * self.kv_size,
-                                    bias=bias_flags["k"] or bias_flags["v"],
-                                    dtype=dtype,
-                                    tp_group=mapping.tp_group,
-                                    tp_size=mapping.tp_size,
-                                    gather_output=False)
-        self.proj_g = ColumnLinear(self.c_s,
-                                   mapping.tp_size * self.q_size,
-                                   bias=bias_flags["g"],
-                                   dtype=dtype,
-                                   tp_group=mapping.tp_group,
-                                   tp_size=mapping.tp_size,
-                                   gather_output=False)
+        self.proj_kv = Linear(self.c_s,
+                              2 * self.kv_size,
+                              bias=bias_flags["k"] or bias_flags["v"],
+                              dtype=dtype)
+        self.proj_g = Linear(self.c_s,
+                             self.q_size,
+                             bias=bias_flags["g"],
+                             dtype=dtype)
         self.need_project_z = need_project_z
         if need_project_z:
             self.proj_z_norm = LayerNorm(normalized_shape=[c_z],
                                          dtype=dtype,
                                          eps=eps,
-                                         tp_size=1,
-                                         tp_dim=0,
                                          bias=bias_flags.get("norm_z", True))
-            self.proj_z = ColumnLinear(self.c_z,
-                                       mapping.tp_size *
-                                       self.num_attention_heads,
-                                       bias=bias_flags["z"],
-                                       dtype=dtype,
-                                       tp_group=mapping.tp_group,
-                                       tp_size=mapping.tp_size,
-                                       gather_output=False)
-        self.proj_o = RowLinear(mapping.tp_size * self.q_size,
-                                self.c_s,
-                                bias=bias_flags["o"],
-                                dtype=dtype,
-                                tp_group=mapping.tp_group,
-                                tp_size=mapping.tp_size)
+            self.proj_z = Linear(self.c_z,
+                                 self.num_attention_heads,
+                                 bias=bias_flags["z"],
+                                 dtype=dtype)
+        self.proj_o = Linear(self.q_size,
+                             self.c_s,
+                             bias=bias_flags["o"],
+                             dtype=dtype)
 
     def forward(self,
                 s: Tensor,
@@ -498,8 +385,7 @@ class SelfAttentionPairBias(Module):
                 mask: Tensor,
                 norm_before_bmm1: bool = False,
                 compute_pair_bias: bool = True,
-                attention_params: AttentionParams = None,
-                all_reduce_params: Optional[AllReduceParams] = None):
+                attention_params: AttentionParams = None):
         """
         Implementation of the self-attention pair bias in TensorRT.
 
@@ -609,8 +495,8 @@ class SelfAttentionPairBias(Module):
 
             if key.ndim() == 4:
                 context = matmul(attention_probs, value,
-                                 use_fp32_acc=False).permute([0, 2, 1, 3
-                                                              ])  # [B, I, H, D]
+                                 use_fp32_acc=False).permute(
+                                     [0, 2, 1, 3])  # [B, I, H, D]
                 context = context.view(
                     concat([
                         shape(context, 0),
@@ -631,8 +517,7 @@ class SelfAttentionPairBias(Module):
             else:
                 assert False, f"Invalid input shape, not supported number of dimensions {key.ndim()}"
             context = context * res_s  # [B, I, H*D] or [B, J, I, H*D]
-            context = self.proj_o(context, all_reduce_params=all_reduce_params
-                                  )  # [B, I, H*D] or [B, J, I, H*D]
+            context = self.proj_o(context)  # [B, I, H*D] or [B, J, I, H*D]
         return context
 
 
@@ -652,8 +537,7 @@ class MSAAttention(Module):
                  bias_flags: dict[str, bool] = {"z": False},
                  eps: float = 1e-5,
                  inf: float = 1e9,
-                 dtype: str = None,
-                 mapping: Mapping = Mapping()):
+                 dtype: str = None):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.num_heads = num_heads
@@ -667,31 +551,23 @@ class MSAAttention(Module):
 
         self.layer_norm_m = LayerNorm(normalized_shape=[c_in],
                                       dtype=dtype,
-                                      eps=eps,
-                                      tp_size=1,
-                                      tp_dim=0)
+                                      eps=eps)
         self.proj_z_norm = None
         self.proj_z = None
         if need_project_z:
             self.proj_z_norm = LayerNorm(normalized_shape=[c_z],
                                          dtype=dtype,
-                                         eps=eps,
-                                         tp_size=1,
-                                         tp_dim=0)
-            self.proj_z = ColumnLinear(self.c_z,
-                                       num_heads,
-                                       bias=bias_flags["z"],
-                                       dtype=dtype,
-                                       tp_group=mapping.tp_group,
-                                       tp_size=mapping.tp_size,
-                                       gather_output=True)
+                                         eps=eps)
+            self.proj_z = Linear(self.c_z,
+                                 num_heads,
+                                 bias=bias_flags["z"],
+                                 dtype=dtype)
         self.mha = TriangleAttention(
             local_layer_idx=local_layer_idx,
             hidden_size=c_in,
             num_attention_heads=num_heads,
             triangle_attn_backend=triangle_attn_backend,
             support_batch=support_batch,
-            mapping=mapping,
             dtype=dtype,
             bias_flags={
                 "q": False,
@@ -706,8 +582,7 @@ class MSAAttention(Module):
                 m: Tensor,
                 z: Tensor,
                 mask: Tensor,
-                attention_params: AttentionParams = None,
-                all_reduce_params: Optional[AllReduceParams] = None):
+                attention_params: AttentionParams = None):
         """
         Args:
             m: [B, J, I, c_in]
@@ -744,10 +619,7 @@ class MSAAttention(Module):
         biases = [mask_bias, z]
         m = self.layer_norm_m(m)
 
-        o = self.mha(m,
-                     biases=biases,
-                     attention_params=attention_params,
-                     all_reduce_params=all_reduce_params)
+        o = self.mha(m, biases=biases, attention_params=attention_params)
         if self.transpose_input:
             o = o.permute([0, 2, 1, 3])
         return o

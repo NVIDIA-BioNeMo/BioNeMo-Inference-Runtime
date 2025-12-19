@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_atom_attention_decoder_weights,
     load_atom_attention_decoder_weights_torch)

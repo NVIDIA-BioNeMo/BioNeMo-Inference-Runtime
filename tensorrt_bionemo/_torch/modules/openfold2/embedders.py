@@ -19,8 +19,9 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
+from tensorrt_bionemo._torch.distributed import (
+    AllReduceParams, get_default_tp_group_coordinator)
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
@@ -110,6 +111,13 @@ class InputEmbedder(nn.Module):
             gather_output=False,
             skip_create_weights=config.skip_create_weights)
 
+        self.tp_size = config.mapping.tp_size
+        self.tp_group_comm = None
+        if self.tp_size > 1:
+            self.tp_group_comm = get_default_tp_group_coordinator()
+            assert self.tp_group_comm(
+            ) is not None, "Failed to get the default TP group coordinator"
+
     def load_weights(self, weights: dict) -> None:
         loaded_weight = recursive_calling_load_weights(self, weights)
 
@@ -147,15 +155,16 @@ class InputEmbedder(nn.Module):
         # [*, N_res, N_res, c_z]
         pair_emb = relpos(residue_index.to(tf_emb_i), self.boundaries,
                           self.linear_relpos)
-        pair_emb = pair_emb + tf_emb_i[..., None, :] + tf_emb_j[..., None, :, :]
+        pair_emb = pair_emb + tf_emb_i[..., None, :] + tf_emb_j[...,
+                                                                None, :, :]
 
         # [*, N_clust, N_res, c_m]
         n_clust = msa_feat.shape[-3]
         tf_m = (self.linear_tf_m(target_feat).unsqueeze(-3).expand(
             ((-1, ) * len(target_feat.shape[:-2]) + (n_clust, -1, -1))))
         msa_emb = self.linear_msa_m(msa_feat) + tf_m
-        if self.mapping.tp_size > 1:
-            pair_emb = allgather(pair_emb, self.mapping, gather_dim=-1)
+        if self.tp_size > 1:
+            pair_emb = self.tp_group_comm().all_gather(pair_emb, dim=-1)
         return msa_emb, pair_emb
 
 
@@ -207,7 +216,8 @@ class InputEmbedderMultimer(nn.Module):
             self.no_bins = (2 * self.max_relative_idx + 2 + 1 +
                             2 * self.max_relative_chain + 2)
             rel_pos_boundaries = torch.arange(start=0,
-                                              end=2 * self.max_relative_idx + 2)
+                                              end=2 * self.max_relative_idx +
+                                              2)
             self.register_buffer("rel_pos_boundaries", rel_pos_boundaries)
             rel_chain_boundaries = torch.arange(
                 start=0, end=2 * self.max_relative_chain + 2)
@@ -215,7 +225,8 @@ class InputEmbedderMultimer(nn.Module):
         else:
             self.no_bins = 2 * self.max_relative_idx + 1
             rel_pos_boundaries = torch.arange(start=0,
-                                              end=2 * self.max_relative_idx + 1)
+                                              end=2 * self.max_relative_idx +
+                                              1)
             self.register_buffer("rel_pos_boundaries", rel_pos_boundaries)
 
         self.linear_relpos = Linear(
@@ -227,6 +238,13 @@ class InputEmbedderMultimer(nn.Module):
             tensor_parallel_mode=TensorParallelMode.COLUMN,
             gather_output=False,
             skip_create_weights=config.skip_create_weights)
+
+        self.tp_size = config.mapping.tp_size
+        self.tp_group_comm = None
+        if self.tp_size > 1:
+            self.tp_group_comm = get_default_tp_group_coordinator()
+            assert self.tp_group_comm(
+            ) is not None, "Failed to get the default TP group coordinator"
 
     def load_weights(self, weights: dict) -> None:
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -346,8 +364,8 @@ class InputEmbedderMultimer(nn.Module):
             ((-1, ) * len(target_feat.shape[:-2]) + (n_clust, -1, -1))))
         msa_emb = self.linear_msa_m(msa_feat) + tf_m
 
-        if self.mapping.tp_size > 1:
-            pair_emb = allgather(pair_emb, self.mapping, gather_dim=-1)
+        if self.tp_size > 1:
+            pair_emb = self.tp_group_comm().all_gather(pair_emb, dim=-1)
 
         return msa_emb, pair_emb
 

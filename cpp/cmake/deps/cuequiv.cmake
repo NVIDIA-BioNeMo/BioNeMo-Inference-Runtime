@@ -14,41 +14,21 @@
 # the License.
 
 find_package(Python REQUIRED)
-set(CUE_OPS_VERSION 0.6.1)
+set(CUE_OPS_VERSION 0.7.0)
 execute_process(
-  COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops
-  COMMAND grep Location
-  COMMAND awk "{print \$2}" # This command doesn't require cuda libraries to be
-                            # installed
+  COMMAND
+    "${Python_EXECUTABLE}" -c
+    "import importlib.util, os; s=importlib.util.find_spec('cuequivariance_ops'); print(os.path.dirname(s.origin))"
   RESULT_VARIABLE FOUND_STATUS
   OUTPUT_VARIABLE CUE_OPS_PATH
   OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 if("${CUE_OPS_PATH}" MATCHES "not found")
   message(
-    WARNING
-      "WARNING: ${FOUND_STATUS}, Cannot find cuequivariance_ops package. Installing it from pip."
-  )
-  execute_process(COMMAND "${Python_EXECUTABLE}" -m pip install
-                          cuequivariance-ops==${CUE_OPS_VERSION})
-  execute_process(
-    COMMAND "${Python_EXECUTABLE}" -m pip show cuequivariance-ops
-    COMMAND grep Location
-    COMMAND awk "{print \$2}" # This command doesn't require cuda libraries to
-                              # be installed
-    RESULT_VARIABLE FOUND_STATUS
-    OUTPUT_VARIABLE CUE_OPS_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
-  if("${CUE_OPS_PATH}" MATCHES "not found")
-    message(
-      STATUS
-        "FATAL_ERROR: ${FOUND_STATUS}, Cannot find cuequivariance_ops package. Please check the build.sh script in 3rdparty/cuequiv-ops"
-    )
-  else()
-    set(CUE_OPS_PATH ${CUE_OPS_PATH}/cuequivariance_ops)
-    message(STATUS "Found cuequivariance_ops package: ${CUE_OPS_PATH}")
-  endif()
+    STATUS
+      "FATAL_ERROR: ${FOUND_STATUS}, Cannot find cuequivariance_ops package.")
 else()
-  set(CUE_OPS_PATH ${CUE_OPS_PATH}/cuequivariance_ops)
+  set(CUE_OPS_PATH ${CUE_OPS_PATH})
   message(STATUS "Found cuequivariance_ops package: ${CUE_OPS_PATH}")
 endif()
 

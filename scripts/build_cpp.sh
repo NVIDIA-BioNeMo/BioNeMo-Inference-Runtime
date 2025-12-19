@@ -17,6 +17,3 @@ cmake --build $(pwd) \
 cd ../.. && \
     mkdir -p tensorrt_bionemo/libs && \
     cp cpp/build/tensorrt_bionemo/plugins/libnvinfer_plugin_tensorrt_bionemo.so tensorrt_bionemo/libs/
-
-# Patch load TensorRT-LLM as local scope to avoid conflicts with TensorRT-LLM
-sed -i 's/mode=ctypes.RTLD_GLOBAL/mode=ctypes.RTLD_LOCAL/' 3rdparty/TensorRT-LLM/tensorrt_llm/plugin/plugin.py

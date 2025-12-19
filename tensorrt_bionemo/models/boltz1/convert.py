@@ -14,13 +14,12 @@
 # limitations under the License.
 
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
-from tensorrt_llm.logger import logger
-from tensorrt_llm.models.convert_utils import split
+from tensorrt_llm_lite._utils import str_dtype_to_torch
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
-from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
+from tensorrt_bionemo.mapping import Mapping
 
 
 def get_pairwise_attn_weights(mapping: Mapping,
@@ -40,19 +39,6 @@ def get_pairwise_attn_weights(mapping: Mapping,
     v_weight = state_dict[f"{prefix}.proj_v.weight"]
     o_weight = state_dict[f"{prefix}.proj_o.weight"]
     g_weight = state_dict[f"{prefix}.proj_g.weight"]
-
-    if max_attention_pairwise_tp_size:
-        mapping = create_max_tp_mapping(mapping=mapping, dim=num_heads)
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        q_weight = split(q_weight, tp_size, tp_rank, 0)
-        q_bias = split(q_bias, tp_size, tp_rank, 0)
-        k_weight = split(k_weight, tp_size, tp_rank, 0)
-        v_weight = split(v_weight, tp_size, tp_rank, 0)
-        o_weight = split(o_weight, tp_size, tp_rank, 1)
-        g_weight = split(g_weight, tp_size, tp_rank, 0)
-        z_weight = split(z_weight, tp_size, tp_rank, 0)
 
     kv_weights = torch.cat([k_weight, v_weight], dim=0)
 
@@ -74,8 +60,6 @@ def get_pairwise_attn_weights(mapping: Mapping,
         norm_z_weight = state_dict[f"{prefix}.proj_z.0.weight"]
         norm_z_bias = state_dict.get(f"{prefix}.proj_z.0.bias", None)
         z_weight = state_dict[f"{prefix}.proj_z.1.weight"]
-        if tp_size > 1:
-            z_weight = split(z_weight, tp_size, tp_rank, 0)
         ret.update({
             f"{tbm_prefix}.proj_z_norm.weight":
             norm_z_weight.to(torch_dtype),
@@ -106,15 +90,6 @@ def get_tri_attn_node_weights(mapping: Mapping,
     mha_o_weight = state_dict[f"{prefix}.mha.linear_o.weight"]
     mha_g_weight = state_dict[f"{prefix}.mha.linear_g.weight"]
 
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        linear_weight = split(linear_weight, tp_size, tp_rank, 0)
-        mha_q_weight = split(mha_q_weight, tp_size, tp_rank, 0)
-        mha_k_weight = split(mha_k_weight, tp_size, tp_rank, 0)
-        mha_v_weight = split(mha_v_weight, tp_size, tp_rank, 0)
-        mha_o_weight = split(mha_o_weight, tp_size, tp_rank, 1)
-        mha_g_weight = split(mha_g_weight, tp_size, tp_rank, 0)
     mha_qkv_weights = torch.cat([mha_q_weight, mha_k_weight, mha_v_weight],
                                 dim=0)
 
@@ -145,26 +120,6 @@ def get_tri_mul_node_weights(mapping: Mapping,
     p_out_weight = state_dict[f"{prefix}.p_out.weight"]
     g_out_weight = state_dict[f"{prefix}.g_out.weight"]
 
-    if max_tri_mul_tp_size:
-        mapping = create_max_tp_mapping(mapping=mapping,
-                                        dim=p_in_weight.shape[0])
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        dim = p_in_weight.shape[0] // 2
-        p0_weight = p_in_weight[:dim, :]
-        p1_weight = p_in_weight[dim:, :]
-        g0_weight = g_in_weight[:dim, :]
-        g1_weight = g_in_weight[dim:, :]
-        p0_weight = split(p0_weight, tp_size, tp_rank, 0)
-        p1_weight = split(p1_weight, tp_size, tp_rank, 0)
-        g0_weight = split(g0_weight, tp_size, tp_rank, 0)
-        g1_weight = split(g1_weight, tp_size, tp_rank, 0)
-
-        p_in_weight = torch.cat([p0_weight, p1_weight], dim=0)
-        g_in_weight = torch.cat([g0_weight, g1_weight], dim=0)
-        p_out_weight = split(p_out_weight, tp_size, tp_rank, 0)
-        g_out_weight = split(g_out_weight, tp_size, tp_rank, 0)
     ret = {
         f"{tbm_prefix}.norm_in.weight": norm_in_weight.to(torch_dtype),
         f"{tbm_prefix}.norm_in.bias": norm_in_bias.to(torch_dtype),
@@ -192,14 +147,6 @@ def get_transition_weights(mapping: Mapping,
     fc2_weight = state_dict[f"{prefix}.fc2.weight"]
     fc3_weight = state_dict[f"{prefix}.fc3.weight"]
 
-    if max_transition_tp_size:
-        mapping = create_max_tp_mapping(mapping=mapping, dim=dim)
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        fc1_weight = split(fc1_weight, tp_size, tp_rank, 0)
-        fc2_weight = split(fc2_weight, tp_size, tp_rank, 0)
-        fc3_weight = split(fc3_weight, tp_size, tp_rank, 1)
     fused_fc2_fc1_weight = torch.cat([fc2_weight, fc1_weight], dim=0)
 
     ret = {
@@ -240,13 +187,14 @@ def convert_hf_pairformer(config: BaseConfig,
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
         if not config.no_update_s:
             weights.update(
-                get_pairwise_attn_weights(mapping,
-                                          state_dict,
-                                          f"{layer_prefix}.attention",
-                                          f"{layer_tbm_prefix}.attention",
-                                          config.max_attention_pairwise_tp_size,
-                                          config.num_heads,
-                                          dtype=config.dtype))
+                get_pairwise_attn_weights(
+                    mapping,
+                    state_dict,
+                    f"{layer_prefix}.attention",
+                    f"{layer_tbm_prefix}.attention",
+                    config.max_attention_pairwise_tp_size,
+                    config.num_heads,
+                    dtype=config.dtype))
         weights.update(
             get_tri_attn_node_weights(mapping,
                                       state_dict,
@@ -493,14 +441,6 @@ def get_adaln_weights(mapping: Mapping,
                               dtype=torch_dtype,
                               device=s_scale_bias.device)
 
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        s_scale_weight = split(s_scale_weight, tp_size, tp_rank, 0)
-        s_scale_bias = split(s_scale_bias, tp_size, tp_rank, 0)
-        s_bias_weight = split(s_bias_weight, tp_size, tp_rank, 0)
-        s_bias_bias = split(s_bias_bias, tp_size, tp_rank, 0)
-
     fused_s_scale_s_bias_weights = torch.cat([s_scale_weight, s_bias_weight],
                                              dim=0)
     fused_s_scale_s_bias_bias = torch.cat([s_scale_bias, s_bias_bias], dim=0)
@@ -543,24 +483,7 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
         f"{prefix}.output_projection.0.weight"]
     output_projection_bias = state_dict[f"{prefix}.output_projection.0.bias"]
 
-    dim_inner = int(dim * expansion_factor)
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        swish_gate_weight_0, swish_gate_weight_1 = swish_gate_weight.split(
-            [dim_inner, dim_inner], dim=0)
-
-        swish_gate_weight_0 = split(swish_gate_weight_0, tp_size, tp_rank, 0)
-        swish_gate_weight_1 = split(swish_gate_weight_1, tp_size, tp_rank, 0)
-        swish_gate_weight = torch.cat(
-            [swish_gate_weight_0, swish_gate_weight_1], dim=0)
-        a_to_b_weight = split(a_to_b_weight, tp_size, tp_rank, 0)
-        b_to_a_weight = split(b_to_a_weight, tp_size, tp_rank, 1)
-        output_projection_weight = split(output_projection_weight, tp_size,
-                                         tp_rank, 0)
-        output_projection_bias = split(output_projection_bias, tp_size, tp_rank,
-                                       0)
-
+    int(dim * expansion_factor)
     fused_swl_a_to_b_weight = torch.cat([swish_gate_weight, a_to_b_weight],
                                         dim=0)
     ret.update({
@@ -585,14 +508,6 @@ def get_output_projection_weights(mapping: Mapping,
     ret = {}
     output_projection_weight = state_dict[f"{prefix}.0.weight"]
     output_projection_bias = state_dict[f"{prefix}.0.bias"]
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        output_projection_weight = split(output_projection_weight, tp_size,
-                                         tp_rank, 0)
-        output_projection_bias = split(output_projection_bias, tp_size, tp_rank,
-                                       0)
-
     ret.update({
         f"{tbm_prefix}.weight": output_projection_weight.to(torch_dtype),
         f"{tbm_prefix}.bias": output_projection_bias.to(torch_dtype),
@@ -634,7 +549,8 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
     tbm_prefix = "layers"
     weights = {}
     state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
-    logger.info(f"Loading weights for token transformer, dtype: {config.dtype}")
+    logger.info(
+        f"Loading weights for token transformer, dtype: {config.dtype}")
     for i in range(config.num_blocks):
         layer_prefix = f"{prefix}.{i}"
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
@@ -762,13 +678,15 @@ def convert_hf_diffusion_transformer_torch(config: BaseConfig,
         if f"layers.{i}.pair_bias_attn.proj_z.0.weight" in module_state_dict and config.version == "v1":
             tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0"] = [{
                 'weight':
-                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.weight"],
+                module_state_dict[
+                    f"layers.{i}.pair_bias_attn.proj_z.0.weight"],
                 'bias':
                 module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.bias"]
             }]
             tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1"] = [{
                 'weight':
-                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1.weight"],
+                module_state_dict[
+                    f"layers.{i}.pair_bias_attn.proj_z.1.weight"],
             }]
         tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_o"] = [{
             'weight':
@@ -792,8 +710,8 @@ def convert_hf_diffusion_transformer_torch(config: BaseConfig,
             "weight":
             module_state_dict[f"layers.{i}.transition.adaln.s_norm.weight"]
         }]
-        tbnm_state_dict[f"layers.{i}.transition.adaln.fused_s_scale_s_bias"] = [
-            {
+        tbnm_state_dict[
+            f"layers.{i}.transition.adaln.fused_s_scale_s_bias"] = [{
                 "weight":
                 module_state_dict[
                     f"layers.{i}.transition.adaln.s_scale.weight"],
@@ -801,11 +719,11 @@ def convert_hf_diffusion_transformer_torch(config: BaseConfig,
                 module_state_dict[f"layers.{i}.transition.adaln.s_scale.bias"]
             }, {
                 "weight":
-                module_state_dict[f"layers.{i}.transition.adaln.s_bias.weight"],
+                module_state_dict[
+                    f"layers.{i}.transition.adaln.s_bias.weight"],
                 "bias":
                 torch.zeros([dim], dtype=dtype)
-            }
-        ]
+            }]
         swish_gate_weight = module_state_dict[
             f"layers.{i}.transition.swish_gate.0.weight"]
         swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(
@@ -829,7 +747,8 @@ def convert_hf_diffusion_transformer_torch(config: BaseConfig,
             module_state_dict[
                 f"layers.{i}.transition.output_projection.0.weight"],
             "bias":
-            module_state_dict[f"layers.{i}.transition.output_projection.0.bias"]
+            module_state_dict[
+                f"layers.{i}.transition.output_projection.0.bias"]
         }]
 
     return tbnm_state_dict
@@ -868,7 +787,8 @@ def convert_hf_msa_module_torch(config: BaseConfig,
 
     tbnm_state_dict = {}
     tbnm_state_dict[f"s_proj"] = [{
-        "weight": module_state_dict[f"s_proj.weight"],
+        "weight":
+        module_state_dict[f"s_proj.weight"],
     }]
     tbnm_state_dict[f"msa_proj"] = [{
         "weight":
@@ -901,14 +821,16 @@ def convert_hf_msa_module_torch(config: BaseConfig,
             module_state_dict[
                 f"layers.{i}.pair_weighted_averaging.norm_m.weight"],
             'bias':
-            module_state_dict[f"layers.{i}.pair_weighted_averaging.norm_m.bias"]
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.norm_m.bias"]
         }]
         tbnm_state_dict[f"layers.{i}.pair_weighted_averaging.norm_z"] = [{
             'weight':
             module_state_dict[
                 f"layers.{i}.pair_weighted_averaging.norm_z.weight"],
             'bias':
-            module_state_dict[f"layers.{i}.pair_weighted_averaging.norm_z.bias"]
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.norm_z.bias"]
         }]
         tbnm_state_dict[
             f"layers.{i}.pair_weighted_averaging.fused_proj_m_g"] = [{
@@ -959,12 +881,14 @@ def convert_hf_msa_module_torch(config: BaseConfig,
                 'weight':
                 g_in_1_weight,
             }]
-            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.norm_out"] = [{
-                'weight':
-                module_state_dict[f"layers.{i}.{name}.norm_out.weight"],
-                'bias':
-                module_state_dict[f"layers.{i}.{name}.norm_out.bias"]
-            }]
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.norm_out"] = [
+                {
+                    'weight':
+                    module_state_dict[f"layers.{i}.{name}.norm_out.weight"],
+                    'bias':
+                    module_state_dict[f"layers.{i}.{name}.norm_out.bias"]
+                }
+            ]
             tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.p_out"] = [{
                 'weight':
                 module_state_dict[f"layers.{i}.{name}.p_out.weight"],
@@ -1241,7 +1165,8 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     }]
     weights[f"out_token_feat_update.transition_block.output_projection"] = [{
         "weight":
-        state_dict[f"{layer_path}.transition_block.output_projection.0.weight"],
+        state_dict[
+            f"{layer_path}.transition_block.output_projection.0.weight"],
         "bias":
         state_dict[f"{layer_path}.transition_block.output_projection.0.bias"]
     }]
@@ -1280,7 +1205,8 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     }]
     weights["score_model.single_conditioner.fourier_to_single"] = [{
         "weight":
-        state_dict[f"{layer_path}.single_conditioner.fourier_to_single.weight"],
+        state_dict[
+            f"{layer_path}.single_conditioner.fourier_to_single.weight"],
         "bias":
         state_dict.get(
             f"{layer_path}.single_conditioner.fourier_to_single.bias", None)
@@ -1464,7 +1390,8 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
             module_state_dict[
                 f"pairwise_conditioner.transitions.{i}.norm.weight"],
             'bias':
-            module_state_dict[f"pairwise_conditioner.transitions.{i}.norm.bias"]
+            module_state_dict[
+                f"pairwise_conditioner.transitions.{i}.norm.bias"]
         }]
         tbnm_state_dict[
             f"pairwise_conditioner.transitions.{i}.fused_fc2_fc1"] = [{

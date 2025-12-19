@@ -7,55 +7,41 @@
 
 ## Getting Started
 
-### Model hubs
+### Develop Docker
 
-Currently, the TRT-BNM is supporting local and huggingface model hubs. The `load_weights` function will load checkpoints from the local hub, if not found in the local hub, it will fallback to the huggingface remote hub. You can specify the hub by setting the `hub` option in this function.
-
-```python
-from tensorrt_bionemo.hubs import load_weights
-os.environ["BOLTZ2_CKPT"] = "boltz2.ckpt"                   # see environment variables in tensorrt_bionemo/hubs/local.py
-boltz2_state_dict = load_weights("boltz-2")                 # priority: local -> hf
-boltz2_state_dict = load_weights("boltz-2", hub="hf")       # only hf
-boltz2_state_dict = load_weights("boltz-2", cache_path="boltz2.ckpt") # local checkpoint from a specific path
-```
-
-### Develop
-
-Please use the `.devcontainer` for `vscode` or `cursor`. In the devcontainer, run as the following:
+Create the base image by the following command, the command will create the TRT-LLM base image, contain TensorRT development packages:
 
 ```bash
-$ git submodule update --init --recursive
-$ cd 3rdparty/TensorRT-LLM
-# Build TensorRT-LLM from source
-$ export PATH=$PATH:$HOME/.local/bin # this for conan executable
-$ python3 ./scripts/build_wheel.py --clean  --trt_root /usr/local/tensorrt --fast # add `-b Debug` for build debug with trt-llm
-$ pip install -e . && cd ../..
-# Install cuequiv
-$ pip install cuequivariance-ops-cu12==0.6.1
-# Build TRT plugins for TensorRT-BioNemo
-$ ./scripts/build_cpp.sh
-# Install as develop mode
-$ pip install -e .
+$ make -C docker base
 ```
 
-### Docker
+Or pull from: `<internal-registry>/tensorrt-llm:base`
+
+Run:
 
 ```bash
-$ make -C docker release
+$ docker run --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --gpus all -it \
+  <internal-registry>/tensorrt-llm:base
 ```
 
-Only build wheels for TensorRT-LLM and TensorRT-BNM:
+Inside docker container, just:
 
 ```bash
-$ export PACKAGE_DIR=__path_to_save_wheel_on_host__
-$ make -C docker trtbnm_wheel
+$ git clone <internal-repository>
+$ cd tensorrt-bionemo && pip install -v -e .
 ```
 
-## Testing
+To create a develop environment with full functionality.
+
+#### Testing
 
 ```bash
 $ pytest -s $(pwd)/tests
 ```
+
+### Release Docker
+
+Wheel and packing: TBD
 
 ## Troubleshoots
 

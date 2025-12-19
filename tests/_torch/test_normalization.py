@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (create_adaln_weights,
                                                       load_adaln_weights_torch)
 from test_utils.boltz.ref_layers import RefAdaLN
@@ -75,8 +75,8 @@ def test_adaln(sc: Scenario):
         diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
-        diff1_mean = torch.mean(torch.abs(ref_output.float() -
-                                          ref_output_float))
+        diff1_mean = torch.mean(
+            torch.abs(ref_output.float() - ref_output_float))
 
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5

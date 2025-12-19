@@ -18,12 +18,13 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.openfold.create_and_load_weights import (
     create_evoformer_block_weights, load_evoformer_block_weights_torch)
 from test_utils.openfold.ref_layers import RefEvoformerBlock
 
-from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
+from tensorrt_bionemo._torch.layers.transformers.evoformer import \
+    EvoformerBlock
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -52,9 +53,15 @@ def test_evoformer_block(sc: Scenario):
     ref_module = ref_module.to(device)
 
     weights_and_biases = create_evoformer_block_weights(from_ref=ref_module)
-    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_module.c_m,
+    m = torch.randn(bs,
+                    sc.n_seq,
+                    sc.n_res,
+                    ref_module.c_m,
                     dtype=torch.float32).cuda()
-    z = torch.randn(bs, sc.n_res, sc.n_res, ref_module.c_z,
+    z = torch.randn(bs,
+                    sc.n_res,
+                    sc.n_res,
+                    ref_module.c_z,
                     dtype=torch.float32).cuda()
     msa_mask = torch.randint(0,
                              2, (bs, sc.n_seq, sc.n_res),

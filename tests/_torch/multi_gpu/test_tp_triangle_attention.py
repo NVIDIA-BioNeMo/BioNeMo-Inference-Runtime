@@ -17,45 +17,59 @@ import os
 import traceback
 
 import pytest
-import tensorrt_llm
 import torch
+import torch.distributed as dist
 from mpi4py.futures import MPIPoolExecutor
 from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_weights, load_triangle_attention_weights_torch)
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
+from tensorrt_bionemo._torch.distributed import (
+    init_distributed_environment, register_dcp_group_coordinator,
+    register_tp_group_coordinator)
 from tensorrt_bionemo._torch.layers.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
+from tests.common.test_utils.mpi import set_mpi_env
 
 
 def run_single_rank(single_rank_forward_func, tensor_parallel_size, input,
                     biases, hidden_size, num_attention_heads,
                     weights_and_biases, dtype, backend):
-    rank = tensorrt_llm.mpi_rank()
-    torch.cuda.set_device(rank)
+
     try:
         single_rank_forward_func(input, biases, hidden_size,
                                  num_attention_heads, tensor_parallel_size,
-                                 rank, weights_and_biases, dtype, backend)
+                                 weights_and_biases, dtype, backend)
+        return True
     except Exception:
         traceback.print_exc()
-        raise
-    return True
+    finally:
+        dist.destroy_process_group()
 
 
 @torch.inference_mode
 def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
-                          tensor_parallel_size, tensor_parallel_rank,
-                          weights_and_biases, dtype, backend):
+                          tensor_parallel_size, weights_and_biases, dtype,
+                          backend):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+
+    mpi_rank, mpi_world_size = set_mpi_env()
+    init_distributed_environment(device_id=torch.device(mpi_rank))
+    rank = torch.distributed.get_rank()
+    assert rank == mpi_rank, "MPI rank and torch.distributed rank do not match"
+    torch.cuda.set_device(rank)
+    mapping = Mapping(world_size=tensor_parallel_size,
+                      tp_size=tensor_parallel_size,
+                      rank=rank)
+    # register default group coordinators
+    _ = register_tp_group_coordinator(mapping)
+    _ = register_dcp_group_coordinator(mapping)
+
     x = x.cuda()
     biases = [bias.cuda() for bias in biases]
 
-    mapping = Mapping(world_size=tensor_parallel_size,
-                      tp_size=tensor_parallel_size,
-                      rank=tensor_parallel_rank)
     metadata_cls = get_attention_backend(backend,
                                          AttentionType.TRIANGLE).Metadata
     attn_metadata = metadata_cls(mapping=mapping)
@@ -98,9 +112,9 @@ def triangle_attn_forward(x, biases, hidden_size, num_attention_heads,
                                           weights_and_biases,
                                           dtype=dtype)
 
-    if tensor_parallel_rank == 0:
-        single_dev_output = single_dev_tri_attn.forward(x, biases,
-                                                        attn_metadata)
+    if rank == 0:
+        single_dev_output = single_dev_tri_attn.forward(
+            x, biases, attn_metadata)
         torch.cuda.synchronize()
         assert multi_dev_output.shape == single_dev_output.shape
         if dtype == torch.float32:
@@ -144,8 +158,8 @@ def test_triangle_attn_forward(backend, dtype, num_attention_heads):
         results = executor.map(
             run_single_rank,
             *zip(*[(triangle_attn_forward, tensor_parallel_size, x, biases,
-                    hidden_size, num_attention_heads, weights_and_biases, dtype,
-                    backend)] * 2))
+                    hidden_size, num_attention_heads, weights_and_biases,
+                    dtype, backend)] * 2))
         if num_attention_heads % 2 != 0:
             with pytest.raises(AssertionError):
                 for r in results:

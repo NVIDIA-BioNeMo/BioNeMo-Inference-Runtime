@@ -17,10 +17,10 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm import Tensor
-from tensorrt_llm._utils import get_sm_version, str_dtype_to_torch
+from tensorrt_llm_lite import Tensor
+from tensorrt_llm_lite._utils import get_sm_version, str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import *
 from test_utils.boltz.ref_attn import RefTriangleAttention
 from test_utils.openfold.create_and_load_weights import (
@@ -118,20 +118,21 @@ def test_triangle_attention(sc: Scenario):
     triangle_bias.normal_(mean=mean, std=std_dev)
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         trt_hidden_states = Tensor(name='hidden_states',
                                    shape=hidden_states.shape,
-                                   dtype=tensorrt_llm.str_dtype_to_trt(
+                                   dtype=tensorrt_llm_lite.str_dtype_to_trt(
                                        sc.dtype))
         trt_mask_bias = Tensor(name="mask_bias",
                                shape=mask_bias.shape,
-                               dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                               dtype=tensorrt_llm_lite.str_dtype_to_trt(
+                                   sc.dtype))
         trt_triangle_bias = Tensor(name="triangle_bias",
                                    shape=triangle_bias.shape,
-                                   dtype=tensorrt_llm.str_dtype_to_trt(
+                                   dtype=tensorrt_llm_lite.str_dtype_to_trt(
                                        sc.dtype))
         attn_layer = TriangleAttention(
             hidden_size=ref_attn.c_q,
@@ -149,14 +150,16 @@ def test_triangle_attention(sc: Scenario):
         output = attn_layer(input_tensor,
                             biases=[trt_mask_bias, trt_triangle_bias],
                             attention_params=attention_params)
-        output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
+        output.mark_output("output",
+                           tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
     builder_config = builder.create_builder_config(name="tri_attention",
                                                    precision=sc.dtype)
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     # Verify result
@@ -168,7 +171,8 @@ def test_triangle_attention(sc: Scenario):
     outputs = {
         'output':
         torch.empty(hidden_states.shape,
-                    dtype=tensorrt_llm._utils.str_dtype_to_torch(sc.dtype),
+                    dtype=tensorrt_llm_lite._utils.str_dtype_to_torch(
+                        sc.dtype),
                     device="cuda")
     }
     session.run(inputs=inputs, outputs=outputs, stream=stream)
@@ -177,12 +181,14 @@ def test_triangle_attention(sc: Scenario):
 
     with torch.inference_mode():
         if sc.triangle_attn_backend in ["TRIFAST", "CUEQUIV"]:
-            mask_bias = mask_bias.to(torch_dtype) * torch.finfo(torch_dtype).min
+            mask_bias = mask_bias.to(torch_dtype) * torch.finfo(
+                torch_dtype).min
         if not sc.support_batch:
             hidden_states = hidden_states.unsqueeze(0)
             mask_bias = mask_bias.unsqueeze(0)
-        ref_output = ref_attn(hidden_states, hidden_states,
-                              [mask_bias, triangle_bias.unsqueeze(1)])
+        ref_output = ref_attn(
+            hidden_states, hidden_states,
+            [mask_bias, triangle_bias.unsqueeze(1)])
 
     trt_output = outputs['output']
     if not sc.support_batch:
@@ -238,20 +244,20 @@ def test_msa_attention(sc: Scenario):
                          device="cuda")
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
 
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         trt_m = Tensor(name='m',
                        shape=m.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_z = Tensor(name="z",
                        shape=z.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_mask = Tensor(name="mask",
                           shape=mask.shape,
-                          dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                          dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         attn_layer = MSAAttention(
             local_layer_idx=0,
             c_in=ref_attn.c_in,
@@ -268,14 +274,16 @@ def test_msa_attention(sc: Scenario):
                             trt_z,
                             trt_mask,
                             attention_params=attention_params)
-        output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
+        output.mark_output("output",
+                           tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
     builder_config = builder.create_builder_config(name="tri_attention",
                                                    precision=sc.dtype)
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     # Verify result
@@ -283,7 +291,8 @@ def test_msa_attention(sc: Scenario):
     outputs = {
         'output':
         torch.empty(m.shape,
-                    dtype=tensorrt_llm._utils.str_dtype_to_torch(sc.dtype),
+                    dtype=tensorrt_llm_lite._utils.str_dtype_to_torch(
+                        sc.dtype),
                     device="cuda")
     }
 

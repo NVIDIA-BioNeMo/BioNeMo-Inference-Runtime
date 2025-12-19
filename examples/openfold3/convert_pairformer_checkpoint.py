@@ -5,7 +5,7 @@ from pathlib import Path
 
 import safetensors
 import torch
-from tensorrt_llm import logger
+from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
@@ -215,7 +215,9 @@ def main():
             args.workers = world_size
         logger.info(f'Convert checkpoint using {args.workers} workers.')
         import torch.multiprocessing as mp
-        mp.spawn(convert, nprocs=args.workers, args=(world_size, configs, args))
+        mp.spawn(convert,
+                 nprocs=args.workers,
+                 args=(world_size, configs, args))
 
     tok = time.time()
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))

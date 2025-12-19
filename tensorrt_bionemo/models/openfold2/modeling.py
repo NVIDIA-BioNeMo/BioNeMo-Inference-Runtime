@@ -16,11 +16,11 @@ from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
-from tensorrt_llm.logger import logger
+from tensorrt_llm_lite.logger import logger
 
 import tensorrt_bionemo.pipeline.openfold2.const as rc
 from tensorrt_bionemo._torch.attention_backend import get_attention_backend
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.modules.openfold2.embedders import (
     ExtraMSAEmbedder, InputEmbedder, InputEmbedderMultimer, RecyclingEmbedder,
     TemplateEmbedder, TemplateEmbedderMultimer)
@@ -49,7 +49,8 @@ class OpenFold2AcceleratedModules(AcceleratedModules):
 
     def get_supported_modules(self) -> dict[str, tuple[nn.Module, Callable]]:
 
-        def evoformer_setter(mod: nn.Module, optimized: nn.Module) -> nn.Module:
+        def evoformer_setter(mod: nn.Module,
+                             optimized: nn.Module) -> nn.Module:
             org = mod.evoformer
             setattr(mod, "evoformer", optimized)
             return org
@@ -68,7 +69,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         super().__init__()
         self.model_name = model_name or SupMat.OpenFold2_PTM1
         self.config = config or self.get_pretrained_config(self.model_name)
-        print(self.config)
         self.is_multimer = self.config.is_multimer
 
         if self.is_multimer:
@@ -100,9 +100,13 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                     self.config.template_embedder)
         self.evoformer = EvoformerStack(self.config.trunk.evoformer_stack)
 
+        if include_load_weights:
+            self.load_weights()
+
     def load_weights(self, weights: dict = None):
         if weights is None:
-            logger.info(f"Input weights is None, try to load weights from hubs")
+            logger.info(
+                f"Input weights is None, try to load weights from hubs")
             weights = load_weights_from_hubs(name=self.model_name)
 
         input_embedder_weights = convert_hf_input_embedder_torch(
@@ -262,7 +266,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             feats, "input_embedder"),
                                    all_reduce_params=all_reduce_params)
 
-        pseudo_beta_x_prev = pseudo_beta_fn(feats["aatype"], x_prev, None).to(z)
+        pseudo_beta_x_prev = pseudo_beta_fn(feats["aatype"], x_prev,
+                                            None).to(z)
 
         m_1_prev_emb, z_prev_emb = self.recycling_embedder(
             m_1_prev, z_prev, pseudo_beta_x_prev)
@@ -285,8 +290,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
 
             if "template_single_embedding" in template_embeds:
                 # [*, S = S_c + S_t, N, C_m]
-                m = torch.cat([m, template_embeds["template_single_embedding"]],
-                              dim=-3)
+                m = torch.cat(
+                    [m, template_embeds["template_single_embedding"]], dim=-3)
                 if not self.config.is_multimer:
                     torsion_angles_mask = feats["template_torsion_angles_mask"]
                     msa_mask = torch.cat(

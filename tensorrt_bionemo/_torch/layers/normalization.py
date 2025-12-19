@@ -19,7 +19,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.distributed import allgather
+from tensorrt_bionemo._torch.distributed import \
+    get_default_tp_group_coordinator
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
@@ -65,6 +66,12 @@ class AdaLN(nn.Module):
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR))
 
+        self.group_comm = None
+        if mapping.tp_size > 1:
+            self.group_comm = get_default_tp_group_coordinator()
+            assert self.group_comm(
+            ) is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
+
     def forward(self, a: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -86,5 +93,5 @@ class AdaLN(nn.Module):
         a = F.sigmoid(s_scale) * a + s_bias
 
         if self.mapping.tp_size > 1:
-            a = allgather(a, self.mapping, gather_dim=-1)
+            a = self.group_comm().all_gather(a, dim=-1)
         return a

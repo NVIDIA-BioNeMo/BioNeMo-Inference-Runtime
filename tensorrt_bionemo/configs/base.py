@@ -19,10 +19,8 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 from pydantic import BaseModel, Field, field_serializer, field_validator
-from tensorrt_llm._utils import str_dtype_to_torch, torch_dtype_to_str
-from tensorrt_llm.lora_manager import LoraConfig
-from tensorrt_llm.plugin import PluginConfig
-from tensorrt_llm.quantization import QuantAlgo
+from tensorrt_llm_lite._utils import str_dtype_to_torch, torch_dtype_to_str
+from tensorrt_llm_lite.plugin import PluginConfig
 
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.version import __version__
@@ -65,7 +63,6 @@ class BaseConfig(BaseModel):
     max_batch_size: int = 1
     max_seq_len: int = 2048
     min_seq_len: int = 4
-    quant_algo: Optional[QuantAlgo] = None
     package_version: str = __version__
 
     class Config:
@@ -230,8 +227,6 @@ class BuildConfig(BaseModel):
     dry_run: Optional[bool] = False
     monitor_memory: Optional[bool] = False
     enable_debug_output: Optional[bool] = False
-    lora_config: LoraConfig = Field(
-        default_factory=LoraConfig)  # Patch for save engine
 
     def get_optimization_profiles(self) -> list[Any]:
         raise NotImplementedError("Subclasses must implement this method")

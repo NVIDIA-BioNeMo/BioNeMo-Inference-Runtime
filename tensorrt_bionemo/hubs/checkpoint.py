@@ -16,7 +16,7 @@
 from pathlib import Path
 from typing import Optional, Union
 
-from tensorrt_llm.logger import logger
+from tensorrt_llm_lite.logger import logger
 
 from .hf import load_hf_weights
 from .local import load_local_weights

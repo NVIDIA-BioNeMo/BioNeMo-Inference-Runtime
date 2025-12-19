@@ -12,10 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import torch
-from tensorrt_llm._utils import str_dtype_to_torch
-from tensorrt_llm.logger import logger
-from tensorrt_llm.models.convert_utils import split
+from tensorrt_llm_lite._utils import str_dtype_to_torch
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
@@ -227,10 +225,6 @@ def get_pairwise_conditioner_weights(mapping: Mapping,
     init_proj_linear_weight = state_dict[
         f"{prefix}.dim_pairwise_init_proj.1.weight"]
 
-    if mapping.tp_size > 1:
-        init_proj_linear_weight = split(init_proj_linear_weight,
-                                        mapping.tp_size, mapping.tp_rank, 0)
-
     ret.update({
         f"{tbm_prefix}.init_proj_norm.weight":
         init_proj_norm_weight.to(torch_dtype),
@@ -299,134 +293,6 @@ def get_pairformer_no_seq_weights(mapping: Mapping,
                                token_z * 4,
                                dtype=dtype))
     return weights
-
-
-def get_affinity_heads_weights(mapping: Mapping,
-                               state_dict: dict,
-                               prefix: str,
-                               tbm_prefix: str,
-                               dtype: str = "float32"):
-    torch_dtype = str_dtype_to_torch(dtype)
-    ret = {}
-    affinity_out_mlp_linear_0_weight = state_dict[
-        f"{prefix}.affinity_out_mlp.0.weight"]
-    affinity_out_mlp_linear_0_bias = state_dict[
-        f"{prefix}.affinity_out_mlp.0.bias"]
-    affinity_out_mlp_linear_1_weight = state_dict[
-        f"{prefix}.affinity_out_mlp.2.weight"]
-    affinity_out_mlp_linear_1_bias = state_dict[
-        f"{prefix}.affinity_out_mlp.2.bias"]
-
-    to_affinity_pred_value_0_weight = state_dict[
-        f"{prefix}.to_affinity_pred_value.0.weight"]
-    to_affinity_pred_value_0_bias = state_dict[
-        f"{prefix}.to_affinity_pred_value.0.bias"]
-    to_affinity_pred_value_1_weight = state_dict[
-        f"{prefix}.to_affinity_pred_value.2.weight"]
-    to_affinity_pred_value_1_bias = state_dict[
-        f"{prefix}.to_affinity_pred_value.2.bias"]
-    to_affinity_pred_value_2_weight = state_dict[
-        f"{prefix}.to_affinity_pred_value.4.weight"]
-    to_affinity_pred_value_2_bias = state_dict[
-        f"{prefix}.to_affinity_pred_value.4.bias"]
-
-    to_affinity_pred_score_0_weight = state_dict[
-        f"{prefix}.to_affinity_pred_score.0.weight"]
-    to_affinity_pred_score_0_bias = state_dict[
-        f"{prefix}.to_affinity_pred_score.0.bias"]
-    to_affinity_pred_score_1_weight = state_dict[
-        f"{prefix}.to_affinity_pred_score.2.weight"]
-    to_affinity_pred_score_1_bias = state_dict[
-        f"{prefix}.to_affinity_pred_score.2.bias"]
-    to_affinity_pred_score_2_weight = state_dict[
-        f"{prefix}.to_affinity_pred_score.4.weight"]
-    to_affinity_pred_score_2_bias = state_dict[
-        f"{prefix}.to_affinity_pred_score.4.bias"]
-
-    to_affinity_logits_binary_weight = state_dict[
-        f"{prefix}.to_affinity_logits_binary.weight"]
-    to_affinity_logits_binary_bias = state_dict[
-        f"{prefix}.to_affinity_logits_binary.bias"]
-
-    if mapping.tp_size > 1:
-        affinity_out_mlp_linear_0_weight = split(
-            affinity_out_mlp_linear_0_weight, mapping.tp_size, mapping.tp_rank,
-            0)
-        affinity_out_mlp_linear_0_bias = split(affinity_out_mlp_linear_0_bias,
-                                               mapping.tp_size, mapping.tp_rank,
-                                               0)
-        affinity_out_mlp_linear_1_weight = split(
-            affinity_out_mlp_linear_1_weight, mapping.tp_size, mapping.tp_rank,
-            1)
-        affinity_out_mlp_linear_1_bias = split(affinity_out_mlp_linear_1_bias,
-                                               mapping.tp_size, mapping.tp_rank,
-                                               1)
-
-        to_affinity_pred_value_0_weight = split(to_affinity_pred_value_0_weight,
-                                                mapping.tp_size,
-                                                mapping.tp_rank, 0)
-        to_affinity_pred_value_0_bias = split(to_affinity_pred_value_0_bias,
-                                              mapping.tp_size, mapping.tp_rank,
-                                              0)
-        to_affinity_pred_value_1_weight = split(to_affinity_pred_value_1_weight,
-                                                mapping.tp_size,
-                                                mapping.tp_rank, 1)
-        to_affinity_pred_value_1_bias = split(to_affinity_pred_value_1_bias,
-                                              mapping.tp_size, mapping.tp_rank,
-                                              1)
-
-        to_affinity_pred_score_0_weight = split(to_affinity_pred_score_0_weight,
-                                                mapping.tp_size,
-                                                mapping.tp_rank, 0)
-        to_affinity_pred_score_0_bias = split(to_affinity_pred_score_0_bias,
-                                              mapping.tp_size, mapping.tp_rank,
-                                              0)
-        to_affinity_pred_score_1_weight = split(to_affinity_pred_score_1_weight,
-                                                mapping.tp_size,
-                                                mapping.tp_rank, 1)
-        to_affinity_pred_score_1_bias = split(to_affinity_pred_score_1_bias,
-                                              mapping.tp_size, mapping.tp_rank,
-                                              1)
-
-    ret.update({
-        f"{tbm_prefix}.affinity_out_mlp_linear_0.weight":
-        affinity_out_mlp_linear_0_weight.to(torch_dtype),
-        f"{tbm_prefix}.affinity_out_mlp_linear_0.bias":
-        affinity_out_mlp_linear_0_bias.to(torch_dtype),
-        f"{tbm_prefix}.affinity_out_mlp_linear_1.weight":
-        affinity_out_mlp_linear_1_weight.to(torch_dtype),
-        f"{tbm_prefix}.affinity_out_mlp_linear_1.bias":
-        affinity_out_mlp_linear_1_bias.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_value_0.weight":
-        to_affinity_pred_value_0_weight.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_value_0.bias":
-        to_affinity_pred_value_0_bias.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_value_1.weight":
-        to_affinity_pred_value_1_weight.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_value_1.bias":
-        to_affinity_pred_value_1_bias.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_value_2.weight":
-        to_affinity_pred_value_2_weight.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_value_2.bias":
-        to_affinity_pred_value_2_bias.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_score_0.weight":
-        to_affinity_pred_score_0_weight.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_score_0.bias":
-        to_affinity_pred_score_0_bias.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_score_1.weight":
-        to_affinity_pred_score_1_weight.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_score_1.bias":
-        to_affinity_pred_score_1_bias.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_score_2.weight":
-        to_affinity_pred_score_2_weight.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_pred_score_2.bias":
-        to_affinity_pred_score_2_bias.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_logits_binary.weight":
-        to_affinity_logits_binary_weight.to(torch_dtype),
-        f"{tbm_prefix}.to_affinity_logits_binary.bias":
-        to_affinity_logits_binary_bias.to(torch_dtype),
-    })
-    return ret
 
 
 def convert_hf_affinity_module_torch(
@@ -511,7 +377,8 @@ def convert_hf_affinity_module_torch(
             module_state_dict[
                 f"pairwise_conditioner.transitions.{i}.norm.weight"],
             'bias':
-            module_state_dict[f"pairwise_conditioner.transitions.{i}.norm.bias"]
+            module_state_dict[
+                f"pairwise_conditioner.transitions.{i}.norm.bias"]
         }]
         tbnm_state_dict[
             f"pairwise_conditioner.transitions.{i}.fused_fc2_fc1"] = [{
@@ -562,14 +429,16 @@ def convert_hf_affinity_module_torch(
                 'weight':
                 g_in_1_weight,
             }]
-            tbnm_state_dict[f"pairformer_stack.layers.{i}.{name}.norm_out"] = [{
-                'weight':
-                module_state_dict[
-                    f"pairformer_stack.layers.{i}.{name}.norm_out.weight"],
-                'bias':
-                module_state_dict[
-                    f"pairformer_stack.layers.{i}.{name}.norm_out.bias"]
-            }]
+            tbnm_state_dict[f"pairformer_stack.layers.{i}.{name}.norm_out"] = [
+                {
+                    'weight':
+                    module_state_dict[
+                        f"pairformer_stack.layers.{i}.{name}.norm_out.weight"],
+                    'bias':
+                    module_state_dict[
+                        f"pairformer_stack.layers.{i}.{name}.norm_out.bias"]
+                }
+            ]
             tbnm_state_dict[f"pairformer_stack.layers.{i}.{name}.p_out"] = [{
                 'weight':
                 module_state_dict[
@@ -710,85 +579,6 @@ def convert_hf_affinity_module_torch(
     return tbnm_state_dict
 
 
-def convert_hf_affinity_module(config: BaseConfig = None,
-                               mapping: Mapping = None,
-                               affinity_module_name: str = "affinity_module1",
-                               local_checkpoint: str = None,
-                               model_name: str = "boltz-2-affinity"):
-    """
-    Convert a affinity module model from a Hugging Face checkpoint to a TensorRT model weights.
-    """
-    mapping = mapping if mapping is not None else Mapping()
-    prefix = affinity_module_name
-    weights = {}
-    state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
-
-    logger.info(
-        f"Loading weights for {affinity_module_name} affinity module, dtype: {config.dtype}, num_dist_bins: {config.num_dist_bins}"
-    )
-
-    torch_dtype = str_dtype_to_torch(config.dtype)
-    dist_bin_pairwise_embed_weight = state_dict[
-        f"{prefix}.dist_bin_pairwise_embed.weight"]
-    if mapping.tp_size > 1:
-        dist_bin_pairwise_embed_weight = split(dist_bin_pairwise_embed_weight,
-                                               mapping.tp_size, mapping.tp_rank,
-                                               0)
-    weights.update({
-        f"dist_bin_pairwise_embed.weight":
-        dist_bin_pairwise_embed_weight.to(torch_dtype),
-    })
-    s_to_z_prod_in1_weight = state_dict[f"{prefix}.s_to_z_prod_in1.weight"]
-    s_to_z_prod_in2_weight = state_dict[f"{prefix}.s_to_z_prod_in2.weight"]
-    z_norm_weight, z_norm_bias = state_dict[
-        f"{prefix}.z_norm.weight"], state_dict[f"{prefix}.z_norm.bias"]
-    z_linear_weight = state_dict[f"{prefix}.z_linear.weight"]
-
-    if mapping.tp_size > 1:
-        s_to_z_prod_in1_weight = split(s_to_z_prod_in1_weight, mapping.tp_size,
-                                       mapping.tp_rank, 0)
-        s_to_z_prod_in2_weight = split(s_to_z_prod_in2_weight, mapping.tp_size,
-                                       mapping.tp_rank, 0)
-        z_linear_weight = split(z_linear_weight, mapping.tp_size,
-                                mapping.tp_rank, 0)
-    fused_s_to_z_weight = torch.cat(
-        [s_to_z_prod_in1_weight, s_to_z_prod_in2_weight], dim=0)
-
-    weights.update({
-        f"z_norm.weight": z_norm_weight.to(torch_dtype),
-        f"z_norm.bias": z_norm_bias.to(torch_dtype),
-        f"z_linear.weight": z_linear_weight.to(torch_dtype),
-        f"fused_s_to_z.weight": fused_s_to_z_weight.to(torch_dtype),
-    })
-
-    weights.update(
-        get_pairwise_conditioner_weights(mapping,
-                                         state_dict,
-                                         f"{prefix}.pairwise_conditioner",
-                                         f"pairwise_conditioner",
-                                         2,
-                                         dtype=config.dtype))
-    for i in range(config.pairformer_num_blocks):
-        layer_prefix = f"{prefix}.pairformer_stack.layers.{i}"
-        layer_tbm_prefix = f"pairformer_stack.layers.{i}"
-        weights.update(
-            get_pairformer_no_seq_weights(mapping,
-                                          state_dict,
-                                          layer_prefix,
-                                          layer_tbm_prefix,
-                                          dtype=config.dtype,
-                                          max_tri_mul_tp_size=True,
-                                          max_transition_tp_size=True,
-                                          token_z=config.token_z))
-    weights.update(
-        get_affinity_heads_weights(mapping,
-                                   state_dict,
-                                   f"{prefix}.affinity_heads",
-                                   f"affinity_heads",
-                                   dtype=config.dtype))
-    return weights
-
-
 def convert_hf_msa_module_torch(config: BaseConfig = None,
                                 mapping: Mapping = None,
                                 local_checkpoint: str = None,
@@ -811,7 +601,8 @@ def convert_hf_msa_module_torch(config: BaseConfig = None,
 
     tbnm_state_dict = {}
     tbnm_state_dict[f"s_proj"] = [{
-        "weight": module_state_dict[f"s_proj.weight"],
+        "weight":
+        module_state_dict[f"s_proj.weight"],
     }]
     tbnm_state_dict[f"msa_proj"] = [{
         "weight":
@@ -844,14 +635,16 @@ def convert_hf_msa_module_torch(config: BaseConfig = None,
             module_state_dict[
                 f"layers.{i}.pair_weighted_averaging.norm_m.weight"],
             'bias':
-            module_state_dict[f"layers.{i}.pair_weighted_averaging.norm_m.bias"]
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.norm_m.bias"]
         }]
         tbnm_state_dict[f"layers.{i}.pair_weighted_averaging.norm_z"] = [{
             'weight':
             module_state_dict[
                 f"layers.{i}.pair_weighted_averaging.norm_z.weight"],
             'bias':
-            module_state_dict[f"layers.{i}.pair_weighted_averaging.norm_z.bias"]
+            module_state_dict[
+                f"layers.{i}.pair_weighted_averaging.norm_z.bias"]
         }]
         tbnm_state_dict[
             f"layers.{i}.pair_weighted_averaging.fused_proj_m_g"] = [{
@@ -906,14 +699,16 @@ def convert_hf_msa_module_torch(config: BaseConfig = None,
                 'weight':
                 g_in_1_weight,
             }]
-            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.norm_out"] = [{
-                'weight':
-                module_state_dict[
-                    f"layers.{i}.pairformer_layer.{name}.norm_out.weight"],
-                'bias':
-                module_state_dict[
-                    f"layers.{i}.pairformer_layer.{name}.norm_out.bias"]
-            }]
+            tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.norm_out"] = [
+                {
+                    'weight':
+                    module_state_dict[
+                        f"layers.{i}.pairformer_layer.{name}.norm_out.weight"],
+                    'bias':
+                    module_state_dict[
+                        f"layers.{i}.pairformer_layer.{name}.norm_out.bias"]
+                }
+            ]
             tbnm_state_dict[f"layers.{i}.pairformer_layer.{name}.p_out"] = [{
                 'weight':
                 module_state_dict[
@@ -1189,7 +984,8 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     }]
     weights["score_model.single_conditioner.fourier_to_single"] = [{
         "weight":
-        state_dict[f"{layer_path}.single_conditioner.fourier_to_single.weight"],
+        state_dict[
+            f"{layer_path}.single_conditioner.fourier_to_single.weight"],
         "bias":
         state_dict.get(
             f"{layer_path}.single_conditioner.fourier_to_single.bias", None)
@@ -1367,7 +1163,8 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
             module_state_dict[
                 f"pairwise_conditioner.transitions.{i}.norm.weight"],
             'bias':
-            module_state_dict[f"pairwise_conditioner.transitions.{i}.norm.bias"]
+            module_state_dict[
+                f"pairwise_conditioner.transitions.{i}.norm.bias"]
         }]
         tbnm_state_dict[
             f"pairwise_conditioner.transitions.{i}.fused_fc2_fc1"] = [{
@@ -1581,10 +1378,12 @@ def convert_hf_confidence_module_torch(config: BaseConfig,
     confidence_prefix = "confidence_module.confidence_heads."
     for key in state_dict.keys():
         if "confidence_heads" in key:
-            confidence_heads_weights[key.replace(confidence_prefix, "").replace(
-                ".weight", "")] = [{
-                    "weight": state_dict[key],
-                    "bias": None
+            confidence_heads_weights[key.replace(
+                confidence_prefix, "").replace(".weight", "")] = [{
+                    "weight":
+                    state_dict[key],
+                    "bias":
+                    None
                 }]
 
     extracted_weights[

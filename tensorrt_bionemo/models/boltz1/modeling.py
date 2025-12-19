@@ -17,10 +17,10 @@ from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
-from tensorrt_llm.logger import logger
+from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import \
@@ -225,7 +225,8 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
 
     def load_weights(self, weights: dict = None):
         if weights is None:
-            logger.info(f"Input weights is None, try to load weights from hubs")
+            logger.info(
+                f"Input weights is None, try to load weights from hubs")
             weights = load_weights_from_hubs(name=self.model_name)
         # Load weights for input embedder
         input_embedder_weights = convert_hf_input_embedder_torch(
@@ -300,7 +301,8 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             config=self.structure_module_config.score_model,
             weights=weights,
             model_name=self.model_name)
-        self.diffusion_conditioning.load_weights(diffusion_conditioning_weights)
+        self.diffusion_conditioning.load_weights(
+            diffusion_conditioning_weights)
 
         structure_module_weights = convert_hf_structure_module_torch(
             config=self.structure_module_config,

@@ -17,10 +17,10 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm import Tensor
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_outer_product_mean_weights, load_outer_product_mean_weights_trt)
 from test_utils.boltz.ref_layers import \
@@ -72,16 +72,16 @@ def test_outer_product_mean(sc: Scenario):
     weights_and_biases = create_outer_product_mean_weights(from_ref=ref_omp)
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         trt_m = Tensor(name='input_m',
                        shape=m.shape,
-                       dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                       dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
         trt_mask = Tensor(name='input_mask',
                           shape=mask.shape,
-                          dtype=tensorrt_llm.str_dtype_to_trt(sc.dtype))
+                          dtype=tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
         if sc.mode == "boltz":
             bias_flags = {"proj_a": False, "proj_b": False, "proj_o": True}
@@ -100,14 +100,16 @@ def test_outer_product_mean(sc: Scenario):
                                             weights_and_biases,
                                             mapping=Mapping())
         output = omp(trt_m, trt_mask)
-        output.mark_output("output", tensorrt_llm.str_dtype_to_trt(sc.dtype))
+        output.mark_output("output",
+                           tensorrt_llm_lite.str_dtype_to_trt(sc.dtype))
 
     builder_config = builder.create_builder_config(name="outer_product_mean",
                                                    precision=sc.dtype)
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     # Verify results

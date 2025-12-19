@@ -18,17 +18,12 @@ import json
 import os
 import shutil
 import time
-import traceback
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import get_context
 from typing import Optional, Union
 
 import torch
-from tensorrt_llm._utils import (OMPI_COMM_TYPE_HOST, mpi_barrier, mpi_comm,
-                                 mpi_rank, mpi_world_size)
-from tensorrt_llm.builder import Engine, EngineConfig
-from tensorrt_llm.logger import logger, severity_map
-from tensorrt_llm.plugin import PluginConfig, add_plugin_argument
+from tensorrt_llm_lite.builder import Engine, EngineConfig
+from tensorrt_llm_lite.logger import logger, severity_map
+from tensorrt_llm_lite.plugin import PluginConfig, add_plugin_argument
 
 from tensorrt_bionemo import __version__
 from tensorrt_bionemo._trt.builder import build
@@ -101,6 +96,11 @@ def parse_arguments():
                         default=False,
                         action='store_true',
                         help="Enable debug output.")
+    parser.add_argument(
+        '--num_profiles',
+        type=int,
+        default=2,
+        help="The number of profiles to build engines default to 2.")
     parser.add_argument(
         '--profiling_verbosity',
         type=str,
@@ -230,50 +230,11 @@ def parallel_build(module_config: BaseConfig,
 
     world_size = module_config.mapping.world_size
 
-    use_mpi = mpi_world_size() > 1
-
-    if not use_mpi and workers == 1:
-        for rank in range(world_size):
-            passed = build_and_save(rank, rank % workers, ckpt_dir,
-                                    build_config, output_dir, log_level,
-                                    module_config, module_cls, **kwargs)
-            assert passed, "Engine building failed, please check error log."
-    elif not use_mpi:
-        with ProcessPoolExecutor(mp_context=get_context('spawn'),
-                                 max_workers=workers) as p:
-            futures = [
-                p.submit(build_and_save, rank, rank % workers, ckpt_dir,
-                         build_config, output_dir, log_level, module_config,
-                         module_cls, **kwargs) for rank in range(world_size)
-            ]
-            exceptions = []
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    traceback.print_exc()
-                    exceptions.append(e)
-            assert len(exceptions
-                       ) == 0, "Engine building failed, please check error log."
-    else:
-        mpi_local_comm = mpi_comm().Split_type(split_type=OMPI_COMM_TYPE_HOST)
-        mpi_local_rank = mpi_local_comm.Get_rank()
-        node_gpu_count = torch.cuda.device_count()
-        exceptions = []
-        for engine_rank in range(world_size):
-            if engine_rank % mpi_world_size() != mpi_rank():
-                continue
-            try:
-                build_and_save(engine_rank, mpi_local_rank % node_gpu_count,
-                               ckpt_dir, build_config, output_dir, log_level,
-                               module_config, module_cls, **kwargs)
-            except Exception as e:
-                traceback.print_exc()
-                exceptions.append(e)
-        mpi_barrier()
-        if len(exceptions) != 0:
-            print("Engine building failed, please check error log.", flush=True)
-            mpi_comm().Abort()
+    for rank in range(world_size):
+        passed = build_and_save(rank, rank % workers, ckpt_dir, build_config,
+                                output_dir, log_level, module_config,
+                                module_cls, **kwargs)
+        assert passed, "Engine building failed, please check error log."
 
 
 def main():
@@ -317,14 +278,12 @@ def main():
         if backend == BackendType.TRT:
             # TODO: remove this, make it a command line argument
             force_num_profiles_from_env = int(
-                os.environ.get("BUILDER_FORCE_NUM_PROFILES", 0))
+                os.environ.get("BUILDER_FORCE_NUM_PROFILES",
+                               args.num_profiles))
             if force_num_profiles_from_env is not None:
                 logger.warning(
                     f"Overriding # of builder profiles <= {force_num_profiles_from_env}."
                 )
-            logger.info(
-                f"Disable custom all reduce: {module_config.disable_custom_all_reduce}"
-            )
             strongly_typed = True
             logger.info(
                 f"Module config dtype: {module_config.dtype}, weakly_dtype: {args.weakly_dtype}"
@@ -354,14 +313,16 @@ def main():
             build_config = module_cls.build_config_class.model_validate(
                 build_config_dict)
 
-            parallel_build(module_config, backend_dir, build_config, output_dir,
-                           workers, args.log_level, module_cls, **kwargs)
+            parallel_build(module_config, backend_dir, build_config,
+                           output_dir, workers, args.log_level, module_cls,
+                           **kwargs)
         elif backend == BackendType.TORCH:
             if args.torch_dtype is not None:
                 module_config.set_dtype(args.torch_dtype)
             build_config = None
-            parallel_build(module_config, backend_dir, build_config, output_dir,
-                           workers, args.log_level, module_cls, **kwargs)
+            parallel_build(module_config, backend_dir, build_config,
+                           output_dir, workers, args.log_level, module_cls,
+                           **kwargs)
 
     tok = time.time()
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))

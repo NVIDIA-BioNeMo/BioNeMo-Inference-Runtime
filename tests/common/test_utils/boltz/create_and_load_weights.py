@@ -15,7 +15,6 @@
 
 import numpy as np
 import torch
-from tensorrt_llm.models.convert_utils import split
 
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
@@ -202,21 +201,7 @@ def load_triangle_attention_weights_trt(module,
                                         tp_size=1,
                                         tp_rank=0):
     q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = weights_and_biases
-    if tp_size > 1:
-        q_weight = split(q_weight, tp_size, tp_rank, 0)
-        if q_bias is not None:
-            q_bias = split(q_bias, tp_size, tp_rank, 0)
-        k_weight = split(k_weight, tp_size, tp_rank, 0)
-        if k_bias is not None:
-            k_bias = split(k_bias, tp_size, tp_rank, 0)
-        v_weight = split(v_weight, tp_size, tp_rank, 0)
-        if v_bias is not None:
-            v_bias = split(v_bias, tp_size, tp_rank, 0)
-        out_weight = split(out_weight, tp_size, tp_rank,
-                           1)  # ignore bias for row tp
-        gating_weight = split(gating_weight, tp_size, tp_rank, 0)
-        if gating_bias is not None:
-            gating_bias = split(gating_bias, tp_size, tp_rank, 0)
+
     qkv_weights = torch.cat([q_weight, k_weight, v_weight], dim=0)
     module.qkv_proj.weight.value = np.ascontiguousarray(
         qkv_weights.cpu().numpy())
@@ -355,25 +340,6 @@ def load_self_pairwise_attention_weights_trt(module,
     init_norm_weight, init_norm_bias, q_weight, q_bias, \
         k_weight, k_bias, v_weight, v_bias, o_weight, o_bias, \
         g_weight, g_bias, z_weight, z_bias, norm_z_weight, norm_z_bias = weights_and_biases
-    if tp_size > 1:
-        q_weight = split(q_weight, tp_size, tp_rank, 0)
-        if q_bias is not None:
-            q_bias = split(q_bias, tp_size, tp_rank, 0)
-        k_weight = split(k_weight, tp_size, tp_rank, 0)
-        if k_bias is not None:
-            k_bias = split(k_bias, tp_size, tp_rank, 0)
-        v_weight = split(v_weight, tp_size, tp_rank, 0)
-        if v_bias is not None:
-            v_bias = split(v_bias, tp_size, tp_rank, 0)
-        o_weight = split(o_weight, tp_size, tp_rank, 1)  # tp row, ignore bias
-
-        g_weight = split(g_weight, tp_size, tp_rank, 0)
-        if g_bias is not None:
-            g_bias = split(g_bias, tp_size, tp_rank, 0)
-        if z_weight is not None:
-            z_weight = split(z_weight, tp_size, tp_rank, 0)
-            if z_bias is not None:
-                z_bias = split(z_bias, tp_size, tp_rank, 0)
 
     kv_weights = torch.cat([k_weight, v_weight], dim=0)
     if hasattr(module, "norm_s") and module.norm_s is not None and \
@@ -386,7 +352,8 @@ def load_self_pairwise_attention_weights_trt(module,
     if q_bias is not None:
         module.proj_q.bias.value = np.ascontiguousarray(q_bias.cpu().numpy())
     # k,v,o,g are identity matrices
-    module.proj_kv.weight.value = np.ascontiguousarray(kv_weights.cpu().numpy())
+    module.proj_kv.weight.value = np.ascontiguousarray(
+        kv_weights.cpu().numpy())
     if k_bias is not None and v_bias is not None:
         module.proj_kv.bias.value = np.ascontiguousarray(
             torch.cat([k_bias, v_bias], dim=0).cpu().numpy())
@@ -575,7 +542,6 @@ def load_triangle_attention_node_weights_trt(module,
         layer_norm_weight.cpu().numpy())
     module.layer_norm.bias.value = np.ascontiguousarray(
         layer_norm_bias.cpu().numpy())
-    linear_weight = split(linear_weight, tp_size, tp_rank, dim=0)
     module.linear.weight.value = np.ascontiguousarray(
         linear_weight.cpu().numpy())
 
@@ -677,46 +643,15 @@ def load_triangle_multiplication_node_weights_trt(module,
                                                   weights_and_biases,
                                                   mapping: Mapping = None):
     mapping = mapping or Mapping()
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
+    mapping.tp_size
+    mapping.tp_rank
     norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
         norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias = weights_and_biases
-    dim = p_in_weight.shape[0] // 2
-    if tp_size > 1:
-        p0_weight = p_in_weight[:dim, :]
-        p0_bias = None
-        p1_weight = p_in_weight[dim:, :]
-        p1_bias = None
-        if p_in_bias is not None:
-            p0_bias = p_in_bias[:dim]
-            p1_bias = p_in_bias[dim:]
-        g0_weight = g_in_weight[:dim, :]
-        g1_weight = g_in_weight[dim:, :]
-        g0_bias = None
-        g1_bias = None
-        if g_in_bias is not None:
-            g0_bias = g_in_bias[:dim]
-            g1_bias = g_in_bias[dim:]
-        p0_weight = split(p0_weight, tp_size, tp_rank, 0)
-        p1_weight = split(p1_weight, tp_size, tp_rank, 0)
-        g0_weight = split(g0_weight, tp_size, tp_rank, 0)
-        g1_weight = split(g1_weight, tp_size, tp_rank, 0)
-
-        p_in_weight = torch.cat([p0_weight, p1_weight], dim=0)
-        g_in_weight = torch.cat([g0_weight, g1_weight], dim=0)
-        if p_in_bias is not None:
-            p_in_bias = torch.cat([p0_bias, p1_bias], dim=0)
-        if g_in_bias is not None:
-            g_in_bias = torch.cat([g0_bias, g1_bias], dim=0)
-        p_out_weight = split(p_out_weight, tp_size, tp_rank, 0)
-        if p_out_bias is not None:
-            p_out_bias = split(p_out_bias, tp_size, tp_rank, 0)
-        g_out_weight = split(g_out_weight, tp_size, tp_rank, 0)
-        if g_out_bias is not None:
-            g_out_bias = split(g_out_bias, tp_size, tp_rank, 0)
+    p_in_weight.shape[0] // 2
     module.norm_in.weight.value = np.ascontiguousarray(
         norm_in_weight.cpu().numpy())
-    module.norm_in.bias.value = np.ascontiguousarray(norm_in_bias.cpu().numpy())
+    module.norm_in.bias.value = np.ascontiguousarray(
+        norm_in_bias.cpu().numpy())
     module.p_in.weight.value = np.ascontiguousarray(p_in_weight.cpu().numpy())
     if p_in_bias is not None:
         module.p_in.bias.value = np.ascontiguousarray(p_in_bias.cpu().numpy())
@@ -728,16 +663,20 @@ def load_triangle_multiplication_node_weights_trt(module,
         norm_out_weight.cpu().numpy())
     module.norm_out.bias.value = np.ascontiguousarray(
         norm_out_bias.cpu().numpy())
-    module.p_out.weight.value = np.ascontiguousarray(p_out_weight.cpu().numpy())
+    module.p_out.weight.value = np.ascontiguousarray(
+        p_out_weight.cpu().numpy())
     if p_out_bias is not None:
-        module.p_out.bias.value = np.ascontiguousarray(p_out_bias.cpu().numpy())
-    module.g_out.weight.value = np.ascontiguousarray(g_out_weight.cpu().numpy())
+        module.p_out.bias.value = np.ascontiguousarray(
+            p_out_bias.cpu().numpy())
+    module.g_out.weight.value = np.ascontiguousarray(
+        g_out_weight.cpu().numpy())
     if g_out_bias is not None:
-        module.g_out.bias.value = np.ascontiguousarray(g_out_bias.cpu().numpy())
+        module.g_out.bias.value = np.ascontiguousarray(
+            g_out_bias.cpu().numpy())
 
 
-def load_triangle_multiplication_node_weights_ref_torch(module,
-                                                        weights_and_biases):
+def load_triangle_multiplication_node_weights_ref_torch(
+        module, weights_and_biases):
     norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
         norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias = weights_and_biases
     norm_in_weight.to("cuda")
@@ -873,10 +812,6 @@ def load_transition_weights_trt(module,
                                 tp_size=1,
                                 tp_rank=0):
     norm_weight, norm_bias, fc1_weight, fc2_weight, fc3_weight = weights_and_biases
-    if tp_size > 1:
-        fc1_weight = split(fc1_weight, tp_size, tp_rank, 0)
-        fc2_weight = split(fc2_weight, tp_size, tp_rank, 0)
-        fc3_weight = split(fc3_weight, tp_size, tp_rank, 1)
     fused_fc2_fc1_weight = torch.cat([fc2_weight, fc1_weight], dim=0)
 
     module.norm.weight.value = np.ascontiguousarray(norm_weight.cpu().numpy())
@@ -908,11 +843,15 @@ def load_transition_weights_torch(module,
     module.norm.weight.data.copy_(norm_weight.to(dtype).to("cuda"))
     module.norm.bias.data.copy_(norm_bias.to(dtype).to("cuda"))
     module.fused_fc2_fc1.load_weights([{
-        "weight": fc2_weight.to(dtype).to("cuda"),
-        "bias": None
+        "weight":
+        fc2_weight.to(dtype).to("cuda"),
+        "bias":
+        None
     }, {
-        "weight": fc1_weight.to(dtype).to("cuda"),
-        "bias": None
+        "weight":
+        fc1_weight.to(dtype).to("cuda"),
+        "bias":
+        None
     }])
     module.fc3.load_weights([{
         "weight": fc3_weight.to(dtype).to("cuda"),
@@ -956,10 +895,11 @@ def create_pairformer_layer_weights(token_s=None,
                 hidden=token_s * 4,
                 out_dim=token_s,
                 torch_dtype=torch_dtype)
-        ret["transition_z"] = create_transition_weights(dim=token_z,
-                                                        hidden=token_z * 4,
-                                                        out_dim=token_z,
-                                                        torch_dtype=torch_dtype)
+        ret["transition_z"] = create_transition_weights(
+            dim=token_z,
+            hidden=token_z * 4,
+            out_dim=token_z,
+            torch_dtype=torch_dtype)
     else:
         if include_s_path:
             ret["attention"] = create_self_pairwise_attention_weights(
@@ -1010,9 +950,8 @@ def load_pairformer_layer_weights_trt(
     m = mapping if mapping else Mapping()  # dynamic mapping
     load_triangle_attention_node_weights_trt(
         module.tri_attn_start, weights_and_biases["tri_attn_start"], m)
-    load_triangle_attention_node_weights_trt(module.tri_attn_end,
-                                             weights_and_biases["tri_attn_end"],
-                                             m)
+    load_triangle_attention_node_weights_trt(
+        module.tri_attn_end, weights_and_biases["tri_attn_end"], m)
     m = mapping if mapping else Mapping()  # dynamic mapping
     if include_s_path:
         if max_transition_tp_size:
@@ -1063,7 +1002,8 @@ def load_pairformer_layer_weights_torch(module,
         module.tri_attn_end, weights_and_biases["tri_attn_end"], dtype)
     if hasattr(module, "transition_s"):
         load_transition_weights_torch(module.transition_s,
-                                      weights_and_biases["transition_s"], dtype)
+                                      weights_and_biases["transition_s"],
+                                      dtype)
     load_transition_weights_torch(module.transition_z,
                                   weights_and_biases["transition_z"], dtype)
 
@@ -1127,7 +1067,9 @@ def load_adaln_weights_torch(module, weights_and_biases, dtype=torch.float32):
     ])
 
 
-def load_adaln_weights_trt(module, weights_and_biases, mapping: Mapping = None):
+def load_adaln_weights_trt(module,
+                           weights_and_biases,
+                           mapping: Mapping = None):
     a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight = weights_and_biases
     s_bias_bias = torch.zeros(s_bias_weight.shape[0],
                               dtype=s_bias_weight.dtype,
@@ -1135,14 +1077,6 @@ def load_adaln_weights_trt(module, weights_and_biases, mapping: Mapping = None):
 
     module.s_norm.weight.value = np.ascontiguousarray(
         s_norm_weight.cpu().numpy())
-    m = mapping if mapping else Mapping()  # dynamic mapping
-    tp_size = m.tp_size
-    tp_rank = m.tp_rank
-    if tp_size > 1:
-        s_scale_weight = split(s_scale_weight, tp_size, tp_rank, 0)
-        s_scale_bias = split(s_scale_bias, tp_size, tp_rank, 0)
-        s_bias_weight = split(s_bias_weight, tp_size, tp_rank, 0)
-        s_bias_bias = split(s_bias_bias, tp_size, tp_rank, 0)
     fused_s_scale_s_bias_weight = torch.cat([s_scale_weight, s_bias_weight],
                                             dim=0)
     fused_s_scale_s_bias_bias = torch.cat([s_scale_bias, s_bias_bias], dim=0)
@@ -1193,8 +1127,8 @@ def create_conditioned_transition_block_weights(
         output_projection_weight, output_projection_bias
 
 
-def load_conditioned_transition_block_weights_ref_torch(module,
-                                                        weights_and_biases):
+def load_conditioned_transition_block_weights_ref_torch(
+        module, weights_and_biases):
     adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
         output_projection_weight, output_projection_bias = weights_and_biases
     swish_gate_weight.to("cuda")
@@ -1267,24 +1201,12 @@ def load_conditioned_transition_block_weights_trt(module,
                                                   mapping: Mapping = None):
     adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
         output_projection_weight, output_projection_bias = weights_and_biases
-    m = mapping if mapping else Mapping()  # dynamic mapping
 
     load_adaln_weights_trt(module.adaln, adaln_weights, mapping)
 
     swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(swish_gate_weight,
                                                            2,
                                                            dim=0)
-    tp_size = m.tp_size
-    tp_rank = m.tp_rank
-    if tp_size > 1:
-        swish_gate_weight_0 = split(swish_gate_weight_0, tp_size, tp_rank, 0)
-        swish_gate_weight_1 = split(swish_gate_weight_1, tp_size, tp_rank, 0)
-        a_to_b_weight = split(a_to_b_weight, tp_size, tp_rank, 0)
-        b_to_a_weight = split(b_to_a_weight, tp_size, tp_rank, 1)
-        output_projection_weight = split(output_projection_weight, tp_size,
-                                         tp_rank, 0)
-        output_projection_bias = split(output_projection_bias, tp_size, tp_rank,
-                                       0)
 
     if a_to_b_weight is not None:
         fused_swl_a_to_b_weight = torch.cat(
@@ -1390,11 +1312,6 @@ def load_diffusion_transformer_layer_weights_trt(module,
 
     output_projection_weight = weights_and_biases["output_projection"][0]
     output_projection_bias = weights_and_biases["output_projection"][1]
-    if m.tp_size > 1:
-        output_projection_weight = split(output_projection_weight, m.tp_size,
-                                         m.tp_rank, 0)
-        output_projection_bias = split(output_projection_bias, m.tp_size,
-                                       m.tp_rank, 0)
 
     module.output_projection.weight.value = np.ascontiguousarray(
         output_projection_weight.cpu().numpy())
@@ -1417,7 +1334,8 @@ def create_pairwise_conditioning_weights(
             torch.randn(token_z + dim_token_rel_pos_feats, dtype=torch_dtype),
         ]
         ret["init_proj_linear"] = torch.randn(token_z,
-                                              token_z + dim_token_rel_pos_feats,
+                                              token_z +
+                                              dim_token_rel_pos_feats,
                                               dtype=torch_dtype)
         ret["transitions"] = [
             create_transition_weights(
@@ -1432,7 +1350,8 @@ def create_pairwise_conditioning_weights(
             from_ref.dim_pairwise_init_proj[0].weight.data,
             from_ref.dim_pairwise_init_proj[0].bias.data,
         ]
-        ret["init_proj_linear"] = from_ref.dim_pairwise_init_proj[1].weight.data
+        ret["init_proj_linear"] = from_ref.dim_pairwise_init_proj[
+            1].weight.data
         ret["transitions"] = [
             create_transition_weights(from_ref=from_ref.transitions[i])
             for i in range(num_transitions)
@@ -1477,7 +1396,6 @@ def load_pairwise_conditioning_weights_torch(module,
 def load_pairwise_conditioning_weights_trt(module,
                                            weights_and_biases,
                                            mapping: Mapping = None):
-    m = mapping if mapping else Mapping()  # dynamic mapping
     init_proj_norm_weight, init_proj_norm_bias = weights_and_biases[
         "init_proj_norm"]
     init_proj_linear_weight = weights_and_biases["init_proj_linear"]
@@ -1488,9 +1406,6 @@ def load_pairwise_conditioning_weights_trt(module,
     module.init_proj_norm.bias.value = np.ascontiguousarray(
         init_proj_norm_bias.cpu().numpy())
 
-    if m.tp_size > 1:
-        init_proj_linear_weight = split(init_proj_linear_weight, m.tp_size,
-                                        m.tp_rank, 0)
     module.init_proj_linear.weight.value = np.ascontiguousarray(
         init_proj_linear_weight.cpu().numpy())
 
@@ -1509,12 +1424,14 @@ def create_affinity_heads_transformer_weights(
         affinity_out_mlp_linear_0_weight = torch.randn(token_z,
                                                        token_z,
                                                        dtype=torch_dtype)
-        affinity_out_mlp_linear_0_bias = torch.randn(token_z, dtype=torch_dtype)
+        affinity_out_mlp_linear_0_bias = torch.randn(token_z,
+                                                     dtype=torch_dtype)
 
         affinity_out_mlp_linear_1 = torch.randn(token_s,
                                                 token_z,
                                                 dtype=torch_dtype)
-        affinity_out_mlp_linear_1_bias = torch.randn(token_s, dtype=torch_dtype)
+        affinity_out_mlp_linear_1_bias = torch.randn(token_s,
+                                                     dtype=torch_dtype)
 
         to_affinity_pred_value_0_weight = torch.randn(token_s,
                                                       token_s,
@@ -1740,7 +1657,6 @@ def load_affinity_heads_transformer_weights_torch(module,
 def load_affinity_heads_transformer_weights_trt(module,
                                                 weights_and_biases,
                                                 mapping: Mapping = None):
-    m = mapping if mapping else Mapping()  # dynamic mapping
     affinity_out_mlp_linear_0_weight, affinity_out_mlp_linear_0_bias = weights_and_biases[
         "affinity_out_mlp_linear_0"]
     affinity_out_mlp_linear_1_weight, affinity_out_mlp_linear_1_bias = weights_and_biases[
@@ -1759,34 +1675,6 @@ def load_affinity_heads_transformer_weights_trt(module,
         "to_affinity_pred_score_2"]
     to_affinity_logits_binary_weight, to_affinity_logits_binary_bias = weights_and_biases[
         "to_affinity_logits_binary"]
-
-    if m.tp_size > 1:
-        affinity_out_mlp_linear_0_weight = split(
-            affinity_out_mlp_linear_0_weight, m.tp_size, m.tp_rank,
-            0)  # tp column
-        affinity_out_mlp_linear_0_bias = split(affinity_out_mlp_linear_0_bias,
-                                               m.tp_size, m.tp_rank, 0)
-        affinity_out_mlp_linear_1_weight = split(
-            affinity_out_mlp_linear_1_weight, m.tp_size, m.tp_rank,
-            1)  # tp row, ignore bias
-
-        to_affinity_pred_value_0_weight = split(to_affinity_pred_value_0_weight,
-                                                m.tp_size, m.tp_rank,
-                                                0)  # tp column
-        to_affinity_pred_value_0_bias = split(to_affinity_pred_value_0_bias,
-                                              m.tp_size, m.tp_rank, 0)
-        to_affinity_pred_value_1_weight = split(to_affinity_pred_value_1_weight,
-                                                m.tp_size, m.tp_rank,
-                                                1)  # tp row, ignore bias
-
-        to_affinity_pred_score_0_weight = split(to_affinity_pred_score_0_weight,
-                                                m.tp_size, m.tp_rank,
-                                                0)  # tp column
-        to_affinity_pred_score_0_bias = split(to_affinity_pred_score_0_bias,
-                                              m.tp_size, m.tp_rank, 0)
-        to_affinity_pred_score_1_weight = split(to_affinity_pred_score_1_weight,
-                                                m.tp_size, m.tp_rank,
-                                                1)  # tp row, ignore bias
 
     module.affinity_out_mlp_linear_0.weight.value = np.ascontiguousarray(
         affinity_out_mlp_linear_0_weight.cpu().numpy())
@@ -1880,7 +1768,9 @@ def create_affinity_module_weights(token_s: int = None,
         ret["dist_bin_pairwise_embed"] = from_ref.dist_bin_pairwise_embed.weight.data
         ret["s_to_z_prod_in1"] = from_ref.s_to_z_prod_in1.weight.data
         ret["s_to_z_prod_in2"] = from_ref.s_to_z_prod_in2.weight.data
-        ret["z_norm"] = [from_ref.z_norm.weight.data, from_ref.z_norm.bias.data]
+        ret["z_norm"] = [
+            from_ref.z_norm.weight.data, from_ref.z_norm.bias.data
+        ]
         ret["z_linear"] = from_ref.z_linear.weight.data
         ret["pairwise_conditioner"] = create_pairwise_conditioning_weights(
             from_ref=from_ref.pairwise_conditioner)
@@ -1935,16 +1825,9 @@ def load_affinity_module_weights_torch(module,
     m = mapping if mapping else Mapping()  # dynamic mapping
     dist_bin_pairwise_embed_weight = weights_and_biases[
         "dist_bin_pairwise_embed"]
-    if m.tp_size > 1:
-        # shard dim 0 for embedding
-        dist_bin_pairwise_embed_weight = split(dist_bin_pairwise_embed_weight,
-                                               m.tp_size, m.tp_rank, 0)
-    module.dist_bin_pairwise_embed.load_weights([{
-        "weight":
-        dist_bin_pairwise_embed_weight.to(dtype).to("cuda"),
-        "bias":
-        None
-    }])
+
+    module.dist_bin_pairwise_embed.weight.data.copy_(
+        dist_bin_pairwise_embed_weight.to(dtype).to("cuda"))
 
     s_to_z_prod_in1_weight = weights_and_biases["s_to_z_prod_in1"]
     s_to_z_prod_in2_weight = weights_and_biases["s_to_z_prod_in2"]
@@ -1966,8 +1849,10 @@ def load_affinity_module_weights_torch(module,
 
     z_linear_weight = weights_and_biases["z_linear"]
     module.z_linear.load_weights([{
-        "weight": z_linear_weight.to(dtype).to("cuda"),
-        "bias": None
+        "weight":
+        z_linear_weight.to(dtype).to("cuda"),
+        "bias":
+        None
     }])
 
     pairwise_conditioner_weights = weights_and_biases["pairwise_conditioner"]
@@ -1982,28 +1867,21 @@ def load_affinity_module_weights_torch(module,
 
     affinity_heads_weights = weights_and_biases["affinity_heads"]
     load_affinity_heads_transformer_weights_torch(module.affinity_heads,
-                                                  affinity_heads_weights, dtype)
+                                                  affinity_heads_weights,
+                                                  dtype)
 
 
 def load_affinity_module_weights_trt(module,
                                      weights_and_biases,
                                      mapping: Mapping = None):
-    m = mapping if mapping else Mapping()  # dynamic mapping
     dist_bin_pairwise_embed_weight = weights_and_biases[
         "dist_bin_pairwise_embed"]
-    if m.tp_size > 1:  # shard dim 0 for embedding
-        dist_bin_pairwise_embed_weight = split(dist_bin_pairwise_embed_weight,
-                                               m.tp_size, m.tp_rank, 0)
+
     module.dist_bin_pairwise_embed.weight.value = np.ascontiguousarray(
         dist_bin_pairwise_embed_weight.cpu().numpy())
 
     s_to_z_prod_in1_weight = weights_and_biases["s_to_z_prod_in1"]
     s_to_z_prod_in2_weight = weights_and_biases["s_to_z_prod_in2"]
-    if m.tp_size > 1:
-        s_to_z_prod_in1_weight = split(s_to_z_prod_in1_weight, m.tp_size,
-                                       m.tp_rank, 0)
-        s_to_z_prod_in2_weight = split(s_to_z_prod_in2_weight, m.tp_size,
-                                       m.tp_rank, 0)
     fused_s_to_z = torch.cat([s_to_z_prod_in1_weight, s_to_z_prod_in2_weight],
                              dim=0)
 
@@ -2017,8 +1895,6 @@ def load_affinity_module_weights_trt(module,
     module.z_norm.bias.value = np.ascontiguousarray(z_norm_bias.cpu().numpy())
 
     z_linear_weight = weights_and_biases["z_linear"]
-    if m.tp_size > 1:
-        z_linear_weight = split(z_linear_weight, m.tp_size, m.tp_rank, 0)
 
     module.z_linear.weight.value = np.ascontiguousarray(
         z_linear_weight.cpu().numpy())
@@ -2039,7 +1915,8 @@ def load_affinity_module_weights_trt(module,
 
     affinity_heads_weights = weights_and_biases["affinity_heads"]
     load_affinity_heads_transformer_weights_trt(module.affinity_heads,
-                                                affinity_heads_weights, mapping)
+                                                affinity_heads_weights,
+                                                mapping)
 
 
 def create_pair_weighted_averaging_weights(
@@ -2228,15 +2105,6 @@ def load_outer_product_mean_weights_trt(module,
     m = mapping if mapping else Mapping()  # dynamic mapping
     norm_weight, norm_bias, proj_a_weight, proj_a_bias, \
     proj_b_weight, proj_b_bias, proj_o_weight, proj_o_bias = weights_and_biases
-    if m.tp_size > 1:
-        proj_a_weight = split(proj_a_weight, m.tp_size, m.tp_rank, 0)
-        proj_a_bias = split(proj_a_bias, m.tp_size, m.tp_rank,
-                            0) if proj_a_bias is not None else None
-        proj_b_weight = split(proj_b_weight, m.tp_size, m.tp_rank, 0)
-        proj_b_bias = split(proj_b_bias, m.tp_size, m.tp_rank,
-                            0) if proj_b_bias is not None else None
-        proj_o_weight = split(proj_o_weight, m.tp_size, m.tp_rank,
-                              1)  # ignore slip bias for row tp
     module.norm.weight.value = np.ascontiguousarray(norm_weight.cpu().numpy())
     module.norm.bias.value = np.ascontiguousarray(norm_bias.cpu().numpy())
 
@@ -2312,11 +2180,10 @@ def load_msa_layer_weights_torch(module,
     msa_transition_weights, pair_weighted_averaging_weights, \
     pairformer_layer_weights, outer_product_mean_weights = weights_and_biases
 
-    load_transition_weights_torch(module.msa_transition, msa_transition_weights,
-                                  dtype)
-    load_pair_weighted_averaging_weights_torch(module.pair_weighted_averaging,
-                                               pair_weighted_averaging_weights,
-                                               dtype)
+    load_transition_weights_torch(module.msa_transition,
+                                  msa_transition_weights, dtype)
+    load_pair_weighted_averaging_weights_torch(
+        module.pair_weighted_averaging, pair_weighted_averaging_weights, dtype)
     load_pairformer_layer_weights_torch(module.pairformer_layer,
                                         pairformer_layer_weights, dtype)
     load_outer_product_mean_weights_torch(module.outer_product_mean,
@@ -2377,8 +2244,10 @@ def load_msa_module_weights_torch(module,
         "bias": None
     }])
     module.msa_proj.load_weights([{
-        "weight": msa_proj_weight.to(dtype).to("cuda"),
-        "bias": None
+        "weight":
+        msa_proj_weight.to(dtype).to("cuda"),
+        "bias":
+        None
     }])
     for i in range(len(msa_layers_weights)):
         load_msa_layer_weights_torch(module.layers[i], msa_layers_weights[i],
@@ -2423,8 +2292,10 @@ def load_atom_embedding_weights_ref_torch(module, weights_and_biases):
         embed_atompair_ref_dist_weight.to("cuda"))
     module.embed_atompair_mask.weight.data.copy_(
         embed_atompair_mask_weight.to("cuda"))
-    module.c_to_p_trans_k[1].weight.data.copy_(c_to_p_trans_k_weight.to("cuda"))
-    module.c_to_p_trans_q[1].weight.data.copy_(c_to_p_trans_q_weight.to("cuda"))
+    module.c_to_p_trans_k[1].weight.data.copy_(
+        c_to_p_trans_k_weight.to("cuda"))
+    module.c_to_p_trans_q[1].weight.data.copy_(
+        c_to_p_trans_q_weight.to("cuda"))
     module.p_mlp[1].weight.data.copy_(p_mlp_1_weight.to("cuda"))
     module.p_mlp[3].weight.data.copy_(p_mlp_3_weight.to("cuda"))
     module.p_mlp[5].weight.data.copy_(p_mlp_5_weight.to("cuda"))
@@ -2499,7 +2370,8 @@ def create_atom_attention_encoder_weights(
     compute_pair_bias = from_ref.atom_encoder.diffusion_transformer.layers[
         0].pair_bias_attn.compute_pair_bias
     atom_transformer_weights = []
-    for layer in range(len(from_ref.atom_encoder.diffusion_transformer.layers)):
+    for layer in range(len(
+            from_ref.atom_encoder.diffusion_transformer.layers)):
         diffusion_layers_weight_dict = create_diffusion_transformer_layer_weights(
             num_heads=num_heads,
             dim=dim,
@@ -2548,7 +2420,8 @@ def create_atom_attention_decoder_weights(
         0].pair_bias_attn.compute_pair_bias
     atom_transformer_weights = []
 
-    for layer in range(len(from_ref.atom_decoder.diffusion_transformer.layers)):
+    for layer in range(len(
+            from_ref.atom_decoder.diffusion_transformer.layers)):
         diffusion_layers_weight_dict = create_diffusion_transformer_layer_weights(
             num_heads=num_heads,
             dim=dim,

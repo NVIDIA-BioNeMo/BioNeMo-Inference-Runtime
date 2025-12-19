@@ -1,7 +1,6 @@
 from typing import Callable
 
 import torch.nn as nn
-from tensorrt_llm.llmapi.utils import print_colored_debug
 
 
 def recursive_calling_load_weights(module: nn.Module,
@@ -22,12 +21,14 @@ def recursive_calling_load_weights(module: nn.Module,
         if filter_func is not None and filter_func(name, module):
             continue
         if len(module._parameters) > 0:
-            print_colored_debug(f"loading for: {name}")
+            # Uncomment to debug
+            # print(f"loading for: {name}")
             try:
                 if hasattr(module, 'load_weights'):
                     module.load_weights(weights=weights[name])
                 else:
-                    print_colored_debug(f" use copy_ to load {name}")
+                    # Uncomment to debug
+                    # print(f" use copy_ to load {name}")
                     module_weights = weights[name][0]
                     for n, p in module._parameters.items():
                         if p is not None:

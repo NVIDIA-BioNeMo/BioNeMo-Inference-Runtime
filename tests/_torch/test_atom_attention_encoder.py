@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_atom_attention_encoder_weights,
     load_atom_attention_encoder_weights_torch)
@@ -163,6 +163,6 @@ def test_atom_attention_encoder(sc: Scenario):
             diff1_max = torch.max(torch.abs(ref_output - ref_output_float))
             diff1_mean = torch.mean(torch.abs(ref_output - ref_output_float))
 
-            assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                          diff1_max) <= 0.5
+            assert abs(diff0_max - diff1_max) / torch.min(
+                diff0_max, diff1_max) <= 0.5
             assert abs(diff0_mean - diff1_mean) <= 0.2

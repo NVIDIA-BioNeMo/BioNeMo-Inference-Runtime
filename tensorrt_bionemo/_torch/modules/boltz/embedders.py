@@ -17,9 +17,9 @@ from typing import Callable, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.transformers.atom import \
     AtomAttentionEncoder
@@ -29,7 +29,8 @@ from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.boltz.const import (NUM_CHAIN_TYPES,
-                                                   NUM_METHOD_TYPES, NUM_TOKENS)
+                                                   NUM_METHOD_TYPES,
+                                                   NUM_TOKENS)
 
 
 class AtomEmbedding(nn.Module):
@@ -569,10 +570,11 @@ class Boltz1InputEmbedder(nn.Module):
 
         # multiplicity is 1 for InputEmbedder, we do squeeze here:
         a = a.squeeze(1)
-        s = torch.cat(
-            [a, res_type, profile,
-             deletion_mean.unsqueeze(-1), pocket_feature],
-            dim=-1)
+        s = torch.cat([
+            a, res_type, profile,
+            deletion_mean.unsqueeze(-1), pocket_feature
+        ],
+                      dim=-1)
 
         return s
 

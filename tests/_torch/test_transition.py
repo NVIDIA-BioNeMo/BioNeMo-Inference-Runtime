@@ -17,13 +17,14 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_conditioned_transition_block_weights,
     load_conditioned_transition_block_weights_torch)
 from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
-from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
+from tensorrt_bionemo._torch.layers.transition import \
+    ConditionedTransitionBlock
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -89,8 +90,8 @@ def test_conditioned_transition_block(sc: Scenario):
         diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
-        diff1_mean = torch.mean(torch.abs(ref_output.float() -
-                                          ref_output_float))
+        diff1_mean = torch.mean(
+            torch.abs(ref_output.float() - ref_output_float))
 
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5

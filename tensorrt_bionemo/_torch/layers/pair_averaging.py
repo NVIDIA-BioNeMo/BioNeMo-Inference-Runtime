@@ -16,11 +16,12 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo.mapping import Mapping
 
-from .linear import Linear, TensorParallelMode, WeightMode, WeightsLoadingConfig
+from .linear import (Linear, TensorParallelMode, WeightMode,
+                     WeightsLoadingConfig)
 
 
 class PairWeightedAveraging(nn.Module):

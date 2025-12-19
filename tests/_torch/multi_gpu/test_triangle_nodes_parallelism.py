@@ -19,10 +19,10 @@ from dataclasses import dataclass
 from itertools import product
 
 import pytest
-import tensorrt_llm
 import torch
+import torch.distributed as dist
 from mpi4py.futures import MPIPoolExecutor
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_node_weights,
     create_triangle_multiplication_node_weights,
@@ -31,10 +31,14 @@ from test_utils.boltz.create_and_load_weights import (
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
+from tensorrt_bionemo._torch.distributed import (
+    init_distributed_environment, register_dcp_group_coordinator,
+    register_tp_group_coordinator)
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
+from tests.common.test_utils.mpi import set_mpi_env
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -68,7 +72,8 @@ def _generate_attn_node_scenarios() -> list[AttnNodeScenario]:
 
     # for chunk_size in [0, 8, 16]:
     for node_type in [
-            TriangleAttentionNodeType.STARTING, TriangleAttentionNodeType.ENDING
+            TriangleAttentionNodeType.STARTING,
+            TriangleAttentionNodeType.ENDING
     ]:
         for tp_size, dcp_size in product([1, 2, 4], repeat=2):
             if tp_size * dcp_size > total_devs:
@@ -106,30 +111,27 @@ def _generate_mul_node_scenarios() -> list[MulNodeScenario]:
 
 def run_triangle_attn_node_single_rank(single_rank_forward_func, x, mask,
                                        weights_and_biases, scenario):
-    rank = tensorrt_llm.mpi_rank()
-    torch.cuda.set_device(rank)
     try:
-        single_rank_forward_func(x, mask, weights_and_biases, scenario, rank)
+        single_rank_forward_func(x, mask, weights_and_biases, scenario)
+        return True
     except Exception:
         traceback.print_exc()
-        raise
-    return True
+    finally:
+        dist.destroy_process_group()
 
 
 def run_triangle_mul_node_single_rank(single_rank_forward_func, x, mask,
                                       weights_and_biases, scenario):
-    import tensorrt_llm
-    rank = tensorrt_llm.mpi_rank()
-    torch.cuda.set_device(rank)
     try:
-        single_rank_forward_func(x, mask, weights_and_biases, scenario, rank)
+        single_rank_forward_func(x, mask, weights_and_biases, scenario)
+        return True
     except Exception:
         traceback.print_exc()
-        raise
-    return True
+    finally:
+        dist.destroy_process_group()
 
 
-def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
+def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     tp_size = scenario.tp_size
@@ -138,13 +140,23 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
     c_hidden = scenario.c_hidden
     num_heads = scenario.num_heads
     node_type = scenario.node_type
-    scenario.chunk_size
-    x = x.cuda()
-    mask = mask.cuda()
+
+    mpi_rank, mpi_world_size = set_mpi_env()
+    init_distributed_environment(device_id=torch.device(mpi_rank))
+    rank = torch.distributed.get_rank()
+    assert rank == mpi_rank, "MPI rank and torch.distributed rank do not match"
+    torch.cuda.set_device(rank)
     mapping = Mapping(world_size=tp_size * dcp_size,
                       tp_size=tp_size,
                       dcp_size=dcp_size,
                       rank=rank)
+
+    # register default group coordinators
+    _ = register_tp_group_coordinator(mapping)
+    _ = register_dcp_group_coordinator(mapping)
+
+    x = x.cuda()
+    mask = mask.cuda()
 
     dtype = str_dtype_to_torch(scenario.torch_dtype)
     metadata_cls = get_attention_backend("VANILLA",
@@ -204,19 +216,29 @@ def _triangle_attn_node_forward(x, mask, weights_and_biases, scenario, rank):
                                    rtol=1e-2)
 
 
-def _triangle_mul_node_forward(x, mask, weights_and_biases, scenario, rank):
+def _triangle_mul_node_forward(x, mask, weights_and_biases, scenario):
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     tp_size = scenario.tp_size
     dcp_size = scenario.dcp_size
     dim = scenario.dim
 
-    x = x.cuda()
-    mask = mask.cuda()
+    mpi_rank, mpi_world_size = set_mpi_env()
+    init_distributed_environment(device_id=torch.device(mpi_rank))
+    rank = torch.distributed.get_rank()
+    assert rank == mpi_rank, "MPI rank and torch.distributed rank do not match"
+    torch.cuda.set_device(rank)
     mapping = Mapping(world_size=tp_size * dcp_size,
                       tp_size=tp_size,
                       dcp_size=dcp_size,
                       rank=rank)
+    # register default group coordinators
+    _ = register_tp_group_coordinator(mapping)
+    _ = register_dcp_group_coordinator(mapping)
+
+    x = x.cuda()
+    mask = mask.cuda()
+
     dtype = str_dtype_to_torch(scenario.torch_dtype)
 
     multi_devs_tri_mul_node = TriangleMultiplicationNode(

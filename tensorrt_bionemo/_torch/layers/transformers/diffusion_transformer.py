@@ -17,13 +17,14 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
-from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
+from tensorrt_bionemo._torch.layers.transition import \
+    ConditionedTransitionBlock
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping

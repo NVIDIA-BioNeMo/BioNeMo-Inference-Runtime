@@ -17,9 +17,9 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm import Tensor, str_dtype_to_torch, str_dtype_to_trt
+from tensorrt_llm_lite import Tensor, str_dtype_to_torch, str_dtype_to_trt
 from test_utils.boltz.create_and_load_weights import *
 from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
@@ -61,10 +61,10 @@ def test_conditioned_transition_block(sc: Scenario):
                     dtype=torch.float32).cuda()
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         input_a = Tensor(name='input_a', shape=a.shape, dtype=trt_dtype)
         input_s = Tensor(name='input_s', shape=s.shape, dtype=trt_dtype)
 
@@ -83,12 +83,15 @@ def test_conditioned_transition_block(sc: Scenario):
 
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
     stream = torch.cuda.current_stream().cuda_stream
 
     # Verify results
     inputs = {'input_a': a.to(torch_dtype), 'input_s': s.to(torch_dtype)}
-    outputs = {'output': torch.empty(a.shape, dtype=torch_dtype, device="cuda")}
+    outputs = {
+        'output': torch.empty(a.shape, dtype=torch_dtype, device="cuda")
+    }
     session.run(inputs=inputs, outputs=outputs, stream=stream)
 
     with torch.inference_mode():

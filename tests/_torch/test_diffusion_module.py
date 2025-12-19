@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_diffusion_module_weights, load_diffusion_module_weights_torch)
 from test_utils.boltz.ref_layers import RefDiffusionModule
@@ -185,8 +185,8 @@ def test_diffusion_module(sc: Scenario):
         ref_output = ref_module(atom_to_token, atom_pad_mask,
                                 token_pad_mask, s_inputs, s_trunk, r_noisy,
                                 times.to(dtype), q, c, atom_enc_bias,
-                                atom_token_bias, atom_dec_bias, sc.multiplicity,
-                                attn_metadata)
+                                atom_token_bias, atom_dec_bias,
+                                sc.multiplicity, attn_metadata)
         r_noisy = r_noisy.unsqueeze(1)
         r_noisy = r_noisy.repeat_interleave(sc.multiplicity, 1)
         diffusion_conditioning_kwargs = {
@@ -217,12 +217,12 @@ def test_diffusion_module(sc: Scenario):
                                        rtol=1e-4)
         else:
             diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
-            diff0_mean = torch.mean(torch.abs(output.float() -
-                                              ref_output_float))
+            diff0_mean = torch.mean(
+                torch.abs(output.float() - ref_output_float))
             diff1_max = torch.max(
                 torch.abs(ref_output.float() - ref_output_float))
             diff1_mean = torch.mean(
                 torch.abs(ref_output.float() - ref_output_float))
-            assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                          diff1_max) <= 0.5
+            assert abs(diff0_max - diff1_max) / torch.min(
+                diff0_max, diff1_max) <= 0.5
             assert abs(diff0_mean - diff1_mean) <= 0.2

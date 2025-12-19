@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_affinity_module_weights, load_affinity_module_weights_torch)
 from test_utils.boltz.ref_layers import RefAffinityModule
@@ -52,7 +52,10 @@ def test_boltz_affinity_module(sc: Scenario):
         sc.triangle_attn_backend).Metadata
 
     s = torch.randn(bs, sc.seq_len, sc.token_s, dtype=torch.float32).to(device)
-    z = torch.randn(bs, sc.seq_len, sc.seq_len, sc.token_z,
+    z = torch.randn(bs,
+                    sc.seq_len,
+                    sc.seq_len,
+                    sc.token_z,
                     dtype=torch.float32).to(device)
     distogram = torch.randint(0,
                               sc.num_dist_bins, (bs, sc.seq_len, sc.seq_len),

@@ -17,9 +17,9 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
@@ -44,9 +44,9 @@ class PairformerLayerV1(nn.Module):
                  dtype: torch.dtype = None,
                  eps: float = 1e-5,
                  inf: float = 1e9,
-                 max_transition_tp_size: bool = True,
-                 max_attention_pairwise_tp_size: bool = True,
-                 max_tri_mul_tp_size: bool = True,
+                 max_transition_tp_size: bool = False,
+                 max_attention_pairwise_tp_size: bool = False,
+                 max_tri_mul_tp_size: bool = False,
                  triangle_attn_node_chunk_size: int = 0,
                  mapping: Optional[Mapping] = None,
                  triangle_attn_backend: str = "VANILLA",
@@ -356,7 +356,8 @@ class PairformerModule(nn.Module):
                 z: torch.Tensor,
                 mask: torch.Tensor,
                 pair_mask: torch.Tensor,
-                attn_metadatas: Optional[dict[str, AttentionMetadata]] = dict(),
+                attn_metadatas: Optional[dict[str,
+                                              AttentionMetadata]] = dict(),
                 all_reduce_params: Optional[AllReduceParams] = None,
                 **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         for layer in self.layers:

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_torch)
@@ -107,7 +107,9 @@ def test_diffusion_transformer_layer(sc: Scenario):
     # Handle both single and multi-sample cases
     if sc.num_samples == 1:
         a = torch.randn(bs, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
-        s = torch.randn(bs, sc.seq_len, sc.dim_single_cond,
+        s = torch.randn(bs,
+                        sc.seq_len,
+                        sc.dim_single_cond,
                         dtype=torch.float32).cuda()
         mask = torch.randn(bs, sc.seq_len, dtype=torch.float32).cuda()
     else:
@@ -154,8 +156,8 @@ def test_diffusion_transformer_layer(sc: Scenario):
         diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
-        diff1_mean = torch.mean(torch.abs(ref_output.float() -
-                                          ref_output_float))
+        diff1_mean = torch.mean(
+            torch.abs(ref_output.float() - ref_output_float))
 
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5

@@ -3,16 +3,19 @@ import json
 import time
 from pathlib import Path
 
+# isort: off
 import safetensors
 import torch
-from tensorrt_llm import logger
+from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz2 import PRETRAINED_CONFIG_REGISTRY
 from tensorrt_bionemo.models.boltz2.convert import (convert_hf_pairformer,
-                                                    convert_hf_pairformer_torch)
+                                                    convert_hf_pairformer_torch
+                                                    )
+# isort: on
 
 
 def parse_arguments():
@@ -232,7 +235,9 @@ def main():
             args.workers = world_size
         logger.info(f'Convert checkpoint using {args.workers} workers.')
         import torch.multiprocessing as mp
-        mp.spawn(convert, nprocs=args.workers, args=(world_size, configs, args))
+        mp.spawn(convert,
+                 nprocs=args.workers,
+                 args=(world_size, configs, args))
 
     tok = time.time()
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))

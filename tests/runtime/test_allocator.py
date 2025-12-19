@@ -21,12 +21,12 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm import Tensor
-from tensorrt_llm._utils import str_dtype_to_trt
-from tensorrt_llm.layers.linear import Linear
-from tensorrt_llm.profiler import device_memory_info, host_memory_info
+from tensorrt_llm_lite import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_trt
+from tensorrt_llm_lite.layers.linear import Linear
+from tensorrt_llm_lite.profiler import device_memory_info, host_memory_info
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.runtime.allocator import (BaseContextMemoryManager,
@@ -114,16 +114,17 @@ def create_dummy_engine(config: DummyConfig, layer_configs: list,
                         engine_name: str):
     """ Create a dummy TensorRT engine with the specified layer configuration """
     logger.info(f"Starting create_dummy_engine: {engine_name}...")
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
     builder_config = builder.create_builder_config(precision="float32")
 
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         # Create input tensor
         input = Tensor(name='input',
                        shape=(1, config.in_features),
-                       dtype=tensorrt_llm.torch_dtype_to_trt(torch.float32))
+                       dtype=tensorrt_llm_lite.torch_dtype_to_trt(
+                           torch.float32))
 
         # Create layers based on configuration
         layers = []
@@ -138,13 +139,14 @@ def create_dummy_engine(config: DummyConfig, layer_configs: list,
         output = x
 
         output.mark_output("output",
-                           tensorrt_llm.torch_dtype_to_trt(torch.float32))
+                           tensorrt_llm_lite.torch_dtype_to_trt(torch.float32))
 
         # Set random weights for each layer
         for i, (layer, (in_features,
-                        out_features)) in enumerate(zip(layers, layer_configs)):
-            layer.weight.value = np.random.randn(out_features,
-                                                 in_features).astype(np.float32)
+                        out_features)) in enumerate(zip(layers,
+                                                        layer_configs)):
+            layer.weight.value = np.random.randn(
+                out_features, in_features).astype(np.float32)
 
     logger.info("Building engine...")
     engine_buffer = builder.build_engine(net, builder_config)
@@ -211,7 +213,8 @@ def run_allocator_test(allocator_class: BaseContextMemoryManager,
 
     # 1. Create multiple engines with different configurations
     logger.info(
-        f"Creating multiple dummy engines for {allocator_name.lower()} test...")
+        f"Creating multiple dummy engines for {allocator_name.lower()} test..."
+    )
 
     # Create engines with different configurations
     engine_dir_0 = create_dummy_net0(
@@ -254,8 +257,8 @@ def run_allocator_test(allocator_class: BaseContextMemoryManager,
     )
 
     # Assert that engines were loaded successfully
-    assert len(allocator.get_handles()
-               ) == 3, f"Expected 3 engines, got {len(allocator.get_handles())}"
+    assert len(allocator.get_handles(
+    )) == 3, f"Expected 3 engines, got {len(allocator.get_handles())}"
 
     # Test forward pass through each engine
     logger.info(
@@ -475,7 +478,8 @@ def test_custom_stream():
                                             loaded_by_manager=True)
         backends.append(backend)
         logger.info(
-            f"Registered backend {i} with custom stream handle {stream_handle}")
+            f"Registered backend {i} with custom stream handle {stream_handle}"
+        )
 
     # Load all engines
     allocator.load()
@@ -483,14 +487,15 @@ def test_custom_stream():
         f"Loaded {len(allocator.get_handles())} engines with custom streams")
 
     # Assert that engines were loaded successfully
-    assert len(allocator.get_handles()
-               ) == 3, f"Expected 3 engines, got {len(allocator.get_handles())}"
+    assert len(allocator.get_handles(
+    )) == 3, f"Expected 3 engines, got {len(allocator.get_handles())}"
 
     # Test forward pass through each engine with its custom stream
     input_tensor = torch.randn(1, 512).cuda()
 
     for i, (backend, stream,
-            stream_handle) in enumerate(zip(backends, streams, stream_handles)):
+            stream_handle) in enumerate(zip(backends, streams,
+                                            stream_handles)):
         logger.info(
             f"Running forward pass for engine {i} with custom stream handle {stream_handle}"
         )
@@ -545,20 +550,21 @@ def test_optimization_profile_switching():
 
     # Create a simple engine with multiple optimization profiles
     config = DummyConfig(in_features=256, out_features=256)
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
     builder_config = builder.create_builder_config(precision="float32")
 
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         # Create input tensor with dynamic shape
         input = Tensor(name='input',
                        shape=(1, -1),
-                       dtype=tensorrt_llm.torch_dtype_to_trt(torch.float32))
+                       dtype=tensorrt_llm_lite.torch_dtype_to_trt(
+                           torch.float32))
 
         output = input + 0.0  # addition to create a new tensor
         output.mark_output("output",
-                           tensorrt_llm.torch_dtype_to_trt(torch.float32))
+                           tensorrt_llm_lite.torch_dtype_to_trt(torch.float32))
 
     # Create optimization profiles for different sequence lengths
     for profile_idx in range(3):
@@ -611,7 +617,8 @@ def test_optimization_profile_switching():
 
         # Get profile info before forward pass
         profile_info_before = allocator.get_opt_profile_info(backend)
-        logger.info(f"Profile before: {profile_info_before['current_profile']}")
+        logger.info(
+            f"Profile before: {profile_info_before['current_profile']}")
         logger.info(
             f"Available profiles: {profile_info_before['num_profiles']}")
 

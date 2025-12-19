@@ -14,19 +14,16 @@
 # limitations under the License.
 
 from enum import IntEnum
-from typing import Optional
 
 import tensorrt as trt
-from tensorrt_llm.functional import (AllReduceParams, Tensor, activation,
-                                     allgather, cast, concat,
-                                     constant_to_tensor_, einsum, expand_dims,
-                                     floordiv, permute, shape, slice, split)
-from tensorrt_llm.layers.linear import ColumnLinear
-from tensorrt_llm.layers.normalization import LayerNorm
-from tensorrt_llm.module import Module
+from tensorrt_llm_lite.functional import (Tensor, activation, cast,
+                                          constant_to_tensor_, einsum,
+                                          expand_dims, permute, shape, split)
+from tensorrt_llm_lite.layers.linear import Linear
+from tensorrt_llm_lite.layers.normalization import LayerNorm
+from tensorrt_llm_lite.module import Module
 
-from tensorrt_bionemo._trt.functional import chunk_loop, send_recv
-from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo._trt.functional import chunk_loop
 
 from .attention import AttentionParams, TriangleAttention
 
@@ -66,8 +63,7 @@ class TriangleAttentionNode(Module):
             "g": False,
             "z": False,
             "o": False
-        },
-        mapping: Mapping = Mapping()):
+        }):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.c_in = c_in
@@ -76,33 +72,17 @@ class TriangleAttentionNode(Module):
         self.node_type = node_type
         self.inf = inf
         self.triangle_attn_backend = triangle_attn_backend
-        self.dcp_size = mapping.dcp_size
-        self.dcp_rank = mapping.dcp_rank
-        self.dcp_group = mapping.dcp_group
         self.support_batch = support_batch
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
         self.fallback_threshold = fallback_threshold
         self.chunk_size = chunk_size
 
-        assert self.num_heads % self.tp_size == 0, \
-            "num_attention_heads must be divisible by tp_size"
-
-        if chunk_size > 0:
-            assert self.chunk_size % self.dcp_size == 0, \
-                "chunk_size must be divisible by dcp_size"
-            self.chunk_size = chunk_size // self.dcp_size
         self.layer_norm = LayerNorm(normalized_shape=[self.c_in],
                                     eps=eps,
                                     dtype=dtype)
-        self.linear = ColumnLinear(self.c_in,
-                                   self.num_heads,
-                                   bias=False,
-                                   dtype=dtype,
-                                   tp_group=self.tp_group,
-                                   tp_size=self.tp_size,
-                                   gather_output=True)
+        self.linear = Linear(self.c_in,
+                             self.num_heads,
+                             bias=False,
+                             dtype=dtype)
         self.mha = TriangleAttention(
             local_layer_idx=self.local_layer_idx,
             hidden_size=self.c_in,
@@ -113,14 +93,12 @@ class TriangleAttentionNode(Module):
             gating=True,
             triangle_attn_backend=self.triangle_attn_backend,
             support_batch=self.support_batch,
-            fallback_threshold=self.fallback_threshold,
-            mapping=mapping)
+            fallback_threshold=self.fallback_threshold)
 
     def forward(self,
                 x: Tensor,
                 mask: Tensor,
-                attention_params: AttentionParams = None,
-                all_reduce_params: Optional[AllReduceParams] = None):
+                attention_params: AttentionParams = None):
         """
         Args:
             x: [B, I, J, F] or [I, J, F]
@@ -134,7 +112,9 @@ class TriangleAttentionNode(Module):
                 x = x.transpose(0, 1)
                 mask = mask.transpose(0, 1)
         x = self.layer_norm(x)
-        inf_const = constant_to_tensor_(self.inf, dtype=x.dtype, to_array=False)
+        inf_const = constant_to_tensor_(self.inf,
+                                        dtype=x.dtype,
+                                        to_array=False)
         one_const = constant_to_tensor_(1.0, dtype=x.dtype, to_array=False)
         # Compute mask bias
         mask_bias = ((mask - one_const) * inf_const)
@@ -154,51 +134,25 @@ class TriangleAttentionNode(Module):
 
         # First if dcp_size > 1, we need to split the input by dcp_size
         if self.support_batch:
-            bs = shape(x, 0)
-            si = shape(x, 1)
-            sj = shape(x, 2)
+            shape(x, 0)
+            shape(x, 1)
+            shape(x, 2)
         else:
-            si = shape(x, 0)
-            sj = shape(x, 1)
-            bs = 1
-
-        if self.dcp_size > 1:
-            slice_size = floordiv(si, self.dcp_size)
-            s_idx = slice_size * self.dcp_rank
-            # Slice the input
-            if self.support_batch:
-                starts = concat([0, s_idx, 0, 0])
-                sizes = concat([bs, slice_size, si, self.c_in])
-            else:
-                starts = concat([s_idx, 0, 0])
-                sizes = concat([slice_size, si, self.c_in])
-            x = slice(x, starts, sizes)
-
-            # Slice the mask bias
-            if self.support_batch:
-                starts = concat([0, s_idx, 0, 0, 0])
-                sizes = concat([bs, slice_size, 1, 1, sj])
-            else:
-                starts = concat([s_idx, 0, 0, 0])
-                sizes = concat([slice_size, 1, 1, sj])
-            mask_bias = slice(mask_bias, starts, sizes)
+            shape(x, 0)
+            shape(x, 1)
 
         def _loop_body(sub_chunk):
             sub_x, sub_mask_bias = sub_chunk
             biases = [sub_mask_bias, triangle_bias]
             context = self.mha(sub_x,
                                biases=biases,
-                               attention_params=attention_params,
-                               all_reduce_params=all_reduce_params)
+                               attention_params=attention_params)
             return context
 
         output = chunk_loop([x, mask_bias],
                             self.chunk_size,
                             _loop_body,
                             reshape_output=False)
-        if self.dcp_size > 1:
-            output = allgather(output, self.dcp_group, gather_dim=1)
-
         if self.node_type == TriangleAttentionNodeType.ENDING:
             if self.support_batch:
                 output = output.transpose(2, 1)
@@ -211,74 +165,48 @@ class TriangleAttentionNode(Module):
 class TriangleMultiplicationNode(Module):
 
     def __init__(
-        self,
-        *,
-        local_layer_idx: int,
-        dim: int,
-        eps: float = 1e-5,
-        multiplication_type:
+            self,
+            *,
+            local_layer_idx: int,
+            dim: int,
+            eps: float = 1e-5,
+            multiplication_type:
         TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
         OUTGOING,
-        high_precision: bool = True,
-        bias_flags: dict[str, bool] = {
-            "p_in": False,
-            "g_in": False,
-            "p_out": False,
-            "g_out": False,
-        },
-        dtype: str = None,
-        support_batch: bool = False,
-        mapping: Mapping = Mapping()):
+            high_precision: bool = True,
+            bias_flags: dict[str, bool] = {
+                "p_in": False,
+                "g_in": False,
+                "p_out": False,
+                "g_out": False,
+            },
+            dtype: str = None,
+            support_batch: bool = False):
         super().__init__()
         self.local_layer_idx = local_layer_idx
-        self.dcp_size = mapping.dcp_size
-        self.dcp_rank = mapping.dcp_rank
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.dcp_group = mapping.dcp_group
-        self.tp_group = mapping.tp_group
         self.dtype = dtype
         self.support_batch = support_batch
-        self.dim = dim // self.tp_size
+        self.dim = dim
         self.multiplication_type = multiplication_type
         self.high_precision = high_precision
-        self.norm_in = LayerNorm(normalized_shape=[self.dim * self.tp_size],
+        self.norm_in = LayerNorm(normalized_shape=[self.dim],
                                  eps=eps,
                                  dtype=dtype)
-        self.p_in = ColumnLinear(dim,
-                                 2 * dim,
-                                 bias=bias_flags["p_in"],
-                                 dtype=dtype,
-                                 tp_group=self.tp_group,
-                                 tp_size=self.tp_size,
-                                 gather_output=False)
-        self.g_in = ColumnLinear(dim,
-                                 2 * dim,
-                                 bias=bias_flags["g_in"],
-                                 dtype=dtype,
-                                 tp_group=self.tp_group,
-                                 tp_size=self.tp_size,
-                                 gather_output=False)
+        self.p_in = Linear(dim, 2 * dim, bias=bias_flags["p_in"], dtype=dtype)
+        self.g_in = Linear(dim, 2 * dim, bias=bias_flags["g_in"], dtype=dtype)
 
         high_precision_dtype = "float32" if high_precision else dtype
         self.norm_out = LayerNorm(normalized_shape=[dim],
                                   eps=eps,
                                   dtype=high_precision_dtype)
-        self.p_out = ColumnLinear(dim,
-                                  dim,
-                                  bias=bias_flags["p_out"],
-                                  dtype=high_precision_dtype,
-                                  tp_group=self.tp_group,
-                                  tp_size=self.tp_size,
-                                  gather_output=True)
-        self.g_out = ColumnLinear(dim,
-                                  dim,
-                                  bias=bias_flags["g_out"],
-                                  dtype=high_precision_dtype,
-                                  tp_group=self.tp_group,
-                                  tp_size=self.tp_size,
-                                  gather_output=True)
-        self.mapping = mapping
+        self.p_out = Linear(dim,
+                            dim,
+                            bias=bias_flags["p_out"],
+                            dtype=high_precision_dtype)
+        self.g_out = Linear(dim,
+                            dim,
+                            bias=bias_flags["g_out"],
+                            dtype=high_precision_dtype)
 
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
         """
@@ -290,56 +218,15 @@ class TriangleMultiplicationNode(Module):
         """
         original_dtype = mask.dtype
         if self.support_batch:
-            bs = shape(x, 0)
-            si = shape(x, 1)
-            sj = shape(x, 2)
-            d = shape(x, 3)
+            shape(x, 0)
+            shape(x, 1)
+            shape(x, 2)
+            shape(x, 3)
         else:
-            bs = 1
-            si = shape(x, 0)
-            sj = shape(x, 1)
-            d = shape(x, 2)
+            shape(x, 0)
+            shape(x, 1)
+            shape(x, 2)
         x = self.norm_in(x)
-        if self.dcp_size > 1:
-            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                slice_size = floordiv(si, self.dcp_size)
-                s_idx = slice_size * self.dcp_rank
-                # slice x
-                if self.support_batch:
-                    starts = concat([0, s_idx, 0, 0])
-                    sizes = concat([bs, slice_size, sj, d])
-                else:
-                    starts = concat([s_idx, 0, 0])
-                    sizes = concat([slice_size, sj, d])
-                x = slice(x, starts, sizes)
-                # slice mask
-                if self.support_batch:
-                    starts = concat([0, s_idx, 0])
-                    sizes = concat([bs, slice_size, sj])
-                else:
-                    starts = concat([s_idx, 0])
-                    sizes = concat([slice_size, sj])
-                mask = slice(mask, starts, sizes)
-            elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
-                slice_size = floordiv(sj, self.dcp_size)
-                s_idx = slice_size * self.dcp_rank
-                # slice x
-                if self.support_batch:
-                    starts = concat([0, 0, s_idx, 0])
-                    sizes = concat([bs, si, slice_size, d])
-                else:
-                    starts = concat([0, s_idx, 0])
-                    sizes = concat([si, slice_size, d])
-                x = slice(x, starts, sizes)
-                # slice mask
-                if self.support_batch:
-                    starts = concat([0, 0, s_idx])
-                    sizes = concat([bs, si, slice_size])
-                else:
-                    starts = concat([0, s_idx])
-                    sizes = concat([si, slice_size])
-                mask = slice(mask, starts, sizes)
-
         x_in = x
         # TODO: SWiGLU, fuse p_in and g_in here
         x = self.p_in(x) * activation(self.g_in(x), trt.ActivationType.SIGMOID)
@@ -360,44 +247,7 @@ class TriangleMultiplicationNode(Module):
                 else:
                     return einsum("kid,kjd->ijd", [a_, b_])
 
-        if self.dcp_size > 1:
-            enisum_results = [
-                None,
-            ] * self.dcp_size
-            enisum_results[self.dcp_rank] = _enisum_compute(a, b)
-            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                b_recv = b
-                for i in range(1, self.dcp_size):
-                    b_recv = send_recv(b_recv,
-                                       self.mapping.prev_dcp_rank(),
-                                       self.mapping.next_dcp_rank(),
-                                       self.mapping.dcp_group,
-                                       group_stride=self.tp_size)
-                    enisum_results[(self.dcp_rank - i) %
-                                   self.dcp_size] = _enisum_compute(a, b_recv)
-                if self.support_batch:
-                    x = concat(enisum_results, dim=2)
-                else:
-                    x = concat(enisum_results, dim=1)
-            else:
-                a_recv = a
-                for i in range(1, self.dcp_size):
-                    a_recv = send_recv(a_recv,
-                                       self.mapping.prev_dcp_rank(),
-                                       self.mapping.next_dcp_rank(),
-                                       self.mapping.dcp_group,
-                                       group_stride=self.tp_size)
-                    enisum_results[(self.dcp_rank - i) %
-                                   self.dcp_size] = _enisum_compute(a_recv, b)
-                if self.support_batch:
-                    x = concat(enisum_results, dim=1)
-                else:
-                    x = concat(enisum_results, dim=0)
-        else:
-            x = _enisum_compute(a, b)
-
-        if self.tp_size > 1:
-            x = allgather(x, self.tp_group, gather_dim=-1)
+        x = _enisum_compute(a, b)
 
         if self.high_precision:
             x_in = cast(x_in, "float32")
@@ -406,13 +256,6 @@ class TriangleMultiplicationNode(Module):
         gout_x = activation(self.g_out(x_in), trt.ActivationType.SIGMOID)
         x = pout_x * gout_x
 
-        # Gather on the dcp group
-        if self.dcp_size > 1:
-            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                gather_dim = 1 if self.support_batch else 0
-            else:
-                gather_dim = 2 if self.support_batch else 1
-            x = allgather(x, self.dcp_group, gather_dim=gather_dim)
         if x.dtype != original_dtype:
             x = cast(x, original_dtype)
         return x

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_atom_embedding_weights, load_atom_embedding_weights_torch)
 from test_utils.boltz.ref_layers import RefAtomEmbedding
@@ -66,7 +66,11 @@ def test_atom_embedding(sc: Scenario):
 
     load_atom_embedding_weights_torch(module, weights_and_biases)
 
-    ref_pos = torch.randn(bs, sc.n_atoms, 3, dtype=torch.float32, device="cuda")
+    ref_pos = torch.randn(bs,
+                          sc.n_atoms,
+                          3,
+                          dtype=torch.float32,
+                          device="cuda")
     atom_pad_mask = torch.ones(bs,
                                sc.n_atoms,
                                dtype=torch.float32,
@@ -75,7 +79,10 @@ def test_atom_embedding(sc: Scenario):
                                   10, (bs, sc.n_atoms),
                                   dtype=torch.long,
                                   device="cuda")
-    ref_charge = torch.randn(bs, sc.n_atoms, dtype=torch.float32, device="cuda")
+    ref_charge = torch.randn(bs,
+                             sc.n_atoms,
+                             dtype=torch.float32,
+                             device="cuda")
     ref_element = torch.randint(0,
                                 10, (bs, sc.n_atoms, 128),
                                 dtype=torch.long,

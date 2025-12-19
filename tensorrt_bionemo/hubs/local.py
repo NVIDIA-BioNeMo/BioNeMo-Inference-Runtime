@@ -200,12 +200,12 @@ def _load_of3_state_dict(local_checkpoint: str):
 
 
 def load_local_weights(
-        name: str,
-        return_raw: bool = False,
-        local_files_only: bool = False,
-        cache_path: Optional[Union[str, Path]] = None,
-        repo_id: Optional[Union[str,
-                                Path]] = None) -> Union[io.BytesIO, dict[str]]:
+    name: str,
+    return_raw: bool = False,
+    local_files_only: bool = False,
+    cache_path: Optional[Union[str, Path]] = None,
+    repo_id: Optional[Union[str,
+                            Path]] = None) -> Union[io.BytesIO, dict[str]]:
     """ Load a checkpoint from the local filesystem """
     checkpoint = LOCAL_CHECKPOINTS[name]
     state_dict_key = checkpoint.state_dict_key
@@ -218,6 +218,9 @@ def load_local_weights(
             default_repo_id = repo_id
         filepath = os.getenv(default_repo_id)
     if filepath is None:
+        logger.info(
+            f"Not found local checkpoint for {name}, using default repo id {default_repo_id}"
+        )
         return None
     logger.info(f"Loading {name} from local filesystem {filepath}")
     cached_file = open(filepath, 'rb')

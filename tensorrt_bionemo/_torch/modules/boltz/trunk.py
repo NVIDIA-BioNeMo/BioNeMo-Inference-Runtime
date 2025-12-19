@@ -17,9 +17,9 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
@@ -254,8 +254,8 @@ class MSAModule(nn.Module):
         m = m + self.s_proj(emb).unsqueeze(1)
 
         for i in range(self.msa_blocks):
-            z, m = self.layers[i](z, m, token_pad_mask, msa_mask, attn_metadata,
-                                  all_reduce_params)
+            z, m = self.layers[i](z, m, token_pad_mask, msa_mask,
+                                  attn_metadata, all_reduce_params)
         return z
 
 

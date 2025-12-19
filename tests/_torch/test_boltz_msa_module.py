@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_msa_layer_weights, create_msa_module_weights,
     load_msa_layer_weights_torch, load_msa_module_weights_torch)
@@ -63,7 +63,8 @@ def test_msa_layer(sc: Scenario):
     m = torch.randn(bs, 32, 64, ref_mod.msa_s, dtype=torch.float32).cuda()
     token_mask = torch.randint(0, 2, (bs, 64, 64),
                                dtype=torch.float32).to(device)
-    msa_mask = torch.randint(0, 2, (bs, 32, 64), dtype=torch.float32).to(device)
+    msa_mask = torch.randint(0, 2, (bs, 32, 64),
+                             dtype=torch.float32).to(device)
 
     triangle_metadata_cls = get_attention_backend(
         "VANILLA", AttentionType.TRIANGLE).Metadata
@@ -89,7 +90,8 @@ def test_msa_layer(sc: Scenario):
         torch.testing.assert_close(ref_m, output_m, atol=1e-3, rtol=1e-4)
     else:
         # This is right way to check float16 and bfloat16 accuracy
-        diff0_max = torch.max(torch.abs(output_m.float() - ref_m_float.float()))
+        diff0_max = torch.max(torch.abs(output_m.float() -
+                                        ref_m_float.float()))
         diff0_mean = torch.mean(
             torch.abs(output_m.float() - ref_m_float.float()))
         diff1_max = torch.max(torch.abs(ref_m.float() - ref_m_float.float()))
@@ -99,7 +101,8 @@ def test_msa_layer(sc: Scenario):
                                                       diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2
 
-        diff0_max = torch.max(torch.abs(output_z.float() - ref_z_float.float()))
+        diff0_max = torch.max(torch.abs(output_z.float() -
+                                        ref_z_float.float()))
         diff0_mean = torch.mean(
             torch.abs(output_z.float() - ref_z_float.float()))
         diff1_max = torch.max(torch.abs(ref_z.float() - ref_z_float.float()))

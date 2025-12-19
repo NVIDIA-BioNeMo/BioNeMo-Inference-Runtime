@@ -21,7 +21,7 @@ from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 from boltz.data.types import Manifest
 from boltz.data.write.writer import BoltzWriter
 from boltz.main import BoltzProcessedInput
-from tensorrt_llm.logger import logger
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
@@ -98,7 +98,8 @@ def parse_arguments():
         type=Path,
         default="engines/structure_pairformer",
         help=
-        'The path to the directory containing the structure pairformer engines')
+        'The path to the directory containing the structure pairformer engines'
+    )
     parser.add_argument(
         '--confidence_pairformer_ckpt',
         type=Path,
@@ -110,16 +111,17 @@ def parse_arguments():
         '--token_transformer_ckpt',
         type=Path,
         default="engines/token_transformer",
-        help='The path to the directory containing the token transformer engines'
-    )
+        help=
+        'The path to the directory containing the token transformer engines')
     parser.add_argument('--structure_pairformer_backend',
                         type=str,
                         default=BackendType.TORCH,
                         help='The backend to use for the structure pairformer')
-    parser.add_argument('--confidence_pairformer_backend',
-                        type=str,
-                        default=BackendType.TORCH,
-                        help='The backend to use for the confidence pairformer')
+    parser.add_argument(
+        '--confidence_pairformer_backend',
+        type=str,
+        default=BackendType.TORCH,
+        help='The backend to use for the confidence pairformer')
     parser.add_argument('--token_transformer_backend',
                         type=str,
                         default=BackendType.TORCH,
@@ -207,10 +209,7 @@ def run_single_rank(model: Boltz2,
 
 
 def main(args):
-    import tensorrt_llm
-
-    rank = tensorrt_llm.mpi_rank()
-    tensorrt_llm.mpi_world_size()
+    rank = 0
     torch.cuda.set_device(rank % args.gpu_per_node)
     model = Boltz2()
     model = model.cuda()

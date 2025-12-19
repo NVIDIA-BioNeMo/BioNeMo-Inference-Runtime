@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
 from test_utils.boltz.ref_layers import RefPairformerLayer

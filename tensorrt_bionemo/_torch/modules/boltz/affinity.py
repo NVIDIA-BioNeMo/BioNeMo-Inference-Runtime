@@ -18,11 +18,10 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm._torch.modules.embedding import Embedding
-from tensorrt_llm.functional import AllReduceParams
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.distributed import allgather
+from tensorrt_bionemo._torch.distributed import (
+    AllReduceParams, get_default_tp_group_coordinator)
 from tensorrt_bionemo._torch.layers.conditioning import PairwiseConditioning
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
@@ -190,7 +189,10 @@ class AffinityHeadsTransformer(nn.Module):
                                                   bias=True,
                                                   dtype=dtype)
 
-        self.to_affinity_logits_binary = nn.Linear(1, 1, bias=True, dtype=dtype)
+        self.to_affinity_logits_binary = nn.Linear(1,
+                                                   1,
+                                                   bias=True,
+                                                   dtype=dtype)
 
     def forward(self, z: torch.Tensor,
                 cross_pair_mask: torch.Tensor) -> torch.Tensor:
@@ -243,13 +245,10 @@ class AffinityModule(nn.Module):
         self.tp_group = self.mapping.tp_group
 
         skip_create_weights = False
-        self.dist_bin_pairwise_embed = Embedding(
+        self.dist_bin_pairwise_embed = nn.Embedding(
             num_embeddings=config.num_dist_bins,
             embedding_dim=config.token_z,
-            dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True)
+            dtype=config.torch_dtype)
 
         self.fused_s_to_z = Linear(
             config.token_s,
@@ -303,6 +302,11 @@ class AffinityModule(nn.Module):
 
         self.token_z = config.token_z // self.tp_size
 
+        self.tp_group_comm = None
+        if self.tp_size > 1:
+            self.tp_group_comm = get_default_tp_group_coordinator()
+            assert self.tp_group_comm is not None, "Failed to get the default TP group coordinator"
+
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
@@ -341,7 +345,7 @@ class AffinityModule(nn.Module):
         embed_distogram = self.dist_bin_pairwise_embed(distogram)
 
         if self.tp_size > 1:
-            z = allgather(z, self.tp_group, gather_dim=-1)
+            z = self.tp_group_comm.all_gather(z, dim=-1)
         z = z + self.pairwise_conditioner(z_trunk=z,
                                           token_rel_pos_feats=embed_distogram)
         z = self.pairformer_stack(z,

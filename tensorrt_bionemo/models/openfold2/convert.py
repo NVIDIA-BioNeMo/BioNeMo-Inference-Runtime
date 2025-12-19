@@ -13,9 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch
-from tensorrt_llm.logger import logger
-from tensorrt_llm.models.convert_utils import split
+from tensorrt_llm_lite._utils import str_dtype_to_torch
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
@@ -40,7 +39,7 @@ def get_outer_product_mean_weights(state_dict: dict,
                                    tbm_prefix: str,
                                    dtype: str = "float32",
                                    mapping: Mapping = None):
-    m = mapping if mapping else Mapping()
+    mapping if mapping else Mapping()
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -55,16 +54,6 @@ def get_outer_product_mean_weights(state_dict: dict,
 
     proj_o_weight = state_dict[f"{prefix}.linear_out.weight"]
     proj_o_bias = state_dict.get(f"{prefix}.linear_out.bias", None)
-
-    if m.tp_size > 1:
-        proj_a_weight = split(proj_a_weight, m.tp_size, m.tp_rank, 0)
-        proj_a_bias = split(proj_a_bias, m.tp_size, m.tp_rank,
-                            0) if proj_a_bias is not None else None
-        proj_b_weight = split(proj_b_weight, m.tp_size, m.tp_rank, 0)
-        proj_b_bias = split(proj_b_bias, m.tp_size, m.tp_rank,
-                            0) if proj_b_bias is not None else None
-        proj_o_weight = split(proj_o_weight, m.tp_size, m.tp_rank,
-                              1)  # ignore slip bias for row tp
 
     fused_proj_a_b_weight = torch.cat([proj_a_weight, proj_b_weight], dim=0)
     fused_proj_a_b_bias = torch.cat([proj_a_bias, proj_b_bias], dim=0)
@@ -116,18 +105,6 @@ def get_msa_attention_weights(state_dict: dict,
     mha_g_weight = state_dict[f"{prefix}.mha.linear_g.weight"]
     mha_g_bias = state_dict.get(f"{prefix}.mha.linear_g.bias", None)
 
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        linear_z_weight = split(linear_z_weight, tp_size, tp_rank, 0)
-        mha_q_weight = split(mha_q_weight, tp_size, tp_rank, 0)
-        mha_k_weight = split(mha_k_weight, tp_size, tp_rank, 0)
-        mha_v_weight = split(mha_v_weight, tp_size, tp_rank, 0)
-        mha_o_weight = split(mha_o_weight, tp_size, tp_rank, 1)
-        mha_g_weight = split(mha_g_weight, tp_size, tp_rank, 0)
-        if mha_g_bias is not None:
-            mha_g_bias = split(mha_g_bias, tp_size, tp_rank, 0)
-
     mha_qkv_weights = torch.cat([mha_q_weight, mha_k_weight, mha_v_weight],
                                 dim=0)
 
@@ -158,7 +135,7 @@ def get_msa_transition_weights(state_dict: dict,
                                tbm_prefix: str,
                                dtype: str = "float32",
                                mapping: Mapping = None):
-    m = mapping if mapping else Mapping()
+    mapping if mapping else Mapping()
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -170,12 +147,6 @@ def get_msa_transition_weights(state_dict: dict,
 
     linear_2_weight = state_dict[f"{prefix}.linear_2.weight"]
     linear_2_bias = state_dict.get(f"{prefix}.linear_2.bias", None)
-
-    if m.tp_size > 1:
-        linear_1_weight = split(linear_1_weight, m.tp_size, m.tp_rank, 0)
-        linear_1_bias = split(linear_1_bias, m.tp_size, m.tp_rank,
-                              0) if linear_1_bias is not None else None
-        linear_2_weight = split(linear_2_weight, m.tp_size, m.tp_rank, 1)
 
     ret[f"{tbm_prefix}.layer_norm.weight"] = layer_norm_weight.to(torch_dtype)
     ret[f"{tbm_prefix}.layer_norm.bias"] = layer_norm_bias.to(torch_dtype)
@@ -231,23 +202,6 @@ def get_tri_mul_node_weights(state_dict: dict,
     g_out_weight = state_dict[f"{prefix}.linear_g.weight"]
     g_out_bias = state_dict[f"{prefix}.linear_g.bias"]
 
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        p_in_0_weight = split(p_in_0_weight, tp_size, tp_rank, 0)
-        p_in_0_bias = split(p_in_0_bias, tp_size, tp_rank, 0)
-        p_in_1_weight = split(p_in_1_weight, tp_size, tp_rank, 0)
-        p_in_1_bias = split(p_in_1_bias, tp_size, tp_rank, 0)
-        g_in_0_weight = split(g_in_0_weight, tp_size, tp_rank, 0)
-        g_in_0_bias = split(g_in_0_bias, tp_size, tp_rank, 0)
-        g_in_1_weight = split(g_in_1_weight, tp_size, tp_rank, 0)
-        g_in_1_bias = split(g_in_1_bias, tp_size, tp_rank, 0)
-
-        p_out_weight = split(p_out_weight, tp_size, tp_rank, 0)
-        p_out_bias = split(p_out_bias, tp_size, tp_rank, 0)
-        g_out_weight = split(g_out_weight, tp_size, tp_rank, 0)
-        g_out_bias = split(g_out_bias, tp_size, tp_rank, 0)
-
     p_in_weight = torch.cat([p_in_0_weight, p_in_1_weight], dim=0).contiguous()
     p_in_bias = torch.cat([p_in_0_bias, p_in_1_bias], dim=0).contiguous()
     g_in_weight = torch.cat([g_in_0_weight, g_in_1_weight], dim=0).contiguous()
@@ -289,16 +243,6 @@ def get_tri_attn_node_weights(state_dict: dict,
     mha_g_weight = state_dict[f"{prefix}.mha.linear_g.weight"]
     mha_g_bias = state_dict[f"{prefix}.mha.linear_g.bias"]
 
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        linear_weight = split(linear_weight, tp_size, tp_rank, 0)
-        mha_q_weight = split(mha_q_weight, tp_size, tp_rank, 0)
-        mha_k_weight = split(mha_k_weight, tp_size, tp_rank, 0)
-        mha_v_weight = split(mha_v_weight, tp_size, tp_rank, 0)
-        mha_o_weight = split(mha_o_weight, tp_size, tp_rank, 1)
-        mha_g_weight = split(mha_g_weight, tp_size, tp_rank, 0)
-        mha_g_bias = split(mha_g_bias, tp_size, tp_rank, 0)
     mha_qkv_weights = torch.cat([mha_q_weight, mha_k_weight, mha_v_weight],
                                 dim=0)
 
@@ -320,7 +264,7 @@ def get_pair_transition_weights(state_dict: dict,
                                 tbm_prefix: str,
                                 dtype: str = "float32",
                                 mapping: Mapping = None):
-    m = mapping if mapping else Mapping()
+    mapping if mapping else Mapping()
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -332,12 +276,6 @@ def get_pair_transition_weights(state_dict: dict,
 
     linear_2_weight = state_dict[f"{prefix}.linear_2.weight"]
     linear_2_bias = state_dict.get(f"{prefix}.linear_2.bias", None)
-
-    if m.tp_size > 1:
-        linear_1_weight = split(linear_1_weight, m.tp_size, m.tp_rank, 0)
-        linear_1_bias = split(linear_1_bias, m.tp_size, m.tp_rank,
-                              0) if linear_1_bias is not None else None
-        linear_2_weight = split(linear_2_weight, m.tp_size, m.tp_rank, 1)
 
     ret[f"{tbm_prefix}.layer_norm.weight"] = layer_norm_weight.to(torch_dtype)
     ret[f"{tbm_prefix}.layer_norm.bias"] = layer_norm_bias.to(torch_dtype)
@@ -372,8 +310,8 @@ def convert_hf_evoformer(config: BaseConfig,
                                                           "")] = v
     state_dict = new_state_dict
     weights = {}
-    weights.update(get_linear_weights(state_dict, f"{prefix}.linear",
-                                      f"linear"))
+    weights.update(
+        get_linear_weights(state_dict, f"{prefix}.linear", f"linear"))
 
     logger.info(
         f"Loading weights for evoformer, model_name: {model_name}, dtype: {config.dtype}, num_blocks: {config.no_blocks}"
@@ -722,16 +660,19 @@ def convert_hf_evoformer_torch(config: BaseConfig,
             module_state_dict[
                 f"blocks.{i}.outer_product_mean.layer_norm.weight"],
             "bias":
-            module_state_dict[f"blocks.{i}.outer_product_mean.layer_norm.bias"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.layer_norm.bias"],
         }]
         tbnm_state_dict[f"blocks.{i}.outer_product_mean.fused_proj_a_b"] = [{
             "weight":
-            module_state_dict[f"blocks.{i}.outer_product_mean.linear_1.weight"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.linear_1.weight"],
             "bias":
             module_state_dict[f"blocks.{i}.outer_product_mean.linear_1.bias"],
         }, {
             "weight":
-            module_state_dict[f"blocks.{i}.outer_product_mean.linear_2.weight"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.linear_2.weight"],
             "bias":
             module_state_dict[f"blocks.{i}.outer_product_mean.linear_2.bias"],
         }]
@@ -740,7 +681,8 @@ def convert_hf_evoformer_torch(config: BaseConfig,
             module_state_dict[
                 f"blocks.{i}.outer_product_mean.linear_out.weight"],
             "bias":
-            module_state_dict[f"blocks.{i}.outer_product_mean.linear_out.bias"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.linear_out.bias"],
         }]
 
         # Update weights for tri_mul_out, tri_mul_in
@@ -930,16 +872,19 @@ def convert_hf_extra_msa_stack_torch(config: BaseConfig,
             module_state_dict[
                 f"blocks.{i}.outer_product_mean.layer_norm.weight"],
             "bias":
-            module_state_dict[f"blocks.{i}.outer_product_mean.layer_norm.bias"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.layer_norm.bias"],
         }]
         tbnm_state_dict[f"blocks.{i}.outer_product_mean.fused_proj_a_b"] = [{
             "weight":
-            module_state_dict[f"blocks.{i}.outer_product_mean.linear_1.weight"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.linear_1.weight"],
             "bias":
             module_state_dict[f"blocks.{i}.outer_product_mean.linear_1.bias"],
         }, {
             "weight":
-            module_state_dict[f"blocks.{i}.outer_product_mean.linear_2.weight"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.linear_2.weight"],
             "bias":
             module_state_dict[f"blocks.{i}.outer_product_mean.linear_2.bias"],
         }]
@@ -948,7 +893,8 @@ def convert_hf_extra_msa_stack_torch(config: BaseConfig,
             module_state_dict[
                 f"blocks.{i}.outer_product_mean.linear_out.weight"],
             "bias":
-            module_state_dict[f"blocks.{i}.outer_product_mean.linear_out.bias"],
+            module_state_dict[
+                f"blocks.{i}.outer_product_mean.linear_out.bias"],
         }]
 
         # Update weights for tri_mul_out, tri_mul_in

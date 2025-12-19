@@ -58,5 +58,9 @@ include(SetupRapidsCMake)
 
 include(cmake/setup_dependencies.cmake)
 
+# Build TRT-BioNeMo
 include_directories(${TRT_BIONEMO_CPP_DIR} ${TRT_BIONEMO_CPP_DIR}/include)
 add_subdirectory(tensorrt_bionemo)
+
+install(TARGETS nvinfer_plugin_tensorrt_bionemo
+        LIBRARY DESTINATION ${TRT_BIONEMO_PYTHON_DIR}/libs)

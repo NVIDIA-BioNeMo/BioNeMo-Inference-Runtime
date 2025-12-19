@@ -16,10 +16,10 @@ import copy
 import time
 
 import tensorrt as trt
-from tensorrt_llm._utils import str_dtype_to_trt
-from tensorrt_llm.builder import Builder, Engine, EngineConfig
-from tensorrt_llm.logger import logger
-from tensorrt_llm.network import net_guard
+from tensorrt_llm_lite._utils import str_dtype_to_trt
+from tensorrt_llm_lite.builder import Builder, Engine, EngineConfig
+from tensorrt_llm_lite.logger import logger
+from tensorrt_llm_lite.network import net_guard
 
 from tensorrt_bionemo._trt.module_utils import PretrainedModule
 from tensorrt_bionemo.configs.base import BuildConfig
@@ -61,19 +61,8 @@ def build(module: PretrainedModule, build_config: BuildConfig = None):
     network.trt_network.name = module_config.architecture
     network.plugin_config = build_config.plugin_config
 
-    nccl_plugin = None
-    if module.config.mapping.world_size > 1:
-        if build_config.plugin_config.nccl_plugin is not None:
-            nccl_plugin = build_config.plugin_config.nccl_plugin
-        else:
-            nccl_plugin = module.config.dtype
-    network.plugin_config.set_nccl_plugin(nccl_plugin)
-
     with net_guard(network):
-        prepare_input_args = {
-            "build_config": build_config,
-            "disable_custom_all_reduce": module_config.disable_custom_all_reduce
-        }
+        prepare_input_args = {"build_config": build_config}
         inputs = module.prepare_inputs(**prepare_input_args)
         outputs = module(**inputs)
         if not isinstance(outputs, tuple) and not isinstance(outputs, list):
@@ -94,7 +83,7 @@ def build(module: PretrainedModule, build_config: BuildConfig = None):
     logger.info(
         f"Total time of constructing network from module object {time.time()-tic} seconds"
     )
-    logger.info(f"Building Engine for rank {module_config.mapping.rank}")
+    logger.info(f"Building Engine for rank 0")
     managed_weights = {} if network.plugin_config.manage_weights else None
     engine = None if build_config.dry_run else builder.build_engine(
         network, builder_config, managed_weights)

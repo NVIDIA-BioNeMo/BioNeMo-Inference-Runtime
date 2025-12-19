@@ -17,10 +17,10 @@ import os
 from dataclasses import dataclass
 
 import pytest
-import tensorrt_llm
+import tensorrt_llm_lite
 import torch
-from tensorrt_llm._utils import str_dtype_to_torch, str_dtype_to_trt
-from tensorrt_llm.functional import Tensor
+from tensorrt_llm_lite._utils import str_dtype_to_torch, str_dtype_to_trt
+from tensorrt_llm_lite.functional import Tensor
 from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_trt)
@@ -30,7 +30,6 @@ from test_utils.openfold3.ref_layers import \
 
 from tensorrt_bionemo._trt.layers.attention import AttentionParams
 from tensorrt_bionemo._trt.layers.transformers import DiffusionTransformerLayer
-from tensorrt_bionemo.mapping import Mapping
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -86,7 +85,9 @@ def test_diffusion_transformer_layer(sc: Scenario):
     # Create input tensors with appropriate shapes based on num_samples
     if sc.num_samples == 1:
         a = torch.randn(bs, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
-        s = torch.randn(bs, sc.seq_len, sc.dim_single_cond,
+        s = torch.randn(bs,
+                        sc.seq_len,
+                        sc.dim_single_cond,
                         dtype=torch.float32).cuda()
         mask = torch.randn(bs, sc.seq_len, dtype=torch.float32).cuda()
     else:
@@ -110,10 +111,10 @@ def test_diffusion_transformer_layer(sc: Scenario):
                     dtype=torch.float32).cuda()
 
     # construct trt network
-    builder = tensorrt_llm.Builder()
+    builder = tensorrt_llm_lite.Builder()
     net = builder.create_network()
     net.plugin_config.to_legacy_setting()
-    with tensorrt_llm.net_guard(net):
+    with tensorrt_llm_lite.net_guard(net):
         input_a = Tensor(name='input_a', shape=a.shape, dtype=trt_dtype)
         input_s = Tensor(name='input_s', shape=s.shape, dtype=trt_dtype)
         input_z = Tensor(name='input_z', shape=z.shape, dtype=trt_dtype)
@@ -128,7 +129,6 @@ def test_diffusion_transformer_layer(sc: Scenario):
             'dim_single_cond': sc.dim_single_cond,
             'dim_pairwise': sc.dim_pairwise,
             'dtype': sc.dtype,
-            'mapping': Mapping()
         }
 
         if sc.using_silu:
@@ -151,7 +151,8 @@ def test_diffusion_transformer_layer(sc: Scenario):
     # Build engine
     engine_buffer = builder.build_engine(net, builder_config)
     assert engine_buffer is not None
-    session = tensorrt_llm.runtime.Session.from_serialized_engine(engine_buffer)
+    session = tensorrt_llm_lite.runtime.Session.from_serialized_engine(
+        engine_buffer)
 
     stream = torch.cuda.current_stream().cuda_stream
 
@@ -168,4 +169,7 @@ def test_diffusion_transformer_layer(sc: Scenario):
         torch.cuda.synchronize()
 
     trt_output_a = outputs['output_a']
-    torch.testing.assert_close(trt_output_a, ref_output_a, atol=1e-3, rtol=1e-4)
+    torch.testing.assert_close(trt_output_a,
+                               ref_output_a,
+                               atol=1e-3,
+                               rtol=1e-4)

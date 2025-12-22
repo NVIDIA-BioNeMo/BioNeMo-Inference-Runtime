@@ -294,13 +294,13 @@ class InputEmbedderMultimer(nn.Module):
             rel_sym_id = sym_id[..., None] - sym_id[..., None, :]
 
             clipped_rel_chain = torch.clamp(
-                rel_sym_id + self.max_rel_chain,
+                rel_sym_id + self.max_relative_chain,
                 0,
-                2 * self.max_rel_chain,
+                2 * self.max_relative_chain,
             )
 
             final_rel_chain = torch.where(entity_id_same, clipped_rel_chain,
-                                          (2 * self.max_rel_chain + 1) *
+                                          (2 * self.max_relative_chain + 1) *
                                           torch.ones_like(clipped_rel_chain))
 
             rel_chain = dist_one_hot(
@@ -315,7 +315,7 @@ class InputEmbedderMultimer(nn.Module):
             )
             rel_feats.append(rel_pos)
 
-        rel_feat = torch.cat(rel_feats, dim=-1)
+        rel_feat = torch.cat(rel_feats, dim=-1).to(self.config.torch_dtype)
         return self.linear_relpos(rel_feat)
 
     def forward(
@@ -431,6 +431,11 @@ class RecyclingEmbedder(nn.Module):
             z:
                 [*, N_res, N_res, C_z] pair embedding update
         """
+        # cast the tensors to the correct dtype
+        m = m.to(dtype=self.config.torch_dtype)
+        z = z.to(dtype=self.config.torch_dtype)
+        x = x.to(dtype=self.config.torch_dtype)
+
         # [*, N, C_m]
         m_update = self.layer_norm_m(m)
 
@@ -648,6 +653,10 @@ class TemplateEmbedder(nn.Module):
             mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
         )
+        # TemplatePointwiseAttention is using triangle attention and triangle multiplication, so we don't need to check the dtype of the template_pointwise_att
+        # leave it for optimization
+        assert self.config.template_single_embedder.torch_dtype == self.config.template_pair_embedder.torch_dtype == \
+            self.config.template_pair_stack.torch_dtype, "Sub-modules of TemplateEmbedder must have the same dtype"
 
     def load_weights(self, weights: dict) -> None:
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -687,6 +696,7 @@ class TemplateEmbedder(nn.Module):
                 max_bin=self.config.distogram.max_bin,
                 no_bins=self.config.distogram.no_bins,
             ).to(z)
+            t = t.to(dtype=self.config.template_pair_embedder.torch_dtype)
             t = self.template_pair_embedder(t)
 
             pair_embeds.append(t)
@@ -696,15 +706,16 @@ class TemplateEmbedder(nn.Module):
         # [*, S_t, N, N, C_z]
         t = self.template_pair_stack(
             t_pair,
-            pair_mask.unsqueeze(-3).to(dtype=z.dtype),
+            pair_mask.unsqueeze(-3).to(t_pair),
             all_reduce_params=all_reduce_params,
         )
 
         # [*, N, N, C_z]
+        desired_dtype = self.config.template_pointwise_attention.torch_dtype
         t = self.template_pointwise_att(
-            t,
-            z,
-            template_mask=batch["template_mask"].to(z),
+            t.to(dtype=desired_dtype),
+            z.to(dtype=desired_dtype),
+            template_mask=batch["template_mask"].to(dtype=desired_dtype),
             all_reduce_params=all_reduce_params,
         )
 
@@ -713,15 +724,17 @@ class TemplateEmbedder(nn.Module):
         t_mask = t_mask.reshape(*t_mask.shape,
                                 *([1] * (len(t.shape) - len(t_mask.shape))))
 
-        t = t * t_mask
+        t = t * t_mask.to(t)
 
         ret = {"template_pair_embedding": t}
 
         if self.config.embed_angles:
+            desired_dtype = self.config.template_single_embedder.torch_dtype
             template_angle_feat = build_template_angle_feat(batch)
 
             # [*, S_t, N, C_m]
-            a = self.template_single_embedder(template_angle_feat)
+            a = self.template_single_embedder(
+                template_angle_feat.to(dtype=desired_dtype))
 
             ret["template_single_embedding"] = a
 

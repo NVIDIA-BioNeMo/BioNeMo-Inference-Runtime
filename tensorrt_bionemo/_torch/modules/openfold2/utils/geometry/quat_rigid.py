@@ -11,43 +11,48 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
+from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rigid_matrix_vector import \
     Rigid3Array
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rotation_matrix import \
     Rot3Array
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.vector import \
     Vec3Array
+from tensorrt_bionemo.mapping import Mapping
 
 
 class QuatRigid(nn.Module):
 
-    def __init__(self, c_hidden: int, full_quat: bool = True):
-        super().__init__()
-        self.full_quat = full_quat
-        if self.full_quat:
-            rigid_dim = 7
-        else:
-            rigid_dim = 6
+    def __init__(self,
+                 c_hidden: int,
+                 dtype: torch.dtype = torch.float32,
+                 mapping: Optional[Mapping] = None,
+                 skip_create_weights: bool = False):
 
-        self.linear = nn.Linear(c_hidden,
-                                rigid_dim,
-                                bias=True,
-                                dtype=torch.float32)
+        super(QuatRigid, self).__init__()
+
+        self.linear = Linear(c_hidden,
+                             6,
+                             bias=True,
+                             dtype=dtype,
+                             mapping=mapping,
+                             tensor_parallel_mode=TensorParallelMode.COLUMN,
+                             gather_output=True,
+                             skip_create_weights=skip_create_weights)
 
     def forward(self, activations: torch.Tensor) -> Rigid3Array:
         rigid_flat = self.linear(activations)
 
         rigid_flat = torch.unbind(rigid_flat, dim=-1)
-        if (self.full_quat):
-            qw, qx, qy, qz = rigid_flat[:4]
-            translation = rigid_flat[4:]
-        else:
-            qx, qy, qz = rigid_flat[:3]
-            qw = torch.ones_like(qx)
-            translation = rigid_flat[3:]
+
+        qx, qy, qz = rigid_flat[:3]
+        qw = torch.ones_like(qx)
+        translation = rigid_flat[3:]
 
         rotation = Rot3Array.from_quaternion(
             qw,

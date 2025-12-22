@@ -41,6 +41,12 @@ class EvoformerStack(_EvoformerStack):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # cast the tensors to the correct dtype
+        m = m.to(dtype=self.config.torch_dtype)
+        z = z.to(dtype=self.config.torch_dtype)
+        msa_mask = msa_mask.to(dtype=self.config.torch_dtype)
+        pair_mask = pair_mask.to(dtype=self.config.torch_dtype)
+
         n_dims = m.ndim
         if n_dims == 3:
             m = m.unsqueeze(0)
@@ -264,6 +270,11 @@ class ExtraMSAStack(nn.Module):
             z = z.unsqueeze(0)
             msa_mask = msa_mask.unsqueeze(0)
             pair_mask = pair_mask.unsqueeze(0)
+
+        m = m.to(dtype=self.config.torch_dtype)
+        z = z.to(dtype=self.config.torch_dtype)
+        msa_mask = msa_mask.to(dtype=self.config.torch_dtype)
+        pair_mask = pair_mask.to(dtype=self.config.torch_dtype)
 
         for block in self.blocks:
             m, z = block(m, z, msa_mask, pair_mask, attn_metadata,

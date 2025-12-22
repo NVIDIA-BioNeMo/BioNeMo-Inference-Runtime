@@ -5,6 +5,11 @@ import torch
 import torch.nn.functional as F
 
 
+def masked_mean(mask, value, dim, eps=1e-4):
+    mask = mask.expand(*value.shape)
+    return torch.sum(mask * value, dim=dim) / (eps + torch.sum(mask, dim=dim))
+
+
 def pad_dim(t: torch.Tensor,
             dim: int,
             pad_len: int,
@@ -22,6 +27,10 @@ def permute_final_dims(tensor: torch.Tensor, inds: list[int]):
     num_first_dims = len(tensor.shape) - len(inds)
     first_inds = list(range(num_first_dims))
     return tensor.permute(first_inds + [num_first_dims + i for i in inds])
+
+
+def flatten_final_dims(t: torch.Tensor, no_dims: int):
+    return t.reshape(t.shape[:-no_dims] + (-1, ))
 
 
 def dist_one_hot(x: torch.Tensor, v_bins: torch.Tensor) -> torch.Tensor:

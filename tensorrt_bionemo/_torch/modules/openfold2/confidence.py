@@ -34,6 +34,7 @@ class AuxiliaryHeads(nn.Module):
         self.dtype = config.torch_dtype
         self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
+        self.epsilon = config.epsilon
 
         self.plddt = PerResidueLDDTCaPredictor(
             no_bins=config.per_residue_lddt.no_bins,
@@ -42,6 +43,7 @@ class AuxiliaryHeads(nn.Module):
             dtype=self.dtype,
             mapping=self.mapping,
             skip_create_weights=self.skip_create_weights,
+            epsilon=self.epsilon,
         )
 
         self.distogram = DistogramHead(
@@ -86,9 +88,14 @@ class AuxiliaryHeads(nn.Module):
             raise ValueError(
                 f"The following weights are not loaded: {not_loaded_weight}")
 
-    def forward(self, outputs):
+    def forward(self, outputs: dict[str,
+                                    torch.Tensor]) -> dict[str, torch.Tensor]:
+        # cast the tensors to the correct dtype
+        for k, v in outputs.items():
+            if v.is_floating_point():
+                outputs[k] = v.to(dtype=self.config.torch_dtype)
         aux_out = {}
-        lddt_logits = self.plddt(outputs["sm"]["single"])
+        lddt_logits = self.plddt(outputs["single"])
         aux_out["lddt_logits"] = lddt_logits
 
         # Required for relaxation later on
@@ -122,8 +129,8 @@ class AuxiliaryHeads(nn.Module):
                     self.config.tm.ptm_weight * aux_out["ptm_score"])
 
             aux_out.update(
-                compute_predicted_aligned_error(tm_logits,
-                                                no_bins=self.config.tm.no_bins))
+                compute_predicted_aligned_error(
+                    tm_logits, no_bins=self.config.tm.no_bins))
 
         return aux_out
 
@@ -138,6 +145,7 @@ class PerResidueLDDTCaPredictor(nn.Module):
         dtype: torch.dtype = torch.float32,
         mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
+        epsilon: float = 1e-5,
     ):
         super(PerResidueLDDTCaPredictor, self).__init__()
 
@@ -145,7 +153,7 @@ class PerResidueLDDTCaPredictor(nn.Module):
         self.c_in = c_in
         self.c_hidden = c_hidden
 
-        self.layer_norm = nn.LayerNorm(self.c_in)
+        self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype, eps=epsilon)
 
         self.linear_1 = Linear(self.c_in,
                                self.c_hidden,

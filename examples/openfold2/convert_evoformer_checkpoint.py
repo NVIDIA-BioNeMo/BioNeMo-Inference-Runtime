@@ -152,9 +152,12 @@ def main():
     if args.triangle_attn_backend == "CUEQUIV":
         args.support_batch = True
 
-    n_seq = 516
-    if not config.enable_template:
-        n_seq = 512
+    if not config.is_multimer:
+        n_seq = 516
+        if not config.enable_template:
+            n_seq = 512
+    else:
+        n_seq = 256
 
     config = copy.deepcopy(evoformer_stack_config.to_dict())
     config.update({

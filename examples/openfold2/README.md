@@ -68,7 +68,7 @@ Single worker build
 # For float32
 $ export MAX_SEQLEN=1536
 $ export MIN_SEQLEN=16
-# can use tensorrt_bionemo/commands/build.py instead (if in development)
+# please use tensorrt_bionemo/commands/build.py instead (if in development), trtbnm-build command may not in PATH.
 $ trtbnm-build \
     --model ${OPENFOLD2_MODEL_NAME} --module evoformer \
     --checkpoint_dir evoformer_ckpt \
@@ -76,8 +76,8 @@ $ trtbnm-build \
     --min_seqlen ${MIN_SEQLEN} \
     --output_dir evoformer_ckpt_engines
 
-# For bfloat16, use weakly-type
-$ python tensorrt_bionemo/commands/build.py \
+# For bfloat16, use weakly-type (recommend)
+$ trtbnm-build \
     --model ${OPENFOLD2_MODEL_NAME} --module evoformer \
     --checkpoint_dir evoformer_ckpt \
     --max_seqlen ${MAX_SEQLEN} \
@@ -87,6 +87,14 @@ $ python tensorrt_bionemo/commands/build.py \
 ```
 
 # Usage
+
+Note that: the .pt checkpoints of multimer models aren't available on HuggingFace. It has to set to environment variables, i.e:
+
+```bash
+export ALPHAFOLD2_MULTIMER_1_CKPT=__checkpoint_dir__/alphafold_params/params_model_1_multimer_v3.pt
+```
+
+See all checkpoint environment variables in `hubs/local.py`.
 
 ```python
     from tensorrt_bionemo.models.helper import AcceleratedConfig
@@ -105,4 +113,19 @@ $ python tensorrt_bionemo/commands/build.py \
         }
     )
     model = model.optimize(acc_m, manager)
+```
+
+Please take a look on the `run_demo.py` script to run with TRT-BNM (default torch-backend)
+
+```bash
+$ python run_demo.py \
+    _fasta_dir_ \
+    _template_cif_dir_ \
+    --use_precomputed_alignments _msa_precomputed_dir_ \
+    --model_name alphafold2_1 \
+    --output_dir demo_casp14 \
+    --skip_relaxation
+# Add option to run with trt
+    # --evoformer_backend trt \
+    # --evoformer_ckpt _engines_path_
 ```

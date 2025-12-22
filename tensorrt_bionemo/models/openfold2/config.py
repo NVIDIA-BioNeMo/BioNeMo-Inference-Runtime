@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from pydantic import model_validator
 
 from tensorrt_bionemo.configs import (BaseConfig, EvoformerStackConfig,
@@ -170,6 +171,24 @@ class TrunkConfig(BaseConfig):
     )
 
 
+class StructureModuleConfig(BaseConfig):
+    c_s: int = _Default.c_s
+    c_z: int = _Default.c_z
+    c_ipa: int = 16
+    c_resnet: int = 128
+    no_heads_ipa: int = 12
+    no_qk_points: int = 4
+    no_v_points: int = 8
+    no_blocks: int = 8
+    no_transition_layers: int = 1
+    no_resnet_blocks: int = 2
+    no_angles: int = 7
+    trans_scale_factor: float = 10.0
+    epsilon: float = 1e-05
+    inf: float = 100000.0
+    is_multimer: bool = _Default.is_multimer
+
+
 class PerResidueLddtConfig(BaseConfig):
     no_bins: int = 50
     c_in: int = 384
@@ -206,6 +225,7 @@ class ConfidenceModuleConfig(BaseConfig):
     experimentally_resolved: ExperimentallyResolvedConfig = ExperimentallyResolvedConfig(
     )
     tm: TmConfig = TmConfig()
+    epsilon: float = 1e-5
 
 
 class OpenFold2Config(BaseConfig):
@@ -223,6 +243,7 @@ class OpenFold2Config(BaseConfig):
     extra_msa_embedder: ExtraMsaEmbedderConfig = ExtraMsaEmbedderConfig()
     template_embedder: TemplateEmbedderConfig = TemplateEmbedderConfig()
     trunk: TrunkConfig = TrunkConfig()
+    structure_module: StructureModuleConfig = StructureModuleConfig()
     confidence_module: ConfidenceModuleConfig = ConfidenceModuleConfig()
 
 
@@ -237,8 +258,12 @@ class OpenFold2MultimerConfig(OpenFold2Config):
         self.trunk.evoformer_stack.opm_first = True
         self.trunk.extra_msa_stack.opm_first = True
         self.is_multimer = True
+        self.structure_module.is_multimer = True
         self.max_extra_msa = 1152
         self.enable_template = True
+        self.confidence_module.masked_msa.c_out = 22
+        self.structure_module.trans_scale_factor = 20.0
+        self.recycle_early_stop_tolerance = 0.5
         return self
 
 
@@ -381,43 +406,23 @@ class AlphaFold2_5_Config(OpenFold2Config):
 
 
 class AlphaFold2_Multimer_1_Config(OpenFold2MultimerConfig):
-
-    @model_validator(mode="after")
-    def fill_config(self) -> "AlphaFold2_Multimer_1_Config":
-        self.confidence_module.masked_msa.c_out = 22
-        return self
+    pass
 
 
 class AlphaFold2_Multimer_2_Config(OpenFold2MultimerConfig):
-
-    @model_validator(mode="after")
-    def fill_config(self) -> "AlphaFold2_Multimer_2_Config":
-        self.confidence_module.masked_msa.c_out = 22
-        return self
+    pass
 
 
 class AlphaFold2_Multimer_3_Config(OpenFold2MultimerConfig):
-
-    @model_validator(mode="after")
-    def fill_config(self) -> "AlphaFold2_Multimer_3_Config":
-        self.confidence_module.masked_msa.c_out = 22
-        return self
+    pass
 
 
 class AlphaFold2_Multimer_4_Config(OpenFold2MultimerConfig):
-
-    @model_validator(mode="after")
-    def fill_config(self) -> "AlphaFold2_Multimer_4_Config":
-        self.confidence_module.masked_msa.c_out = 22
-        return self
+    pass
 
 
 class AlphaFold2_Multimer_5_Config(OpenFold2MultimerConfig):
-
-    @model_validator(mode="after")
-    def fill_config(self) -> "AlphaFold2_Multimer_5_Config":
-        self.confidence_module.masked_msa.c_out = 22
-        return self
+    pass
 
 
 PRETRAINED_CONFIG_REGISTRY = {

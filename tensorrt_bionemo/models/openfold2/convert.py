@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import torch
 from tensorrt_llm_lite._utils import str_dtype_to_torch
 from tensorrt_llm_lite.logger import logger
@@ -1378,5 +1379,229 @@ def convert_hf_confidence_module_torch(config: BaseConfig,
             "bias":
             state_dict[f"{prefix}tm.linear.bias"],
         }]
+
+    return tbnm_state_dict
+
+
+def convert_hf_structure_module_torch(config: BaseConfig,
+                                      mapping: Mapping = None,
+                                      local_checkpoint: str = None,
+                                      model_name: str = "openfold2_ptm_1",
+                                      weights: dict = None):
+    """
+    Convert a structure module model from a Hugging Face checkpoint to a PyTorch model weights.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    tbnm_state_dict = {}
+    layer_path = "structure_module."
+    tbnm_state_dict["layer_norm_s"] = [{
+        "weight":
+        state_dict[f"{layer_path}layer_norm_s.weight"],
+        "bias":
+        state_dict[f"{layer_path}layer_norm_s.bias"],
+    }]
+    tbnm_state_dict["layer_norm_z"] = [{
+        "weight":
+        state_dict[f"{layer_path}layer_norm_z.weight"],
+        "bias":
+        state_dict[f"{layer_path}layer_norm_z.bias"],
+    }]
+    tbnm_state_dict["linear_in"] = [{
+        "weight":
+        state_dict[f"{layer_path}linear_in.weight"],
+        "bias":
+        state_dict[f"{layer_path}linear_in.bias"],
+    }]
+
+    tbnm_state_dict["ipa.linear_q"] = [{
+        "weight":
+        state_dict[f"{layer_path}ipa.linear_q.weight"],
+        "bias":
+        state_dict.get(f"{layer_path}ipa.linear_q.bias", None),
+    }]
+
+    if not config.is_multimer:
+        tbnm_state_dict["ipa.linear_q_points.linear"] = [{
+            "weight":
+            state_dict[f"{layer_path}ipa.linear_q_points.linear.weight"],
+            "bias":
+            state_dict[f"{layer_path}ipa.linear_q_points.linear.bias"],
+        }]
+
+        tbnm_state_dict["ipa.linear_kv"] = [{
+            "weight":
+            state_dict[f"{layer_path}ipa.linear_kv.weight"],
+            "bias":
+            state_dict[f"{layer_path}ipa.linear_kv.bias"],
+        }]
+        tbnm_state_dict["ipa.linear_kv_points.linear"] = [{
+            "weight":
+            state_dict[f"{layer_path}ipa.linear_kv_points.linear.weight"],
+            "bias":
+            state_dict[f"{layer_path}ipa.linear_kv_points.linear.bias"],
+        }]
+    else:
+        if f"{layer_path}ipa.linear_q_points.linear.weight" in state_dict.keys(
+        ):
+            tbnm_state_dict["ipa.linear_q_points.linear"] = [{
+                "weight":
+                state_dict[f"{layer_path}ipa.linear_q_points.linear.weight"],
+                "bias":
+                state_dict[f"{layer_path}ipa.linear_q_points.linear.bias"],
+            }]
+        else:
+            tbnm_state_dict["ipa.linear_q_points.linear"] = [{
+                "weight":
+                state_dict[f"{layer_path}ipa.linear_q_points.weight"],
+                "bias":
+                state_dict[f"{layer_path}ipa.linear_q_points.bias"],
+            }]
+
+        tbnm_state_dict["ipa.linear_k"] = [{
+            "weight":
+            state_dict[f"{layer_path}ipa.linear_k.weight"],
+            "bias":
+            state_dict.get(f"{layer_path}ipa.linear_k.bias", None),
+        }]
+        tbnm_state_dict["ipa.linear_v"] = [{
+            "weight":
+            state_dict[f"{layer_path}ipa.linear_v.weight"],
+            "bias":
+            state_dict.get(f"{layer_path}ipa.linear_v.bias", None),
+        }]
+
+        if f"{layer_path}ipa.linear_k_points.linear.weight" in state_dict.keys(
+        ):
+            tbnm_state_dict["ipa.linear_k_points.linear"] = [{
+                "weight":
+                state_dict[f"{layer_path}ipa.linear_k_points.linear.weight"],
+                "bias":
+                state_dict[f"{layer_path}ipa.linear_k_points.linear.bias"],
+            }]
+        else:
+            tbnm_state_dict["ipa.linear_k_points.linear"] = [{
+                "weight":
+                state_dict[f"{layer_path}ipa.linear_k_points.weight"],
+                "bias":
+                state_dict[f"{layer_path}ipa.linear_k_points.bias"],
+            }]
+
+        if f"{layer_path}ipa.linear_v_points.linear.weight" in state_dict.keys(
+        ):
+            tbnm_state_dict["ipa.linear_v_points.linear"] = [{
+                "weight":
+                state_dict[f"{layer_path}ipa.linear_v_points.linear.weight"],
+                "bias":
+                state_dict[f"{layer_path}ipa.linear_v_points.linear.bias"],
+            }]
+        else:
+            tbnm_state_dict["ipa.linear_v_points.linear"] = [{
+                "weight":
+                state_dict[f"{layer_path}ipa.linear_v_points.weight"],
+                "bias":
+                state_dict[f"{layer_path}ipa.linear_v_points.bias"],
+            }]
+
+    tbnm_state_dict["ipa.linear_b"] = [{
+        "weight":
+        state_dict[f"{layer_path}ipa.linear_b.weight"],
+        "bias":
+        state_dict[f"{layer_path}ipa.linear_b.bias"],
+    }]
+    tbnm_state_dict["ipa.linear_out"] = [{
+        "weight":
+        state_dict[f"{layer_path}ipa.linear_out.weight"],
+        "bias":
+        state_dict[f"{layer_path}ipa.linear_out.bias"],
+    }]
+
+    tbnm_state_dict["layer_norm_ipa"] = [{
+        "weight":
+        state_dict[f"{layer_path}layer_norm_ipa.weight"],
+        "bias":
+        state_dict[f"{layer_path}layer_norm_ipa.bias"],
+    }]
+
+    for transition_layer in range(config.no_transition_layers):
+        tbnm_state_dict[f"transition.layers.{transition_layer}.linear_1"] = [{
+            "weight":
+            state_dict[
+                f"{layer_path}transition.layers.{transition_layer}.linear_1.weight"],
+            "bias":
+            state_dict[
+                f"{layer_path}transition.layers.{transition_layer}.linear_1.bias"],
+        }]
+        tbnm_state_dict[f"transition.layers.{transition_layer}.linear_2"] = [{
+            "weight":
+            state_dict[
+                f"{layer_path}transition.layers.{transition_layer}.linear_2.weight"],
+            "bias":
+            state_dict[
+                f"{layer_path}transition.layers.{transition_layer}.linear_2.bias"],
+        }]
+        tbnm_state_dict[f"transition.layers.{transition_layer}.linear_3"] = [{
+            "weight":
+            state_dict[
+                f"{layer_path}transition.layers.{transition_layer}.linear_3.weight"],
+            "bias":
+            state_dict[
+                f"{layer_path}transition.layers.{transition_layer}.linear_3.bias"],
+        }]
+    tbnm_state_dict[f"transition.layer_norm"] = [{
+        "weight":
+        state_dict[f"{layer_path}transition.layer_norm.weight"],
+        "bias":
+        state_dict[f"{layer_path}transition.layer_norm.bias"],
+    }]
+
+    tbnm_state_dict["bb_update.linear"] = [{
+        "weight":
+        state_dict[f"{layer_path}bb_update.linear.weight"],
+        "bias":
+        state_dict[f"{layer_path}bb_update.linear.bias"],
+    }]
+
+    tbnm_state_dict["angle_resnet.linear_in"] = [{
+        "weight":
+        state_dict[f"{layer_path}angle_resnet.linear_in.weight"],
+        "bias":
+        state_dict[f"{layer_path}angle_resnet.linear_in.bias"],
+    }]
+    tbnm_state_dict["angle_resnet.linear_initial"] = [{
+        "weight":
+        state_dict[f"{layer_path}angle_resnet.linear_initial.weight"],
+        "bias":
+        state_dict[f"{layer_path}angle_resnet.linear_initial.bias"],
+    }]
+    for block_layer in range(config.no_resnet_blocks):
+        tbnm_state_dict[f"angle_resnet.layers.{block_layer}.linear_1"] = [{
+            "weight":
+            state_dict[
+                f"{layer_path}angle_resnet.layers.{block_layer}.linear_1.weight"],
+            "bias":
+            state_dict[
+                f"{layer_path}angle_resnet.layers.{block_layer}.linear_1.bias"],
+        }]
+        tbnm_state_dict[f"angle_resnet.layers.{block_layer}.linear_2"] = [{
+            "weight":
+            state_dict[
+                f"{layer_path}angle_resnet.layers.{block_layer}.linear_2.weight"],
+            "bias":
+            state_dict[
+                f"{layer_path}angle_resnet.layers.{block_layer}.linear_2.bias"],
+        }]
+    tbnm_state_dict["angle_resnet.linear_out"] = [{
+        "weight":
+        state_dict[f"{layer_path}angle_resnet.linear_out.weight"],
+        "bias":
+        state_dict[f"{layer_path}angle_resnet.linear_out.bias"],
+    }]
+
+    tbnm_state_dict["ipa.head_weights"] = state_dict[
+        f"{layer_path}ipa.head_weights"]
 
     return tbnm_state_dict

@@ -18,17 +18,21 @@ import torch
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
-import tensorrt_bionemo.pipeline.openfold2.const as rc
+# isort: off
+import tensorrt_bionemo.pipeline.openfold2.const as residue_constants
 from tensorrt_bionemo._torch.attention_backend import get_attention_backend
 from tensorrt_bionemo._torch.distributed import AllReduceParams
+from tensorrt_bionemo._torch.modules.openfold2.confidence import AuxiliaryHeads
 from tensorrt_bionemo._torch.modules.openfold2.embedders import (
     ExtraMSAEmbedder, InputEmbedder, InputEmbedderMultimer, RecyclingEmbedder,
     TemplateEmbedder, TemplateEmbedderMultimer)
+from tensorrt_bionemo._torch.modules.openfold2.structure import StructureModule
 from tensorrt_bionemo._torch.modules.openfold2.trunk import (EvoformerStack,
                                                              ExtraMSAStack)
 from tensorrt_bionemo._torch.modules.openfold2.utils.feats import (
-    build_extra_msa_feat, build_extra_msa_feat_multimer, pseudo_beta_fn)
-from tensorrt_bionemo._torch.tensor_utils import tensor_tree_map
+    atom14_to_atom37, build_extra_msa_feat, build_extra_msa_feat_multimer,
+    pseudo_beta_fn)
+from tensorrt_bionemo._torch.tensor_utils import masked_mean, tensor_tree_map
 from tensorrt_bionemo._trt.module_wrappers import EvoformerStackTRT
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
@@ -36,13 +40,13 @@ from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
 from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY
-from .convert import (convert_hf_evoformer_torch,
-                      convert_hf_extra_msa_embedder_torch,
-                      convert_hf_extra_msa_stack_torch,
-                      convert_hf_input_embedder_torch,
-                      convert_hf_recycling_embedder_torch,
-                      convert_hf_template_embedder_multimer_torch,
-                      convert_hf_template_embedder_torch)
+from .convert import (
+    convert_hf_confidence_module_torch, convert_hf_evoformer_torch,
+    convert_hf_extra_msa_embedder_torch, convert_hf_extra_msa_stack_torch,
+    convert_hf_input_embedder_torch, convert_hf_recycling_embedder_torch,
+    convert_hf_structure_module_torch,
+    convert_hf_template_embedder_multimer_torch,
+    convert_hf_template_embedder_torch)
 
 
 class OpenFold2AcceleratedModules(AcceleratedModules):
@@ -61,7 +65,7 @@ class OpenFold2AcceleratedModules(AcceleratedModules):
 
 
 class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
-    # FIXME: Implement this
+
     def __init__(self,
                  config: BaseConfig = None,
                  include_load_weights: bool = True,
@@ -99,6 +103,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 self.template_embedder = TemplateEmbedder(
                     self.config.template_embedder)
         self.evoformer = EvoformerStack(self.config.trunk.evoformer_stack)
+        self.structure_module = StructureModule(self.config.structure_module)
+        self.aux_heads = AuxiliaryHeads(self.config.confidence_module)
 
         if include_load_weights:
             self.load_weights()
@@ -127,7 +133,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 weights=weights,
                 model_name=self.model_name)
             self.extra_msa_embedder.load_weights(extra_msa_embedder_weights)
-
             extra_msa_stack_weights = convert_hf_extra_msa_stack_torch(
                 config=self.config.trunk.extra_msa_stack,
                 weights=weights,
@@ -153,14 +158,39 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             model_name=self.model_name)
         self.evoformer.load_weights(evoformer_weights)
 
+        structure_module_weights = convert_hf_structure_module_torch(
+            self.config.structure_module,
+            weights=weights,
+            model_name=self.model_name)
+
+        self.structure_module.load_weights(structure_module_weights)
+
+        aux_heads_weights = convert_hf_confidence_module_torch(
+            self.config.confidence_module,
+            weights=weights,
+            model_name=self.model_name)
+        self.aux_heads.load_weights(aux_heads_weights)
+
     @staticmethod
-    def get_pretrained_config(model_name: str) -> BaseConfig:
+    def get_pretrained_config(
+            model_name: str = SupMat.OpenFold2_PTM1) -> BaseConfig:
         config_class = PRETRAINED_CONFIG_REGISTRY.get(model_name)
         if config_class is None:
             raise ValueError(
                 f"OpenFold2 pretrained config not found for model name: {model_name}"
             )
-        return config_class()
+        config = config_class()
+        config.trunk.set_triangle_attention_backend("CUEQUIV")
+        if config.enable_extra_msa:
+            config.trunk.extra_msa_stack.set_dtype(torch.bfloat16)
+        if config.enable_template:
+            if not config.is_multimer:
+                config.template_embedder.template_pointwise_attention.set_dtype(
+                    torch.bfloat16)
+                config.template_embedder.template_pointwise_attention.set_triangle_attention_backend(
+                    "CUEQUIV")
+        config.trunk.evoformer_stack.set_dtype(torch.bfloat16)
+        return config
 
     def get_current_batch(self,
                           feed_dict: dict[str, torch.Tensor],
@@ -240,6 +270,37 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             )
         return template_embeds
 
+    def tolerance_reached(self, prev_pos, next_pos, mask, eps=1e-8) -> bool:
+        """
+        Early stopping criteria based on criteria used in
+        AF2Complex: https://www.nature.com/articles/s41467-022-29394-2
+        Args:
+          prev_pos: Previous atom positions in atom37/14 representation
+          next_pos: Current atom positions in atom37/14 representation
+          mask: 1-D sequence mask
+          eps: Epsilon used in square root calculation
+        Returns:
+          Whether to stop recycling early based on the desired tolerance.
+        """
+
+        def distances(points):
+            """Compute all pairwise distances for a set of points."""
+            d = points[..., None, :] - points[..., None, :, :]
+            return torch.sqrt(torch.sum(d**2, dim=-1))
+
+        if self.config.recycle_early_stop_tolerance < 0:
+            return False
+
+        ca_idx = residue_constants.atom_order['CA']
+        sq_diff = (distances(prev_pos[..., ca_idx, :]) -
+                   distances(next_pos[..., ca_idx, :]))**2
+        mask = mask[..., None] * mask[..., None, :]
+        sq_diff = masked_mean(mask=mask,
+                              value=sq_diff,
+                              dim=list(range(len(mask.shape))))
+        diff = torch.sqrt(sq_diff + eps).item()
+        return diff <= self.config.recycle_early_stop_tolerance
+
     def iteration(
         self,
         feats: dict[str, torch.Tensor],
@@ -305,7 +366,9 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         a = None
         if self.config.enable_extra_msa:
             extra_msa_feat = self.extra_msa_fn(
-                **self.get_module_feed_dict(feats, "extra_msa_feat"))
+                **self.get_module_feed_dict(feats, "extra_msa_feat")).to(
+                    self.config.extra_msa_embedder.torch_dtype)
+
             a = self.extra_msa_embedder(extra_msa_feat)
 
             triangle_metadata_cls = get_attention_backend(
@@ -332,8 +395,32 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             all_reduce_params=all_reduce_params,
             attn_metadata=triangle_metadata_cls(),
         )
-        # FIXME: return the correct outputs, currently it returns for debugging purposes
-        return m_1_prev, z_prev, x_prev, m, z, s, a, m_1_prev_emb, z_prev_emb, msa_mask
+
+        structure_output = {}
+        structure_output = self.structure_module(
+            s, z, feats["aatype"], mask=feats["seq_mask"].to(dtype=s.dtype))
+
+        structure_output['pair'] = z
+
+        structure_output["final_atom_positions"] = atom14_to_atom37(
+            structure_output["positions"][-1], feats)
+        structure_output["final_atom_mask"] = feats["atom37_atom_exists"]
+        structure_output["final_affine_tensor"] = structure_output["frames"][
+            -1]
+
+        early_stop = False
+        if self.is_multimer:
+            early_stop = self.tolerance_reached(
+                x_prev, structure_output["final_atom_positions"],
+                feats["seq_mask"])
+
+        m_1_prev = m[..., 0, :, :]
+        z_prev = z
+        x_prev = structure_output["final_atom_positions"]
+        n_seq = feats["msa_feat"].shape[-3]
+        structure_output["msa"] = m[..., :n_seq, :, :]
+
+        return structure_output, m_1_prev, z_prev, x_prev, early_stop
 
     def forward(
         self,
@@ -363,14 +450,29 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             dtype=self.config.input_embedder.torch_dtype)
 
         # [*, N_res, 3]
-        x_prev = torch.zeros((*batch_dims, n_res, rc.atom_type_num, 3),
-                             device=device,
-                             dtype=self.config.input_embedder.torch_dtype)
+        x_prev = torch.zeros(
+            (*batch_dims, n_res, residue_constants.atom_type_num, 3),
+            device=device,
+            dtype=self.config.input_embedder.torch_dtype)
 
         prevs = [m_1_prev, z_prev, x_prev]
-
+        num_recycles = 0
+        model_prediction = {}
         for cycle_no in range(num_iters):
             batch = self.get_current_batch(feed_dict, cycle_no)
-            outputs = self.iteration(batch, prevs, all_reduce_params)
+            structure_output, m_1_prev, z_prev, x_prev, early_stop = self.iteration(
+                batch, prevs, all_reduce_params)
+            prevs = [m_1_prev, z_prev, x_prev]
+            num_recycles += 1
+            if early_stop:
+                break
+        model_prediction["num_recycles"] = torch.tensor(num_recycles,
+                                                        device=device)
+        model_prediction.update(structure_output)
 
-        return outputs
+        if "asym_id" in batch:
+            model_prediction["asym_id"] = batch["asym_id"]
+
+        model_prediction.update(self.aux_heads(model_prediction))
+
+        return model_prediction

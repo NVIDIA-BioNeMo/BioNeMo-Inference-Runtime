@@ -190,7 +190,7 @@ class TriangleAttentionNode(nn.Module):
         seq_len = x.shape[1]
         x, mask_bias = self._dcp_slice(x, mask_bias)
         if self.chunk_size > 0:
-            niters = seq_len // self.chunk_size
+            niters = (seq_len+self.chunk_size-1) // self.chunk_size
             outputs = []
             for i in range(niters):
                 start = i * self.chunk_size
@@ -203,7 +203,7 @@ class TriangleAttentionNode(nn.Module):
                                         attn_metadata=attn_metadata,
                                         all_reduce_params=all_reduce_params)
                 outputs.append(chunk_output)
-            output = torch.cat(outputs, dim=0)
+            output = torch.cat(outputs, dim=1)
         else:
             biases = [mask_bias, triangle_bias]
             output = self.mha(x,

@@ -652,7 +652,7 @@ class TemplateEmbedder(nn.Module):
             dtype=mc.torch_dtype,
             mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
-        )
+            chunk_size=mc.chunk_size)
         # TemplatePointwiseAttention is using triangle attention and triangle multiplication, so we don't need to check the dtype of the template_pointwise_att
         # leave it for optimization
         assert self.config.template_single_embedder.torch_dtype == self.config.template_pair_embedder.torch_dtype == \

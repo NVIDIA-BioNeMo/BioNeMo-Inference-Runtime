@@ -59,7 +59,8 @@ class CuEquivFusedSigmoidGatedDualGemm:
         M = 1
         for dim in x.shape[:-1]:
             M *= dim
-        if M < 32:
+        # 256 * 256, know issues: CuEquiv fused dual gemm has lower performance with short sequence length
+        if M < 65536:
             return False
         N = w1.shape[0]
         K = w1.shape[1]
@@ -119,7 +120,8 @@ class CuEquivFusedSigmoidGatedDualGemmDualX:
         M = 1
         for dim in x1.shape[:-1]:
             M *= dim
-        if M < 32:
+        # 256 * 256, know issues: CuEquiv fused dual gemm has lower performance with short sequence length
+        if M < 65536:
             return False
         N = w1.shape[0]
         K = w1.shape[1]

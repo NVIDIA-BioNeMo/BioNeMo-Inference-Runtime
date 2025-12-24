@@ -89,7 +89,7 @@ class TemplatePairStackConfig(BaseConfig):
     no_heads: int = 4
     pair_transition_n: int = 2
     tri_mul_first: bool = False
-    triangle_attn_node_chunk_size: int = 0
+    triangle_attn_node_chunk_size: int = 512
 
 
 class TemplatePointwiseAttentionConfig(BaseConfig):
@@ -97,6 +97,7 @@ class TemplatePointwiseAttentionConfig(BaseConfig):
     c_z: int = _Default.c_z
     c_hidden: int = 16
     no_heads: int = 4
+    chunk_size: int = 256
 
 
 class TemplateEmbedderConfig(BaseConfig):
@@ -168,6 +169,8 @@ class TrunkConfig(BaseConfig):
         opm_first=False,
         transition_n=4,
         trimul_high_precision=False,
+        opm_chunk_size=16,
+        opm_mask_chunk_size=256,
     )
 
 

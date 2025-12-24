@@ -38,7 +38,7 @@ def create_linear_layers(K: int = 128,
 
 def test_fused_sigmoid_gated_dual_gemm():
     torch.manual_seed(42)
-    seq_len = 64
+    seq_len = 256
     dtype = torch.bfloat16
     K = 128
     N = 256
@@ -82,7 +82,7 @@ def test_fused_sigmoid_gated_dual_gemm():
 
 def test_fused_sigmoid_gated_dual_gemm_dual_x():
     torch.manual_seed(42)
-    seq_len = 64
+    seq_len = 256
     dtype = torch.bfloat16
     K = 128
     N = 256

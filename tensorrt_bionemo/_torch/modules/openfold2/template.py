@@ -314,6 +314,7 @@ class TemplatePointwiseAttention(nn.Module):
                  eps: float = 1e-5,
                  triangle_attn_backend: str = 'VANILLA',
                  triangle_attn_node_chunk_size: int = 0,
+                 chunk_size: int = 256,
                  dtype: torch.dtype = torch.float32,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
@@ -324,6 +325,7 @@ class TemplatePointwiseAttention(nn.Module):
         self.c_hidden = c_hidden
         self.no_heads = no_heads
         self.inf = inf
+        self.chunk_size = chunk_size
         self.mapping = mapping or Mapping()
 
         self.mha = CrossTriangleAttention(
@@ -381,11 +383,27 @@ class TemplatePointwiseAttention(nn.Module):
 
         # [*, 1, 1, 1, N_temp]
         biases = [bias]
+        if self.chunk_size > 1:
+            seq_len = z.shape[1]
+            niters = (seq_len+self.chunk_size-1) // self.chunk_size
+            outputs = []
+            for i in range(niters):
+                start = i * self.chunk_size
+                end = start + self.chunk_size
+                z_chunk = z[:, start:end:, :, :]
+                t_chunk = t[:, start:end:, :, :]
+                z_chunk = self.mha(q_x=z_chunk,
+                                   kv_x=t_chunk,
+                                   biases=biases,
+                                   all_reduce_params=all_reduce_params)
+                outputs.append(z_chunk)
+            z = torch.cat(outputs, dim=1)
+        else:
 
-        z = self.mha(q_x=z,
-                     kv_x=t,
-                     biases=biases,
-                     all_reduce_params=all_reduce_params)
+            z = self.mha(q_x=z,
+                         kv_x=t,
+                         biases=biases,
+                         all_reduce_params=all_reduce_params)
 
         # [*, N_res, N_res, C_z]
         z = z.squeeze(-2)

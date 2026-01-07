@@ -28,7 +28,8 @@ Inside docker container, just:
 
 ```bash
 $ git clone <internal-repository>
-$ cd tensorrt-bionemo && pip install -v -e .
+# Note: --no-build-isolation must have to avoid re-install torch
+$ cd tensorrt-bionemo && pip install --no-build-isolation -v -e .
 ```
 
 To create a develop environment with full functionality.

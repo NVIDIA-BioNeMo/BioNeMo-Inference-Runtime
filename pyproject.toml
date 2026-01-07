@@ -4,7 +4,7 @@
 [build-system]
 requires = [
   "setuptools>=77",
-  "cuequivariance-ops-cu13==0.7.0"
+  "packaging>=24",
 ]
 build-backend = "build_backend"
 backend-path = ["."]
@@ -33,9 +33,9 @@ name = "tensorrt_bionemo"
 description = "TensorRT BioNeMo: GPU accelerated framework for protein folding"
 requires-python = ">=3.10,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
-license = "Apache-2.0"
 readme = "README.md"
 dynamic = ["dependencies", "version"]
+license = "Apache-2.0"
 
 [project.scripts]
 trtbnm-build = "tensorrt_bionemo.commands.build:main"

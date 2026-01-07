@@ -13,12 +13,12 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-find_package(Python REQUIRED)
+find_package(Python3 REQUIRED)
 set(CUE_OPS_VERSION 0.7.0)
 execute_process(
   COMMAND
-    "${Python_EXECUTABLE}" -c
-    "import importlib.util, os; s=importlib.util.find_spec('cuequivariance_ops'); print(os.path.dirname(s.origin))"
+    ${Python3_EXECUTABLE} -c
+    "import os; import cuequivariance_ops;print(os.path.dirname(cuequivariance_ops.__file__),end='');"
   RESULT_VARIABLE FOUND_STATUS
   OUTPUT_VARIABLE CUE_OPS_PATH
   OUTPUT_STRIP_TRAILING_WHITESPACE)

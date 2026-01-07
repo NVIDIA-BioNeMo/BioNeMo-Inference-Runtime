@@ -13,20 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import ctypes
-import importlib.util
 import platform
 from pathlib import Path
-
-CUEQUIV_PKG = importlib.util.find_spec("cuequivariance_ops")
-CUEQUIV_PKG_LIB = None
-if CUEQUIV_PKG is not None:
-    CUEQUIV_PKG_LIB = Path(
-        CUEQUIV_PKG.origin).parent.absolute() / "lib" / "libcue_ops.so"
-    if CUEQUIV_PKG_LIB.exists():
-        CUEQUIV_PKG_LIB = ctypes.CDLL(CUEQUIV_PKG_LIB.as_posix())
-
-if CUEQUIV_PKG_LIB is None:
-    raise ImportError('CuEQuivariance Ops library is unavailable')
 
 TRT_BNM_PLUGIN_NAMESPACE = 'tensorrt_bionemo'
 

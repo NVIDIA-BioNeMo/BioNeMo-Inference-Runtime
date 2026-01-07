@@ -58,9 +58,22 @@ include(SetupRapidsCMake)
 
 include(cmake/setup_dependencies.cmake)
 
+# Take code TRT_LLM
+file(GLOB TRTLLM_SRCS ${TRT_LLM_CPP_DIR}/tensorrt_llm/common/*.cpp
+     ${TRT_LLM_CPP_DIR}/tensorrt_llm/runtime/*.cpp)
+
 # Build TRT-BioNeMo
 include_directories(${TRT_BIONEMO_CPP_DIR} ${TRT_BIONEMO_CPP_DIR}/include)
 add_subdirectory(tensorrt_bionemo)
 
+# kernels shared library between torch and trt
+install(TARGETS kernels_tensorrt_bionemo
+        LIBRARY DESTINATION ${TRT_BIONEMO_PYTHON_DIR}/libs)
+
+# Library for TensorRT plugins
 install(TARGETS nvinfer_plugin_tensorrt_bionemo
+        LIBRARY DESTINATION ${TRT_BIONEMO_PYTHON_DIR}/libs)
+
+# Library for torch extensions
+install(TARGETS torch_crsc_tensorrt_bionemo
         LIBRARY DESTINATION ${TRT_BIONEMO_PYTHON_DIR}/libs)

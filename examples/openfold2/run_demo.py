@@ -213,8 +213,9 @@ def main(args):
     # Create the output directory
     os.makedirs(args.output_dir, exist_ok=True)
     config, config_preset = model_name_to_config_preset(args.model_name)
-
     is_multimer = "multimer" in args.model_name
+    if is_multimer and args.max_recycling_iters is not None:
+        config.data.common.max_recycling_iters = args.max_recycling_iters
     is_custom_template = "use_custom_template" in args and args.use_custom_template
     if is_custom_template:
         template_featurizer = templates.CustomHitFeaturizer(
@@ -502,6 +503,11 @@ if __name__ == "__main__":
         help=
         """Threshold for the sequence length to fallback to the torch backend for the evoformer."""
     )
+    parser.add_argument(
+        "--max_recycling_iters",
+        type=int,
+        default=None,
+        help="""Maximum number of recycling iterations to use.""")
     add_data_args(parser)
     args = parser.parse_args()
 

@@ -100,7 +100,7 @@ class DummyBackend(BackendBase):
                          context_memory_allocator=context_memory_allocator)
         self.trt_dtype = str_dtype_to_trt(config.dtype)
 
-    def forward(self, x: torch.Tensor):
+    def forward_udf(self, x: torch.Tensor):
         # Use the allocator from the base class
         inputs = {"input": x}
         # Cast to memory manager since it has the forward method

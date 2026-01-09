@@ -35,9 +35,9 @@ class PairformerTRT(BackendBase):
         self.dtype = config.torch_dtype
 
     @ensure_contiguous
-    def forward(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward_udf(self, s: torch.Tensor, z: torch.Tensor, mask: torch.Tensor,
+                    pair_mask: torch.Tensor,
+                    **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         # Ensure the inputs are contiguous
         if not self.config.support_batch:
             s = s.squeeze(0)
@@ -75,12 +75,12 @@ class TokenTransformerTRT(BackendBase):
                          context_memory_allocator=context_memory_allocator)
         self.dtype = config.torch_dtype
 
-    def forward(self,
-                a: torch.Tensor,
-                s: torch.Tensor,
-                z: torch.Tensor = None,
-                mask: torch.Tensor = None,
-                **kwargs) -> torch.Tensor:
+    def forward_udf(self,
+                    a: torch.Tensor,
+                    s: torch.Tensor,
+                    z: torch.Tensor = None,
+                    mask: torch.Tensor = None,
+                    **kwargs) -> torch.Tensor:
         return self._forward_internal(a, s, z, mask, **kwargs)
 
     @ensure_contiguous
@@ -118,9 +118,10 @@ class EvoformerStackTRT(BackendBase):
         self.dtype = config.torch_dtype
 
     @ensure_contiguous
-    def forward(self, m: torch.Tensor, z: torch.Tensor, msa_mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward_udf(
+            self, m: torch.Tensor, z: torch.Tensor, msa_mask: torch.Tensor,
+            pair_mask: torch.Tensor,
+            **kwargs) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Ensure the inputs are contiguous
         m_numdims = m.ndim
         if self.config.support_batch:

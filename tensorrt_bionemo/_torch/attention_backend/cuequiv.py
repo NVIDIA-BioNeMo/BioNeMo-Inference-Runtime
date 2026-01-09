@@ -85,15 +85,15 @@ class CuEquivAttention(AttentionBackend[CuEquivAttentionMetadata]):
         # b i j (h d) -> b i h j d
         bijhd = list(batch_dims) + [i, j, self.num_heads, d]
         q = q.view(*bijhd).flatten(0, n_batch_dims - 1)
-        q = permute_final_dims(q, (0, 2, 1, 3)).contiguous()
+        q = permute_final_dims(q, (0, 2, 1, 3))
         k = k.view(*bijhd).flatten(0, n_batch_dims - 1)
-        k = permute_final_dims(k, (0, 2, 1, 3)).contiguous()
+        k = permute_final_dims(k, (0, 2, 1, 3))
         v = v.view(*bijhd).flatten(0, n_batch_dims - 1)
-        v = permute_final_dims(v, (0, 2, 1, 3)).contiguous()
+        v = permute_final_dims(v, (0, 2, 1, 3))
 
         bias = bias.flatten(0, n_batch_dims - 1)
         # b h i j -> b () h i j
-        bias = bias.unsqueeze(-4).contiguous()
+        bias = bias.unsqueeze(-4)
 
         mask = mask.flatten(0, n_batch_dims - 1)
         mask = mask.bool().contiguous()

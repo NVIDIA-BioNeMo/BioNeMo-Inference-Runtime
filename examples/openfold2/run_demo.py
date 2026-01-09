@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import csv
 import logging
 import math
 import os
@@ -143,8 +144,22 @@ def run_model_opt(model, batch, tag, output_dir, dtype=torch.float32):
     return cast_out
 
 
-def create_model_opt(model_name: str, evoformer_backend: str,
-                     evoformer_ckpt: str) -> OpenFold2:
+class NeedFallbackEvoformer:
+
+    def __init__(self, threshold: int = 1536):
+        self.threshold = threshold
+
+    def __call__(self, m: torch.Tensor, **kwargs) -> bool:
+        n_res = m.shape[-2]
+        if n_res > self.threshold:
+            return True
+        return False
+
+
+def create_model_opt(model_name: str,
+                     evoformer_backend: str,
+                     evoformer_ckpt: str,
+                     evoformer_fallback_threshold: int = 1536) -> OpenFold2:
     manager = OnDemandContextMemoryManager()
 
     model = OpenFold2(model_name=model_name)
@@ -156,6 +171,7 @@ def create_model_opt(model_name: str, evoformer_backend: str,
         AcceleratedConfig(
             checkpoint=evoformer_ckpt,
             backend=evoformer_backend,
+            need_fallback=NeedFallbackEvoformer(evoformer_fallback_threshold),
         )
     })
     model = model.optimize(acc_m, manager)
@@ -271,14 +287,19 @@ def main(args):
     feature_dicts = {}
 
     model_opt = create_model_opt(args.model_name, args.evoformer_backend,
-                                 args.evoformer_ckpt)
+                                 args.evoformer_ckpt,
+                                 args.evoformer_fallback_threshold)
+
+    # Initialize timing records list
+    timing_records = []
 
     for (tag, tags), seqs in sorted_targets:
         print(f"Processing {tag}...")
         output_name = f'{tag}_{args.model_name}'
         if args.output_postfix is not None:
             output_name = f'{output_name}_{args.output_postfix}'
-
+        # Timing: Feature preparation
+        t_prep_start = time.perf_counter()
         # Does nothing if the alignments have already been computed
         precompute_alignments(tags, seqs, alignment_dir, args)
 
@@ -293,6 +314,7 @@ def main(args):
             )
 
             feature_dicts[tag] = feature_dict
+
         processed_feature_dict = feature_processor.process_features(
             feature_dict, mode='predict', is_multimer=is_multimer)
 
@@ -300,10 +322,21 @@ def main(args):
             k: torch.as_tensor(v, device="cuda")
             for k, v in processed_feature_dict.items()
         }
+        torch.cuda.synchronize()
+        t_prep_end = time.perf_counter()
+        prep_time = t_prep_end - t_prep_start
+        logger.info(f"Feature preparation time: {prep_time:.4f}s")
 
+        # Timing: Prediction
+        t_predict_start = time.perf_counter()
         out = run_model_opt(model_opt, processed_feature_dict, tag,
                             args.output_dir)
+        torch.cuda.synchronize()
+        t_predict_end = time.perf_counter()
+        predict_time = t_predict_end - t_predict_start
 
+        # Timing: Write output PDB
+        t_write_start = time.perf_counter()
         # Toss out the recycling dimensions --- we don't need them anymore
         processed_feature_dict = tensor_tree_map(
             lambda x: np.array(x[..., -1].cpu()), processed_feature_dict)
@@ -325,8 +358,26 @@ def main(args):
                 fp.write(protein.to_modelcif(unrelaxed_protein))
             else:
                 fp.write(protein.to_pdb(unrelaxed_protein))
+        t_write_end = time.perf_counter()
+        write_time = t_write_end - t_write_start
+        logger.info(f"PDB write time: {write_time:.4f}s")
 
         logger.info(f"Output written to {unrelaxed_output_path}...")
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        # Record timings for this sample
+        timing_records.append({
+            'tag':
+            tag,
+            'prep_features_time':
+            prep_time,
+            'predict_time':
+            predict_time,
+            'write_pdb_time':
+            write_time,
+            'total_time':
+            prep_time + predict_time + write_time
+        })
 
         if not args.skip_relaxation:
             # Relax the prediction.
@@ -341,6 +392,24 @@ def main(args):
                 pickle.dump(out, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
             logger.info(f"Model output written to {output_dict_path}...")
+
+    # Write timing records to CSV
+    if timing_records:
+        if args.evoformer_backend == "trt":
+            timing_csv_path = os.path.join(args.output_dir,
+                                           "trt_timing_measurements.csv")
+        else:
+            timing_csv_path = os.path.join(args.output_dir,
+                                           "torch_timing_measurements.csv")
+        with open(timing_csv_path, 'w', newline='') as csvfile:
+            fieldnames = [
+                'tag', 'prep_features_time', 'predict_time', 'write_pdb_time',
+                'total_time'
+            ]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(timing_records)
+        logger.info(f"Timing measurements written to {timing_csv_path}")
 
 
 if __name__ == "__main__":
@@ -426,6 +495,13 @@ if __name__ == "__main__":
                         type=Path,
                         default=None,
                         help="""Path to the evoformer checkpoint.""")
+    parser.add_argument(
+        "--evoformer_fallback_threshold",
+        type=int,
+        default=1536,
+        help=
+        """Threshold for the sequence length to fallback to the torch backend for the evoformer."""
+    )
     add_data_args(parser)
     args = parser.parse_args()
 

@@ -60,6 +60,8 @@ class BaseConfig(BaseModel):
     pairwise_attention_backend: str = "VANILLA"
     support_batch: bool = True
     backend: Union[str, BackendType] = BackendType.TORCH
+    # This function is used to determine if the module needs to fallback to the torch backend based on the input arguments
+    need_fallback: Optional[Callable] = Field(exclude=True, default=None)
     max_batch_size: int = 1
     max_seq_len: int = 2048
     min_seq_len: int = 4

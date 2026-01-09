@@ -192,10 +192,11 @@ class TemplatePairStackBlock(nn.Module):
         single_templates_masks = [
             m.unsqueeze(-3) for m in torch.unbind(mask, dim=-3)
         ]
+        z.dtype
 
         for i in range(len(single_templates)):
-            single = single_templates[i]
-            single_mask = single_templates_masks[i]
+            single = single_templates[i].to(self.dtype)
+            single_mask = single_templates_masks[i].to(self.dtype)
 
             if self.tri_mul_first:
                 single = self.trimul_update(single, single_mask)
@@ -290,6 +291,7 @@ class TemplatePairStack(nn.Module):
         Returns:
             [*, N_templ, N_res, N_res, C_t] template embedding update
         """
+        origin_dtype = t.dtype
         if mask.shape[-3] == 1:
             expand_idx = list(mask.shape)
             expand_idx[-3] = t.shape[-4]
@@ -300,7 +302,7 @@ class TemplatePairStack(nn.Module):
 
         t = self.layer_norm(t)
 
-        return t
+        return t.to(origin_dtype)
 
 
 class TemplatePointwiseAttention(nn.Module):
@@ -385,7 +387,7 @@ class TemplatePointwiseAttention(nn.Module):
         biases = [bias]
         if self.chunk_size > 1:
             seq_len = z.shape[1]
-            niters = (seq_len+self.chunk_size-1) // self.chunk_size
+            niters = (seq_len + self.chunk_size - 1) // self.chunk_size
             outputs = []
             for i in range(niters):
                 start = i * self.chunk_size

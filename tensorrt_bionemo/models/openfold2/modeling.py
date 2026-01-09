@@ -189,6 +189,10 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                     torch.bfloat16)
                 config.template_embedder.template_pointwise_attention.set_triangle_attention_backend(
                     "CUEQUIV")
+            config.template_embedder.template_pair_stack.set_dtype(
+                torch.bfloat16)
+            config.template_embedder.template_pair_stack.set_triangle_attention_backend(
+                "CUEQUIV")
         config.trunk.evoformer_stack.set_dtype(torch.bfloat16)
         return config
 
@@ -388,8 +392,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             self.config.trunk.evoformer_stack.triangle_attention_backend
         ).Metadata
         m, z, s = self.evoformer(
-            m,
-            z,
+            m=m,
+            z=z,
             msa_mask=msa_mask.to(m),
             pair_mask=pair_mask.to(m),
             all_reduce_params=all_reduce_params,

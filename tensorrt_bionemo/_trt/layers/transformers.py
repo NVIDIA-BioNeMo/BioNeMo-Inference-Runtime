@@ -774,6 +774,9 @@ class EvoformerBlock(Module):
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
 
+        if self.opm_first:
+            # Break Myelin fusion
+            z, m = identity_sz(z, m, True)
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
 

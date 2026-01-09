@@ -15,7 +15,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
@@ -31,6 +31,7 @@ class AcceleratedConfig:
     default: BaseConfig = None
     warmup: bool = False
     compile: bool = False
+    need_fallback: Optional[Callable[..., bool]] = None
 
 
 class AcceleratedModules(ABC):
@@ -65,6 +66,9 @@ class AcceleratedModules(ABC):
                                   module_name: str) -> Optional[BaseConfig]:
         return self._configs.get(module_name, None).default
 
+    def get_module_need_fallback(self, module_name: str) -> Optional[Callable]:
+        return self._configs.get(module_name, None).need_fallback
+
     @abstractmethod
     def get_supported_modules(self) -> dict[str, nn.Module]:
         raise NotImplementedError("Subclass must implement this method")
@@ -98,5 +102,8 @@ class OptimizedModuleSetterMixin:
                 checkpoint_dir=checkpoint_dir,
                 context_memory_allocator=context_memory_allocator,
                 **kwargs)
-            setter_func(self, opt_m)
+            org = setter_func(self, opt_m)
+            opt_m.set_fallback_module(org)
+            opt_m.config.need_fallback = accelerated_modules.get_module_need_fallback(
+                module_name)
         return self

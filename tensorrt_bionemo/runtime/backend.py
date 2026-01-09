@@ -13,15 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+from abc import ABC, abstractmethod
+from typing import Any
 
 import torch.nn as nn
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import BackendType, BaseConfig
 
 from .allocator import BaseContextMemoryManager, SimpleContextMemoryManager
 
 
-class BackendBase(nn.Module):
+class BackendBase(nn.Module, ABC):
     CONFIG_CLASS = None
 
     def __init__(self,
@@ -42,6 +45,10 @@ class BackendBase(nn.Module):
         self._world_size = 1
         self._runtime_rank = 0
         self._checkpoint_dir = None
+        self._fallback_module = None
+
+    def set_fallback_module(self, fallback_module: nn.Module):
+        self._fallback_module = fallback_module
 
     @property
     def config(self):
@@ -126,3 +133,17 @@ class BackendBase(nn.Module):
         context_memory_allocator.add_handle(module, stream=_stream)
 
         return module
+
+    @abstractmethod
+    def forward_udf(self, *args, **kwargs) -> Any:
+        raise NotImplementedError("Subclass must implement this method")
+
+    def forward(self, *args, **kwargs) -> Any:
+        if self.config.need_fallback is not None:
+            if self.config.need_fallback(*args, **kwargs):
+                logger.info(
+                    f"Fallback to torch backend for {self.__class__.__name__}")
+                return self._fallback_module(*args, **kwargs)
+        else:
+            logger.info(f"No fallback needed for {self.__class__.__name__}")
+        return self.forward_udf(*args, **kwargs)

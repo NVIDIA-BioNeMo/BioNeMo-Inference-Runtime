@@ -87,6 +87,7 @@ class ExtraMSABlock(EvoformerBlock):
                  inf: float = 1e9,
                  skip_create_weights: bool = False,
                  mapping: Optional[Mapping] = None,
+                 trimul_high_precision: bool = False,
                  **kwargs):
         super().__init__(
             local_layer_idx=local_layer_idx,
@@ -110,6 +111,7 @@ class ExtraMSABlock(EvoformerBlock):
             inf=inf,
             skip_create_weights=skip_create_weights,
             mapping=mapping,
+            trimul_high_precision=trimul_high_precision,
         )
         self.msa_att_col = MSAColumnGlobalAttention(
             local_layer_idx=local_layer_idx,
@@ -229,6 +231,7 @@ class ExtraMSAStack(nn.Module):
                     inf=config.mask_inf,
                     skip_create_weights=config.skip_create_weights,
                     mapping=config.mapping,
+                    trimul_high_precision=config.trimul_high_precision,
                 ))
 
     def load_weights(self, weights: dict):

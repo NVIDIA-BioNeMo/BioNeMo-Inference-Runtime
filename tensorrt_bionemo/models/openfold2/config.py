@@ -89,6 +89,7 @@ class TemplatePairStackConfig(BaseConfig):
     no_heads: int = 4
     pair_transition_n: int = 2
     tri_mul_first: bool = False
+    trimul_high_precision: bool = False
     triangle_attn_node_chunk_size: int = 512
 
 
@@ -130,7 +131,7 @@ class TemplateEmbedderMultimerConfig(BaseConfig):
     c_t: int = _Default.c_t
     c_z: int = _Default.c_z
     embed_angles: bool = True
-    use_unit_vector: bool = False
+    use_unit_vector: bool = True
     distogram: TemplateDistogramConfig = TemplateDistogramConfig()
     template_single_embedder: TemplateSingleEmbedderMultimerConfig = TemplateSingleEmbedderMultimerConfig(
     )
@@ -409,14 +410,18 @@ class AlphaFold2_5_Config(OpenFold2Config):
 
 
 class AlphaFold2_Multimer_1_Config(OpenFold2MultimerConfig):
+    # Parent validator call first -> child validator
+    @model_validator(mode="after")
+    def fill_msa_config(self) -> "OpenFold2MultimerConfig":
+        self.max_extra_msa = 2048
+        return self
+
+
+class AlphaFold2_Multimer_2_Config(AlphaFold2_Multimer_1_Config):
     pass
 
 
-class AlphaFold2_Multimer_2_Config(OpenFold2MultimerConfig):
-    pass
-
-
-class AlphaFold2_Multimer_3_Config(OpenFold2MultimerConfig):
+class AlphaFold2_Multimer_3_Config(AlphaFold2_Multimer_1_Config):
     pass
 
 

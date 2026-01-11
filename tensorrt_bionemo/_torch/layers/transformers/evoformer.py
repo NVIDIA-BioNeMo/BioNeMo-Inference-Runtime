@@ -54,6 +54,7 @@ class EvoformerBlock(nn.Module):
                  opm_mask_chunk_size: Optional[int] = None,
                  dtype: Optional[torch.dtype] = None,
                  triangle_attn_node_chunk_size: int = 0,
+                 trimul_high_precision: bool = False,
                  eps: float = 1e-5,
                  inf: float = 1e9,
                  skip_create_weights: bool = False,
@@ -137,6 +138,7 @@ class EvoformerBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
+            high_precision=trimul_high_precision,
         )
 
         self.tri_mul_in = TriangleMultiplicationNode(
@@ -154,6 +156,7 @@ class EvoformerBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
+            high_precision=trimul_high_precision,
         )
 
         self.tri_attn_start = TriangleAttentionStartingNode(
@@ -318,6 +321,7 @@ class EvoformerStack(nn.Module):
                     inf=config.mask_inf,
                     skip_create_weights=config.skip_create_weights,
                     mapping=config.mapping,
+                    trimul_high_precision=config.trimul_high_precision,
                 ))
         self.linear = Linear(config.c_m,
                              config.c_s,

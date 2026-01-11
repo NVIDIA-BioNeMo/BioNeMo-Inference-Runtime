@@ -198,11 +198,12 @@ def model_name_to_config_preset(model_name: str) -> str:
             "alphafold2_multimer_1", "alphafold2_multimer_2",
             "alphafold2_multimer_3"
     ]:
-        config_preset = "model_1_multimer"
+        i = model_name.split("_")[-1]
+        config_preset = f"model_{i}_multimer_v3"
     elif model_name in ["alphafold2_multimer_4"]:
-        config_preset = "model_4_multimer"
+        config_preset = "model_4_multimer_v3"
     elif model_name in ["alphafold2_multimer_5"]:
-        config_preset = "model_5_multimer"
+        config_preset = "model_5_multimer_v3"
     else:
         raise ValueError(f"Invalid model name: {model_name}")
 
@@ -296,7 +297,7 @@ def main(args):
 
     for (tag, tags), seqs in sorted_targets:
         print(f"Processing {tag}...")
-        output_name = f'{tag}_{args.model_name}'
+        output_name = f'{tag}_{config_preset}'
         if args.output_postfix is not None:
             output_name = f'{output_name}_{args.output_postfix}'
         # Timing: Feature preparation
@@ -323,6 +324,7 @@ def main(args):
             k: torch.as_tensor(v, device="cuda")
             for k, v in processed_feature_dict.items()
         }
+
         torch.cuda.synchronize()
         t_prep_end = time.perf_counter()
         prep_time = t_prep_end - t_prep_start
@@ -393,7 +395,6 @@ def main(args):
                 pickle.dump(out, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
             logger.info(f"Model output written to {output_dict_path}...")
-
     # Write timing records to CSV
     if timing_records:
         if args.evoformer_backend == "trt":

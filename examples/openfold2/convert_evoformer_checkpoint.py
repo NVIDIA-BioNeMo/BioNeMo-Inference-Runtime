@@ -157,7 +157,7 @@ def main():
         if not config.enable_template:
             n_seq = 512
     else:
-        n_seq = 256
+        n_seq = 512
 
     config = copy.deepcopy(evoformer_stack_config.to_dict())
     config.update({

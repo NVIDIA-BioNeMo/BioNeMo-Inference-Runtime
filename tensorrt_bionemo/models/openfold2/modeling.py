@@ -189,8 +189,9 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                     torch.bfloat16)
                 config.template_embedder.template_pointwise_attention.set_triangle_attention_backend(
                     "CUEQUIV")
-            config.template_embedder.template_pair_stack.set_dtype(
-                torch.bfloat16)
+            # Comment now. This hurt the accuracy.
+            # config.template_embedder.template_pair_stack.set_dtype(
+            #     torch.bfloat16)
             config.template_embedder.template_pair_stack.set_triangle_attention_backend(
                 "CUEQUIV")
         config.trunk.evoformer_stack.set_dtype(torch.bfloat16)

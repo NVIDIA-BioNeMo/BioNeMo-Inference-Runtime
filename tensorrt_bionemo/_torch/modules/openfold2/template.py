@@ -39,6 +39,7 @@ class TemplatePairStackBlock(nn.Module):
                  no_heads: int,
                  pair_transition_n: int,
                  tri_mul_first: bool,
+                 trimul_high_precision: bool = False,
                  dtype: torch.dtype = torch.float32,
                  local_layer_idx: int = 0,
                  eps: float = 1e-5,
@@ -78,6 +79,7 @@ class TemplatePairStackBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
+            high_precision=trimul_high_precision,
         )
 
         self.tri_mul_in = TriangleMultiplicationNode(
@@ -96,6 +98,7 @@ class TemplatePairStackBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
+            high_precision=trimul_high_precision,
         )
 
         self.tri_attn_start = TriangleAttentionStartingNode(
@@ -232,6 +235,7 @@ class TemplatePairStack(nn.Module):
                  no_heads: int,
                  pair_transition_n: int,
                  tri_mul_first: bool = False,
+                 trimul_high_precision: bool = False,
                  inf: float = 1e9,
                  eps: float = 1e-5,
                  triangle_attn_backend: str = 'VANILLA',
@@ -263,6 +267,7 @@ class TemplatePairStack(nn.Module):
                 no_heads=no_heads,
                 pair_transition_n=pair_transition_n,
                 tri_mul_first=tri_mul_first,
+                trimul_high_precision=trimul_high_precision,
                 inf=inf,
                 eps=eps,
                 local_layer_idx=layer_idx,

@@ -47,7 +47,8 @@ class CuEquivFusedSigmoidGatedDualGemm:
                                              mask,
                                              transpose_out=False,
                                              b1=b1,
-                                             b2=b2)
+                                             b2=b2,
+                                             precision=-1)
 
     @staticmethod
     def is_supported(x: torch.Tensor,
@@ -68,7 +69,7 @@ class CuEquivFusedSigmoidGatedDualGemm:
             return False
         if K not in [128]:
             return False
-        if not x.dtype in [torch.float16, torch.bfloat16]:
+        if not x.dtype in [torch.float16, torch.bfloat16, torch.float32]:
             return False
         return True
 
@@ -103,7 +104,8 @@ class CuEquivFusedSigmoidGatedDualGemmDualX:
                                                     mask,
                                                     transpose_out=False,
                                                     b1=b1,
-                                                    b2=b2)
+                                                    b2=b2,
+                                                    precision=-1)
 
     @staticmethod
     def is_supported(x1: torch.Tensor,
@@ -129,6 +131,6 @@ class CuEquivFusedSigmoidGatedDualGemmDualX:
             return False
         if K not in [128]:
             return False
-        if not x1.dtype in [torch.float16, torch.bfloat16]:
+        if not x1.dtype in [torch.float16, torch.bfloat16, torch.float32]:
             return False
         return True

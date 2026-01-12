@@ -33,7 +33,7 @@ from tensorrt_bionemo._torch.tensor_utils import dict_multimap
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs.base import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.openfold2.const import (
+from tensorrt_bionemo.pipeline.models.openfold2.const import (
     restype_atom14_mask, restype_atom14_rigid_group_positions,
     restype_atom14_to_rigid_group, restype_rigid_group_default_frame)
 

@@ -31,6 +31,15 @@ class _Default:
     enable_template: bool = True
     max_extra_msa: int = 1024
 
+    # Config for pipeline
+    msa_cluster_features: bool = True
+    max_recycling_iters: int = 3
+    reduce_msa_clusters_by_max_templates: bool = False
+    use_template_torsion_angles: bool = True
+    max_msa_clusters: int = 512
+    max_templates: int = 4
+    resample_msa_in_recycling: bool = True
+
 
 class InputEmbedderConfig(BaseConfig):
     c_z: int = _Default.c_z
@@ -241,6 +250,13 @@ class OpenFold2Config(BaseConfig):
     is_multimer: bool = _Default.is_multimer
     enable_extra_msa: bool = _Default.enable_extra_msa
     enable_template: bool = _Default.enable_template
+    max_recycling_iters: int = _Default.max_recycling_iters
+    reduce_msa_clusters_by_max_templates: bool = _Default.reduce_msa_clusters_by_max_templates
+    use_template_torsion_angles: bool = _Default.use_template_torsion_angles
+    max_msa_clusters: int = _Default.max_msa_clusters
+    msa_cluster_features: bool = _Default.msa_cluster_features
+    max_templates: int = _Default.max_templates
+    resample_msa_in_recycling: bool = _Default.resample_msa_in_recycling
 
     input_embedder: InputEmbedderConfig = InputEmbedderConfig()
     recycling_embedder: RecyclingEmbedderConfig = RecyclingEmbedderConfig()
@@ -268,6 +284,8 @@ class OpenFold2MultimerConfig(OpenFold2Config):
         self.confidence_module.masked_msa.c_out = 22
         self.structure_module.trans_scale_factor = 20.0
         self.recycle_early_stop_tolerance = 0.5
+        self.max_msa_clusters = 252
+        self.max_recycling_iters = 20
         return self
 
 
@@ -366,6 +384,8 @@ class AlphaFold2_1_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_1_Config":
         self.enable_template = True
+        self.reduce_max_clusters_by_max_templates = True
+        self.use_template_torsion_angles = True
         self.max_extra_msa = 5120
         self.confidence_module.tm.enabled = False
         return self
@@ -376,6 +396,8 @@ class AlphaFold2_2_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_2_Config":
         self.enable_template = True
+        self.reduce_max_clusters_by_max_templates = True
+        self.use_template_torsion_angles = True
         self.confidence_module.tm.enabled = False
         return self
 

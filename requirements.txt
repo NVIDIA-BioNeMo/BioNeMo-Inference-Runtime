@@ -4,3 +4,8 @@ cuequivariance==0.7.0
 cuequivariance-ops-cu13==0.7.0
 cuequivariance-ops-torch-cu13==0.7.0
 cuequivariance-torch==0.7.0
+biopython>=1.84
+ray==2.53.0
+boto3==1.42.17
+ray[serve]
+uvloop==0.21.0

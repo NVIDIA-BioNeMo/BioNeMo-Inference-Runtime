@@ -52,3 +52,5 @@ CMakeUserPresets.json
 compile_commands.json
 *.bin
 .dir-locals.el
+checkpoints/
+.pip_cache/

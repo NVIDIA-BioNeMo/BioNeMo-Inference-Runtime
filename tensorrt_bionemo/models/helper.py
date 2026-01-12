@@ -14,33 +14,22 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Optional
 
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo.configs import BaseConfig
+from tensorrt_bionemo.configs.base import AcceleratedConfig, BaseConfig
 from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
-
-
-@dataclass
-class AcceleratedConfig:
-    checkpoint: str = None
-    backend: BackendType = None
-    default: BaseConfig = None
-    warmup: bool = False
-    compile: bool = False
-    need_fallback: Optional[Callable[..., bool]] = None
 
 
 class AcceleratedModules(ABC):
 
     def __init__(self, configs: dict[str, AcceleratedConfig] = {}):
         """
-        This class is used to store the checkpoints and module configs for the accelerated modules.
+        This class is used to store the checkpoints and module configs for the optimized modules.
         Args:
-            configs: A dictionary of AcceleratedConfig for the accelerated modules.
+            configs: A dictionary of AcceleratedConfig for the optimized modules.
         """
         self._configs = {}
         for k, v in configs.items():
@@ -77,26 +66,29 @@ class AcceleratedModules(ABC):
 class OptimizedModuleSetterMixin:
 
     def optimize(self,
-                 accelerated_modules: AcceleratedModules,
+                 accelerated_configs: dict[str, AcceleratedConfig],
                  context_memory_allocator: Optional[
                      BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
         """
-        This function is used to build the optimized version of Boltz1 model from the original.
+        This function is used to build the accelerated version of the model from the original.
         Args:
-            accelerated_modules: A dictionary of modules to be accelerated.
+            accelerated_configs: A dictionary of modules to be accelerated.
             context_memory_allocator: The context memory allocator to be used for each module.
         Returns:
             The optimized model.
         """
-        supported_modules = accelerated_modules.get_supported_modules()
+        if "get_optimized_modules" not in self.__class__.__dict__:
+            return self
+        optimized_modules = self.get_optimized_modules(accelerated_configs)
+        supported_modules = optimized_modules.get_supported_modules()
 
         for module_name, (cls_, setter_func) in supported_modules.items():
-            backend = accelerated_modules.get_module_backend(module_name)
+            backend = optimized_modules.get_module_backend(module_name)
             if backend != BackendType.TRT:
                 # Only support for TRT backend for now
                 continue
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
+            checkpoint_dir = optimized_modules.get_module_checkpoint(
                 module_name)
             opt_m = cls_.load_weights(
                 checkpoint_dir=checkpoint_dir,

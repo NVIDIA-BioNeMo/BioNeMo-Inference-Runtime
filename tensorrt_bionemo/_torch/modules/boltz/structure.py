@@ -44,8 +44,8 @@ from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.boltz.const import (NUM_POCKET_CONTACT_INFO,
-                                                   NUM_TOKENS)
+from tensorrt_bionemo.pipeline.models.boltz.const import (
+    NUM_POCKET_CONTACT_INFO, NUM_TOKENS)
 
 
 class DiffusionConditioning(nn.Module):

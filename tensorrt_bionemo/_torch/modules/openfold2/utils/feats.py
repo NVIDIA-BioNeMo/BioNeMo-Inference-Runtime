@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import tensorrt_bionemo.pipeline.openfold2.const as rc
+import tensorrt_bionemo.pipeline.models.openfold2.const as rc
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry import \
     rigid_matrix_vector
 from tensorrt_bionemo._torch.tensor_utils import batched_gather

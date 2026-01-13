@@ -14,17 +14,17 @@
 # limitations under the License.
 
 from typing import Any, Optional
+
 import torch
 from torch import nn
 
-from tensorrt_bionemo.pipeline.boltz.const import CHAIN_TYPE_IDS
+from tensorrt_bionemo.pipeline.models.boltz.const import CHAIN_TYPE_IDS
 
 
 def repeat_with_multiplicity(tensor: torch.Tensor,
                              multiplicity: int) -> torch.Tensor:
     """Repeat a tensor with multiplicity."""
     return tensor.unsqueeze(1).repeat_interleave(multiplicity, 1)
-
 
 
 def compute_distogram(x_pred: torch.Tensor,
@@ -356,8 +356,7 @@ def concat_out_dicts(out_dicts: dict[str, Any]) -> dict[str, Any]:
     out_dict = {}
     for key in out_dicts[0]:
         if key != "pair_chains_iptm":
-            out_dict[key] = torch.cat([out[key] for out in out_dicts],
-                                        dim=1)
+            out_dict[key] = torch.cat([out[key] for out in out_dicts], dim=1)
         else:
             pair_chains_iptm = {}
             for chain_idx1 in out_dicts[0][key]:

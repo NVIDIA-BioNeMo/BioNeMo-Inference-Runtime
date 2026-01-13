@@ -19,7 +19,7 @@ import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
 # isort: off
-import tensorrt_bionemo.pipeline.openfold2.const as residue_constants
+import tensorrt_bionemo.pipeline.models.openfold2.const as residue_constants
 from tensorrt_bionemo._torch.attention_backend import get_attention_backend
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.modules.openfold2.confidence import AuxiliaryHeads

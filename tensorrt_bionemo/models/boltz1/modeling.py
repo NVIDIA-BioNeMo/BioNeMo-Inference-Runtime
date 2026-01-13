@@ -40,8 +40,8 @@ from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.pipeline.boltz.const import (NUM_POCKET_CONTACT_INFO,
-                                                   NUM_TOKENS)
+from tensorrt_bionemo.pipeline.models.boltz.const import (
+    NUM_POCKET_CONTACT_INFO, NUM_TOKENS)
 
 from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY

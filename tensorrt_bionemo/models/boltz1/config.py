@@ -17,7 +17,7 @@ from pydantic import model_validator
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       MSAModuleConfig, PairformerConfig)
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.pipeline.boltz.const import NUM_TOKENS
+from tensorrt_bionemo.pipeline.models.boltz.const import NUM_TOKENS
 
 
 class _Default:

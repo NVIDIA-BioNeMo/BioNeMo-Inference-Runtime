@@ -29,7 +29,7 @@ from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.boltz.const import POCKET_CONTACT_INFO
+from tensorrt_bionemo.pipeline.models.boltz.const import POCKET_CONTACT_INFO
 
 
 class MSALayer(nn.Module):

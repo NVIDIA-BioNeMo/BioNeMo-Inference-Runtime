@@ -38,7 +38,7 @@ from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
-from ..helper import AcceleratedModules, OptimizedModuleSetterMixin
+from ..helper import AcceleratedModules, OptimizedModuleSetterMixin, AcceleratedConfig
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_hf_confidence_module_torch, convert_hf_evoformer_torch,
@@ -108,6 +108,11 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
 
         if include_load_weights:
             self.load_weights()
+
+    def get_optimized_modules(
+        self, accelerated_configs: dict[str, AcceleratedConfig]
+    ) -> OpenFold2AcceleratedModules:
+        return OpenFold2AcceleratedModules(accelerated_configs)
 
     def load_weights(self, weights: dict = None):
         if weights is None:

@@ -25,7 +25,7 @@ from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
-from tensorrt_bionemo.models.boltz2 import Boltz2, Boltz2AcceleratedModules
+from tensorrt_bionemo.models.boltz2 import Boltz2
 from tensorrt_bionemo.models.helper import AcceleratedConfig
 from tensorrt_bionemo.runtime import BackendType, OnDemandContextMemoryManager
 
@@ -219,18 +219,17 @@ def main(args):
     # Create optimized model with TensorRT backends
     manager = OnDemandContextMemoryManager()
 
-    acc_m = Boltz2AcceleratedModules(
-        configs={
-            "structure_pairformer":
-            AcceleratedConfig(checkpoint=args.structure_pairformer_ckpt,
-                              backend=args.structure_pairformer_backend),
-            "confidence_pairformer":
-            AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
-                              backend=args.confidence_pairformer_backend),
-            "token_transformer":
-            AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
-                              backend=args.token_transformer_backend)
-        })
+    acc_m = {
+        "structure_pairformer":
+        AcceleratedConfig(checkpoint=args.structure_pairformer_ckpt,
+                          backend=args.structure_pairformer_backend),
+        "confidence_pairformer":
+        AcceleratedConfig(checkpoint=args.confidence_pairformer_ckpt,
+                          backend=args.confidence_pairformer_backend),
+        "token_transformer":
+        AcceleratedConfig(checkpoint=args.token_transformer_ckpt,
+                          backend=args.token_transformer_backend)
+    }
     model = model.optimize(acc_m, manager)
 
     run_single_rank(processed_dir=args.processed_dir,

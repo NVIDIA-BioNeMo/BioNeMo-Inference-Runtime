@@ -14,24 +14,13 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Callable, Optional
 
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo.configs import BaseConfig
+from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
 from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
-
-
-@dataclass
-class AcceleratedConfig:
-    checkpoint: str = None
-    backend: BackendType = None
-    default: BaseConfig = None
-    warmup: bool = False
-    compile: bool = False
-    need_fallback: Optional[Callable[..., bool]] = None
 
 
 class AcceleratedModules(ABC):
@@ -74,29 +63,37 @@ class AcceleratedModules(ABC):
         raise NotImplementedError("Subclass must implement this method")
 
 
-class OptimizedModuleSetterMixin:
+class OptimizedModuleSetterMixin(ABC):
+
+    @abstractmethod
+    def get_optimized_modules(
+        self,
+        accelerated_configs: dict[str,
+                                  AcceleratedConfig]) -> AcceleratedModules:
+        raise NotImplementedError("Subclass must implement this method")
 
     def optimize(self,
-                 accelerated_modules: AcceleratedModules,
+                 accelerated_configs: dict[str, AcceleratedConfig],
                  context_memory_allocator: Optional[
                      BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
         """
         This function is used to build the optimized version of Boltz1 model from the original.
         Args:
-            accelerated_modules: A dictionary of modules to be accelerated.
+            accelerated_configs: A dictionary of modules to be accelerated.
             context_memory_allocator: The context memory allocator to be used for each module.
         Returns:
             The optimized model.
         """
-        supported_modules = accelerated_modules.get_supported_modules()
+        optimized_modules = self.get_optimized_modules(accelerated_configs)
+        supported_modules = optimized_modules.get_supported_modules()
 
         for module_name, (cls_, setter_func) in supported_modules.items():
-            backend = accelerated_modules.get_module_backend(module_name)
+            backend = optimized_modules.get_module_backend(module_name)
             if backend != BackendType.TRT:
                 # Only support for TRT backend for now
                 continue
-            checkpoint_dir = accelerated_modules.get_module_checkpoint(
+            checkpoint_dir = optimized_modules.get_module_checkpoint(
                 module_name)
             opt_m = cls_.load_weights(
                 checkpoint_dir=checkpoint_dir,
@@ -104,6 +101,6 @@ class OptimizedModuleSetterMixin:
                 **kwargs)
             org = setter_func(self, opt_m)
             opt_m.set_fallback_module(org)
-            opt_m.config.need_fallback = accelerated_modules.get_module_need_fallback(
+            opt_m.config.need_fallback = optimized_modules.get_module_need_fallback(
                 module_name)
         return self

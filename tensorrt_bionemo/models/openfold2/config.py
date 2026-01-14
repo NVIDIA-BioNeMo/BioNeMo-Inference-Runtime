@@ -30,6 +30,7 @@ class _Default:
     enable_extra_msa: bool = True
     enable_template: bool = True
     max_extra_msa: int = 1024
+    skip_template_pair_stack: bool = False
 
 
 class InputEmbedderConfig(BaseConfig):
@@ -241,6 +242,7 @@ class OpenFold2Config(BaseConfig):
     is_multimer: bool = _Default.is_multimer
     enable_extra_msa: bool = _Default.enable_extra_msa
     enable_template: bool = _Default.enable_template
+    skip_template_pair_stack: bool = _Default.skip_template_pair_stack
 
     input_embedder: InputEmbedderConfig = InputEmbedderConfig()
     recycling_embedder: RecyclingEmbedderConfig = RecyclingEmbedderConfig()

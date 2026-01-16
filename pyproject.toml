@@ -12,7 +12,7 @@ backend-path = ["."]
 
 [tool.setuptools]
 include-package-data = true
-package-dir = { "" = "" }
+package-dir = { "" = "." }
 
 [tool.setuptools.dynamic]
 version = {attr = "tensorrt_bionemo.version.__version__"}

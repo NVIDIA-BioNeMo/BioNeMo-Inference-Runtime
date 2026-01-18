@@ -59,6 +59,8 @@ class WriterUDF(StatefulStageUDF):
                 else:
                     # Return the raw output to the user
                     output_path = None
+                if output_path:
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 writer.set_output_path(output_path)
                 output_raw = writer.write(record)
                 results.append({

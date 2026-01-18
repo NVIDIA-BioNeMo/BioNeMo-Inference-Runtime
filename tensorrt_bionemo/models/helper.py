@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Callable
 
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger

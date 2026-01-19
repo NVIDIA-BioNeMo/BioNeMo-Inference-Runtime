@@ -14,8 +14,8 @@
 # limitations under the License.
 import json
 from abc import ABC, abstractmethod
-from typing import Any
-
+from typing import Any, Union
+from pathlib import Path
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
@@ -94,7 +94,7 @@ class BackendBase(nn.Module, ABC):
 
     @classmethod
     def load_weights(cls,
-                     checkpoint_dir: str = None,
+                     checkpoint_dir: Union[str, Path] = None,
                      context_memory_allocator: BaseContextMemoryManager = None,
                      **kwargs):
         """
@@ -106,6 +106,8 @@ class BackendBase(nn.Module, ABC):
             **kwargs: Additional arguments to pass to the load_weights_fn.
         """
         assert cls.CONFIG_CLASS is not None, "CONFIG_CLASS must be set for the backend: {cls.__name__}"
+        if isinstance(checkpoint_dir, str):
+            checkpoint_dir = Path(checkpoint_dir)
         backend_dir = checkpoint_dir / str(BackendType.TRT)
         if backend_dir.exists():
             # Build from trtbnm-build

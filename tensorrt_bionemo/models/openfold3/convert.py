@@ -16,9 +16,8 @@
 from collections import OrderedDict
 
 import torch
-from tensorrt_llm import str_dtype_to_torch
-from tensorrt_llm.logger import logger
-from tensorrt_llm.models.convert_utils import split
+from tensorrt_llm_lite import str_dtype_to_torch
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import (DiffusionTransformerConfig,
                                       PairformerConfig)
@@ -29,6 +28,10 @@ from tensorrt_bionemo.models.boltz1.convert import (
     get_post_norm_weights, get_transition_weights, get_tri_attn_node_weights,
     get_tri_mul_node_weights)
 
+
+def split(*args, **kwargs):
+    # Do nothing: TRT for multiple gpus is deprecated
+    pass
 
 def convert_hf_pairformer(config: PairformerConfig,
                           mapping: Mapping,

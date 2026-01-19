@@ -77,13 +77,6 @@ class TRTEngineHandle:
                                         tp_size=self._tp_size,
                                         dcp_size=self._dcp_size)
 
-        if self._world_size > 1 and not self._disable_custom_all_reduce:
-            # init_all_reduce_helper()
-            _, self._workspace = CustomAllReduceHelper.allocate_workspace(
-                self._runtime_mapping,
-                CustomAllReduceHelper.max_workspace_size_auto(
-                    self._runtime_mapping.tp_size))
-
         self._serialize_path = os.path.join(engine_dir, self._engine_name)
         self._self_allocated = False
         self._using_torch_caching_allocator = True

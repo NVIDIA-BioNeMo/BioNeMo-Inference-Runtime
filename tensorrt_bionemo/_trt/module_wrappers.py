@@ -90,21 +90,35 @@ class TokenTransformerTRT(BackendBase):
                           z: Optional[torch.Tensor] = None,
                           mask: Optional[torch.Tensor] = None,
                           **kwargs) -> torch.Tensor:
-        B = a.shape[0]
-        assert B == 1, "Batch size must be 1 for token transformer TRT"
+        need_unsqueeze = False
+        if a.ndim == 4:
+            # a.shape = (bs, multiplicity, seqlen, dim)
+            # s.shape = (bs, multiplicity, seqlen, dim_single_cond)
+            # For v1 version, z.shape = (bs, 1, seqlen, seqlen, heads_times_blocks)
+            # For v2 version, z.shape = (bs, 1, n_seqs, seqlen, seqlen, heads_times_blocks)
+            # mask.shape = (bs, multiplicity, seqlen)
+            B = a.shape[0]
+            assert B == 1, "Batch size must be 1 for token transformer TRT"
+            a = a.squeeze(0)
+            s = s.squeeze(0)
+            z = z.squeeze(0)
+            mask = mask.squeeze(0)
+            need_unsqueeze = True
         original_dtype = s.dtype
 
         # TODO: Use config.get_input_names() to get the input names
         inputs = {
-            "a": a.to(self.dtype).squeeze(0),
-            "s": s.to(self.dtype).squeeze(0),
-            "z": z.to(self.dtype).squeeze(0),
-            "mask": mask.to(self.dtype).squeeze(0)
+            "a": a.to(self.dtype),
+            "s": s.to(self.dtype),
+            "z": z.to(self.dtype),
+            "mask": mask.to(self.dtype)
         }
 
         # Use the allocator from the base class for execution
         outputs = self._context_memory_allocator.forward(self, inputs)
-        return outputs["output_a"].to(original_dtype).unsqueeze(0)
+        if need_unsqueeze:
+            return outputs["output_a"].to(original_dtype).unsqueeze(0)
+        return outputs["output_a"].to(original_dtype)
 
 
 class EvoformerStackTRT(BackendBase):

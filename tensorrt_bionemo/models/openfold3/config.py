@@ -42,5 +42,7 @@ class OpenFold3Config(BaseConfig):
             expansion_factor=2,
             bias_proj=True,
             conditioned_transition_using_silu=True,
+            attention_initial_norm=False,
+            post_layer_norm=False,
             version="v1",
             dtype="float32"), ))

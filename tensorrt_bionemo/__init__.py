@@ -15,7 +15,8 @@
 
 from ._torch import (_load_cuequivariance_lib, _load_kernels_lib)
 from ._trt.plugin import _load_plugin_lib
-from .registry import register_default_building_modules
+from .registry import (register_default_building_modules,
+                       register_default_models)
 from .version import __version__
 
 _inited = False
@@ -33,6 +34,7 @@ def _init() -> None:
     # load Tensorrt plugins library
     _load_plugin_lib()
     register_default_building_modules()
+    register_default_models()
 
 
 _init()

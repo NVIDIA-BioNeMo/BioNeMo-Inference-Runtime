@@ -12,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Type
+
+import torch.nn as nn
 
 from tensorrt_bionemo._trt.layers.transformers import (
     EvoformerStack, OpenFold3DiffusionTransformer, PairformerModule,
@@ -19,6 +22,7 @@ from tensorrt_bionemo._trt.layers.transformers import (
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 
 TRT_BUILDING_MODULES_REGISTRY = {}
+MODEL_REGISTRY = {}
 
 
 def register_building_module(model_name: str, module_name: str, module_class):
@@ -131,4 +135,46 @@ def get_building_module_class(model_name: str, module_name: str):
     """Get a registered module class for a specific model and module type"""
     ret = TRT_BUILDING_MODULES_REGISTRY.get(model_name, {}).get(module_name)
     assert ret is not None, f"Module class for {model_name} and {module_name} not found"
+    return ret
+
+
+def register_model(model_name: str, model_class: Type[nn.Module]):
+    """Register a model class for a specific model name"""
+    if model_name not in MODEL_REGISTRY:
+        MODEL_REGISTRY[model_name] = model_class
+
+
+def register_default_models():
+    from tensorrt_bionemo.models.boltz1 import Boltz1
+    from tensorrt_bionemo.models.boltz2 import Boltz2, Boltz2Affinity
+    from tensorrt_bionemo.models.openfold2 import OpenFold2
+    register_model(SupMat.OpenFold2_FT2, OpenFold2)
+    register_model(SupMat.OpenFold2_FT3, OpenFold2)
+    register_model(SupMat.OpenFold2_FT4, OpenFold2)
+    register_model(SupMat.OpenFold2_FT5, OpenFold2)
+    register_model(SupMat.OpenFold2_NoTempl1, OpenFold2)
+    register_model(SupMat.OpenFold2_NoTempl2, OpenFold2)
+    register_model(SupMat.OpenFold2_NoTempl_PTM1, OpenFold2)
+    register_model(SupMat.OpenFold2_PTM1, OpenFold2)
+    register_model(SupMat.OpenFold2_PTM2, OpenFold2)
+    register_model(SupMat.AlphaFold2_1, OpenFold2)
+    register_model(SupMat.AlphaFold2_2, OpenFold2)
+    register_model(SupMat.AlphaFold2_3, OpenFold2)
+    register_model(SupMat.AlphaFold2_4, OpenFold2)
+    register_model(SupMat.AlphaFold2_5, OpenFold2)
+    register_model(SupMat.AlphaFold2_Multimer_1, OpenFold2)
+    register_model(SupMat.AlphaFold2_Multimer_2, OpenFold2)
+    register_model(SupMat.AlphaFold2_Multimer_3, OpenFold2)
+    register_model(SupMat.AlphaFold2_Multimer_4, OpenFold2)
+    register_model(SupMat.AlphaFold2_Multimer_5, OpenFold2)
+
+    register_model(SupMat.Boltz1, Boltz1)
+    register_model(SupMat.Boltz2, Boltz2)
+    register_model(SupMat.Boltz2Affinity, Boltz2Affinity)
+
+
+def get_model_class(model_name: str) -> Type[nn.Module]:
+    """Get a registered model class for a specific model name"""
+    ret = MODEL_REGISTRY.get(model_name)
+    assert ret is not None, f"Model class for {model_name} not found"
     return ret

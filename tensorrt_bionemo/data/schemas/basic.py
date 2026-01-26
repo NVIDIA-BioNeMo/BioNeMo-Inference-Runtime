@@ -17,11 +17,15 @@ import csv
 import io
 import os
 import re
+import string
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Literal, Optional, Union
+from io import StringIO
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, TextIO, Union
 
 import numpy as np
+from Bio import SeqIO
 
 class PolymerType(str, Enum):
     PROTEIN = "protein"
@@ -353,6 +357,60 @@ class InputRequest(dict):
             polymers=polymers or [],
         )
         
+        
+class MSAParsed(dict):
+    """Parsed A3M MSA file.
+    
+    Contains:
+        sequences: aligned sequences (lowercase deletions removed)
+        raw: original sequences with lowercase letters (deletion info)
+        descriptions: sequence descriptions
+    """
+    def __init__(
+        self,
+        sequences: List[str],
+        raw: List[str],
+        descriptions: Optional[List[str]] = None
+    ):
+        super().__init__(sequences=sequences, raw=raw, descriptions=descriptions)
+
+
+class TemplateParsed(dict):
+    def __init__(
+        self,
+        content: Optional[str] = None,
+        format: str = "cif"
+    ):
+        super().__init__(content=content, format=format)
+
+
+class PolymerParsed(dict):
+    def __init__(
+        self,
+        polymer_type: Union[PolymerType, str] = PolymerType.PROTEIN,
+        chain_id: Optional[Union[str, List[str]]] = None,
+        sequence: Optional[str] = None,
+        msas: Optional[List[MSAParsed]] = None,
+        paired_msas: Optional[List[MSAParsed]] = None,
+        templates: Optional[List[TemplateParsed]] = None
+    ):
+        super().__init__(
+            polymer_type=polymer_type.value if isinstance(polymer_type, PolymerType) else polymer_type,
+            chain_id=chain_id,
+            sequence=sequence,
+            msas=msas,
+            paired_msas=paired_msas,
+            templates=templates
+        )        
+        
+class InputParsed(dict):
+    def __init__(
+        self,
+        input_id: Optional[str] = None,
+        polymers: Optional[List[PolymerParsed]] = None,
+    ):
+        super().__init__(input_id=input_id, polymers=polymers)
+ 
 class FoldingOutput(dict):
 
     def __init__(

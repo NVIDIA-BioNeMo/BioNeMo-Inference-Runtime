@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.data.parsers import parse_a3m_content, read_a3m, A3MParsed
+from tensorrt_bionemo.data.parsers import parse_a3m_content, read_a3m
+from tensorrt_bionemo.data.schemas import MSAParsed
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples"
 
@@ -15,7 +16,7 @@ class TestReadA3M:
 
     def test_read_returns_a3m_parsed(self):
         result = read_a3m(SAMPLES_DIR / "msas" / "T1031.a3m")
-        assert isinstance(result, A3MParsed)
+        assert isinstance(result, MSAParsed)
         assert "sequences" in result
         assert "raw" in result
         assert "descriptions" in result

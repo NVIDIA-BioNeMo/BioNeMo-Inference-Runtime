@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.data.parsers.a3m import read_a3m
+from tensorrt_bionemo.data.parsers import read_a3m
 from tensorrt_bionemo.data.parsers.fasta import read_fasta
 from tensorrt_bionemo.data.schemas.basic import (
     MSARecord,

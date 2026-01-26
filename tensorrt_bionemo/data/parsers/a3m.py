@@ -16,39 +16,30 @@
 import string
 from io import StringIO
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import TextIO, Union
 
-import numpy as np
-import torch
+from Bio import SeqIO
 
-from tensorrt_bionemo.data.parsers.fasta import parse_fasta_content
-
-
-class A3MParsed(dict):
-
-    def __init__(self,
-                 sequences: list[str],
-                 raw: list[str],
-                 descriptions: Optional[list[str]] = None):
-        super().__init__(sequences=sequences,
-                         raw=raw,
-                         descriptions=descriptions)
+from tensorrt_bionemo.data.schemas.basic import MSAParsed
 
 
-def parse_a3m_content(content: StringIO | TextIO) -> A3MParsed:
-    """
-    Read an a3m file from a string or text stream and return a list of sequences.
-    """
-
-    sequences, descriptions = parse_fasta_content(content, return_as_list=True)
+def parse_a3m_content(content: Union[StringIO, TextIO]) -> MSAParsed:
+    if isinstance(content, str):
+        content = StringIO(content)
+    fasta_sequences = SeqIO.parse(content, "fasta")
+    sequences = []
+    descriptions = []
+    for fasta in fasta_sequences:
+        sequences.append(str(fasta.seq))
+        descriptions.append(fasta.description)
     deletion_table = str.maketrans("", "", string.ascii_lowercase)
     aligned_sequences = [s.translate(deletion_table) for s in sequences]
-    ret = A3MParsed(sequences=aligned_sequences,
-                    raw=sequences,
-                    descriptions=descriptions)
-    return ret
+    return MSAParsed(sequences=aligned_sequences, raw=sequences, descriptions=descriptions)
 
 
-def read_a3m(file_path: str | Path) -> A3MParsed:
+def read_a3m(file_path: Union[str, Path]) -> MSAParsed:
     with open(file_path, "r") as f:
         return parse_a3m_content(f)
+
+
+__all__ = ["MSAParsed", "parse_a3m_content", "read_a3m"]

@@ -53,3 +53,4 @@ compile_commands.json
 *.bin
 .dir-locals.el
 .pip_cache/
+*.pt

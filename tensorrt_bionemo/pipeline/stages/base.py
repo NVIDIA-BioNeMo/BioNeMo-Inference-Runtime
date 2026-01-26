@@ -1,6 +1,6 @@
 # Adapted from https://github.com/ray-project/ray/blob/ray-2.53.0/python/ray/llm/_internal/batch/stages/base.py
 # But modify for both of the row mode and batch mode.
-
+import traceback
 from typing import Any, AsyncIterator, Dict, List, Optional, Type
 
 import pyarrow
@@ -223,8 +223,26 @@ class StatefulStageUDF:
 
     async def udf_for_rows(
             self, rows: List[Dict[str, Any]]) -> AsyncIterator[Dict[str, Any]]:
+        for row in rows:
+            idx = row[self.IDX_IN_BATCH_COLUMN]
+            try:
+                result = await self.udf_for_item(row)
+                result["__inference_error__"] = {
+                    "error_msg": None,
+                    "traceback": None
+                }
+            except Exception as e:
+                result = self.on_row_error(row, e)
+                result["__inference_error__"] = {
+                    "error_msg": f"{type(e).__name__}: {str(e)}",
+                    "traceback": traceback.format_exc()
+                }
+            result[self.IDX_IN_BATCH_COLUMN] = idx
+            yield result
+
+    async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
         raise NotImplementedError(
-            "StageUDF must implement the udf_for_rows method")
+            "StageUDF must implement the udf_for_item method")
 
 
 class StatefulStage(BaseModel):

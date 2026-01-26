@@ -59,7 +59,7 @@ def parse_arguments():
                         type=Path,
                         default='pairformer_checkpoint',
                         help='The path to save the TensorRT-BNM checkpoint')
-    parser.add_argument('--triangle_attn_backend',
+    parser.add_argument('--triangle_attention_backend',
                         type=str,
                         default='CUEQUIV',
                         choices=['VANILLA', 'TRIFAST', 'CUEQUIV'],
@@ -113,6 +113,7 @@ def convert(worker_rank, world_size, configs, args):
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
 
+
 def main():
     args = parse_arguments()
     world_size = args.tp_size * args.dcp_size
@@ -123,7 +124,7 @@ def main():
     openfold3_config = OpenFold3Config()
     pairformer_config = openfold3_config.trunk.pairformer
 
-    if args.triangle_attn_backend == "CUEQUIV":
+    if args.triangle_attention_backend == "CUEQUIV":
         args.support_batch = True
 
     config = {
@@ -159,7 +160,8 @@ def main():
         pairformer_config.num_heads,
         "dtype":
         args.dtype,
-        "architecture": "pairformer",
+        "architecture":
+        "pairformer",
         'mapping': {
             'world_size': world_size,
             'tp_size': args.tp_size,
@@ -168,8 +170,8 @@ def main():
         "disable_custom_all_reduce":
         args.max_transition_tp_size or args.max_attention_pairwise_tp_size
         or args.max_tri_mul_tp_size,
-        "triangle_attn_backend":
-        args.triangle_attn_backend,
+        "triangle_attention_backend":
+        args.triangle_attention_backend,
         "post_layer_norm":
         pairformer_config.post_layer_norm,
         "trimul_high_precision":

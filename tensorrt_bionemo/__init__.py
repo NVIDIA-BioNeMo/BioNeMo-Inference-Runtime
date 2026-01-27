@@ -13,10 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._torch import (_load_cuequivariance_lib, _load_kernels_lib)
+from ._torch import _load_cuequivariance_lib, _load_kernels_lib
 from ._trt.plugin import _load_plugin_lib
-from .registry import (register_default_building_modules,
-                       register_default_models)
+from .registry import register_all_factories
 from .version import __version__
 
 _inited = False
@@ -33,8 +32,7 @@ def _init() -> None:
     _load_kernels_lib()
     # load Tensorrt plugins library
     _load_plugin_lib()
-    register_default_building_modules()
-    register_default_models()
+    register_all_factories()
 
 
 _init()

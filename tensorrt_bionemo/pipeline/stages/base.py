@@ -240,9 +240,14 @@ class StatefulStageUDF:
             result[self.IDX_IN_BATCH_COLUMN] = idx
             yield result
 
+    def on_row_error(self, row: Dict[str, Any],
+                     error: Exception) -> Dict[str, Any]:
+        return {}
+
     async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
         raise NotImplementedError(
-            "StageUDF must implement the udf_for_item method")
+            f"{self.__class__.__name__} inherits from StatefulStageUDF must implement the udf_for_item method"
+        )
 
 
 class StatefulStage(BaseModel):

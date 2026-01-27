@@ -16,8 +16,8 @@
 import pytest
 
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.registry import (MODEL_REGISTRY, get_model_class,
-                                       register_default_models, register_model)
+from tensorrt_bionemo.registry import (ModelRegistry, get_model_class,
+                                       register_all_factories)
 
 
 class MockModel:
@@ -30,30 +30,34 @@ class TestModelRegistry:
     @pytest.fixture(autouse=True)
     def setup_and_teardown(self):
         """Setup and teardown for each test - clears the registry."""
-        original_registry = MODEL_REGISTRY.copy()
-        MODEL_REGISTRY.clear()
+        original_registry = ModelRegistry._factories.copy()
+        ModelRegistry._factories.clear()
         yield
-        MODEL_REGISTRY.clear()
-        MODEL_REGISTRY.update(original_registry)
+        ModelRegistry._factories.clear()
+        ModelRegistry._factories.update(original_registry)
 
     def test_register_and_retrieve_model(self):
         """Test basic model registration and retrieval."""
-        register_model("test_model", MockModel)
+        class MockFactory:
+            @classmethod
+            def get_model_class(cls):
+                return MockModel
+        ModelRegistry.register("test_model", MockFactory)
 
-        assert "test_model" in MODEL_REGISTRY
+        assert "test_model" in ModelRegistry._factories
         retrieved_class = get_model_class("test_model")
         assert retrieved_class == MockModel
 
     def test_get_model_class_raises_error_for_nonexistent_model(self):
-        """Test that retrieving a non-existing model raises AssertionError."""
+        """Test that retrieving a non-existing model raises ValueError."""
         with pytest.raises(
-                AssertionError,
-                match="Model class for nonexistent_model not found"):
+                ValueError,
+                match="Model nonexistent_model not registered"):
             get_model_class("nonexistent_model")
 
     def test_register_default_models(self):
-        """Test that register_default_models populates registry correctly."""
-        register_default_models()
+        """Test that register_all_factories populates registry correctly."""
+        register_all_factories()
 
         # Verify expected models are registered
         expected_models = [
@@ -65,11 +69,11 @@ class TestModelRegistry:
         ]
 
         for model_name in expected_models:
-            assert model_name in MODEL_REGISTRY
+            assert model_name in ModelRegistry._factories
 
     def test_default_models_have_correct_types(self):
         """Test that default models are registered with correct class types."""
-        register_default_models()
+        register_all_factories()
 
         from tensorrt_bionemo.models.boltz1 import Boltz1
         from tensorrt_bionemo.models.boltz2 import Boltz2, Boltz2Affinity

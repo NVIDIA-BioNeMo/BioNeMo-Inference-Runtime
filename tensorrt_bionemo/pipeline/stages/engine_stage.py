@@ -23,10 +23,9 @@ from tensorrt_bionemo.configs.base import DeviceConfig, EngineConfig
 from tensorrt_bionemo.data.schemas import FoldingOutput
 from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.pipeline.engine import FoldingEngine
-from tensorrt_bionemo.pipeline.models.registry import get_postprocessor
 from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
                                                    StatefulStageUDF)
-from tensorrt_bionemo.registry import get_model_class
+from tensorrt_bionemo.registry import get_model_class, get_postprocessor
 
 
 class FoldingEngineWrapper:

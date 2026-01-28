@@ -19,19 +19,20 @@ import torch
 from tensorrt_llm_lite import str_dtype_to_torch
 from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo.configs import (DiffusionTransformerConfig,
+from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       PairformerConfig)
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import (
-    get_adaln_weights, get_output_projection_weights, get_pairwise_attn_weights,
-    get_post_norm_weights, get_transition_weights, get_tri_attn_node_weights,
-    get_tri_mul_node_weights)
+    get_adaln_weights, get_output_projection_weights,
+    get_pairwise_attn_weights, get_post_norm_weights, get_transition_weights,
+    get_tri_attn_node_weights, get_tri_mul_node_weights)
 
 
 def split(*args, **kwargs):
     # Do nothing: TRT for multiple gpus is deprecated
     pass
+
 
 def convert_hf_pairformer(config: PairformerConfig,
                           mapping: Mapping,
@@ -129,13 +130,14 @@ def convert_hf_pairformer(config: PairformerConfig,
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
         if not config.no_update_s:
             weights.update(
-                get_pairwise_attn_weights(mapping,
-                                          pairformer_state_dict,
-                                          f"{layer_prefix}.attention",
-                                          f"{layer_tbm_prefix}.attention",
-                                          config.max_attention_pairwise_tp_size,
-                                          config.num_heads,
-                                          dtype=config.dtype))
+                get_pairwise_attn_weights(
+                    mapping,
+                    pairformer_state_dict,
+                    f"{layer_prefix}.attention",
+                    f"{layer_tbm_prefix}.attention",
+                    config.max_attention_pairwise_tp_size,
+                    config.num_heads,
+                    dtype=config.dtype))
         weights.update(
             get_tri_attn_node_weights(mapping,
                                       pairformer_state_dict,
@@ -454,8 +456,8 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
         b_to_a_weight = split(b_to_a_weight, tp_size, tp_rank, 1)
         output_projection_weight = split(output_projection_weight, tp_size,
                                          tp_rank, 0)
-        output_projection_bias = split(output_projection_bias, tp_size, tp_rank,
-                                       0)
+        output_projection_bias = split(output_projection_bias, tp_size,
+                                       tp_rank, 0)
 
     fused_swl_a_to_b_weight = torch.cat([swish_gate_weight, a_to_b_weight],
                                         dim=0)
@@ -553,7 +555,8 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
     tbm_prefix = "layers"
     weights = {}
 
-    logger.info(f"Loading weights for token transformer, dtype: {config.dtype}")
+    logger.info(
+        f"Loading weights for token transformer, dtype: {config.dtype}")
     for i in range(config.num_blocks):
         layer_prefix = f"{prefix}.{i}"
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
@@ -603,6 +606,15 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
     return weights
 
 
+def _template_module_weight(tbnm_state_dict, module_state_dict, name):
+    tbnm_state_dict[name] = [{
+        "weight":
+        module_state_dict[f"{name}.weight"],
+        "bias":
+        module_state_dict.get(f"{name}.bias", None)
+    }]
+
+
 def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
                                            mapping: Mapping = None,
                                            local_checkpoint: str = None,
@@ -627,19 +639,44 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
             name = name.replace(prefix, replace_prefix)
             if "attention_pair_bias" in name:
                 # change name for AdaLN
-                if "layer_norm_a" in name:
-                    name = name.replace("attention_pair_bias.layer_norm_a",
-                                        "adaln")
-                    name = name.replace("layer_norm_s", "s_norm")
-                    name = name.replace("linear_g", "s_scale")
-                    name = name.replace("linear_s", "s_bias")
-                    module_state_dict[name] = param
-                    continue
+                if config.use_seperate_layer_norm:
+                    if "layer_norm_a_q" in name:
+
+                        name = name.replace(
+                            "attention_pair_bias.layer_norm_a_q",
+                            "pair_bias_attn.layer_norm_a_q")
+                        name = name.replace("layer_norm_s.", "s_norm.")
+                        name = name.replace("linear_g.", "s_scale.")
+                        name = name.replace("linear_s.", "s_bias.")
+                        module_state_dict[name] = param
+                        continue
+                    if "layer_norm_a_k" in name:
+
+                        name = name.replace(
+                            "attention_pair_bias.layer_norm_a_k",
+                            "pair_bias_attn.layer_norm_a_k")
+                        name = name.replace("layer_norm_a.", "a_norm.")
+                        name = name.replace("layer_norm_s.", "s_norm.")
+                        name = name.replace("linear_g.", "s_scale.")
+                        name = name.replace("linear_s.", "s_bias.")
+                        module_state_dict[name] = param
+                        continue
+                else:
+                    if "layer_norm_a" in name:
+                        name = name.replace("attention_pair_bias.layer_norm_a",
+                                            "adaln")
+                        name = name.replace("layer_norm_s", "s_norm")
+                        name = name.replace("linear_g", "s_scale")
+                        name = name.replace("linear_s", "s_bias")
+                        module_state_dict[name] = param
+                        continue
+
                 if "linear_ada_out" in name:
                     name = name.replace("attention_pair_bias.linear_ada_out",
                                         "output_projection.0")
                     module_state_dict[name] = param
                     continue
+
                 if "mha" in name:
                     name = name.replace("attention_pair_bias.mha",
                                         "pair_bias_attn")
@@ -683,31 +720,82 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
                                         "transition.output_projection.0")
                     module_state_dict[name] = param
                     continue
+
     tbnm_state_dict = {}
-    dim = module_state_dict[f"layers.0.adaln.s_bias.weight"].shape[0]
-    dtype = module_state_dict[f"layers.0.adaln.s_bias.weight"].dtype
+    dim = module_state_dict[f"layers.0.pair_bias_attn.proj_q.weight"].shape[0]
+    dtype = module_state_dict[f"layers.0.pair_bias_attn.proj_q.weight"].dtype
 
     for i in range(config.num_blocks):
-        # weight for adaln
-        tbnm_state_dict[f"layers.{i}.adaln.a_norm"] = [{
-            "weight":
-            torch.ones([dim], dtype=dtype)
-        }]
-        tbnm_state_dict[f"layers.{i}.adaln.s_norm"] = [{
-            "weight":
-            module_state_dict[f"layers.{i}.adaln.s_norm.weight"]
-        }]
-        tbnm_state_dict[f"layers.{i}.adaln.fused_s_scale_s_bias"] = [{
-            "weight":
-            module_state_dict[f"layers.{i}.adaln.s_scale.weight"],
-            "bias":
-            module_state_dict[f"layers.{i}.adaln.s_scale.bias"]
-        }, {
-            "weight":
-            module_state_dict[f"layers.{i}.adaln.s_bias.weight"],
-            "bias":
-            torch.zeros([dim], dtype=dtype)
-        }]
+        if not config.use_seperate_layer_norm:
+            tbnm_state_dict[f"layers.{i}.adaln.a_norm"] = [{
+                "weight":
+                torch.ones([dim], dtype=dtype)
+            }]
+            tbnm_state_dict[f"layers.{i}.adaln.s_norm"] = [{
+                "weight":
+                module_state_dict[f"layers.{i}.adaln.s_norm.weight"]
+            }]
+            tbnm_state_dict[f"layers.{i}.adaln.fused_s_scale_s_bias"] = [{
+                "weight":
+                module_state_dict[f"layers.{i}.adaln.s_scale.weight"],
+                "bias":
+                module_state_dict[f"layers.{i}.adaln.s_scale.bias"]
+            }, {
+                "weight":
+                module_state_dict[f"layers.{i}.adaln.s_bias.weight"],
+                "bias":
+                torch.zeros([dim], dtype=dtype)
+            }]
+        else:
+            tbnm_state_dict[
+                f"layers.{i}.pair_bias_attn.layer_norm_a_q.a_norm"] = [{
+                    "weight":
+                    torch.ones([dim], dtype=dtype)
+                }]
+            _template_module_weight(
+                tbnm_state_dict, module_state_dict,
+                f"layers.{i}.pair_bias_attn.layer_norm_a_q.s_norm")
+
+            tbnm_state_dict[
+                f"layers.{i}.pair_bias_attn.layer_norm_a_q.fused_s_scale_s_bias"] = [{
+                    "weight":
+                    module_state_dict[
+                        f"layers.{i}.pair_bias_attn.layer_norm_a_q.s_scale.weight"],
+                    "bias":
+                    module_state_dict[
+                        f"layers.{i}.pair_bias_attn.layer_norm_a_q.s_scale.bias"]
+                }, {
+                    "weight":
+                    module_state_dict[
+                        f"layers.{i}.pair_bias_attn.layer_norm_a_q.s_bias.weight"],
+                    "bias":
+                    torch.zeros([dim], dtype=dtype)
+                }]
+
+            tbnm_state_dict[
+                f"layers.{i}.pair_bias_attn.layer_norm_a_k.a_norm"] = [{
+                    "weight":
+                    torch.ones([dim], dtype=dtype)
+                }]
+            _template_module_weight(
+                tbnm_state_dict, module_state_dict,
+                f"layers.{i}.pair_bias_attn.layer_norm_a_k.s_norm")
+
+            tbnm_state_dict[
+                f"layers.{i}.pair_bias_attn.layer_norm_a_k.fused_s_scale_s_bias"] = [{
+                    "weight":
+                    module_state_dict[
+                        f"layers.{i}.pair_bias_attn.layer_norm_a_k.s_scale.weight"],
+                    "bias":
+                    module_state_dict[
+                        f"layers.{i}.pair_bias_attn.layer_norm_a_k.s_scale.bias"]
+                }, {
+                    "weight":
+                    module_state_dict[
+                        f"layers.{i}.pair_bias_attn.layer_norm_a_k.s_bias.weight"],
+                    "bias":
+                    torch.zeros([dim], dtype=dtype)
+                }]
 
         # weight for pairwise attention
         tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_q"] = [{
@@ -737,7 +825,8 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
             }]
             tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1"] = [{
                 'weight':
-                module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1.weight"],
+                module_state_dict[
+                    f"layers.{i}.pair_bias_attn.proj_z.1.weight"],
             }]
         tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_o"] = [{
             'weight':
@@ -761,8 +850,8 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
             "weight":
             module_state_dict[f"layers.{i}.transition.adaln.s_norm.weight"]
         }]
-        tbnm_state_dict[f"layers.{i}.transition.adaln.fused_s_scale_s_bias"] = [
-            {
+        tbnm_state_dict[
+            f"layers.{i}.transition.adaln.fused_s_scale_s_bias"] = [{
                 "weight":
                 module_state_dict[
                     f"layers.{i}.transition.adaln.s_scale.weight"],
@@ -770,11 +859,11 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
                 module_state_dict[f"layers.{i}.transition.adaln.s_scale.bias"]
             }, {
                 "weight":
-                module_state_dict[f"layers.{i}.transition.adaln.s_bias.weight"],
+                module_state_dict[
+                    f"layers.{i}.transition.adaln.s_bias.weight"],
                 "bias":
                 torch.zeros([dim], dtype=dtype)
-            }
-        ]
+            }]
         swish_gate_weight = module_state_dict[
             f"layers.{i}.transition.swish_gate.0.weight"]
         swish_gate_weight_0 = swish_gate_weight
@@ -794,7 +883,78 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
             module_state_dict[
                 f"layers.{i}.transition.output_projection.0.weight"],
             "bias":
-            module_state_dict[f"layers.{i}.transition.output_projection.0.bias"]
+            module_state_dict[
+                f"layers.{i}.transition.output_projection.0.bias"]
         }]
 
     return tbnm_state_dict
+
+
+def convert_hf_input_embedder_torch(config: BaseConfig,
+                                    mapping: Mapping = None,
+                                    local_checkpoint: str = None,
+                                    model_name: str = "openfold3",
+                                    weights: dict = None,
+                                    **kwargs):
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+    assert state_dict is not None
+
+    module_state_dict = {}
+    ref_atom_attn_enc_weight_list = [
+        "ref_atom_feature_embedder.linear_ref_offset",
+        "ref_atom_feature_embedder.linear_inv_sq_dists",
+        "ref_atom_feature_embedder.linear_valid_mask", "linear_l", "linear_m",
+        "pair_mlp.1", "pair_mlp.3", "pair_mlp.5", "linear_q.0"
+    ]
+
+    for layer_name in ref_atom_attn_enc_weight_list:
+        module_state_dict[f"atom_attn_enc.{layer_name}"] = [{
+            "weight":
+            state_dict[f"input_embedder.atom_attn_enc.{layer_name}.weight"],
+            "bias":
+            state_dict.get(f"input_embedder.atom_attn_enc.{layer_name}.bias",
+                           None),
+        }]
+
+    ref_atom_attn_enc_weight_list = [
+        "ref_atom_feature_embedder.linear_ref_pos",
+        "ref_atom_feature_embedder.linear_ref_charge",
+        "ref_atom_feature_embedder.linear_ref_mask",
+        "ref_atom_feature_embedder.linear_ref_element",
+        "ref_atom_feature_embedder.linear_ref_atom_chars"
+    ]
+    merge_weight = []
+    for layer_name in ref_atom_attn_enc_weight_list:
+        merge_weight.append({
+            "weight":
+            state_dict[f"input_embedder.atom_attn_enc.{layer_name}.weight"],
+            "bias":
+            state_dict.get(f"input_embedder.atom_attn_enc.{layer_name}.bias",
+                           None),
+        })
+    module_state_dict[f"atom_attn_enc.ref_atom_feature_embedder.linear_merge_ref_features"] = merge_weight
+
+    atom_attn_enc_coder = convert_hf_diffusion_transformer_torch(
+        config=config.atom_transformer_config,
+        mapping=mapping,
+        model_name=model_name,
+        weights=weights,
+        prefix="input_embedder.atom_attn_enc.atom_transformer.blocks")
+    for key, value in atom_attn_enc_coder.items():
+        module_state_dict["atom_attn_enc.atom_transformer." + key] = value
+
+    input_embedder_weight_list = [
+        "linear_s", "linear_z_i", "linear_z_j", "linear_relpos",
+        "linear_token_bonds"
+    ]
+    for layer_name in input_embedder_weight_list:
+        module_state_dict[f"{layer_name}"] = [{
+            "weight":
+            state_dict[f"input_embedder.{layer_name}.weight"],
+            "bias":
+            state_dict.get(f"input_embedder.{layer_name}.bias", None),
+        }]
+    return module_state_dict

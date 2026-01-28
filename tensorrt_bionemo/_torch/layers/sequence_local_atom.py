@@ -73,6 +73,8 @@ def query_to_keys(query: torch.Tensor,
         # K: number of windows, W: query window size
         assert W is not None, "Query window size is required"
         K = N // W
+        query = query.view(B, K, W, D)
+        
     elif query.ndim == 4:
         B, K, W, D = query.shape
     elif query.ndim == 5:
@@ -80,7 +82,6 @@ def query_to_keys(query: torch.Tensor,
     else:
         raise ValueError("Query tensor must be 3, 4, or 5 dimensions")
     # 2*K: number of areas, W//2: area size
-
     query = query.view(B, multiplicity, 2 * K, W // 2, D)
     return torch.einsum("b m j i d, j k -> b m k i d", query,
                         keys_indexing_matrix.to(query.dtype)).reshape(

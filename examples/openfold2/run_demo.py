@@ -503,7 +503,7 @@ if __name__ == "__main__":
                 "torch" uses the original torch implementation.
                 "trt" uses the TRT backend.""")
     parser.add_argument("--evoformer_ckpt",
-                        type=Path,
+                        type=str,
                         default=None,
                         help="""Path to the evoformer checkpoint.""")
     parser.add_argument(

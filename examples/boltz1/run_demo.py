@@ -95,21 +95,21 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--structure_pairformer_ckpt',
-        type=Path,
+        type=str,
         default="engines/structure_pairformer",
         help=
         'The path to the directory containing the structure pairformer engines'
     )
     parser.add_argument(
         '--confidence_pairformer_ckpt',
-        type=Path,
+        type=str,
         default="engines/confidence_pairformer",
         help=
         'The path to the directory containing the confidence pairformer engines'
     )
     parser.add_argument(
         '--token_transformer_ckpt',
-        type=Path,
+        type=str,
         default="engines/token_transformer",
         help=
         'The path to the directory containing the token transformer engines')

@@ -57,9 +57,14 @@ class FoldingEngine:
         self.context_memory_allocator = None
         if self.accelerated_configs is not None:
             self.context_memory_allocator = OnDemandContextMemoryManager()
-            self.model, _ = self.model.optimize(
+            optimized = self.model.optimize(
                 self.accelerated_configs,
-                context_memory_allocator=self.context_memory_allocator)
+                context_memory_allocator=self.context_memory_allocator,
+            )
+            if isinstance(optimized, tuple):
+                self.model, _ = optimized
+            else:
+                self.model = optimized
         return self.model
 
     def create_postprocessor(self) -> Callable:

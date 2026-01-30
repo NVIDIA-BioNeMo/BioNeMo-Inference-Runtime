@@ -39,6 +39,7 @@ class FoldingEngineWrapper:
         if model_config is None:
             model_config = model_class.get_pretrained_config(model)
         accelerated_configs = engine_kwargs.get("accelerated_configs", None)
+        
         postprocessor_config = engine_kwargs.get("postprocessor_config", None)
         postprocessor_class = get_postprocessor(model)
         device_config = engine_kwargs.get("device", None) or DeviceConfig()
@@ -50,7 +51,6 @@ class FoldingEngineWrapper:
         self.engine = FoldingEngine(engine_config, model_class,
                                     postprocessor_class)
         self.model_config = model_config
-        # TODO: Implement the scheduler to control the number of pending requests.
         self.max_pending_requests = max_pending_requests
 
     def get_max_batch_size(self) -> int:
@@ -143,11 +143,14 @@ class FoldingEngineUDF(StatefulStageUDF):
                 output, time_taken in zip(sub_batch, outputs, time_takens)
             ]
         except Exception as e:
+            traceback_str = traceback.format_exc()
+            logger.error("=== Exception in _predict_with_error_handling ===")
+            logger.error(traceback_str)
+            logger.error("================================================")
             if not self.should_continue_on_error:
                 raise ValueError(f"Error predicting folding output: {e}")
 
             error_msg = f"{type(e).__name__}: {str(e)}"
-            traceback_str = traceback.format_exc()
             return [
                 self._create_error_response(row, error_msg, traceback_str)
                 for row in sub_batch

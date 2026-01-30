@@ -200,6 +200,12 @@ class StatefulStageUDF:
             ValueError: If the required keys are not found.
         """
         for inp in inputs:
+            infer_err = inp.get("__inference_error__", {
+                "error_msg": None,
+                "traceback": None
+            })
+            if infer_err["error_msg"] is not None:
+                continue
             input_keys = set(inp.keys())
 
             if self.IDX_IN_BATCH_COLUMN in input_keys:

@@ -103,7 +103,7 @@ class PDBWriter:
             # Close the previous chain if in a multichain PDB.
             if last_chain_index != chain_indices[i]:
                 pdb_lines.append(
-                    _chain_end(
+                    self._chain_end(
                         atom_index,
                         self.res_type_mapping[residue_types[i -
                                                             1]].canonical_name,

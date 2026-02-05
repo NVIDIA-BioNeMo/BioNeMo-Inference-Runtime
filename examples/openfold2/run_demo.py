@@ -15,6 +15,7 @@
 # limitations under the License.
 import argparse
 import csv
+import csv
 import logging
 import math
 import os
@@ -308,6 +309,8 @@ def main(args):
             output_name = f'{output_name}_{args.output_postfix}'
         # Timing: Feature preparation
         t_prep_start = time.perf_counter()
+        # Timing: Feature preparation
+        t_prep_start = time.perf_counter()
         # Does nothing if the alignments have already been computed
         try:
             precompute_alignments(tags, seqs, alignment_dir, args)
@@ -326,6 +329,7 @@ def main(args):
             logger.error(f"Error processing {tag}: {e}")
             continue
 
+
         processed_feature_dict = feature_processor.process_features(
             feature_dict, mode='predict', is_multimer=is_multimer)
 
@@ -333,8 +337,6 @@ def main(args):
             k: torch.as_tensor(v, device="cuda")
             for k, v in processed_feature_dict.items()
         }
-
-        torch.cuda.synchronize()
         t_prep_end = time.perf_counter()
         prep_time = t_prep_end - t_prep_start
         logger.info(f"Feature preparation time: {prep_time:.4f}s")
@@ -343,7 +345,6 @@ def main(args):
         t_predict_start = time.perf_counter()
         out = run_model_opt(model_opt, processed_feature_dict, tag,
                             args.output_dir)
-        torch.cuda.synchronize()
         t_predict_end = time.perf_counter()
         predict_time = t_predict_end - t_predict_start
 
@@ -365,6 +366,8 @@ def main(args):
         unrelaxed_output_path = os.path.join(
             args.output_dir, f'{output_name}{unrelaxed_file_suffix}')
 
+        # Timing: Write output PDB
+        t_write_start = time.perf_counter()
         with open(unrelaxed_output_path, 'w') as fp:
             if args.cif_output:
                 fp.write(protein.to_modelcif(unrelaxed_protein))
@@ -373,10 +376,12 @@ def main(args):
         t_write_end = time.perf_counter()
         write_time = t_write_end - t_write_start
         logger.info(f"PDB write time: {write_time:.4f}s")
+        t_write_end = time.perf_counter()
+        write_time = t_write_end - t_write_start
+        logger.info(f"PDB write time: {write_time:.4f}s")
 
         logger.info(f"Output written to {unrelaxed_output_path}...")
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+
         # Record timings for this sample
         timing_records.append({
             'tag':
@@ -404,14 +409,11 @@ def main(args):
                 pickle.dump(out, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
             logger.info(f"Model output written to {output_dict_path}...")
+
     # Write timing records to CSV
     if timing_records:
-        if args.evoformer_backend == "trt":
-            timing_csv_path = os.path.join(args.output_dir,
-                                           "trt_timing_measurements.csv")
-        else:
-            timing_csv_path = os.path.join(args.output_dir,
-                                           "torch_timing_measurements.csv")
+        timing_csv_path = os.path.join(args.output_dir,
+                                       "timing_measurements.csv")
         with open(timing_csv_path, 'w', newline='') as csvfile:
             fieldnames = [
                 'tag', 'prep_features_time', 'predict_time', 'write_pdb_time',

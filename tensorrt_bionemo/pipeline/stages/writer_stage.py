@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Type
 import numpy as np
 
 from tensorrt_bionemo.data.schemas import FoldingOutput
-from tensorrt_bionemo.data.writers import CIFWriter, PDBWriter
+from tensorrt_bionemo.data.writers import PDBWriter
 from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
                                                    StatefulStageUDF)
 
@@ -41,55 +41,46 @@ class WriterUDF(StatefulStageUDF):
         self.output_path = output_path
 
     def _get_writer_and_ext(self):
-        """Get the appropriate writer instance and file extension based on format.
-
-        Both PDBWriter and CIFWriter inherit from BaseWriter and support optional
-        mappings. If mappings are not provided, they use sensible defaults.
-
-        Returns:
-            tuple: (writer_instance, file_extension)
-
-        Raises:
-            ValueError: If the format is not supported
-        """
-        res_type_mapping = self.mappings.get("res_type_mapping", None)
-        atom_type_mapping = self.mappings.get("atom_type_mapping", None)
-
         if self.format == "pdb":
-            writer = PDBWriter(res_type_mapping=res_type_mapping,
-                               atom_type_mapping=atom_type_mapping)
+            res_type_mapping = self.mappings.get("res_type_mapping", None)
+            atom_type_mapping = self.mappings.get("atom_type_mapping", None)
+            
+            if res_type_mapping is None and atom_type_mapping is None:
+                raise ValueError(
+                    "WriterUDF requires at least one of 'res_type_mapping' or 'atom_type_mapping' "
+                    "in the mappings dictionary to write PDB files. "
+                    "These mappings define how residue/atom types are interpreted. "
+                    "Ensure WriterStage is configured with proper mappings."
+                )
+            
+            writer = PDBWriter(
+                res_type_mapping=res_type_mapping,
+                atom_type_mapping=atom_type_mapping)
             return writer, ".pdb"
-        elif self.format == "cif":
-            writer = CIFWriter(res_type_mapping=res_type_mapping,
-                               atom_type_mapping=atom_type_mapping)
-            return writer, ".cif"
-        else:
-            raise ValueError(
-                f"Invalid format: {self.format}. Supported formats: 'pdb', 'cif'"
-            )
+        raise ValueError(f"Invalid format: {self.format}")
 
     async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
         writer, ext = self._get_writer_and_ext()
-
+        
         chain_indices = row.get("chain_indices")
         if chain_indices is None:
             residue_indices = row.get("residue_indices")
             if residue_indices is not None:
                 chain_indices = np.zeros_like(residue_indices, dtype=np.int64)
-
+        
         b_factors = row.get("b_factors")
         if b_factors is None:
             atom_mask = row.get("atom_mask")
             if atom_mask is not None:
                 b_factors = np.zeros_like(atom_mask, dtype=np.float32)
-
-        record = FoldingOutput(atom_positions=row.get("atom_positions", None),
-                               residue_types=row.get("residue_types", None),
-                               atom_mask=row.get("atom_mask", None),
-                               residue_indices=row.get("residue_indices",
-                                                       None),
-                               b_factors=b_factors,
-                               chain_indices=chain_indices)
+        
+        record = FoldingOutput(
+            atom_positions=row.get("atom_positions", None),
+            residue_types=row.get("residue_types", None),
+            atom_mask=row.get("atom_mask", None),
+            residue_indices=row.get("residue_indices", None),
+            b_factors=b_factors,
+            chain_indices=chain_indices)
         row_id = row.get(self.RECORD_ID_IN_BATCH_COLUMN)
 
         if self.output_path and row_id:
@@ -113,8 +104,7 @@ class WriterUDF(StatefulStageUDF):
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
 
-    def on_row_error(self, row: Dict[str, Any],
-                     error: Exception) -> Dict[str, Any]:
+    def on_row_error(self, row: Dict[str, Any], error: Exception) -> Dict[str, Any]:
         return {
             "output_path": None,
             "format": self.format,

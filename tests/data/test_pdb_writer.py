@@ -79,16 +79,14 @@ class TestPDBWriter:
         assert writer.res_type_mapping == res_type_mapping
         assert len(writer.res_types) == len(res_type_mapping)
 
-    def test_initialization_with_defaults(self, temp_output_file):
-        """Test that PDBWriter initialization works with default mappings."""
-        writer = PDBWriter(output_path=temp_output_file)
-
-        # Should have default mappings from BaseWriter
-        assert writer.output_path == temp_output_file
-        assert len(writer.res_types) > 0  # Should have default residue types
-        assert len(writer.atom_types) > 0  # Should have default atom types
-        assert writer.res_type_mapping is not None
-        assert writer.atom_type_mapping is not None
+    def test_initialization_fails_without_mappings(self, temp_output_file):
+        """Test that PDBWriter initialization fails without any mappings."""
+        with pytest.raises(
+                AssertionError,
+                match=
+                "Either res_type_mapping or atom_type_mapping must be provided"
+        ):
+            PDBWriter(output_path=temp_output_file)
 
     def test_set_output_path(self, res_type_mapping, atom_type_mapping):
         """Test setting output path after initialization."""

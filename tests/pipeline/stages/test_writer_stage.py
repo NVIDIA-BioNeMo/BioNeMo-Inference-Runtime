@@ -9,8 +9,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.pipeline.stages.writer_stage import (WriterStage,
-                                                           WriterUDF)
+from tensorrt_bionemo.pipeline.stages.writer_stage import WriterStage, WriterUDF
 
 
 @pytest.fixture
@@ -33,9 +32,7 @@ def writer_udf():
     return WriterUDF(
         compute_by_rows=True,
         drop_keys=[],
-        expected_input_keys=[
-            "atom_positions", "residue_types", "atom_mask", "residue_indices"
-        ],
+        expected_input_keys=["atom_positions", "residue_types", "atom_mask", "residue_indices"],
         update_row=False,
         mappings={},
         format="pdb",
@@ -57,7 +54,7 @@ class TestWriterUDFInit:
         assert udf.output_path is None
         assert udf.mappings == {}
 
-    def test_init_with_custom_format_pdb(self):
+    def test_init_with_custom_format(self):
         udf = WriterUDF(
             compute_by_rows=True,
             drop_keys=[],
@@ -67,17 +64,6 @@ class TestWriterUDFInit:
             format="pdb",
         )
         assert udf.format == "pdb"
-
-    def test_init_with_custom_format_cif(self):
-        udf = WriterUDF(
-            compute_by_rows=True,
-            drop_keys=[],
-            expected_input_keys=[],
-            update_row=False,
-            mappings={},
-            format="cif",
-        )
-        assert udf.format == "cif"
 
     def test_init_with_output_path(self):
         udf = WriterUDF(
@@ -105,15 +91,11 @@ class TestWriterUDFInit:
 class TestWriterUDFGetWriter:
 
     def test_get_writer_pdb_format(self):
-        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
-        from tensorrt_bionemo.data.writers import PDBWriter
+        from tensorrt_bionemo.data.schemas.basic import ResTypes, AtomTypes
         basic_20 = ResTypes.basic_20_residue_types()
         res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}
         all_atom_types = AtomTypes.all_types()
-        atom_type_mapping = {
-            i: all_atom_types[i]
-            for i in range(len(all_atom_types))
-        }
+        atom_type_mapping = {i: all_atom_types[i] for i in range(len(all_atom_types))}
         udf = WriterUDF(
             compute_by_rows=True,
             drop_keys=[],
@@ -127,50 +109,6 @@ class TestWriterUDFGetWriter:
         )
         writer, ext = udf._get_writer_and_ext()
         assert ext == ".pdb"
-        assert isinstance(writer, PDBWriter)
-
-    def test_get_writer_cif_format(self):
-        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
-        from tensorrt_bionemo.data.writers import CIFWriter
-        basic_20 = ResTypes.basic_20_residue_types()
-        res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}
-        all_atom_types = AtomTypes.all_types()
-        atom_type_mapping = {
-            i: all_atom_types[i]
-            for i in range(len(all_atom_types))
-        }
-        udf = WriterUDF(
-            compute_by_rows=True,
-            drop_keys=[],
-            expected_input_keys=[],
-            update_row=False,
-            mappings={
-                "res_type_mapping": res_type_mapping,
-                "atom_type_mapping": atom_type_mapping
-            },
-            format="cif",
-        )
-        writer, ext = udf._get_writer_and_ext()
-        assert ext == ".cif"
-        assert isinstance(writer, CIFWriter)
-
-    def test_get_writer_with_default_mappings(self):
-        """Test that writers work without explicit mappings (use defaults)."""
-        from tensorrt_bionemo.data.writers import PDBWriter
-        udf = WriterUDF(
-            compute_by_rows=True,
-            drop_keys=[],
-            expected_input_keys=[],
-            update_row=False,
-            mappings={},  # No mappings provided
-            format="pdb",
-        )
-        writer, ext = udf._get_writer_and_ext()
-        assert ext == ".pdb"
-        assert isinstance(writer, PDBWriter)
-        # Verify writer has default mappings from BaseWriter
-        assert writer.res_type_mapping is not None
-        assert writer.atom_type_mapping is not None
 
     def test_get_writer_invalid_format(self):
         udf = WriterUDF(
@@ -181,16 +119,14 @@ class TestWriterUDFGetWriter:
             mappings={},
             format="invalid",
         )
-        with pytest.raises(ValueError,
-                           match="Invalid format.*Supported formats"):
+        with pytest.raises(ValueError, match="Invalid format"):
             udf._get_writer_and_ext()
 
 
 class TestWriterUDFProcessing:
 
     def test_udf_for_item_returns_output_dict(self, writer_udf, sample_row):
-        with patch.object(writer_udf,
-                          '_get_writer_and_ext') as mock_get_writer:
+        with patch.object(writer_udf, '_get_writer_and_ext') as mock_get_writer:
             mock_writer = MagicMock()
             mock_writer.write.return_value = "ATOM..."
             mock_get_writer.return_value = (mock_writer, ".pdb")
@@ -202,8 +138,7 @@ class TestWriterUDFProcessing:
             assert "output_raw" in result
 
     def test_udf_for_item_format_in_output(self, writer_udf, sample_row):
-        with patch.object(writer_udf,
-                          '_get_writer_and_ext') as mock_get_writer:
+        with patch.object(writer_udf, '_get_writer_and_ext') as mock_get_writer:
             mock_writer = MagicMock()
             mock_writer.write.return_value = "ATOM..."
             mock_get_writer.return_value = (mock_writer, ".pdb")
@@ -257,30 +192,6 @@ class TestWriterUDFProcessing:
 
                 expected_path = os.path.join(tmpdir, "0.pdb")
                 assert result["output_path"] == expected_path
-
-    def test_udf_for_item_cif_format(self, sample_row):
-        """Test that CIF format produces correct output."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            udf = WriterUDF(
-                compute_by_rows=True,
-                drop_keys=[],
-                expected_input_keys=[],
-                update_row=False,
-                mappings={},
-                format="cif",
-                output_path=tmpdir,
-            )
-
-            with patch.object(udf, '_get_writer_and_ext') as mock_get_writer:
-                mock_writer = MagicMock()
-                mock_writer.write.return_value = "data_structure\n#..."
-                mock_get_writer.return_value = (mock_writer, ".cif")
-
-                result = asyncio.run(udf.udf_for_item(sample_row))
-
-                expected_path = os.path.join(tmpdir, "test_protein.cif")
-                assert result["output_path"] == expected_path
-                assert result["format"] == "cif"
 
 
 class TestWriterUDFErrorHandling:

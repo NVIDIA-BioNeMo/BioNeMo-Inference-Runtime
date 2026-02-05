@@ -27,9 +27,9 @@ class AcceleratedModules(ABC):
 
     def __init__(self, configs: dict[str, AcceleratedConfig] = {}):
         """
-        This class is used to store the checkpoints and module configs for the accelerated modules.
+        This class is used to store the checkpoints and module configs for the optimized modules.
         Args:
-            configs: A dictionary of AcceleratedConfig for the accelerated modules.
+            configs: A dictionary of AcceleratedConfig for the optimized modules.
         """
         self._configs = {}
         for k, v in configs.items():
@@ -78,7 +78,7 @@ class OptimizedModuleSetterMixin(ABC):
                      BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
         """
-        This function is used to build the optimized version of Boltz1 model from the original.
+        This function is used to build the accelerated version of the model from the original.
         Args:
             accelerated_configs: A dictionary of modules to be accelerated.
             context_memory_allocator: The context memory allocator to be used for each module.

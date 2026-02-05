@@ -15,11 +15,13 @@
 # limitations under the License.
 
 import string
+from typing import Optional
 
 import numpy as np
 
-from tensorrt_bionemo.data.schemas.basic import FoldingOutput
-from tensorrt_bionemo.data.writers.base_writer import BaseWriter
+from tensorrt_bionemo.data.schemas.type_aliases import np_float32_triple
+from tensorrt_bionemo.data.schemas.basic import (AtomType, FoldingOutput,
+                                                 ResType, ResTypes)
 
 PICO_TO_ANGSTROM = 0.01
 
@@ -27,12 +29,33 @@ PDB_CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 PDB_MAX_CHAINS = len(PDB_CHAIN_IDS)
 
 
-class PDBWriter(BaseWriter):
-    """Writes a multi-chain protein structure to PDB format.
+class PDBWriter:
 
-    Inherits from BaseWriter which provides default mappings for residue types
-    and atom types if not specified.
-    """
+    def __init__(
+        self,
+        output_path: str = "output.pdb",
+        res_type_mapping: Optional[dict[int, ResType]] = None,
+        atom_type_mapping: Optional[dict[int, AtomType]] = None,
+    ):
+        assert res_type_mapping is not None or atom_type_mapping is not None, "Either res_type_mapping or atom_type_mapping must be provided to dump PDB file"
+        self.output_path = output_path
+        self.res_type_mapping = res_type_mapping
+        if self.res_type_mapping is None:
+            self.res_type_mapping = {
+                i: ResTypes.from_string(i)
+                for i in range(len(ResTypes.basic_20_residue_types()))
+            }
+        self.atom_type_mapping = atom_type_mapping
+
+        self.res_types = []
+        self.atom_types = []
+        for i in range(len(self.res_type_mapping)):
+            self.res_types.append(self.res_type_mapping[i])
+        for i in range(len(self.atom_type_mapping)):
+            self.atom_types.append(self.atom_type_mapping[i])
+
+    def set_output_path(self, output_path: str):
+        self.output_path = output_path
 
     def get_pdb_headers(self) -> list[str]:
         pdb_headers = []
@@ -48,18 +71,16 @@ class PDBWriter(BaseWriter):
                 f'{chain_name:>1}{residue_index:>4}')
 
     def write(self, folding_output: FoldingOutput):
-
+        
         pdb_lines = []
-
+        
         # get output protein complex representation
         #   - for numpy arrays below, 0th axis is sequence position
-        residue_types: np.ndarray[np.int64] = folding_output["residue_types"]
-        atom_positions: np.ndarray = folding_output[
-            "atom_positions"]  # shape: (n_res, n_atoms, 3)
+        residue_types: np.ndarray[np.int64] = folding_output["residue_types"]  
+        atom_positions: np.ndarray[np_float32_triple] = folding_output["atom_positions"]
         atom_mask: np.ndarray[np.float32] = folding_output["atom_mask"]
         chain_indices: np.ndarray[np.int64] = folding_output["chain_indices"]
-        residue_indices: np.ndarray[np.int64] = folding_output[
-            "residue_indices"]  # 1-based
+        residue_indices: np.ndarray[np.int64] = folding_output["residue_indices"]  # 1-based
         b_factors: np.ndarray[np.float32] = folding_output["b_factors"]
 
         # Construct a mapping from chain integer indices to chain ID strings.

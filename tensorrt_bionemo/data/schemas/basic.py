@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,21 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import csv
+import io
+import os
+import re
+import string
 from dataclasses import dataclass
-from typing import Optional
+from enum import Enum
+from io import StringIO
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, TextIO, Union
 
 import numpy as np
+from Bio import SeqIO
 
-
-class EntityType:
+class PolymerType(str, Enum):
     PROTEIN = "protein"
     RNA = "rna"
     DNA = "dna"
     LIGAND = "ligand"
-    POLYMER_HYBRID = "polymer_hybrid"
-    WATER = "water"
-    UNKNOWN = "unknown"
-    MANUAL_GLYCAN = "manual_glycan"
 
 
 @dataclass
@@ -175,11 +179,11 @@ class ResTypes:
 
     @staticmethod
     def rna_nucleotide_types() -> list[ResType]:
-        return [ResType.RA, ResType.RC, ResType.RG, ResType.RU]
+        return [ResTypes.RA, ResTypes.RC, ResTypes.RG, ResTypes.RU]
 
     @staticmethod
     def dna_nucleotide_types() -> list[ResType]:
-        return [ResType.DA, ResType.DC, ResType.DG, ResType.DT]
+        return [ResTypes.DA, ResTypes.DC, ResTypes.DG, ResTypes.DT]
 
     @staticmethod
     def from_string(s: str,
@@ -208,63 +212,216 @@ class ResTypes:
         return res in ResTypes.rna_nucleotide_types(
         ) or res in ResTypes.dna_nucleotide_types()
 
+class MSARecord(dict):
 
-class Sequence(dict):
+    def __init__(
+        self,
+        content: Optional[str] = None,
+        path: Optional[str] = None,
+        format: str = "a3m",
+    ):
+        super().__init__(
+            content=content,
+            path=path,
+            format=format,
+        )
 
-    def __init__(self,
-                 residues: Optional[str] = None,
-                 description: Optional[str] = None):
-        super().__init__(residues=residues, description=description)
+    def is_file(self) -> bool:
+        return self["path"] is not None
+
+    def get_content(self) -> str:
+        if self["content"] is not None:
+            return self["content"]
+        if self["path"] is not None:
+            with open(self["path"], "r") as f:
+                self["content"] = f.read()
+                return self["content"]
+        raise ValueError("No content or file available")
 
 
-class InputChain(dict):
 
-    def __init__(self,
-                 sequence: Sequence,
-                 chain_id: Optional[str] = 'A',
-                 entity_type: str = EntityType.PROTEIN):
-        super().__init__(sequence=sequence,
-                         chain_id=chain_id,
-                         entity_type=entity_type)
+class Template(dict):
+
+    def __init__(
+        self,
+        content: Optional[str] = None,
+        path: Optional[str] = None,
+        format: str = "cif"
+    ):
+        super().__init__(
+            content=content,
+            path=path,
+            format=format
+        )
+
+    def is_file(self) -> bool:
+        return self["path"] is not None
+
+    def get_content(self) -> str:
+        if self["content"] is not None:
+            return self["content"]
+        if self["path"] is not None:
+            with open(self["path"], "r") as f:
+                self["content"] =  f.read()
+                return self["content"]
+        raise ValueError("No content or file available")
 
 
-class StructureMetadata(dict):
+class Polymer(dict):
 
-    def __init__(self,
-                 resolution: float,
-                 release_date: str,
-                 method: str,
-                 file_id: Optional[str] = "sample"):
-        super().__init__(resolution=resolution,
-                         release_date=release_date,
-                         method=method,
-                         file_id=file_id)
-
+    def __init__(
+        self,
+        polymer_type: Union[PolymerType, str] = PolymerType.PROTEIN,
+        chain_id: Optional[Union[str, List[str]]] = None,
+        sequence: Optional[str] = None,
+        msas: Optional[List[MSARecord]] = None,
+        paired_msas: Optional[List[MSARecord]] = None,
+        templates: Optional[List[Template]] = None
+    ):
+        if isinstance(polymer_type, str):
+            polymer_type = PolymerType(polymer_type)
+        
+        self._validate_chain_id(chain_id)
+        self._validate_polymer_fields(polymer_type, sequence, templates)
+        
+        super().__init__(
+            polymer_type=polymer_type.value if isinstance(polymer_type, PolymerType) else polymer_type,
+            chain_id=chain_id,
+            sequence=sequence,
+            msas=msas,
+            paired_msas=paired_msas,
+            templates=templates
+        )
+    
+    @staticmethod
+    def _validate_chain_id(chain_id: Optional[Union[str, List[str]]]) -> None:
+        if chain_id is None:
+            return
+        
+        pattern = re.compile(r'^[A-Za-z0-9]{1,4}$')
+        
+        if isinstance(chain_id, str):
+            if not pattern.match(chain_id):
+                raise ValueError(
+                    f"Chain ID '{chain_id}' is invalid. Must be 1-4 alphanumeric characters."
+                )
+        elif isinstance(chain_id, list):
+            if len(chain_id) == 0:
+                raise ValueError("Chain ID list cannot be empty.")
+            for idx, cid in enumerate(chain_id):
+                if not isinstance(cid, str):
+                    raise ValueError(
+                        f"Chain ID at index {idx} must be a string, got {type(cid).__name__}"
+                    )
+                if not pattern.match(cid):
+                    raise ValueError(
+                        f"Chain ID '{cid}' at index {idx} is invalid. Must be 1-4 alphanumeric characters."
+                    )
+        else:
+            raise ValueError(
+                f"Chain ID must be a string or list of strings, got {type(chain_id).__name__}"
+            )
+    
+    @staticmethod
+    def _validate_polymer_fields(
+        polymer_type: PolymerType,
+        sequence: Optional[str],
+        templates: Optional[List]
+    ) -> None:
+        if sequence is None:
+            raise ValueError(f"{polymer_type.value} must have 'sequence'")
+           
+        if templates is not None and len(templates) > 0:
+            if polymer_type != PolymerType.PROTEIN:
+                raise ValueError(
+                    f"Templates are only allowed for protein molecules. "
+                    f"Polymer type is '{polymer_type.value}' but templates were provided."
+                )
+    
+    def get_chain_count(self) -> int:
+        if self['chain_id'] is None:
+            return 1
+        if isinstance(self['chain_id'], list):
+            return len(self['chain_id'])
+        return 1
 
 class InputRequest(dict):
 
-    def __init__(self,
-                 fasta_file: str,
-                 a3m_files: dict[str, list[str]],
-                 mmcif_files: Optional[dict[str, list[str]]] = None,
-                 is_description_formatted: bool = False,
-                 is_files: bool = True):
-        super().__init__(fasta_file=fasta_file,
-                         a3m_files=a3m_files,
-                         mmcif_files=mmcif_files,
-                         is_description_formatted=is_description_formatted,
-                         is_files=is_files)
+    def __init__(
+        self,
+        input_id: Optional[str] = None,
+        polymers: Optional[List[Polymer]] = None,
+    ):
+        super().__init__(
+            input_id=input_id or "input_id_0",
+            polymers=polymers or [],
+        )
+        
+        
+class MSAParsed(dict):
+    """Parsed A3M MSA file.
+    
+    Contains:
+        sequences: aligned sequences (lowercase deletions removed)
+        raw: original sequences with lowercase letters (deletion info)
+        descriptions: sequence descriptions
+    """
+    def __init__(
+        self,
+        sequences: List[str],
+        raw: List[str],
+        descriptions: Optional[List[str]] = None
+    ):
+        super().__init__(sequences=sequences, raw=raw, descriptions=descriptions)
 
 
+class TemplateParsed(dict):
+    def __init__(
+        self,
+        content: Optional[str] = None,
+        format: str = "cif"
+    ):
+        super().__init__(content=content, format=format)
+
+
+class PolymerParsed(dict):
+    def __init__(
+        self,
+        polymer_type: Union[PolymerType, str] = PolymerType.PROTEIN,
+        chain_id: Optional[Union[str, List[str]]] = None,
+        sequence: Optional[str] = None,
+        msas: Optional[List[MSAParsed]] = None,
+        paired_msas: Optional[List[MSAParsed]] = None,
+        templates: Optional[List[TemplateParsed]] = None
+    ):
+        super().__init__(
+            polymer_type=polymer_type.value if isinstance(polymer_type, PolymerType) else polymer_type,
+            chain_id=chain_id,
+            sequence=sequence,
+            msas=msas,
+            paired_msas=paired_msas,
+            templates=templates
+        )        
+        
+class InputParsed(dict):
+    def __init__(
+        self,
+        input_id: Optional[str] = None,
+        polymers: Optional[List[PolymerParsed]] = None,
+    ):
+        super().__init__(input_id=input_id, polymers=polymers)
+ 
 class FoldingOutput(dict):
 
-    def __init__(self,
-                 atom_positions: np.ndarray,
-                 residue_types: np.ndarray,
-                 atom_mask: np.ndarray,
-                 residue_indices: np.ndarray,
-                 b_factors: Optional[np.ndarray] = None,
-                 chain_indices: Optional[np.ndarray] = None):
+    def __init__(
+        self,
+        atom_positions: np.ndarray,
+        residue_types: np.ndarray,
+        atom_mask: np.ndarray,
+        residue_indices: np.ndarray,
+        b_factors: Optional[np.ndarray] = None,
+        chain_indices: Optional[np.ndarray] = None
+    ):
         """
         Args:
             atom_positions: (num_res, num_atom_type, 3)

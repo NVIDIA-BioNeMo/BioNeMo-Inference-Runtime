@@ -4,14 +4,12 @@ import time
 from pathlib import Path
 
 import safetensors
-import torch
 from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.openfold3 import OpenFold3Config
-from tensorrt_bionemo.models.openfold3.convert import (
-    convert_hf_pairformer, convert_hf_pairformer_torch)
+from tensorrt_bionemo.models.openfold3.convert import convert_hf_pairformer
 
 
 def parse_arguments():
@@ -61,7 +59,7 @@ def parse_arguments():
                         type=Path,
                         default='pairformer_checkpoint',
                         help='The path to save the TensorRT-BNM checkpoint')
-    parser.add_argument('--triangle_attn_backend',
+    parser.add_argument('--triangle_attention_backend',
                         type=str,
                         default='CUEQUIV',
                         choices=['VANILLA', 'TRIFAST', 'CUEQUIV'],
@@ -76,8 +74,8 @@ def parse_arguments():
                         help='Whether to support batch')
     parser.add_argument('--backend',
                         type=str,
-                        default='all',
-                        choices=['all', 'trt', 'torch'],
+                        default='trt',
+                        choices=['trt'],
                         help='The backend to convert')
     parser.add_argument(
         '--workers',
@@ -92,20 +90,13 @@ def parse_arguments():
 def convert(worker_rank, world_size, configs, args):
     model_name = "openfold3"
     # Dump for tensorrt config
-    if args.backend == 'all' or args.backend == BackendType.TRT:
+    if args.backend == BackendType.TRT:
         (args.output_dir / f'{BackendType.TRT}').mkdir(parents=True,
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
             json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
     # Dump for torch config
-
-    if args.backend == 'all' or args.backend == BackendType.TORCH:
-        (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
-                                                         exist_ok=True)
-        with (args.output_dir /
-              f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].model_dump(), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
@@ -122,16 +113,6 @@ def convert(worker_rank, world_size, configs, args):
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
 
-        if args.backend == 'all' or args.backend == BackendType.TORCH:
-            # Save the load_weights_fn and load_weights_fn_kwargs for the torch backend
-            weights = convert_hf_pairformer_torch(
-                config=configs[BackendType.TORCH],
-                mapping=mapping,
-                local_checkpoint=args.local_checkpoint,
-                model_name=model_name)
-            torch.save(weights,
-                       args.output_dir / f'{BackendType.TORCH}/weights.pt')
-
 
 def main():
     args = parse_arguments()
@@ -143,7 +124,7 @@ def main():
     openfold3_config = OpenFold3Config()
     pairformer_config = openfold3_config.trunk.pairformer
 
-    if args.triangle_attn_backend == "CUEQUIV":
+    if args.triangle_attention_backend == "CUEQUIV":
         args.support_batch = True
 
     config = {
@@ -180,7 +161,7 @@ def main():
         "dtype":
         args.dtype,
         "architecture":
-        f"pairformer",
+        "pairformer",
         'mapping': {
             'world_size': world_size,
             'tp_size': args.tp_size,
@@ -189,8 +170,8 @@ def main():
         "disable_custom_all_reduce":
         args.max_transition_tp_size or args.max_attention_pairwise_tp_size
         or args.max_tri_mul_tp_size,
-        "triangle_attn_backend":
-        args.triangle_attn_backend,
+        "triangle_attention_backend":
+        args.triangle_attention_backend,
         "post_layer_norm":
         pairformer_config.post_layer_norm,
         "trimul_high_precision":
@@ -201,12 +182,9 @@ def main():
         args.support_batch,
     }
     trt_pairformer_config = pairformer_config.model_copy(update=config)
-    torch_pairformer_config = pairformer_config.model_copy(update=config)
-    torch_pairformer_config.set_backend(BackendType.TORCH)
 
     configs = {
         BackendType.TRT: trt_pairformer_config,
-        BackendType.TORCH: torch_pairformer_config
     }
     if args.workers == 1:
         convert(0, world_size, configs, args)

@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 from typing import Optional
 
 import numpy as np
@@ -37,13 +53,16 @@ class CorrectMsaRestypes(TransformBase):
 
         for k in batch.keys():
             if "profile" in k:
-                num_dim = batch[k].shape.as_list()[-1]
-                assert num_dim in [
-                    20,
-                    21,
-                    22,
-                ], "num_dim for %s out of expected range: %s" % (k, num_dim)
-                batch[k] = torch.dot(batch[k], perm_matrix[:num_dim, :num_dim])
+                num_dim = batch[k].shape[-1]
+                assert num_dim in (20, 21, 22), (
+                    f"num_dim for {k} out of expected range: {num_dim}"
+                )
+
+                perm = torch.from_numpy(
+                    perm_matrix[:num_dim, :num_dim]
+                ).to(device=batch[k].device, dtype=batch[k].dtype)
+
+                batch[k] = torch.einsum("...i,ij->...j", batch[k], perm)
 
         return batch
 

@@ -1,3 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import asyncio
 import time
 import traceback
@@ -25,6 +39,7 @@ class FoldingEngineWrapper:
         if model_config is None:
             model_config = model_class.get_pretrained_config(model)
         accelerated_configs = engine_kwargs.get("accelerated_configs", None)
+        
         postprocessor_config = engine_kwargs.get("postprocessor_config", None)
         postprocessor_class = get_postprocessor(model)
         device_config = engine_kwargs.get("device", None) or DeviceConfig()
@@ -37,11 +52,6 @@ class FoldingEngineWrapper:
                                     postprocessor_class)
         self.model_config = model_config
         self.max_pending_requests = max_pending_requests
-        if self.max_pending_requests > 0:
-            self.semaphore = asyncio.Semaphore(self.max_pending_requests)
-        else:
-            # self.semaphore = asyncio.NullContext()
-            pass
 
     def get_max_batch_size(self) -> int:
         return self.model_config.max_batch_size
@@ -53,7 +63,6 @@ class FoldingEngineWrapper:
         assert len(rows) == 1, "Currently, support len(rows) == 1."
         row = rows[0]
         t = time.perf_counter()
-        # async with self.semaphore:
         prediction = self.engine.execute(row)
         time_taken = time.perf_counter() - t
         return [prediction], [time_taken]
@@ -83,52 +92,76 @@ class FoldingEngineUDF(StatefulStageUDF):
             engine_kwargs=engine_kwargs,
             max_pending_requests=max_pending_requests)
 
+    def _create_success_response(self, row: Dict[str, Any], output: Dict[str,
+                                                                         Any],
+                                 time_taken: float) -> Dict[str, Any]:
+        """Create a successful prediction response."""
+        return {
+            **output,
+            "time_taken": time_taken,
+            "__inference_error__": {
+                "error_msg": None,
+                "traceback": None,
+            },
+            self.IDX_IN_BATCH_COLUMN: row[self.IDX_IN_BATCH_COLUMN],
+        }
+
+    def _create_error_response(self, row: Dict[str, Any], error_msg: str,
+                               traceback_str: str) -> Dict[str, Any]:
+        """Create an error response for a failed prediction."""
+        return {
+            "__inference_error__": {
+                "error_msg": error_msg,
+                "traceback": traceback_str,
+            },
+            self.IDX_IN_BATCH_COLUMN: row[self.IDX_IN_BATCH_COLUMN],
+        }
+
     async def _predict_with_error_handling(
             self, sub_batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Generate output for a single row, catching errors if should_continue_on_error is set.
+        """Generate output for a sub-batch, catching errors if should_continue_on_error is set.
 
-         In the future the folding flow should be:
+        In the future the folding flow should be:
         1. Put requests to queue
         2. Get requests from queue and do padding if any to create a batch to model.
         3. Execute the engine.
         Currently, support len(rows) == 1.
+
+        Args:
+            sub_batch: List of input rows to process.
+
+        Returns:
+            List of prediction results or error responses.
+
+        Raises:
+            ValueError: If prediction fails and should_continue_on_error is False.
         """
         try:
             outputs, time_takens = await self.folding.predict_async(sub_batch)
-            ret = []
-            for row, output, time_taken in zip(sub_batch, outputs,
-                                               time_takens):
-                idx_in_batch = row[self.IDX_IN_BATCH_COLUMN]
-                ret.append({
-                    **output,
-                    "time_taken": time_taken,
-                    "__inference_error__": {
-                        "error_msg": None,
-                        "traceback": None,
-                    },
-                    self.IDX_IN_BATCH_COLUMN: idx_in_batch,
-                })
-            return ret
+            return [
+                self._create_success_response(row, output, time_taken) for row,
+                output, time_taken in zip(sub_batch, outputs, time_takens)
+            ]
         except Exception as e:
+            traceback_str = traceback.format_exc()
+            logger.error("=== Exception in _predict_with_error_handling ===")
+            logger.error(traceback_str)
+            logger.error("================================================")
             if not self.should_continue_on_error:
                 raise ValueError(f"Error predicting folding output: {e}")
+
             error_msg = f"{type(e).__name__}: {str(e)}"
-            ret = []
-            for row in sub_batch:
-                idx_in_batch = row[self.IDX_IN_BATCH_COLUMN]
-                ret.append({
-                    "__inference_error__": {
-                        "error_msg": error_msg,
-                        "traceback": traceback.format_exc(),
-                    },
-                    self.IDX_IN_BATCH_COLUMN: idx_in_batch,
-                })
+            return [
+                self._create_error_response(row, error_msg, traceback_str)
+                for row in sub_batch
+            ]
 
     async def udf_for_rows(
             self, batch: List[Dict[str,
                                    Any]]) -> AsyncIterator[Dict[str, Any]]:
         """
         For each row in the batch, predict the folding output.
+        We don't use the udf_for_item function, the model will handle the batching.
         """
         max_batch_size = self.folding.get_max_batch_size()
         n_iters = (len(batch) + max_batch_size - 1) // max_batch_size
@@ -149,7 +182,7 @@ class FoldingEngineUDF(StatefulStageUDF):
                 yield item
 
         batch_time_taken = time.perf_counter() - batch_start_time
-        logger.info(
+        logger.debug(
             "Elapsed time for batch %s with size %d: %s",
             len(batch),
             batch_time_taken,

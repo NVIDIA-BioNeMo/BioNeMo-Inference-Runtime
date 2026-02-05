@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,12 +24,8 @@ from tensorrt_bionemo.pipeline.base import ContextGeneratorBase
 class PrimaryContextGenerator(ContextGeneratorBase):
 
     def __call__(self, parsed: InputParsed) -> dict[str, torch.Tensor]:
-        """
-        Generate a structure context from an input parsed object.
-        """
-        parsed_primary = parsed['primary']
-        chains = parsed_primary['chains']
-        sequence = chains[0]['sequence']['residues']
+        polymer = parsed['polymers'][0]
+        sequence = polymer['sequence']
         aatype = sequence_to_onehot(sequence, rc.restype_order_with_x)
         n_res = len(sequence)
 

@@ -129,3 +129,7 @@ $ python run_demo.py \
     # --evoformer_backend trt \
     # --evoformer_ckpt _engines_path_
 ```
+
+# Run with ray.
+
+The `ray_pipeline.ipynb` demonstrate for running with ray map_batches stage, hide (pre/post)processing latencies.

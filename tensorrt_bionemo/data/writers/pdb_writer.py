@@ -1,10 +1,25 @@
+# Copyright 2021 AlQuraishi Laboratory
+# Copyright 2021 DeepMind Technologies Limited
+# Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import string
-from typing import Optional
 
 import numpy as np
 
-from tensorrt_bionemo.data.schemas.basic import (AtomType, FoldingOutput,
-                                                 ResType, ResTypes)
+from tensorrt_bionemo.data.schemas.basic import FoldingOutput
+from tensorrt_bionemo.data.writers.base_writer import BaseWriter
 
 PICO_TO_ANGSTROM = 0.01
 
@@ -12,33 +27,12 @@ PDB_CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 PDB_MAX_CHAINS = len(PDB_CHAIN_IDS)
 
 
-class PDBWriter:
+class PDBWriter(BaseWriter):
+    """Writes a multi-chain protein structure to PDB format.
 
-    def __init__(
-        self,
-        output_path: str = "output.pdb",
-        res_type_mapping: Optional[dict[int, ResType]] = None,
-        atom_type_mapping: Optional[dict[int, AtomType]] = None,
-    ):
-        assert res_type_mapping is not None or atom_type_mapping is not None, "Either res_type_mapping or atom_type_mapping must be provided to dump PDB file"
-        self.output_path = output_path
-        self.res_type_mapping = res_type_mapping
-        if self.res_type_mapping is None:
-            self.res_type_mapping = {
-                i: ResTypes.from_string(i)
-                for i in range(len(ResTypes.basic_20_residue_types()))
-            }
-        self.atom_type_mapping = atom_type_mapping
-
-        self.res_types = []
-        self.atom_types = []
-        for i in range(len(self.res_type_mapping)):
-            self.res_types.append(self.res_type_mapping[i])
-        for i in range(len(self.atom_type_mapping)):
-            self.atom_types.append(self.atom_type_mapping[i])
-
-    def set_output_path(self, output_path: str):
-        self.output_path = output_path
+    Inherits from BaseWriter which provides default mappings for residue types
+    and atom types if not specified.
+    """
 
     def get_pdb_headers(self) -> list[str]:
         pdb_headers = []
@@ -54,13 +48,19 @@ class PDBWriter:
                 f'{chain_name:>1}{residue_index:>4}')
 
     def write(self, folding_output: FoldingOutput):
+
         pdb_lines = []
-        residue_types: np.ndarray = folding_output["residue_types"]
-        atom_positions: np.ndarray = folding_output["atom_positions"]
-        atom_mask: np.ndarray = folding_output["atom_mask"]
-        chain_indices: np.ndarray = folding_output["chain_indices"]
-        residue_indices: np.ndarray = folding_output["residue_indices"]
-        b_factors: np.ndarray = folding_output["b_factors"]
+
+        # get output protein complex representation
+        #   - for numpy arrays below, 0th axis is sequence position
+        residue_types: np.ndarray[np.int64] = folding_output["residue_types"]
+        atom_positions: np.ndarray = folding_output[
+            "atom_positions"]  # shape: (n_res, n_atoms, 3)
+        atom_mask: np.ndarray[np.float32] = folding_output["atom_mask"]
+        chain_indices: np.ndarray[np.int64] = folding_output["chain_indices"]
+        residue_indices: np.ndarray[np.int64] = folding_output[
+            "residue_indices"]  # 1-based
+        b_factors: np.ndarray[np.float32] = folding_output["b_factors"]
 
         # Construct a mapping from chain integer indices to chain ID strings.
         chain_ids = {}
@@ -87,7 +87,7 @@ class PDBWriter:
             # Close the previous chain if in a multichain PDB.
             if last_chain_index != chain_indices[i]:
                 pdb_lines.append(
-                    _chain_end(
+                    self._chain_end(
                         atom_index,
                         self.res_type_mapping[residue_types[i -
                                                             1]].canonical_name,

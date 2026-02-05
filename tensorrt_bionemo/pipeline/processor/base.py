@@ -185,9 +185,11 @@ class Processor:
         # When a processor has multiple stages with the same type,
         # append a index suffix to the stage name to avoid conflicts.
         if stage_name in self.stages:
-            num_same_type_stage = len(
-                [s for s in self.stages.values() if s is stage])
-            stage_name = f"{stage_name}_{num_same_type_stage + 1}"
+            num_same_type_stage = sum(
+                1 for s in self.stages.values()
+                if type(s) is type(stage)
+            )
+            stage_name = f"{stage_name}_{num_same_type_stage}"
         self.stages[stage_name] = stage
 
     def list_stage_names(self) -> List[str]:

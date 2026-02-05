@@ -14,12 +14,12 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 import torch.nn as nn
 from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo.configs.base import AcceleratedConfig, BaseConfig
+from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
 from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
 
 
@@ -27,9 +27,9 @@ class AcceleratedModules(ABC):
 
     def __init__(self, configs: dict[str, AcceleratedConfig] = {}):
         """
-        This class is used to store the checkpoints and module configs for the optimized modules.
+        This class is used to store the checkpoints and module configs for the accelerated modules.
         Args:
-            configs: A dictionary of AcceleratedConfig for the optimized modules.
+            configs: A dictionary of AcceleratedConfig for the accelerated modules.
         """
         self._configs = {}
         for k, v in configs.items():
@@ -63,7 +63,14 @@ class AcceleratedModules(ABC):
         raise NotImplementedError("Subclass must implement this method")
 
 
-class OptimizedModuleSetterMixin:
+class OptimizedModuleSetterMixin(ABC):
+
+    @abstractmethod
+    def get_optimized_modules(
+        self,
+        accelerated_configs: dict[str,
+                                  AcceleratedConfig]) -> AcceleratedModules:
+        raise NotImplementedError("Subclass must implement this method")
 
     def optimize(self,
                  accelerated_configs: dict[str, AcceleratedConfig],
@@ -71,15 +78,13 @@ class OptimizedModuleSetterMixin:
                      BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
         """
-        This function is used to build the accelerated version of the model from the original.
+        This function is used to build the optimized version of Boltz1 model from the original.
         Args:
             accelerated_configs: A dictionary of modules to be accelerated.
             context_memory_allocator: The context memory allocator to be used for each module.
         Returns:
             The optimized model.
         """
-        if "get_optimized_modules" not in self.__class__.__dict__:
-            return self
         optimized_modules = self.get_optimized_modules(accelerated_configs)
         supported_modules = optimized_modules.get_supported_modules()
 
@@ -96,6 +101,6 @@ class OptimizedModuleSetterMixin:
                 **kwargs)
             org = setter_func(self, opt_m)
             opt_m.set_fallback_module(org)
-            opt_m.config.need_fallback = accelerated_modules.get_module_need_fallback(
+            opt_m.config.need_fallback = optimized_modules.get_module_need_fallback(
                 module_name)
         return self

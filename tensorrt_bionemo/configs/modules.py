@@ -98,36 +98,41 @@ class DiffusionTransformerBuildConfig(BuildConfig):
     """ TensorRT building configurations for DiffusionTransformer """
 
     def get_input_shapes(self) -> OrderedDict[str, DimSpec]:
+        # TODO: Support batch dimension
         mc = self.module_config
         seqlen = DimSpec(name="seqlen", dynamic=True)
-        batch_size = DimSpec(name="batch_size", dynamic=True)
+        multiplicity = DimSpec(name="multiplicity", dynamic=True)
         dim = DimSpec(name="dim", size=mc.dim)
         dim_single_cond = DimSpec(name="dim_single_cond",
                                   size=mc.dim_single_cond)
         dim_pairwise = DimSpec(name="dim_pairwise", size=mc.dim_pairwise)
-        num_heads = DimSpec(name="num_heads", size=mc.num_heads)
-        num_blocks = DimSpec(name="num_blocks", size=mc.num_blocks)
+        # num_heads = DimSpec(name="num_heads", size=mc.num_heads)
+        # num_blocks = DimSpec(name="num_blocks", size=mc.num_blocks)
         heads_times_blocks = DimSpec(name="heads_times_blocks",
                                      size=mc.num_heads * mc.num_blocks)
-        z_shape = (DimSpec(size=1, name="n_seqs"), num_heads, seqlen, seqlen,
-                   num_blocks)
+        
         if mc.version == "v2":
             z_shape = (DimSpec(size=1, name="n_seqs"), seqlen, seqlen,
                        heads_times_blocks)
+        elif mc.version == "v1":
+            z_shape = (DimSpec(size=1, name="n_seqs"), seqlen, seqlen,
+                   dim_pairwise)
+        else:
+            raise ValueError(f"Invalid version: {mc.version}")
 
         return OrderedDict([
-            ("a", (batch_size, seqlen, dim)),
-            ("s", (batch_size, seqlen, dim_single_cond)),
+            ("a", (multiplicity, seqlen, dim)),
+            ("s", (multiplicity, seqlen, dim_single_cond)),
             ("z", z_shape),
-            ("mask", (batch_size, seqlen)),
+            ("mask", (multiplicity, seqlen)),
         ])
 
     def get_output_shapes(self) -> OrderedDict[str, DimSpec]:
         mc = self.module_config
         seqlen = DimSpec(name="seqlen", dynamic=True)
-        batch_size = DimSpec(name="batch_size", dynamic=True)
+        multiplicity = DimSpec(name="multiplicity", dynamic=True)
         dim = DimSpec(name="dim", size=mc.dim)
-        return OrderedDict([("output_a", (batch_size, seqlen, dim))])
+        return OrderedDict([("output_a", (multiplicity, seqlen, dim))])
 
     def get_optimization_profiles(self) -> list[Any]:
         return create_optimization_profiles(self)

@@ -51,6 +51,8 @@ class WeightMode(str, enum.Enum):
     FUSED_QKV_LINEAR = 'fused_qkv_linear'
     # weight of a fused gate and up linear layer
     FUSED_KV_LINEAR = 'fused_kv_linear'
+    # weight of a fused all linear layer, the last dimension is the fused dimension
+    FUSED_ALL_LINEAR_LAST_DIM = 'fused_all_linear_last_dim'
 
 
 @dataclass(kw_only=True)
@@ -281,5 +283,24 @@ class Linear(nn.Module):
                 v_bias = load_weight_shard(weights[1]['bias'], self.tp_size,
                                            self.tp_rank, self.tp_mode, device)
                 copy(self.bias, torch.cat((k_bias, v_bias)))
+        elif weight_mode == WeightMode.FUSED_ALL_LINEAR_LAST_DIM:
+            fused_weight = []
+            for weight_index in range(len(weights)):
+                weight = load_weight_shard(weights[weight_index]['weight'],
+                                           self.tp_size, self.tp_rank,
+                                           self.tp_mode, device)
+                fused_weight.append(weight)
+            copy(self.weight, torch.cat(fused_weight, dim=-1))
+
+            if self.bias is not None:
+                fused_bias = []
+                for bias_index in range(len(weights)):
+                    bias = load_weight_shard(weights[bias_index]['bias'],
+                                             self.tp_size, self.tp_rank,
+                                             self.tp_mode, device)
+                    fused_bias.append(bias.unsqueeze(-1))
+
+                copy(self.bias, torch.sum(torch.cat(fused_bias, dim=-1),
+                                          dim=-1))
         else:
             raise ValueError(f'unsupported weight mode: {weight_mode}')

@@ -16,3 +16,7 @@
 # Find CUDA Toolkit
 find_package(CUDAToolkit REQUIRED)
 
+message(STATUS "CUDA library status:")
+message(STATUS "    version: ${CUDAToolkit_VERSION}")
+message(STATUS "    libraries: ${CUDAToolkit_LIBRARY_DIR}")
+message(STATUS "    include path: ${CUDAToolkit_INCLUDE_DIRS}")

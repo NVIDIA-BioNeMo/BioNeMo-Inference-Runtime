@@ -1,7 +1,33 @@
-from .basic import (AtomType, AtomTypes, EntityType, FoldingOutput, InputChain,
-                    InputRequest, ResType, ResTypes, Sequence)
+from .basic import (
+    MSAParsed,
+    AtomType,
+    AtomTypes,
+    FoldingOutput,
+    InputParsed,
+    InputRequest,
+    MSARecord,
+    Polymer,
+    PolymerParsed,
+    PolymerType,
+    ResType,
+    ResTypes,
+    Template,
+    TemplateParsed,
+)
 
 __all__ = [
-    "EntityType", "ResType", "ResTypes", "Sequence", "InputChain",
-    "InputRequest", "AtomType", "AtomTypes", "FoldingOutput"
+    "MSAParsed",
+    "AtomType",
+    "AtomTypes",
+    "FoldingOutput",
+    "InputParsed",
+    "InputRequest",
+    "MSARecord",
+    "Polymer",
+    "PolymerParsed",
+    "PolymerType",
+    "ResType",
+    "ResTypes",
+    "Template",
+    "TemplateParsed",
 ]

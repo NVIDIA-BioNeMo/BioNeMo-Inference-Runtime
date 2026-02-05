@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -62,18 +62,23 @@ class SampleRepeater(FeatureCollatorBase):
                  stack_dim: int = -1):
         super().__init__(config)
         if get_n_iters is None:
-            get_n_iters = lambda config: 1
+
+            def get_n_iters(_: Optional[BaseConfig]) -> int:
+                return 1
+
         self.n_iter = get_n_iters(config)
         self.stack_dim = stack_dim
 
         self.feature_collators = []
-        for v in feature_collator_specs:
-            self.feature_collators.append(v.functor(config=config, **v.kwargs))
+        if feature_collator_specs is not None:
+            for v in feature_collator_specs:
+                self.feature_collators.append(
+                    v.functor(config=config, **v.kwargs))
 
     def __call__(self, batch: dict[str, torch.Tensor],
                  context: dict[str, Any]) -> dict[str, torch.Tensor]:
         ensemble_batch = []
-        for i in range(self.n_iter):
+        for _ in range(self.n_iter):
             batch_i = batch.copy()
             for collator in self.feature_collators:
                 if collator.is_enabled():
@@ -88,12 +93,14 @@ class SampleRepeater(FeatureCollatorBase):
 
 
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
-    """ Setup environment for the feature factory. """
+    """ Setup environment for the feature factory.
+    TODO: Get the random seed from the settings.
+    """
     random.randrange(2**32)
     # np.random.seed(random_seed)
-    np.random.seed(42)
+    np.random.seed(0)
     # torch.manual_seed(random_seed + 1)
-    torch.manual_seed(42)
+    torch.manual_seed(1)
     context["ensemble_seed"] = random.randint(0, torch.iinfo(torch.int32).max)
     return context
 

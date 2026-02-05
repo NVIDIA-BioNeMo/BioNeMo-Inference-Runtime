@@ -1,3 +1,19 @@
+# Copyright 2021 AlQuraishi Laboratory
+# Copyright 2021 DeepMind Technologies Limited
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from typing import Any, Optional
 
 import numpy as np
@@ -20,6 +36,63 @@ class PostProcessor(PostProcessorBase):
         if self.config is None:
             self.config = PostProcessorConfig()
 
+    def _normalize_residue_indices(self,
+                                   residue_index: np.ndarray) -> np.ndarray:
+        """Normalize residue indices for multi-chain FASTAs.
+
+        Converts global residue indices (with gaps between chains) to
+        per-chain residue indices starting from 0 for each chain.
+
+        The algorithm detects chain boundaries by examining when the chain ID
+        (computed as (residue_index[i] - i) // multimer_ri_gap) changes.
+
+        Args:
+            residue_index: Global residue indices with multimer_ri_gap between chains
+
+        Returns:
+            Normalized residue indices (0-based for each chain)
+        """
+        if len(residue_index) == 0:
+            return residue_index
+
+        # Calculate which chain each residue belongs to
+        position_in_sequence = np.arange(residue_index.shape[0])
+        chain_ids = ((residue_index - position_in_sequence) /
+                     self.config.multimer_ri_gap).astype(np.int64)
+
+        # Detect chain transitions
+        chain_changes = np.concatenate([[True], chain_ids[1:]
+                                        != chain_ids[:-1]])
+
+        # Calculate offsets at chain boundaries: position + chain_id * multimer_ri_gap
+        chain_offsets_at_boundaries = (
+            position_in_sequence +
+            chain_ids * self.config.multimer_ri_gap) * chain_changes
+
+        # Forward-fill: propagate each offset to all positions until the next change
+        # Use cummax to get the most recent chain offset for each position
+        offsets = np.maximum.accumulate(chain_offsets_at_boundaries)
+
+        # Normalize residue indices within each chain
+        return residue_index - offsets
+
+    def _get_chain_indices(self, np_batch: dict[str,
+                                                np.ndarray]) -> np.ndarray:
+        """Extract or infer chain indices from batch data.
+
+        Args:
+            np_batch: Batch dictionary containing residue data
+
+        Returns:
+            Array of chain indices (0-based) for each residue
+        """
+        if 'asym_id' in np_batch:
+            # Use explicit asymmetric unit IDs if available (convert to 0-based)
+            return np_batch["asym_id"] - 1
+        else:
+            # Default to single chain (all zeros)
+            return np.zeros_like(np_batch["aatype"])
+
     def __call__(self, batch: dict[str, Any],
                  output: dict[str, Any]) -> FoldingOutput:
         np_batch = {}
@@ -38,29 +111,17 @@ class PostProcessor(PostProcessorBase):
         if self.config.subtract_plddt:
             plddt_b_factors = 100 - plddt_b_factors
 
-        # For multi-chain FASTAs
-        ri = np_batch["residue_index"]
-        chain_indices = (ri -
-                         np.arange(ri.shape[0])) / self.config.multimer_ri_gap
-        chain_indices = chain_indices.astype(np.int64)
-        cur_chain = 0
-        prev_chain_max = 0
-        for i, c in enumerate(chain_indices):
-            if c != cur_chain:
-                cur_chain = c
-                prev_chain_max = i + cur_chain * self.config.multimer_ri_gap
+        # Normalize residue indices for multi-chain sequences
+        normalized_residue_index = self._normalize_residue_indices(
+            np_batch["residue_index"])
 
-            np_batch["residue_index"][i] -= prev_chain_max
-
-        if 'asym_id' in np_batch:
-            chain_indices = np_batch["asym_id"] - 1
-        else:
-            chain_indices = np.zeros_like(np_batch["aatype"])
+        # Extract chain indices from batch data
+        chain_indices = self._get_chain_indices(np_batch)
 
         return FoldingOutput(
             residue_types=np_batch["aatype"],
             atom_positions=output["final_atom_positions"].cpu().numpy(),
             atom_mask=output["final_atom_mask"].cpu().numpy(),
-            residue_indices=np_batch["residue_index"] + 1,
+            residue_indices=normalized_residue_index + 1,
             b_factors=plddt_b_factors,
             chain_indices=chain_indices)

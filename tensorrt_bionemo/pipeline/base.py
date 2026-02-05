@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from typing import Any, Callable, Optional, Type, Union
@@ -29,13 +31,15 @@ class FeatureGeneratorBase(ABC):
 
     def __init__(self, config: Optional[BaseConfig] = None, **kwargs: Any):
         self.config = config
-        self.name = kwargs.get("name", self.__class__.__name__)
+        self._name = kwargs.get("name", self.__class__.__name__)
 
-    def set_name(self, name: str):
-        self.name = name
+    @property
+    def name(self) -> str:
+        return self._name
 
-    def get_name(self) -> str:
-        return self.name
+    @name.setter
+    def name(self, name: str):
+        self._name = name
 
     @abstractmethod
     def __call__(self, batch: dict[str, torch.Tensor],
@@ -101,18 +105,26 @@ class ContextGeneratorBase(ABC):
     @abstractmethod
     def __call__(self) -> dict[str, torch.Tensor]:
         """
-        Generate a structure context from a ComplexInput.
+        Generate a structure context from a InputRequest.
         """
         return {}
 
-    def set_required_kwargs(self, required_kwargs: list[str]):
-        self._required_kwargs = required_kwargs
-
-    def get_required_kwargs(self) -> list[str]:
+    @property
+    def required_kwargs(self) -> list[str]:
         return self._required_kwargs
+
+    @required_kwargs.setter
+    def required_kwargs(self, required_kwargs: list[str]):
+        self._required_kwargs = required_kwargs
 
 
 class ContextGeneratorSpec(BaseModel):
+    """ Context generator spec is a specification for a context generator.
+    Normally, the contexts include:
+      - Polymers context: the context of the polymers.
+      - MSA context: the context of the MSA for the polymers.
+      - Template context: the context of the template for the polymers.
+    """
     name: str = Field(description="The name of the context generator.")
     generator: Type[ContextGeneratorBase] = Field(
         description="The generator function for the context generator.")
@@ -126,6 +138,7 @@ def dict_context_merger(
 ) -> dict[str, torch.Tensor]:
     """
     Merge a dictionary of context tensors into a single dictionary of context tensors.
+    WARNING: This function is not key-conflict safe.
     """
     ret = {}
     if isinstance(contexts, list):

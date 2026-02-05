@@ -41,8 +41,14 @@ $ pytest -s $(pwd)/tests
 ```
 
 ### Release Docker
-
-Wheel and packing: TBD
+Use the same development docker to build the wheel package:
+```bash
+# clean building caches.
+$ rm -rf cpp/build 
+$ pip install build
+# Set RECOMPILE_CPP=1 to avoid caches
+$ RECOMPILE_CPP=1 python -m build --wheel --no-isolation --outdir packages/
+```
 
 ## Troubleshoots
 

@@ -28,14 +28,24 @@ def extract_resource_kwargs(
 
 
 def normalize_cpu_stage_concurrency(
-        concurrency: Optional[Union[int, Tuple[int, int]]]) -> Tuple[int, int]:
-    """Normalize concurrency for CPU stages (int -> (1, int) for autoscaling)."""
+        concurrency: Optional[Union[int, Tuple[int, int]]]) -> ray.data.ActorPoolStrategy:
+    """
+    Normalize concurrency specification to ActorPoolStrategy for CPU stages.
+    
+    Args:
+        concurrency: Concurrency specification:
+            - None: Returns ActorPoolStrategy(1, 1) - single actor, no autoscaling
+            - int n: Returns ActorPoolStrategy(1, n) - autoscale from 1 to n actors
+            - tuple (min, max): Returns ActorPoolStrategy(min, max) - custom autoscaling range
+    
+    Returns:
+        ray.data.ActorPoolStrategy configured based on the input specification
+    """
     if concurrency is None:
-        return ray.data.ActorPoolStrategy(
-            min_size=1, max_size=1)  # Default to minimal autoscaling pool
+        return ray.data.ActorPoolStrategy(min_size=1, max_size=1)
     if isinstance(concurrency, int):
         return ray.data.ActorPoolStrategy(min_size=1, max_size=concurrency)
-    return concurrency
+    return ray.data.ActorPoolStrategy(min_size=concurrency[0], max_size=concurrency[1])
 
 
 def build_cpu_stage_map_kwargs(

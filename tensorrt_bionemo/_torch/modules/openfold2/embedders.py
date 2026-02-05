@@ -672,6 +672,7 @@ class TemplateEmbedder(nn.Module):
             z: torch.Tensor,
             pair_mask: torch.Tensor,
             templ_dim: int,
+            skip_template_pair_stack: bool = False,
             all_reduce_params: Optional[AllReduceParams] = None
     ) -> torch.Tensor:
         # Embed the templates one at a time (with a poor man's vmap)
@@ -707,6 +708,7 @@ class TemplateEmbedder(nn.Module):
         t = self.template_pair_stack(
             t_pair,
             pair_mask.unsqueeze(-3).to(t_pair),
+            skip_template_pair_stack=skip_template_pair_stack,
             all_reduce_params=all_reduce_params,
         )
 
@@ -1035,6 +1037,7 @@ class TemplateEmbedderMultimer(nn.Module):
         padding_mask_2d: torch.Tensor,
         templ_dim: int,
         multichain_mask_2d: torch.Tensor,
+        skip_template_pair_stack: bool = False,
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> dict[str, torch.Tensor]:
         template_embeds = []
@@ -1109,6 +1112,7 @@ class TemplateEmbedderMultimer(nn.Module):
         t = self.template_pair_stack(
             template_embeds["template_pair_embedding"],
             padding_mask_2d.unsqueeze(-3).to(z),
+            skip_template_pair_stack=skip_template_pair_stack,
             all_reduce_params=all_reduce_params,
         )
 

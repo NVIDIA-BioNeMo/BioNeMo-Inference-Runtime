@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,13 +36,12 @@ class TemplateContextGenerator(ContextGeneratorBase):
         }
 
     def __call__(self, parsed: InputParsed) -> dict[str, torch.Tensor]:
-        """ This flow for custom tempales in the OpenFold2:
-        Progress: get_custom_template_features -> _realign_pdb_template_to_query -> _extract_template_features
-        """
-        parsed_template = parsed['template']
-        parsed_primary = parsed['primary']
-        if parsed_template is None or len(parsed_template) == 0:
-            n_res = len(parsed_primary['chains'][0]['sequence']['residues'])
+        polymer = parsed['polymers'][0]
+        parsed_templates = polymer.get('templates')
+        sequence = polymer['sequence']
+
+        if parsed_templates is None or len(parsed_templates) == 0:
+            n_res = len(sequence)
             tensors = self.empty_template_feats(n_res)
             return tensors
 

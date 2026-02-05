@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,8 +16,6 @@ from functools import lru_cache
 
 import torch
 import torch.nn.functional as F
-
-from tensorrt_bionemo.data.schemas import ResType, Sequence
 
 from .schemas import AtomType, AtomTypes, ResType, ResTypes
 
@@ -46,7 +44,7 @@ def get_all_atom_types(model: str) -> list[AtomType]:
     return atom_types
 
 
-def sequence_to_onehot(sequence: Sequence,
+def sequence_to_onehot(sequence: str,
                        restype_to_idx: dict[str, int]) -> torch.IntTensor:
     """
     Maps the given sequence into a one-hot encoded matrix.

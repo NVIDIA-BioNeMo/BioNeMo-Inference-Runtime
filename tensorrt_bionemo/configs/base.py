@@ -316,21 +316,22 @@ def print_model_tree(model: BaseModel, indent: int = 0):
             print(f"{prefix}{name}: {value}")
 
 
-class PostProcessorConfig(BaseModel):
-
-    class Config:
-        extra = "allow"
-        arbitrary_types_allowed = True
-
-
 class AcceleratedConfig(BaseModel):
     checkpoint: Optional[str] = None
     backend: Optional[str] = None
     default: Optional[BaseConfig] = None
     warmup: bool = False
     compile: bool = False
+    need_fallback: Optional[Callable[..., bool]] = None
 
     class Config:
+        arbitrary_types_allowed = True
+
+
+class PostProcessorConfig(BaseModel):
+
+    class Config:
+        extra = "allow"
         arbitrary_types_allowed = True
 
 

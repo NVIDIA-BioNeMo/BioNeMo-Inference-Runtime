@@ -195,7 +195,6 @@ class TemplatePairStackBlock(nn.Module):
         single_templates_masks = [
             m.unsqueeze(-3) for m in torch.unbind(mask, dim=-3)
         ]
-        z.dtype
 
         for i in range(len(single_templates)):
             single = single_templates[i].to(self.dtype)
@@ -285,6 +284,7 @@ class TemplatePairStack(nn.Module):
             self,
             t: torch.tensor,
             mask: torch.tensor,
+            skip_template_pair_stack: bool = False,
             all_reduce_params: Optional[AllReduceParams] = None
     ) -> torch.Tensor:
         """
@@ -302,11 +302,10 @@ class TemplatePairStack(nn.Module):
             expand_idx[-3] = t.shape[-4]
             mask = mask.expand(*expand_idx)
 
-        for block in self.blocks:
-            t = block(z=t, mask=mask, all_reduce_params=all_reduce_params)
-
+        if not skip_template_pair_stack:
+            for block in self.blocks:
+                t = block(z=t, mask=mask, all_reduce_params=all_reduce_params)
         t = self.layer_norm(t)
-
         return t.to(origin_dtype)
 
 

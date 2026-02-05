@@ -14,7 +14,8 @@
 # limitations under the License.
 
 import tensorrt as trt
-from tensorrt_llm_lite.functional import (Tensor, cast, concat, einsum,
+from tensorrt_llm_lite.functional import (Tensor, cast, concat,
+                                          constant_to_tensor_, einsum,
                                           elementwise_binary, shape, split,
                                           sum)
 from tensorrt_llm_lite.layers.linear import Linear
@@ -89,12 +90,15 @@ class OuterProductMean(Module):
 
         mask = sum(left_mask * right_mask, dim=1)
 
-        mask = cast(mask, "float32")
+        if self.cast_to_float_before_einsum:
+            mask = cast(mask, "float32")
         if self.norm_mask_by_eps:
-            num_mask = mask + self.mask_eps
+            num_mask = mask + constant_to_tensor_(
+                self.mask_eps, mask.dtype, to_array=False)
         else:
-            num_mask = elementwise_binary(mask, float(1),
-                                          trt.ElementWiseOperation.MAX)
+            num_mask = elementwise_binary(
+                mask, constant_to_tensor_(1., mask.dtype, to_array=False),
+                trt.ElementWiseOperation.MAX)
 
         z = einsum("bsic,bsjd->bijcd", [a, b])
 

@@ -101,8 +101,7 @@ def _build_tokenizer_stage(config: EngineProcessorConfig, processor_defaults: Di
     context_generators = {}
     for k, generator_spec in tokenizer.context_generator_specs.items():
         context_generators[k] = generator_spec.generator()
-        context_generators[k].set_required_kwargs(
-            generator_spec.required_kwargs)
+        context_generators[k].required_kwargs = generator_spec.required_kwargs
 
     # Get the model class and pretrained config
     model_class = get_model_class(config.model_source)
@@ -146,12 +145,12 @@ def _build_feature_generator_stage(config: EngineProcessorConfig, processor_defa
     for generator_spec in feature_factory.feature_generator_specs:
         generator = generator_spec.functor(config=model_pretrained_config,
                                            **generator_spec.kwargs)
-        generator.set_name(generator_spec.name)
+        generator.name = generator_spec.name
         feature_generators.append(generator)
     for collator_spec in feature_factory.feature_collator_specs:
         collator = collator_spec.functor(config=model_pretrained_config,
                                          **collator_spec.kwargs)
-        collator.set_name(collator_spec.name)
+        collator.name = collator_spec.name
         feature_collators.append(collator)
     return FeatureGeneratorStage(
         fn_constructor_kwargs={

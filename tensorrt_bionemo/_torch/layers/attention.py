@@ -23,6 +23,7 @@ from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
+from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..attention_backend import AttentionMetadata, AttentionType
@@ -335,7 +336,10 @@ class AttentionPairBias(nn.Module):
                  dtype: torch.dtype = None,
                  inf: float = 1e6,
                  eps: float = 1e-5,
+                 use_initial_ada_layer_norm: bool = False,
                  max_attention_pairwise_tp_size: bool = True,
+                 use_seperate_layer_norm: bool = False,
+                 use_ada_layer_norm: bool = True,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  attn_backend: str = "VANILLA"):
@@ -346,6 +350,8 @@ class AttentionPairBias(nn.Module):
         self.num_heads = num_heads
         self.head_dim = c_s // num_heads
         self.initial_norm = initial_norm
+        self.use_seperate_layer_norm = use_seperate_layer_norm
+        self.use_ada_layer_norm = use_ada_layer_norm
         self.inf = inf
 
         self.num_key_value_heads = num_heads
@@ -367,6 +373,26 @@ class AttentionPairBias(nn.Module):
         self.norm_s = None
         if initial_norm:
             self.norm_s = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
+
+        if self.use_seperate_layer_norm:
+            if self.use_ada_layer_norm:
+                self.layer_norm_a_q = AdaLN(
+                    self.c_s,
+                    self.c_s,
+                    eps=eps,
+                    dtype=dtype,
+                    mapping=mapping,
+                    skip_create_weights=skip_create_weights)
+                self.layer_norm_a_k = AdaLN(
+                    self.c_s,
+                    self.c_s,
+                    dtype=dtype,
+                    eps=eps,
+                    skip_create_weights=skip_create_weights,
+                    mapping=mapping)
+            else:
+                self.layer_norm_a_q = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
+                self.layer_norm_a_k = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
 
         self.proj_q = Linear(
             self.c_s,
@@ -438,14 +464,16 @@ class AttentionPairBias(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
+        single_embedding: torch.Tensor | None = None,
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         """ Single and TP Distributed version for AttentionPairBias. I=J if is self-attention.
         Args:
-            s: [*, I, C_S]
+            s: [*, I, C_S] Token or atom-level embedding
             z: [*, I, J, C_Z] if compute_pair_bias else [*, H, I, J]
             mask: [*, I]
+            single_embedding: [*, I, C_S] Single embedding. Used in AdaLN if use_ada_layer_norm is True
             attn_metadata (Optional[AttentionMetadata]): The attention metadata.
                 - query_to_keys (Callable): The function to convert the query to keys.
                 - bias_cache (dict): The bias cache.
@@ -453,21 +481,30 @@ class AttentionPairBias(nn.Module):
         Returns:
             Updated output tensor.
         """
-        s.size(0)
         if self.initial_norm:
             s = self.norm_s(s)
         if not s.is_contiguous():
             s = s.contiguous()
         kv_in = s
-        q = self.proj_q(s)
 
         if attn_metadata is not None:
             # Get key-value from the query for sequence local atom attention
             query_to_keys = attn_metadata.query_to_keys
+
             if query_to_keys is not None:
+
                 kv_in = query_to_keys(s)
                 mask = query_to_keys(mask.unsqueeze(-1)).squeeze(-1)
-
+                if self.use_seperate_layer_norm:
+                    if self.use_ada_layer_norm:
+                        assert single_embedding is not None, "single_embedding is required for AdaLN"
+                        single_embedding_kv = query_to_keys(single_embedding)
+                        s = self.layer_norm_a_q(s, single_embedding)
+                        kv_in = self.layer_norm_a_k(kv_in, single_embedding_kv)
+                    else:
+                        s = self.layer_norm_a_q(s)
+                        kv_in = self.layer_norm_a_k(kv_in)
+        q = self.proj_q(s)
         kv = self.proj_kv(kv_in)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
         mask = mask[..., None, None, :]

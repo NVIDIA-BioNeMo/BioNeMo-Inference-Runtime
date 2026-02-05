@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,12 +14,17 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Type
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, Type
 
 import torch.nn as nn
 
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.logger import logger
+
+if TYPE_CHECKING:
+    from tensorrt_bionemo.pipeline.base import (FeatureFactoryBase,
+                                                PostProcessorBase,
+                                                TokenizerBase)
 
 
 class ModelComponentsFactory(ABC):
@@ -55,7 +60,7 @@ class ModelComponentsFactory(ABC):
 
 
 class ModelRegistry:
-    _factories: Dict[str, Type[ModelComponentsFactory]] = {}
+    _factories: ClassVar[Dict[str, Type[ModelComponentsFactory]]] = {}
 
     @classmethod
     def register(cls, model_name: str, factory: Type[ModelComponentsFactory]):
@@ -75,8 +80,7 @@ class ModelRegistry:
         if model_name not in cls._factories:
             raise ValueError(
                 f"Model {model_name} not registered. "
-                f"Available models: {list(cls._factories.keys())}"
-            )
+                f"Available models: {list(cls._factories.keys())}")
         return cls._factories[model_name]
 
     @classmethod
@@ -100,13 +104,13 @@ class ModelRegistry:
         return cls.get_factory(model_name).get_trt_building_modules()
 
     @classmethod
-    def get_building_module_class(cls, model_name: str, module_name: str) -> Any:
+    def get_building_module_class(cls, model_name: str,
+                                  module_name: str) -> Any:
         modules = cls.get_trt_building_modules(model_name)
         if module_name not in modules:
             raise ValueError(
                 f"Module {module_name} not found for model {model_name}. "
-                f"Available modules: {list(modules.keys())}"
-            )
+                f"Available modules: {list(modules.keys())}")
         return modules[module_name]
 
 
@@ -119,17 +123,20 @@ class OpenFold2Factory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import Tokenizer
+        from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import \
+            Tokenizer
         return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import FeatureFactory
+        from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import \
+            FeatureFactory
         return FeatureFactory()
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import PostProcessor
+        from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import \
+            PostProcessor
         return PostProcessor
 
     @classmethod
@@ -171,22 +178,23 @@ class Boltz1Factory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError("Boltz1 tokenizer not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz1 tokenizer not implemented in pipeline")
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError("Boltz1 feature factory not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz1 feature factory not implemented in pipeline")
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError("Boltz1 postprocessor not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz1 postprocessor not implemented in pipeline")
 
     @classmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:
         from tensorrt_bionemo._trt.layers.transformers import (
-            PairformerModule,
-            TokenTransformer,
-        )
+            PairformerModule, TokenTransformer)
         return {
             "structure_pairformer": PairformerModule,
             "confidence_pairformer": PairformerModule,
@@ -207,22 +215,23 @@ class Boltz2Factory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError("Boltz2 tokenizer not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz2 tokenizer not implemented in pipeline")
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError("Boltz2 feature factory not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz2 feature factory not implemented in pipeline")
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError("Boltz2 postprocessor not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz2 postprocessor not implemented in pipeline")
 
     @classmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:
         from tensorrt_bionemo._trt.layers.transformers import (
-            PairformerModule,
-            TokenTransformer,
-        )
+            PairformerModule, TokenTransformer)
         return {
             "structure_pairformer": PairformerModule,
             "confidence_pairformer": PairformerModule,
@@ -243,22 +252,23 @@ class Boltz2AffinityFactory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError("Boltz2Affinity tokenizer not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz2Affinity tokenizer not implemented in pipeline")
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError("Boltz2Affinity feature factory not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz2Affinity feature factory not implemented in pipeline")
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError("Boltz2Affinity postprocessor not implemented in pipeline")
+        raise NotImplementedError(
+            "Boltz2Affinity postprocessor not implemented in pipeline")
 
     @classmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:
         from tensorrt_bionemo._trt.layers.transformers import (
-            PairformerModule,
-            TokenTransformer,
-        )
+            PairformerModule, TokenTransformer)
         return {
             "structure_pairformer": PairformerModule,
             "confidence_pairformer": PairformerModule,
@@ -278,22 +288,23 @@ class OpenFold3Factory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError("OpenFold3 tokenizer not implemented in pipeline")
+        raise NotImplementedError(
+            "OpenFold3 tokenizer not implemented in pipeline")
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError("OpenFold3 feature factory not implemented in pipeline")
+        raise NotImplementedError(
+            "OpenFold3 feature factory not implemented in pipeline")
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError("OpenFold3 postprocessor not implemented in pipeline")
+        raise NotImplementedError(
+            "OpenFold3 postprocessor not implemented in pipeline")
 
     @classmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:
         from tensorrt_bionemo._trt.layers.transformers import (
-            OpenFold3DiffusionTransformer,
-            PairformerModule,
-        )
+            OpenFold3DiffusionTransformer, PairformerModule)
         return {
             "pairformer": PairformerModule,
             "token_transformer": OpenFold3DiffusionTransformer,
@@ -314,10 +325,8 @@ def register_all_factories():
     ]
     for factory in factories:
         ModelRegistry.register_factory(factory)
-        
+
     logger.info(f"Registered {len(factories)} model factories")
-
-
 
 
 def get_model_class(model_name: str) -> Type[nn.Module]:

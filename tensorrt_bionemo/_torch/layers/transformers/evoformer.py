@@ -111,7 +111,7 @@ class EvoformerBlock(nn.Module):
             mask_eps=1e-3,
             norm_mask_by_eps=True,
             norm_before_output=False,
-            cast_to_float_before_einsum=True,
+            cast_to_float_before_einsum=False,
             bias_flags={
                 "proj_a": True,
                 "proj_b": True,

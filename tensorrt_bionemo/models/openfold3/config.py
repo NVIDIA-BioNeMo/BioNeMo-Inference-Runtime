@@ -17,6 +17,46 @@ from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       PairformerConfig)
 
 
+class _Default:
+    c_z: int = 128
+    c_s: int = 384
+    n_query: int = 32
+    n_key: int = 128
+
+
+class InputEmbedderAllAtomConfig(BaseConfig):
+    c_s_input: int = 449
+    c_atom_ref_element: int = 119
+    c_atom_ref_name_chars: int = 256
+    c_atom: int = 128
+    c_atom_pair: int = 16
+    c_token: int = 384
+    c_hidden: int = 32
+    n_transition: int = 2
+    n_query: int = _Default.n_query
+    n_key: int = _Default.n_key
+    c_s: int = _Default.c_s
+    c_z: int = _Default.c_z
+    max_relative_idx: int = 32
+    max_relative_chain: int = 2
+    add_noisy_pos: bool = False
+    atom_transformer_config: DiffusionTransformerConfig = DiffusionTransformerConfig(
+        num_blocks=3,
+        num_heads=4,
+        dim=128,
+        dim_single_cond=128,
+        dim_pairwise=16,
+        post_layer_norm=False,
+        bias_proj=True,
+        dtype="float32",
+        initial_norm=False,
+        attention_initial_norm=False,
+        use_ada_layer_norm=True,
+        use_seperate_layer_norm=True,
+        conditioned_transition_using_silu=True,
+        version="v1")
+
+
 class OpenFold3Config(BaseConfig):
     c_z: int = 128
     c_s: int = 384
@@ -42,5 +82,7 @@ class OpenFold3Config(BaseConfig):
             expansion_factor=2,
             bias_proj=True,
             conditioned_transition_using_silu=True,
+            attention_initial_norm=False,
+            post_layer_norm=False,
             version="v1",
             dtype="float32"), ))

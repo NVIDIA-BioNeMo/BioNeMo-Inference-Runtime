@@ -18,7 +18,13 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 import pytest
 
+import numpy as np
 import ray
+
+import biotite.structure as struc
+import biotite.structure.io.pdbx as pdbx
+import biotite.structure.io.pdb as pdb
+from biotite.structure import AtomArrayStack
 
 from tensorrt_bionemo.pipeline.processor.engine_proc import (
     EngineProcessorConfig, Processor, build_processor)
@@ -91,4 +97,22 @@ def test_writer_stage_in_noop_pipe():
     ds_for_cif = processor_for_cif(ds)
     ds_for_cif.materialize()
     
-    print("all done")
+    # (4) metrics to compare output
+    for x in ["T1031"]:
+        pdb_file = pdb.PDBFile.read(
+            os.path.join(output_path, f"{x}_0.pdb")
+        )
+        struc_from_pdb: AtomArrayStack = pdb.get_structure(pdb_file)
+        cif_file = pdbx.CIFFile.read(
+            os.path.join(output_path, f"{x}_0.cif")
+        )
+        struc_from_cif: AtomArrayStack = pdbx.get_structure(cif_file)
+        
+        atom_coord_from_pdb: np.array = struc_from_pdb.coord
+        atom_coord_from_cif: np.array = struc_from_cif.coord
+        
+        atom_coord_delta_size: np.array = np.abs(atom_coord_from_cif - atom_coord_from_pdb)
+        assert atom_coord_delta_size.max() < 0.1
+        
+    print("done")
+

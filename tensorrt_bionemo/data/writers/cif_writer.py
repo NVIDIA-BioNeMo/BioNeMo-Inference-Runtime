@@ -81,7 +81,8 @@ class CIFWriter(BaseWriter):
             (6) set atom_types to the name field of self.atom_types
 
         """
-        trtbnm_logger("begin")
+
+        #trtbnm_logger("begin")
         system_title = 'TensorRT BioNeMo prediction'
         
         # get output protein complex representation
@@ -236,6 +237,5 @@ class CIFWriter(BaseWriter):
         if self.output_path is not None:
             with open(self.output_path, "w") as f:
                 f.write(buffer)
-
-        trtbnm_logger("end")
+        #trtbnm_logger("end")
         return buffer

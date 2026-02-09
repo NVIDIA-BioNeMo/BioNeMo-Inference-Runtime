@@ -22,7 +22,7 @@ def trtbnm_logger(message: str = "trt_bnm_logger", do_print: bool=False):
         """
         if do_print:
             print(formatted_message)
-        logger.log(trtbnm_log_level_from_env, formatted_message)
+        logger.log(logger.INFO, formatted_message)
 
 
 def caller_info(levels_up: int = 1) -> str:

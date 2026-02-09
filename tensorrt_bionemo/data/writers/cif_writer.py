@@ -22,7 +22,7 @@ from modelcif import dumper, model, qa_metric  # noqa: F401
 
 from tensorrt_bionemo.data.schemas.basic import FoldingOutput
 from tensorrt_bionemo.data.writers.base_writer import BaseWriter
-from tensorrt_bionemo.logger import logger
+from tensorrt_bionemo.logger import trtbnm_logger
 
 
 class CIFWriter(BaseWriter):
@@ -81,7 +81,6 @@ class CIFWriter(BaseWriter):
             (6) set atom_types to the name field of self.atom_types
 
         """
-        breakpoint()
         trtbnm_logger("begin")
         system_title = 'TensorRT BioNeMo prediction'
         
@@ -92,7 +91,7 @@ class CIFWriter(BaseWriter):
             "atom_positions"]  # shape: (n_res, n_atoms, 3)
         atom_mask: np.ndarray[np.float32] = folding_output["atom_mask"]
 
-        chain_indices: np.ndarray[np.int64] = folding_output["chain_indices"]
+        chain_indices: np.ndarray[np.int64] | None = folding_output["chain_indices"]
         residue_indices: np.ndarray[np.int64] = folding_output[
             "residue_indices"]  # 1-based
         b_factors: np.ndarray[np.float32] = folding_output["b_factors"]
@@ -101,6 +100,13 @@ class CIFWriter(BaseWriter):
         #   - below seqs is map from integer to list of strings
         restypes: list[str] = [x.name for x in self.res_types]
         atom_types: list[str] = [x.name for x in self.atom_types]
+
+        # sanity checks on folding_output
+        if chain_indices.min() < 0 or chain_indices.max() > 25:
+            raise ValueError(
+                "In the CIFWriter, received folding_output chain_indices has at least"
+                "one value less than 0 or greater than 25"
+            )
 
         # start openfold logic
         n = residue_types.shape[0]  # number of sequence positions in input
@@ -231,5 +237,5 @@ class CIFWriter(BaseWriter):
             with open(self.output_path, "w") as f:
                 f.write(buffer)
 
-        logger.debug("CIFWriter.write() end")
+        trtbnm_logger("end")
         return buffer

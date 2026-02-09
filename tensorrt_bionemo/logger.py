@@ -1,13 +1,12 @@
 import os
 import inspect
-import ray
 
 from tensorrt_llm_lite.logger import logger as tllm_logger
 
 logger = tllm_logger
 
 
-def trtbnm_logger(message: str = "trt_bnm_logger", do_print: bool =True):
+def trtbnm_logger(message: str = "trt_bnm_logger", do_print: bool=False):
     
     trtbnm_log_level_from_env: str = os.getenv("TRTBNM_LOG_LEVEL", "CRITICAL").upper()
     
@@ -21,9 +20,9 @@ def trtbnm_logger(message: str = "trt_bnm_logger", do_print: bool =True):
         at {caller_info_["filename"]}: {caller_info_["line"]}
         ******** trtbnm, end ********
         """
-        if False:
+        if do_print:
             print(formatted_message)
-        logger.info(message)
+        logger.log(trtbnm_log_level_from_env, formatted_message)
 
 
 def caller_info(levels_up: int = 1) -> str:

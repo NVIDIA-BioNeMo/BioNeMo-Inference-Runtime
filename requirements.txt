@@ -18,3 +18,5 @@ uvloop==0.21.0
 modelcif==1.6
 pandas==3.0.0
 pyarrow==23.0.0
+biotite==1.6.0 
+biotraj==1.2.2

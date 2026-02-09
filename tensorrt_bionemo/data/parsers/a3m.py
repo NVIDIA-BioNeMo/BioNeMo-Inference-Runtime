@@ -16,19 +16,20 @@
 import string
 from io import StringIO
 from pathlib import Path
-from typing import List, TextIO, Union
+from typing import TextIO, Union
 
 import numpy as np
 import torch
 from Bio import SeqIO
 
 from tensorrt_bionemo.data.schemas.basic import MSAParsed
+from tensorrt_bionemo.logger import logger
 
 
-def generate_deletion_matrix(sequences: list[str],
-                             gpu_preferred: bool = False) -> torch.Tensor:
+def generate_deletion_matrix(sequences: list[str]) -> torch.Tensor:
     deletion_matrix = []
-    for msa_sequence in sequences:
+    len_vec = None
+    for i, msa_sequence in enumerate(sequences):
         deletion_vec = []
         deletion_count = 0
         for j in msa_sequence:
@@ -37,15 +38,59 @@ def generate_deletion_matrix(sequences: list[str],
             else:
                 deletion_vec.append(deletion_count)
                 deletion_count = 0
+        if len_vec is None:
+            len_vec = len(deletion_vec)
+        elif len(deletion_vec) != len_vec:
+            logger.warning(
+                f"Length of deletion vector is not consistent: {len(deletion_vec)} != {len_vec}, {i}"
+            )
         deletion_matrix.append(deletion_vec)
     ret = np.array(deletion_matrix)
     return ret
 
 
+def parse_a3m_content(content: Union[StringIO, TextIO],
+                      preserve_comments: bool = False) -> MSAParsed:
+    """Parse A3M format MSA content.
 
-def parse_a3m_content(content: Union[StringIO, TextIO]) -> MSAParsed:
+    This parser filters out comment lines before parsing the FASTA-like content.
+    Comment lines are identified as lines where lstrip().startswith("#") returns True.
+    These lines are removed before calling Bio.SeqIO.parse to ensure compatibility
+    with standard FASTA parsing.
+
+    Args:
+        content: A3M file content as StringIO or TextIO object
+        preserve_comments: If True, collect and return comment lines in the result.
+                          Default is False for backward compatibility.
+
+    Returns:
+        MSAParsed: Dictionary-like object containing:
+            - sequences: aligned sequences (lowercase deletions removed)
+            - raw: original sequences with lowercase letters (deletion info)
+            - descriptions: sequence descriptions
+            - comments: list of comment lines (only if preserve_comments=True)
+
+    Note:
+        Lines that match lstrip().startswith("#") are considered comments and
+        are removed before FASTA parsing. If preserve_comments=True, these lines
+        are collected (with leading/trailing whitespace stripped) and made available
+        in the returned MSAParsed object.
+    """
     if isinstance(content, str):
         content = StringIO(content)
+
+    # Filter out comment lines starting with "#" and optionally collect them
+    filtered_lines = []
+    comment_lines = [] if preserve_comments else None
+
+    for line in content:
+        if line.lstrip().startswith("#"):
+            if preserve_comments:
+                comment_lines.append(line.strip())
+        else:
+            filtered_lines.append(line)
+
+    content = StringIO("".join(filtered_lines))
     fasta_sequences = SeqIO.parse(content, "fasta")
     sequences = []
     descriptions = []
@@ -54,12 +99,28 @@ def parse_a3m_content(content: Union[StringIO, TextIO]) -> MSAParsed:
         descriptions.append(fasta.description)
     deletion_table = str.maketrans("", "", string.ascii_lowercase)
     aligned_sequences = [s.translate(deletion_table) for s in sequences]
-    return MSAParsed(sequences=aligned_sequences, raw=sequences, descriptions=descriptions)
+    return MSAParsed(sequences=aligned_sequences,
+                     raw=sequences,
+                     descriptions=descriptions,
+                     comments=comment_lines)
 
 
-def read_a3m(file_path: Union[str, Path]) -> MSAParsed:
+def read_a3m(file_path: Union[str, Path],
+             preserve_comments: bool = False) -> MSAParsed:
+    """Read and parse an A3M format MSA file.
+
+    Args:
+        file_path: Path to the A3M file
+        preserve_comments: If True, collect and return comment lines in the result.
+                          Default is False for backward compatibility.
+
+    Returns:
+        MSAParsed: Parsed MSA data with sequences, descriptions, and optionally comments.
+    """
     with open(file_path, "r") as f:
-        return parse_a3m_content(f)
+        return parse_a3m_content(f, preserve_comments=preserve_comments)
 
 
-__all__ = ["MSAParsed", "generate_deletion_matrix", "parse_a3m_content", "read_a3m"]
+__all__ = [
+    "MSAParsed", "generate_deletion_matrix", "parse_a3m_content", "read_a3m"
+]

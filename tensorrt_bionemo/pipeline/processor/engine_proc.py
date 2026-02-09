@@ -66,50 +66,43 @@ class EngineProcessorConfig(ProcessorConfig):
         "or the batch processing latency is too small, but it should be good "
         "enough for batch size >= 32.",
     )
-    
+
     def get_model_pretrained_config(self):
         model_class = get_model_class(self.model_source)
-        result = model_class.get_pretrained_config(
-            self.model_source)
+        result = model_class.get_pretrained_config(self.model_source)
         if "config" in self.engine_kwargs:
             # Override the default pretrained config
             result = self.engine_kwargs["config"]
         return result
 
-    
-    
-def _build_parser_stage(config: EngineProcessorConfig, processor_defaults: Dict[str, Any]) -> StatefulStage:
-    parser_stage_cfg = resolve_stage_config(
-        config.parser_stage,
-        ParserStageConfig,
-        processor_defaults
-    )
+
+def _build_parser_stage(config: EngineProcessorConfig,
+                        processor_defaults: Dict[str, Any]) -> StatefulStage:
+    parser_stage_cfg = resolve_stage_config(config.parser_stage,
+                                            ParserStageConfig,
+                                            processor_defaults)
     return ParserStage(
         fn_constructor_kwargs={},
         map_batches_kwargs=build_cpu_stage_map_kwargs(parser_stage_cfg),
         compute_by_rows=parser_stage_cfg.compute_by_rows,
         drop_keys=parser_stage_cfg.drop_keys,
     )
-    
-def _build_tokenizer_stage(config: EngineProcessorConfig, processor_defaults: Dict[str, Any]) -> StatefulStage:
-    tokenizer_stage_cfg = resolve_stage_config(
-        config.tokenizer_stage,
-        TokenizerStageConfig,
-        processor_defaults
-    )
+
+
+def _build_tokenizer_stage(
+        config: EngineProcessorConfig,
+        processor_defaults: Dict[str, Any]) -> StatefulStage:
+    model_pretrained_config = config.get_model_pretrained_config()
+    tokenizer_stage_cfg = resolve_stage_config(config.tokenizer_stage,
+                                               TokenizerStageConfig,
+                                               processor_defaults)
     tokenizer = get_tokenizer(config.model_source)
     context_generators = {}
     for k, generator_spec in tokenizer.context_generator_specs.items():
-        context_generators[k] = generator_spec.generator()
+        context_generators[k] = generator_spec.generator(
+            config=model_pretrained_config)
         context_generators[k].required_kwargs = generator_spec.required_kwargs
 
-    # Get the model class and pretrained config
-    model_class = get_model_class(config.model_source)
-    model_pretrained_config = model_class.get_pretrained_config(
-        config.model_source)
-    if "config" in config.engine_kwargs:
-        # Override the default pretrained config
-        model_pretrained_config = config.engine_kwargs["config"]
     transform_funcs = []
     for transform_spec in tokenizer.transform_specs:
         transform_cls = transform_spec.transform
@@ -128,20 +121,20 @@ def _build_tokenizer_stage(config: EngineProcessorConfig, processor_defaults: Di
         drop_keys=tokenizer_stage_cfg.drop_keys,
     )
 
-def _build_feature_generator_stage(config: EngineProcessorConfig, processor_defaults: Dict[str, Any]) -> StatefulStage:
+
+def _build_feature_generator_stage(
+        config: EngineProcessorConfig,
+        processor_defaults: Dict[str, Any]) -> StatefulStage:
     model_pretrained_config = config.get_model_pretrained_config()
     feature_generator_stage_cfg = resolve_stage_config(
-        config.feature_generator_stage, 
-        FeatureGeneratorStageConfig,
-        processor_defaults
-    )
-    
+        config.feature_generator_stage, FeatureGeneratorStageConfig,
+        processor_defaults)
 
     feature_factory = get_feature_factory(config.model_source)
     feature_generators = []
     feature_collators = []
     # Initialize feature generators and collators
-    
+
     for generator_spec in feature_factory.feature_generator_specs:
         generator = generator_spec.functor(config=model_pretrained_config,
                                            **generator_spec.kwargs)
@@ -158,53 +151,55 @@ def _build_feature_generator_stage(config: EngineProcessorConfig, processor_defa
             "feature_collators": feature_collators,
             "features_merger_func": feature_factory.features_merger_func,
             "pre_init": feature_factory.pre_init,
+            "init_context": feature_generator_stage_cfg.init_context,
         },
         # TODO: consider using GPU for feature factory
         map_batches_kwargs=build_cpu_stage_map_kwargs(
             feature_generator_stage_cfg),
         compute_by_rows=feature_generator_stage_cfg.compute_by_rows,
         # Drop parsed to save memory
-        drop_keys=feature_generator_stage_cfg.drop_keys if
-        feature_generator_stage_cfg.drop_keys is not None else ["parsed"],
+        drop_keys=feature_generator_stage_cfg.drop_keys
+        if feature_generator_stage_cfg.drop_keys is not None else ["parsed"],
     )
 
-def _build_folding_engine_stage(config: EngineProcessorConfig, processor_defaults: Dict[str, Any]) -> StatefulStage:
+
+def _build_folding_engine_stage(
+        config: EngineProcessorConfig,
+        processor_defaults: Dict[str, Any]) -> StatefulStage:
     return FoldingEngineStage(
-            fn_constructor_kwargs={
-                "model": config.model_source,
-                "engine_kwargs": config.engine_kwargs,
-                "max_pending_requests": config.max_pending_requests,
-                "should_continue_on_error": config.should_continue_on_error,
-            },
-            map_batches_kwargs=dict(
-                zero_copy_batch=True,
-                # The number of running replicas. This is a deprecated field, but
-                # we need to set `max_tasks_in_flight_per_actor` through `compute`,
-                # which initiates enough many overlapping UDF calls per actor, to
-                # saturate `max_concurrency`.
-                compute=ray.data.ActorPoolStrategy(
-                    min_size=config.get_concurrency(
-                        autoscaling_enabled=False)[0],
-                    max_size=config.get_concurrency(
-                        autoscaling_enabled=False)[1],
-                ),
-                # The number of running batches "per actor" in Ray Core level.
-                # This is used to make sure we overlap batches to avoid the tail
-                # latency of each batch.
-                max_concurrency=config.max_concurrent_batches,
-                accelerator_type=config.accelerator_type,
-                runtime_env=config.runtime_env,
+        fn_constructor_kwargs={
+            "model": config.model_source,
+            "engine_kwargs": config.engine_kwargs,
+            "max_pending_requests": config.max_pending_requests,
+            "should_continue_on_error": config.should_continue_on_error,
+        },
+        map_batches_kwargs=dict(
+            zero_copy_batch=True,
+            # The number of running replicas. This is a deprecated field, but
+            # we need to set `max_tasks_in_flight_per_actor` through `compute`,
+            # which initiates enough many overlapping UDF calls per actor, to
+            # saturate `max_concurrency`.
+            compute=ray.data.ActorPoolStrategy(
+                min_size=config.get_concurrency(autoscaling_enabled=False)[0],
+                max_size=config.get_concurrency(autoscaling_enabled=False)[1],
             ),
-            compute_by_rows=True,
-            drop_keys=None,
-        )
-    
-def _build_writer_stage(config: EngineProcessorConfig, processor_defaults: Dict[str, Any]) -> StatefulStage:
-    writer_stage_cfg = resolve_stage_config(
-        config.writer_stage,
-        WriterStageConfig,
-        processor_defaults
+            # The number of running batches "per actor" in Ray Core level.
+            # This is used to make sure we overlap batches to avoid the tail
+            # latency of each batch.
+            max_concurrency=config.max_concurrent_batches,
+            accelerator_type=config.accelerator_type,
+            runtime_env=config.runtime_env,
+        ),
+        compute_by_rows=True,
+        drop_keys=None,
     )
+
+
+def _build_writer_stage(config: EngineProcessorConfig,
+                        processor_defaults: Dict[str, Any]) -> StatefulStage:
+    writer_stage_cfg = resolve_stage_config(config.writer_stage,
+                                            WriterStageConfig,
+                                            processor_defaults)
     res_types = get_all_residue_types(config.model_source)
     res_type_mapping = {i: res_type for i, res_type in enumerate(res_types)}
     atom_types = get_all_atom_types(config.model_source)
@@ -227,9 +222,9 @@ def _build_writer_stage(config: EngineProcessorConfig, processor_defaults: Dict[
         drop_keys=writer_stage_cfg.drop_keys,
     )
 
-    
-    
-def _build_stages(config: EngineProcessorConfig, processor_defaults: Dict[str, Any]) -> List[StatefulStage]:
+
+def _build_stages(config: EngineProcessorConfig,
+                  processor_defaults: Dict[str, Any]) -> List[StatefulStage]:
     stages = []
     stages.append(_build_parser_stage(config, processor_defaults))
     stages.append(_build_tokenizer_stage(config, processor_defaults))
@@ -248,8 +243,7 @@ def build_processor(config: EngineProcessorConfig) -> Processor:
         "runtime_env": config.runtime_env,
         "model_source": config.model_source,
     }
-    
+
     stages = _build_stages(config, processor_defaults)
-    
+
     return Processor(config, stages)
-    

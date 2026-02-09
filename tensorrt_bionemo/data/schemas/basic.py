@@ -13,19 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import csv
-import io
-import os
 import re
-import string
 from dataclasses import dataclass
 from enum import Enum
-from io import StringIO
-from pathlib import Path
-from typing import Dict, List, Literal, Optional, TextIO, Union
+from typing import List, Optional, Union
 
 import numpy as np
-from Bio import SeqIO
+
 
 class PolymerType(str, Enum):
     PROTEIN = "protein"
@@ -212,6 +206,7 @@ class ResTypes:
         return res in ResTypes.rna_nucleotide_types(
         ) or res in ResTypes.dna_nucleotide_types()
 
+
 class MSARecord(dict):
 
     def __init__(
@@ -239,20 +234,13 @@ class MSARecord(dict):
         raise ValueError("No content or file available")
 
 
-
 class Template(dict):
 
-    def __init__(
-        self,
-        content: Optional[str] = None,
-        path: Optional[str] = None,
-        format: str = "cif"
-    ):
-        super().__init__(
-            content=content,
-            path=path,
-            format=format
-        )
+    def __init__(self,
+                 content: Optional[str] = None,
+                 path: Optional[str] = None,
+                 format: str = "cif"):
+        super().__init__(content=content, path=path, format=format)
 
     def is_file(self) -> bool:
         return self["path"] is not None
@@ -262,44 +250,41 @@ class Template(dict):
             return self["content"]
         if self["path"] is not None:
             with open(self["path"], "r") as f:
-                self["content"] =  f.read()
+                self["content"] = f.read()
                 return self["content"]
         raise ValueError("No content or file available")
 
 
 class Polymer(dict):
 
-    def __init__(
-        self,
-        polymer_type: Union[PolymerType, str] = PolymerType.PROTEIN,
-        chain_id: Optional[Union[str, List[str]]] = None,
-        sequence: Optional[str] = None,
-        msas: Optional[List[MSARecord]] = None,
-        paired_msas: Optional[List[MSARecord]] = None,
-        templates: Optional[List[Template]] = None
-    ):
+    def __init__(self,
+                 polymer_type: Union[PolymerType, str] = PolymerType.PROTEIN,
+                 chain_id: Optional[Union[str, List[str]]] = None,
+                 sequence: Optional[str] = None,
+                 msas: Optional[List[MSARecord]] = None,
+                 paired_msas: Optional[List[MSARecord]] = None,
+                 templates: Optional[List[Template]] = None):
         if isinstance(polymer_type, str):
             polymer_type = PolymerType(polymer_type)
-        
+
         self._validate_chain_id(chain_id)
         self._validate_polymer_fields(polymer_type, sequence, templates)
-        
-        super().__init__(
-            polymer_type=polymer_type.value if isinstance(polymer_type, PolymerType) else polymer_type,
-            chain_id=chain_id,
-            sequence=sequence,
-            msas=msas,
-            paired_msas=paired_msas,
-            templates=templates
-        )
-    
+
+        super().__init__(polymer_type=polymer_type.value if isinstance(
+            polymer_type, PolymerType) else polymer_type,
+                         chain_id=chain_id,
+                         sequence=sequence,
+                         msas=msas,
+                         paired_msas=paired_msas,
+                         templates=templates)
+
     @staticmethod
     def _validate_chain_id(chain_id: Optional[Union[str, List[str]]]) -> None:
         if chain_id is None:
             return
-        
+
         pattern = re.compile(r'^[A-Za-z0-9]{1,4}$')
-        
+
         if isinstance(chain_id, str):
             if not pattern.match(chain_id):
                 raise ValueError(
@@ -321,29 +306,28 @@ class Polymer(dict):
             raise ValueError(
                 f"Chain ID must be a string or list of strings, got {type(chain_id).__name__}"
             )
-    
+
     @staticmethod
-    def _validate_polymer_fields(
-        polymer_type: PolymerType,
-        sequence: Optional[str],
-        templates: Optional[List]
-    ) -> None:
+    def _validate_polymer_fields(polymer_type: PolymerType,
+                                 sequence: Optional[str],
+                                 templates: Optional[List]) -> None:
         if sequence is None:
             raise ValueError(f"{polymer_type.value} must have 'sequence'")
-           
+
         if templates is not None and len(templates) > 0:
             if polymer_type != PolymerType.PROTEIN:
                 raise ValueError(
                     f"Templates are only allowed for protein molecules. "
                     f"Polymer type is '{polymer_type.value}' but templates were provided."
                 )
-    
+
     def get_chain_count(self) -> int:
         if self['chain_id'] is None:
             return 1
         if isinstance(self['chain_id'], list):
             return len(self['chain_id'])
         return 1
+
 
 class InputRequest(dict):
 
@@ -353,75 +337,110 @@ class InputRequest(dict):
         polymers: Optional[List[Polymer]] = None,
     ):
         super().__init__(
-            input_id=input_id or "input_id_0",
-            polymers=polymers or [],
+            input_id=input_id,
+            polymers=polymers,
         )
-        
-        
+
+
 class MSAParsed(dict):
     """Parsed A3M MSA file.
-    
+
     Contains:
         sequences: aligned sequences (lowercase deletions removed)
         raw: original sequences with lowercase letters (deletion info)
         descriptions: sequence descriptions
+        comments: optional list of comment lines (starting with '#') from the file
     """
-    def __init__(
-        self,
-        sequences: List[str],
-        raw: List[str],
-        descriptions: Optional[List[str]] = None
-    ):
-        super().__init__(sequences=sequences, raw=raw, descriptions=descriptions)
+
+    def __init__(self,
+                 sequences: List[str],
+                 raw: List[str],
+                 descriptions: Optional[List[str]] = None,
+                 comments: Optional[List[str]] = None):
+        super().__init__(sequences=sequences,
+                         raw=raw,
+                         descriptions=descriptions,
+                         comments=comments)
+
+    @staticmethod
+    def concat(msas: Optional[List['MSAParsed']]) -> Optional['MSAParsed']:
+        # Validate for falsy input
+        if not msas:
+            return None
+
+        # Return the sole element when only one MSA
+        if len(msas) == 1:
+            return msas[0]
+
+        # Flatten all sequences
+        sequences = [seq for msa in msas for seq in msa['sequences']]
+
+        # Flatten all raw strings
+        raw = [raw_seq for msa in msas for raw_seq in msa['raw']]
+
+        # Concatenate descriptions - None only when no descriptions exist
+        has_any_descriptions = any(msa['descriptions'] is not None
+                                   for msa in msas)
+
+        if has_any_descriptions:
+            descriptions = []
+            for msa in msas:
+                if msa['descriptions'] is not None:
+                    descriptions.extend(msa['descriptions'])
+                else:
+                    # Add empty strings as placeholders for MSAs without descriptions
+                    descriptions.extend([''] * len(msa['sequences']))
+        else:
+            descriptions = None
+
+        return MSAParsed(sequences=sequences,
+                         raw=raw,
+                         descriptions=descriptions)
 
 
 class TemplateParsed(dict):
-    def __init__(
-        self,
-        content: Optional[str] = None,
-        format: str = "cif"
-    ):
+
+    def __init__(self, content: Optional[str] = None, format: str = "cif"):
         super().__init__(content=content, format=format)
 
 
 class PolymerParsed(dict):
-    def __init__(
-        self,
-        polymer_type: Union[PolymerType, str] = PolymerType.PROTEIN,
-        chain_id: Optional[Union[str, List[str]]] = None,
-        sequence: Optional[str] = None,
-        msas: Optional[List[MSAParsed]] = None,
-        paired_msas: Optional[List[MSAParsed]] = None,
-        templates: Optional[List[TemplateParsed]] = None
-    ):
-        super().__init__(
-            polymer_type=polymer_type.value if isinstance(polymer_type, PolymerType) else polymer_type,
-            chain_id=chain_id,
-            sequence=sequence,
-            msas=msas,
-            paired_msas=paired_msas,
-            templates=templates
-        )        
-        
+
+    def __init__(self,
+                 polymer_type: Union[PolymerType, str] = PolymerType.PROTEIN,
+                 chain_id: Optional[Union[str, List[str]]] = None,
+                 sequence: Optional[str] = None,
+                 msas: Optional[List[MSAParsed]] = None,
+                 paired_msas: Optional[List[MSAParsed]] = None,
+                 templates: Optional[List[TemplateParsed]] = None):
+        super().__init__(polymer_type=polymer_type.value if isinstance(
+            polymer_type, PolymerType) else polymer_type,
+                         chain_id=chain_id,
+                         sequence=sequence,
+                         msas=msas,
+                         paired_msas=paired_msas,
+                         templates=templates)
+
+
 class InputParsed(dict):
+
     def __init__(
         self,
         input_id: Optional[str] = None,
         polymers: Optional[List[PolymerParsed]] = None,
     ):
         super().__init__(input_id=input_id, polymers=polymers)
- 
+
+
 class FoldingOutput(dict):
 
-    def __init__(
-        self,
-        atom_positions: np.ndarray,
-        residue_types: np.ndarray,
-        atom_mask: np.ndarray,
-        residue_indices: np.ndarray,
-        b_factors: Optional[np.ndarray] = None,
-        chain_indices: Optional[np.ndarray] = None
-    ):
+    def __init__(self,
+                 atom_positions: np.ndarray,
+                 residue_types: np.ndarray,
+                 atom_mask: np.ndarray,
+                 residue_indices: np.ndarray,
+                 b_factors: Optional[np.ndarray] = None,
+                 chain_indices: Optional[np.ndarray] = None):
         """
         Args:
             atom_positions: (num_res, num_atom_type, 3)

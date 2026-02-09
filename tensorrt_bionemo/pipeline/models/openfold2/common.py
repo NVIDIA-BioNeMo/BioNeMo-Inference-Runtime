@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from typing import Optional
 
 import torch
@@ -267,3 +266,66 @@ def atom37_to_torsion_angles(
     feats[prefix + "torsion_angles_mask"] = torsion_angles_mask
 
     return feats
+
+
+def gumbel_noise(
+    shape: list[int],
+    device: torch.device,
+    eps=1e-6,
+    generator=None,
+) -> torch.Tensor:
+    """Generate Gumbel Noise of given Shape.
+
+    This generates samples from Gumbel(0, 1).
+
+    Args:
+        shape: Shape of noise to return.
+
+    Returns:
+        Gumbel noise of given shape.
+    """
+    uniform_noise = torch.rand(shape,
+                               dtype=torch.float32,
+                               device=device,
+                               generator=generator)
+    gumbel = -torch.log(-torch.log(uniform_noise + eps) + eps)
+    return gumbel
+
+
+def gumbel_max_sample(logits: torch.Tensor, generator=None) -> torch.Tensor:
+    """Samples from a probability distribution given by 'logits'.
+
+    This uses Gumbel-max trick to implement the sampling in an efficient manner.
+
+    Args:
+        logits: Logarithm of probabilities to sample from, probabilities can be
+            unnormalized.
+
+    Returns:
+        Sample from logprobs in one-hot form.
+    """
+    z = gumbel_noise(logits.shape, device=logits.device, generator=generator)
+    return torch.nn.functional.one_hot(
+        torch.argmax(logits + z, dim=-1),
+        logits.shape[-1],
+    )
+
+
+def gumbel_argsort_sample_idx(logits: torch.Tensor,
+                              generator=None) -> torch.Tensor:
+    """Samples with replacement from a distribution given by 'logits'.
+
+    This uses Gumbel trick to implement the sampling an efficient manner. For a
+    distribution over k items this samples k times without replacement, so this
+    is effectively sampling a random permutation with probabilities over the
+    permutations derived from the logprobs.
+
+    Args:
+        logits: Logarithm of probabilities to sample from, probabilities can be
+            unnormalized.
+
+    Returns:
+        Sample from logprobs in one-hot form.
+    """
+    z = gumbel_noise(logits.shape, device=logits.device, generator=generator)
+    return torch.argsort(logits + z, dim=-1, descending=True)

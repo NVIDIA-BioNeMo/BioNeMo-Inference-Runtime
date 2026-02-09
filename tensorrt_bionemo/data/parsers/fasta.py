@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
 from io import StringIO
 from pathlib import Path
 from typing import Optional, TextIO, Union
@@ -23,6 +22,66 @@ from Bio import SeqIO
 from tensorrt_bionemo.data.schemas import Polymer, PolymerType
 
 _alphabetical_order = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _generate_chain_id(index: int) -> str:
+    """Generate a chain ID following mmCIF-style conventions.
+
+    This uses bijective base-26 encoding with letters A-Z, following the mmCIF format:
+    - Indices 0-25: A-Z (single letter)
+    - Indices 26-701: AA-ZZ (two letters)
+    - Indices 702-18277: AAA-ZZZ (three letters)
+    - Indices 18278-475253: AAAA-ZZZZ (four letters)
+
+    This ensures chain IDs are always 1-4 alphanumeric characters as required
+    by Polymer._validate_chain_id. Supports up to 475,254 sequences.
+
+    Args:
+        index: Zero-based sequence index
+
+    Returns:
+        A chain ID string of 1-4 letters (e.g., "A", "Z", "AA", "ZZ", "ZZZZ")
+
+    Raises:
+        ValueError: If index exceeds the maximum supported value (475,253)
+
+    Examples:
+        >>> _generate_chain_id(0)
+        'A'
+        >>> _generate_chain_id(25)
+        'Z'
+        >>> _generate_chain_id(26)
+        'AA'
+        >>> _generate_chain_id(27)
+        'AB'
+        >>> _generate_chain_id(701)
+        'ZZ'
+        >>> _generate_chain_id(702)
+        'AAA'
+    """
+    # Calculate maximum index for 4-character chain IDs
+    # 26 + 26^2 + 26^3 + 26^4 - 1 = 475,253
+    max_index = 26 + 26**2 + 26**3 + 26**4 - 1
+
+    if index > max_index:
+        raise ValueError(
+            f"Sequence index {index} exceeds maximum supported value ({max_index}). "
+            f"Cannot generate valid chain ID following mmCIF conventions. "
+            f"Chain IDs are limited to 4 characters by Polymer._validate_chain_id."
+        )
+
+    # Bijective base-26: convert index to chain ID
+    # Adjust index by adding 1 to convert from 0-indexed to bijective base-26
+    num = index + 1
+    result = []
+
+    while num > 0:
+        # Adjust for bijective base-26 (no zero digit)
+        num -= 1
+        result.append(_alphabetical_order[num % 26])
+        num //= 26
+
+    return ''.join(reversed(result))
 
 
 class SequenceParsed(dict):
@@ -35,13 +94,19 @@ class SequenceParsed(dict):
 
 def parse_fasta_content(
     content: StringIO | TextIO,
-    return_as_list: bool = False,
-    is_description_formatted: bool = False
+    return_as_list: bool = False
 ) -> Union[SequenceParsed, tuple[list[str], list[str]]]:
+    """Parse a FASTA file into a SequenceParsed object for protein entity"""
     if isinstance(content, str):
         content = StringIO(content)
+
+    # Filter out comment lines starting with "#"
+    filtered_lines = [
+        line for line in content if not line.lstrip().startswith("#")
+    ]
+    content = StringIO("".join(filtered_lines))
+
     fasta_sequences = SeqIO.parse(content, "fasta")
-    pattern = r'^([^|]+)\|([^|]+)\|([^|]+)$'
     sequences: list[Polymer] = []
     descriptions: list[str] = []
 
@@ -53,40 +118,39 @@ def parse_fasta_content(
             desps.append(fasta.description)
         return seqs, desps
 
+    seen_sequences = {}
     for i, fasta in enumerate(fasta_sequences):
         desp = fasta.description
         seq = str(fasta.seq)
 
-        match = None
-        if is_description_formatted:
-            match = re.match(pattern, desp)
+        # Generate chain ID using base-36 encoding to ensure it stays within 4 characters
+        try:
+            chain_id = _generate_chain_id(i)
+        except ValueError as e:
+            raise ValueError(
+                f"Cannot generate valid chain ID for sequence at index {i}. {str(e)}"
+            ) from e
 
-        if match is not None:
-            chain_id, entity_type_str, msa_id = match.groups()
-            molecule_type = PolymerType(entity_type_str.lower())
-            molecule = Polymer(polymer_type=molecule_type, chain_id=chain_id, sequence=seq)
-        else:
-            id_letter = _alphabetical_order[i % len(_alphabetical_order)]
-            id_number = i // len(_alphabetical_order)
-            if id_number == 0:
-                chain_id = id_letter
-            else:
-                chain_id = f"{id_letter}{id_number}"
+        if seq in seen_sequences:
+            p = seen_sequences[seq]
+            chain_ids = p['chain_id']
+            if isinstance(chain_ids, str):
+                chain_ids = [chain_ids]
+            chain_ids.append(chain_id)
+            seen_sequences[seq]["chain_id"] = chain_ids
+            continue
 
-            molecule = Polymer(
-                polymer_type=PolymerType.PROTEIN,
-                chain_id=chain_id,
-                sequence=seq
-            )
-
+        molecule = Polymer(polymer_type=PolymerType.PROTEIN,
+                           chain_id=chain_id,
+                           sequence=seq)
         sequences.append(molecule)
         descriptions.append(desp)
+        seen_sequences[seq] = molecule
 
     return SequenceParsed(sequences=sequences, descriptions=descriptions)
 
 
 def read_fasta(file_path: str | Path,
-               is_description_formatted: bool = False) -> SequenceParsed:
+               return_as_list: bool = False) -> SequenceParsed:
     with open(file_path) as source:
-        return parse_fasta_content(
-            source, is_description_formatted=is_description_formatted)
+        return parse_fasta_content(source, return_as_list=return_as_list)

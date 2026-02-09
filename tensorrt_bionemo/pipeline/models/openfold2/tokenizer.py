@@ -20,8 +20,7 @@ from tensorrt_bionemo.pipeline.base import (ContextGeneratorSpec,
                                             TokenizerBase, TransformSpec,
                                             dict_context_merger)
 
-from .context import (MSAContextGenerator, PrimaryContextGenerator,
-                      TemplateContextGenerator)
+from .feature_context import FeatureContextGenerator
 from .transforms import (CastTo64BitInts, CorrectMsaRestypes,
                          FixTemplatesAatype, RandomlyReplaceMsaWithUnknown,
                          SqueezeFeatures)
@@ -32,16 +31,8 @@ class Tokenizer(TokenizerBase):
         str, ContextGeneratorSpec] = OrderedDict({
             'primary':
             ContextGeneratorSpec(name='primary',
-                                 generator=PrimaryContextGenerator,
-                                 required_kwargs=['parsed']),
-            'msa':
-            ContextGeneratorSpec(name='msa',
-                                 generator=MSAContextGenerator,
-                                 required_kwargs=['parsed']),
-            'template':
-            ContextGeneratorSpec(name='template',
-                                 generator=TemplateContextGenerator,
-                                 required_kwargs=['parsed']),
+                                 generator=FeatureContextGenerator,
+                                 required_kwargs=['parsed'])
         })
 
     context_merger_func: Callable = dict_context_merger
@@ -56,4 +47,20 @@ class Tokenizer(TokenizerBase):
                       kwargs={'replace_proportion': 0.0}),
         TransformSpec(name='fix_templates_aatype',
                       transform=FixTemplatesAatype),
+    ]
+
+
+class MultimerTokenizer(TokenizerBase):
+    context_generator_specs: OrderedDict[
+        str, ContextGeneratorSpec] = OrderedDict({
+            'primary':
+            ContextGeneratorSpec(name='primary',
+                                 generator=FeatureContextGenerator,
+                                 required_kwargs=['parsed'])
+        })
+
+    context_merger_func: Callable = dict_context_merger
+
+    transform_specs: list[TransformSpec] = [
+        TransformSpec(name='cast_to_64_bit_ints', transform=CastTo64BitInts)
     ]

@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from typing import Optional
 
 import numpy as np
@@ -55,12 +54,10 @@ class CorrectMsaRestypes(TransformBase):
             if "profile" in k:
                 num_dim = batch[k].shape[-1]
                 assert num_dim in (20, 21, 22), (
-                    f"num_dim for {k} out of expected range: {num_dim}"
-                )
+                    f"num_dim for {k} out of expected range: {num_dim}")
 
-                perm = torch.from_numpy(
-                    perm_matrix[:num_dim, :num_dim]
-                ).to(device=batch[k].device, dtype=batch[k].dtype)
+                perm = torch.from_numpy(perm_matrix[:num_dim, :num_dim]).to(
+                    device=batch[k].device, dtype=batch[k].dtype)
 
                 batch[k] = torch.einsum("...i,ij->...j", batch[k], perm)
 
@@ -137,6 +134,7 @@ class FixTemplatesAatype(TransformBase):
 
     def __call__(self, batch: dict[str,
                                    torch.Tensor]) -> dict[str, torch.Tensor]:
+        "Call fix templates aa type"
         # Map one-hot to indices
         num_templates = batch["template_aatype"].shape[0]
         batch["template_aatype"] = torch.argmax(batch["template_aatype"],

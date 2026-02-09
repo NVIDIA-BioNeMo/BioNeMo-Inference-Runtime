@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 from pydantic import BaseModel, Field
@@ -61,7 +60,10 @@ class TokenizerStageConfig(_StageConfigBase):
 
 
 class FeatureGeneratorStageConfig(_StageConfigBase):
-    pass
+    init_context: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="The context to initialize the feature generator with.",
+    )
 
 
 class WriterStageConfig(_StageConfigBase):

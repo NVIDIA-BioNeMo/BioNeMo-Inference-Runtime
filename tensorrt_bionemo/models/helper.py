@@ -25,7 +25,7 @@ from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
 
 class AcceleratedModules(ABC):
 
-    def __init__(self, configs: dict[str, AcceleratedConfig] = {}):
+    def __init__(self, configs: dict[str, AcceleratedConfig | dict] = {}):
         """
         This class is used to store the checkpoints and module configs for the accelerated modules.
         Args:
@@ -36,6 +36,8 @@ class AcceleratedModules(ABC):
             if k not in self.get_supported_modules().keys():
                 logger.warning(f"Unknown module: {k}")
             else:
+                if isinstance(v, dict):
+                    v = AcceleratedConfig(**v)
                 self._configs[k] = v
 
     def get_module_config(self,

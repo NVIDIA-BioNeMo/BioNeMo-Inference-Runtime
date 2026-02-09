@@ -161,6 +161,42 @@ class OpenFold2Factory(ModelComponentsFactory):
             SupMat.AlphaFold2_3,
             SupMat.AlphaFold2_4,
             SupMat.AlphaFold2_5,
+        ]
+
+
+class OpenFold2MultimerFactory(ModelComponentsFactory):
+
+    @classmethod
+    def get_model_class(cls) -> Type[nn.Module]:
+        from tensorrt_bionemo.models.openfold2 import OpenFold2
+        return OpenFold2
+
+    @classmethod
+    def get_tokenizer(cls) -> "TokenizerBase":
+        from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import \
+            MultimerTokenizer
+        return MultimerTokenizer()
+
+    @classmethod
+    def get_feature_factory(cls) -> "FeatureFactoryBase":
+        from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import \
+            MultimerFeatureFactory
+        return MultimerFeatureFactory()
+
+    @classmethod
+    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
+        from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import \
+            PostProcessor
+        return PostProcessor
+
+    @classmethod
+    def get_trt_building_modules(cls) -> Dict[str, Any]:
+        from tensorrt_bionemo._trt.layers.transformers import EvoformerStack
+        return {"evoformer": EvoformerStack}
+
+    @classmethod
+    def get_supported_model_names(cls) -> list[str]:
+        return [
             SupMat.AlphaFold2_Multimer_1,
             SupMat.AlphaFold2_Multimer_2,
             SupMat.AlphaFold2_Multimer_3,
@@ -318,6 +354,7 @@ class OpenFold3Factory(ModelComponentsFactory):
 def register_all_factories():
     factories = [
         OpenFold2Factory,
+        OpenFold2MultimerFactory,
         Boltz1Factory,
         Boltz2Factory,
         Boltz2AffinityFactory,

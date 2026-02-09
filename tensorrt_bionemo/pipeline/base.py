@@ -13,15 +13,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from typing import Any, Callable, Optional, Type, Union
 
+import numpy as np
 import torch
 from pydantic import BaseModel, Field
 
 from tensorrt_bionemo.configs.base import BaseConfig
+
+# Feature preprocessing pipeline stages:
+# 1. Tokenizer:
+#   - Context Generator: Generates context tensors from input data.
+#   - Context Merger: Merges context tensors from multiple sources.
+#   - Context Transform: Normalizes and transforms context tensors.
+#     Ideally, it shouldn't add new tensors but optional by user intention.
+# 2. Feature Generator:
+#   - Feature Generator: Generates feature tensors based on context tensors.
+#     The output of this stage is a dictionary of tensors (context tensors + generated tensors).
+#     The reason why we need to separate the stage because it can run in parallel.
+#   - Context and Feature Merger: Merges context tensors and generated feature tensors from multiple generators
+#   - Feature Collator: Collates feature tensors to produce the final feature set.
+#     Conceptually, this step can add new features, remove features, or modify the features.
 
 
 class FeatureGeneratorBase(ABC):
@@ -99,7 +113,8 @@ class ContextGeneratorBase(ABC):
     Abstract base class for structure context.
     """
 
-    def __init__(self, **kwargs: Any):
+    def __init__(self, config: Optional[BaseConfig] = None):
+        self.config = config
         self._required_kwargs = []
 
     @abstractmethod
@@ -153,6 +168,18 @@ def dict_context_merger(
     return ret
 
 
+def default_context_and_feature_merger(
+        contexts: dict[str, torch.Tensor],
+        features: dict[str, dict[str,
+                                 torch.Tensor]]) -> dict[str, torch.Tensor]:
+    """
+    Merge the context tensors and generated feature tensors from multiple generators.
+    """
+    merged = contexts
+    merged.update(dict_context_merger(features))
+    return merged
+
+
 class TransformBase(ABC):
     """
     Abstract base class for transform functions.
@@ -186,7 +213,7 @@ class TransformSpec(BaseModel):
 
 
 class TokenizerBase(BaseModel):
-    """Workflow: context_generator -> context_merger -> transform """
+    """Workflow: context_generator -> context_merger -> context_transform """
     context_generator_specs: OrderedDict[str, ContextGeneratorSpec] = Field(
         description="The dictionary of context generator specs.")
     context_merger_func: Callable = Field(
@@ -211,3 +238,22 @@ class PostProcessorBase:
         Apply the postprocessor to the batch.
         """
         return output
+
+
+def numpy_to_dict(data: Any) -> Any:
+    """Recursively convert numpy arrays and structured data to Python dicts/lists."""
+    if isinstance(data, np.ndarray):
+        # 0-D arrays: convert to a Python scalar first
+        if data.ndim == 0:
+            return numpy_to_dict(data.item())
+        # N-D arrays: convert to nested lists and recurse
+        return [numpy_to_dict(item) for item in data.tolist()]
+    elif isinstance(data, dict):
+        # Recursively process dictionary values
+        return {key: numpy_to_dict(value) for key, value in data.items()}
+    elif isinstance(data, (list, tuple)):
+        # Recursively process list/tuple items
+        return [numpy_to_dict(item) for item in data]
+    else:
+        # Return primitive types as-is
+        return data

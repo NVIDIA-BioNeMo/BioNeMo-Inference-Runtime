@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional, Type
 
 import numpy as np
@@ -37,13 +37,15 @@ class FeatureGeneratorUDF(StatefulStageUDF):
             feature_generators: list[FeatureGeneratorBase],
             features_merger_func: Optional[Callable] = dict_context_merger,
             feature_collators: Optional[list[FeatureCollatorBase]] = None,
-            pre_init: Optional[Callable] = None):
+            pre_init: Optional[Callable] = None,
+            init_context: Optional[dict[str, Any]] = None):
         super().__init__(compute_by_rows, drop_keys, expected_input_keys,
                          update_row)
         self.feature_generators = feature_generators
         self.features_merger_func = features_merger_func
         self.feature_collators = feature_collators or []
         self.pre_init = pre_init
+        self.init_context = init_context
 
     def _extract_tensors(self, row: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         row_with_tensors = {}
@@ -58,7 +60,9 @@ class FeatureGeneratorUDF(StatefulStageUDF):
 
     async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
         row_with_tensors = self._extract_tensors(row)
-        context = {}
+        # Per-row copy of the initial context; default to an empty dict when None.
+        context = deepcopy(
+            self.init_context) if self.init_context is not None else {}
         features_dict = {}
 
         if self.pre_init is not None:
@@ -74,14 +78,13 @@ class FeatureGeneratorUDF(StatefulStageUDF):
                     features_dict[generator.name] = generator(
                         row_with_tensors, context)
 
-            features_dict = self.features_merger_func(features_dict)
-            row_with_tensors.update(features_dict)
-
+            merged_feats = self.features_merger_func(contexts=row_with_tensors,
+                                                     features=features_dict)
             for collator in self.feature_collators:
                 if collator.is_enabled():
-                    row_with_tensors = collator(row_with_tensors, context)
+                    merged_feats = collator(merged_feats, context)
 
-        return row_with_tensors
+        return merged_feats
 
 
 class FeatureGeneratorStage(StatefulStage):

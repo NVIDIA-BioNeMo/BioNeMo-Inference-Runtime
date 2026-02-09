@@ -14,3 +14,7 @@ ray==2.53.0
 boto3==1.42.17
 ray[serve]
 uvloop==0.21.0
+# needed for CIFWriter
+modelcif==1.6
+pandas==3.0.0
+pyarrow==23.0.0

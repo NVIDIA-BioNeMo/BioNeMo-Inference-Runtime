@@ -41,15 +41,6 @@ class _Default:
     max_templates: int = 4
     resample_msa_in_recycling: bool = True
 
-    # Config for pipeline
-    msa_cluster_features: bool = True
-    max_recycling_iters: int = 3
-    reduce_msa_clusters_by_max_templates: bool = False
-    use_template_torsion_angles: bool = True
-    max_msa_clusters: int = 512
-    max_templates: int = 4
-    resample_msa_in_recycling: bool = True
-
 
 class InputEmbedderConfig(BaseConfig):
     c_z: int = _Default.c_z
@@ -397,8 +388,6 @@ class AlphaFold2_1_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_1_Config":
         self.enable_template = True
-        self.reduce_max_clusters_by_max_templates = True
-        self.use_template_torsion_angles = True
         self.max_extra_msa = 5120
         self.confidence_module.tm.enabled = False
         self.reduce_msa_clusters_by_max_templates = True
@@ -411,8 +400,6 @@ class AlphaFold2_2_Config(OpenFold2Config):
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_2_Config":
         self.enable_template = True
-        self.reduce_max_clusters_by_max_templates = True
-        self.use_template_torsion_angles = True
         self.confidence_module.tm.enabled = False
         self.reduce_msa_clusters_by_max_templates = True
         self.use_template_torsion_angles = True

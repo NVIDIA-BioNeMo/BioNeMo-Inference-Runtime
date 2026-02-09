@@ -25,17 +25,19 @@ from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
 
 class AcceleratedModules(ABC):
 
-    def __init__(self, configs: dict[str, AcceleratedConfig] = {}):
+    def __init__(self, configs: dict[str, AcceleratedConfig | dict] = {}):
         """
-        This class is used to store the checkpoints and module configs for the optimized modules.
+        This class is used to store the checkpoints and module configs for the accelerated modules.
         Args:
-            configs: A dictionary of AcceleratedConfig for the optimized modules.
+            configs: A dictionary of AcceleratedConfig for the accelerated modules.
         """
         self._configs = {}
         for k, v in configs.items():
             if k not in self.get_supported_modules().keys():
                 logger.warning(f"Unknown module: {k}")
             else:
+                if isinstance(v, dict):
+                    v = AcceleratedConfig(**v)
                 self._configs[k] = v
 
     def get_module_config(self,
@@ -78,7 +80,7 @@ class OptimizedModuleSetterMixin(ABC):
                      BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
         """
-        This function is used to build the accelerated version of the model from the original.
+        This function is used to build the optimized version of Boltz1 model from the original.
         Args:
             accelerated_configs: A dictionary of modules to be accelerated.
             context_memory_allocator: The context memory allocator to be used for each module.

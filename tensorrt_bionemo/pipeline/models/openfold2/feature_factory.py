@@ -24,29 +24,88 @@ from tensorrt_bionemo.pipeline.base import (FeatureCollatorBase,
                                             FeatureCollatorSpec,
                                             FeatureFactoryBase,
                                             FeatureGeneratorSpec,
-                                            dict_context_merger)
+                                            default_context_and_feature_merger)
 
 from .feature_collators import (CropExtraMsa, DeleteExtraMsa, MakeFixedSize,
                                 MakeMaskedMsa, MakeMsaFeat,
-                                NearestNeighborClusters, RandomCropToSize,
-                                SampleMsa, SelectFeat, SummarizeClusters)
+                                MultimerCreateMsaFeat, MultimerMakeMaskedMsa,
+                                MultimerNearestNeighborClusters,
+                                MultimerSampleMsa, NearestNeighborClusters,
+                                RandomCropToSize, SampleMsa, SelectFeat,
+                                SummarizeClusters)
 from .feature_generators import (Atom37ToTorsionAngles, MakeAtom14Masks,
                                  MakeHhblitsProfile, MakeMsaMask,
                                  MakeSequenceMask, MakeTemplateMask,
-                                 MakeTemplatePseudoBeta, UseClampedFape)
+                                 MakeTemplatePseudoBeta,
+                                 MultimerCreateTargetFeatures,
+                                 MultimerMakeMsaProfile, UseClampedFape)
 
-# isort: off
-"""
-How to debug the feature factory:
-1. OpenFold2 using some random in the feature generators.
-2. Set the fixed random seed in the feature factory at functor:
-    - SampleMsa
-    - MakeMaskedMsa
-    - common.shaped_categorical
-    - CropExtraMsa
-    - transforms.RandomlyReplaceMsaWithUnknown
-"""
-# isort: on
+_MONOMER_FEATURE_KEYS = [
+    "aatype", "all_atom_mask", "all_atom_positions", "alt_chi_angles",
+    "atom14_alt_gt_exists", "atom14_alt_gt_positions", "atom14_atom_exists",
+    "atom14_atom_is_ambiguous", "atom14_gt_exists", "atom14_gt_positions",
+    "atom37_atom_exists", "backbone_rigid_mask", "backbone_rigid_tensor",
+    "bert_mask", "chi_angles_sin_cos", "chi_mask", "extra_deletion_value",
+    "extra_has_deletion", "extra_msa", "extra_msa_mask", "extra_msa_row_mask",
+    "is_distillation", "msa_feat", "msa_mask", "msa_row_mask",
+    "no_recycling_iters", "pseudo_beta", "pseudo_beta_mask", "residue_index",
+    "residx_atom14_to_atom37", "residx_atom37_to_atom14", "resolution",
+    "rigidgroups_alt_gt_frames", "rigidgroups_group_exists",
+    "rigidgroups_group_is_ambiguous", "rigidgroups_gt_exists",
+    "rigidgroups_gt_frames", "seq_length", "seq_mask", "target_feat",
+    "template_aatype", "template_all_atom_mask", "template_all_atom_positions",
+    "template_alt_torsion_angles_sin_cos", "template_backbone_rigid_mask",
+    "template_backbone_rigid_tensor", "template_mask", "template_pseudo_beta",
+    "template_pseudo_beta_mask", "template_sum_probs",
+    "template_torsion_angles_mask", "template_torsion_angles_sin_cos",
+    "true_msa", "use_clamped_fape", "is_template_present"
+]
+
+_MULTIMER_FEATURE_KEYS = [
+    "aatype",
+    "all_atom_mask",
+    "all_atom_positions",
+    # "all_chains_entity_ids",  # TODO: Resolve missing features, remove processed msa feats
+    # "all_crops_all_chains_mask",
+    # "all_crops_all_chains_positions",
+    # "all_crops_all_chains_residue_ids",
+    "assembly_num_chains",
+    "asym_id",
+    "atom14_atom_exists",
+    "atom37_atom_exists",
+    "bert_mask",
+    "cluster_bias_mask",
+    "cluster_profile",
+    "cluster_deletion_mean",
+    "deletion_matrix",
+    "deletion_mean",
+    "entity_id",
+    "entity_mask",
+    "extra_deletion_matrix",
+    "extra_msa",
+    "extra_msa_mask",
+    # "mem_peak",
+    "msa",
+    "msa_feat",
+    "msa_mask",
+    "msa_profile",
+    "num_alignments",
+    "num_templates",
+    # "queue_size",
+    "residue_index",
+    "residx_atom14_to_atom37",
+    "residx_atom37_to_atom14",
+    "resolution",
+    "seq_length",
+    "seq_mask",
+    "sym_id",
+    "target_feat",
+    "template_aatype",
+    "template_all_atom_mask",
+    "template_all_atom_positions",
+    "true_msa",
+    "is_template_present"
+]
 
 
 class SampleRepeater(FeatureCollatorBase):
@@ -93,14 +152,12 @@ class SampleRepeater(FeatureCollatorBase):
 
 
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
-    """ Setup environment for the feature factory.
-    TODO: Get the random seed from the settings.
-    """
-    random.randrange(2**32)
-    # np.random.seed(random_seed)
-    np.random.seed(0)
-    # torch.manual_seed(random_seed + 1)
-    torch.manual_seed(1)
+    """ Setup environment for the feature factory."""
+    random_seed = context.get("random_seed", 0)
+    if random_seed is None:
+        random_seed = random.randrange(2**32)
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed + 1)
     context["ensemble_seed"] = random.randint(0, torch.iinfo(torch.int32).max)
     return context
 
@@ -126,18 +183,9 @@ def create_ensemble_feature_collator() -> list[FeatureCollatorSpec]:
         FeatureCollatorSpec(name="make_msa_feat",
                             functor=MakeMsaFeat,
                             kwargs={}),
-        FeatureCollatorSpec(
-            name="select_feat",
-            functor=SelectFeat,
-            kwargs={
-                "exclude_feats": [
-                    "between_segment_residues", "deletion_matrix", "msa",
-                    "num_alignments", "use_clamped_fape", "hhblits_profile",
-                    "extra_deletion_matrix", "extra_cluster_assignment",
-                    "cluster_profile", "cluster_deletion_mean",
-                    "hhblits_profile"
-                ]
-            }),
+        FeatureCollatorSpec(name="select_feat",
+                            functor=SelectFeat,
+                            kwargs={"include_feats": _MONOMER_FEATURE_KEYS}),
         FeatureCollatorSpec(name="random_crop_to_size",
                             functor=RandomCropToSize,
                             kwargs={}),
@@ -158,6 +206,16 @@ def create_ensemble_feature_collator() -> list[FeatureCollatorSpec]:
 
 
 class FeatureFactory(FeatureFactoryBase):
+    # isort: off
+    # How to debug the feature factory:
+    # 1. OpenFold2 using some random in the feature generators.
+    # 2. Set the fixed random seed in the feature factory at functor:
+    #     - SampleMsa
+    #     - MakeMaskedMsa
+    #     - common.shaped_categorical
+    #     - CropExtraMsa
+    #     - transforms.RandomlyReplaceMsaWithUnknown
+    # isort: on
     pre_init: Callable = pre_init
     feature_generator_specs: list[FeatureGeneratorSpec] = [
         FeatureGeneratorSpec(name="use_clamped_fape",
@@ -185,6 +243,60 @@ class FeatureFactory(FeatureFactoryBase):
                              functor=MakeAtom14Masks,
                              kwargs={}),
     ]
-    features_merger_func: Callable = dict_context_merger
+    features_merger_func: Callable = default_context_and_feature_merger
     feature_collator_specs: list[
         FeatureCollatorSpec] = create_ensemble_feature_collator()
+
+
+def create_ensemble_multimer_feature_collator() -> list[FeatureCollatorSpec]:
+    feature_collator_specs = [
+        FeatureCollatorSpec(name="sample_msa",
+                            functor=MultimerSampleMsa,
+                            kwargs={}),
+        FeatureCollatorSpec(name="make_masked_msa",
+                            functor=MultimerMakeMaskedMsa,
+                            kwargs={}),
+        FeatureCollatorSpec(name="nearest_neighbor_clusters",
+                            functor=MultimerNearestNeighborClusters,
+                            kwargs={}),
+        FeatureCollatorSpec(name="create_msa_feat",
+                            functor=MultimerCreateMsaFeat,
+                            kwargs={}),
+        FeatureCollatorSpec(name="select_feat",
+                            functor=SelectFeat,
+                            kwargs={"include_feats": _MULTIMER_FEATURE_KEYS}),
+        FeatureCollatorSpec(name="random_crop_to_size",
+                            functor=RandomCropToSize,
+                            kwargs={}),
+        FeatureCollatorSpec(name="make_fixed_size",
+                            functor=MakeFixedSize,
+                            kwargs={}),
+    ]
+    return [
+        FeatureCollatorSpec(name="repeater",
+                            functor=SampleRepeater,
+                            kwargs={
+                                "feature_collator_specs":
+                                feature_collator_specs,
+                                "get_n_iters":
+                                lambda config: config.max_recycling_iters + 1
+                            })
+    ]
+
+
+class MultimerFeatureFactory(FeatureFactoryBase):
+    pre_init: Callable = pre_init
+    feature_generator_specs: list[FeatureGeneratorSpec] = [
+        FeatureGeneratorSpec(name="make_msa_profile",
+                             functor=MultimerMakeMsaProfile,
+                             kwargs={}),
+        FeatureGeneratorSpec(name="create_target_features",
+                             functor=MultimerCreateTargetFeatures,
+                             kwargs={}),
+        FeatureGeneratorSpec(name="make_atom14_masks",
+                             functor=MakeAtom14Masks,
+                             kwargs={})
+    ]
+    features_merger_func: Callable = default_context_and_feature_merger
+    feature_collator_specs: list[
+        FeatureCollatorSpec] = create_ensemble_multimer_feature_collator()

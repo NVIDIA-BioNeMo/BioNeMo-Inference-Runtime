@@ -15,9 +15,10 @@
 
 from abc import ABC, abstractmethod
 
-from tensorrt_bionemo.data.schemas.basic import (AtomType, AtomTypes, FoldingOutput,
-                                                 ResType, ResTypes)
-from tensorrt_bionemo.logger import trtbnm_logger
+from tensorrt_bionemo.data.schemas.basic import (AtomType, AtomTypes,
+                                                 FoldingOutput, ResType,
+                                                 ResTypes)
+from tensorrt_bionemo.logger import logger
 
 
 class BaseWriter(ABC):
@@ -31,7 +32,7 @@ class BaseWriter(ABC):
             represented as a map from integer to AtomType
         res_types (list[ResType]): Universe of existing residue types in the batch,
             represented as a 0-based list of ResType.  Assumes, res_type_mapping is 0-based.
-        atom_types (list[AtomType]):  Universe of existing atom types in the batch, 
+        atom_types (list[AtomType]):  Universe of existing atom types in the batch,
             represented as a 0-based list of AtomType.  Assumes, atom_type_mapping is 0-based.
     """
 
@@ -41,7 +42,7 @@ class BaseWriter(ABC):
         res_type_mapping: dict[int, ResType] | None = None,
         atom_type_mapping: dict[int, AtomType] | None = None,
     ):
-        """Initializes the CIFWriter with the given configuration.
+        """Initializes the BaseWriter with the given configuration.
 
         Args:
             output_path: Assigned to instance attribute.
@@ -50,38 +51,51 @@ class BaseWriter(ABC):
         Raises:
             None
         """
-        trtbnm_logger("begin")
-        
+        logger.debug("BaseWriter.__init__() begin")
+
         # process __init__ args
         self.output_path = output_path
-        if res_type_mapping is not None:
-            self.res_types = list[tuple[int, ResType]](
-                y for _, y in 
-                sorted(res_type_mapping.items(), key=lambda pair: pair[0])
-            )
-        else:
-            self.res_types = ResTypes.basic_20_residue_types()
 
-        if atom_type_mapping is not None:
-            self.atom_types = list[tuple[int, AtomType]]   (
-                y for _, y in 
-                sorted(atom_type_mapping.items(), key=lambda pair: pair[0])
-            )
-        else:
-            self.atom_types = AtomTypes.standard_37_atom_types()
-        trtbnm_logger("end")
-    
-    @abstractmethod
+        # Store the mappings as instance attributes
+        self.res_type_mapping = res_type_mapping
+        self.atom_type_mapping = atom_type_mapping
+
+        # Set defaults if not provided
+        if self.res_type_mapping is None:
+            basic_20 = ResTypes.basic_20_residue_types()
+            self.res_type_mapping = {
+                i: basic_20[i]
+                for i in range(len(basic_20))
+            }
+
+        if self.atom_type_mapping is None:
+            all_atom_types = AtomTypes.all_types()
+            self.atom_type_mapping = {
+                i: all_atom_types[i]
+                for i in range(len(all_atom_types))
+            }
+
+        # Build lists from mappings
+        self.res_types = [
+            y for _, y in sorted(self.res_type_mapping.items(),
+                                 key=lambda pair: pair[0])
+        ]
+        self.atom_types = [
+            y for _, y in sorted(self.atom_type_mapping.items(),
+                                 key=lambda pair: pair[0])
+        ]
+
+        logger.debug("BaseWriter.__init__() end")
+
     def set_output_path(self, output_path: str):
-        pass
-    
+        self.output_path = output_path
+
     @abstractmethod
     def write(self, folding_output: FoldingOutput) -> str:
-        """Write the result fo the network forward pass to file in the local 
+        """Write the result of the network forward pass to file in the local
         environment.
-        
+
         Args:
-            folding_output: The result of the forward pass of a structure 
+            folding_output: The result of the forward pass of a structure
                 prediction network, e.g. OpenFold, or Boltz2
         """
-        pass

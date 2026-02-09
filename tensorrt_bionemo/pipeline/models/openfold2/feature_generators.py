@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from typing import Any, Optional
 
 import torch
@@ -192,4 +191,38 @@ class MakeHhblitsProfile(FeatureGeneratorBase):
         msa_one_hot = make_one_hot(batch["msa"], 22)
 
         feats["hhblits_profile"] = torch.mean(msa_one_hot, dim=0)
+        return feats
+
+
+class MultimerMakeMsaProfile(FeatureGeneratorBase):
+
+    def masked_mean(self,
+                    mask: torch.Tensor,
+                    value: torch.Tensor,
+                    dim: int,
+                    eps: float = 1e-4) -> torch.Tensor:
+        mask = mask.expand(*value.shape)
+        return torch.sum(mask * value,
+                         dim=dim) / (eps + torch.sum(mask, dim=dim))
+
+    def __call__(self, batch: dict[str, torch.Tensor],
+                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+        """Compute the MSA profile."""
+        feats = {}
+        feats["msa_profile"] = self.masked_mean(
+            batch['msa_mask'][..., None],
+            torch.nn.functional.one_hot(batch['msa'], 22),
+            dim=-3,
+        )
+        return feats
+
+
+class MultimerCreateTargetFeatures(FeatureGeneratorBase):
+
+    def __call__(self, batch: dict[str, torch.Tensor],
+                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+        """Create the target features."""
+        feats = {}
+        feats["target_feat"] = torch.nn.functional.one_hot(
+            batch["aatype"], 21).to(torch.float32)
         return feats

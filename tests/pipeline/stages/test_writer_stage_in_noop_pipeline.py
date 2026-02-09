@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import os
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import Mock, patch
+import pytest
+
+import ray
+
+from tensorrt_bionemo.pipeline.processor.engine_proc import (
+    EngineProcessorConfig, Processor, build_processor)
+from tensorrt_bionemo.pipeline.stages.configs import (
+    FeatureGeneratorStageConfig, ParserStageConfig, WriterStageConfig)
+from tensorrt_bionemo.data.parsers import read_fasta
+from tensorrt_bionemo.data.schemas import InputRequest, Polymer, MSARecord
+
+
+SAMPLE_DIR = Path.cwd() / "examples" / "data" / "samples" / "monomers"
+
+def create_sample_requests(repeat: int = 1):
+    """Create sample protein folding requests."""
+    requests = []
+    sample_ids = ["T1031", "T1033"]
+    for i in range(repeat):
+        for sample_id in sample_ids:
+            sequence = read_fasta(str(SAMPLE_DIR / f"{sample_id}.fasta"))["sequences"][0]["sequence"]
+            requests.append(
+                InputRequest(
+                    input_id=f"{sample_id}_{i}",
+                    polymers=[Polymer(
+                        chain_id="A",
+                        sequence=sequence,
+                        msas=[MSARecord(path=str(SAMPLE_DIR / "msas" / f"{sample_id}.a3m"))]
+                    )]
+                )
+            )    
+    return requests
+
+
+def test_writer_stage_in_noop_pipe():
+    
+    os.environ["ALPHAFOLD2_1_CKPT"] = "/workspaces/tensorrt-bionemo/checkpoints/alphafold2_1.pt"
+    os.environ["RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION"] = "0.5"
+    
+    run_label = datetime.now().strftime('%Y%m%dT%H%M%S')
+    output_path=os.path.join(
+        "/tmp/output/tests/pipeline/stages",
+        f"test_writer_stage_in_noop_pipeline_output_{run_label}",
+        f"writer_output_{run_label}"
+    )
+
+    # (2) Define dataset    
+    requests = create_sample_requests()
+    records = [{"record": req, "__record_id": req["input_id"]} for req in requests]
+    ds = ray.data.from_items(records)
+    
+    # (3) Define and run processors for pdb and cif formats
+    config_for_pdb = EngineProcessorConfig(
+        model_source="alphafold2_1",
+        parser_stage=ParserStageConfig(compute=2),
+        feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
+        writer_stage=WriterStageConfig(
+            compute=2, output_path=output_path, format="pdb"))
+    config_for_cif = EngineProcessorConfig(
+        model_source="alphafold2_1",
+        parser_stage=ParserStageConfig(compute=2),
+        feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
+        writer_stage=WriterStageConfig(
+            compute=2, output_path=output_path, format="cif"))
+    
+    processor_for_pdb: Processor = build_processor(config_for_pdb)
+    processor_for_cif: Processor = build_processor(config_for_cif)
+    
+    # (3) Run processors for pdb and cif formats
+    ds_for_pdb = processor_for_pdb(ds)
+    ds_for_pdb.materialize()
+    
+    ds_for_cif = processor_for_cif(ds)
+    ds_for_cif.materialize()
+    
+    print("all done")

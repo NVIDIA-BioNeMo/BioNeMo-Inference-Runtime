@@ -13,27 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from tensorrt_bionemo.pipeline.base import (ContextGeneratorBase,
-                                            TransformBase, dict_context_merger)
+                                            TransformBase, dict_context_merger,
+                                            numpy_to_dict)
 from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
                                                    StatefulStageUDF)
 
 
 class TokenizerUDF(StatefulStageUDF):
 
-    def __init__(
-        self,
-        compute_by_rows: bool,
-        drop_keys: List[str],
-        expected_input_keys: List[str],
-        update_row: bool,
-        context_generators: dict[str, ContextGeneratorBase],
-        context_merger_func: Optional[Callable] = dict_context_merger,
-        transform_funcs: Optional[List[TransformBase]] = None
-    ):
+    def __init__(self,
+                 compute_by_rows: bool,
+                 drop_keys: List[str],
+                 expected_input_keys: List[str],
+                 update_row: bool,
+                 context_generators: dict[str, ContextGeneratorBase],
+                 context_merger_func: Optional[Callable] = dict_context_merger,
+                 transform_funcs: Optional[List[TransformBase]] = None):
         super().__init__(compute_by_rows, drop_keys, expected_input_keys,
                          update_row)
         self.context_generators = context_generators
@@ -46,6 +44,7 @@ class TokenizerUDF(StatefulStageUDF):
             required_kwargs = generator.required_kwargs
             if required_kwargs:
                 required_kwargs_dict = {k: row[k] for k in required_kwargs}
+                required_kwargs_dict = numpy_to_dict(required_kwargs_dict)
                 context_dict[name] = generator(**required_kwargs_dict)
             else:
                 context_dict[name] = generator()

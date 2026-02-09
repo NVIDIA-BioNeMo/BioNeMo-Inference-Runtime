@@ -34,7 +34,7 @@ from tensorrt_bionemo._torch.modules.openfold2.utils.feats import (
     pseudo_beta_fn)
 from tensorrt_bionemo._torch.tensor_utils import masked_mean, tensor_tree_map
 from tensorrt_bionemo._trt.module_wrappers import EvoformerStackTRT
-from tensorrt_bionemo.configs import BaseConfig, AcceleratedConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
@@ -175,11 +175,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             weights=weights,
             model_name=self.model_name)
         self.aux_heads.load_weights(aux_heads_weights)
-
-    def get_optimized_modules(
-        self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> OpenFold2AcceleratedModules:
-        return OpenFold2AcceleratedModules(accelerated_configs)
 
     @staticmethod
     def get_pretrained_config(

@@ -2,19 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-import sys
 
 import numpy as np
 import pytest
 import torch
 
-from tensorrt_bionemo.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase
-from tensorrt_bionemo.pipeline.stages.feature_generator_stage import FeatureGeneratorUDF
+from tensorrt_bionemo.pipeline.base import (FeatureCollatorBase,
+                                            FeatureGeneratorBase,
+                                            default_context_and_feature_merger)
+from tensorrt_bionemo.pipeline.stages.feature_generator_stage import \
+    FeatureGeneratorUDF
 
 
 class MockFeatureGenerator(FeatureGeneratorBase):
 
-    def __init__(self, output_tensors: dict = None, enabled: bool = True, name: str = "mock"):
+    def __init__(self,
+                 output_tensors: dict = None,
+                 enabled: bool = True,
+                 name: str = "mock"):
         super().__init__(config=None, name=name)
         self._output = output_tensors or {"generated_feature": torch.ones(10)}
         self._enabled = enabled
@@ -50,7 +55,7 @@ class TestFeatureGeneratorUDFBasicProcessing:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
     def test_init_with_defaults(self):
@@ -127,7 +132,9 @@ class TestFeatureGeneratorUDFTensorExtraction:
             "tensor": torch.ones(3),
             "string": "hello",
             "list": [1, 2, 3],
-            "dict": {"a": 1},
+            "dict": {
+                "a": 1
+            },
         }
         result = udf._extract_tensors(row)
 
@@ -149,7 +156,7 @@ class TestFeatureGeneratorUDFFeatureGeneration:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[generator],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         row = {"input_tensor": torch.ones(3), "__record_id": "test"}
@@ -168,7 +175,7 @@ class TestFeatureGeneratorUDFFeatureGeneration:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[gen1, gen2],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         row = {"__record_id": "test"}
@@ -178,8 +185,12 @@ class TestFeatureGeneratorUDFFeatureGeneration:
         assert "feat2" in result
 
     def test_disabled_generator_skipped(self):
-        enabled_gen = MockFeatureGenerator({"enabled_feat": torch.ones(3)}, enabled=True, name="enabled")
-        disabled_gen = MockFeatureGenerator({"disabled_feat": torch.zeros(3)}, enabled=False, name="disabled")
+        enabled_gen = MockFeatureGenerator({"enabled_feat": torch.ones(3)},
+                                           enabled=True,
+                                           name="enabled")
+        disabled_gen = MockFeatureGenerator({"disabled_feat": torch.zeros(3)},
+                                            enabled=False,
+                                            name="disabled")
 
         udf = FeatureGeneratorUDF(
             compute_by_rows=True,
@@ -187,7 +198,7 @@ class TestFeatureGeneratorUDFFeatureGeneration:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[enabled_gen, disabled_gen],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         row = {"__record_id": "test"}
@@ -206,11 +217,12 @@ class TestFeatureGeneratorUDFFeatureGeneration:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[gen1, gen2],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         row = {"__record_id": "test"}
-        with pytest.raises(ValueError, match="already in the features dictionary"):
+        with pytest.raises(ValueError,
+                           match="already in the features dictionary"):
             asyncio.run(udf.udf_for_item(row))
 
 
@@ -227,7 +239,7 @@ class TestFeatureGeneratorUDFCollators:
             update_row=False,
             feature_generators=[generator],
             feature_collators=[collator],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         row = {"__record_id": "test"}
@@ -246,7 +258,7 @@ class TestFeatureGeneratorUDFCollators:
             update_row=False,
             feature_generators=[generator],
             feature_collators=[collator],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         row = {"__record_id": "test"}
@@ -255,7 +267,9 @@ class TestFeatureGeneratorUDFCollators:
         assert "collated" not in result
 
     def test_multiple_collators_chained(self):
+
         class CollatorA(FeatureCollatorBase):
+
             def __init__(self):
                 super().__init__(config=None, name="collator_a")
 
@@ -267,6 +281,7 @@ class TestFeatureGeneratorUDFCollators:
                 return True
 
         class CollatorB(FeatureCollatorBase):
+
             def __init__(self):
                 super().__init__(config=None, name="collator_b")
 
@@ -286,7 +301,7 @@ class TestFeatureGeneratorUDFCollators:
             update_row=False,
             feature_generators=[generator],
             feature_collators=[CollatorA(), CollatorB()],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         row = {"__record_id": "test"}
@@ -299,6 +314,7 @@ class TestFeatureGeneratorUDFCollators:
 class TestFeatureGeneratorUDFPreInit:
 
     def test_pre_init_called(self):
+
         def mock_pre_init(context):
             context["initialized"] = True
             return context
@@ -311,7 +327,7 @@ class TestFeatureGeneratorUDFPreInit:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[generator],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
             pre_init=mock_pre_init,
         )
 
@@ -329,7 +345,7 @@ class TestFeatureGeneratorUDFPreInit:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[generator],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
             pre_init=None,
         )
 
@@ -350,12 +366,13 @@ class TestFeatureGeneratorUDFBatchProcessing:
             expected_input_keys=[],
             update_row=False,
             feature_generators=[generator],
-            features_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            features_merger_func=default_context_and_feature_merger,
         )
 
         async def run_batch():
             batch = {
-                "input_data": [np.ones(3), np.ones(3), np.ones(3)],
+                "input_data": [np.ones(3), np.ones(3),
+                               np.ones(3)],
                 "__record_id": ["r1", "r2", "r3"],
             }
             results = []

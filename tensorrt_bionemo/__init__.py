@@ -23,8 +23,6 @@ logging.basicConfig(
 )
 
 from .registry import register_all_factories
-#from ._torch import (_load_cuequivariance_lib, _load_kernels_lib,
-#                     _load_torch_ext_lib)
 from ._trt.plugin import _load_plugin_lib
 from ._torch import _load_cuequivariance_lib, _load_kernels_lib
 from ._trt.plugin import _load_plugin_lib

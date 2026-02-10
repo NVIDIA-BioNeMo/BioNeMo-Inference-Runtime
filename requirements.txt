@@ -10,10 +10,7 @@ matplotlib # FIXME: this is added to make nvtx happy
 tensorrt>=10.13.2
 triton==3.5.0
 biopython>=1.84
-ray==2.53.0
 boto3==1.42.17
-ray[serve]
+ray[serve,data]==2.53.0  # installs pandas, pyarrow
 uvloop==0.21.0
 modelcif==1.6  # needed for CIFWriter
-pandas==3.0.0  # needed for CIFWriter
-pyarrow==23.0.0  # needed for CIFWriter

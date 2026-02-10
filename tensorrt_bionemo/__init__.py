@@ -22,8 +22,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-from .registry import register_all_factories
-from ._trt.plugin import _load_plugin_lib
 from ._torch import _load_cuequivariance_lib, _load_kernels_lib
 from ._trt.plugin import _load_plugin_lib
 from .registry import register_all_factories

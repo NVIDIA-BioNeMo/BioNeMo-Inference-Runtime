@@ -26,13 +26,13 @@ from tensorrt_bionemo.logger import trtbnm_logger
 
 
 class CIFWriter(BaseWriter):
-    """Writes a multi-chain protein structure to string and to file in cif format"""
+    """Writes a multi-chain protein structure to string and to file in cif format."""
     
     def set_output_path(self, output_path: str):
         self.output_path = output_path
     
     def write(self, folding_output: FoldingOutput, system_title: str | None = "TensorRT BioNeMo Prediction") -> str:
-        """Write the result fo the network forward pass to file in the local 
+        """Write the result of the network forward pass to file in the local 
         environment.
 
         Args:
@@ -102,7 +102,7 @@ class CIFWriter(BaseWriter):
         atom_types: list[str] = [x.name for x in self.atom_types]
 
         # sanity checks on folding_output
-        if isinstance(chain_indices, np.array) and (chain_indices.min() < 0 or chain_indices.max() > 25):
+        if isinstance(chain_indices, np.ndarray) and (chain_indices.min() < 0 or chain_indices.max() > 25):
             raise ValueError(
                 "In the CIFWriter, received folding_output chain_indices has at least"
                 "one value less than 0 or greater than 25"
@@ -223,10 +223,10 @@ class CIFWriter(BaseWriter):
                     (_GlobalPLDDT(np.mean(np.array(plddts)))))
 
         # Add the model and modeling protocol to the file and write them out:
-        model = _MyModel(assembly=modeled_assembly, name='Best scoring model')
-        model.add_scores()
+        model_ = _MyModel(assembly=modeled_assembly, name='Best scoring model')
+        model_.add_scores()
 
-        model_group = modelcif.model.ModelGroup([model], name='All models')
+        model_group = modelcif.model.ModelGroup([model_], name='All models')
         system.model_groups.append(model_group)
 
         fh = io.StringIO()

@@ -1,8 +1,6 @@
--r requirements.txt
 pre-commit
 pytest
 parameterized
 omegaconf==2.3.0
 biotite==1.6.0  # used for tests
 biotraj==1.2.2  # used for tests
-

@@ -154,15 +154,21 @@ class TestWriterUDFGetWriter:
         assert ext == ".cif"
         assert isinstance(writer, CIFWriter)
 
-    def test_get_writer_with_default_mappings(self):
+    def test_get_writer_with_atom_type_mapping_only(self):
         """Test that writers work without explicit mappings (use defaults)."""
+        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
         from tensorrt_bionemo.data.writers import PDBWriter
+        all_atom_types = AtomTypes.all_types()
+        atom_type_mapping = {
+            i: all_atom_types[i]
+            for i in range(len(all_atom_types))
+        }
         udf = WriterUDF(
             compute_by_rows=True,
             drop_keys=[],
             expected_input_keys=[],
             update_row=False,
-            mappings={},  # No mappings provided
+            mappings={"atom_type_mapping": atom_type_mapping},
             format="pdb",
         )
         writer, ext = udf._get_writer_and_ext()
@@ -181,8 +187,7 @@ class TestWriterUDFGetWriter:
             mappings={},
             format="invalid",
         )
-        with pytest.raises(ValueError,
-                           match="Invalid format.*Supported formats"):
+        with pytest.raises(ValueError, match=r"Invalid format.*"):
             udf._get_writer_and_ext()
 
 

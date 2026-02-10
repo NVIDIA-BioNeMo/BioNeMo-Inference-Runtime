@@ -45,15 +45,14 @@ class WriterUDF(StatefulStageUDF):
             res_type_mapping = self.mappings.get("res_type_mapping", None)
             atom_type_mapping = self.mappings.get("atom_type_mapping", None)
             
-            if res_type_mapping is None and atom_type_mapping is None:
+            if self.format == "pdb":
+                if res_type_mapping is None and atom_type_mapping is None:
                     raise ValueError(
                         "WriterUDF requires at least one of 'res_type_mapping' or 'atom_type_mapping' "
-                        "in the mappings dictionary to write PDB files. "
+                        "in the mappings dictionary to write PDB. "
                         "These mappings define how residue/atom types are interpreted. "
                         "Ensure WriterStage is configured with proper mappings."
                     )
-                
-            if self.format == "pdb":
                 writer = PDBWriter(
                     res_type_mapping=res_type_mapping,
                     atom_type_mapping=atom_type_mapping)

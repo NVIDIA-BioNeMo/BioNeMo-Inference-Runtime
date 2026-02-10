@@ -69,19 +69,9 @@ class TestPDBWriter:
         assert len(writer.res_types) == len(res_type_mapping)
         assert len(writer.atom_types) == len(atom_type_mapping)
 
-    def test_initialization_with_only_res_type(self, res_type_mapping,
-                                               temp_output_file):
-        """Test PDBWriter initialization with only residue type mapping."""
-        writer = PDBWriter(output_path=temp_output_file,
-                           res_type_mapping=res_type_mapping)
-
-        assert writer.output_path == temp_output_file
-        assert writer.res_type_mapping == res_type_mapping
-        assert len(writer.res_types) == len(res_type_mapping)
-
-    def test_initialization_with_defaults(self, temp_output_file):
+    def test_initialization_only_atom_type_mapping(self, temp_output_file, atom_type_mapping):
         """Test that PDBWriter initialization works with default mappings."""
-        writer = PDBWriter(output_path=temp_output_file)
+        writer = PDBWriter(output_path=temp_output_file, atom_type_mapping=atom_type_mapping)
 
         # Should have default mappings from BaseWriter
         assert writer.output_path == temp_output_file

@@ -36,7 +36,8 @@ class PDBWriter:
         res_type_mapping: Optional[dict[int, ResType]] = None,
         atom_type_mapping: Optional[dict[int, AtomType]] = None,
     ):
-        assert res_type_mapping is not None or atom_type_mapping is not None, "Either res_type_mapping or atom_type_mapping must be provided to dump PDB file"
+        if atom_type_mapping is None:
+            raise ValueError("atom_type_mapping must be provided to dump PDB file")
         self.output_path = output_path
         self.res_type_mapping = res_type_mapping
         if self.res_type_mapping is None:

@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import ray
 
+import pytest
 import numpy.testing as npt
 
 import biotite.structure.io.pdbx as pdbx
@@ -33,7 +34,7 @@ from tensorrt_bionemo.data.parsers import read_fasta
 from tensorrt_bionemo.data.schemas import InputRequest, Polymer, MSARecord
 
 
-SAMPLE_DIR = Path.cwd() / "examples" / "data" / "samples" / "monomers"
+SAMPLE_DIR = Path("examples") / "data" / "samples" / "monomers"
 
 def create_sample_requests(repeat: int = 1):
     """Create sample protein folding requests."""
@@ -55,14 +56,15 @@ def create_sample_requests(repeat: int = 1):
     return requests
 
 
-def test_writer_stage_in_noop_pipe():
+def test_writer_stage_in_noop_pipe(tmp_path):
     
     os.environ["ALPHAFOLD2_1_CKPT"] = "/workspaces/tensorrt-bionemo/checkpoints/alphafold2_1.pt"
     os.environ["RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION"] = "0.5"
     
     run_label = datetime.now().strftime('%Y%m%dT%H%M%S')
     output_path=os.path.join(
-        "/tmp/output/tests/pipeline/stages",
+        tmp_path,
+        "output/tests/pipeline/stages",
         f"test_writer_stage_in_noop_pipeline_output_{run_label}",
         f"writer_output_{run_label}"
     )

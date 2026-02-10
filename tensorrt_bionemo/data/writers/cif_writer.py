@@ -38,6 +38,7 @@ class CIFWriter(BaseWriter):
         Args:
             folding_output: The result of the forward pass of a structure
                 prediction network, e.g. OpenFold, or Boltz2
+            system_title: Written to the output cif-format file.
 
         Notes:
             from Protein dataclass
@@ -81,9 +82,7 @@ class CIFWriter(BaseWriter):
             (6) set atom_types to the name field of self.atom_types
 
         """
-
-        #trtbnm_logger("begin")
-        system_title = 'TensorRT BioNeMo prediction'
+        trtbnm_logger("begin")
         
         # get output protein complex representation
         #   - for numpy arrays below, 0th axis is sequence position
@@ -103,7 +102,7 @@ class CIFWriter(BaseWriter):
         atom_types: list[str] = [x.name for x in self.atom_types]
 
         # sanity checks on folding_output
-        if chain_indices.min() < 0 or chain_indices.max() > 25:
+        if isinstance(chain_indices, np.array) and (chain_indices.min() < 0 or chain_indices.max() > 25):
             raise ValueError(
                 "In the CIFWriter, received folding_output chain_indices has at least"
                 "one value less than 0 or greater than 25"
@@ -237,5 +236,5 @@ class CIFWriter(BaseWriter):
         if self.output_path is not None:
             with open(self.output_path, "w") as f:
                 f.write(buffer)
-        #trtbnm_logger("end")
+        trtbnm_logger("end")
         return buffer

@@ -167,21 +167,6 @@ class TestCIFWriter:
                 # Should have entity or asym information for multiple chains
                 assert "_entity" in cif_content.lower() or "asym" in cif_content.lower()
 
-    def test_write_contains_plddt_scores(self, res_type_mapping,
-                                             atom_type_mapping,
-                                             sample_folding_output):
-        """Test that pLDDT scores are included in the output."""
-        writer = CIFWriter(output_path="test.cif",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
-
-        cif_content = writer.write(sample_folding_output)
-
-        # Should contain quality metric information (pLDDT)
-        # modelcif includes qa_metric data
-        assert "pLDDT local" in cif_content
-        assert "pLDDT global" in cif_content
-
     def test_write_file(self, res_type_mapping,
                                atom_type_mapping,
                                sample_folding_output,

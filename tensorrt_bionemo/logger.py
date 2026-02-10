@@ -5,6 +5,8 @@ from tensorrt_llm_lite.logger import logger as tllm_logger
 
 logger = tllm_logger
 
+LEVEL_FROM_STR = {"DEBUG": logger.DEBUG, "INFO": logger.INFO}
+
 
 def trtbnm_logger(message: str = "trt_bnm_logger", do_print: bool=False):
     
@@ -22,7 +24,7 @@ def trtbnm_logger(message: str = "trt_bnm_logger", do_print: bool=False):
         """
         if do_print:
             print(formatted_message)
-        logger.log(logger.INFO, formatted_message)
+        logger.log(LEVEL_FROM_STR.get(trtbnm_log_level_from_env, "INFO"), formatted_message)
 
 
 def caller_info(levels_up: int = 1) -> str:

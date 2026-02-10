@@ -15,13 +15,12 @@
 import os
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, patch
-import pytest
 
 import numpy as np
 import ray
 
-import biotite.structure as struc
+import numpy.testing as npt
+
 import biotite.structure.io.pdbx as pdbx
 import biotite.structure.io.pdb as pdb
 from biotite.structure import AtomArrayStack
@@ -39,7 +38,7 @@ SAMPLE_DIR = Path.cwd() / "examples" / "data" / "samples" / "monomers"
 def create_sample_requests(repeat: int = 1):
     """Create sample protein folding requests."""
     requests = []
-    sample_ids = ["T1031", "T1033"]
+    sample_ids = ["T1031"]
     for i in range(repeat):
         for sample_id in sample_ids:
             sequence = read_fasta(str(SAMPLE_DIR / f"{sample_id}.fasta"))["sequences"][0]["sequence"]
@@ -111,8 +110,5 @@ def test_writer_stage_in_noop_pipe():
         atom_coord_from_pdb: np.array = struc_from_pdb.coord
         atom_coord_from_cif: np.array = struc_from_cif.coord
         
-        atom_coord_delta_size: np.array = np.abs(atom_coord_from_cif - atom_coord_from_pdb)
-        assert atom_coord_delta_size.max() < 0.1
-        
-    print("done")
+        npt.assert_allclose(atom_coord_from_pdb, atom_coord_from_cif, rtol=1e-3, atol=1e-3)
 

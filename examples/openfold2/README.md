@@ -96,26 +96,29 @@ export ALPHAFOLD2_MULTIMER_1_CKPT=__checkpoint_dir__/alphafold_params/params_mod
 
 See all checkpoint environment variables in `hubs/local.py`.
 
+Normal cases:
+
 ```python
     from tensorrt_bionemo.models.helper import AcceleratedConfig
     from tensorrt_bionemo.models.openfold2.modeling import OpenFold2, OpenFold2AcceleratedModules
     from tensorrt_bionemo.runtime import BackendType, OnDemandContextMemoryManager
     manager = OnDemandContextMemoryManager()
 
-    model_name = "openFold2_ptm1"
-    model = OpenFold2(model_name)
-    acc_m = OpenFold2AcceleratedModules(
-        {
-            "evoformer": AcceleratedConfig(
-                checkpoint="__path_to_engines_dir__",
-                backend=BackendType.TRT,
-            )
-        }
-    )
+    model = OpenFold2(model_name=model_name)
+    model.cuda()
+    model.eval()
+    acc_m = {
+        "evoformer":
+        AcceleratedConfig(
+            checkpoint=evoformer_ckpt,
+            backend=evoformer_backend,
+            need_fallback=NeedFallbackEvoformer(evoformer_fallback_threshold),
+        )
+    }
     model = model.optimize(acc_m, manager)
 ```
 
-Please take a look on the `run_demo.py` script to run with TRT-BNM (default torch-backend)
+Please take a look on the `run_demo.py` script to run with TRT-BNM (default torch-backend, fallback optional on trt-backend)
 
 ```bash
 $ python run_demo.py \
@@ -128,6 +131,17 @@ $ python run_demo.py \
 # Add option to run with trt
     # --evoformer_backend trt \
     # --evoformer_ckpt _engines_path_
+```
+
+## Longer sequences ~ 3k
+
+For longer sequences, it recommends to use the pytorch backend (or trt-backend with fallback threshold) and chunking configurations for the OuterProductMean module:
+
+```python
+config = OpenFold2.get_pretrained_config(model_name)
+config.trunk.evoformer_stack.opm_chunk_size = 16
+config.trunk.evoformer_stack.opm_mask_chunk_size = 128 # 64, 128, 256, 512
+model = OpenFold2(config=config, model_name=model_name)
 ```
 
 # Run with ray.

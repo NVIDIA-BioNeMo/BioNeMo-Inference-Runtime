@@ -630,7 +630,7 @@ class MSAAttention(nn.Module):
                     m.size(-2),
                     m.size(-2)
                 ]
-                z = torch.zeros(z_shape, dtype=self.dtype).to(m.device)
+                z = torch.zeros(z_shape, dtype=self.dtype, device=m.device)
         biases = [mask_bias, z]
         m = self.layer_norm_m(m)
 

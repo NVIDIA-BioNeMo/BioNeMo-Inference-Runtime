@@ -18,6 +18,9 @@ package-dir = { "" = "." }
 version = {attr = "tensorrt_bionemo.version.__version__"}
 dependencies = {file = ["requirements.txt"]}
 
+[tool.setuptools.dynamic.optional-dependencies]
+dev = {file = ["requirements-dev.txt"]}
+
 [tool.setuptools.packages.find]
 where = [".", "nv_deps/TensorRT-LLM"]
 include = ["tensorrt_bionemo*", "tensorrt_llm_lite*"]
@@ -34,7 +37,7 @@ description = "TensorRT BioNeMo: GPU accelerated framework for protein folding"
 requires-python = ">=3.10,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 readme = "README.md"
-dynamic = ["dependencies", "version"]
+dynamic = ["dependencies", "version", "optional-dependencies"]
 license = "Apache-2.0"
 
 [project.scripts]

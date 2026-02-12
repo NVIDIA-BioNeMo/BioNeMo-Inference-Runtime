@@ -67,15 +67,6 @@ class TestCIFWriter:
         assert len(writer.res_types) == len(res_type_mapping)
         assert len(writer.atom_types) == len(atom_type_mapping)
 
-    def test_initialization_with_only_res_type(self, res_type_mapping,
-                                               temp_output_file):
-        """Test CIFWriter initialization with only residue type mapping."""
-        writer = CIFWriter(output_path=temp_output_file,
-                           res_type_mapping=res_type_mapping)
-
-        assert writer.output_path == temp_output_file
-        assert len(writer.res_types) == len(res_type_mapping)
-
     def test_set_output_path(self, res_type_mapping, atom_type_mapping):
         """Test setting output path after initialization."""
         writer = CIFWriter(output_path="initial.cif",

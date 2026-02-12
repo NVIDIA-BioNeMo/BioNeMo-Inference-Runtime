@@ -22,7 +22,6 @@ from modelcif import dumper, model, qa_metric  # noqa: F401
 
 from tensorrt_bionemo.data.schemas.basic import FoldingOutput
 from tensorrt_bionemo.data.writers.base_writer import BaseWriter
-from tensorrt_bionemo.logger import trtbnm_logger
 
 
 class CIFWriter(BaseWriter):
@@ -81,9 +80,7 @@ class CIFWriter(BaseWriter):
             (5) set restypes to single-char name from self.res_types
             (6) set atom_types to the name field of self.atom_types
 
-        """
-        trtbnm_logger("begin")
-        
+        """        
         # get output protein complex representation
         #   - for numpy arrays below, 0th axis is sequence position
         residue_types: np.ndarray[np.int64] = folding_output["residue_types"]
@@ -102,11 +99,17 @@ class CIFWriter(BaseWriter):
         atom_types: list[str] = [x.name for x in self.atom_types]
 
         # sanity checks on folding_output
-        if isinstance(chain_indices, np.ndarray) and (chain_indices.min() < 0 or chain_indices.max() > 25):
-            raise ValueError(
-                "In the CIFWriter, received folding_output chain_indices has at least"
-                "one value less than 0 or greater than 25"
+        if chain_indices is not None and not isinstance(chain_indices, np.ndarray):
+            raise TypeError(
+                "In the CIFWriter, received folding_output chain_indices is neither None or an array."
             )
+        elif isinstance(chain_indices, np.ndarray) and (min(chain_indices) < 0 or max(chain_indices) > 25):
+            raise ValueError(
+                " ".join([
+                    "In the CIFWriter, received folding_output chain_indices has at least",
+                    "one value less than 0 or greater than 25."])
+            )
+
 
         # start openfold logic
         n = residue_types.shape[0]  # number of sequence positions in input
@@ -236,5 +239,4 @@ class CIFWriter(BaseWriter):
         if self.output_path is not None:
             with open(self.output_path, "w") as f:
                 f.write(buffer)
-        trtbnm_logger("end")
         return buffer

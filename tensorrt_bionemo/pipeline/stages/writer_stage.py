@@ -45,24 +45,29 @@ class WriterUDF(StatefulStageUDF):
             res_type_mapping = self.mappings.get("res_type_mapping", None)
             atom_type_mapping = self.mappings.get("atom_type_mapping", None)
             
-            if self.format == "pdb":
-                if res_type_mapping is None and atom_type_mapping is None:
+            if self.format in ["pdb", "cif"]:
+                if res_type_mapping is None or atom_type_mapping is None:
                     raise ValueError(
-                        "WriterUDF requires at least one of 'res_type_mapping' or 'atom_type_mapping' "
-                        "in the mappings dictionary to write PDB. "
-                        "These mappings define how residue/atom types are interpreted. "
-                        "Ensure WriterStage is configured with proper mappings."
+                        " ".join(
+                            [
+                                "WriterUDF requires both 'res_type_mapping' and 'atom_type_mapping'",
+                                "to write PDB or CIF.",
+                                "These mappings define how residue/atom types are interpreted.",
+                                "Ensure WriterStage is configured with proper mappings."
+                            ]
+                        )
                     )
-                writer = PDBWriter(
-                    res_type_mapping=res_type_mapping,
-                    atom_type_mapping=atom_type_mapping)
-                return writer, ".pdb"
-    
-            elif self.format == "cif":
-                writer = CIFWriter(
-                    res_type_mapping=res_type_mapping,
-                    atom_type_mapping=atom_type_mapping)
-                return writer, ".cif"
+                elif self.format == "pdb":
+                    writer = PDBWriter(
+                        res_type_mapping=res_type_mapping,
+                        atom_type_mapping=atom_type_mapping)
+                    return writer, ".pdb"
+        
+                elif self.format == "cif":
+                    writer = CIFWriter(
+                        res_type_mapping=res_type_mapping,
+                        atom_type_mapping=atom_type_mapping)
+                    return writer, ".cif"
                 
         raise ValueError(f"Invalid format: {self.format}")
 

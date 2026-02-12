@@ -62,7 +62,7 @@ class TRTEngineHandle:
         self._stream = stream
         self._engine_dir = engine_dir
         if self._stream is None:
-            self._stream = torch.cuda.current_stream().cuda_stream
+            self._stream = torch.cuda.current_stream()
         self._tp_size = self._config.mapping.tp_size
         self._dcp_size = self._config.mapping.dcp_size
 
@@ -419,13 +419,13 @@ class BaseContextMemoryManager:
         raise NotImplementedError("load() is not implemented")
 
     def set_stream(self, stream: Any):
-        current_stream = torch.cuda.current_stream().cuda_stream
+        current_stream = torch.cuda.current_stream()
         if stream is not None and stream != current_stream:
             current_stream.synchronize()
             torch.cuda.set_stream(stream)
 
     def unset_stream(self, stream: Any):
-        current_stream = torch.cuda.current_stream().cuda_stream
+        current_stream = torch.cuda.current_stream()
         if stream is not None and stream != current_stream:
             stream.synchronize()
             torch.cuda.set_stream(current_stream)
@@ -470,7 +470,7 @@ class BaseContextMemoryManager:
         # Run inference
         ok = session.run(trt_inputs,
                          outputs,
-                         handle._stream,
+                         handle._stream.cuda_stream,
                          context=session.context)
         assert ok, "Runtime execution failed"
 

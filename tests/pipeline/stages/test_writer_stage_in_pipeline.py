@@ -17,10 +17,9 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import ray
-
-import pytest
 import numpy.testing as npt
+
+import ray
 
 import biotite.structure.io.pdbx as pdbx
 import biotite.structure.io.pdb as pdb
@@ -35,6 +34,7 @@ from tensorrt_bionemo.data.schemas import InputRequest, Polymer, MSARecord
 
 
 SAMPLE_DIR = Path("examples") / "data" / "samples" / "monomers"
+
 
 def create_sample_requests(repeat: int = 1):
     """Create sample protein folding requests."""
@@ -56,11 +56,22 @@ def create_sample_requests(repeat: int = 1):
     return requests
 
 
-def test_writer_stage_in_noop_pipe(tmp_path):
+def test_writer_stage_in_noop_pipe(tmp_path: Path):
+    """Check that the atomic structure written with PDBWriter is the same as 
+    the atomic structure written with CIFWriter..
+
+        Use alphafold2_1.pt weights.  openfold2_ptm_1 weights fail to load in 
+        OpenFold2.load_weights()
+
+        Args:
+            tmp_path: pytest construct
+    """
     
-    os.environ["ALPHAFOLD2_1_CKPT"] = "/workspaces/tensorrt-bionemo/checkpoints/alphafold2_1.pt"
+    # (0) settings
+    model_source = "alphafold2_1"
     os.environ["RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION"] = "0.5"
     
+    # (1) Create a scratch-space directory
     run_label = datetime.now().strftime('%Y%m%dT%H%M%S')
     output_path=os.path.join(
         tmp_path,
@@ -76,13 +87,13 @@ def test_writer_stage_in_noop_pipe(tmp_path):
     
     # (3) Define and run processors for pdb and cif formats
     config_for_pdb = EngineProcessorConfig(
-        model_source="alphafold2_1",
+        model_source=model_source,
         parser_stage=ParserStageConfig(compute=2),
         feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
         writer_stage=WriterStageConfig(
             compute=2, output_path=output_path, format="pdb"))
     config_for_cif = EngineProcessorConfig(
-        model_source="alphafold2_1",
+        model_source=model_source,
         parser_stage=ParserStageConfig(compute=2),
         feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
         writer_stage=WriterStageConfig(
@@ -91,21 +102,21 @@ def test_writer_stage_in_noop_pipe(tmp_path):
     processor_for_pdb: Processor = build_processor(config_for_pdb)
     processor_for_cif: Processor = build_processor(config_for_cif)
     
-    # (3) Run processors for pdb and cif formats
+    # (4) Run processors for pdb and cif formats
     ds_for_pdb = processor_for_pdb(ds)
     ds_for_pdb.materialize()
     
     ds_for_cif = processor_for_cif(ds)
     ds_for_cif.materialize()
     
-    # (4) metrics to compare output
-    for x in ["T1031"]:
+    # (5) metrics to compare output
+    for input_id in [req["input_id"] for req in requests]:
         pdb_file = pdb.PDBFile.read(
-            os.path.join(output_path, f"{x}_0.pdb")
+            os.path.join(output_path, f"{input_id}.pdb")
         )
         struc_from_pdb: AtomArrayStack = pdb.get_structure(pdb_file)
         cif_file = pdbx.CIFFile.read(
-            os.path.join(output_path, f"{x}_0.cif")
+            os.path.join(output_path, f"{input_id}.cif")
         )
         struc_from_cif: AtomArrayStack = pdbx.get_structure(cif_file)
         
@@ -113,4 +124,3 @@ def test_writer_stage_in_noop_pipe(tmp_path):
         atom_coord_from_cif: np.array = struc_from_cif.coord
         
         npt.assert_allclose(atom_coord_from_pdb, atom_coord_from_cif, rtol=1e-3, atol=1e-3)
-

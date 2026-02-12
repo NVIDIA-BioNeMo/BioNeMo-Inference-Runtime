@@ -38,20 +38,23 @@ class BaseWriter(ABC):
 
     def __init__(
         self,
+        res_type_mapping: dict[int, ResType],
+        atom_type_mapping: dict[int, AtomType],
         output_path: str = "output.cif",
-        res_type_mapping: dict[int, ResType] | None = None,
-        atom_type_mapping: dict[int, AtomType] | None = None,
     ):
-        """Initializes the BaseWriter with the given configuration.
+        """Initializes the BaseWriter with the given configuration..
 
         Args:
-            output_path: Assigned to instance attribute.
             res_type_mapping: Assigned to instance attribute.
             atom_type_mapping: Assigned to instance attribute.
+            output_path: Assigned to instance attribute.
         Raises:
             None
         """
         logger.debug("BaseWriter.__init__() begin")
+
+        if atom_type_mapping is None or res_type_mapping is None:
+            raise ValueError("atom_type_mapping and res_type_mapping must be provided to dump PDB file")
 
         # process __init__ args
         self.output_path = output_path
@@ -59,21 +62,6 @@ class BaseWriter(ABC):
         # Store the mappings as instance attributes
         self.res_type_mapping = res_type_mapping
         self.atom_type_mapping = atom_type_mapping
-
-        # Set defaults if not provided
-        if self.res_type_mapping is None:
-            basic_20 = ResTypes.basic_20_residue_types()
-            self.res_type_mapping = {
-                i: basic_20[i]
-                for i in range(len(basic_20))
-            }
-
-        if self.atom_type_mapping is None:
-            all_atom_types = AtomTypes.all_types()
-            self.atom_type_mapping = {
-                i: all_atom_types[i]
-                for i in range(len(all_atom_types))
-            }
 
         # Build lists from mappings
         self.res_types = [
@@ -84,7 +72,6 @@ class BaseWriter(ABC):
             y for _, y in sorted(self.atom_type_mapping.items(),
                                  key=lambda pair: pair[0])
         ]
-
         logger.debug("BaseWriter.__init__() end")
 
     def set_output_path(self, output_path: str):

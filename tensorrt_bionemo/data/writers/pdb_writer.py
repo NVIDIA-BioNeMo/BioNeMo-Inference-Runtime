@@ -19,8 +19,7 @@ from typing import Optional
 
 import numpy as np
 
-from tensorrt_bionemo.data.schemas.basic import (AtomType, FoldingOutput,
-                                                 ResType, ResTypes)
+from tensorrt_bionemo.data.schemas.basic import (AtomType, FoldingOutput, ResType)
 
 PICO_TO_ANGSTROM = 0.01
 
@@ -32,19 +31,14 @@ class PDBWriter:
 
     def __init__(
         self,
+        res_type_mapping: dict[int, ResType],
+        atom_type_mapping: dict[int, AtomType],
         output_path: str = "output.pdb",
-        res_type_mapping: Optional[dict[int, ResType]] = None,
-        atom_type_mapping: Optional[dict[int, AtomType]] = None,
     ):
-        if atom_type_mapping is None:
-            raise ValueError("atom_type_mapping must be provided to dump PDB file")
+        if atom_type_mapping is None or res_type_mapping is None:
+            raise ValueError("atom_type_mapping and res_type_mapping must be provided to dump PDB file")
         self.output_path = output_path
         self.res_type_mapping = res_type_mapping
-        if self.res_type_mapping is None:
-            self.res_type_mapping = {
-                i: ResTypes.from_string(i)
-                for i in range(len(ResTypes.basic_20_residue_types()))
-            }
         self.atom_type_mapping = atom_type_mapping
 
         self.res_types = []

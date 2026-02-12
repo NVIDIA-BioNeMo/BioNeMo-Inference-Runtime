@@ -110,13 +110,13 @@ class DiffusionTransformerBuildConfig(BuildConfig):
         # num_blocks = DimSpec(name="num_blocks", size=mc.num_blocks)
         heads_times_blocks = DimSpec(name="heads_times_blocks",
                                      size=mc.num_heads * mc.num_blocks)
-        
+
         if mc.version == "v2":
             z_shape = (DimSpec(size=1, name="n_seqs"), seqlen, seqlen,
                        heads_times_blocks)
         elif mc.version == "v1":
-            z_shape = (DimSpec(size=1, name="n_seqs"), seqlen, seqlen,
-                   dim_pairwise)
+            z_shape = (DimSpec(size=1,
+                               name="n_seqs"), seqlen, seqlen, dim_pairwise)
         else:
             raise ValueError(f"Invalid version: {mc.version}")
 
@@ -169,6 +169,8 @@ class EvoformerStackConfig(BaseConfig):
     chunk_size: int = 0
     n_seq: int = 516
     trimul_high_precision: bool = False
+    opm_chunk_size: Optional[int] = None
+    opm_mask_chunk_size: Optional[int] = None
 
 
 class EvoformerStackBuildConfig(BuildConfig):

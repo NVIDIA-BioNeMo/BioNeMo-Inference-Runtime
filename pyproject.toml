@@ -37,7 +37,7 @@ description = "TensorRT BioNeMo: GPU accelerated framework for protein folding"
 requires-python = ">=3.10,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 readme = "README.md"
-dynamic = ["dependencies", "optional-dependencies", "version"]
+dynamic = ["dependencies", "version", "optional-dependencies"]
 license = "Apache-2.0"
 
 [project.scripts]

@@ -179,6 +179,38 @@ class TestFoldingOutput:
         assert output["b_factors"].shape == (num_res, num_atom_type)
         assert output["chain_indices"].shape == (num_res, )
 
+    def test_create_folding_output_with_confidence_metrics(self):
+        num_res = 95
+        num_atom_type = 37
+        atom_positions = np.random.randn(num_res, num_atom_type,
+                                         3).astype(np.float32)
+        residue_types = np.random.randint(0,
+                                          21,
+                                          size=(num_res, ),
+                                          dtype=np.int32)
+        atom_mask = np.ones((num_res, num_atom_type), dtype=np.float32)
+        residue_indices = np.arange(num_res, dtype=np.int32)
+        plddt = np.random.rand(num_res).astype(np.float32) * 100
+        pae = np.random.rand(num_res, num_res).astype(np.float32) * 31.75
+
+        output = FoldingOutput(
+            atom_positions=atom_positions,
+            residue_types=residue_types,
+            atom_mask=atom_mask,
+            residue_indices=residue_indices,
+            plddt=plddt,
+            ptm=0.85,
+            iptm=0.72,
+            pae=pae,
+            max_pae=31.75,
+        )
+
+        assert output["plddt"].shape == (num_res, )
+        assert output["ptm"] == pytest.approx(0.85)
+        assert output["iptm"] == pytest.approx(0.72)
+        assert output["pae"].shape == (num_res, num_res)
+        assert output["max_pae"] == pytest.approx(31.75)
+
     def test_folding_output_from_sample_sequence(self):
         fasta_path = SAMPLES_DIR / "T1033.fasta"
         parsed = read_fasta(fasta_path)
@@ -205,6 +237,82 @@ class TestFoldingOutput:
         assert output["residue_types"].shape == (100, )
         assert output["b_factors"] is None
         assert output["chain_indices"] is None
+        assert output["plddt"] is None
+        assert output["ptm"] is None
+        assert output["iptm"] is None
+        assert output["pae"] is None
+        assert output["max_pae"] is None
+
+    def test_get_scores_with_all_metrics(self):
+        num_res = 10
+        num_atom_type = 37
+        plddt = np.array(
+            [85.0, 90.1, 72.3, 95.0, 60.5, 88.2, 91.0, 77.4, 83.6, 69.8],
+            dtype=np.float32)
+        pae = np.random.rand(num_res, num_res).astype(np.float32) * 20.0
+
+        output = FoldingOutput(
+            atom_positions=np.zeros((num_res, num_atom_type, 3),
+                                    dtype=np.float32),
+            residue_types=np.zeros(num_res, dtype=np.int32),
+            atom_mask=np.zeros((num_res, num_atom_type), dtype=np.float32),
+            residue_indices=np.arange(num_res, dtype=np.int32),
+            plddt=plddt,
+            ptm=0.92,
+            iptm=0.88,
+            pae=pae,
+            max_pae=31.75,
+        )
+
+        scores = output.get_scores()
+        assert isinstance(scores, dict)
+        assert isinstance(scores["plddt"], list)
+        assert len(scores["plddt"]) == num_res
+        assert scores["ptm"] == pytest.approx(0.92)
+        assert scores["iptm"] == pytest.approx(0.88)
+        assert isinstance(scores["pae"], list)
+        assert len(scores["pae"]) == num_res
+        assert len(scores["pae"][0]) == num_res
+        assert scores["max_pae"] == pytest.approx(31.75)
+
+    def test_get_scores_with_no_metrics(self):
+        num_res = 10
+        num_atom_type = 37
+
+        output = FoldingOutput(
+            atom_positions=np.zeros((num_res, num_atom_type, 3),
+                                    dtype=np.float32),
+            residue_types=np.zeros(num_res, dtype=np.int32),
+            atom_mask=np.zeros((num_res, num_atom_type), dtype=np.float32),
+            residue_indices=np.arange(num_res, dtype=np.int32),
+        )
+
+        scores = output.get_scores()
+        assert scores["plddt"] is None
+        assert scores["ptm"] is None
+        assert scores["iptm"] is None
+        assert scores["pae"] is None
+        assert scores["max_pae"] is None
+
+    def test_get_scores_with_nan_values(self):
+        num_res = 10
+        num_atom_type = 37
+
+        output = FoldingOutput(
+            atom_positions=np.zeros((num_res, num_atom_type, 3),
+                                    dtype=np.float32),
+            residue_types=np.zeros(num_res, dtype=np.int32),
+            atom_mask=np.zeros((num_res, num_atom_type), dtype=np.float32),
+            residue_indices=np.arange(num_res, dtype=np.int32),
+            ptm=float('nan'),
+            iptm=float('nan'),
+            max_pae=float('nan'),
+        )
+
+        scores = output.get_scores()
+        assert scores["ptm"] is None
+        assert scores["iptm"] is None
+        assert scores["max_pae"] is None
 
 
 class TestMSARecord:

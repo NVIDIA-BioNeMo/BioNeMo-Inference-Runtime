@@ -118,10 +118,31 @@ class PostProcessor(PostProcessorBase):
         # Extract chain indices from batch data
         chain_indices = self._get_chain_indices(np_batch)
 
+        # Extract pTM and iPTM
+        ptm = float(output['ptm'].cpu().numpy()) if 'ptm' in output else None
+        iptm = float(
+            output['iptm'].cpu().numpy()) if 'iptm' in output else None
+
+        # Extract PAE (Predicted Aligned Error)
+        pae = None
+        max_pae = None
+        if 'predicted_aligned_error' in output:
+            pae = output['predicted_aligned_error'].cpu().numpy()
+            if 'max_predicted_aligned_error' in output:
+                max_pae = float(
+                    output['max_predicted_aligned_error'].cpu().numpy())
+            else:
+                max_pae = float(np.max(pae))
+            pae = np.round(pae, 3)
         return FoldingOutput(
             residue_types=np_batch["aatype"],
             atom_positions=output["final_atom_positions"].cpu().numpy(),
             atom_mask=output["final_atom_mask"].cpu().numpy(),
             residue_indices=normalized_residue_index + 1,
             b_factors=plddt_b_factors,
-            chain_indices=chain_indices)
+            chain_indices=chain_indices,
+            plddt=plddt,
+            ptm=ptm,
+            iptm=iptm,
+            pae=pae,
+            max_pae=max_pae)

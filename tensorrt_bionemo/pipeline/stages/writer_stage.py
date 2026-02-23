@@ -13,13 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 from typing import Any, Dict, List, Optional, Type
 
 import numpy as np
 
 from tensorrt_bionemo.data.schemas import FoldingOutput
-from tensorrt_bionemo.data.writers import PDBWriter, CIFWriter
+from tensorrt_bionemo.data.writers import CIFWriter, PDBWriter
 from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
                                                    StatefulStageUDF)
 
@@ -44,31 +45,25 @@ class WriterUDF(StatefulStageUDF):
         if self.format in ["pdb", "cif"]:
             res_type_mapping = self.mappings.get("res_type_mapping", None)
             atom_type_mapping = self.mappings.get("atom_type_mapping", None)
-            
+
             if self.format in ["pdb", "cif"]:
                 if res_type_mapping is None or atom_type_mapping is None:
-                    raise ValueError(
-                        " ".join(
-                            [
-                                "WriterUDF requires both 'res_type_mapping' and 'atom_type_mapping'",
-                                "to write PDB or CIF.",
-                                "These mappings define how residue/atom types are interpreted.",
-                                "Ensure WriterStage is configured with proper mappings."
-                            ]
-                        )
-                    )
+                    raise ValueError(" ".join([
+                        "WriterUDF requires both 'res_type_mapping' and 'atom_type_mapping'",
+                        "to write PDB or CIF.",
+                        "These mappings define how residue/atom types are interpreted.",
+                        "Ensure WriterStage is configured with proper mappings."
+                    ]))
                 elif self.format == "pdb":
-                    writer = PDBWriter(
-                        res_type_mapping=res_type_mapping,
-                        atom_type_mapping=atom_type_mapping)
+                    writer = PDBWriter(res_type_mapping=res_type_mapping,
+                                       atom_type_mapping=atom_type_mapping)
                     return writer, ".pdb"
-        
+
                 elif self.format == "cif":
-                    writer = CIFWriter(
-                        res_type_mapping=res_type_mapping,
-                        atom_type_mapping=atom_type_mapping)
+                    writer = CIFWriter(res_type_mapping=res_type_mapping,
+                                       atom_type_mapping=atom_type_mapping)
                     return writer, ".cif"
-                
+
         raise ValueError(f"Invalid format: {self.format}")
 
     async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
@@ -92,27 +87,44 @@ class WriterUDF(StatefulStageUDF):
                                residue_indices=row.get("residue_indices",
                                                        None),
                                b_factors=b_factors,
-                               chain_indices=chain_indices)
+                               chain_indices=chain_indices,
+                               plddt=row.get("plddt", None),
+                               ptm=row.get("ptm", None),
+                               iptm=row.get("iptm", None),
+                               pae=row.get("pae", None),
+                               max_pae=row.get("max_pae", None))
         row_id = row.get(self.RECORD_ID_IN_BATCH_COLUMN)
 
         if self.output_path and row_id:
             output_path = os.path.join(self.output_path, f"{row_id}{ext}")
+            output_score_path = os.path.join(self.output_path,
+                                             f"{row_id}_scores.json")
         elif self.output_path:
             output_path = os.path.join(
                 self.output_path, f"{row[self.IDX_IN_BATCH_COLUMN]}{ext}")
+            output_score_path = os.path.join(
+                self.output_path,
+                f"{row[self.IDX_IN_BATCH_COLUMN]}_scores.json")
         else:
             output_path = None
+            output_score_path = None
 
         if output_path:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         writer.set_output_path(output_path)
         output_raw = writer.write(record)
+        scores = record.get_scores()
+
+        if output_score_path:
+            with open(output_score_path, "w") as f:
+                json.dump(scores, f)
 
         return {
             "output_path": output_path,
             "format": self.format,
             "output_raw": output_raw,
+            "scores": scores,
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
 

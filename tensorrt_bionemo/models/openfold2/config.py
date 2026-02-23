@@ -283,12 +283,12 @@ class OpenFold2MultimerConfig(OpenFold2Config):
         self.trunk.extra_msa_stack.opm_first = True
         self.is_multimer = True
         self.structure_module.is_multimer = True
-        self.max_extra_msa = 1152
+        self.max_extra_msa = 2048
         self.enable_template = True
         self.confidence_module.masked_msa.c_out = 22
         self.structure_module.trans_scale_factor = 20.0
         self.recycle_early_stop_tolerance = 0.5
-        self.max_msa_clusters = 252
+        self.max_msa_clusters = 508
         self.max_recycling_iters = 20
         return self
 

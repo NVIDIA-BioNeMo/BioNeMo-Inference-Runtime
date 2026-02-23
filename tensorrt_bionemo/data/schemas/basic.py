@@ -434,13 +434,20 @@ class InputParsed(dict):
 
 class FoldingOutput(dict):
 
-    def __init__(self,
-                 atom_positions: np.ndarray,
-                 residue_types: np.ndarray,
-                 atom_mask: np.ndarray,
-                 residue_indices: np.ndarray,
-                 b_factors: Optional[np.ndarray] = None,
-                 chain_indices: Optional[np.ndarray] = None):
+    def __init__(
+        self,
+        atom_positions: np.ndarray,
+        residue_types: np.ndarray,
+        atom_mask: np.ndarray,
+        residue_indices: np.ndarray,
+        b_factors: Optional[np.ndarray] = None,
+        chain_indices: Optional[np.ndarray] = None,
+        plddt: Optional[np.ndarray] = None,
+        ptm: Optional[float] = None,
+        iptm: Optional[float] = None,
+        pae: Optional[np.ndarray] = None,
+        max_pae: Optional[float] = None,
+    ):
         """
         Args:
             atom_positions: (num_res, num_atom_type, 3)
@@ -458,10 +465,63 @@ class FoldingOutput(dict):
                 representing the displacement of the residue from its ground truth mean value.
             chain_indices: (num_res)
                 Chain indices for multi-chain predictions.
+            plddt: (num_res)
+                Predicted Local Distance Difference Test score per residue, ranging
+                from 0 to 100. Higher values indicate greater confidence in the
+                predicted position of each residue. Scores above 90 are considered
+                high confidence, 70-90 moderate, and below 70 low confidence.
+            ptm: scalar
+                Predicted Template Modeling (pTM) score between 0 and 1, estimating
+                the overall global quality of the predicted structure. Higher values
+                indicate better predicted alignment to the true structure.
+            iptm: scalar
+                Interface predicted Template Modeling (ipTM) score between 0 and 1,
+                estimating the accuracy of predicted inter-chain interfaces in
+                multimer predictions. Only meaningful for multi-chain structures.
+            pae: (num_res, num_res)
+                Predicted Aligned Error matrix in angstroms. Entry (i, j) represents
+                the expected positional error at residue i when the predicted and
+                true structures are aligned on residue j. Lower values indicate
+                higher confidence in the relative positioning of residue pairs.
+            max_pae: scalar
+                Maximum possible Predicted Aligned Error value in angstroms, used
+                for normalizing the PAE matrix.
         """
         super().__init__(atom_positions=atom_positions,
                          residue_types=residue_types,
                          atom_mask=atom_mask,
                          residue_indices=residue_indices,
                          b_factors=b_factors,
-                         chain_indices=chain_indices)
+                         chain_indices=chain_indices,
+                         plddt=plddt,
+                         ptm=ptm,
+                         iptm=iptm,
+                         pae=pae,
+                         max_pae=max_pae)
+
+    def get_scores(self) -> dict:
+        # Ensure all scores are json-able.
+        ptm = None
+        iptm = None
+        max_pae = None
+        plddt = None
+        pae = None
+        if self["plddt"] is not None:
+            if isinstance(self["plddt"], np.ndarray):
+                plddt = self["plddt"].tolist()
+        if self["pae"] is not None:
+            if isinstance(self["pae"], np.ndarray):
+                pae = self["pae"].tolist()
+        if self["ptm"] is not None and not np.isnan(self["ptm"]):
+            ptm = float(self["ptm"])
+        if self["iptm"] is not None and not np.isnan(self["iptm"]):
+            iptm = float(self["iptm"])
+        if self["max_pae"] is not None and not np.isnan(self["max_pae"]):
+            max_pae = float(self["max_pae"])
+        return {
+            "plddt": plddt,
+            "ptm": ptm,
+            "iptm": iptm,
+            "pae": pae,
+            "max_pae": max_pae,
+        }

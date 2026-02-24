@@ -15,15 +15,23 @@
 
 # isort: off
 import asyncio
+from typing import Any, AsyncIterator, Dict, List
 from unittest.mock import Mock, patch
 
 import pytest
+import ray
 
+from tensorrt_bionemo.pipeline.processor.utils import get_available_gpu_count
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
+from tensorrt_bionemo.pipeline.stages.configs import ParallelismMode
 from tensorrt_bionemo.pipeline.stages.engine_stage import (FoldingEngineStage,
                                                            FoldingEngineUDF,
                                                            FoldingEngineWrapper
                                                            )
 # isort: on
+
+# Minimum GPUs required for multi-GPU replica tests
+MIN_GPUS_FOR_MULTI_GPU_REPLICA = 2
 
 
 class TestFoldingEngineWrapper:
@@ -459,3 +467,287 @@ class TestFoldingEngineStage:
         assert "accelerator_type" not in result[
             "map_batches_kwargs"] or result["map_batches_kwargs"].get(
                 "accelerator_type") == ""
+
+
+def _get_nvml_gpu_id(torch_gpu_id):
+    """
+    Remap torch device id to nvml device id, respecting CUDA_VISIBLE_DEVICES.
+
+    If the latter isn't set return the same id
+    """
+    import os
+
+    # if CUDA_VISIBLE_DEVICES is used automagically remap the id since pynvml ignores this env var
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        ids = list(
+            map(int,
+                os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")))
+        return ids[torch_gpu_id]  # remap
+    else:
+        return torch_gpu_id
+
+
+def _get_device_uuid(device_id: int):
+    """Return GPU UUID for device_id if pynvml is available and initialized; else fallback."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return None
+    except ImportError:
+        return None
+    try:
+        import pynvml
+        device_id = _get_nvml_gpu_id(device_id)
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(device_id)
+        uuid = pynvml.nvmlDeviceGetUUID(handle)
+        return uuid.decode() if isinstance(uuid, bytes) else uuid
+    except (ImportError, Exception):
+        return None
+
+
+def _get_current_device_id() -> int:
+    """Return current GPU device id for the calling process (e.g. Ray worker)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return int(torch.cuda.current_device())
+    except ImportError:
+        pass
+    return 0
+
+
+class MockFoldingEngineUDF(StatefulStageUDF):
+    """Mock engine UDF for testing replica mode under Ray map_batches.
+
+    Same constructor signature as FoldingEngineUDF so stage kwargs match;
+    returns fake prediction outputs without loading a real model.
+    Includes device_id so tests can verify the number of GPUs used.
+    """
+
+    def __init__(self,
+                 compute_by_rows: bool,
+                 drop_keys: List[str],
+                 expected_input_keys: List[str],
+                 update_row: bool,
+                 model: str,
+                 engine_kwargs: Dict[str, Any],
+                 max_pending_requests: Any = None,
+                 should_continue_on_error: bool = False,
+                 parallelism_mode: Any = ParallelismMode.REPLICA,
+                 **kwargs: Any) -> None:
+        super().__init__(
+            compute_by_rows=compute_by_rows,
+            drop_keys=drop_keys or [],
+            expected_input_keys=expected_input_keys or [],
+            update_row=update_row,
+        )
+        self._model = model
+        self._max_batch_size = 2
+
+    async def udf_for_rows(
+            self, batch: List[Dict[str,
+                                   Any]]) -> AsyncIterator[Dict[str, Any]]:
+        device_id = _get_current_device_id()
+        n_iters = (len(batch) + self._max_batch_size -
+                   1) // self._max_batch_size
+        for i in range(n_iters):
+            start = i * self._max_batch_size
+            end = min(start + self._max_batch_size, len(batch))
+            sub = batch[start:end]
+            device_uuid = _get_device_uuid(device_id)
+            for row in sub:
+                idx = row.get("__idx_in_batch", 0)
+                yield {
+                    "structure": "MOCK_ATOM",
+                    "confidence": 0.99,
+                    "time_taken": 0.01,
+                    "device_id": device_id,
+                    "device_uuid": device_uuid,
+                    "__inference_error__": {
+                        "error_msg": None,
+                        "traceback": None
+                    },
+                    "__idx_in_batch": idx,
+                }
+
+
+class TestFoldingEngineStageReplicaMapBatches:
+    """Test engine stage replica mode under Ray Dataset map_batches."""
+
+    @pytest.fixture(autouse=True)
+    def ray_local(self):
+        """Run Ray in worker mode (avoids PeekObjectRefStream bug with async UDF in local_mode)."""
+        ray.init(ignore_reinit_error=True, include_dashboard=False)
+        yield
+        ray.shutdown()
+
+    def test_replica_mode_map_batches_completes(self, ray_local):
+        """Replica mode stage runs under map_batches and materializes."""
+        batch_size = 4
+        num_rows = 6
+        stage = StatefulStage(
+            fn=MockFoldingEngineUDF,
+            fn_constructor_kwargs={
+                "model": "test_model",
+                "engine_kwargs": {},
+                "parallelism_mode": ParallelismMode.REPLICA,
+            },
+            map_batches_kwargs={
+                "num_gpus": 0,
+                "batch_size": batch_size,
+                "compute": ray.data.ActorPoolStrategy(min_size=1, max_size=1),
+            },
+            compute_by_rows=True,
+            drop_keys=None,
+            update_row=False,
+        )
+        kwargs = stage.get_dataset_map_batches_kwargs(batch_size=batch_size)
+
+        ds = ray.data.from_items([{
+            "key": f"row_{i}",
+            "__record_id": f"id_{i}"
+        } for i in range(num_rows)])
+        result = ds.map_batches(stage.fn, **kwargs)
+        result = result.materialize()
+        out = result.take_all()
+
+        assert len(out) == num_rows
+        for i, row in enumerate(out):
+            assert "structure" in row
+            assert row["structure"] == "MOCK_ATOM"
+            assert "time_taken" in row
+            assert "device_id" in row
+            assert isinstance(row["device_id"], int)
+            assert "__inference_error__" in row
+
+    def test_replica_mode_map_batches_output_structure(self, ray_local):
+        """Replica mode output has expected inference columns."""
+        stage = StatefulStage(
+            fn=MockFoldingEngineUDF,
+            fn_constructor_kwargs={
+                "model": "test_model",
+                "engine_kwargs": {},
+                "parallelism_mode": ParallelismMode.REPLICA,
+            },
+            map_batches_kwargs={
+                "num_gpus": 0,
+                "batch_size": 2,
+                "compute": ray.data.ActorPoolStrategy(min_size=1, max_size=1),
+            },
+            compute_by_rows=True,
+            drop_keys=None,
+            update_row=False,
+        )
+        kwargs = stage.get_dataset_map_batches_kwargs(batch_size=2)
+
+        ds = ray.data.from_items([
+            {
+                "key": "a",
+                "__record_id": "id_a"
+            },
+            {
+                "key": "b",
+                "__record_id": "id_b"
+            },
+        ])
+        out = ds.map_batches(stage.fn, **kwargs).materialize().take_all()
+
+        assert len(out) == 2
+        for row in out:
+            assert row.get("__inference_error__") is not None
+            assert row["__inference_error__"].get("error_msg") is None
+            assert "time_taken" in row
+            assert "structure" in row
+            assert "confidence" in row
+            assert "device_id" in row
+            assert isinstance(row["device_id"], int)
+
+    def test_replica_mode_real_stage_config_under_map_batches(self, ray_local):
+        """FoldingEngineStage config (num_gpus, compute) works with map_batches when using a mock UDF.
+
+        Testing the real FoldingEngineUDF under map_batches would require loading a registered
+        model in the Ray worker; use MockFoldingEngineUDF (above) to test the map_batches path
+        without a real model.
+        """
+        stage = FoldingEngineStage(
+            fn_constructor_kwargs={
+                "model": "alphafold2_1",
+                "engine_kwargs": {},
+                "parallelism_mode": ParallelismMode.REPLICA,
+            },
+            map_batches_kwargs={
+                "num_gpus": 0,
+                "batch_size": 1,
+                "compute": ray.data.ActorPoolStrategy(min_size=1, max_size=1),
+            },
+            compute_by_rows=True,
+            drop_keys=[],
+        )
+        kwargs = stage.get_dataset_map_batches_kwargs(batch_size=1)
+        assert stage.fn is FoldingEngineUDF
+        assert kwargs["fn_constructor_kwargs"][
+            "parallelism_mode"] == ParallelismMode.REPLICA
+        assert kwargs.get("num_gpus") == 0 or kwargs.get("num_gpus") == 1
+
+    @pytest.mark.skipif(
+        get_available_gpu_count() < MIN_GPUS_FOR_MULTI_GPU_REPLICA,
+        reason=
+        f"Need at least {MIN_GPUS_FOR_MULTI_GPU_REPLICA} GPUs for multi-GPU replica test",
+    )
+    def test_replica_mode_map_batches_multiple_gpus(self, ray_local):
+        """Replica mode with multiple GPUs: 2 replicas (1 GPU each) under map_batches."""
+        num_gpus_available = get_available_gpu_count()
+        num_replicas = min(2, num_gpus_available)
+        assert num_replicas >= MIN_GPUS_FOR_MULTI_GPU_REPLICA, "skipif should have skipped"
+
+        stage = StatefulStage(
+            fn=MockFoldingEngineUDF,
+            fn_constructor_kwargs={
+                "model": "test_model",
+                "engine_kwargs": {},
+                "parallelism_mode": ParallelismMode.REPLICA,
+            },
+            map_batches_kwargs={
+                "num_gpus":
+                1,
+                "batch_size":
+                2,
+                "compute":
+                ray.data.ActorPoolStrategy(
+                    min_size=num_replicas,
+                    max_size=num_replicas,
+                ),
+            },
+            compute_by_rows=True,
+            drop_keys=None,
+            update_row=False,
+        )
+        kwargs = stage.get_dataset_map_batches_kwargs(batch_size=2)
+
+        num_rows = 4
+        ds = ray.data.from_items([{
+            "key": f"row_{i}",
+            "__record_id": f"id_{i}"
+        } for i in range(num_rows)])
+        result = ds.map_batches(stage.fn, **kwargs)
+        result = result.materialize()
+        out = result.take_all()
+
+        assert len(out) == num_rows
+        device_ids = {row["device_id"] for row in out}
+        # When Ray pins each actor to a different GPU, we see num_replicas distinct device_ids.
+        # When Ray does not (e.g. same CUDA_VISIBLE_DEVICES per worker), all rows may have the same device_id.
+        assert len(device_ids
+                   ) >= 1, f"Expected at least one device_id, got {device_ids}"
+        device_uuids = {row["device_uuid"] for row in out}
+        assert len(
+            device_uuids
+        ) == num_replicas, f"Expected {num_replicas} distinct device_uuids, got {len(device_uuids)}: {device_uuids}"
+        for row in out:
+            assert "structure" in row
+            assert row["structure"] == "MOCK_ATOM"
+            assert "time_taken" in row
+            assert "device_id" in row
+            assert isinstance(row["device_id"], int)
+            assert "__inference_error__" in row

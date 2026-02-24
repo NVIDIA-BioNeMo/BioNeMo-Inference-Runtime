@@ -53,9 +53,14 @@ class FeatureGeneratorUDF(StatefulStageUDF):
             if isinstance(v, torch.Tensor):
                 row_with_tensors[k] = v
             elif isinstance(v, np.ndarray):
-                row_with_tensors[k] = torch.from_numpy(v)
+                # Copy to writable array to avoid PyTorch UserWarning
+                arr = np.asarray(v, order="C")
+                if not arr.flags.writeable:
+                    arr = arr.copy()
+                row_with_tensors[k] = torch.from_numpy(arr)
             elif isinstance(v, np.generic):
-                row_with_tensors[k] = torch.tensor(v)
+                # Use .item() to avoid DeprecationWarning for np.bool_ etc. as index
+                row_with_tensors[k] = torch.tensor(v.item())
         return row_with_tensors
 
     async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:

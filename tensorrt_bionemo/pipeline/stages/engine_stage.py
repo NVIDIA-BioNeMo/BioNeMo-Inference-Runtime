@@ -25,6 +25,7 @@ from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.pipeline.engine import FoldingEngine
 from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
                                                    StatefulStageUDF)
+from tensorrt_bionemo.pipeline.stages.configs import ParallelismMode
 from tensorrt_bionemo.registry import get_model_class, get_postprocessor
 
 
@@ -39,7 +40,7 @@ class FoldingEngineWrapper:
         if model_config is None:
             model_config = model_class.get_pretrained_config(model)
         accelerated_configs = engine_kwargs.get("accelerated_configs", None)
-        
+
         postprocessor_config = engine_kwargs.get("postprocessor_config", None)
         postprocessor_class = get_postprocessor(model)
         device_config = engine_kwargs.get("device", None) or DeviceConfig()
@@ -70,23 +71,36 @@ class FoldingEngineWrapper:
 
 class FoldingEngineUDF(StatefulStageUDF):
 
-    def __init__(self,
-                 compute_by_rows: bool,
-                 drop_keys: List[str],
-                 expected_input_keys: List[str],
-                 update_row: bool,
-                 model: str,
-                 engine_kwargs: Dict[str, Any],
-                 max_pending_requests: Optional[int] = None,
-                 should_continue_on_error: bool = False) -> None:
+    def __init__(
+            self,
+            compute_by_rows: bool,
+            drop_keys: List[str],
+            expected_input_keys: List[str],
+            update_row: bool,
+            model: str,
+            engine_kwargs: Dict[str, Any],
+            max_pending_requests: Optional[int] = None,
+            should_continue_on_error: bool = False,
+            parallelism_mode: ParallelismMode = ParallelismMode.REPLICA
+    ) -> None:
         super().__init__(
             compute_by_rows=compute_by_rows,
             drop_keys=drop_keys,
             expected_input_keys=expected_input_keys,
             update_row=update_row,
         )
+        self.parallelism_mode = parallelism_mode
         self.should_continue_on_error = should_continue_on_error
         max_pending_requests = max_pending_requests or 1
+
+        if parallelism_mode == ParallelismMode.DISTRIBUTED:
+            # Extension point: implement multi-GPU per engine (Tensor Parallel / Context Parallel).
+            # E.g. init process group, create FoldingEngine with Mapping(world_size, rank, tp_size, dcp_size),
+            # or spawn N processes per logical replica. Leave unimplemented until DISTRIBUTED is enabled in engine_proc.
+            raise NotImplementedError(
+                "DISTRIBUTED mode is not implemented yet. Extend FoldingEngineUDF here for TP/CP."
+            )
+
         self.folding = FoldingEngineWrapper(
             model=model,
             engine_kwargs=engine_kwargs,
@@ -199,16 +213,16 @@ class FoldingEngineStage(StatefulStage):
 
     @model_validator(mode="before")
     def post_init(cls, values):
-        map_batches_kwargs = values["map_batches_kwargs"]
+        map_batches_kwargs = values.get("map_batches_kwargs", {})
         accelerator_type = map_batches_kwargs.get("accelerator_type", "")
 
         ray_remote_args = {}
         if accelerator_type:
             ray_remote_args["accelerator_type"] = accelerator_type
 
-        # TODO: When we have the executor support, we should use the executor to get the number of GPUs.
-        # For now, we hardcode it to 1.
-        ray_remote_args["num_gpus"] = 1
+        if "num_gpus" not in map_batches_kwargs:
+            ray_remote_args["num_gpus"] = 1
 
         map_batches_kwargs.update(ray_remote_args)
+        values["map_batches_kwargs"] = map_batches_kwargs
         return values

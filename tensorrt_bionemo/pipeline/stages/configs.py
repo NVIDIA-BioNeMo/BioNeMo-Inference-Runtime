@@ -13,9 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 from pydantic import BaseModel, Field
+
+
+class ParallelismMode(str, Enum):
+    """Engine stage parallelism mode."""
+
+    REPLICA = "replica"
+    """Data-parallel: one engine per GPU; multiple independent replicas."""
+
+    DISTRIBUTED = "distributed"
+    """Multi-GPU per engine (e.g. Data Parallel / Tensor Parallel / Context Parallel).
+
+    DISTRIBUTED can do all the work that REPLICA mode does (data-parallel inference
+    across multiple GPUs), but uses Ray for convenience: Ray manages placement,
+    process groups, and scaling. When implemented, use this mode for Data Parallel, Tensor Parallel
+    or Context Parallel (one logical engine spanning multiple GPUs). Not implemented
+    yet; extend when adding DP/TP/CP."""
 
 
 class _StageConfigBase(BaseModel):
@@ -74,6 +91,18 @@ class WriterStageConfig(_StageConfigBase):
     format: Optional[str] = Field(
         default=None,
         description="The format to write the output in.",
+    )
+
+
+class EngineStageConfig(_StageConfigBase):
+    parallelism_mode: ParallelismMode = Field(
+        default=ParallelismMode.REPLICA,
+        description=
+        "Parallelism mode: REPLICA (one engine per GPU) or DISTRIBUTED (multi-GPU per engine, reserved for future TP/CP).",
+    )
+    num_gpus: float = Field(
+        default=1.0,
+        description="Number of GPUs to reserve for each engine replica.",
     )
 
 

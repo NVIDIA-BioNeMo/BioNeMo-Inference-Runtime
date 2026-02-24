@@ -76,9 +76,16 @@ class FoldingEngine:
         """ Transfer the batch to the device. """
         device_batch = {}
         for k, v in batch.items():
-            if isinstance(v, torch.Tensor) or isinstance(v, np.ndarray):
+            if isinstance(v, torch.Tensor):
                 device_batch[k] = torch.as_tensor(
                     v, device=self.device_config.device)
+            elif isinstance(v, np.ndarray):
+                # Copy if read-only to avoid PyTorch UserWarning
+                arr = np.asarray(v, order="C")
+                if not arr.flags.writeable:
+                    arr = arr.copy()
+                device_batch[k] = torch.as_tensor(
+                    arr, device=self.device_config.device)
             else:
                 device_batch[k] = v
         return device_batch

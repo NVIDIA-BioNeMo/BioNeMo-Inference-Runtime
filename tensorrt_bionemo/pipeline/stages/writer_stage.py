@@ -41,6 +41,15 @@ class WriterUDF(StatefulStageUDF):
         self.mappings = mappings
         self.output_path = output_path
 
+    def round_floats(self, o: Any, precision: int = 4) -> Any:
+        if isinstance(o, float):
+            return round(o, precision)
+        if isinstance(o, dict):
+            return {k: self.round_floats(v, precision) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [self.round_floats(x, precision) for x in o]
+        return o
+
     def _get_writer_and_ext(self):
         if self.format in ["pdb", "cif"]:
             res_type_mapping = self.mappings.get("res_type_mapping", None)
@@ -118,7 +127,7 @@ class WriterUDF(StatefulStageUDF):
 
         if output_score_path:
             with open(output_score_path, "w") as f:
-                json.dump(scores, f)
+                json.dump(self.round_floats(scores), f)
 
         return {
             "output_path": output_path,

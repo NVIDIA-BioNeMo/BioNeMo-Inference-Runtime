@@ -6,15 +6,16 @@ from pydantic import Field
 from tensorrt_bionemo.data.utils import (get_all_atom_types,
                                          get_all_residue_types)
 from tensorrt_bionemo.pipeline.processor.base import Processor, ProcessorConfig
-from tensorrt_bionemo.pipeline.processor.utils import \
-    build_cpu_stage_map_kwargs
+from tensorrt_bionemo.pipeline.processor.utils import (
+    build_cpu_stage_map_kwargs, get_available_gpu_count)
 from tensorrt_bionemo.pipeline.stages import (FeatureGeneratorStage,
                                               FoldingEngineStage, ParserStage,
                                               TokenizerStage, WriterStage)
 from tensorrt_bionemo.pipeline.stages.base import StatefulStage
 from tensorrt_bionemo.pipeline.stages.configs import (
-    FeatureGeneratorStageConfig, ParserStageConfig, TokenizerStageConfig,
-    WriterStageConfig, resolve_stage_config)
+    EngineStageConfig, FeatureGeneratorStageConfig, ParallelismMode,
+    ParserStageConfig, TokenizerStageConfig, WriterStageConfig,
+    resolve_stage_config)
 from tensorrt_bionemo.registry import (get_feature_factory, get_model_class,
                                        get_tokenizer)
 
@@ -47,6 +48,11 @@ class EngineProcessorConfig(ProcessorConfig):
         default=True,
         description="Writer stage config (bool | dict | WriterStageConfig).",
     )
+    engine_stage: Any = Field(
+        default=True,
+        description="Engine stage config (bool | dict | EngineStageConfig). "
+        "Controls folding engine replicas and GPU allocation.",
+    )
     runtime_env: Optional[Dict[str, Any]] = Field(
         default=None,
         description=
@@ -66,6 +72,30 @@ class EngineProcessorConfig(ProcessorConfig):
         "or the batch processing latency is too small, but it should be good "
         "enough for batch size >= 32.",
     )
+
+    @classmethod
+    def create_replica_mode_config(
+            cls,
+            model_source: str,
+            output_dir: str,
+            output_format: str = "pdb",
+            tokenizer_stage_num_cpus: int = 2,
+            feature_generator_stage_num_cpus: int = 4,
+            engine_stage_num_cpus: int = 4) -> "EngineProcessorConfig":
+        """Build a processor config for replica mode (one engine per GPU) using all available GPUs."""
+        num_gpus = get_available_gpu_count()
+        return cls(model_source=model_source,
+                   parser_stage=ParserStageConfig(compute=num_gpus),
+                   tokenizer_stage=TokenizerStageConfig(
+                       compute=num_gpus, num_cpus=tokenizer_stage_num_cpus),
+                   feature_generator_stage=FeatureGeneratorStageConfig(
+                       num_cpus=feature_generator_stage_num_cpus,
+                       compute=num_gpus),
+                   writer_stage=WriterStageConfig(compute=num_gpus,
+                                                  output_path=output_dir,
+                                                  format=output_format),
+                   engine_stage=EngineStageConfig(
+                       compute=num_gpus, num_cpus=engine_stage_num_cpus))
 
     def get_model_pretrained_config(self):
         model_class = get_model_class(self.model_source)
@@ -166,32 +196,63 @@ def _build_feature_generator_stage(
 def _build_folding_engine_stage(
         config: EngineProcessorConfig,
         processor_defaults: Dict[str, Any]) -> StatefulStage:
+    engine_stage_cfg = resolve_stage_config(config.engine_stage,
+                                            EngineStageConfig,
+                                            processor_defaults)
+
+    if engine_stage_cfg.parallelism_mode == ParallelismMode.DISTRIBUTED:
+        # Extension point: implement multi-GPU per engine (Tensor Parallel / Context Parallel).
+        # E.g. set up process groups, pass Mapping into engine_kwargs, use placement groups or
+        # multi-process runner per logical replica.
+        raise NotImplementedError(
+            "DISTRIBUTED mode (Tensor Parallel / Context Parallel) is not implemented yet. "
+            "Extend _build_folding_engine_stage and the engine stage for multi-GPU per replica."
+        )
+
+    available_gpus = get_available_gpu_count()
+    num_gpus_per_replica = engine_stage_cfg.num_gpus
+
+    # Replica count: use explicit compute if set, otherwise one replica per available GPU.
+    compute = engine_stage_cfg.compute
+    if compute is None:
+        # Auto: calculate max replicas based on available GPUs and GPU requirement per replica.
+        max_replicas = max(1, int(available_gpus / num_gpus_per_replica))
+        compute = max_replicas
+    if isinstance(compute, int):
+        compute_range = (compute, compute)
+    else:
+        compute_range = compute
+
+    # Validate total GPU demand does not exceed available GPUs.
+    max_replicas = compute_range[1]
+    total_gpus_needed = max_replicas * num_gpus_per_replica
+    if total_gpus_needed > available_gpus:
+        raise ValueError(
+            f"Engine stage requires up to {max_replicas} replicas × {num_gpus_per_replica} GPU(s) = {total_gpus_needed} GPUs, "
+            f"but only {available_gpus} are available. Set compute <= {int(available_gpus // num_gpus_per_replica)} or "
+            f"leave compute unset to use all available GPUs.")
+
     return FoldingEngineStage(
         fn_constructor_kwargs={
             "model": config.model_source,
             "engine_kwargs": config.engine_kwargs,
             "max_pending_requests": config.max_pending_requests,
             "should_continue_on_error": config.should_continue_on_error,
+            "parallelism_mode": engine_stage_cfg.parallelism_mode,
         },
         map_batches_kwargs=dict(
             zero_copy_batch=True,
-            # The number of running replicas. This is a deprecated field, but
-            # we need to set `max_tasks_in_flight_per_actor` through `compute`,
-            # which initiates enough many overlapping UDF calls per actor, to
-            # saturate `max_concurrency`.
             compute=ray.data.ActorPoolStrategy(
-                min_size=config.get_concurrency(autoscaling_enabled=False)[0],
-                max_size=config.get_concurrency(autoscaling_enabled=False)[1],
+                min_size=compute_range[0],
+                max_size=compute_range[1],
             ),
-            # The number of running batches "per actor" in Ray Core level.
-            # This is used to make sure we overlap batches to avoid the tail
-            # latency of each batch.
             max_concurrency=config.max_concurrent_batches,
             accelerator_type=config.accelerator_type,
-            runtime_env=config.runtime_env,
+            runtime_env=engine_stage_cfg.runtime_env or config.runtime_env,
+            num_gpus=engine_stage_cfg.num_gpus,
         ),
-        compute_by_rows=True,
-        drop_keys=None,
+        compute_by_rows=engine_stage_cfg.compute_by_rows,
+        drop_keys=engine_stage_cfg.drop_keys,
     )
 
 
@@ -235,7 +296,8 @@ def _build_stages(config: EngineProcessorConfig,
 
 
 def build_processor(config: EngineProcessorConfig) -> Processor:
-    ray.init(runtime_env=config.runtime_env, ignore_reinit_error=True)
+    if not ray.is_initialized():
+        ray.init(runtime_env=config.runtime_env, ignore_reinit_error=True)
 
     processor_defaults = {
         "batch_size": config.batch_size,

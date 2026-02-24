@@ -62,3 +62,13 @@ def build_cpu_stage_map_kwargs(
             stage_cfg.memory,
         ),
     )
+
+
+def get_available_gpu_count() -> int:
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.device_count()
+    except ImportError:
+        pass
+    return 1

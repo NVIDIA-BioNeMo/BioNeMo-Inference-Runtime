@@ -3,9 +3,7 @@ ARG BASE_TAG=base
 
 FROM ${BASE_IMAGE}:${BASE_TAG}
 
-WORKDIR /workspace
-COPY . /workspace/
+ENV PROJECT_WORKDIR=/workspace/tensorrt-bionemo
 
-# Set the working directory for any subsequent operations
-WORKDIR /workspace
-
+WORKDIR ${PROJECT_WORKDIR}
+COPY . ${PROJECT_WORKDIR}/

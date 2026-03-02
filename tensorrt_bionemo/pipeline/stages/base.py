@@ -1,12 +1,43 @@
 # Adapted from https://github.com/ray-project/ray/blob/ray-2.53.0/python/ray/llm/_internal/batch/stages/base.py
 # But modify for both of the row mode and batch mode.
+import pickle
 import traceback
 from typing import Any, AsyncIterator, Dict, List, Optional, Type
 
+import numpy as np
 import pyarrow
 from pydantic import BaseModel, ConfigDict, Field
 
 from tensorrt_bionemo.logger import logger
+
+
+def _serialize_value(value: Any) -> Any:
+    """Serialize tensor-like values to keep Ray/PyArrow typing stable.
+
+    Why this is needed:
+    - Ray may infer different Arrow tensor extension types per block when stages
+      emit large tensors and the dataset is split into multiple blocks.
+    - In folding workloads, tensor shapes are typically dynamic, so mixed block
+      inference can cause Ray to alternate between ArrowTensorTypeV2 and
+      ArrowVariableShapedTensorType.
+    - We explicitly pickle tensors between stages so Ray immediately treats all
+      blocks as variable-shaped tensor payloads consistently.
+    """
+    if isinstance(value, np.ndarray):
+        return pickle.dumps(value)
+    if hasattr(value, 'detach'):
+        return pickle.dumps(value.detach().cpu().numpy())
+    return value
+
+
+def _deserialize_value(value: bytes) -> Any:
+    """Deserialize pickled tensors before per-row stage logic runs."""
+    if isinstance(value, bytes):
+        try:
+            return pickle.loads(value)
+        except Exception:
+            return value
+    return value
 
 
 class StatefulStageUDF:
@@ -105,6 +136,9 @@ class StatefulStageUDF:
                     rows = [{} for _ in range(len(values))]
                 for row, value in zip(rows, values):
                     row[column] = value
+            for row in rows:
+                for key in list(row.keys()):
+                    row[key] = _deserialize_value(row[key])
             self.validate_rows_input(rows)
             for idx, row in enumerate(rows):
                 row[self.IDX_IN_BATCH_COLUMN] = idx
@@ -167,7 +201,7 @@ class StatefulStageUDF:
                             del row[key]
             gather_keys = list(rows[0].keys())
             for key in gather_keys:
-                output[key] = [row.get(key) for row in rows]
+                output[key] = [_serialize_value(row.get(key)) for row in rows]
             yield output
         else:
             output = await self.udf_for_batch(batch)

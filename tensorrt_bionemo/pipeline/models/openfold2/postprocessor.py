@@ -17,6 +17,7 @@
 from typing import Any, Optional
 
 import numpy as np
+import torch
 from pydantic import BaseModel
 
 import tensorrt_bionemo.pipeline.models.openfold2.const as rc
@@ -119,9 +120,14 @@ class PostProcessor(PostProcessorBase):
         chain_indices = self._get_chain_indices(np_batch)
 
         # Extract pTM and iPTM
-        ptm = float(output['ptm'].cpu().numpy()) if 'ptm' in output else None
+        ptm = float(
+            output.get('ptm',
+                       output.get('ptm_score',
+                                  torch.tensor(float('nan')))).cpu().numpy())
         iptm = float(
-            output['iptm'].cpu().numpy()) if 'iptm' in output else None
+            output.get('iptm',
+                       output.get('iptm_score',
+                                  torch.tensor(float('nan')))).cpu().numpy())
 
         # Extract PAE (Predicted Aligned Error)
         pae = None

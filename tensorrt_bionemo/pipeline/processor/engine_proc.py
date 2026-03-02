@@ -74,28 +74,45 @@ class EngineProcessorConfig(ProcessorConfig):
     )
 
     @classmethod
-    def create_replica_mode_config(
-            cls,
-            model_source: str,
-            output_dir: str,
-            output_format: str = "pdb",
-            tokenizer_stage_num_cpus: int = 2,
-            feature_generator_stage_num_cpus: int = 4,
-            engine_stage_num_cpus: int = 4) -> "EngineProcessorConfig":
+    def create_default_replica_mode_config(
+        cls,
+        model_source: str,
+        output_dir: str,
+        output_format: str = "pdb",
+        parser_stage_actors: Optional[int] = None,
+        tokenizer_stage_actors: Optional[int] = None,
+        tokenizer_stage_num_cpus: Optional[int] = None,
+        feature_generator_stage_actors: Optional[int] = None,
+        feature_generator_stage_num_cpus: Optional[int] = None,
+        engine_stage_num_gpus: Optional[int] = None,
+        engine_stage_num_cpus: Optional[int] = None,
+        engine_stage_memory: Optional[int] = None,
+        writer_stage_actors: Optional[int] = None,
+        writer_stage_num_cpus: Optional[int] = None,
+        should_continue_on_error: bool = True,
+    ) -> "EngineProcessorConfig":
         """Build a processor config for replica mode (one engine per GPU) using all available GPUs."""
         num_gpus = get_available_gpu_count()
         return cls(model_source=model_source,
-                   parser_stage=ParserStageConfig(compute=num_gpus),
+                   parser_stage=ParserStageConfig(
+                       compute=parser_stage_actors or num_gpus),
                    tokenizer_stage=TokenizerStageConfig(
-                       compute=num_gpus, num_cpus=tokenizer_stage_num_cpus),
+                       compute=tokenizer_stage_actors or num_gpus,
+                       num_cpus=tokenizer_stage_num_cpus or 4),
                    feature_generator_stage=FeatureGeneratorStageConfig(
-                       num_cpus=feature_generator_stage_num_cpus,
-                       compute=num_gpus),
-                   writer_stage=WriterStageConfig(compute=num_gpus,
-                                                  output_path=output_dir,
-                                                  format=output_format),
+                       num_cpus=feature_generator_stage_num_cpus or 8,
+                       compute=feature_generator_stage_actors or num_gpus),
+                   writer_stage=WriterStageConfig(
+                       compute=writer_stage_actors or num_gpus,
+                       output_path=output_dir,
+                       format=output_format,
+                       num_cpus=writer_stage_num_cpus or 1),
                    engine_stage=EngineStageConfig(
-                       compute=num_gpus, num_cpus=engine_stage_num_cpus))
+                       parallelism_mode=ParallelismMode.REPLICA,
+                       compute=engine_stage_num_gpus or num_gpus,
+                       num_cpus=engine_stage_num_cpus or 4,
+                       memory=engine_stage_memory),
+                   should_continue_on_error=should_continue_on_error)
 
     def get_model_pretrained_config(self):
         model_class = get_model_class(self.model_source)
@@ -250,6 +267,7 @@ def _build_folding_engine_stage(
             accelerator_type=config.accelerator_type,
             runtime_env=engine_stage_cfg.runtime_env or config.runtime_env,
             num_gpus=engine_stage_cfg.num_gpus,
+            memory=engine_stage_cfg.memory,
         ),
         compute_by_rows=engine_stage_cfg.compute_by_rows,
         drop_keys=engine_stage_cfg.drop_keys,

@@ -553,11 +553,13 @@ class FeatureContextGenerator(ContextGeneratorBase):
             if all_none:
                 # 1. All polymers should have the paired_msas is None
                 for i in range(len(polymers)):
-                    paired_msas[i] = MSAParsed(
-                        sequences=[polymers[i]['sequence']],
-                        raw=[polymers[i]['sequence']],
-                        descriptions=["_".join(polymers[i]['chain_id'])],
-                    )
+                    polymers[i]['paired_msas'] = [
+                        MSAParsed(
+                            sequences=[polymers[i]['sequence']],
+                            raw=[polymers[i]['sequence']],
+                            descriptions=["_".join(polymers[i]['chain_id'])],
+                        )
+                    ]
             else:
                 # 2. Or, all polymers should have the same number of sequences in paired_msas
                 nseqs = set()

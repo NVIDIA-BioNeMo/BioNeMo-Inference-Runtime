@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import gc
 import time
 import traceback
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Type
 
+import torch
 from pydantic import model_validator
 
 from tensorrt_bionemo.configs.base import DeviceConfig, EngineConfig
@@ -53,9 +55,15 @@ class FoldingEngineWrapper:
                                     postprocessor_class)
         self.model_config = model_config
         self.max_pending_requests = max_pending_requests
+        self.is_cuda_device = device_config.device_type == "cuda"
 
     def get_max_batch_size(self) -> int:
         return self.model_config.max_batch_size
+
+    def cleanup(self):
+        gc.collect()
+        if self.is_cuda_device:
+            torch.cuda.empty_cache()
 
     async def predict_async(
             self,
@@ -164,6 +172,7 @@ class FoldingEngineUDF(StatefulStageUDF):
             if not self.should_continue_on_error:
                 raise ValueError(f"Error predicting folding output: {e}")
 
+            self.folding.cleanup()
             error_msg = f"{type(e).__name__}: {str(e)}"
             return [
                 self._create_error_response(row, error_msg, traceback_str)

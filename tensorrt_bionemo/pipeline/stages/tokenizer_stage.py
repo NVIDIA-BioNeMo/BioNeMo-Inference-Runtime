@@ -52,6 +52,7 @@ class TokenizerUDF(StatefulStageUDF):
         for transform_func in self.transform_funcs:
             if transform_func.is_enabled():
                 context_dict = transform_func(context_dict)
+
         return context_dict
 
 

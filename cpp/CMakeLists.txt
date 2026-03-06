@@ -74,6 +74,5 @@ install(TARGETS kernels_tensorrt_bionemo
 install(TARGETS nvinfer_plugin_tensorrt_bionemo
         LIBRARY DESTINATION ${TRT_BIONEMO_PYTHON_DIR}/libs)
 
-# Library for torch extensions
-install(TARGETS trt_bnm_ops
-        LIBRARY DESTINATION ${TRT_BIONEMO_PYTHON_DIR}/libs)
+# Library for CRSC
+install(TARGETS _C LIBRARY DESTINATION ${TRT_BIONEMO_PYTHON_DIR}/libs)

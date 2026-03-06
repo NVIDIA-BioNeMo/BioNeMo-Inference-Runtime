@@ -1,6 +1,6 @@
 import os
-import subprocess
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +9,11 @@ TRT_ROOT_DIR = os.environ.get("TRT_ROOT_DIR", "/usr/local/tensorrt")
 CMAKE_BUILD_TYPE = os.environ.get("CMAKE_BUILD_TYPE", "Release")
 RECOMPILE_CPP = int(os.environ.get("RECOMPILE_CPP", "0"))
 CUEQ_VERSION = os.environ.get("CUEQ_VERSION", "0.8.1")
+
+LIBS_DIR = ROOT_DIR / "tensorrt_bionemo" / "libs"
+KERNELS_LIBRARY_NAME = "kernels_tensorrt_bionemo"
+KERNELS_LIBRARY_PATH = LIBS_DIR / f"lib{KERNELS_LIBRARY_NAME}.so"
+TRT_PLUGIN_LIBRARY_PATH = LIBS_DIR / "libnvinfer_plugin_tensorrt_bionemo.so"
 
 
 def get_platform_tag():
@@ -20,8 +25,9 @@ def get_platform_tag():
         return tag.platform
     except ImportError:
         pass
-    
+
     # Method 2: Use sysconfig (standard library)
+    import sysconfig
     platform = sysconfig.get_platform()
     return platform.replace("-", "_").replace(".", "_")
 
@@ -32,8 +38,10 @@ def get_python_tag():
     version = f"{sys.version_info.major}{sys.version_info.minor}"
     return f"{impl}{version}"  # e.g., 'cp311'
 
+
 def get_abi_tag():
     return "none"
+
 
 def get_cuda_version():
     """Detect CUDA version like 'cu130' for CUDA 13.0."""
@@ -46,7 +54,7 @@ def get_cuda_version():
             return f"cu{major}{minor}"
     except Exception:
         pass
-    
+
     # Try torch
     try:
         import torch
@@ -55,7 +63,7 @@ def get_cuda_version():
             return f"cu{version}"
     except Exception:
         pass
-    
+
     # Fallback
     return os.environ.get("CUDA_TAG", "cu126")
 
@@ -123,10 +131,8 @@ def _run_cmake(need_build: bool = True):
         return
 
     output_libs = [
-        ROOT_DIR / "tensorrt_bionemo" / "libs" /
-        "libkernels_tensorrt_bionemo.so",
-        ROOT_DIR / "tensorrt_bionemo" / "libs" /
-        "libnvinfer_plugin_tensorrt_bionemo.so"
+        KERNELS_LIBRARY_PATH,
+        TRT_PLUGIN_LIBRARY_PATH,
     ]
     all_exist = True
     for output_lib in output_libs:
@@ -171,11 +177,14 @@ def _run_cmake(need_build: bool = True):
 def get_requires_for_build_sdist(config_settings=None):
     return []
 
+
 def get_requires_for_build_wheel(config_settings=None):
     return []
 
+
 def get_requires_for_build_editable(config_settings=None):
     return []
+
 
 def prepare_metadata_for_build_editable(metadata_directory,
                                         config_settings=None):
@@ -186,7 +195,8 @@ def prepare_metadata_for_build_editable(metadata_directory,
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
     import setuptools.build_meta as stbm
-    return stbm.prepare_metadata_for_build_wheel(metadata_directory, config_settings)
+    return stbm.prepare_metadata_for_build_wheel(metadata_directory,
+                                                 config_settings)
 
 
 def build_editable(wheel_directory,
@@ -203,27 +213,32 @@ def build_sdist(sdist_directory, config_settings=None):
     return stbm.build_sdist(sdist_directory, config_settings)
 
 
-def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+def build_wheel(wheel_directory,
+                config_settings=None,
+                metadata_directory=None):
     _run_cmake(need_build=True)
     import setuptools.build_meta as stbm
-    wheel_name = stbm.build_wheel(wheel_directory, config_settings, metadata_directory)
+    wheel_name = stbm.build_wheel(wheel_directory, config_settings,
+                                  metadata_directory)
     wheel_path = Path(wheel_directory) / wheel_name
     print(f"==> Built wheel: {wheel_path}")
     # Parse original name
     # Format: {name}-{version}-{python}-{abi}-{platform}.whl
-    match = re.match(r"^(.+?)-(\d+\.\d+\.\d+\.?[a-z0-9]*)-(.+?)-(.+?)-(.+?)\.whl$", wheel_name)
+    match = re.match(
+        r"^(.+?)-(\d+\.\d+\.\d+\.?[a-z0-9]*)-(.+?)-(.+?)-(.+?)\.whl$",
+        wheel_name)
     if match:
         name = match.group(1)
         base_version = match.group(2)
-        
+
         # Build custom tags
         cuda_tag = get_cuda_version()
         python_tag = get_python_tag()
         abi_tag = get_abi_tag()
         platform_tag = get_platform_tag()
-        
+
         new_name = f"{name}-{base_version}+{cuda_tag}-{python_tag}-{abi_tag}-{platform_tag}.whl"
-        
+
         new_path = Path(wheel_directory) / new_name
         wheel_path.rename(new_path)
         print(f"==> Renamed: {wheel_name} -> {new_name}")

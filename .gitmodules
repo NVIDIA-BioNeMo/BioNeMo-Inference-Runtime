@@ -1,3 +1,6 @@
 [submodule "3rdparty/TensorRT-LLM"]
 	path = 3rdparty/TensorRT-LLM
 	url = https://github.com/NVIDIA/TensorRT-LLM.git
+[submodule "3rdparty/cutlass"]
+	path = 3rdparty/cutlass
+	url = https://github.com/NVIDIA/cutlass.git

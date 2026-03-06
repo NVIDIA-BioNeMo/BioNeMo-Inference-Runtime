@@ -13,50 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
-import importlib.util
+import ctypes
 from pathlib import Path
 from typing import Any
 
+_LIBS_DIR = Path(__file__).parent.parent / "libs"
+
 
 def load_extension() -> Any:
-    """Load the compiled extension module from libs/."""
-    # libs/ is at tensorrt_bionemo/libs/, one level up from ops/
-    package_dir = Path(__file__).parent.parent
-    libs_dir = package_dir / "libs"
-    
-    if not libs_dir.exists():
-        raise ImportError(
-            f"libs directory not found: {libs_dir}\n"
-            "Please build the extension: RECOMPILE_CPP=1 pip install -e ."
-        )
-    
-    # Find the .so file
-    so_files = list(libs_dir.glob("trt_bnm_ops*.so"))
-    
+    """Load the compiled extension."""
+    # Find .so file
+    so_files = list(_LIBS_DIR.glob("lib_C*.so"))
+
     if not so_files:
-        # Try alternative patterns
-        so_files = list(libs_dir.glob("*.so"))
-    
-    if not so_files:
-        raise ImportError(
-            f"Extension .so not found in {libs_dir}\n"
-            "Please build the extension: RECOMPILE_CPP=1 pip install -e ."
-        )
-    
+        raise ImportError(f"Extension not found in {_LIBS_DIR}.\n"
+                          "Build with: pip install -e .")
+
     so_path = so_files[0]
-    
-    # Extract module name from filename
-    # e.g., "trt_bnm_ops.cpython-312-x86_64-linux-gnu.so" → "trt_bnm_ops"
-    module_name = so_path.name.split('.')[0]
-    
-    # Load the module
-    spec = importlib.util.spec_from_file_location(module_name, so_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load spec for {so_path}")
-    
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    
-    return module
+
+    if so_path.exists():
+        handle = ctypes.CDLL(so_path.as_posix())
+    else:
+        raise ImportError(f"Failed to load {so_path}")
+
+    return handle

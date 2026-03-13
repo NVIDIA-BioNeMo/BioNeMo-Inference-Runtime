@@ -27,7 +27,7 @@ from tensorrt_bionemo._torch.custom_ops.base import (MAX_BENCHMARK_SCORE,
 def _generate_support_dict(dual_gemm_type: str = "x_x"):
     support_dict = {}
     if dual_gemm_type == "x_x":
-        for sm in ["80", "86", "89"]:
+        for sm in ["80", "86", "89", "90"]:
             for dtype in ["torch.float16", "torch.bfloat16"]:
                 for N in [128, 256]:
                     for K in [128]:
@@ -36,7 +36,7 @@ def _generate_support_dict(dual_gemm_type: str = "x_x"):
                                 support_dict[
                                     f"sm{sm}-{dtype}-N={N}-K={K}-Mask={mask}-Bias={bias}"] = True
     elif dual_gemm_type == "x0_x1":
-        for sm in ["80", "86", "89"]:
+        for sm in ["80", "86", "89", "90"]:
             for dtype in ["torch.float16", "torch.bfloat16"]:
                 for N in [128, 256]:
                     for K in [128]:
@@ -111,7 +111,7 @@ class CutlassFusedSigmoidGatedDualGemm(CustomOpBase):
                             b2: Optional[torch.Tensor] = None) -> int:
         """Get benchmark score for the operation."""
         sm = get_sm_version()
-        if sm == 80 or sm == 89:
+        if sm == 80 or sm == 89 or sm == 90:
             return MAX_BENCHMARK_SCORE
         M = 1
         for dim in x.shape[:-1]:
@@ -191,7 +191,7 @@ class CutlassFusedSigmoidGatedDualGemmDualX(CustomOpBase):
                             b2: Optional[torch.Tensor] = None) -> int:
         """Get benchmark score for the operation."""
         sm = get_sm_version()
-        if sm == 80 or sm == 89:
+        if sm == 80 or sm == 89 or sm == 90:
             return MAX_BENCHMARK_SCORE
         M = 1
         for dim in x1.shape[:-1]:

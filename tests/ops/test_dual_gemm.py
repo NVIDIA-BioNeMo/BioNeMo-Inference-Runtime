@@ -101,8 +101,8 @@ def create_linear_layers(K: int, N: int, dtype=torch.bfloat16, has_bias=False):
                          ])
 def test_x_x_dual_gemm(sc: X_X_Scenario):
     sm = get_sm_version()
-    if sm < 80 or sm >= 90:
-        pytest.skip("x_x_dual_gemm is not supported on SM < 80 or >= 90")
+    if sm < 80 or sm > 90:
+        pytest.skip("x_x_dual_gemm is not supported on SM < 80 or > 90")
     linear0, linear1 = create_linear_layers(sc.K, sc.N, sc.dtype, sc.has_bias)
     for seq_len in sc.seq_lens:
         X = torch.randn(1, seq_len, seq_len, sc.K,
@@ -155,8 +155,8 @@ def ref_torch_x0_x1_dual_gemm(X0: torch.Tensor, X1: torch.Tensor,
 )
 def test_x0_x1_dual_gemm(sc: X0_X1_Scenario):
     sm = get_sm_version()
-    if sm < 80 or sm >= 90:
-        pytest.skip("x0_x1_dual_gemm is not supported on SM < 80 or >= 90")
+    if sm < 80 or sm > 90:
+        pytest.skip("x0_x1_dual_gemm is not supported on SM < 80 or > 90")
     linear0, linear1 = create_linear_layers(sc.K, sc.N, sc.dtype, sc.has_bias)
     for seq_len in sc.seq_lens:
         X0 = torch.randn(1, seq_len, seq_len, sc.K,

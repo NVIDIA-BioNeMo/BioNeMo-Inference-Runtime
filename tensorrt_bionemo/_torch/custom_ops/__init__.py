@@ -1,3 +1,3 @@
-from .dispatcher import get_custom_ops_impl
+from .dual_gemm import get_dual_gemm_op
 
-__all__ = ["get_custom_ops_impl"]
+__all__ = ["get_dual_gemm_op"]

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import torch.nn as nn
@@ -23,7 +24,25 @@ from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
 from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
 
 
-class AcceleratedModules(ABC):
+@dataclass
+class ModuleSpec:
+    """Describes a single optimizable module.
+
+    Attributes:
+        getter: ``(model) -> nn.Module`` — retrieves the original module.
+        setter: ``(model, optimized) -> None`` — installs the replacement.
+        trt_cls: TRT wrapper class (has ``load_weights``).  ``None`` if TRT
+            is not supported for this module.
+        compiled_cls: ``CompilableModule`` subclass.  ``None`` if
+            torch.compile is not supported for this module.
+    """
+    getter: Callable
+    setter: Callable
+    trt_cls: Optional[type] = None
+    compiled_cls: Optional[type] = None
+
+
+class ModuleRegistry(ABC):
 
     def __init__(self, configs: dict[str, AcceleratedConfig | dict] = {}):
         """
@@ -32,8 +51,9 @@ class AcceleratedModules(ABC):
             configs: A dictionary of AcceleratedConfig for the accelerated modules.
         """
         self._configs = {}
+        all_known = set(self.get_accelerated_modules().keys())
         for k, v in configs.items():
-            if k not in self.get_supported_modules().keys():
+            if k not in all_known:
                 logger.warning(f"Unknown module: {k}")
             else:
                 if isinstance(v, dict):
@@ -61,7 +81,12 @@ class AcceleratedModules(ABC):
         return self._configs.get(module_name, None).need_fallback
 
     @abstractmethod
-    def get_supported_modules(self) -> dict[str, nn.Module]:
+    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
+        """Return ``{name: ModuleSpec(...)}`` for every optimizable module.
+
+        Each :class:`ModuleSpec` carries getter/setter lambdas plus the
+        per-backend wrapper classes (``trt_cls`` and/or ``compiled_cls``).
+        """
         raise NotImplementedError("Subclass must implement this method")
 
 
@@ -69,9 +94,9 @@ class OptimizedModuleSetterMixin(ABC):
 
     @abstractmethod
     def get_optimized_modules(
-        self,
-        accelerated_configs: dict[str,
-                                  AcceleratedConfig]) -> AcceleratedModules:
+            self,
+            accelerated_configs: dict[str,
+                                      AcceleratedConfig]) -> ModuleRegistry:
         raise NotImplementedError("Subclass must implement this method")
 
     def optimize(self,
@@ -79,30 +104,49 @@ class OptimizedModuleSetterMixin(ABC):
                  context_memory_allocator: Optional[
                      BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
-        """
-        This function is used to build the optimized version of Boltz1 model from the original.
+        """Build the optimized version of the model from the original.
+
+        Supports TRT engine backends and torch backends (optionally with
+        ``torch.compile`` when ``compile=True``).
+
         Args:
             accelerated_configs: A dictionary of modules to be accelerated.
-            context_memory_allocator: The context memory allocator to be used for each module.
+                Each key is a module name (e.g. ``"evoformer"``) and the value
+                is an :class:`AcceleratedConfig` whose ``backend`` field
+                selects ``"trt"`` or ``"torch"``.  Set ``compile=True`` on
+                torch-backend configs to enable ``torch.compile``.
+            context_memory_allocator: The context memory allocator to be
+                used for TRT modules.
         Returns:
-            The optimized model.
+            The optimized model (self, modified in-place).
         """
         optimized_modules = self.get_optimized_modules(accelerated_configs)
-        supported_modules = optimized_modules.get_supported_modules()
+        module_specs = optimized_modules.get_accelerated_modules()
 
-        for module_name, (cls_, setter_func) in supported_modules.items():
-            backend = optimized_modules.get_module_backend(module_name)
-            if backend != BackendType.TRT:
-                # Only support for TRT backend for now
+        for module_name in optimized_modules.get_module_names():
+            acc_config = optimized_modules.get_module_config(module_name)
+            if acc_config is None:
                 continue
-            checkpoint_dir = optimized_modules.get_module_checkpoint(
-                module_name)
-            opt_m = cls_.load_weights(
-                checkpoint_dir=checkpoint_dir,
-                context_memory_allocator=context_memory_allocator,
-                **kwargs)
-            org = setter_func(self, opt_m)
-            opt_m.set_fallback_module(org)
-            opt_m.config.need_fallback = optimized_modules.get_module_need_fallback(
-                module_name)
+            spec = module_specs.get(module_name)
+            if spec is None:
+                continue
+            backend = acc_config.backend
+
+            # ── TRT engine path ─────────────────────────────────────────
+            if backend == BackendType.TRT and spec.trt_cls is not None:
+                org = spec.getter(self)
+                checkpoint_dir = optimized_modules.get_module_checkpoint(
+                    module_name)
+                opt_m = spec.trt_cls.load_weights(
+                    checkpoint_dir=checkpoint_dir,
+                    context_memory_allocator=context_memory_allocator,
+                    **kwargs)
+                spec.setter(self, opt_m)
+                opt_m.set_fallback_module(org)
+                opt_m.config.need_fallback = (
+                    optimized_modules.get_module_need_fallback(module_name))
+
+            # ── torch.compile path ──────────────────────────────────────
+            # TODO: Implement torch.compile path
+
         return self

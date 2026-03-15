@@ -15,8 +15,8 @@
 
 from typing import Optional
 
+import cuequivariance_ops_torch as _cueq_ops  # noqa: F401 – registers torch.ops.cuequivariance
 import torch
-from cuequivariance_torch.primitives.triangle import triangle_attention
 
 from ..tensor_utils import permute_final_dims
 from .interface import AttentionBackend, AttentionMetadata
@@ -26,12 +26,22 @@ class CuEquivAttentionMetadata(AttentionMetadata):
     flip_mask: bool = True
 
 
-@torch.compiler.disable
 def _invoke_triangle_attention_kernel(q: torch.Tensor, k: torch.Tensor,
                                       v: torch.Tensor, bias: torch.Tensor,
                                       mask: torch.Tensor,
                                       sm_scale: float) -> torch.Tensor:
-    o = triangle_attention(q, k, v, bias, mask=mask, scale=sm_scale)
+    """Call the cuequivariance triangle attention custom op directly.
+
+    Using torch.ops.cuequivariance.triangle_attention (which has Meta + CUDA
+    dispatch keys registered) instead of the Python wrapper avoids graph breaks
+    under torch.compile.
+    """
+    o, _lse, _max = torch.ops.cuequivariance.triangle_attention(q,
+                                                                k,
+                                                                v,
+                                                                bias,
+                                                                mask,
+                                                                scale=sm_scale)
     return o
 
 

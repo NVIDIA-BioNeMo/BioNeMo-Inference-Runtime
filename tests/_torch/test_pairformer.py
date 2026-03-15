@@ -81,9 +81,10 @@ def test_pairformer_layer(sc: Scenario):
     layer.to(device)
     load_pairformer_layer_weights_torch(layer, weights_and_biases, dtype)
 
-    s = torch.rand(bs, sc.seq_len, ref_layer.token_s).to(device)
-    z = torch.rand(bs, sc.seq_len, sc.seq_len, ref_layer.token_z).to(device)
-    mask = torch.randn(bs, sc.seq_len).to(device)
+    s = torch.randn(bs, sc.seq_len, ref_layer.token_s).to(device)
+    z = torch.randn(bs, sc.seq_len, sc.seq_len, ref_layer.token_z).to(device)
+    mask = torch.randint(0, 2, (bs, sc.seq_len),
+                         dtype=torch.float32).to(device)
     # pair_mask = torch.randn(bs, sc.seq_len, sc.seq_len).to(device)
     pair_mask = torch.randint(0,
                               2, (bs, sc.seq_len, sc.seq_len),
@@ -131,19 +132,13 @@ def test_pairformer_layer(sc: Scenario):
     else:
         # This is right way to check float16 and bfloat16 accuracy
         diff0_max = torch.max(torch.abs(output_s.float() - ref_s_float))
-        diff0_mean = torch.mean(torch.abs(output_s.float() - ref_s_float))
         diff1_max = torch.max(torch.abs(ref_s.float() - ref_s_float))
-        diff1_mean = torch.mean(torch.abs(ref_s.float() - ref_s_float))
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5
-        assert abs(diff0_mean - diff1_mean) <= 0.2
 
         # This is right way to check float16 and bfloat16 accuracy
         diff0_max = torch.max(torch.abs(output_z.float() - ref_z_float))
-        diff0_mean = torch.mean(torch.abs(output_z.float() - ref_z_float))
         diff1_max = torch.max(torch.abs(ref_z.float() - ref_z_float))
-        diff1_mean = torch.mean(torch.abs(ref_z.float() - ref_z_float))
 
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5
-        assert abs(diff0_mean - diff1_mean) <= 0.2

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from functools import partial
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -47,7 +47,7 @@ from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.pipeline.models.boltz.const import (
     CONTACT_CONDITIONING_INFO, NUM_BOND_TYPES)
 
-from ..helper import (AcceleratedConfig, AcceleratedModules,
+from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY, Boltz2AffinityConfig
 from .convert import (convert_hf_affinity_module_torch,
@@ -58,40 +58,46 @@ from .convert import (convert_hf_affinity_module_torch,
                       convert_hf_structure_module_torch)
 
 
-class Boltz2AcceleratedModules(AcceleratedModules):
+class Boltz2ModuleRegistry(ModuleRegistry):
 
-    def get_supported_modules(self) -> dict[str, tuple[nn.Module, Callable]]:
-
-        def structure_pairformer_setter(mod: nn.Module,
-                                        optimized: nn.Module) -> nn.Module:
-            org = mod.trunk.pairformer_module
-            setattr(mod.trunk, "pairformer_module", optimized)
-            return org
-
-        def confidence_pairformer_setter(mod: nn.Module,
-                                         optimized: nn.Module) -> nn.Module:
-            org = mod.confidence_module.pairformer_stack
-            setattr(mod.confidence_module, "pairformer_stack", optimized)
-            return org
-
-        def token_transformer_setter(mod: nn.Module,
-                                     optimized: nn.Module) -> nn.Module:
-            org = mod.structure_module.score_model.token_transformer
-            setattr(mod.structure_module.score_model, "token_transformer",
-                    optimized)
-            return org
-
+    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
         return {
             "structure_pairformer":
-            (PairformerTRT, structure_pairformer_setter),
+            ModuleSpec(
+                getter=lambda mod: mod.trunk.pairformer_module,
+                setter=lambda mod, opt: setattr(mod.trunk, "pairformer_module",
+                                                opt),
+                trt_cls=PairformerTRT,
+                compiled_cls=None,
+            ),
             "confidence_pairformer":
-            (PairformerTRT, confidence_pairformer_setter),
+            ModuleSpec(
+                getter=lambda mod: mod.confidence_module.pairformer_stack,
+                setter=lambda mod, opt: setattr(mod.confidence_module,
+                                                "pairformer_stack", opt),
+                trt_cls=PairformerTRT,
+                compiled_cls=None,
+            ),
             "token_transformer":
-            (TokenTransformerTRT, token_transformer_setter),
+            ModuleSpec(
+                getter=lambda mod:
+                (mod.structure_module.score_model.token_transformer),
+                setter=lambda mod, opt: setattr(
+                    mod.structure_module.score_model, "token_transformer", opt
+                ),
+                trt_cls=TokenTransformerTRT,
+                compiled_cls=None,
+            ),
+            "structure_msa":
+            ModuleSpec(
+                getter=lambda mod: mod.trunk.msa_module,
+                setter=lambda mod, opt: setattr(mod.trunk, "msa_module", opt),
+                compiled_cls=None,
+            ),
         }
 
 
-class Boltz2AffinityAcceleratedModules(Boltz2AcceleratedModules):
+class Boltz2AffinityModuleRegistry(Boltz2ModuleRegistry):
     pass
 
 
@@ -243,9 +249,10 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         self.eval()
 
     def get_optimized_modules(
-        self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> Boltz2AcceleratedModules:
-        return Boltz2AcceleratedModules(accelerated_configs)
+        self,
+        accelerated_configs: dict[str,
+                                  AcceleratedConfig]) -> Boltz2ModuleRegistry:
+        return Boltz2ModuleRegistry(accelerated_configs)
 
     @staticmethod
     def get_pretrained_config(model_name: str = SupMat.Boltz2) -> BaseConfig:
@@ -258,6 +265,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         config = config_class()
         config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
         config.trunk.set_dtype(torch.bfloat16)
+        config.trunk.pairformer.s_path_dtype = torch.bfloat16
         config.trunk.set_triangle_attention_backend("CUEQUIV")
         config.structure_module.score_model.set_dtype(torch.bfloat16)
 

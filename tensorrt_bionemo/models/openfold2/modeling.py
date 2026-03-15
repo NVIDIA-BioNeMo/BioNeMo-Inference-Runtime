@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -38,7 +38,8 @@ from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
-from ..helper import AcceleratedModules, OptimizedModuleSetterMixin, AcceleratedConfig
+from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
+                      OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_hf_confidence_module_torch, convert_hf_evoformer_torch,
@@ -49,18 +50,17 @@ from .convert import (
     convert_hf_template_embedder_torch)
 
 
-class OpenFold2AcceleratedModules(AcceleratedModules):
+class OpenFold2ModuleRegistry(ModuleRegistry):
 
-    def get_supported_modules(self) -> dict[str, tuple[nn.Module, Callable]]:
-
-        def evoformer_setter(mod: nn.Module,
-                             optimized: nn.Module) -> nn.Module:
-            org = mod.evoformer
-            setattr(mod, "evoformer", optimized)
-            return org
-
+    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
         return {
-            "evoformer": (EvoformerStackTRT, evoformer_setter),
+            "evoformer":
+            ModuleSpec(
+                getter=lambda mod: mod.evoformer,
+                setter=lambda mod, opt: setattr(mod, "evoformer", opt),
+                trt_cls=EvoformerStackTRT,
+                compiled_cls=None,
+            ),
         }
 
 
@@ -111,8 +111,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
 
     def get_optimized_modules(
         self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> OpenFold2AcceleratedModules:
-        return OpenFold2AcceleratedModules(accelerated_configs)
+    ) -> OpenFold2ModuleRegistry:
+        return OpenFold2ModuleRegistry(accelerated_configs)
 
     def load_weights(self, weights: dict = None):
         if weights is None:

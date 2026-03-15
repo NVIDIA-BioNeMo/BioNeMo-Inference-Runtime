@@ -132,7 +132,14 @@ def test_triangle_attention_node(s: AttnNodeScenario):
                     torch_dtype="bfloat16"),
     MulNodeScenario(mul_type=TriangleMultiplicationNodeType.OUTGOING,
                     torch_dtype="bfloat16",
-                    high_precision=False)
+                    high_precision=False),
+    MulNodeScenario(mul_type=TriangleMultiplicationNodeType.OUTGOING,
+                    torch_dtype="bfloat16",
+                    seq_len=512),
+    MulNodeScenario(mul_type=TriangleMultiplicationNodeType.OUTGOING,
+                    torch_dtype="bfloat16",
+                    seq_len=512,
+                    high_precision=False),
 ])
 def test_triangle_multiplication_node(s: MulNodeScenario):
     torch.manual_seed(42)

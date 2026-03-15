@@ -17,6 +17,8 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from cuequivariance_ops_torch.fused_layer_norm_torch import \
+    layer_norm_transpose
 
 from tensorrt_bionemo._torch.distributed import (
     AllReduceParams, get_default_dcp_group_coordinator,
@@ -29,7 +31,7 @@ from tensorrt_bionemo._trt.layers.triangle_nodes import (
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 from ..attention_backend import AttentionMetadata
-from ..custom_ops import get_custom_ops_impl
+from ..custom_ops.dual_gemm import get_dual_gemm_op
 from .attention import TriangleAttention
 
 
@@ -190,7 +192,7 @@ class TriangleAttentionNode(nn.Module):
         seq_len = x.shape[1]
         x, mask_bias = self._dcp_slice(x, mask_bias)
         if self.chunk_size > 0:
-            niters = (seq_len+self.chunk_size-1) // self.chunk_size
+            niters = (seq_len + self.chunk_size - 1) // self.chunk_size
             outputs = []
             for i in range(niters):
                 start = i * self.chunk_size
@@ -265,6 +267,7 @@ class TriangleMultiplicationNode(nn.Module):
         self.gpus_per_node = self.mapping.gpus_per_node
         self.dtype = dtype
         self.high_precision = high_precision
+        self.eps = eps
 
         self.dim = dim // self.tp_size
         self.hidden_dim = hidden_dim // self.tp_size
@@ -328,33 +331,24 @@ class TriangleMultiplicationNode(nn.Module):
             assert self.dcp_group_comm(
             ) is not None, "DP group coordinator is not initialized"
 
-    @torch.compiler.disable
-    def _fused_dual_gemm(self, x: torch.Tensor,
-                         mask: torch.Tensor) -> torch.Tensor:
-        fused_ops = get_custom_ops_impl("fused_sigmoid_gated_dual_gemm", x,
-                                        self.g_in.weight, self.p_in.weight,
-                                        mask, self.g_in.bias, self.p_in.bias)
-        if fused_ops is not None:
-            x = fused_ops()
-        else:
-            x = self.p_in(x) * self.g_in(x).sigmoid()
-            x = x * mask.unsqueeze(-1)
-        return x
-
-    @torch.compiler.disable
-    def _fused_dual_gemm_dual_x(self, x_0_out: torch.Tensor,
-                                x_1_out: torch.Tensor) -> torch.Tensor:
-        fused_ops = get_custom_ops_impl("fused_sigmoid_gated_dual_gemm_dual_x",
-                                        x_1_out, x_0_out, self.g_out.weight,
-                                        self.p_out.weight, None,
-                                        self.g_out.bias, self.p_out.bias)
-        if fused_ops is not None:
-            x = fused_ops()
-        else:
-            pout_x = self.p_out(x_0_out)
-            gout_x = self.g_out(x_1_out).sigmoid()
-            x = pout_x * gout_x
-        return x
+        # TODO: Make this threshold configurable
+        self._forward_impl_v2_threshold = 384
+        self._dual_gemm_x_x_op = get_dual_gemm_op(self.dtype,
+                                                  transpose_out=False,
+                                                  dual_gemm_type="x_x",
+                                                  N=self.dim,
+                                                  K=self.hidden_dim)
+        self._dual_gemm_x0_x1_op = get_dual_gemm_op(self.high_precision_dtype,
+                                                    transpose_out=False,
+                                                    dual_gemm_type="x0_x1",
+                                                    N=self.dim,
+                                                    K=self.hidden_dim)
+        self._dual_gemm_x_x_op_transpose = get_dual_gemm_op(
+            self.dtype,
+            transpose_out=True,
+            dual_gemm_type="x_x",
+            N=self.dim,
+            K=self.hidden_dim)
 
     def _dcp_slice(self, x: torch.Tensor,
                    mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -445,25 +439,99 @@ class TriangleMultiplicationNode(nn.Module):
             x = x.to(self.dtype)
         return x
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """
+    def _forward_impl_v1(self, x: torch.Tensor,
+                         mask: torch.Tensor) -> torch.Tensor:
+        """ This version is used for short sequences in eager mode
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
         """
         x = self._ensure_dtype(x)
         x = self.norm_in(x)
+
         x, mask = self._dcp_slice(x, mask)
         x_in = x
-        x = self._fused_dual_gemm(x, mask)
+        x = self._dual_gemm_x_x_op(x, self.g_in.weight, self.p_in.weight,
+                                   self.g_in.bias, self.p_in.bias, mask)
         x = x.to(self.high_precision_dtype)
+
         a, b = x.split([self.dim, self.dim], dim=-1)
         x = self._ring_einsum_compute(a, b)
         # need to gather here for LayerNorm
+
         x = self._tp_gather(x)
         x_0_out = self.norm_out(x)
         x_1_out = x_in.to(self.high_precision_dtype)
-        x = self._fused_dual_gemm_dual_x(x_0_out, x_1_out)
+
+        x = self._dual_gemm_x0_x1_op(x_1_out, x_0_out, self.g_out.weight,
+                                     self.p_out.weight, self.g_out.bias,
+                                     self.p_out.bias)
         x = self._dcp_gather(x)
         x = self._ensure_dtype(x)
         return x
+
+    def _forward_impl_v2(self, x: torch.Tensor,
+                         mask: torch.Tensor) -> torch.Tensor:
+        """ This version is used for long sequences and int the compile mode.
+        Distributed is not supported yet.
+        Args:
+            x (torch.Tensor): input tensor, shape [B, I, J, c_in]
+            mask (torch.Tensor): mask tensor [B, I, J]
+        """
+        x = self._ensure_dtype(x)
+        x = layer_norm_transpose(x,
+                                 self.norm_in.weight,
+                                 self.norm_in.bias,
+                                 eps=self.eps,
+                                 layout="bijd->bijd")
+
+        x_in = x
+        # Gated dual gemm
+        ab = self._dual_gemm_x_x_op_transpose(
+            x,
+            self.g_in.weight,
+            self.p_in.weight,
+            self.g_in.bias,
+            self.p_in.bias,
+            mask,
+            transpose_out=True,
+        )
+
+        a, b = torch.chunk(ab, 2, dim=0)
+        # Triangular projection
+        if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+            x = torch.einsum("dbik,dbjk->dbij", a, b)
+        else:
+            x = torch.einsum("dbki,dbkj->dbij", a, b)
+
+        # Output normalization
+        x_out = layer_norm_transpose(x,
+                                     self.norm_out.weight,
+                                     self.norm_out.bias,
+                                     eps=self.eps,
+                                     layout="dbij->bijd")
+
+        # Output gating
+        x_out = x_out.to(self.high_precision_dtype)
+        x_in = x_in.to(self.high_precision_dtype)
+        x = self._dual_gemm_x0_x1_op(x_in, x_out, self.g_out.weight,
+                                     self.p_out.weight, self.g_out.bias,
+                                     self.p_out.bias)
+        return x
+
+    def _eager_mode_forward(self, x: torch.Tensor,
+                            mask: torch.Tensor) -> torch.Tensor:
+        seq_len = x.shape[-2]
+        is_distributed = self.dcp_size > 1 or self.tp_size > 1
+        if seq_len < self._forward_impl_v2_threshold or is_distributed:
+            return self._forward_impl_v1(x, mask)
+        return self._forward_impl_v2(x, mask)
+
+    def _compile_mode_forward(self, x: torch.Tensor,
+                              mask: torch.Tensor) -> torch.Tensor:
+        return self._forward_impl_v2(x, mask)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if not torch.compiler.is_compiling():
+            return self._eager_mode_forward(x, mask)
+        return self._compile_mode_forward(x, mask)

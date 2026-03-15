@@ -14,12 +14,15 @@
 # limitations under the License.
 
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
-from tensorrt_llm_lite._utils import str_dtype_to_trt
+import torch
+from pydantic import field_serializer, model_validator
+from tensorrt_llm_lite._utils import str_dtype_to_trt, torch_dtype_to_str
 
-from .base import (BaseConfig, BuildConfig, DimSpec,
-                   create_optimization_profiles)
+from tensorrt_bionemo.runtime.compile import DimKind, DimSpec
+
+from .base import BaseConfig, BuildConfig, create_optimization_profiles
 
 
 class PairformerConfig(BaseConfig):
@@ -35,12 +38,30 @@ class PairformerConfig(BaseConfig):
     triangle_attn_node_chunk_size: int = 0
     no_update_s: bool = False
     no_update_z: bool = False
-    s_path_dtype: Optional[str] = None
+    s_path_dtype: Optional[Union[str, torch.dtype]] = None
     post_layer_norm: Optional[bool] = False
     triangle_attn_cueq_fallback_threshold: int = 0
     trimul_high_precision: bool = False
     attention_initial_norm: Optional[bool] = True
     version: str = "v1"
+
+    @field_serializer("s_path_dtype")
+    @classmethod
+    def _serialize_s_path_dtype(cls, v):
+        if isinstance(v, torch.dtype):
+            return torch_dtype_to_str(v)
+        return v
+
+    def set_dtype(self, value: Union[str, torch.dtype]) -> None:
+        super().set_dtype(value)
+        if self.s_path_dtype is None:
+            self.s_path_dtype = self.torch_dtype
+
+    @model_validator(mode="after")
+    def fill_s_path_dtype(self) -> "PairformerConfig":
+        if self.s_path_dtype is None:
+            self.s_path_dtype = self.torch_dtype
+        return self
 
 
 class PairformerBuildConfig(BuildConfig):
@@ -48,32 +69,37 @@ class PairformerBuildConfig(BuildConfig):
 
     def get_input_shapes(self) -> OrderedDict[str, DimSpec]:
         mc = self.module_config
-        seqlen = DimSpec(name="seqlen", dynamic=True)
+        seqlen = DimSpec("seqlen", DimKind.DYNAMIC)
 
         if mc.support_batch:
-            batch_size = DimSpec(name="batch_size", dynamic=True)
+            batch_size = DimSpec("batch_size", DimKind.BATCH)
             return OrderedDict([
                 ("s", (batch_size, seqlen,
-                       DimSpec(size=mc.token_s, name="token_s"))),
+                       DimSpec("token_s", DimKind.STATIC, size=mc.token_s))),
                 ("z", (batch_size, seqlen, seqlen,
-                       DimSpec(size=mc.token_z, name="token_z"))),
+                       DimSpec("token_z", DimKind.STATIC, size=mc.token_z))),
                 ("mask", (batch_size, seqlen)),
                 ("pair_mask", (batch_size, seqlen, seqlen)),
             ])
         return OrderedDict([
-            ("s", (seqlen, DimSpec(size=mc.token_s, name="token_s"))),
-            ("z", (seqlen, seqlen, DimSpec(size=mc.token_z, name="token_z"))),
+            ("s", (seqlen, DimSpec("token_s", DimKind.STATIC,
+                                   size=mc.token_s))),
+            ("z", (seqlen, seqlen,
+                   DimSpec("token_z", DimKind.STATIC, size=mc.token_z))),
             ("mask", (seqlen, )),
             ("pair_mask", (seqlen, seqlen)),
         ])
 
     def get_output_shapes(self) -> OrderedDict[str, DimSpec]:
         mc = self.module_config
-        seqlen = DimSpec(name="seqlen", dynamic=True)
+        seqlen = DimSpec("seqlen", DimKind.DYNAMIC)
         return OrderedDict([
-            ("output_s", (seqlen, DimSpec(size=mc.token_s, name="token_s"))),
+            ("output_s", (seqlen,
+                          DimSpec("token_s", DimKind.STATIC,
+                                  size=mc.token_s))),
             ("output_z", (seqlen, seqlen,
-                          DimSpec(size=mc.token_z, name="token_z"))),
+                          DimSpec("token_z", DimKind.STATIC,
+                                  size=mc.token_z))),
         ])
 
     def get_optimization_profiles(self) -> list[Any]:
@@ -100,23 +126,25 @@ class DiffusionTransformerBuildConfig(BuildConfig):
     def get_input_shapes(self) -> OrderedDict[str, DimSpec]:
         # TODO: Support batch dimension
         mc = self.module_config
-        seqlen = DimSpec(name="seqlen", dynamic=True)
-        multiplicity = DimSpec(name="multiplicity", dynamic=True)
-        dim = DimSpec(name="dim", size=mc.dim)
-        dim_single_cond = DimSpec(name="dim_single_cond",
+        seqlen = DimSpec("seqlen", DimKind.DYNAMIC)
+        multiplicity = DimSpec("multiplicity", DimKind.BATCH)
+        dim = DimSpec("dim", DimKind.STATIC, size=mc.dim)
+        dim_single_cond = DimSpec("dim_single_cond",
+                                  DimKind.STATIC,
                                   size=mc.dim_single_cond)
-        dim_pairwise = DimSpec(name="dim_pairwise", size=mc.dim_pairwise)
-        # num_heads = DimSpec(name="num_heads", size=mc.num_heads)
-        # num_blocks = DimSpec(name="num_blocks", size=mc.num_blocks)
-        heads_times_blocks = DimSpec(name="heads_times_blocks",
+        dim_pairwise = DimSpec("dim_pairwise",
+                               DimKind.STATIC,
+                               size=mc.dim_pairwise)
+        heads_times_blocks = DimSpec("heads_times_blocks",
+                                     DimKind.STATIC,
                                      size=mc.num_heads * mc.num_blocks)
 
         if mc.version == "v2":
-            z_shape = (DimSpec(size=1, name="n_seqs"), seqlen, seqlen,
-                       heads_times_blocks)
+            z_shape = (DimSpec("n_seqs", DimKind.STATIC,
+                               size=1), seqlen, seqlen, heads_times_blocks)
         elif mc.version == "v1":
-            z_shape = (DimSpec(size=1,
-                               name="n_seqs"), seqlen, seqlen, dim_pairwise)
+            z_shape = (DimSpec("n_seqs", DimKind.STATIC,
+                               size=1), seqlen, seqlen, dim_pairwise)
         else:
             raise ValueError(f"Invalid version: {mc.version}")
 
@@ -129,9 +157,9 @@ class DiffusionTransformerBuildConfig(BuildConfig):
 
     def get_output_shapes(self) -> OrderedDict[str, DimSpec]:
         mc = self.module_config
-        seqlen = DimSpec(name="seqlen", dynamic=True)
-        multiplicity = DimSpec(name="multiplicity", dynamic=True)
-        dim = DimSpec(name="dim", size=mc.dim)
+        seqlen = DimSpec("seqlen", DimKind.DYNAMIC)
+        multiplicity = DimSpec("multiplicity", DimKind.BATCH)
+        dim = DimSpec("dim", DimKind.STATIC, size=mc.dim)
         return OrderedDict([("output_a", (multiplicity, seqlen, dim))])
 
     def get_optimization_profiles(self) -> list[Any]:
@@ -178,13 +206,13 @@ class EvoformerStackBuildConfig(BuildConfig):
 
     def get_input_shapes(self) -> OrderedDict[str, DimSpec]:
         mc = self.module_config
-        n_res = DimSpec(name="n_res", dynamic=True)
-        n_seq = DimSpec(name="n_seq", size=mc.n_seq)
-        c_m = DimSpec(size=mc.c_m, name="c_m")
-        c_z = DimSpec(size=mc.c_z, name="c_z")
+        n_res = DimSpec("n_res", DimKind.DYNAMIC)
+        n_seq = DimSpec("n_seq", DimKind.STATIC, size=mc.n_seq)
+        c_m = DimSpec("c_m", DimKind.STATIC, size=mc.c_m)
+        c_z = DimSpec("c_z", DimKind.STATIC, size=mc.c_z)
 
         if mc.support_batch:
-            batch_size = DimSpec(name="batch_size", dynamic=True)
+            batch_size = DimSpec("batch_size", DimKind.BATCH)
             return OrderedDict([
                 ("m", (batch_size, n_seq, n_res, c_m)),
                 ("z", (batch_size, n_res, n_res, c_z)),
@@ -200,14 +228,14 @@ class EvoformerStackBuildConfig(BuildConfig):
 
     def get_output_shapes(self) -> OrderedDict[str, DimSpec]:
         mc = self.module_config
-        n_res = DimSpec(name="n_res", dynamic=True)
-        n_seq = DimSpec(name="n_seq", size=mc.n_seq)
-        c_m = DimSpec(size=mc.c_m, name="c_m")
-        c_z = DimSpec(size=mc.c_z, name="c_z")
-        c_s = DimSpec(size=mc.c_s, name="c_s")
+        n_res = DimSpec("n_res", DimKind.DYNAMIC)
+        n_seq = DimSpec("n_seq", DimKind.STATIC, size=mc.n_seq)
+        c_m = DimSpec("c_m", DimKind.STATIC, size=mc.c_m)
+        c_z = DimSpec("c_z", DimKind.STATIC, size=mc.c_z)
+        c_s = DimSpec("c_s", DimKind.STATIC, size=mc.c_s)
 
         if mc.support_batch:
-            batch_size = DimSpec(name="batch_size", dynamic=True)
+            batch_size = DimSpec("batch_size", DimKind.BATCH)
             return OrderedDict([
                 ("output_m", (batch_size, n_seq, n_res, c_m)),
                 ("output_z", (batch_size, n_res, n_res, c_z)),
@@ -268,10 +296,10 @@ class AffinityModuleBuildConfig(BuildConfig):
 
     def get_input_shapes(self) -> OrderedDict[str, DimSpec]:
         mc = self.module_config
-        batch_size = DimSpec(name="batch_size", dynamic=True)
-        seqlen = DimSpec(name="seqlen", dynamic=True)
-        token_s = DimSpec(name="token_s", size=mc.token_s)
-        token_z = DimSpec(name="token_z", size=mc.token_z)
+        batch_size = DimSpec("batch_size", DimKind.BATCH)
+        seqlen = DimSpec("seqlen", DimKind.DYNAMIC)
+        token_s = DimSpec("token_s", DimKind.STATIC, size=mc.token_s)
+        token_z = DimSpec("token_z", DimKind.STATIC, size=mc.token_z)
 
         return OrderedDict([
             ("s", (batch_size, seqlen, token_s)),
@@ -279,11 +307,12 @@ class AffinityModuleBuildConfig(BuildConfig):
             ("distogram", (batch_size, seqlen, seqlen)),
             ("cross_pair_mask_0", (batch_size, seqlen, seqlen)),
             ("cross_pair_mask_1", (batch_size, seqlen, seqlen,
-                                   DimSpec(size=1, name="const_1"))),
+                                   DimSpec("const_1", DimKind.STATIC,
+                                           size=1))),
         ])
 
     def get_output_shapes(self) -> OrderedDict[str, DimSpec]:
-        batch_size = DimSpec(name="batch_size", dynamic=True)
+        batch_size = DimSpec("batch_size", DimKind.BATCH)
         return OrderedDict([
             ("pred_value", (batch_size, 1)),
             ("logits_binary", (batch_size, 1)),

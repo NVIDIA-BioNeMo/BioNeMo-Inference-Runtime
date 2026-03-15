@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.distributed import AllReduceParams
@@ -53,7 +54,7 @@ class PairformerLayerV1(nn.Module):
                  pairwise_attn_backend: str = "VANILLA",
                  skip_create_weights: bool = False,
                  attention_initial_norm: bool = False,
-                 s_path_dtype: torch.dtype = None,
+                 s_path_dtype: Union[str, torch.dtype, None] = None,
                  trimul_high_precision: bool = True,
                  **kwargs):
         super().__init__()
@@ -64,8 +65,11 @@ class PairformerLayerV1(nn.Module):
         self.token_z = token_z
         self.mapping = mapping or Mapping()
 
+        if isinstance(s_path_dtype, str):
+            s_path_dtype = str_dtype_to_torch(s_path_dtype)
         if s_path_dtype is None:
             s_path_dtype = dtype
+        self.s_path_dtype = s_path_dtype
 
         if not self.no_update_s:
             self.attention = AttentionPairBias(
@@ -160,10 +164,8 @@ class PairformerLayerV1(nn.Module):
     ) -> torch.Tensor:
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
-        if z.dtype != self.dtype:
-            z = z.to(self.dtype)
-        if pair_mask.dtype != self.dtype:
-            pair_mask = pair_mask.to(self.dtype)
+        z = z.to(self.dtype)
+        pair_mask = pair_mask.to(self.dtype)
         z = z + self.tri_attn_start(
             z,
             mask=pair_mask,
@@ -263,13 +265,13 @@ class PairformerNoSeqModule(nn.Module):
 class PairformerLayerV2(PairformerLayerV1):
 
     def __init__(self, post_layer_norm: bool = False, **kwargs):
-        kwargs["s_path_dtype"] = torch.float32
         super().__init__(**kwargs)
         self.post_layer_norm = post_layer_norm
-        self.pre_norm_s = nn.LayerNorm(self.token_s, dtype=torch.float32)
+        self.pre_norm_s = nn.LayerNorm(self.token_s, dtype=self.s_path_dtype)
         self.post_norm_s = None
         if self.post_layer_norm:
-            self.post_norm_s = nn.LayerNorm(self.token_s, dtype=torch.float32)
+            self.post_norm_s = nn.LayerNorm(self.token_s,
+                                            dtype=self.s_path_dtype)
 
     def forward(
         self,
@@ -281,11 +283,12 @@ class PairformerLayerV2(PairformerLayerV1):
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         z = self._transform_z(z, pair_mask, attn_metadatas, all_reduce_params)
-        original_dtype = s.dtype
+        original_s_dtype = s.dtype
+        original_z_dtype = z.dtype
 
         # v2 use float precision on the computing of s
-        z = z.float()
-        s = s.float()
+        z = z.to(self.s_path_dtype)
+        s = s.to(self.s_path_dtype)
         s_normed = self.pre_norm_s(s)
         s = s + self.attention(
             s_normed,
@@ -296,8 +299,8 @@ class PairformerLayerV2(PairformerLayerV1):
         s = s + self.transition_s(s)
         if self.post_layer_norm:
             s = self.post_norm_s(s)
-        s = s.to(original_dtype)
-        z = z.to(original_dtype)
+        s = s.to(original_s_dtype)
+        z = z.to(original_z_dtype)
         return s, z
 
 

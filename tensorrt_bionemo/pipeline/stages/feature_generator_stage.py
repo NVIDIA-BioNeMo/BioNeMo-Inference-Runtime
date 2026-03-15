@@ -53,7 +53,8 @@ class FeatureGeneratorUDF(StatefulStageUDF):
             if isinstance(v, torch.Tensor):
                 row_with_tensors[k] = v
             elif isinstance(v, np.ndarray):
-                # Copy to writable array to avoid PyTorch UserWarning
+                if v.dtype == object:
+                    continue
                 arr = np.asarray(v, order="C")
                 if not arr.flags.writeable:
                     arr = arr.copy()
@@ -68,23 +69,29 @@ class FeatureGeneratorUDF(StatefulStageUDF):
         # Per-row copy of the initial context; default to an empty dict when None.
         context = deepcopy(
             self.init_context) if self.init_context is not None else {}
+        # Expose full row to generators (e.g. Boltz2 needs structure, tokens, molecules, MSA).
+        context["_row"] = row
         features_dict = {}
 
         if self.pre_init is not None:
             context = self.pre_init(context=context)
 
         with torch.no_grad():
+            merged_feats = row_with_tensors
             for generator in self.feature_generators:
                 if generator.is_enabled():
                     if generator.name in features_dict:
                         raise ValueError(
-                            f"Feature generator {generator.name} is already in the features dictionary."
+                            f"Feature generator '{generator.name}' is already in the features dictionary."
                         )
                     features_dict[generator.name] = generator(
-                        row_with_tensors, context)
-
-            merged_feats = self.features_merger_func(contexts=row_with_tensors,
-                                                     features=features_dict)
+                        merged_feats, context)
+                    merged_feats = self.features_merger_func(
+                        contexts=merged_feats,
+                        features={
+                            generator.name: features_dict[generator.name]
+                        },
+                    )
             for collator in self.feature_collators:
                 if collator.is_enabled():
                     merged_feats = collator(merged_feats, context)

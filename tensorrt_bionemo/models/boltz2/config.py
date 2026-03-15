@@ -92,19 +92,19 @@ class TrunkConfig(BaseConfig):
 
 
 class AtomDiffusionConfig(BaseConfig):
-    sigma_min: float = 0.0004
-    sigma_max: float = 10.0
+    sigma_min: float = 0.0001
+    sigma_max: float = 160.0
     sigma_data: int = 16
     rho: int = 7
     P_mean: float = -1.2
     P_std: float = 1.5
     gamma_0: float = 0.8
     gamma_min: float = 1.0
-    noise_scale: float = 1.0
-    step_scale: float = 1.638
+    noise_scale: float = 1.003
+    step_scale: float = 1.5
     coordinate_augmentation: bool = True
     alignment_reverse_diff: bool = True
-    synchronize_sigmas: bool = False
+    synchronize_sigmas: bool = True
     accumulate_token_repr: bool = False
     num_sampling_steps: int = 50
     token_s: int = _Default.token_s

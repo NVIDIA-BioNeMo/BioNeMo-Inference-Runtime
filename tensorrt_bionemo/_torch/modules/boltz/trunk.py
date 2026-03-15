@@ -41,6 +41,7 @@ class MSALayer(nn.Module):
                  pairwise_num_heads: int = 4,
                  opm_chunk_size: Optional[int] = None,
                  opm_mask_chunk_size: Optional[int] = None,
+                 opm_efficient_memory_threshold: Optional[int] = None,
                  layer_idx: int = 0,
                  eps: float = 1e-5,
                  inf: float = 1e9,
@@ -96,6 +97,7 @@ class MSALayer(nn.Module):
             c_out=token_z,
             chunk_size=opm_chunk_size,
             mask_chunk_size=opm_mask_chunk_size,
+            efficient_memory_threshold=opm_efficient_memory_threshold,
             eps=eps,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
@@ -108,7 +110,8 @@ class MSALayer(nn.Module):
         token_mask: torch.Tensor,
         msa_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        all_reduce_params: Optional[AllReduceParams] = None,
+        chunk_heads_pwa: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -116,12 +119,14 @@ class MSALayer(nn.Module):
             m(Tensor): The input tensor of shape (B, S, N, msa_s).
             token_mask(Tensor): The mask tensor of shape (B, N, N).
             msa_mask(Tensor): The mask tensor of shape (B, S, N).
+            chunk_heads_pwa(bool): Chunk pair-weighted averaging by heads.
         Returns:
             Tuple[Tensor, Tensor]: The output tensor of shape (B, N, N, token_z), (B, S, N, msa_s).
         """
-        m = m + self.pair_weighted_averaging(m, z, token_mask,
+        m = m + self.pair_weighted_averaging(m, z, token_mask, chunk_heads_pwa,
                                              all_reduce_params)
-        m = m + self.msa_transition(m, all_reduce_params)
+        m = m + self.msa_transition(
+            m, all_reduce_params, chunk_size=(32 if chunk_heads_pwa else None))
         z = z + self.outer_product_mean(m, msa_mask, all_reduce_params)
 
         # Compute pairwise stack
@@ -153,6 +158,11 @@ class MSAModule(nn.Module):
         self.use_paired_feature = config.use_paired_feature
         self.opm_chunk_size = config.opm_chunk_size
         self.opm_mask_chunk_size = config.opm_mask_chunk_size
+        self.opm_efficient_memory_threshold = getattr(
+            config, 'opm_efficient_memory_threshold', None)
+        self.pwa_chunk_token_threshold = getattr(config,
+                                                 'pwa_chunk_token_threshold',
+                                                 None)
         self.dtype = config.torch_dtype
         self.version = config.version
 
@@ -192,6 +202,8 @@ class MSAModule(nn.Module):
                     inf=config.mask_inf,
                     opm_chunk_size=self.opm_chunk_size,
                     opm_mask_chunk_size=self.opm_mask_chunk_size,
+                    opm_efficient_memory_threshold=self.
+                    opm_efficient_memory_threshold,
                     dtype=self.dtype,
                     skip_create_weights=config.skip_create_weights,
                     triangle_attn_backend=config.triangle_attention_backend,
@@ -253,9 +265,18 @@ class MSAModule(nn.Module):
         m = self.msa_proj(m.to(self.dtype))
         m = m + self.s_proj(emb).unsqueeze(1)
 
+        n_tokens = z.shape[1]
+        chunk_heads_pwa = (self.pwa_chunk_token_threshold is not None
+                           and n_tokens > self.pwa_chunk_token_threshold)
+
         for i in range(self.msa_blocks):
-            z, m = self.layers[i](z, m, token_pad_mask, msa_mask,
-                                  attn_metadata, all_reduce_params)
+            z, m = self.layers[i](z,
+                                  m,
+                                  token_pad_mask,
+                                  msa_mask,
+                                  attn_metadata,
+                                  all_reduce_params,
+                                  chunk_heads_pwa=chunk_heads_pwa)
         return z
 
 

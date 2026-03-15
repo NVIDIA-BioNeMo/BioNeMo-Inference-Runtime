@@ -1,9 +1,7 @@
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-import ray
 from pydantic import BaseModel, Field, field_validator
-from ray.data import Dataset
 
 from tensorrt_bionemo.pipeline.stages.base import StatefulStage
 
@@ -63,6 +61,12 @@ class ProcessorConfig(BaseModel):
         "'__inference_error__' column containing the error message, and other "
         "output columns will be None. Error rows bypass postprocess. "
         "If False (default), any inference error will raise an exception.",
+    )
+    executor_backend: Optional[Literal["ray"]] = Field(
+        default=None,
+        description="Execution backend. None = serial (no Ray, stages run "
+        "sequentially in-process — useful for debugging and testing). "
+        "'ray' = distributed execution via Ray Data.",
     )
 
     @field_validator("concurrency")
@@ -137,80 +141,128 @@ class ProcessorConfig(BaseModel):
         arbitrary_types_allowed = True
 
 
-class Processor:
+class _ProcessorBase:
+    """Shared bookkeeping for both serial and Ray processors."""
 
     def __init__(self, config: ProcessorConfig, stages: List[StatefulStage]):
         self.config = config
         self.stages: OrderedDict[str, StatefulStage] = OrderedDict()
-
-        # FIXES: https://github.com/ray-project/ray/issues/53124
-        # TODO (Kourosh): Remove this once the issue is fixed
-        data_context = ray.data.DataContext.get_current()
-        data_context.wait_for_min_actors_s = 600
-        # TODO: Remove this when https://github.com/ray-project/ray/issues/53169
-        # is fixed.
-        data_context._enable_actor_pool_on_exit_hook = True
-
         for stage in stages:
             self._append_stage(stage)
 
-    def __call__(self, dataset: Dataset) -> Dataset:
-        """Execute the processor:
-        preprocess -> stages -> postprocess.
-        Note that the dataset won't be materialized during the execution.
+    def _append_stage(self, stage: StatefulStage) -> None:
+        stage_name = type(stage).__name__
+        if stage_name in self.stages:
+            num_same_type_stage = sum(1 for s in self.stages.values()
+                                      if type(s) is type(stage))
+            stage_name = f"{stage_name}_{num_same_type_stage}"
+        self.stages[stage_name] = stage
 
-        Args:
-            dataset: The input dataset.
+    def list_stage_names(self) -> List[str]:
+        return list(self.stages.keys())
 
-        Returns:
-            The output dataset.
-        """
-        # Apply stages.
+    def get_stage_by_name(self, name: str) -> StatefulStage:
+        if name in self.stages:
+            return self.stages[name]
+        raise ValueError(f"Stage {name} not found")
+
+
+class Processor(_ProcessorBase):
+    """Ray-based distributed processor."""
+
+    def __init__(self, config: ProcessorConfig, stages: List[StatefulStage]):
+        import ray as _ray
+        from ray.data import Dataset  # noqa: F401
+
+        super().__init__(config, stages)
+
+        data_context = _ray.data.DataContext.get_current()
+        data_context.wait_for_min_actors_s = 600
+        data_context._enable_actor_pool_on_exit_hook = True
+
+    def __call__(self, dataset: "Dataset") -> "Dataset":
         for stage in self.stages.values():
             kwargs = stage.get_dataset_map_batches_kwargs(
                 batch_size=self.config.batch_size)
             dataset = dataset.map_batches(stage.fn, **kwargs)
         return dataset
 
-    def _append_stage(self, stage: StatefulStage) -> None:
-        """Append a stage before postprocess. The stage class name will be used as
-        the stage name. If there are multiple stages with the same type, a suffix
-        will be added to the stage name to avoid conflicts.
+
+class SerialProcessor(_ProcessorBase):
+    """In-process serial processor — no Ray dependency.
+
+    Runs each stage sequentially on every input row.  Useful for debugging,
+    testing, and environments where Ray is not available.
+    """
+
+    def __init__(self, config: ProcessorConfig, stages: List[StatefulStage]):
+        super().__init__(config, stages)
+        self._udf_instances: OrderedDict[str, Any] = OrderedDict()
+
+    def _get_or_create_udf(self, name: str, stage: StatefulStage):
+        if name not in self._udf_instances:
+            ctor_kwargs = stage.fn_constructor_kwargs.copy()
+            ctor_kwargs["compute_by_rows"] = stage.compute_by_rows
+            ctor_kwargs["drop_keys"] = stage.drop_keys
+            ctor_kwargs["expected_input_keys"] = list(
+                stage.get_required_input_keys().keys())
+            ctor_kwargs["update_row"] = stage.update_row
+            self._udf_instances[name] = stage.fn(**ctor_kwargs)
+        return self._udf_instances[name]
+
+    def __call__(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Run all stages serially on the given records.
 
         Args:
-            stage: The stage to append.
-        """
-        stage_name = type(stage).__name__
-
-        # When a processor has multiple stages with the same type,
-        # append a index suffix to the stage name to avoid conflicts.
-        if stage_name in self.stages:
-            num_same_type_stage = sum(
-                1 for s in self.stages.values()
-                if type(s) is type(stage)
-            )
-            stage_name = f"{stage_name}_{num_same_type_stage}"
-        self.stages[stage_name] = stage
-
-    def list_stage_names(self) -> List[str]:
-        """List the stage names of this processor in order. Preprocess and postprocess
-        are not included.
+            records: List of input dicts, same format as rows passed to
+                ``ray.data.from_items``.
 
         Returns:
-            A list of stage names.
+            List of output dicts (flat, no packing).
         """
-        return list(self.stages.keys())
+        import asyncio
 
-    def get_stage_by_name(self, name: str) -> StatefulStage:
-        """Get a particular stage by its name. If the stage is not found,
-        a ValueError will be raised.
+        batch: Dict[str, Any] = self._rows_to_columnar(records)
 
-        Args:
-            name: The stage name.
+        for name, stage in self.stages.items():
+            udf = self._get_or_create_udf(name, stage)
+            batch = asyncio.run(self._run_udf(udf, batch))
 
-        Returns:
-            The pipeline stage.
-        """
-        if name in self.stages:
-            return self.stages[name]
-        raise ValueError(f"Stage {name} not found")
+        return self._columnar_to_rows(batch)
+
+    @staticmethod
+    async def _run_udf(udf, batch: Dict[str, Any]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = {}
+        async for chunk in udf(batch):
+            for k, v in chunk.items():
+                if k in merged:
+                    if isinstance(merged[k], list) and isinstance(v, list):
+                        merged[k].extend(v)
+                    else:
+                        merged[k] = v
+                else:
+                    merged[k] = v
+        return merged
+
+    @staticmethod
+    def _rows_to_columnar(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not rows:
+            return {}
+        all_keys: set = set()
+        for row in rows:
+            all_keys.update(row.keys())
+        return {k: [row.get(k) for row in rows] for k in all_keys}
+
+    @staticmethod
+    def _columnar_to_rows(batch: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not batch:
+            return []
+        first_col = next(iter(batch.values()))
+        n = len(first_col) if isinstance(first_col, list) else 1
+        rows: List[Dict[str, Any]] = [{} for _ in range(n)]
+        for k, vals in batch.items():
+            if not isinstance(vals, list):
+                vals = [vals]
+            for i, v in enumerate(vals):
+                rows[i][k] = v
+        return rows

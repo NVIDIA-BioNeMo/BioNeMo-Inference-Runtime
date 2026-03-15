@@ -30,7 +30,8 @@ class FoldingEngine:
     def __init__(self,
                  config: EngineConfig,
                  model_cls: Type[nn.Module],
-                 postprocessor_cls: Optional[Type[Callable]] = None) -> None:
+                 postprocessor_cls: Optional[Type[Callable]] = None,
+                 runtime_args: Optional[dict[str, Any]] = None) -> None:
         self.config = config
         self.model_name = config.name
         self.model_config = config.model
@@ -38,6 +39,7 @@ class FoldingEngine:
         self.postprocessor_config = config.postprocessor
         self.accelerated_configs = config.accelerated
         self.model_cls = model_cls
+        self.runtime_args = runtime_args or {}
         if postprocessor_cls is None:
             self.postprocessor_cls = PostProcessorBase
         else:
@@ -94,6 +96,6 @@ class FoldingEngine:
     def execute(self, batch: dict[str, Any]) -> FoldingOutput:
         """ Execute the model with the input. """
         device_batch = self.transfer_batch_to_device(batch)
-        output = self.model(device_batch)
+        output = self.model(device_batch, **self.runtime_args)
         output = self.postprocessor(device_batch, output)
         return output

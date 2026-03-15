@@ -22,12 +22,13 @@ import pytest
 import ray
 
 from tensorrt_bionemo.pipeline.processor.utils import get_available_gpu_count
-from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
+from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
+                                                   StatefulStageUDF,
+                                                   unpack_pipeline_row)
 from tensorrt_bionemo.pipeline.stages.configs import ParallelismMode
-from tensorrt_bionemo.pipeline.stages.engine_stage import (FoldingEngineStage,
-                                                           FoldingEngineUDF,
-                                                           FoldingEngineWrapper
-                                                           )
+from tensorrt_bionemo.pipeline.stages.engine_stage import (
+    FoldingEngineStage, FoldingEngineUDF, FoldingEngineWrapper,
+    FoldingPredictionError)
 # isort: on
 
 # Minimum GPUs required for multi-GPU replica tests
@@ -98,7 +99,8 @@ class TestFoldingEngineWrapper:
         # Verify FoldingEngine was created
         mock_folding_engine.assert_called_once_with(mock_engine_config,
                                                     mock_model_class,
-                                                    mock_postprocessor_class)
+                                                    mock_postprocessor_class,
+                                                    runtime_args=None)
 
         # Verify max_pending_requests and model_config are set
         assert wrapper.max_pending_requests == 10
@@ -268,13 +270,13 @@ class TestFoldingEngineUDF:
         async def run_test():
             batch = [{"sequence": "ACGT", "__idx_in_batch": 0}]
 
-            with pytest.raises(ValueError) as exc_info:
+            with pytest.raises(FoldingPredictionError) as exc_info:
                 async for _ in udf.udf_for_rows(batch):
                     pass
 
-            # Verify error message
-            assert "Error predicting folding output" in str(exc_info.value)
-            assert "Model inference failed" in str(exc_info.value)
+            # Verify exception chaining preserves original cause
+            assert exc_info.value.__cause__ is not None
+            assert "Model inference failed" in str(exc_info.value.__cause__)
 
         asyncio.run(run_test())
 
@@ -610,7 +612,7 @@ class TestFoldingEngineStageReplicaMapBatches:
         } for i in range(num_rows)])
         result = ds.map_batches(stage.fn, **kwargs)
         result = result.materialize()
-        out = result.take_all()
+        out = [unpack_pipeline_row(r) for r in result.take_all()]
 
         assert len(out) == num_rows
         for i, row in enumerate(out):
@@ -651,7 +653,10 @@ class TestFoldingEngineStageReplicaMapBatches:
                 "__record_id": "id_b"
             },
         ])
-        out = ds.map_batches(stage.fn, **kwargs).materialize().take_all()
+        out = [
+            unpack_pipeline_row(r) for r in ds.map_batches(
+                stage.fn, **kwargs).materialize().take_all()
+        ]
 
         assert len(out) == 2
         for row in out:
@@ -732,7 +737,7 @@ class TestFoldingEngineStageReplicaMapBatches:
         } for i in range(num_rows)])
         result = ds.map_batches(stage.fn, **kwargs)
         result = result.materialize()
-        out = result.take_all()
+        out = [unpack_pipeline_row(r) for r in result.take_all()]
 
         assert len(out) == num_rows
         device_ids = {row["device_id"] for row in out}

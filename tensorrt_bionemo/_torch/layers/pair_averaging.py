@@ -101,19 +101,24 @@ class PairWeightedAveraging(nn.Module):
         m: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
+        chunk_heads: bool = False,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         """
-        TODO: Support chunking by num_heads
         Args:
             m(torch.Tensor): The input sequence tensor (B, S, N, D)
             z(torch.Tensor): The input pairwise tensor (B, N, N, D)
             mask(torch.Tensor): The pairwise mask tensor (B, N, N)
+            chunk_heads(bool): Process heads one-at-a-time to reduce peak memory.
         Returns:
             torch.Tensor: The output tensor (B, S, N, D)
         """
         m = self.norm_m(m)
         z = self.norm_z(z)
+
+        if chunk_heads and not self.training:
+            return self._forward_chunked(m, z, mask, all_reduce_params)
+
         vg = self.fused_proj_m_g(m)
         v, g = vg.split([self.c_h * self.num_heads, self.c_h * self.num_heads],
                         dim=-1)
@@ -126,10 +131,57 @@ class PairWeightedAveraging(nn.Module):
         b = b + (1 - mask[:, None]) * -self.inf
         w = torch.softmax(b, dim=-1)
 
-        # Compute output
         o = torch.einsum("bhij,bhsjd->bhsid", w, v)
         o = o.permute(0, 2, 3, 1, 4)  # [B, S, N, H, D]
         o = o.reshape(*o.shape[:3], self.num_heads * self.c_h)
-        o = self.proj_o(
-            g * o, all_reduce_params=all_reduce_params)  # Reduce output here
+        o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o
+
+    def _forward_chunked(
+        self,
+        m: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        all_reduce_params: Optional[AllReduceParams] = None,
+    ) -> torch.Tensor:
+        """Process one head at a time to reduce peak memory."""
+        fused_w = self.fused_proj_m_g.weight  # (2*H*D, c_m)
+        proj_z_w = self.proj_z.weight  # (H, c_z)
+        proj_o_w = self.proj_o.weight  # (c_m, H*D)
+
+        o_out: Optional[torch.Tensor] = None
+        for h in range(self.num_heads):
+            hd_s = h * self.c_h
+            hd_e = hd_s + self.c_h
+
+            v = m @ fused_w[hd_s:hd_e].T  # (B,S,N,D)
+            v = v.reshape(*v.shape[:3], 1, self.c_h)
+            v = v.permute(0, 3, 1, 2, 4)  # (B,1,S,N,D)
+
+            g_w = fused_w[self.c_h * self.num_heads +
+                          hd_s:self.c_h * self.num_heads + hd_e]
+            g = (m @ g_w.T).sigmoid()  # (B,S,N,D)
+
+            b = z @ proj_z_w[h:h + 1].T  # (B,N,N,1)
+            b = b.permute(0, 3, 1, 2)  # (B,1,N,N)
+            b = b + (1 - mask[:, None]) * -self.inf
+            w = torch.softmax(b, dim=-1)
+
+            o = torch.einsum("bhij,bhsjd->bhsid", w, v)
+            o = o.permute(0, 2, 3, 1, 4)
+            o = o.reshape(*o.shape[:3], self.c_h)
+            o = g * o  # (B,S,N,D)
+
+            chunk_out = o @ proj_o_w[:, hd_s:hd_e].T  # (B,S,N,c_m)
+            if o_out is None:
+                o_out = chunk_out
+            else:
+                o_out = o_out + chunk_out
+            del v, g, b, w, o, chunk_out
+
+        if (all_reduce_params is not None
+                and hasattr(self.proj_o, 'all_reduce')
+                and self.proj_o.all_reduce):
+            from tensorrt_bionemo._torch.distributed import allreduce
+            o_out = allreduce(o_out, all_reduce_params)
+        return o_out

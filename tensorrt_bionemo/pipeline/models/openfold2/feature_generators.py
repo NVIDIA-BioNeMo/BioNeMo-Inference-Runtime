@@ -91,8 +91,11 @@ class MakeTemplatePseudoBeta(FeatureGeneratorBase):
 
 class Atom37ToTorsionAngles(FeatureGeneratorBase):
 
-    def __init__(self, config: Optional[BaseConfig] = None, prefix: str = ""):
-        super().__init__(config)
+    def __init__(self,
+                 config: Optional[BaseConfig] = None,
+                 prefix: str = "",
+                 **kwargs):
+        super().__init__(config, **kwargs)
         self.prefix = prefix
 
     def is_enabled(self) -> bool:

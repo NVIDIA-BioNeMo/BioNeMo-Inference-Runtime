@@ -1,11 +1,13 @@
 from typing import Any, Dict, List, Optional
 
-import ray
 from pydantic import Field
 
 from tensorrt_bionemo.data.utils import (get_all_atom_types,
                                          get_all_residue_types)
-from tensorrt_bionemo.pipeline.processor.base import Processor, ProcessorConfig
+from tensorrt_bionemo.pipeline.processor.base import (Processor,
+                                                      ProcessorConfig,
+                                                      SerialProcessor,
+                                                      _ProcessorBase)
 from tensorrt_bionemo.pipeline.processor.utils import (
     build_cpu_stage_map_kwargs, get_available_gpu_count)
 from tensorrt_bionemo.pipeline.stages import (FeatureGeneratorStage,
@@ -58,6 +60,17 @@ class EngineProcessorConfig(ProcessorConfig):
         description=
         "The runtime environment to use for the offline processing.",
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional metadata (e.g. ccd_path, mol_dir) for context "
+        "generators and feature generators.",
+    )
+    runtime_args: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Runtime arguments passed to model.forward() alongside "
+        "feed_dict. For Boltz models: recycling_steps, num_sampling_steps, "
+        "diffusion_samples, steering_args, etc.",
+    )
 
     max_pending_requests: Optional[int] = Field(
         default=None,
@@ -94,6 +107,7 @@ class EngineProcessorConfig(ProcessorConfig):
         """Build a processor config for replica mode (one engine per GPU) using all available GPUs."""
         num_gpus = get_available_gpu_count()
         return cls(model_source=model_source,
+                   executor_backend="ray",
                    parser_stage=ParserStageConfig(
                        compute=parser_stage_actors or num_gpus),
                    tokenizer_stage=TokenizerStageConfig(
@@ -147,7 +161,9 @@ def _build_tokenizer_stage(
     context_generators = {}
     for k, generator_spec in tokenizer.context_generator_specs.items():
         context_generators[k] = generator_spec.generator(
-            config=model_pretrained_config)
+            config=model_pretrained_config,
+            metadata=config.metadata,
+        )
         context_generators[k].required_kwargs = generator_spec.required_kwargs
 
     transform_funcs = []
@@ -184,11 +200,13 @@ def _build_feature_generator_stage(
 
     for generator_spec in feature_factory.feature_generator_specs:
         generator = generator_spec.functor(config=model_pretrained_config,
+                                           metadata=config.metadata,
                                            **generator_spec.kwargs)
         generator.name = generator_spec.name
         feature_generators.append(generator)
     for collator_spec in feature_factory.feature_collator_specs:
         collator = collator_spec.functor(config=model_pretrained_config,
+                                         metadata=config.metadata,
                                          **collator_spec.kwargs)
         collator.name = collator_spec.name
         feature_collators.append(collator)
@@ -226,38 +244,39 @@ def _build_folding_engine_stage(
             "Extend _build_folding_engine_stage and the engine stage for multi-GPU per replica."
         )
 
-    available_gpus = get_available_gpu_count()
-    num_gpus_per_replica = engine_stage_cfg.num_gpus
+    fn_constructor_kwargs = {
+        "model": config.model_source,
+        "engine_kwargs": config.engine_kwargs,
+        "max_pending_requests": config.max_pending_requests,
+        "should_continue_on_error": config.should_continue_on_error,
+        "parallelism_mode": engine_stage_cfg.parallelism_mode,
+        "runtime_args": config.runtime_args or None,
+    }
 
-    # Replica count: use explicit compute if set, otherwise one replica per available GPU.
-    compute = engine_stage_cfg.compute
-    if compute is None:
-        # Auto: calculate max replicas based on available GPUs and GPU requirement per replica.
-        max_replicas = max(1, int(available_gpus / num_gpus_per_replica))
-        compute = max_replicas
-    if isinstance(compute, int):
-        compute_range = (compute, compute)
-    else:
-        compute_range = compute
+    if config.executor_backend == "ray":
+        import ray
 
-    # Validate total GPU demand does not exceed available GPUs.
-    max_replicas = compute_range[1]
-    total_gpus_needed = max_replicas * num_gpus_per_replica
-    if total_gpus_needed > available_gpus:
-        raise ValueError(
-            f"Engine stage requires up to {max_replicas} replicas × {num_gpus_per_replica} GPU(s) = {total_gpus_needed} GPUs, "
-            f"but only {available_gpus} are available. Set compute <= {int(available_gpus // num_gpus_per_replica)} or "
-            f"leave compute unset to use all available GPUs.")
+        available_gpus = get_available_gpu_count()
+        num_gpus_per_replica = engine_stage_cfg.num_gpus
 
-    return FoldingEngineStage(
-        fn_constructor_kwargs={
-            "model": config.model_source,
-            "engine_kwargs": config.engine_kwargs,
-            "max_pending_requests": config.max_pending_requests,
-            "should_continue_on_error": config.should_continue_on_error,
-            "parallelism_mode": engine_stage_cfg.parallelism_mode,
-        },
-        map_batches_kwargs=dict(
+        compute = engine_stage_cfg.compute
+        if compute is None:
+            max_replicas = max(1, int(available_gpus / num_gpus_per_replica))
+            compute = max_replicas
+        if isinstance(compute, int):
+            compute_range = (compute, compute)
+        else:
+            compute_range = compute
+
+        max_replicas = compute_range[1]
+        total_gpus_needed = max_replicas * num_gpus_per_replica
+        if total_gpus_needed > available_gpus:
+            raise ValueError(
+                f"Engine stage requires up to {max_replicas} replicas * "
+                f"{num_gpus_per_replica} GPUs ({total_gpus_needed} total), "
+                f"but only {available_gpus} available.")
+
+        map_batches_kwargs = dict(
             zero_copy_batch=True,
             compute=ray.data.ActorPoolStrategy(
                 min_size=compute_range[0],
@@ -268,7 +287,13 @@ def _build_folding_engine_stage(
             runtime_env=engine_stage_cfg.runtime_env or config.runtime_env,
             num_gpus=engine_stage_cfg.num_gpus,
             memory=engine_stage_cfg.memory,
-        ),
+        )
+    else:
+        map_batches_kwargs = {}
+
+    return FoldingEngineStage(
+        fn_constructor_kwargs=fn_constructor_kwargs,
+        map_batches_kwargs=map_batches_kwargs,
         compute_by_rows=engine_stage_cfg.compute_by_rows,
         drop_keys=engine_stage_cfg.drop_keys,
     )
@@ -313,10 +338,13 @@ def _build_stages(config: EngineProcessorConfig,
     return stages
 
 
-def build_processor(config: EngineProcessorConfig) -> Processor:
-    if not ray.is_initialized():
-        ray.init(runtime_env=config.runtime_env, ignore_reinit_error=True)
+def build_processor(config: EngineProcessorConfig) -> _ProcessorBase:
+    """Build a processor from the given config.
 
+    Returns a :class:`Processor` (Ray-backed) when
+    ``config.executor_backend == "ray"``, or a :class:`SerialProcessor`
+    (in-process, no Ray) when ``config.executor_backend is None``.
+    """
     processor_defaults = {
         "batch_size": config.batch_size,
         "concurrency": config.concurrency,
@@ -324,6 +352,12 @@ def build_processor(config: EngineProcessorConfig) -> Processor:
         "model_source": config.model_source,
     }
 
-    stages = _build_stages(config, processor_defaults)
+    if config.executor_backend == "ray":
+        import ray
+        if not ray.is_initialized():
+            ray.init(runtime_env=config.runtime_env, ignore_reinit_error=True)
+        stages = _build_stages(config, processor_defaults)
+        return Processor(config, stages)
 
-    return Processor(config, stages)
+    stages = _build_stages(config, processor_defaults)
+    return SerialProcessor(config, stages)

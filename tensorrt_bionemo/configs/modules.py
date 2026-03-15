@@ -177,6 +177,8 @@ class MSAModuleConfig(BaseConfig):
     use_paired_feature: bool = True
     opm_chunk_size: int = None
     opm_mask_chunk_size: int = None
+    opm_efficient_memory_threshold: Optional[int] = None
+    pwa_chunk_token_threshold: Optional[int] = None
     version: str = "v1"
 
 

@@ -43,9 +43,13 @@ class FeatureGeneratorBase(ABC):
     Abstract base class for transform functions.
     """
 
-    def __init__(self, config: Optional[BaseConfig] = None, **kwargs: Any):
+    def __init__(self,
+                 config: Optional[BaseConfig] = None,
+                 metadata: Optional[dict[str, Any]] = None,
+                 **kwargs: Any):
         self.config = config
         self._name = kwargs.get("name", self.__class__.__name__)
+        self.metadata = metadata
 
     @property
     def name(self) -> str:
@@ -113,8 +117,11 @@ class ContextGeneratorBase(ABC):
     Abstract base class for structure context.
     """
 
-    def __init__(self, config: Optional[BaseConfig] = None):
+    def __init__(self,
+                 config: Optional[BaseConfig] = None,
+                 metadata: Optional[dict[str, Any]] = None):
         self.config = config
+        self.metadata = metadata
         self._required_kwargs = []
 
     @abstractmethod

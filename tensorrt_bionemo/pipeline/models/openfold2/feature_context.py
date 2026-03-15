@@ -249,7 +249,7 @@ class MultimerFeaturePairAndMerge:
 
 class FeatureContextGenerator(ContextGeneratorBase):
 
-    def __init__(self, config: BaseConfig):
+    def __init__(self, config: BaseConfig, **kwargs):
         """
 
         Args:

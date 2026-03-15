@@ -14,12 +14,34 @@
 # limitations under the License.
 
 import asyncio
+import pickle
 
 import pyarrow
 import pytest
 
 from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
                                                    StatefulStageUDF)
+
+
+def _unpack_columnar(output):
+    """Unpack DATA_COLUMN format back to flat columnar dict for test assertions."""
+    data_col = output.get(StatefulStageUDF.DATA_COLUMN)
+    if data_col is None:
+        return output
+    rows = [pickle.loads(d) if isinstance(d, bytes) else d for d in data_col]
+    n = len(rows)
+    flat = {
+        "__inference_error__":
+        output.get("__inference_error__", [None] * n),
+        "__record_id":
+        output.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN, [None] * n),
+    }
+    all_keys: set = set()
+    for row in rows:
+        all_keys.update(row.keys())
+    for key in all_keys:
+        flat[key] = [row.get(key) for row in rows]
+    return flat
 
 
 class MockRowUDF(StatefulStageUDF):
@@ -77,7 +99,7 @@ class TestStatefulStageUDF:
 
             # Verify single output batch
             assert len(results) == 1
-            output = results[0]
+            output = _unpack_columnar(results[0])
 
             # Verify output structure
             assert "value" in output
@@ -183,7 +205,7 @@ class TestStatefulStageUDF:
 
             # Verify single output batch
             assert len(results) == 1
-            output = results[0]
+            output = _unpack_columnar(results[0])
 
             # Verify error information is preserved
             assert output["__inference_error__"][0]["error_msg"] is None
@@ -233,7 +255,7 @@ class TestStatefulStageUDF:
 
             # Verify single output batch
             assert len(results) == 1
-            output = results[0]
+            output = _unpack_columnar(results[0])
 
             # Verify temporary_data was dropped
             assert "temporary_data" not in output
@@ -382,7 +404,7 @@ class TestStatefulStage:
                 results.append(output)
 
             assert len(results) == 1
-            output = results[0]
+            output = _unpack_columnar(results[0])
 
             # Verify old columns are not preserved (replaced)
             assert "old_column" not in output or all(

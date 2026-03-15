@@ -31,12 +31,21 @@ from tensorrt_bionemo.pipeline.stages.configs import ParallelismMode
 from tensorrt_bionemo.registry import get_model_class, get_postprocessor
 
 
+class FoldingPredictionError(RuntimeError):
+    """Raised when model prediction fails for a batch of records."""
+
+    def __init__(self, record_ids: List, cause: Exception):
+        self.record_ids = record_ids
+        super().__init__(f"Prediction failed for record_ids={record_ids}")
+
+
 class FoldingEngineWrapper:
 
     def __init__(self,
                  model: str,
                  engine_kwargs: Dict[str, Any],
-                 max_pending_requests: int = -1) -> None:
+                 max_pending_requests: int = -1,
+                 runtime_args: Optional[Dict[str, Any]] = None) -> None:
         model_class = get_model_class(model)
         model_config = engine_kwargs.get("config", None)
         if model_config is None:
@@ -51,8 +60,10 @@ class FoldingEngineWrapper:
                                      device=device_config,
                                      accelerated=accelerated_configs,
                                      postprocessor=postprocessor_config)
-        self.engine = FoldingEngine(engine_config, model_class,
-                                    postprocessor_class)
+        self.engine = FoldingEngine(engine_config,
+                                    model_class,
+                                    postprocessor_class,
+                                    runtime_args=runtime_args)
         self.model_config = model_config
         self.max_pending_requests = max_pending_requests
         self.is_cuda_device = device_config.device_type == "cuda"
@@ -80,16 +91,17 @@ class FoldingEngineWrapper:
 class FoldingEngineUDF(StatefulStageUDF):
 
     def __init__(
-            self,
-            compute_by_rows: bool,
-            drop_keys: List[str],
-            expected_input_keys: List[str],
-            update_row: bool,
-            model: str,
-            engine_kwargs: Dict[str, Any],
-            max_pending_requests: Optional[int] = None,
-            should_continue_on_error: bool = False,
-            parallelism_mode: ParallelismMode = ParallelismMode.REPLICA
+        self,
+        compute_by_rows: bool,
+        drop_keys: List[str],
+        expected_input_keys: List[str],
+        update_row: bool,
+        model: str,
+        engine_kwargs: Dict[str, Any],
+        max_pending_requests: Optional[int] = None,
+        should_continue_on_error: bool = False,
+        parallelism_mode: ParallelismMode = ParallelismMode.REPLICA,
+        runtime_args: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(
             compute_by_rows=compute_by_rows,
@@ -102,9 +114,6 @@ class FoldingEngineUDF(StatefulStageUDF):
         max_pending_requests = max_pending_requests or 1
 
         if parallelism_mode == ParallelismMode.DISTRIBUTED:
-            # Extension point: implement multi-GPU per engine (Tensor Parallel / Context Parallel).
-            # E.g. init process group, create FoldingEngine with Mapping(world_size, rank, tp_size, dcp_size),
-            # or spawn N processes per logical replica. Leave unimplemented until DISTRIBUTED is enabled in engine_proc.
             raise NotImplementedError(
                 "DISTRIBUTED mode is not implemented yet. Extend FoldingEngineUDF here for TP/CP."
             )
@@ -112,7 +121,8 @@ class FoldingEngineUDF(StatefulStageUDF):
         self.folding = FoldingEngineWrapper(
             model=model,
             engine_kwargs=engine_kwargs,
-            max_pending_requests=max_pending_requests)
+            max_pending_requests=max_pending_requests,
+            runtime_args=runtime_args)
 
     def _create_success_response(self, row: Dict[str, Any], output: Dict[str,
                                                                          Any],
@@ -156,7 +166,9 @@ class FoldingEngineUDF(StatefulStageUDF):
             List of prediction results or error responses.
 
         Raises:
-            ValueError: If prediction fails and should_continue_on_error is False.
+            FoldingPredictionError: If prediction fails and
+                should_continue_on_error is False.  The original exception
+                is chained via ``__cause__``.
         """
         try:
             outputs, time_takens = await self.folding.predict_async(sub_batch)
@@ -170,7 +182,11 @@ class FoldingEngineUDF(StatefulStageUDF):
             logger.error(traceback_str)
             logger.error("================================================")
             if not self.should_continue_on_error:
-                raise ValueError(f"Error predicting folding output: {e}")
+                record_ids = [
+                    row.get(self.RECORD_ID_IN_BATCH_COLUMN)
+                    for row in sub_batch
+                ]
+                raise FoldingPredictionError(record_ids, e) from e
 
             self.folding.cleanup()
             error_msg = f"{type(e).__name__}: {str(e)}"

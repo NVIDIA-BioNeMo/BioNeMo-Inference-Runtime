@@ -26,6 +26,35 @@ from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
 
 
 class WriterUDF(StatefulStageUDF):
+    """Terminal pipeline stage that writes predicted structures to disk.
+
+    ``pack_output`` is ``False`` so the returned row is a flat Arrow-friendly
+    dict rather than the packed ``DATA_COLUMN`` format used between earlier
+    stages.
+
+    Output row schema
+    -----------------
+    Each call to :meth:`udf_for_item` returns a dict with these keys:
+
+    * ``output_path`` (*str | None*) - filesystem path of the written
+      structure file (PDB or CIF), or ``None`` when no output_path is
+      configured.
+    * ``format`` (*str*) - ``"pdb"`` or ``"cif"``.
+    * ``output_raw`` (*str*) - the raw file content as a string.
+    * ``scores`` (*str*) - **JSON-encoded** string of prediction quality
+      metrics (pLDDT, pTM, ipTM, …).  Encoded as a JSON string (rather
+      than a raw dict) so the column has a uniform ``string`` type in
+      PyArrow, avoiding schema-inference errors when score dicts have
+      varying structures across rows.  To access the scores dict::
+
+          import json
+          scores = json.loads(row["scores"])
+          plddt = scores.get("plddt")
+
+    * ``__record_id`` (*str | None*) - propagated record identifier.
+    """
+
+    pack_output = False
 
     def __init__(self,
                  compute_by_rows: bool,
@@ -125,15 +154,16 @@ class WriterUDF(StatefulStageUDF):
         output_raw = writer.write(record)
         scores = record.get_scores()
 
+        scores = self.round_floats(scores)
         if output_score_path:
             with open(output_score_path, "w") as f:
-                json.dump(self.round_floats(scores), f)
+                json.dump(scores, f)
 
         return {
             "output_path": output_path,
             "format": self.format,
             "output_raw": output_raw,
-            "scores": scores,
+            "scores": json.dumps(scores),
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
 
@@ -147,6 +177,18 @@ class WriterUDF(StatefulStageUDF):
 
 
 class WriterStage(StatefulStage):
+    """Pipeline stage configuration for :class:`WriterUDF`.
+
+    This is a terminal stage (``update_row=False``): its output replaces the
+    input row entirely.  The output schema is flat and Arrow-friendly —
+    see :class:`WriterUDF` for the exact column definitions.
+
+    .. note::
+       The ``scores`` column is a **JSON string**, not a dict.  Consumers
+       must call ``json.loads(row["scores"])`` to obtain the scores dict.
+       This ensures uniform PyArrow typing across rows with heterogeneous
+       score structures.
+    """
 
     fn: Type[StatefulStageUDF] = WriterUDF
     update_row: bool = False

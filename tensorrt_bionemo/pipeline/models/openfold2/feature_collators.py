@@ -41,8 +41,9 @@ class SampleMsa(FeatureCollatorBase):
 
     def __init__(self,
                  config: Optional[BaseConfig] = None,
-                 keep_extra: bool = True):
-        super().__init__(config)
+                 keep_extra: bool = True,
+                 **kwargs):
+        super().__init__(config, **kwargs)
         self.keep_extra = keep_extra
 
     def __call__(self, features: dict[str, torch.Tensor],
@@ -82,8 +83,9 @@ class MakeMaskedMsa(FeatureCollatorBase):
                  profile_prob: Optional[float] = 0.1,
                  same_prob: Optional[float] = 0.1,
                  uniform_prob: Optional[float] = 0.1,
-                 masked_msa_replace_fraction: Optional[float] = 0.15):
-        super().__init__(config)
+                 masked_msa_replace_fraction: Optional[float] = 0.15,
+                 **kwargs):
+        super().__init__(config, **kwargs)
         self.profile_prob = profile_prob
         self.same_prob = same_prob
         self.uniform_prob = uniform_prob
@@ -155,8 +157,9 @@ class NearestNeighborClusters(FeatureCollatorBase):
 
     def __init__(self,
                  config: Optional[BaseConfig] = None,
-                 gap_agreement_weight: float = 0.0):
-        super().__init__(config)
+                 gap_agreement_weight: float = 0.0,
+                 **kwargs):
+        super().__init__(config, **kwargs)
         self.gap_agreement_weight = gap_agreement_weight
 
     def is_enabled(self) -> bool:
@@ -201,8 +204,8 @@ class NearestNeighborClusters(FeatureCollatorBase):
 
 class SummarizeClusters(FeatureCollatorBase):
 
-    def __init__(self, config: Optional[BaseConfig] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+        super().__init__(config, **kwargs)
 
     def is_enabled(self) -> bool:
         return self.config.msa_cluster_features
@@ -237,8 +240,8 @@ class SummarizeClusters(FeatureCollatorBase):
 
 class CropExtraMsa(FeatureCollatorBase):
 
-    def __init__(self, config: Optional[BaseConfig] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+        super().__init__(config, **kwargs)
 
     def is_enabled(self) -> bool:
         max_extra = self.config.max_extra_msa
@@ -259,8 +262,8 @@ class CropExtraMsa(FeatureCollatorBase):
 
 class DeleteExtraMsa(FeatureCollatorBase):
 
-    def __init__(self, config: Optional[BaseConfig] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+        super().__init__(config, **kwargs)
 
     def is_enabled(self) -> bool:
         return self.config.max_extra_msa is None
@@ -322,9 +325,10 @@ class SelectFeat(FeatureCollatorBase):
 
     def __init__(self,
                  config: Optional[BaseConfig] = None,
-                 include_feats: list[str] = None,
-                 exclude_feats: list[str] = None):
-        super().__init__(config)
+                 include_feats: Optional[list[str]] = None,
+                 exclude_feats: Optional[list[str]] = None,
+                 **kwargs):
+        super().__init__(config, **kwargs)
         self.include_feats = include_feats
         self.exclude_feats = exclude_feats
 
@@ -350,8 +354,9 @@ class RandomCropToSize(FeatureCollatorBase):
 
     def __init__(self,
                  config: Optional[BaseConfig] = None,
-                 subsample_templates: bool = False):
-        super().__init__(config)
+                 subsample_templates: bool = False,
+                 **kwargs):
+        super().__init__(config, **kwargs)
         self.subsample_templates = subsample_templates
         self.max_templates = self.config.max_templates
 
@@ -419,8 +424,8 @@ class MakeFixedSize(FeatureCollatorBase):
     N_EXTRA_SEQ = "n_extra_seq"
     N_RES = "n_res"
 
-    def __init__(self, config: Optional[BaseConfig] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+        super().__init__(config, **kwargs)
         _monomer_shape_schema = {
             "template_aatype": [self.N_TEMPL, self.N_RES],
             "template_all_atom_mask": [self.N_TEMPL, self.N_RES, None],
@@ -507,8 +512,8 @@ class MakeFixedSize(FeatureCollatorBase):
 
 class MultimerSampleMsa(FeatureCollatorBase):
 
-    def __init__(self, config: Optional[BaseConfig] = None, inf=1e6):
-        super().__init__(config)
+    def __init__(self, config: Optional[BaseConfig] = None, inf=1e6, **kwargs):
+        super().__init__(config, **kwargs)
         self.inf = inf
 
     def __call__(self, features: dict[str, torch.Tensor],
@@ -609,8 +614,9 @@ class MultimerNearestNeighborClusters(FeatureCollatorBase):
 
     def __init__(self,
                  config: Optional[BaseConfig] = None,
-                 gap_agreement_weight: float = 0.0):
-        super().__init__(config)
+                 gap_agreement_weight: float = 0.0,
+                 **kwargs):
+        super().__init__(config, **kwargs)
         self.gap_agreement_weight = gap_agreement_weight
 
     def __call__(self, features: dict[str, torch.Tensor],

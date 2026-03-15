@@ -2,19 +2,42 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-import sys
-from unittest.mock import MagicMock
+import pickle
 
 import pytest
 import torch
 
 from tensorrt_bionemo.pipeline.base import ContextGeneratorBase, TransformBase
+from tensorrt_bionemo.pipeline.stages.base import StatefulStageUDF
 from tensorrt_bionemo.pipeline.stages.tokenizer_stage import TokenizerUDF
+
+
+def _unpack_columnar(output):
+    """Unpack DATA_COLUMN format back to flat columnar dict for test assertions."""
+    data_col = output.get(StatefulStageUDF.DATA_COLUMN)
+    if data_col is None:
+        return output
+    rows = [pickle.loads(d) if isinstance(d, bytes) else d for d in data_col]
+    n = len(rows)
+    flat = {
+        "__inference_error__":
+        output.get("__inference_error__", [None] * n),
+        "__record_id":
+        output.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN, [None] * n),
+    }
+    all_keys: set = set()
+    for row in rows:
+        all_keys.update(row.keys())
+    for key in all_keys:
+        flat[key] = [row.get(key) for row in rows]
+    return flat
 
 
 class MockContextGenerator(ContextGeneratorBase):
 
-    def __init__(self, output_tensors: dict = None, required_kwargs: list = None):
+    def __init__(self,
+                 output_tensors: dict = None,
+                 required_kwargs: list = None):
         super().__init__()
         self._output = output_tensors or {"mock_feature": torch.ones(10)}
         self._required_kwargs = required_kwargs or []
@@ -47,7 +70,11 @@ class TestTokenizerUDFBasicProcessing:
             expected_input_keys=["parsed"],
             update_row=True,
             context_generators={},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
             transform_funcs=[],
         )
 
@@ -98,7 +125,11 @@ class TestTokenizerUDFContextGeneration:
             expected_input_keys=["parsed"],
             update_row=True,
             context_generators={"primary": generator},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
         )
 
         row = {"parsed": {"primary": {}}, "__record_id": "test"}
@@ -116,8 +147,15 @@ class TestTokenizerUDFContextGeneration:
             drop_keys=None,
             expected_input_keys=["parsed"],
             update_row=True,
-            context_generators={"gen1": gen1, "gen2": gen2},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_generators={
+                "gen1": gen1,
+                "gen2": gen2
+            },
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
         )
 
         row = {"parsed": {}, "__record_id": "test"}
@@ -127,7 +165,9 @@ class TestTokenizerUDFContextGeneration:
         assert "feat2" in result
 
     def test_context_generator_with_required_kwargs(self):
+
         class RequiredKwargsGenerator(ContextGeneratorBase):
+
             def __init__(self):
                 super().__init__()
                 self._required_kwargs = ["parsed"]
@@ -141,7 +181,11 @@ class TestTokenizerUDFContextGeneration:
             expected_input_keys=["parsed"],
             update_row=True,
             context_generators={"primary": RequiredKwargsGenerator()},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
         )
 
         row = {"parsed": {"data": "test"}, "__record_id": "test"}
@@ -159,7 +203,11 @@ class TestTokenizerUDFTransforms:
             expected_input_keys=["parsed"],
             update_row=True,
             context_generators={"primary": MockContextGenerator({})},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
             transform_funcs=[MockTransform(enabled=True)],
         )
 
@@ -175,7 +223,11 @@ class TestTokenizerUDFTransforms:
             expected_input_keys=["parsed"],
             update_row=True,
             context_generators={"primary": MockContextGenerator({})},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
             transform_funcs=[MockTransform(enabled=False)],
         )
 
@@ -185,7 +237,9 @@ class TestTokenizerUDFTransforms:
         assert "transformed" not in result
 
     def test_multiple_transforms_chained(self):
+
         class TransformA(TransformBase):
+
             def __init__(self):
                 super().__init__(config=None)
 
@@ -197,6 +251,7 @@ class TestTokenizerUDFTransforms:
                 return True
 
         class TransformB(TransformBase):
+
             def __init__(self):
                 super().__init__(config=None)
 
@@ -213,7 +268,11 @@ class TestTokenizerUDFTransforms:
             expected_input_keys=["parsed"],
             update_row=True,
             context_generators={"primary": MockContextGenerator({})},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
             transform_funcs=[TransformA(), TransformB()],
         )
 
@@ -227,6 +286,7 @@ class TestTokenizerUDFTransforms:
 class TestTokenizerUDFContextMerger:
 
     def test_custom_context_merger(self):
+
         def custom_merger(context_dict):
             merged = {}
             for name, tensors in context_dict.items():
@@ -242,7 +302,10 @@ class TestTokenizerUDFContextMerger:
             drop_keys=None,
             expected_input_keys=["parsed"],
             update_row=True,
-            context_generators={"gen1": gen1, "gen2": gen2},
+            context_generators={
+                "gen1": gen1,
+                "gen2": gen2
+            },
             context_merger_func=custom_merger,
         )
 
@@ -280,8 +343,14 @@ class TestTokenizerUDFBatchProcessing:
             drop_keys=None,
             expected_input_keys=["parsed"],
             update_row=True,
-            context_generators={"primary": MockContextGenerator({"feat": torch.ones(3)})},
-            context_merger_func=lambda x: {k: v for d in x.values() for k, v in d.items()},
+            context_generators={
+                "primary": MockContextGenerator({"feat": torch.ones(3)})
+            },
+            context_merger_func=lambda x: {
+                k: v
+                for d in x.values()
+                for k, v in d.items()
+            },
         )
 
         async def run_batch():
@@ -297,5 +366,5 @@ class TestTokenizerUDFBatchProcessing:
         results = asyncio.run(run_batch())
 
         assert len(results) == 1
-        assert len(results[0]["feat"]) == 3
-
+        output = _unpack_columnar(results[0])
+        assert len(output["feat"]) == 3

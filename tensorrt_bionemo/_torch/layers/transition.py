@@ -73,16 +73,37 @@ class Transition(nn.Module):
                           skip_create_weights=skip_create_weights)
 
     def forward(
-            self,
-            x: torch.Tensor,
-            all_reduce_params: Optional[AllReduceParams] = None
+        self,
+        x: torch.Tensor,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        chunk_size: Optional[int] = None,
     ) -> torch.Tensor:
+        if chunk_size is not None and x.dim() >= 3:
+            return self._forward_chunked(x, all_reduce_params, chunk_size)
         x = self.norm(x)
         x = self.fused_fc2_fc1(x)
         x, gate = x.split([self.hidden, self.hidden], dim=-1)
         x = self.silu(gate) * x
         x = self.fc3(x, all_reduce_params=all_reduce_params)
         return x
+
+    def _forward_chunked(
+        self,
+        x: torch.Tensor,
+        all_reduce_params: Optional[AllReduceParams],
+        chunk_size: int,
+    ) -> torch.Tensor:
+        """Chunk along dim=1 (e.g. MSA sequence dim) to bound peak memory."""
+        chunks = []
+        for i in range(0, x.shape[1], chunk_size):
+            xi = x[:, i:i + chunk_size]
+            xi = self.norm(xi)
+            xi = self.fused_fc2_fc1(xi)
+            xi, gate = xi.split([self.hidden, self.hidden], dim=-1)
+            xi = self.silu(gate) * xi
+            xi = self.fc3(xi, all_reduce_params=all_reduce_params)
+            chunks.append(xi)
+        return torch.cat(chunks, dim=1)
 
 
 class ConditionedTransitionBlock(nn.Module):

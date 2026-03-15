@@ -118,8 +118,9 @@ class SampleRepeater(FeatureCollatorBase):
                  config: Optional[BaseConfig] = None,
                  feature_collator_specs: list[FeatureCollatorSpec] = None,
                  get_n_iters: Optional[Callable] = None,
-                 stack_dim: int = -1):
-        super().__init__(config)
+                 stack_dim: int = -1,
+                 **kwargs):
+        super().__init__(config, **kwargs)
         if get_n_iters is None:
 
             def get_n_iters(_: Optional[BaseConfig]) -> int:

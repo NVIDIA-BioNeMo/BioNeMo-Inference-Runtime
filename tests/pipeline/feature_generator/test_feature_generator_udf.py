@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import pickle
 
 import numpy as np
 import pytest
@@ -10,8 +11,30 @@ import torch
 from tensorrt_bionemo.pipeline.base import (FeatureCollatorBase,
                                             FeatureGeneratorBase,
                                             default_context_and_feature_merger)
+from tensorrt_bionemo.pipeline.stages.base import StatefulStageUDF
 from tensorrt_bionemo.pipeline.stages.feature_generator_stage import \
     FeatureGeneratorUDF
+
+
+def _unpack_columnar(output):
+    """Unpack DATA_COLUMN format back to flat columnar dict for test assertions."""
+    data_col = output.get(StatefulStageUDF.DATA_COLUMN)
+    if data_col is None:
+        return output
+    rows = [pickle.loads(d) if isinstance(d, bytes) else d for d in data_col]
+    n = len(rows)
+    flat = {
+        "__inference_error__":
+        output.get("__inference_error__", [None] * n),
+        "__record_id":
+        output.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN, [None] * n),
+    }
+    all_keys: set = set()
+    for row in rows:
+        all_keys.update(row.keys())
+    for key in all_keys:
+        flat[key] = [row.get(key) for row in rows]
+    return flat
 
 
 class MockFeatureGenerator(FeatureGeneratorBase):
@@ -383,4 +406,5 @@ class TestFeatureGeneratorUDFBatchProcessing:
         results = asyncio.run(run_batch())
 
         assert len(results) == 1
-        assert len(results[0]["feat"]) == 3
+        output = _unpack_columnar(results[0])
+        assert len(output["feat"]) == 3

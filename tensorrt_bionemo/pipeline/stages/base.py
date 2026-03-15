@@ -1,61 +1,55 @@
 # Adapted from https://github.com/ray-project/ray/blob/ray-2.53.0/python/ray/llm/_internal/batch/stages/base.py
-# But modify for both of the row mode and batch mode.
+# All per-row data is packed into a single pickled DATA_COLUMN between stages
+# so that PyArrow never has to infer schemas for complex/heterogeneous nested dicts.
 import pickle
 import traceback
 from typing import Any, AsyncIterator, Dict, List, Optional, Type
 
-import numpy as np
 import pyarrow
 from pydantic import BaseModel, ConfigDict, Field
 
 from tensorrt_bionemo.logger import logger
 
 
-def _serialize_value(value: Any) -> Any:
-    """Serialize tensor-like values to keep Ray/PyArrow typing stable.
+def unpack_pipeline_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Unpack a row from the pipeline's packed data-column format.
 
-    Why this is needed:
-    - Ray may infer different Arrow tensor extension types per block when stages
-      emit large tensors and the dataset is split into multiple blocks.
-    - In folding workloads, tensor shapes are typically dynamic, so mixed block
-      inference can cause Ray to alternate between ArrowTensorTypeV2 and
-      ArrowVariableShapedTensorType.
-    - We explicitly pickle tensors between stages so Ray immediately treats all
-      blocks as variable-shaped tensor payloads consistently.
+    After pipeline execution, each row has a pickled ``__data__`` column
+    containing the actual payload.  Call this when iterating over pipeline
+    output rows (e.g. ``ds.iter_rows()``) to get the original flat dict.
     """
-    if isinstance(value, np.ndarray):
-        return pickle.dumps(value)
-    if hasattr(value, 'detach'):
-        return pickle.dumps(value.detach().cpu().numpy())
-    return value
-
-
-def _deserialize_value(value: bytes) -> Any:
-    """Deserialize pickled tensors before per-row stage logic runs."""
-    if isinstance(value, bytes):
-        try:
-            return pickle.loads(value)
-        except Exception:
-            return value
-    return value
+    data = row.get(StatefulStageUDF.DATA_COLUMN)
+    if data is None:
+        return row
+    unpacked = pickle.loads(data) if isinstance(data, bytes) else data
+    unpacked["__inference_error__"] = row.get("__inference_error__")
+    record_id = row.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN)
+    if record_id is not None:
+        unpacked[StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN] = record_id
+    return unpacked
 
 
 class StatefulStageUDF:
     """A stage UDF wrapper that processes the input and output columns
     before and after the UDF.
 
-    Args:
-        data_column: The internal data column name of the processor. The
-                     __call__ method takes the data column as the input of the UDF
-                     method, and encapsulates the output of the UDF method into the data
-                     column for the next stage.
-        expected_input_keys: The expected input keys of the stage.
+    Between stages, all per-row data is packed into a single pickled column
+    (``DATA_COLUMN``) so that PyArrow never needs to infer schemas for complex
+    nested Python objects.  Only ``__inference_error__`` and ``__record_id``
+    are kept as plain top-level columns (they have uniform, simple types).
+
+    The first stage in the pipeline receives flat columns from
+    ``ray.data.from_items``; subsequent stages receive the packed format.
     """
 
-    # The internal column name for the index of the row in the batch.
-    # This is used to align the output of the UDF with the input batch.
     IDX_IN_BATCH_COLUMN: str = "__idx_in_batch"
     RECORD_ID_IN_BATCH_COLUMN: str = "__record_id"
+    DATA_COLUMN: str = "__data__"
+
+    # Keys that live as top-level Arrow columns (not inside DATA_COLUMN).
+    _TOP_LEVEL_KEYS = frozenset({"__inference_error__", "__record_id"})
+
+    pack_output: bool = True
 
     def __init__(self,
                  compute_by_rows: bool = True,
@@ -67,78 +61,123 @@ class StatefulStageUDF:
         self.drop_keys = drop_keys
         self.update_row = update_row
 
+    # ------------------------------------------------------------------
+    # Row unpacking helpers
+    # ------------------------------------------------------------------
+
+    def _unpack_rows_from_batch(self,
+                                batch: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convert a columnar batch into a list of row dicts.
+
+        If the batch contains DATA_COLUMN (packed format from a previous
+        stage), each element is unpickled and top-level columns are merged in.
+        Otherwise, the batch is in flat-column format (from ray.data.from_items)
+        and is converted the traditional way.
+        """
+        if self.DATA_COLUMN in batch:
+            packed = batch[self.DATA_COLUMN]
+            if hasattr(packed, "tolist"):
+                packed = packed.tolist()
+            n_rows = len(packed)
+
+            error_col = batch.get("__inference_error__")
+            if error_col is None:
+                error_col = [None] * n_rows
+            elif hasattr(error_col, "tolist"):
+                error_col = error_col.tolist()
+
+            record_col = batch.get(self.RECORD_ID_IN_BATCH_COLUMN)
+            if record_col is None:
+                record_col = [None] * n_rows
+            elif hasattr(record_col, "tolist"):
+                record_col = record_col.tolist()
+
+            rows: List[Dict[str, Any]] = []
+            for i in range(n_rows):
+                row = pickle.loads(packed[i]) if isinstance(
+                    packed[i], bytes) else packed[i]
+                row["__inference_error__"] = error_col[i]
+                row[self.RECORD_ID_IN_BATCH_COLUMN] = record_col[i]
+                rows.append(row)
+            return rows
+
+        # Flat columns (first stage from ray.data.from_items)
+        rows: List[Dict[str, Any]] = []
+        for column, values in batch.items():
+            if hasattr(values, "tolist"):
+                values = values.tolist()
+            if len(rows) == 0:
+                rows = [{} for _ in range(len(values))]
+            for row, value in zip(rows, values):
+                row[column] = value
+        return rows
+
+    def _pack_rows_to_output(self, rows: List[Dict[str,
+                                                   Any]]) -> Dict[str, Any]:
+        """Pack processed rows back into columnar format.
+
+        All per-row data (except top-level keys) is pickled into
+        DATA_COLUMN so Arrow only sees uniform ``bytes`` columns.
+        """
+        output: Dict[str, Any] = {}
+
+        output["__inference_error__"] = [
+            row.pop("__inference_error__", None) for row in rows
+        ]
+        record_ids = [
+            row.pop(self.RECORD_ID_IN_BATCH_COLUMN, None) for row in rows
+        ]
+        output[self.RECORD_ID_IN_BATCH_COLUMN] = record_ids
+
+        if self.drop_keys:
+            for key in self.drop_keys:
+                for row in rows:
+                    row.pop(key, None)
+
+        output[self.DATA_COLUMN] = [pickle.dumps(row) for row in rows]
+        return output
+
+    def _flatten_rows_to_output(self, rows: List[Dict[str,
+                                                      Any]]) -> Dict[str, Any]:
+        """Convert processed rows back to flat columnar format.
+
+        Used by terminal stages (e.g. writer) whose output schema is simple
+        and Arrow-friendly, so packing into DATA_COLUMN is unnecessary.
+        """
+        if self.drop_keys:
+            for key in self.drop_keys:
+                for row in rows:
+                    row.pop(key, None)
+
+        output: Dict[str, Any] = {}
+        if not rows:
+            return output
+
+        all_keys: set = set()
+        for row in rows:
+            all_keys.update(row.keys())
+
+        for key in all_keys:
+            output[key] = [row.get(key) for row in rows]
+        return output
+
+    # ------------------------------------------------------------------
+
     async def __call__(self,
                        batch: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """Process a batch of data through the stage UDF.
 
-        This method serves as the main entry point for processing data through the stage.
-        It handles the transformation between columnar and row-based formats, manages
-        error propagation, and ensures proper alignment of outputs with inputs.
-
-        The method supports two processing modes:
-        1. Row-based processing (compute_by_rows=True): Transforms columnar batch data
-           into individual rows, processes each row through udf_for_rows, and transforms
-           back to columnar format.
-        2. Batch-based processing (compute_by_rows=False): Processes the entire batch
-           directly through udf_for_batch.
-
-        Args:
-            batch: A dictionary mapping column names to lists of values, representing
-                   a batch of data in columnar format. For example:
-                   {"col1": [val1, val2, ...], "col2": [val1, val2, ...]}
-
-                   Special columns:
-                   - __record_id: Optional record identifier that is preserved through
-                     processing
-                   - __inference_error__: List of error dictionaries with "error_msg"
-                     and "traceback" keys. Rows with errors are skipped during processing
-                     but included in output.
-
-        Yields:
-            A dictionary in columnar format containing the processed results. The output
-            includes:
-            - All input columns (unless dropped via drop_keys)
-            - New columns added by the UDF
-            - Updated columns modified by the UDF (if update_row=True)
-            - __inference_error__: Preserved error information for all rows
-            - __record_id: Preserved record identifiers (if present in input)
-
-        Raises:
-            ValueError: If the UDF output is missing the required __idx_in_batch column
-                       (row-based mode only).
-            ValueError: If a row index is outputted multiple times, indicating the UDF
-                       is not one-to-one (row-based mode only).
-            ValueError: If some rows are not outputted by the UDF (row-based mode only).
-
-        Notes:
-            - In row-based mode, the method adds an internal __idx_in_batch column to
-              track row positions and ensure proper alignment of outputs.
-            - Rows with existing inference errors are preserved and passed through
-              without processing, maintaining their error state.
-            - The method validates that all normal (non-error) rows are processed
-              exactly once by the UDF.
-            - Empty PyArrow tables are handled gracefully by yielding an empty dict.
-            - Keys specified in drop_keys are removed from the output after processing.
+        Supports two processing modes:
+        1. Row-based (compute_by_rows=True): columnar → rows → UDF → packed columnar.
+        2. Batch-based (compute_by_rows=False): direct batch UDF.
         """
         if isinstance(batch, pyarrow.lib.Table) and batch.num_rows == 0:
             yield {}
             return
 
         if self.compute_by_rows:
-            # Transform:
-            # batch: [col0: [row0, row1], col1: [row0, row1]]
-            # to:
-            # list of rows: row0: [col0, col1], row1: [col0, col1]
-            # then call the udf_for_rows method
-            rows = []
-            for column, values in batch.items():
-                if len(rows) == 0:
-                    rows = [{} for _ in range(len(values))]
-                for row, value in zip(rows, values):
-                    row[column] = value
-            for row in rows:
-                for key in list(row.keys()):
-                    row[key] = _deserialize_value(row[key])
+            rows = self._unpack_rows_from_batch(batch)
+
             self.validate_rows_input(rows)
             for idx, row in enumerate(rows):
                 row[self.IDX_IN_BATCH_COLUMN] = idx
@@ -168,9 +207,6 @@ class StatefulStageUDF:
                             "This is likely due to the UDF is not one-to-one.")
                     not_outputed_rows.remove(idx_in_batch)
 
-                    # Add stage outputs to the data column of the row.
-                    # The output may be a reference of the row, so we need to check
-                    # They are same reference to pop the idx_in_batch column.
                     if id(rows[idx_in_batch]) != id(output):
                         rows[idx_in_batch].pop(self.IDX_IN_BATCH_COLUMN)
                     _id = rows[idx_in_batch][self.RECORD_ID_IN_BATCH_COLUMN]
@@ -179,30 +215,18 @@ class StatefulStageUDF:
                     else:
                         rows[idx_in_batch] = output
                     if _id is not None:
-                        # Keep the __record_id for the row.
                         rows[idx_in_batch][
                             self.RECORD_ID_IN_BATCH_COLUMN] = _id
             if not_outputed_rows:
                 raise ValueError(
                     f"The rows {not_outputed_rows} are not outputted.")
-            # Clean up idx column from error rows (normal rows already cleaned above)
             for idx in error_row_indices:
                 rows[idx].pop(self.IDX_IN_BATCH_COLUMN, None)
 
-            # Transform back
-            output = {}
-            output["__inference_error__"] = [
-                row.get("__inference_error__") for row in rows
-            ]
-            if self.drop_keys:
-                for key in self.drop_keys:
-                    for row in rows:
-                        if key in row:
-                            del row[key]
-            gather_keys = list(rows[0].keys())
-            for key in gather_keys:
-                output[key] = [_serialize_value(row.get(key)) for row in rows]
-            yield output
+            if self.pack_output:
+                yield self._pack_rows_to_output(rows)
+            else:
+                yield self._flatten_rows_to_output(rows)
         else:
             output = await self.udf_for_batch(batch)
             if self.drop_keys:
@@ -322,6 +346,9 @@ class StatefulStage(BaseModel):
         update_row: If True, merges UDF output with input row (preserves existing
             columns). If False, replaces input with UDF output entirely. Only
             applies when compute_by_rows=True. Default: True.
+        metadata: Optional dict (e.g. ccd_path, mol_dir) used only by the
+            Tokenizer stage. Passed to context generators (e.g. Boltz2
+            ccd_path, mol_dir). Merged into fn_constructor_kwargs when set.
 
     Example:
         ```python

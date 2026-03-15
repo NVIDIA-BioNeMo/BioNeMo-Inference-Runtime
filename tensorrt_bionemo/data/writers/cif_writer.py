@@ -26,12 +26,14 @@ from tensorrt_bionemo.data.writers.base_writer import BaseWriter
 
 class CIFWriter(BaseWriter):
     """Writes a multi-chain protein structure to string and to file in cif format."""
-    
+
     def set_output_path(self, output_path: str):
         self.output_path = output_path
-    
-    def write(self, folding_output: FoldingOutput, system_title: str | None = "TensorRT BioNeMo Prediction") -> str:
-        """Write the result of the network forward pass to file in the local 
+
+    def write(self,
+              folding_output: FoldingOutput,
+              system_title: str | None = "TensorRT BioNeMo Prediction") -> str:
+        """Write the result of the network forward pass to file in the local
         environment.
 
         Args:
@@ -80,7 +82,7 @@ class CIFWriter(BaseWriter):
             (5) set restypes to single-char name from self.res_types
             (6) set atom_types to the name field of self.atom_types
 
-        """        
+        """
         # get output protein complex representation
         #   - for numpy arrays below, 0th axis is sequence position
         residue_types: np.ndarray[np.int64] = folding_output["residue_types"]
@@ -88,7 +90,8 @@ class CIFWriter(BaseWriter):
             "atom_positions"]  # shape: (n_res, n_atoms, 3)
         atom_mask: np.ndarray[np.float32] = folding_output["atom_mask"]
 
-        chain_indices: np.ndarray[np.int64] | None = folding_output["chain_indices"]
+        chain_indices: np.ndarray[
+            np.int64] | None = folding_output["chain_indices"]
         residue_indices: np.ndarray[np.int64] = folding_output[
             "residue_indices"]  # 1-based
         b_factors: np.ndarray[np.float32] = folding_output["b_factors"]
@@ -99,17 +102,18 @@ class CIFWriter(BaseWriter):
         atom_types: list[str] = [x.name for x in self.atom_types]
 
         # sanity checks on folding_output
-        if chain_indices is not None and not isinstance(chain_indices, np.ndarray):
+        if chain_indices is not None and not isinstance(
+                chain_indices, np.ndarray):
             raise TypeError(
                 "In the CIFWriter, received folding_output chain_indices is neither None or an array."
             )
-        elif isinstance(chain_indices, np.ndarray) and (min(chain_indices) < 0 or max(chain_indices) > 25):
-            raise ValueError(
-                " ".join([
-                    "In the CIFWriter, received folding_output chain_indices has at least",
-                    "one value less than 0 or greater than 25."])
-            )
-
+        elif isinstance(chain_indices,
+                        np.ndarray) and (min(chain_indices) < 0
+                                         or max(chain_indices) > 25):
+            raise ValueError(" ".join([
+                "In the CIFWriter, received folding_output chain_indices has at least",
+                "one value less than 0 or greater than 25."
+            ]))
 
         # start openfold logic
         n = residue_types.shape[0]  # number of sequence positions in input
@@ -132,10 +136,13 @@ class CIFWriter(BaseWriter):
         # finally add the last chain
         seqs[last_chain_idx] = seq
 
+        # ihm uses 'UNK' for unknown residues, not single-char 'X'
+        _IHM_REMAP = {'X': 'UNK'}
+
         # now reduce sequences to unique ones (note this won't work if different asyms have different unmodelled regions)
         unique_seqs = {}
         for chain_idx, seq_list in seqs.items():
-            seq = "".join(seq_list)
+            seq = tuple(seq_list)
             if seq in unique_seqs:
                 unique_seqs[seq].append(chain_idx)
             else:
@@ -144,7 +151,8 @@ class CIFWriter(BaseWriter):
         # adding 1 entity per unique sequence
         entities_map = {}
         for key, value in unique_seqs.items():
-            model_e = modelcif.Entity(key, description='Model subunit')
+            ihm_seq = [_IHM_REMAP.get(r, r) for r in key]
+            model_e = modelcif.Entity(ihm_seq, description='Model subunit')
             for chain_idx in value:
                 entities_map[chain_idx] = model_e
 

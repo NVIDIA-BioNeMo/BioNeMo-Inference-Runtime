@@ -29,7 +29,7 @@ from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.models.boltz.const import POCKET_CONTACT_INFO
+from tensorrt_bionemo.pipeline.models.boltz2.const import pocket_contact_info
 
 
 class MSALayer(nn.Module):
@@ -168,7 +168,7 @@ class MSAModule(nn.Module):
 
         if config.version == "v1":
             s_input_dim = self.token_s + 2 * self.num_tokens + 1 + len(
-                POCKET_CONTACT_INFO)
+                pocket_contact_info)
         else:
             s_input_dim = self.token_s
         self.s_proj = Linear(s_input_dim,

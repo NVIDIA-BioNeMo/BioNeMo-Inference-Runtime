@@ -15,7 +15,7 @@
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, Union
 
 import numpy as np
 
@@ -23,6 +23,9 @@ from tensorrt_bionemo.data.schemas import FoldingOutput
 from tensorrt_bionemo.data.writers import CIFWriter, PDBWriter
 from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
                                                    StatefulStageUDF)
+
+_SUPPORTED_FORMATS = {"pdb", "cif"}
+_EXT_MAP = {"pdb": ".pdb", "cif": ".cif"}
 
 
 class WriterUDF(StatefulStageUDF):
@@ -32,17 +35,24 @@ class WriterUDF(StatefulStageUDF):
     dict rather than the packed ``DATA_COLUMN`` format used between earlier
     stages.
 
+    Supports writing **multiple formats** in a single pass when ``format``
+    is a list (e.g. ``["pdb", "cif"]``).  Both files are produced from the
+    same ``FoldingOutput``, so atom coordinates are guaranteed identical.
+
     Output row schema
     -----------------
     Each call to :meth:`udf_for_item` returns a dict with these keys:
 
-    * ``output_path`` (*str | None*) - filesystem path of the written
-      structure file (PDB or CIF), or ``None`` when no output_path is
-      configured.
-    * ``format`` (*str*) - ``"pdb"`` or ``"cif"``.
-    * ``output_raw`` (*str*) - the raw file content as a string.
+    * ``output_path`` (*str | None*) - filesystem path of the first (or
+      only) written structure file.
+    * ``output_paths`` (*str*) - **JSON-encoded** dict mapping each
+      format to its filesystem path, e.g.
+      ``'{"pdb": "/out/id.pdb", "cif": "/out/id.cif"}'``.
+    * ``format`` (*str*) - the primary format written (first element when
+      a list was configured).
+    * ``output_raw`` (*str*) - the raw file content of the primary format.
     * ``scores`` (*str*) - **JSON-encoded** string of prediction quality
-      metrics (pLDDT, pTM, ipTM, …).  Encoded as a JSON string (rather
+      metrics (pLDDT, pTM, ipTM, ...).  Encoded as a JSON string (rather
       than a raw dict) so the column has a uniform ``string`` type in
       PyArrow, avoiding schema-inference errors when score dicts have
       varying structures across rows.  To access the scores dict::
@@ -62,13 +72,23 @@ class WriterUDF(StatefulStageUDF):
                  expected_input_keys: List[str],
                  update_row: bool,
                  mappings: dict[str, Any],
-                 format: Optional[str] = "pdb",
+                 format: Optional[Union[str, List[str]]] = "pdb",
                  output_path: Optional[str] = None):
         super().__init__(compute_by_rows, drop_keys, expected_input_keys,
                          update_row)
-        self.format = format or "pdb"
+        raw = format or "pdb"
+        self.formats: List[str] = [raw] if isinstance(raw, str) else list(raw)
+        for fmt in self.formats:
+            if fmt not in _SUPPORTED_FORMATS:
+                raise ValueError(f"Unsupported writer format '{fmt}'. "
+                                 f"Supported: {sorted(_SUPPORTED_FORMATS)}")
         self.mappings = mappings
         self.output_path = output_path
+
+    @property
+    def format(self) -> str:
+        """Primary (first) format — kept for backward compatibility."""
+        return self.formats[0]
 
     def round_floats(self, o: Any, precision: int = 4) -> Any:
         if isinstance(o, float):
@@ -79,34 +99,33 @@ class WriterUDF(StatefulStageUDF):
             return [self.round_floats(x, precision) for x in o]
         return o
 
-    def _get_writer_and_ext(self):
-        if self.format in ["pdb", "cif"]:
-            res_type_mapping = self.mappings.get("res_type_mapping", None)
-            atom_type_mapping = self.mappings.get("atom_type_mapping", None)
+    def _create_writer(self, fmt: str):
+        res_type_mapping = self.mappings.get("res_type_mapping", None)
+        atom_type_mapping = self.mappings.get("atom_type_mapping", None)
+        if res_type_mapping is None or atom_type_mapping is None:
+            raise ValueError(
+                "WriterUDF requires both 'res_type_mapping' and "
+                "'atom_type_mapping' to write PDB or CIF. "
+                "Ensure WriterStage is configured with proper mappings.")
+        if fmt == "pdb":
+            return PDBWriter(res_type_mapping=res_type_mapping,
+                             atom_type_mapping=atom_type_mapping)
+        if fmt == "cif":
+            return CIFWriter(res_type_mapping=res_type_mapping,
+                             atom_type_mapping=atom_type_mapping)
+        raise ValueError(f"Invalid format: {fmt}")
 
-            if self.format in ["pdb", "cif"]:
-                if res_type_mapping is None or atom_type_mapping is None:
-                    raise ValueError(" ".join([
-                        "WriterUDF requires both 'res_type_mapping' and 'atom_type_mapping'",
-                        "to write PDB or CIF.",
-                        "These mappings define how residue/atom types are interpreted.",
-                        "Ensure WriterStage is configured with proper mappings."
-                    ]))
-                elif self.format == "pdb":
-                    writer = PDBWriter(res_type_mapping=res_type_mapping,
-                                       atom_type_mapping=atom_type_mapping)
-                    return writer, ".pdb"
-
-                elif self.format == "cif":
-                    writer = CIFWriter(res_type_mapping=res_type_mapping,
-                                       atom_type_mapping=atom_type_mapping)
-                    return writer, ".cif"
-
-        raise ValueError(f"Invalid format: {self.format}")
+    def _resolve_paths(self, row: Dict[str, Any], row_id, ext: str):
+        if self.output_path and row_id:
+            out = os.path.join(self.output_path, f"{row_id}{ext}")
+        elif self.output_path:
+            out = os.path.join(self.output_path,
+                               f"{row[self.IDX_IN_BATCH_COLUMN]}{ext}")
+        else:
+            out = None
+        return out
 
     async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        writer, ext = self._get_writer_and_ext()
-
         chain_indices = row.get("chain_indices")
         if chain_indices is None:
             residue_indices = row.get("residue_indices")
@@ -133,36 +152,45 @@ class WriterUDF(StatefulStageUDF):
                                max_pae=row.get("max_pae", None))
         row_id = row.get(self.RECORD_ID_IN_BATCH_COLUMN)
 
+        output_paths: Dict[str, Optional[str]] = {}
+        primary_raw: Optional[str] = None
+
+        for fmt in self.formats:
+            ext = _EXT_MAP[fmt]
+            out_path = self._resolve_paths(row, row_id, ext)
+            if out_path:
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+            writer = self._create_writer(fmt)
+            writer.set_output_path(out_path)
+            raw = writer.write(record)
+
+            output_paths[fmt] = out_path
+            if primary_raw is None:
+                primary_raw = raw
+
+        scores = self.round_floats(record.get_scores())
+
         if self.output_path and row_id:
-            output_path = os.path.join(self.output_path, f"{row_id}{ext}")
-            output_score_path = os.path.join(self.output_path,
-                                             f"{row_id}_scores.json")
+            score_path = os.path.join(self.output_path,
+                                      f"{row_id}_scores.json")
         elif self.output_path:
-            output_path = os.path.join(
-                self.output_path, f"{row[self.IDX_IN_BATCH_COLUMN]}{ext}")
-            output_score_path = os.path.join(
+            score_path = os.path.join(
                 self.output_path,
                 f"{row[self.IDX_IN_BATCH_COLUMN]}_scores.json")
         else:
-            output_path = None
-            output_score_path = None
+            score_path = None
 
-        if output_path:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-        writer.set_output_path(output_path)
-        output_raw = writer.write(record)
-        scores = record.get_scores()
-
-        scores = self.round_floats(scores)
-        if output_score_path:
-            with open(output_score_path, "w") as f:
+        if score_path:
+            with open(score_path, "w") as f:
                 json.dump(scores, f)
 
+        primary_path = output_paths.get(self.format)
         return {
-            "output_path": output_path,
+            "output_path": primary_path,
+            "output_paths": json.dumps(output_paths),
             "format": self.format,
-            "output_raw": output_raw,
+            "output_raw": primary_raw,
             "scores": json.dumps(scores),
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
@@ -171,6 +199,7 @@ class WriterUDF(StatefulStageUDF):
                      error: Exception) -> Dict[str, Any]:
         return {
             "output_path": None,
+            "output_paths": json.dumps({}),
             "format": self.format,
             "output_raw": None,
         }

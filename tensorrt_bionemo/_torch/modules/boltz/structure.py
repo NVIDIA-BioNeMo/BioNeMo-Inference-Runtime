@@ -44,8 +44,8 @@ from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.models.boltz.const import (
-    NUM_POCKET_CONTACT_INFO, NUM_TOKENS)
+from tensorrt_bionemo.pipeline.models.boltz2.const import (
+    num_pocket_contact_info, num_tokens)
 
 
 class DiffusionConditioning(nn.Module):
@@ -242,7 +242,7 @@ class DiffusionModule(nn.Module):
         additional_input_dim = 0
         if config.version == "v1":
             # NOTE: v1 uses additional input_dim for the single conditioning
-            additional_input_dim = 2 * NUM_TOKENS + 1 + NUM_POCKET_CONTACT_INFO
+            additional_input_dim = 2 * num_tokens + 1 + num_pocket_contact_info
         # conditioning
         self.single_conditioner = SingleConditioning(
             token_s=config.token_s,

@@ -18,7 +18,7 @@ from typing import Any, Optional
 import torch
 from torch import nn
 
-from tensorrt_bionemo.pipeline.models.boltz.const import CHAIN_TYPE_IDS
+from tensorrt_bionemo.pipeline.models.boltz2.const import chain_type_ids
 
 
 def repeat_with_multiplicity(tensor: torch.Tensor,
@@ -188,8 +188,8 @@ def compute_ptms(
     # compute ligand and protein ipTM
     token_type = feats["mol_type"]
     token_type = repeat_with_multiplicity(token_type, multiplicity)
-    is_ligand_token = (token_type == CHAIN_TYPE_IDS["NONPOLYMER"]).float()
-    is_protein_token = (token_type == CHAIN_TYPE_IDS["PROTEIN"]).float()
+    is_ligand_token = (token_type == chain_type_ids["NONPOLYMER"]).float()
+    is_protein_token = (token_type == chain_type_ids["PROTEIN"]).float()
 
     # [B, mult, N_tokens, N_tokens]
     ligand_iptm_mask = (pair_mask_iptm * (
@@ -294,7 +294,7 @@ def compute_frame_pred(
                                == id) * feats["atom_pad_mask"][i]
             num_tokens = int(mask_chain_token.sum().item())
             num_atoms = int(mask_chain_atom.sum().item())
-            if (feats["mol_type"][i, token_idx] != CHAIN_TYPE_IDS["NONPOLYMER"]
+            if (feats["mol_type"][i, token_idx] != chain_type_ids["NONPOLYMER"]
                     or num_atoms < 3):
                 token_idx += num_tokens
                 atom_idx += num_atoms

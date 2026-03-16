@@ -82,8 +82,9 @@ class FeatureGeneratorUDF(StatefulStageUDF):
                 if generator.is_enabled():
                     if generator.name in features_dict:
                         raise ValueError(
-                            f"Feature generator '{generator.name}' is already in the features dictionary."
-                        )
+                            f"Feature generator '{generator.name}' conflicts "
+                            f"with a previously generated feature in "
+                            f"features_dict.")
                     features_dict[generator.name] = generator(
                         merged_feats, context)
                     merged_feats = self.features_merger_func(

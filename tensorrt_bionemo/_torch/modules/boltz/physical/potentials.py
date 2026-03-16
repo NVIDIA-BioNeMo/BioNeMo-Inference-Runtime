@@ -20,8 +20,8 @@ import torch
 
 from tensorrt_bionemo._torch.modules.boltz.loss.diffusion import \
     weighted_rigid_align
-from tensorrt_bionemo.pipeline.models.boltz.const import (NUM_ELEMENTS,
-                                                          VDW_RADII)
+from tensorrt_bionemo.pipeline.models.boltz2.const import (num_elements,
+                                                           vdw_radii)
 
 from .schedules import (ExponentialInterpolation, ParameterSchedule,
                         PiecewiseStepFunction)
@@ -438,14 +438,14 @@ class PoseBustersPotential(FlatBottomPotential, DistancePotential):
                      ~angle_mask] *= 1.0 - parameters["clash_buffer"]
         upper_bounds[~bond_mask * ~angle_mask] = float("inf")
 
-        vdw_radii = torch.zeros(NUM_ELEMENTS,
-                                dtype=torch.float32,
-                                device=pair_index.device)
-        vdw_radii[1:119] = torch.tensor(VDW_RADII,
-                                        dtype=torch.float32,
-                                        device=pair_index.device)
+        radii_table = torch.zeros(num_elements,
+                                  dtype=torch.float32,
+                                  device=pair_index.device)
+        radii_table[1:119] = torch.tensor(vdw_radii,
+                                          dtype=torch.float32,
+                                          device=pair_index.device)
         atom_vdw_radii = (feats["ref_element"].float()
-                          @ vdw_radii.unsqueeze(-1)).squeeze(-1)[0]
+                          @ radii_table.unsqueeze(-1)).squeeze(-1)[0]
         bond_cutoffs = 0.35 + atom_vdw_radii[pair_index].mean(dim=0)
         lower_bounds[~bond_mask] = torch.max(lower_bounds[~bond_mask],
                                              bond_cutoffs[~bond_mask])
@@ -480,14 +480,14 @@ class VDWOverlapPotential(FlatBottomPotential, DistancePotential):
         chain_sizes = torch.bincount(atom_chain_id[atom_pad_mask])
         single_ion_mask = (chain_sizes > 1)[atom_chain_id]
 
-        vdw_radii = torch.zeros(NUM_ELEMENTS,
-                                dtype=torch.float32,
-                                device=atom_chain_id.device)
-        vdw_radii[1:119] = torch.tensor(VDW_RADII,
-                                        dtype=torch.float32,
-                                        device=atom_chain_id.device)
+        radii_table = torch.zeros(num_elements,
+                                  dtype=torch.float32,
+                                  device=atom_chain_id.device)
+        radii_table[1:119] = torch.tensor(vdw_radii,
+                                          dtype=torch.float32,
+                                          device=atom_chain_id.device)
         atom_vdw_radii = (feats["ref_element"].float()
-                          @ vdw_radii.unsqueeze(-1)).squeeze(-1)[0]
+                          @ radii_table.unsqueeze(-1)).squeeze(-1)[0]
 
         pair_index = torch.triu_indices(
             atom_chain_id.shape[0],

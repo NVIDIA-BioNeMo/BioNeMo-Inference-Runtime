@@ -134,7 +134,7 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
 
 
 def test_serial_processor_pdb_cif_match(tmp_path: Path):
-    """Same PDB-vs-CIF check using the serial (no-Ray) processor."""
+    """PDB-vs-CIF check using multi-format writer in one serial pass."""
 
     model_source = "alphafold2_1"
     run_label = datetime.now().strftime('%Y%m%dT%H%M%S')
@@ -148,20 +148,21 @@ def test_serial_processor_pdb_cif_match(tmp_path: Path):
         "__record_id": req["input_id"]
     } for req in requests]
 
-    for fmt in ("pdb", "cif"):
-        config = EngineProcessorConfig(
-            model_source=model_source,
-            writer_stage=WriterStageConfig(output_path=output_path,
-                                           format=fmt))
-        processor = build_processor(config)
-        assert isinstance(processor, SerialProcessor)
-        results = processor(records)
-        assert len(results) == len(requests)
-        for row in results:
-            err = row.get("__inference_error__")
-            has_error = isinstance(err,
-                                   dict) and err.get("error_msg") is not None
-            assert not has_error, f"Serial processor error: {err}"
+    config = EngineProcessorConfig(model_source=model_source,
+                                   writer_stage=WriterStageConfig(
+                                       output_path=output_path,
+                                       format=["pdb", "cif"]))
+    processor = build_processor(config)
+    assert isinstance(processor, SerialProcessor)
+    results = processor(records)
+    assert len(results) == len(requests)
+    for row in results:
+        err = row.get("__inference_error__")
+        has_error = isinstance(err, dict) and err.get("error_msg") is not None
+        assert not has_error, f"Serial processor error: {err}"
+        paths = json.loads(row.get("output_paths", "{}"))
+        assert "pdb" in paths, "output_paths should contain 'pdb'"
+        assert "cif" in paths, "output_paths should contain 'cif'"
 
     for input_id in [req["input_id"] for req in requests]:
         pdb_file = pdb.PDBFile.read(

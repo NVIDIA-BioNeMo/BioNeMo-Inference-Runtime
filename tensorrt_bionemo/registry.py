@@ -214,18 +214,20 @@ class Boltz1Factory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError(
-            "Boltz1 tokenizer not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.boltz1.tokenizer import Tokenizer
+        return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError(
-            "Boltz1 feature factory not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.boltz1.feature_factory import \
+            FeatureFactory
+        return FeatureFactory()
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError(
-            "Boltz1 postprocessor not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.boltz2.postprocessor import \
+            PostProcessor
+        return PostProcessor
 
     @classmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:
@@ -251,18 +253,20 @@ class Boltz2Factory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError(
-            "Boltz2 tokenizer not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.boltz2.tokenizer import Tokenizer
+        return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError(
-            "Boltz2 feature factory not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.boltz2.feature_factory import \
+            FeatureFactory
+        return FeatureFactory()
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError(
-            "Boltz2 postprocessor not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.boltz2.postprocessor import \
+            PostProcessor
+        return PostProcessor
 
     @classmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:

@@ -44,8 +44,8 @@ from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.pipeline.models.boltz.const import (
-    CONTACT_CONDITIONING_INFO, NUM_BOND_TYPES)
+from tensorrt_bionemo.pipeline.models.boltz2.const import (
+    contact_conditioning_info, num_bond_types)
 
 from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
@@ -111,6 +111,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
         self.model_name = model_name or SupMat.Boltz2
         self.config = config or self.get_pretrained_config(self.model_name)
+        self.steering_args = None
 
         self.confidence_prediction = self.config.confidence_prediction
         self.skip_run_structure = self.config.skip_run_structure
@@ -179,13 +180,13 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             gather_output=True,
             skip_create_weights=False)
         if self.config.bond_type_feature:
-            self.token_bonds_type = nn.Embedding(NUM_BOND_TYPES + 1,
+            self.token_bonds_type = nn.Embedding(num_bond_types + 1,
                                                  self.config.token_z)
         self.contact_conditioning = ContactConditioning(
             token_z=self.config.token_z,
             cutoff_min=self.config.conditioning_cutoff_min,
             cutoff_max=self.config.conditioning_cutoff_max,
-            contact_conditioning_info=CONTACT_CONDITIONING_INFO)
+            contact_conditioning_info=contact_conditioning_info)
 
         ### Trunk ###
         self.trunk = Trunk(self.trunk_config)

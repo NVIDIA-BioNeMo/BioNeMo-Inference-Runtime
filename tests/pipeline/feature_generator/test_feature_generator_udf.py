@@ -244,8 +244,9 @@ class TestFeatureGeneratorUDFFeatureGeneration:
         )
 
         row = {"__record_id": "test"}
-        with pytest.raises(ValueError,
-                           match="already in the features dictionary"):
+        with pytest.raises(
+                ValueError,
+                match="conflicts with a previously generated feature"):
             asyncio.run(udf.udf_for_item(row))
 
 

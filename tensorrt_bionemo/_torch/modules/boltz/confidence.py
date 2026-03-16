@@ -27,9 +27,9 @@ from tensorrt_bionemo._torch.layers.position_encoders import \
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.models.boltz.const import (
-    BOND_TYPES, CHAIN_TYPE_IDS, CONTACT_CONDITIONING_INFO,
-    NUM_POCKET_CONTACT_INFO, NUM_TOKENS)
+from tensorrt_bionemo.pipeline.models.boltz2.const import (
+    bond_types, chain_type_ids, contact_conditioning_info,
+    num_pocket_contact_info, num_tokens)
 
 from .confidence_utils import (compute_aggregated_metric, compute_distogram,
                                compute_ptms, concat_out_dicts,
@@ -258,7 +258,7 @@ class Boltz2ConfidenceHeads(nn.Module):
         token_type = feats["mol_type"]
 
         token_type = repeat_with_multiplicity(token_type, multiplicity)
-        is_ligand_token = (token_type == CHAIN_TYPE_IDS["NONPOLYMER"]).float()
+        is_ligand_token = (token_type == chain_type_ids["NONPOLYMER"]).float()
 
         assert self.token_level_confidence, "Only support for token level confidence"
 
@@ -477,13 +477,13 @@ class Boltz2ConfidenceModule(nn.Module):
             self.bond_type_feature = config.bond_type_feature
             if config.bond_type_feature:
                 self.token_bonds_type = nn.Embedding(
-                    len(BOND_TYPES) + 1, config.token_z)
+                    len(bond_types) + 1, config.token_z)
 
             self.contact_conditioning = ContactConditioning(
                 token_z=config.token_z,
                 cutoff_min=config.conditioning_cutoff_min,
                 cutoff_max=config.conditioning_cutoff_max,
-                contact_conditioning_info=CONTACT_CONDITIONING_INFO,
+                contact_conditioning_info=contact_conditioning_info,
                 dtype=self.dtype,
                 mapping=self.mapping,
                 skip_create_weights=self.skip_create_weights)
@@ -774,7 +774,7 @@ class Boltz1ConfidenceHeads(nn.Module):
         interface_weight = 1
 
         # Retrieve relevant features
-        is_ligand_token = (token_type == CHAIN_TYPE_IDS["NONPOLYMER"]).float()
+        is_ligand_token = (token_type == chain_type_ids["NONPOLYMER"]).float()
 
         # Compute the aggregated pLDDT and iPLDDT
         plddt = compute_aggregated_metric(plddt_logits)
@@ -861,8 +861,8 @@ class Boltz1ConfidenceModule(nn.Module):
         self.num_dist_bins = self.config.num_dist_bins
         self.token_z = self.config.token_z
         self.token_s = self.config.token_s
-        self.s_input_dim = (self.token_s + 2 * NUM_TOKENS + 1 +
-                            NUM_POCKET_CONTACT_INFO)
+        self.s_input_dim = (self.token_s + 2 * num_tokens + 1 +
+                            num_pocket_contact_info)
         boundaries = torch.linspace(2, self.max_dist, self.num_dist_bins - 1)
 
         # TODO: Replace nn.Embedding with tensorrt_llm.Embedding

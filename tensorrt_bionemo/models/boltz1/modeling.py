@@ -40,8 +40,8 @@ from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.pipeline.models.boltz.const import (
-    NUM_POCKET_CONTACT_INFO, NUM_TOKENS)
+from tensorrt_bionemo.pipeline.models.boltz2.const import (
+    num_pocket_contact_info, num_tokens)
 
 from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
@@ -139,8 +139,8 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         self.input_embedder = Boltz1InputEmbedder(self.input_embedder_config)
 
         ### Input projections ###
-        s_input_dim = (self.config.token_s + 2 * NUM_TOKENS + 1 +
-                       NUM_POCKET_CONTACT_INFO)
+        s_input_dim = (self.config.token_s + 2 * num_tokens + 1 +
+                       num_pocket_contact_info)
         self.s_init = Linear(s_input_dim,
                              self.config.token_s,
                              bias=False,
@@ -490,6 +490,8 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             (4 * confidence_module_output["complex_plddt"] + iptm_score) / 5,
             "masks":
             feed_dict["atom_pad_mask"],
+            "token_masks":
+            feed_dict["token_pad_mask"],
             "coords":
             struct_module_output["sample_atom_coords"],
             "complex_plddt":

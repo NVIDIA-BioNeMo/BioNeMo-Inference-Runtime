@@ -28,9 +28,9 @@ from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.pipeline.models.boltz.const import (NUM_CHAIN_TYPES,
-                                                          NUM_METHOD_TYPES,
-                                                          NUM_TOKENS)
+from tensorrt_bionemo.pipeline.models.boltz2.const import (num_chain_types,
+                                                           num_method_types,
+                                                           num_tokens)
 
 
 class AtomEmbedding(nn.Module):
@@ -635,7 +635,7 @@ class Boltz2InputEmbedder(nn.Module):
         )
 
         self.res_type_encoding = Linear(
-            NUM_TOKENS,
+            num_tokens,
             config.token_s,
             bias=False,
             dtype=config.torch_dtype,
@@ -644,7 +644,7 @@ class Boltz2InputEmbedder(nn.Module):
             gather_output=True,
             skip_create_weights=config.skip_create_weights)
         self.msa_profile_encoding = Linear(
-            NUM_TOKENS + 1,
+            num_tokens + 1,
             config.token_s,
             bias=False,
             dtype=config.torch_dtype,
@@ -660,7 +660,7 @@ class Boltz2InputEmbedder(nn.Module):
 
         if self.add_method_conditioning:
             self.method_conditioning_init = nn.Embedding(
-                NUM_METHOD_TYPES, config.token_s, dtype=config.torch_dtype)
+                num_method_types, config.token_s, dtype=config.torch_dtype)
         if self.add_modified_flag:
             self.modified_conditioning_init = nn.Embedding(
                 2, config.token_s, dtype=config.torch_dtype)
@@ -676,7 +676,7 @@ class Boltz2InputEmbedder(nn.Module):
                 skip_create_weights=config.skip_create_weights)
         if self.add_mol_type_feat:
             self.mol_type_conditioning_init = nn.Embedding(
-                NUM_CHAIN_TYPES, config.token_s)
+                num_chain_types, config.token_s)
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)

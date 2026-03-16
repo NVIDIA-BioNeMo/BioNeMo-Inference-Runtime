@@ -88,9 +88,11 @@ class WriterStageConfig(_StageConfigBase):
         default=None,
         description="The path to write the output to.",
     )
-    format: Optional[str] = Field(
+    format: Optional[Union[str, List[str]]] = Field(
         default=None,
-        description="The format to write the output in.",
+        description='Output format(s). A single string (e.g. "pdb") or a '
+        'list of strings (e.g. ["pdb", "cif"]) to write multiple '
+        "formats from the same prediction in one pass.",
     )
 
 

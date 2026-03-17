@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -49,7 +49,8 @@ class DiffusionTransformerLayer(nn.Module):
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  initial_norm: bool = True,
-                 conditioned_transition_using_silu: bool = False):
+                 conditioned_transition_using_silu: bool = False,
+                 attn_backend: str = "VANILLA"):
         super().__init__()
 
         self.initial_norm = initial_norm
@@ -76,7 +77,8 @@ class DiffusionTransformerLayer(nn.Module):
             inf=inf,
             dtype=dtype,
             mapping=mapping,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+            attn_backend=attn_backend)
 
         self.output_projection = Linear(
             dim_single_cond,
@@ -155,6 +157,7 @@ class BoltzDiffusionTransformer(nn.Module):
                     attention_initial_norm=config.attention_initial_norm,
                     mapping=config.mapping,
                     skip_create_weights=config.skip_create_weights,
+                    attn_backend=config.pairwise_attention_backend,
                 ))
 
     def load_weights(self, weights: dict):
@@ -225,7 +228,8 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 config.use_ada_layer_norm,
                 use_seperate_layer_norm=False
                 if not hasattr(config, 'use_seperate_layer_norm') else
-                config.use_seperate_layer_norm)
+                config.use_seperate_layer_norm,
+                attn_backend=config.pairwise_attention_backend)
             dim = layer.pair_bias_attn.proj_z[0].weight.shape
             eps = layer.pair_bias_attn.proj_z[0].eps
             new_layer = nn.LayerNorm(dim, bias=False, eps=eps)

@@ -58,7 +58,7 @@ class BaseConfig(BaseModel):
     mapping: Mapping = Mapping()
     disable_custom_all_reduce: bool = False
     triangle_attention_backend: str = "VANILLA"
-    pairwise_attention_backend: str = "VANILLA"
+    pairwise_attention_backend: str = "SDPA"
     support_batch: bool = True
     backend: Union[str, BackendType] = BackendType.TORCH
     # This function is used to determine if the module needs to fallback to the torch backend based on the input arguments

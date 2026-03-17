@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,6 +43,7 @@ class Scenario:
     num_samples: int = 1
     test_with_openfold3: bool = False
     conditioned_transition_using_silu: bool = False
+    backend: str = "VANILLA"
 
 
 @pytest.mark.parametrize("sc", [
@@ -56,6 +57,15 @@ class Scenario:
              num_samples=10,
              test_with_openfold3=True,
              conditioned_transition_using_silu=True),
+    Scenario(dim=768, dim_single_cond=768, backend="SDPA"),
+    Scenario(
+        dim=768, dim_single_cond=768, torch_dtype="bfloat16", backend="SDPA"),
+    Scenario(dim=768, dim_single_cond=768, num_samples=5, backend="SDPA"),
+    Scenario(dim=768,
+             dim_single_cond=768,
+             num_samples=10,
+             torch_dtype="bfloat16",
+             backend="SDPA"),
 ],
                          ids=[
                              "boltz-single-float32",
@@ -63,6 +73,10 @@ class Scenario:
                              "boltz-samples5-float32",
                              "boltz-samples10-bfloat16",
                              "openfold3-samples10-silu-float32",
+                             "boltz-single-float32-sdpa",
+                             "boltz-single-bfloat16-sdpa",
+                             "boltz-samples5-float32-sdpa",
+                             "boltz-samples10-bfloat16-sdpa",
                          ])
 def test_diffusion_transformer_layer(sc: Scenario):
     torch.manual_seed(42)
@@ -86,7 +100,7 @@ def test_diffusion_transformer_layer(sc: Scenario):
         from_ref=ref_module)
 
     attn_pairwise_metadata_cls = get_attention_backend(
-        "VANILLA", AttentionType.PAIRWISE).Metadata
+        sc.backend, AttentionType.PAIRWISE).Metadata
 
     module = DiffusionTransformerLayer(
         layer_idx=0,
@@ -96,7 +110,8 @@ def test_diffusion_transformer_layer(sc: Scenario):
         dim_pairwise=sc.dim_pairwise,
         bias_proj=True,
         dtype=dtype,
-        conditioned_transition_using_silu=sc.conditioned_transition_using_silu)
+        conditioned_transition_using_silu=sc.conditioned_transition_using_silu,
+        attn_backend=sc.backend)
 
     load_diffusion_transformer_layer_weights_torch(module,
                                                    weights_and_biases,

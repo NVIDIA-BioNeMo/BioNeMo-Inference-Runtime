@@ -42,6 +42,8 @@ class Scenario:
 @pytest.mark.parametrize("sc", [
     Scenario(backend="VANILLA"),
     Scenario(backend="VANILLA", torch_dtype="bfloat16"),
+    Scenario(backend="SDPA"),
+    Scenario(backend="SDPA", torch_dtype="bfloat16"),
 ])
 def test_pairwise_attention_backend(sc: Scenario):
     torch.manual_seed(42)

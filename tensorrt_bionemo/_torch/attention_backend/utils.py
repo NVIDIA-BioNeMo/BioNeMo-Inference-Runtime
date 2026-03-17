@@ -17,6 +17,7 @@ from typing import Optional, Type
 
 from .cuequiv import CuEquivAttention
 from .interface import AttentionBackend, AttentionType
+from .sdpa import SDPAPairwiseAttention
 from .trifast import TrifastAttention
 from .vanilla import VanillaPairwiseAttention, VanillaTriangleAttention
 
@@ -36,6 +37,8 @@ def get_attention_backend(
     elif attention_type == AttentionType.PAIRWISE:
         if backend_name == "VANILLA":
             return VanillaPairwiseAttention
+        elif backend_name == "SDPA":
+            return SDPAPairwiseAttention
         else:
             raise ValueError(f"Invalid backend name: {backend_name}")
     else:
@@ -43,12 +46,12 @@ def get_attention_backend(
 
 
 def create_attention(
-        backend_name: str,
-        layer_idx: int,
-        num_heads: int,
-        head_dim: int,
-        num_kv_heads: Optional[int] = None,
-        attention_type: AttentionType = AttentionType.TRIANGLE
+    backend_name: str,
+    layer_idx: int,
+    num_heads: int,
+    head_dim: int,
+    num_kv_heads: Optional[int] = None,
+    attention_type: AttentionType = AttentionType.TRIANGLE
 ) -> AttentionBackend:
     """Create an attention backend based on the backend name and attention type."""
     attn_cls = get_attention_backend(backend_name, attention_type)

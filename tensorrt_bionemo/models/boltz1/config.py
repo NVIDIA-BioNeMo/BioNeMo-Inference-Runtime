@@ -63,6 +63,7 @@ class TrunkConfig(BaseConfig):
         use_paired_feature=False,
         opm_chunk_size=16,
         opm_mask_chunk_size=256,
+        pwa_chunk_token_threshold=1280,
         trimul_high_precision=False,
         version="v1",
     )

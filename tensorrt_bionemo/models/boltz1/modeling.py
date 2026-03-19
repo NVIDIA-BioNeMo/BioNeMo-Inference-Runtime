@@ -26,7 +26,7 @@ from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_indexing_matrix, query_to_keys)
+    create_gather_indices, query_to_keys_optimized)
 from tensorrt_bionemo._torch.modules.boltz.confidence import \
     Boltz1ConfidenceModule
 from tensorrt_bionemo._torch.modules.boltz.embedders import Boltz1InputEmbedder
@@ -384,10 +384,12 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         W = self.input_embedder_config.atoms_per_window_queries
         H = self.input_embedder_config.atoms_per_window_keys
         K = n_atoms // W
-        keys_indexing_matrix = create_indexing_matrix(
-            K, W, H, device=torch.device("cuda"))
-        query_to_keys_func = partial(query_to_keys,
-                                     keys_indexing_matrix=keys_indexing_matrix,
+        gather_indices, _ = create_gather_indices(K,
+                                                  W,
+                                                  H,
+                                                  device=torch.device("cuda"))
+        query_to_keys_func = partial(query_to_keys_optimized,
+                                     gather_indices=gather_indices,
                                      W=W,
                                      H=H)
         return AttentionMetadata(query_to_keys=query_to_keys_func,

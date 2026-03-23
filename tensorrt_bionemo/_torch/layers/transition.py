@@ -75,6 +75,7 @@ class Transition(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
         chunk_size: Optional[int] = None,
     ) -> torch.Tensor:
@@ -85,6 +86,11 @@ class Transition(nn.Module):
         x, gate = x.split([self.hidden, self.hidden], dim=-1)
         x = self.silu(gate) * x
         x = self.fc3(x, all_reduce_params=all_reduce_params)
+
+        if mask is not None:
+            if mask.ndim == x.ndim - 1:
+                mask = mask.unsqueeze(-1)
+            x = x * mask
         return x
 
     def _forward_chunked(

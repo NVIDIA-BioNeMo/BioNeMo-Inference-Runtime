@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+import pytest
+import torch
+
+# TODO: fix this after finish full openfold3 model
+pytestmark = pytest.mark.skip(reason="openfold3")
+from tensorrt_llm_lite._utils import str_dtype_to_torch
+
+from tensorrt_bionemo._torch.modules.openfold3.trunk import MSAModuleBlock
+from tensorrt_bionemo.mapping import Mapping
+
+from tests.common.test_utils.openfold3.ref_layers_from_oss import RefMSAModuleBlockFromOF3OSS
+from tests.common.test_utils.openfold3.create_and_load_weights_from_of3oss import (
+    create_msa_module_block_weights_from_of3oss_torch,
+    load_msa_module_block_weights_from_of3oss_torch)
+
+
+@dataclass(kw_only=True, frozen=True)
+class Scenario:
+    batch_size: int = 1
+    n_res: int = 63
+    n_seq: int = 127
+    dtype: str = "float32"
+    triangle_attn_backend: str = "VANILLA"
+    opm_chunk_size: Optional[int] = None
+    opm_mask_chunk_size: Optional[int] = None
+
+
+@pytest.mark.parametrize(
+    "sc", [
+        Scenario(triangle_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV"),
+        Scenario(triangle_attn_backend="VANILLA",
+                 opm_chunk_size=16,
+                 opm_mask_chunk_size=16),
+        Scenario(triangle_attn_backend="CUEQUIV",
+                 opm_chunk_size=16,
+                 opm_mask_chunk_size=16),
+    ],
+    ids=["vanilla", "cueequiv", "vanilla_chunked", "cueequiv_chunked"])
+def test_msa_module_block(sc: Scenario):
+    torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    bs = 1
+    torch_dtype = str_dtype_to_torch(sc.dtype)
+    device = torch.device('cuda')
+
+    # (1) create input data first since use RNG.
+    c_m = 64; c_z = 128
+
+    m = torch.randn(bs,
+                    sc.n_seq,
+                    sc.n_res,
+                    c_m,
+                    dtype=torch.float32).cuda()
+    z = torch.randn(bs,
+                    sc.n_res,
+                    sc.n_res,
+                    c_z,
+                    dtype=torch.float32).cuda()
+    msa_mask = torch.randint(0,
+                             2, (bs, sc.n_seq, sc.n_res),
+                             dtype=torch.float32).cuda()
+    pair_mask = torch.randint(0,
+                              2, (bs, sc.n_res, sc.n_res),
+                              dtype=torch.float32).cuda()
+
+    # (2) load reference MSAModule.
+    ref_module = RefMSAModuleBlockFromOF3OSS.load_weights()
+    ref_module = ref_module.to(device)
+
+    assert c_m == ref_module.msa_att_row.c_in
+    assert c_z == ref_module.outer_product_mean.c_z
+
+    # (3) load tested MSAModule
+    module = MSAModuleBlock(local_layer_idx=0,
+                           c_m=c_m,
+                           c_z=c_z,
+                           c_hidden_msa_att=ref_module.msa_att_row.c_hidden,
+                           c_hidden_opm=ref_module.outer_product_mean.c_hidden,
+                           c_hidden_mul=ref_module.tri_mul_out.c_hidden if not isinstance(ref_module, RefMSAModuleBlockFromOF3OSS) else ref_module.pair_stack.tri_mul_out.c_hidden,
+                           c_hidden_pair_att=ref_module.tri_attn_start.c_hidden if not isinstance(ref_module, RefMSAModuleBlockFromOF3OSS) else ref_module.pair_stack.tri_att_start.c_hidden,
+                           no_heads_msa=ref_module.msa_att_row.no_heads,
+                           no_heads_pair=ref_module.tri_attn_start.no_heads if not isinstance(ref_module, RefMSAModuleBlockFromOF3OSS) else ref_module.pair_stack.tri_att_start.no_heads,
+                           transition_n=ref_module.msa_transition.n,
+                           opm_first=False,
+                           triangle_attn_backend=sc.triangle_attn_backend,
+                           support_batch=True,
+                           dtype=torch_dtype,
+                           triangle_attn_node_chunk_size=0,
+                           eps=1e-5,
+                           inf=ref_module.msa_att_row.inf,
+                           opm_chunk_size=sc.opm_chunk_size,
+                           opm_mask_chunk_size=sc.opm_mask_chunk_size,
+                           outer_product_mean_bias={
+                                "proj_a": False,
+                                "proj_b": False,
+                                "proj_o": True
+                           },
+                           tri_mul_out_bias={
+                                "p_in": False,
+                                "g_in": False,
+                                "p_out": False,
+                                "g_out": False
+                           },
+                           tri_mul_in_bias={
+                                "p_in": False,
+                                "g_in": False,
+                                "p_out": False,
+                                "g_out": False
+                           },
+                           tri_attn_start_bias={
+                               "q": False,
+                               "k": False,
+                               "v": False,
+                               "g": False,
+                               "z": False,
+                               "o": False
+                           },
+                           tri_attn_end_bias={
+                               "q": False,
+                               "k": False,
+                               "v": False,
+                               "g": False,
+                               "z": False,
+                               "o": False
+                           },
+                           mapping=Mapping(),
+                           last_block=False,
+                           )
+
+    weights_and_biases = create_msa_module_block_weights_from_of3oss_torch(
+        from_ref=ref_module)
+    
+    load_msa_module_block_weights_from_of3oss_torch(
+        module, weights_and_biases)
+    module = module.to(device)
+    module.eval()
+    ref_module.eval()
+
+    # (4) run forwards and asserts
+    with torch.no_grad():        
+        output_m, output_z = module(m, z, msa_mask, pair_mask)
+        ref_m, ref_z = ref_module(m, z, msa_mask, pair_mask)
+        torch.testing.assert_close(output_m, ref_m, atol=2e-1, rtol=1e-2)        
+        torch.testing.assert_close(output_z, ref_z, atol=2e-1, rtol=1e-2)

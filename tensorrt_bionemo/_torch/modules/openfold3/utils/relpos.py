@@ -16,8 +16,9 @@ import torch
 import torch.nn as nn
 from tensorrt_bionemo._torch.tensor_utils import dist_one_hot as binned_one_hot
 
-def relpos_complex(batch: dict, max_relative_idx: int,
-                   max_relative_chain: int) -> torch.Tensor:
+def relpos_complex(
+    batch: dict, max_relative_idx: int, max_relative_chain: int
+) -> torch.Tensor:
     """
     Args:
         batch:
@@ -37,8 +38,9 @@ def relpos_complex(batch: dict, max_relative_idx: int,
     same_res = res_idx[..., None] == res_idx[..., None, :]
     same_entity = entity_id[..., None] == entity_id[..., None, :]
 
-    def relpos(pos: torch.Tensor, condition: torch.BoolTensor,
-               rel_clip_idx: int) -> torch.Tensor:
+    def relpos(
+        pos: torch.Tensor, condition: torch.BoolTensor, rel_clip_idx: int
+    ) -> torch.Tensor:
         """
         Args:
             pos:
@@ -52,17 +54,15 @@ def relpos_complex(batch: dict, max_relative_idx: int,
                 [*, N_token, N_token, 2 * rel_clip_idx + 2] Relative position embedding
         """
         offset = pos[..., None] - pos[..., None, :]
-        clipped_offset = torch.clamp(offset + rel_clip_idx,
-                                     min=0,
-                                     max=2 * rel_clip_idx)
+        clipped_offset = torch.clamp(offset + rel_clip_idx, min=0, max=2 * rel_clip_idx)
         final_offset = torch.where(
             condition,
             clipped_offset,
-            (2 * rel_clip_idx + 1) * torch.ones_like(clipped_offset),
+            torch.full_like(clipped_offset, 2 * rel_clip_idx + 1),
         )
-        boundaries = torch.arange(start=0,
-                                  end=2 * rel_clip_idx + 2,
-                                  device=final_offset.device)
+        boundaries = torch.arange(
+            start=0, end=2 * rel_clip_idx + 2, device=final_offset.device
+        )
         rel_pos = binned_one_hot(
             final_offset,
             boundaries,
@@ -70,9 +70,7 @@ def relpos_complex(batch: dict, max_relative_idx: int,
 
         return rel_pos
 
-    rel_pos = relpos(pos=res_idx,
-                     condition=same_chain,
-                     rel_clip_idx=max_relative_idx)
+    rel_pos = relpos(pos=res_idx, condition=same_chain, rel_clip_idx=max_relative_idx)
     rel_token = relpos(
         pos=batch["token_index"],
         condition=same_chain & same_res,

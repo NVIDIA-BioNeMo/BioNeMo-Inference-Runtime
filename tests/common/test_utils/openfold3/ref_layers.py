@@ -23,7 +23,6 @@ from test_utils.boltz.ref_layers import \
     RefConditionedTransitionBlock as BoltzRefConditionedTransitionBlock
 from test_utils.boltz.ref_layers import \
     RefDiffusionTransformerLayer as BoltzRefDiffusionTransformerLayer
-
 from tensorrt_bionemo.hubs import load_weights
 
 
@@ -78,14 +77,15 @@ class Openfold3RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
         c_s = extract_state_dict[f"{layer_path}.proj_q.weight"].shape[0]
 
         c_z = extract_state_dict[f"{layer_path}.proj_z.1.weight"].shape[1]
-        num_heads = extract_state_dict[f"{layer_path}.proj_z.1.weight"].shape[0]
+        num_heads = extract_state_dict[f"{layer_path}.proj_z.1.weight"].shape[
+            0]
 
         if f"{layer_path}.norm_s.weight" in extract_state_dict:
             attn = cls(c_s, c_z, num_heads, initial_norm=True)
             attn.proj_z[0] = nn.LayerNorm(c_z, bias=False)
             layers = [
-                attn.norm_s, attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,
-                attn.proj_z[0], attn.proj_z[1], attn.proj_o
+                attn.norm_s, attn.proj_q, attn.proj_k, attn.proj_v,
+                attn.proj_g, attn.proj_z[0], attn.proj_z[1], attn.proj_o
             ]
         else:
             attn = cls(c_s, c_z, num_heads, initial_norm=False)
@@ -133,7 +133,8 @@ class Openfold3RefAdaLN(BoltzRefAdaLN):
             (f"{layer_path}.s_bias.weight", None),
         ]
         dim = extract_state_dict[weights_biases_path[1][0]].shape[0]
-        dim_single_cond = extract_state_dict[weights_biases_path[1][0]].shape[1]
+        dim_single_cond = extract_state_dict[weights_biases_path[1]
+                                             [0]].shape[1]
         m = cls(dim, dim_single_cond)
         layers = [
             # m.a_norm,
@@ -293,3 +294,5 @@ class Openfold3RefDiffusionTransformerLayer(BoltzRefDiffusionTransformerLayer):
                 layer.bias.data.copy_(extract_state_dict[bias_path])
             layer.weight.data.copy_(extract_state_dict[weights_path])
         return m
+
+

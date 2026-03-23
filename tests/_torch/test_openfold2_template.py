@@ -28,7 +28,7 @@ from test_utils.openfold.ref_layers import (RefTemplatePairStackBlock,
                                             RefTemplatePointwiseAttention)
 
 from tensorrt_bionemo._torch.modules.openfold2.template import (
-    TemplatePairStackBlock, TemplatePointwiseAttention)
+    TemplatePairBlock, TemplatePointwiseAttention)
 from tensorrt_bionemo.mapping import Mapping
 
 
@@ -72,7 +72,7 @@ def test_template_pair_stack_block(sc: Scenario):
                          2, (bs, sc.n_templ, sc.n_res, sc.n_res),
                          dtype=torch.float32).cuda()
 
-    module = TemplatePairStackBlock(
+    module = TemplatePairBlock(
         local_layer_idx=0,
         c_t=ref_module.c_t,
         c_hidden_tri_att=ref_module.c_hidden_tri_att,

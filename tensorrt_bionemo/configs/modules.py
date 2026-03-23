@@ -118,6 +118,15 @@ class DiffusionTransformerConfig(BaseConfig):
     post_layer_norm: Optional[bool] = None
     conditioned_transition_using_silu: Optional[bool] = None
     bias_proj: Optional[bool] = None
+    # When True, load_weights expects a single "layer_norm_z" weight entry
+    # (matching the reference where one LayerNorm is shared across all blocks)
+    # and broadcasts it to every block's proj_z.0.  Other modules that use
+    # independent per-block LayerNorms should leave this False (default).
+    shared_pair_norm: bool = False
+    # When True, load_weights expects a single "layer_norm_z" entry and
+    # broadcasts it to every block's proj_z.0, matching the reference
+    # architecture where one LayerNorm is shared across all blocks.
+    shared_pair_norm: bool = False
 
 
 class DiffusionTransformerBuildConfig(BuildConfig):

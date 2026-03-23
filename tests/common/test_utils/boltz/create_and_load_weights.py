@@ -616,7 +616,10 @@ def create_triangle_multiplication_node_weights(
     else:
         bias_flags = from_ref.bias_flags
         norm_in_weight = from_ref.norm_in.weight.data
-        norm_in_bias = from_ref.norm_in.bias.data
+        if from_ref.norm_in.bias is not None:
+            norm_in_bias = from_ref.norm_in.bias.data
+        else:
+            norm_in_bias = None
         p_in_weight = from_ref.p_in.weight.data
         p_in_bias = None
         if bias_flags.get("p_in", False):
@@ -626,7 +629,11 @@ def create_triangle_multiplication_node_weights(
         if bias_flags.get("g_in", False):
             g_in_bias = from_ref.g_in.bias.data
         norm_out_weight = from_ref.norm_out.weight.data
-        norm_out_bias = from_ref.norm_out.bias.data
+        if from_ref.norm_out.bias is not None:
+            norm_out_bias = from_ref.norm_out.bias.data
+        else:
+            norm_out_bias = None
+
         p_out_weight = from_ref.p_out.weight.data
         p_out_bias = None
         if bias_flags.get("p_out", False):
@@ -721,7 +728,8 @@ def load_triangle_multiplication_node_weights_torch(module,
     norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
         norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias = weights_and_biases
     module.norm_in.weight.data.copy_(norm_in_weight.to(dtype).to("cuda"))
-    module.norm_in.bias.data.copy_(norm_in_bias.to(dtype).to("cuda"))
+    if norm_in_bias is not None:
+        module.norm_in.bias.data.copy_(norm_in_bias.to(dtype).to("cuda"))
     dim = p_in_weight.shape[0] // 2
     p0_weight = p_in_weight[:dim, :]
     p1_weight = p_in_weight[dim:, :]
@@ -774,7 +782,9 @@ def load_triangle_multiplication_node_weights_torch(module,
     }])
     module.norm_out.weight.data.copy_(
         norm_out_weight.to(torch.float32).to("cuda"))
-    module.norm_out.bias.data.copy_(norm_out_bias.to(torch.float32).to("cuda"))
+    if norm_out_bias is not None:
+        module.norm_out.bias.data.copy_(
+            norm_out_bias.to(torch.float32).to("cuda"))
 
 
 def create_transition_weights(dim=None,

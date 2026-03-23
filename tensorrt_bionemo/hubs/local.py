@@ -195,7 +195,10 @@ def _load_of3_state_dict(local_checkpoint: str):
     with torch.serialization.safe_globals(unsafe_globals):
         state_dict = torch.load(local_checkpoint,
                                 map_location="cpu",
-                                weights_only=True)["ema"]["params"]
+                                weights_only=True)
+        if "ema" in state_dict:
+            if "params" in state_dict["ema"]:
+                state_dict = state_dict["ema"]["params"]
     return state_dict
 
 

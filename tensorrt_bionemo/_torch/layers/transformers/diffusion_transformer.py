@@ -39,13 +39,14 @@ class DiffusionTransformerLayer(nn.Module):
                  dim_single_cond: Optional[int] = None,
                  dim_pairwise: int = 128,
                  bias_proj: bool = False,
+                 pair_norm: bool = True,
                  dtype: torch.dtype = None,
                  eps: float = 1e-5,
                  inf: float = 1e9,
                  attention_initial_norm: bool = False,
                  post_layer_norm: bool = False,
                  use_ada_layer_norm: bool = True,
-                 use_seperate_layer_norm: bool = False,
+                 use_separate_layer_norm: bool = False,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  initial_norm: bool = True,
@@ -54,7 +55,7 @@ class DiffusionTransformerLayer(nn.Module):
         super().__init__()
 
         self.initial_norm = initial_norm
-        self.use_seperate_layer_norm = use_seperate_layer_norm
+        self.use_separate_layer_norm = use_separate_layer_norm
 
         if initial_norm:
             self.adaln = AdaLN(dim,
@@ -71,8 +72,9 @@ class DiffusionTransformerLayer(nn.Module):
             num_heads=num_heads,
             initial_norm=attention_initial_norm,
             bias_proj=bias_proj,
+            pair_norm=pair_norm,
             use_ada_layer_norm=use_ada_layer_norm,
-            use_seperate_layer_norm=use_seperate_layer_norm,
+            use_separate_layer_norm=use_separate_layer_norm,
             eps=eps,
             inf=inf,
             dtype=dtype,
@@ -116,7 +118,7 @@ class DiffusionTransformerLayer(nn.Module):
         b = self.pair_bias_attn(
             s=b,
             z=bias,
-            single_embedding=s if self.use_seperate_layer_norm else None,
+            single_embedding=s if self.use_separate_layer_norm else None,
             mask=mask,
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params)
@@ -203,7 +205,12 @@ class OpenFold3DiffusionTransformer(nn.Module):
         self.layers = nn.ModuleList()
         self.version = config.version
         self.num_blocks = config.num_blocks
+        self.dtype = config.torch_dtype
+        shared_pair_norm = getattr(config, 'shared_pair_norm', False)
 
+        if shared_pair_norm:
+            self.layer_norm_z = nn.LayerNorm(
+                config.dim_pairwise, bias=False, eps=config.norm_epsilon, dtype=self.dtype)
         for i in range(config.num_blocks):
             layer = DiffusionTransformerLayer(
                 layer_idx=i,
@@ -213,6 +220,7 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 dim_pairwise=config.dim_pairwise,
                 post_layer_norm=config.post_layer_norm,
                 bias_proj=config.bias_proj,
+                pair_norm=not shared_pair_norm,
                 dtype=config.torch_dtype,
                 eps=config.norm_epsilon,
                 inf=config.mask_inf,
@@ -226,14 +234,18 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 use_ada_layer_norm=True
                 if not hasattr(config, 'use_ada_layer_norm') else
                 config.use_ada_layer_norm,
-                use_seperate_layer_norm=False
-                if not hasattr(config, 'use_seperate_layer_norm') else
-                config.use_seperate_layer_norm,
+                use_separate_layer_norm=False
+                if not hasattr(config, 'use_separate_layer_norm') else
+                config.use_separate_layer_norm,
                 attn_backend=config.pairwise_attention_backend)
-            dim = layer.pair_bias_attn.proj_z[0].weight.shape
-            eps = layer.pair_bias_attn.proj_z[0].eps
-            new_layer = nn.LayerNorm(dim, bias=False, eps=eps)
-            layer.pair_bias_attn.proj_z[0] = new_layer
+
+            if not shared_pair_norm:
+                # Replace the default bias=True LayerNorm in proj_z[0] with
+                # bias=False to match the reference model.
+                dim = layer.pair_bias_attn.proj_z[0].weight.shape
+                eps = layer.pair_bias_attn.proj_z[0].eps
+                layer.pair_bias_attn.proj_z[0] = nn.LayerNorm(
+                    dim, bias=False, eps=eps, dtype=config.torch_dtype)
             self.layers.append(layer)
 
     def load_weights(self, weights: dict):
@@ -252,6 +264,9 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 attn_metadata: Optional[AttentionMetadata] = None,
                 all_reduce_params: Optional[AllReduceParams] = None,
                 **kwargs) -> torch.Tensor:
+
+        if hasattr(self, 'layer_norm_z'):
+            z = self.layer_norm_z(z)
 
         for layer in self.layers:
             a = layer(a, s, z, mask, attn_metadata, all_reduce_params)

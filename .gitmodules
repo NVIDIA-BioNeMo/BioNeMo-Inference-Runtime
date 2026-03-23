@@ -4,3 +4,6 @@
 [submodule "3rdparty/cutlass"]
 	path = 3rdparty/cutlass
 	url = https://github.com/NVIDIA/cutlass.git
+[submodule "3rdparty/openfold-3"]
+	path = 3rdparty/openfold-3
+	url = https://github.com/aqlaboratory/openfold-3.git

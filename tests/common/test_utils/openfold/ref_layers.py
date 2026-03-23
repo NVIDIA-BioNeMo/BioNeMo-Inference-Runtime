@@ -289,6 +289,7 @@ class RefTriangleMultiplicationNode(BoltzRefTriangleMultiplicationNode):
         outgoing = True if "out" in layer_path else False
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
+
         weights_biases_path = [
             (f"{layer_path}.layer_norm_in.weight",
              f"{layer_path}.layer_norm_in.bias"),
@@ -298,18 +299,24 @@ class RefTriangleMultiplicationNode(BoltzRefTriangleMultiplicationNode):
             (f"{layer_path}.linear_g.weight", f"{layer_path}.linear_g.bias"),
         ]
         p_in_0_weight = state_dict[f"{layer_path}.linear_a_p.weight"]
-        p_in_0_bias = state_dict[f"{layer_path}.linear_a_p.bias"]
+        p_in_0_bias = state_dict.get(f"{layer_path}.linear_a_p.bias", None)
         p_in_1_weight = state_dict[f"{layer_path}.linear_b_p.weight"]
-        p_in_1_bias = state_dict[f"{layer_path}.linear_b_p.bias"]
+        p_in_1_bias = state_dict.get(f"{layer_path}.linear_b_p.bias", None)
         g_in_0_weight = state_dict[f"{layer_path}.linear_a_g.weight"]
-        g_in_0_bias = state_dict[f"{layer_path}.linear_a_g.bias"]
+        g_in_0_bias = state_dict.get(f"{layer_path}.linear_a_g.bias", None)
         g_in_1_weight = state_dict[f"{layer_path}.linear_b_g.weight"]
-        g_in_1_bias = state_dict[f"{layer_path}.linear_b_g.bias"]
+        g_in_1_bias = state_dict.get(f"{layer_path}.linear_b_g.bias", None)
 
         p_in_weight = torch.cat([p_in_0_weight, p_in_1_weight], dim=0)
-        p_in_bias = torch.cat([p_in_0_bias, p_in_1_bias], dim=0)
+        if p_in_0_bias is not None:
+            p_in_bias = torch.cat([p_in_0_bias, p_in_1_bias], dim=0)
+        else:
+            p_in_bias = None
         g_in_weight = torch.cat([g_in_0_weight, g_in_1_weight], dim=0)
-        g_in_bias = torch.cat([g_in_0_bias, g_in_1_bias], dim=0)
+        if g_in_0_bias is not None:
+            g_in_bias = torch.cat([g_in_0_bias, g_in_1_bias], dim=0)
+        else:
+            g_in_bias = None
 
         dim = p_in_0_weight.shape[1]
         m = cls(dim=dim,
@@ -399,10 +406,11 @@ class RefMSATransition(nn.Module):
         self.linear_2 = nn.Linear(self.n * self.c_m, c_m)
 
     @classmethod
-    def load_weights(cls,
-                     model: str = "openfold2_ptm_1",
-                     layer_path: str = "evoformer.blocks.0.core.msa_transition",
-                     state_dict: dict = None):
+    def load_weights(
+            cls,
+            model: str = "openfold2_ptm_1",
+            layer_path: str = "evoformer.blocks.0.core.msa_transition",
+            state_dict: dict = None):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
@@ -511,18 +519,19 @@ class RefEvoformerBlock(nn.Module):
             },
             inf=inf,
             starting=True)
-        self.tri_attn_end = RefTriangleAttentionNode(c_in=c_z,
-                                                     c_hidden=c_hidden_pair_att,
-                                                     num_heads=no_heads_pair,
-                                                     mha_bias_flags={
-                                                         "q": False,
-                                                         "k": False,
-                                                         "v": False,
-                                                         "g": True,
-                                                         "o": True,
-                                                     },
-                                                     inf=inf,
-                                                     starting=False)
+        self.tri_attn_end = RefTriangleAttentionNode(
+            c_in=c_z,
+            c_hidden=c_hidden_pair_att,
+            num_heads=no_heads_pair,
+            mha_bias_flags={
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": True,
+                "o": True,
+            },
+            inf=inf,
+            starting=False)
         self.pair_transition = RefPairTransition(c_z=c_z, n=transition_n)
         if not self.no_column_attention:
             self.msa_att_col = RefMSAAttention(c_in=c_m,
@@ -825,12 +834,12 @@ class RefExtraMSABlock(RefEvoformerBlock):
 
 class RefDiffusionModule(nn.Module):
 
-    def __init__(self, token_s: int, atom_s: int, atoms_per_window_queries: int,
-                 atoms_per_window_keys: int, dim_fourier: int,
-                 atom_encoder_depth: int, atom_encoder_heads: int,
-                 token_transformer_depth: int, token_transformer_heads: int,
-                 atom_decoder_depth: int, atom_decoder_heads: int,
-                 conditioning_transition_layers: int):
+    def __init__(self, token_s: int, atom_s: int,
+                 atoms_per_window_queries: int, atoms_per_window_keys: int,
+                 dim_fourier: int, atom_encoder_depth: int,
+                 atom_encoder_heads: int, token_transformer_depth: int,
+                 token_transformer_heads: int, atom_decoder_depth: int,
+                 atom_decoder_heads: int, conditioning_transition_layers: int):
         super().__init__()
 
         self.token_s = token_s
@@ -877,12 +886,13 @@ class RefDiffusionModule(nn.Module):
         self.a_norm = nn.LayerNorm(2 * token_s)
 
     @classmethod
-    def load_weights(cls,
-                     attn_window_queries: int = 32,
-                     attn_window_keys: int = 128,
-                     model: str = "boltz-2",
-                     layer_path: str = "structure_module.score_model",
-                     state_dict: Optional[dict] = None) -> 'RefDiffusionModule':
+    def load_weights(
+            cls,
+            attn_window_queries: int = 32,
+            attn_window_keys: int = 128,
+            model: str = "boltz-2",
+            layer_path: str = "structure_module.score_model",
+            state_dict: Optional[dict] = None) -> 'RefDiffusionModule':
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
 
@@ -1782,7 +1792,11 @@ class RefTemplatePointwiseAttention(nn.Module):
         c_hidden = mha.c_hidden
         no_heads = mha.no_heads
         inf = 1e9
-        m = cls(c_t=c_t, c_z=c_z, c_hidden=c_hidden, no_heads=no_heads, inf=inf)
+        m = cls(c_t=c_t,
+                c_z=c_z,
+                c_hidden=c_hidden,
+                no_heads=no_heads,
+                inf=inf)
         setattr(m, "mha", mha)
         return m
 

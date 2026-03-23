@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,7 +29,6 @@ from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 from ..attention_backend import AttentionMetadata, AttentionType
 from ..attention_backend.utils import create_attention
 from ..tensor_utils import permute_final_dims
-
 
 class TriangleAttention(nn.Module):
     """
@@ -322,8 +321,20 @@ class CrossTriangleAttention(nn.Module):
 
 class AttentionPairBias(nn.Module):
     """
-    A module that implements the self-attention pair bias mechanism with tensor parallelism in torch.
-    This kind of attention is used in the pairformer modules.
+    Self-attention with pair bias and tensor-parallel projections.
+
+    This layer is used by pairformer-style blocks across Boltz, OpenFold2, and
+    OpenFold3. The core attention pattern is similar across those variants: the
+    single representation provides queries/keys/values while the pair
+    representation contributes an additive attention bias.
+
+    OpenFold3 adds two notable differences compared with Boltz and OpenFold2:
+    it can use separate layer norms for the query and key/value paths, and it
+    can derive the key/value inputs with a `query_to_keys` mapping from
+    `attn_metadata` for sequence-local atom attention. In practice,
+    `use_separate_layer_norm=True` is used for OpenFold3, while Boltz and
+    OpenFold2 keep it disabled. OpenFold3 may also disable pair normalization
+    (`pair_norm=False`) before projecting the pair bias.
     """
 
     def __init__(self,
@@ -333,12 +344,13 @@ class AttentionPairBias(nn.Module):
                  num_heads: int,
                  initial_norm: bool = True,
                  bias_proj: bool = False,
+                 pair_norm: bool = True,
                  dtype: torch.dtype = None,
                  inf: float = 1e6,
                  eps: float = 1e-5,
                  use_initial_ada_layer_norm: bool = False,
                  max_attention_pairwise_tp_size: bool = True,
-                 use_seperate_layer_norm: bool = False,
+                 use_separate_layer_norm: bool = False,
                  use_ada_layer_norm: bool = True,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
@@ -350,7 +362,8 @@ class AttentionPairBias(nn.Module):
         self.num_heads = num_heads
         self.head_dim = c_s // num_heads
         self.initial_norm = initial_norm
-        self.use_seperate_layer_norm = use_seperate_layer_norm
+        # Use separate layer norm for query and key instead of a shared one (e.g. OpenFold3).
+        self.use_separate_layer_norm = use_separate_layer_norm
         self.use_ada_layer_norm = use_ada_layer_norm
         self.inf = inf
 
@@ -374,7 +387,7 @@ class AttentionPairBias(nn.Module):
         if initial_norm:
             self.norm_s = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
 
-        if self.use_seperate_layer_norm:
+        if self.use_separate_layer_norm:
             if self.use_ada_layer_norm:
                 self.layer_norm_a_q = AdaLN(
                     self.c_s,
@@ -427,19 +440,23 @@ class AttentionPairBias(nn.Module):
             skip_create_weights=skip_create_weights,
         )
         if self.bias_proj:
-            self.proj_z = nn.Sequential(
-                nn.LayerNorm(c_z, dtype=dtype, eps=eps),
-                Linear(
-                    c_z,
-                    tp_size * self.num_heads,
-                    bias=False,
-                    dtype=dtype,
-                    mapping=mapping,
-                    tensor_parallel_mode=TensorParallelMode.COLUMN,
-                    gather_output=False,
-                    skip_create_weights=skip_create_weights,
-                ),
+            linear_z = Linear(
+                c_z,
+                tp_size * self.num_heads,
+                bias=False,
+                dtype=dtype,
+                mapping=mapping,
+                tensor_parallel_mode=TensorParallelMode.COLUMN,
+                gather_output=False,
+                skip_create_weights=skip_create_weights,
             )
+            if pair_norm:
+                self.proj_z = nn.Sequential(
+                    nn.LayerNorm(c_z, dtype=dtype, eps=eps),
+                    linear_z,
+                )
+            else:
+                self.proj_z = nn.Sequential(linear_z)
         self.proj_o = Linear(
             tp_size * self.q_size,
             self.c_s,
@@ -492,18 +509,20 @@ class AttentionPairBias(nn.Module):
             query_to_keys = attn_metadata.query_to_keys
 
             if query_to_keys is not None:
-
                 kv_in = query_to_keys(s)
                 mask = query_to_keys(mask.unsqueeze(-1)).squeeze(-1)
-                if self.use_seperate_layer_norm:
+                if self.use_separate_layer_norm:
                     if self.use_ada_layer_norm:
                         assert single_embedding is not None, "single_embedding is required for AdaLN"
                         single_embedding_kv = query_to_keys(single_embedding)
+                        # generate_query_and_key
+
                         s = self.layer_norm_a_q(s, single_embedding)
                         kv_in = self.layer_norm_a_k(kv_in, single_embedding_kv)
                     else:
                         s = self.layer_norm_a_q(s)
                         kv_in = self.layer_norm_a_k(kv_in)
+
         q = self.proj_q(s)
         kv = self.proj_kv(kv_in)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)

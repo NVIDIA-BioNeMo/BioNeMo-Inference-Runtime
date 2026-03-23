@@ -81,6 +81,12 @@ class EvoformerBlock(nn.Module):
         self.inf = inf
         self.mapping = mapping
 
+        outer_product_mean_bias = kwargs.get("outer_product_mean_bias", None)
+        tri_mul_out_bias = kwargs.get("tri_mul_out_bias", None)
+        tri_mul_in_bias = kwargs.get("tri_mul_in_bias", None)
+        tri_attn_start_bias = kwargs.get("tri_attn_start_bias", None)
+        tri_attn_end_bias = kwargs.get("tri_attn_end_bias", None)
+
         self.msa_att_row = MSAAttention(
             local_layer_idx=local_layer_idx,
             c_in=c_m,
@@ -116,7 +122,7 @@ class EvoformerBlock(nn.Module):
                 "proj_a": True,
                 "proj_b": True,
                 "proj_o": True
-            },
+            } if outer_product_mean_bias is None else outer_product_mean_bias,
             dtype=dtype,
             chunk_size=opm_chunk_size,
             mask_chunk_size=opm_mask_chunk_size,
@@ -133,7 +139,7 @@ class EvoformerBlock(nn.Module):
                 "g_in": True,
                 "p_out": True,
                 "g_out": True
-            },
+            } if tri_mul_out_bias is None else tri_mul_out_bias,
             dtype=dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights,
@@ -151,7 +157,7 @@ class EvoformerBlock(nn.Module):
                 "g_in": True,
                 "p_out": True,
                 "g_out": True
-            },
+            } if tri_mul_in_bias is None else tri_mul_in_bias,
             dtype=dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights,
@@ -173,7 +179,7 @@ class EvoformerBlock(nn.Module):
                 "g": True,
                 "z": False,
                 "o": True
-            },
+            } if tri_attn_start_bias is None else tri_attn_start_bias,
             attn_backend=triangle_attn_backend,
             dtype=dtype,
             mapping=mapping,
@@ -192,7 +198,7 @@ class EvoformerBlock(nn.Module):
                 "g": True,
                 "z": False,
                 "o": True
-            },
+            } if tri_attn_end_bias is None else tri_attn_end_bias,
             attn_backend=triangle_attn_backend,
             dtype=dtype,
             mapping=mapping,

@@ -23,7 +23,8 @@ from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo.mapping import Mapping
-
+from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import \
+    relpos_complex
 
 class ContactConditioning(nn.Module):
     """ Boltz2 Contact Conditioning """
@@ -237,3 +238,209 @@ class SingleConditioning(nn.Module):
             s = transition(s) + s
 
         return s, normed_fourier if not self.disable_times else None
+
+class DiffusionConditioning(nn.Module):
+    """
+    Implements AF3 Algorithm 21 — Diffusion conditioning for AlphaFold3.
+
+    Prepares the single and pair conditioning representations consumed by the
+    diffusion module. This includes:
+      - Fourier embedding of the noise level (sigma),
+      - Fusing per-token input features and trunk single representations,
+      - Encoding relative position, relative token index, relative chain, and
+        same-entity features into the pair representation.
+    """
+
+    def __init__(self,
+                 c_s_input: int,
+                 c_s: int,
+                 c_z: int,
+                 c_fourier_emb: int,
+                 max_relative_idx: int,
+                 max_relative_chain: int,
+                 sigma_data: float,
+                 eps: float = 1e-5,
+                 dtype: torch.dtype = torch.float32,
+                 mapping: Optional[Mapping] = None,
+                 skip_create_weights: bool = False):
+        """
+        Args:
+            c_s_input:
+                Per token input representation channel dimension
+            c_s:
+                Single representation channel dimension
+            c_z:
+                Pair representation channel dimension
+            c_fourier_emb:
+                Fourier embedding channel dimension
+            max_relative_idx:
+                Maximum relative position and token indices clipped
+            max_relative_chain:
+                Maximum relative chain indices clipped
+            sigma_data:
+                Constant determined by data variance
+        """
+        super().__init__()
+
+        self.c_s_input = c_s_input
+        self.c_s = c_s
+        self.c_z = c_z
+        self.c_fourier_emb = c_fourier_emb
+        self.max_relative_idx = max_relative_idx
+        self.max_relative_chain = max_relative_chain
+        self.sigma_data = sigma_data
+        self.dtype = dtype
+
+        num_rel_pos_bins = 2 * max_relative_idx + 2
+        num_rel_token_bins = 2 * max_relative_idx + 2
+        num_rel_chain_bins = 2 * max_relative_chain + 2
+        num_same_entity_features = 1
+        num_relpos_dims = (num_rel_pos_bins + num_rel_token_bins +
+                           num_rel_chain_bins + num_same_entity_features)
+
+        self.layer_norm_z = nn.LayerNorm(num_relpos_dims + self.c_z,
+                                         bias=False,
+                                         dtype=dtype,
+                                         eps=eps)
+        self.linear_z = Linear(num_relpos_dims + self.c_z,
+                               self.c_z,
+                               bias=False,
+                               dtype=dtype,
+                               mapping=mapping,
+                               tensor_parallel_mode=TensorParallelMode.COLUMN,
+                               gather_output=True,
+                               skip_create_weights=skip_create_weights)
+
+        self.transition_z = nn.ModuleList([
+            Transition(dim=self.c_z,
+                       hidden=self.c_z * 2,
+                       eps=eps,
+                       dtype=dtype,
+                       mapping=mapping,
+                       skip_create_weights=skip_create_weights)
+            for _ in range(2)
+        ])
+
+        self.layer_norm_s = nn.LayerNorm(self.c_s + self.c_s_input,
+                                         bias=False,
+                                         dtype=dtype,
+                                         eps=eps)
+        self.linear_s = Linear(self.c_s + self.c_s_input,
+                               self.c_s,
+                               bias=False,
+                               dtype=dtype,
+                               mapping=mapping,
+                               tensor_parallel_mode=TensorParallelMode.COLUMN,
+                               gather_output=True,
+                               skip_create_weights=skip_create_weights)
+
+        self.fourier_emb = FourierEmbedding(c_fourier_emb,
+                                            dtype=dtype,
+                                            mapping=mapping)
+
+        self.layer_norm_n = nn.LayerNorm(self.c_fourier_emb,
+                                         bias=False,
+                                         dtype=dtype,
+                                         eps=eps)
+        self.linear_n = Linear(self.c_fourier_emb,
+                               self.c_s,
+                               bias=False,
+                               dtype=dtype,
+                               mapping=mapping,
+                               tensor_parallel_mode=TensorParallelMode.COLUMN,
+                               gather_output=True,
+                               skip_create_weights=skip_create_weights)
+
+        self.transition_s = nn.ModuleList([
+            Transition(dim=self.c_s,
+                       hidden=self.c_s * 2,
+                       eps=eps,
+                       dtype=dtype,
+                       mapping=mapping,
+                       skip_create_weights=skip_create_weights)
+            for _ in range(2)
+        ])
+
+    def _embed_trunk_inputs(
+        self,
+        batch: dict,
+        t: torch.Tensor,
+        si_input: torch.Tensor,
+        si_trunk: torch.Tensor,
+        zij_trunk: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Pair conditioning
+        relpos_zij = relpos_complex(
+            batch=batch,
+            max_relative_idx=self.max_relative_idx,
+            max_relative_chain=self.max_relative_chain,
+        ).to(dtype=zij_trunk.dtype)
+
+        zij = torch.cat([zij_trunk, relpos_zij], dim=-1)
+        
+        zij = self.linear_z(self.layer_norm_z(zij))
+
+        # Single conditioning
+        si = torch.cat([si_trunk, si_input], dim=-1)
+        si = self.linear_s(self.layer_norm_s(si))
+
+        n = 0.25 * torch.log(t / self.sigma_data)
+        n = self.fourier_emb(n)
+
+        si = si + self.linear_n(self.layer_norm_n(n)).unsqueeze(-2)
+
+        return si, zij
+
+    def _forward(
+            self, si: torch.Tensor, zij: torch.Tensor,
+            token_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        pair_token_mask = token_mask.unsqueeze(-1) * token_mask.unsqueeze(-2)
+
+        # Pair conditioning
+        for layer in self.transition_z:
+            zij = zij + layer(zij, mask=pair_token_mask.unsqueeze(-1))
+
+        # Single conditioning
+        for layer in self.transition_s:
+            si = si + layer(si, mask=token_mask.unsqueeze(-1))
+
+        return si, zij
+
+    def forward(self, 
+                batch: dict, t: torch.Tensor, 
+                si_input: torch.Tensor,
+                si_trunk: torch.Tensor,
+                zij_trunk: torch.Tensor,
+                use_conditioning: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            batch:
+                Feature dictionary
+            t:
+                [*] Noise level at a diffusion timestep
+            si_input:
+                [*, N_token, c_s_input] Input embedding
+            si_trunk:
+                [*, N_token, c_s] Single representation
+            zij_trunk:
+                [*, N_token, N_token, c_z] Pair representation
+        Returns:
+            si:
+                [*, N_token, c_s] Conditioned single representation
+            zij:
+                [*, N_token, N_token, c_z] Conditioned pair representation
+        """
+        token_mask = batch["token_mask"]
+        if not use_conditioning:
+            si_trunk = si_trunk.zero_()
+            zij_trunk = zij_trunk.zero_()
+
+        si, zij = self._embed_trunk_inputs(batch=batch,
+                                           t=t,
+                                           si_input=si_input,
+                                           si_trunk=si_trunk,
+                                           zij_trunk=zij_trunk)
+
+        si, zij = self._forward(si=si, zij=zij, token_mask=token_mask)
+
+        return si, zij

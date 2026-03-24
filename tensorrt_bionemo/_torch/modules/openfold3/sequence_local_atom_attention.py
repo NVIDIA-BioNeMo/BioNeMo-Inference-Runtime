@@ -17,7 +17,6 @@
 
 from typing import Optional
 
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -74,15 +73,13 @@ def convert_pair_atom_to_blocks(
         B = atom_mask.shape[0]
 
     BS, N_atom = atom_mask.shape
-    K = math.ceil(N_atom / n_query)
     device = zij_trunk.device
 
     # ── Q token indices: pad and block ────────────────────────────────────────
     q_token_blocked, _ = pad_to_multiple_and_divide(atom_to_token.float(), multiple=n_query, dim=1)
-    q_token_blocked = q_token_blocked[:, :K]          # [BS, K, n_query]
+    K = q_token_blocked.shape[1]
 
     atom_mask_blocked, _ = pad_to_multiple_and_divide(atom_mask, multiple=n_query, dim=1)
-    atom_mask_blocked = atom_mask_blocked[:, :K]      # [BS, K, n_query]
 
     # ── K token indices via query_to_keys ──────────────────────────────────────
     k_token_float = attn_metadata.query_to_keys(

@@ -153,7 +153,7 @@ def pad_to_multiple_and_divide(tensor: torch.Tensor,
         The padded and divided tensor.
     """
     current_size = tensor.shape[dim]
-    pad_size = (multiple - (tensor.shape[dim] % multiple)) % multiple
+    pad_size = (multiple - (tensor.shape[dim] % multiple))
     extend_size = tensor.shape[dim] + pad_size
     pad = [0, 0] * (tensor.dim() - dim - 1) + [0, pad_size]
     tensor = torch.nn.functional.pad(tensor, pad, mode="constant", value=0.0)

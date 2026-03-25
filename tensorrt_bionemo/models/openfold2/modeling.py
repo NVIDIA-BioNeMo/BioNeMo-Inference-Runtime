@@ -253,12 +253,20 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> dict[str, torch.Tensor]:
 
+        is_template_present = True
+        skip_template_pair_stack = self.config.skip_template_pair_stack
+        if "is_template_present" in feats:
+            is_template_present = feats["is_template_present"]
+        if not is_template_present:
+            # Force to skip the template pair stack for multimer if no template is present.
+            skip_template_pair_stack = True
+
         template_feats = {
             k: v
             for k, v in feats.items() if k.startswith("template_")
         }
         logger.debug(
-            f"skip_template_pair_stack: {self.config.skip_template_pair_stack}, is_multimer: {self.is_multimer}"
+            f"skip_template_pair_stack: {skip_template_pair_stack}, is_multimer: {self.is_multimer}"
         )
         if self.is_multimer:
             asym_id = feats["asym_id"]
@@ -269,7 +277,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 pair_mask,
                 templ_dim,
                 multichain_mask_2d=multichain_mask_2d,
-                skip_template_pair_stack=self.config.skip_template_pair_stack,
+                skip_template_pair_stack=skip_template_pair_stack,
                 all_reduce_params=all_reduce_params,
             )
             feats["template_torsion_angles_mask"] = (
@@ -280,7 +288,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 z,
                 pair_mask,
                 templ_dim,
-                skip_template_pair_stack=self.config.skip_template_pair_stack,
+                skip_template_pair_stack=skip_template_pair_stack,
                 all_reduce_params=all_reduce_params,
             )
         return template_embeds

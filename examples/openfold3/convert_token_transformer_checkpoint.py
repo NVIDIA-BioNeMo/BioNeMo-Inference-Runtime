@@ -3,13 +3,14 @@ import json
 import time
 from pathlib import Path
 
-import safetensors
+from safetensors.torch import save_file
 from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.openfold3 import OpenFold3Config
-from tensorrt_bionemo.models.openfold3.convert import convert_hf_diffusion_transformer
+from tensorrt_bionemo.models.openfold3.convert import \
+    convert_hf_diffusion_transformer
 
 
 def parse_arguments():
@@ -23,11 +24,10 @@ def parse_arguments():
                         type=int,
                         default=1,
                         help='N-way data-context parallelism size')
-    parser.add_argument(
-        '--multiplicity',
-        type=int,
-        default=1,
-        help='The multiplicity for the token transformer')
+    parser.add_argument('--multiplicity',
+                        type=int,
+                        default=1,
+                        help='The multiplicity for the token transformer')
     parser.add_argument('--dtype',
                         type=str,
                         default='float32',
@@ -83,7 +83,7 @@ def convert(worker_rank, world_size, configs, args):
                 configs[BackendType.TRT],
                 mapping,
                 local_checkpoint=args.local_checkpoint)
-            safetensors.torch.save_file(
+            save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
 

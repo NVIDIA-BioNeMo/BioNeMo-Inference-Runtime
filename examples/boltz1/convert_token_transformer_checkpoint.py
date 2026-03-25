@@ -3,8 +3,8 @@ import json
 import time
 from pathlib import Path
 
-import safetensors
 import torch
+from safetensors.torch import save_file
 from tensorrt_llm_lite import logger
 
 from tensorrt_bionemo.configs import BackendType
@@ -92,7 +92,7 @@ def convert(worker_rank, world_size, configs, args):
                 configs[BackendType.TRT],
                 mapping,
                 local_checkpoint=args.local_checkpoint)
-            safetensors.torch.save_file(
+            save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
         if args.backend == 'all' or args.backend == BackendType.TORCH:

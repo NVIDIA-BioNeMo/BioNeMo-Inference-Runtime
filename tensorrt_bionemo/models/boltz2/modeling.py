@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -664,7 +664,7 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
     def forward(
         self,
         feed_dict: dict[str, torch.Tensor],
-        recycling_steps: int = 0,
+        recycling_steps: int = 3,
         num_sampling_steps: Optional[int] = 200,
         diffusion_samples: int = 1,
         max_parallel_samples: Optional[int] = None,

@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 # isort: off
-import safetensors
+from safetensors.torch import save_file
 import torch
 from tensorrt_llm_lite import logger
 
@@ -134,7 +134,7 @@ def convert(worker_rank, world_size, configs, args):
                 args.pairformer_type,
                 local_checkpoint=args.local_checkpoint,
                 model_name=model_name)
-            safetensors.torch.save_file(
+            save_file(
                 weights,
                 args.output_dir / f'{BackendType.TRT}/rank{rank}.safetensors')
         if args.backend == 'all' or args.backend == BackendType.TORCH:

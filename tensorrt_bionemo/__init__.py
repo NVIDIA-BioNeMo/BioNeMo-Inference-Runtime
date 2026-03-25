@@ -15,12 +15,16 @@
 
 import logging
 import os
+from pathlib import Path
 
 _log_level = os.environ.get("TENSORRT_BIONEMO_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, _log_level, logging.INFO),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+CACHE_DIR = Path(
+    os.getenv("TENSORRT_BIONEMO_CACHE",
+              str(Path.home() / ".cache" / "tensorrt_bionemo")))
 
 from ._torch import _load_cuequivariance_lib, _load_kernels_lib
 from ._trt.plugin import _load_plugin_lib
@@ -48,4 +52,4 @@ _init()
 
 import tensorrt_bionemo._trt.layers as layers
 
-__all__ = ["layers", "__version__"]
+__all__ = ["layers", "__version__", "CACHE_DIR"]

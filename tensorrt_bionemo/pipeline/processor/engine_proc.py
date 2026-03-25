@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import Field
 
@@ -18,8 +18,9 @@ from tensorrt_bionemo.pipeline.stages.configs import (
     EngineStageConfig, FeatureGeneratorStageConfig, ParallelismMode,
     ParserStageConfig, TokenizerStageConfig, WriterStageConfig,
     resolve_stage_config)
-from tensorrt_bionemo.registry import (get_feature_factory, get_model_class,
-                                       get_tokenizer)
+from tensorrt_bionemo.registry import (get_default_runtime_args,
+                                       get_feature_factory, get_model_class,
+                                       get_tokenizer, load_metadata)
 
 
 class EngineProcessorConfig(ProcessorConfig):
@@ -63,7 +64,14 @@ class EngineProcessorConfig(ProcessorConfig):
     metadata: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optional metadata (e.g. ccd_path, mol_dir) for context "
-        "generators and feature generators.",
+        "generators and feature generators. When None, the model factory's "
+        "load_metadata (or a custom metadata_loader) is called automatically.",
+    )
+    metadata_loader: Optional[Callable[[], Dict[str, Any]]] = Field(
+        default=None,
+        description="Optional callable that returns a metadata dict. "
+        "When set, overrides the model factory's default load_metadata. "
+        "Ignored if metadata is provided explicitly.",
     )
     runtime_args: Dict[str, Any] = Field(
         default_factory=dict,
@@ -338,6 +346,33 @@ def _build_stages(config: EngineProcessorConfig,
     return stages
 
 
+def _resolve_metadata(config: EngineProcessorConfig) -> None:
+    """Auto-resolve metadata when not explicitly provided.
+
+    Priority: explicit metadata dict > metadata_loader callable > factory default.
+    """
+    if config.metadata is not None:
+        return
+    if config.metadata_loader is not None:
+        config.metadata = config.metadata_loader()
+    else:
+        resolved = load_metadata(config.model_source)
+        if resolved:
+            config.metadata = resolved
+
+
+def _resolve_runtime_args(config: EngineProcessorConfig) -> None:
+    """Merge registry defaults with user-supplied runtime_args.
+
+    Registry defaults are used as the base; any keys explicitly provided
+    by the user take precedence.
+    """
+    defaults = get_default_runtime_args(config.model_source)
+    if defaults:
+        merged = {**defaults, **config.runtime_args}
+        config.runtime_args = merged
+
+
 def build_processor(config: EngineProcessorConfig) -> _ProcessorBase:
     """Build a processor from the given config.
 
@@ -345,6 +380,9 @@ def build_processor(config: EngineProcessorConfig) -> _ProcessorBase:
     ``config.executor_backend == "ray"``, or a :class:`SerialProcessor`
     (in-process, no Ray) when ``config.executor_backend is None``.
     """
+    _resolve_metadata(config)
+    _resolve_runtime_args(config)
+
     processor_defaults = {
         "batch_size": config.batch_size,
         "concurrency": config.concurrency,

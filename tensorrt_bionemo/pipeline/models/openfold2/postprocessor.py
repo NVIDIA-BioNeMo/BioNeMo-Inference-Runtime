@@ -103,7 +103,7 @@ class PostProcessor(PostProcessorBase):
                 "final_atom_mask"
         ]:
             if k in batch:
-                np_batch[k] = np.array(batch[k][..., -1].cpu())
+                np_batch[k] = batch[k][..., -1].cpu().numpy()
         plddt = output["plddt"].cpu().numpy()
         plddt_b_factors = np.repeat(plddt[..., None],
                                     rc.atom_type_num,

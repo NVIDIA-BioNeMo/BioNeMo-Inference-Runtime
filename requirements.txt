@@ -11,7 +11,7 @@ tensorrt>=10.13.2
 triton==3.5.0
 biopython>=1.84
 boto3==1.42.17
-ray[serve,data]==2.53.0  # installs pandas, pyarrow
+ray[serve,data]==2.54.0  # installs pandas, pyarrow
 uvloop==0.21.0
 modelcif==1.6  # needed for CIFWriter
 rdkit==2025.9.6 # needed for Boltz2 Data pipeline

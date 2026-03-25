@@ -14,7 +14,8 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, Type
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, Optional, Type, Union
 
 import torch.nn as nn
 
@@ -53,6 +54,10 @@ class ModelComponentsFactory(ABC):
     @abstractmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:
         pass
+
+    @classmethod
+    def get_default_runtime_args(cls) -> Dict[str, Any]:
+        return {}
 
     @classmethod
     def get_supported_model_names(cls) -> list[str]:
@@ -98,6 +103,19 @@ class ModelRegistry:
     @classmethod
     def get_postprocessor(cls, model_name: str) -> Type["PostProcessorBase"]:
         return cls.get_factory(model_name).get_postprocessor()
+
+    @classmethod
+    def get_default_runtime_args(cls, model_name: str) -> Dict[str, Any]:
+        return cls.get_factory(model_name).get_default_runtime_args()
+
+    @classmethod
+    def load_metadata(
+        cls,
+        model_name: str,
+        cache_dir: Optional[Union[str, Path]] = None,
+    ) -> Dict[str, Any]:
+        from tensorrt_bionemo.hubs.metadata import load_metadata
+        return load_metadata(model_name, cache_dir)
 
     @classmethod
     def get_trt_building_modules(cls, model_name: str) -> Dict[str, Any]:
@@ -208,6 +226,14 @@ class OpenFold2MultimerFactory(ModelComponentsFactory):
 class Boltz1Factory(ModelComponentsFactory):
 
     @classmethod
+    def get_default_runtime_args(cls) -> Dict[str, Any]:
+        return {
+            "recycling_steps": 3,
+            "num_sampling_steps": 200,
+            "diffusion_samples": 1,
+        }
+
+    @classmethod
     def get_model_class(cls) -> Type[nn.Module]:
         from tensorrt_bionemo.models.boltz1 import Boltz1
         return Boltz1
@@ -247,6 +273,14 @@ class Boltz1Factory(ModelComponentsFactory):
 class Boltz2Factory(ModelComponentsFactory):
 
     @classmethod
+    def get_default_runtime_args(cls) -> Dict[str, Any]:
+        return {
+            "recycling_steps": 3,
+            "num_sampling_steps": 200,
+            "diffusion_samples": 1,
+        }
+
+    @classmethod
     def get_model_class(cls) -> Type[nn.Module]:
         from tensorrt_bionemo.models.boltz2 import Boltz2
         return Boltz2
@@ -284,6 +318,14 @@ class Boltz2Factory(ModelComponentsFactory):
 
 
 class Boltz2AffinityFactory(ModelComponentsFactory):
+
+    @classmethod
+    def get_default_runtime_args(cls) -> Dict[str, Any]:
+        return {
+            "recycling_steps": 3,
+            "num_sampling_steps": 200,
+            "diffusion_samples": 1,
+        }
 
     @classmethod
     def get_model_class(cls) -> Type[nn.Module]:
@@ -384,6 +426,17 @@ def get_feature_factory(model_name: str) -> "FeatureFactoryBase":
 
 def get_postprocessor(model_name: str) -> Type["PostProcessorBase"]:
     return ModelRegistry.get_postprocessor(model_name)
+
+
+def get_default_runtime_args(model_name: str) -> Dict[str, Any]:
+    return ModelRegistry.get_default_runtime_args(model_name)
+
+
+def load_metadata(
+    model_name: str,
+    cache_dir: Optional[Union[str, Path]] = None,
+) -> Dict[str, Any]:
+    return ModelRegistry.load_metadata(model_name, cache_dir)
 
 
 def get_building_module_class(model_name: str, module_name: str) -> Any:

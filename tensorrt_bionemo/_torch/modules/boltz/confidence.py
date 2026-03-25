@@ -252,7 +252,6 @@ class Boltz2ConfidenceHeads(nn.Module):
         else:
             pde_logits = self.to_pde_logits(z + z.transpose(2, 3))
 
-        resolved_logits = self.to_resolved_logits(s)
         plddt_logits = self.to_plddt_logits(s)
 
         token_type = feats["mol_type"]
@@ -319,9 +318,6 @@ class Boltz2ConfidenceHeads(nn.Module):
             dim=(2, 3)) / (token_interface_pair_mask.sum(dim=(2, 3)) + 1e-5)
 
         out_dict = dict(
-            pde_logits=pde_logits,
-            plddt_logits=plddt_logits,
-            resolved_logits=resolved_logits,
             pde=pde,
             plddt=plddt,
             complex_plddt=complex_plddt,
@@ -329,7 +325,7 @@ class Boltz2ConfidenceHeads(nn.Module):
             complex_pde=complex_pde,
             complex_ipde=complex_ipde,
         )
-        out_dict["pae_logits"] = pae_logits
+        # out_dict["pae_logits"] = pae_logits
         out_dict["pae"] = compute_aggregated_metric(pae_logits, end=32)
 
         try:
@@ -767,7 +763,6 @@ class Boltz1ConfidenceHeads(nn.Module):
         # Compute the pLDDT, PDE, PAE, and resolved logits
         plddt_logits = self.to_plddt_logits(s)
         pde_logits = self.to_pde_logits(z + z.transpose(-3, -2))
-        resolved_logits = self.to_resolved_logits(s)
 
         # Weights used to compute the interface pLDDT
         ligand_weight = 2
@@ -819,9 +814,9 @@ class Boltz1ConfidenceHeads(nn.Module):
             token_interface_pair_mask.sum(dim=(-2, -1)) + 1e-5)
 
         out_dict = dict(
-            pde_logits=pde_logits,
-            plddt_logits=plddt_logits,
-            resolved_logits=resolved_logits,
+            # pde_logits=pde_logits,
+            # plddt_logits=plddt_logits,
+            # resolved_logits=resolved_logits,
             pde=pde,
             plddt=plddt,
             complex_plddt=complex_plddt,
@@ -831,7 +826,7 @@ class Boltz1ConfidenceHeads(nn.Module):
         )
         if self.config.compute_pae:
             pae_logits = self.to_pae_logits(z)
-            out_dict["pae_logits"] = pae_logits
+            # out_dict["pae_logits"] = pae_logits
             out_dict["pae"] = compute_aggregated_metric(pae_logits, end=32)
             ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
                 pae_logits, x_pred, feature_dict)

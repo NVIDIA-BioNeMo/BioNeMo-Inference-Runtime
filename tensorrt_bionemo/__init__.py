@@ -26,6 +26,8 @@ CACHE_DIR = Path(
     os.getenv("TENSORRT_BIONEMO_CACHE",
               str(Path.home() / ".cache" / "tensorrt_bionemo")))
 
+EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
+
 from ._torch import _load_cuequivariance_lib, _load_kernels_lib
 from ._trt.plugin import _load_plugin_lib
 from .registry import register_all_factories
@@ -52,4 +54,4 @@ _init()
 
 import tensorrt_bionemo._trt.layers as layers
 
-__all__ = ["layers", "__version__", "CACHE_DIR"]
+__all__ = ["layers", "__version__", "CACHE_DIR", "EXAMPLES_DIR"]

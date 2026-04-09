@@ -98,6 +98,65 @@ def _check_and_install_packaging():
 
 _check_and_install_packaging()
 
+EXAMPLES_CONVERSION_SCRIPTS = [
+    "examples/boltz1/convert_pairformer_checkpoint.py",
+    "examples/boltz1/convert_token_transformer_checkpoint.py",
+    "examples/boltz2/convert_pairformer_checkpoint.py",
+    "examples/boltz2/convert_token_transformer_checkpoint.py",
+    "examples/openfold2/convert_evoformer_checkpoint.py",
+    "examples/openfold2/jax_to_pt.py",
+    "examples/openfold3/convert_pairformer_checkpoint.py",
+    "examples/openfold3/convert_token_transformer_checkpoint.py",
+]
+
+
+def _inject_examples_into_wheel(wheel_path: Path):
+    """Add conversion example scripts into the built wheel."""
+    import base64
+    import hashlib
+    import tempfile
+    import zipfile
+
+    with tempfile.NamedTemporaryFile(dir=wheel_path.parent,
+                                     suffix='.whl',
+                                     delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+
+    record_path = None
+    record_lines = []
+
+    with zipfile.ZipFile(wheel_path, 'r') as zin:
+        with zipfile.ZipFile(tmp_path, 'w',
+                             compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename.endswith('.dist-info/RECORD'):
+                    record_path = item.filename
+                    record_lines = data.decode().strip().splitlines()
+                    continue
+                zout.writestr(item, data)
+
+            for script_rel in EXAMPLES_CONVERSION_SCRIPTS:
+                src = ROOT_DIR / script_rel
+                if not src.exists():
+                    print(f"WARNING: {src} not found, skipping")
+                    continue
+                file_data = src.read_bytes()
+                zout.writestr(script_rel, file_data)
+                digest = base64.urlsafe_b64encode(
+                    hashlib.sha256(file_data).digest()).rstrip(b'=').decode()
+                record_lines.append(
+                    f"{script_rel},sha256={digest},{len(file_data)}")
+                print(f"==> Injected {script_rel} into wheel")
+
+            record_lines = [
+                l for l in record_lines if not l.startswith(record_path)
+            ]
+            record_lines.append(f"{record_path},,")
+            zout.writestr(record_path, '\n'.join(record_lines) + '\n')
+
+    tmp_path.replace(wheel_path)
+
 
 def _check_and_install_cuequivariance():
     """Check if cuequivariance_ops is available and install if needed."""
@@ -221,6 +280,7 @@ def build_wheel(wheel_directory,
     wheel_name = stbm.build_wheel(wheel_directory, config_settings,
                                   metadata_directory)
     wheel_path = Path(wheel_directory) / wheel_name
+    _inject_examples_into_wheel(wheel_path)
     print(f"==> Built wheel: {wheel_path}")
     # Parse original name
     # Format: {name}-{version}-{python}-{abi}-{platform}.whl

@@ -56,6 +56,7 @@ class PairformerLayerV1(nn.Module):
                  attention_initial_norm: bool = False,
                  s_path_dtype: Union[str, torch.dtype, None] = None,
                  trimul_high_precision: bool = True,
+                 trimul_mean_normalization: bool = False,
                  **kwargs):
         super().__init__()
         self.dtype = dtype
@@ -97,6 +98,7 @@ class PairformerLayerV1(nn.Module):
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=max_tri_mul_tp_size,
             high_precision=trimul_high_precision,
+            mean_normalization=trimul_mean_normalization,
         )
         self.tri_mul_in = TriangleMultiplicationNode(
             layer_idx=layer_idx,
@@ -108,6 +110,7 @@ class PairformerLayerV1(nn.Module):
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=max_tri_mul_tp_size,
             high_precision=trimul_high_precision,
+            mean_normalization=trimul_mean_normalization,
         )
         self.tri_attn_start = TriangleAttentionStartingNode(
             token_z,
@@ -343,6 +346,8 @@ class PairformerModule(nn.Module):
                     post_layer_norm=config.post_layer_norm,
                     attention_initial_norm=config.attention_initial_norm,
                     trimul_high_precision=config.trimul_high_precision,
+                    trimul_mean_normalization=getattr(
+                        config, 'trimul_mean_normalization', False),
                     s_path_dtype=config.s_path_dtype,
                 ))
 

@@ -253,7 +253,8 @@ class TriangleMultiplicationNode(nn.Module):
             mapping: Optional[Mapping] = None,
             skip_create_weights: bool = False,
             max_tri_mul_tp_size: bool = False,
-            high_precision: bool = True):
+            high_precision: bool = True,
+            mean_normalization: bool = False):
         super().__init__()
         if hidden_dim is None:
             hidden_dim = dim
@@ -267,6 +268,7 @@ class TriangleMultiplicationNode(nn.Module):
         self.gpus_per_node = self.mapping.gpus_per_node
         self.dtype = dtype
         self.high_precision = high_precision
+        self.mean_normalization = mean_normalization
         self.eps = eps
 
         self.dim = dim // self.tp_size
@@ -456,6 +458,11 @@ class TriangleMultiplicationNode(nn.Module):
         x = x.to(self.high_precision_dtype)
 
         a, b = x.split([self.dim, self.dim], dim=-1)
+        if self.mean_normalization:
+            # Divide right branch by number of valid tokens (mean over contraction axis).
+            # mask is [B, I, J] where 1.0=valid; any row gives the valid count.
+            n_valid = mask[:, 0, :].sum(dim=-1)  # [B]
+            b = b / (n_valid[:, None, None, None] + 1e-3)
         x = self._ring_einsum_compute(a, b)
         # need to gather here for LayerNorm
 
@@ -498,6 +505,11 @@ class TriangleMultiplicationNode(nn.Module):
         )
 
         a, b = torch.chunk(ab, 2, dim=0)
+        if self.mean_normalization:
+            # Divide right branch by number of valid tokens (mean over contraction axis).
+            # mask is [B, I, J]; b is [d, B, I, K] (transposed layout).
+            n_valid = mask[:, 0, :].sum(dim=-1)  # [B]
+            b = b / (n_valid[None, :, None, None] + 1e-3)
         # Triangular projection
         if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
             x = torch.einsum("dbik,dbjk->dbij", a, b)

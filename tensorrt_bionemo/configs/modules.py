@@ -42,6 +42,7 @@ class PairformerConfig(BaseConfig):
     post_layer_norm: Optional[bool] = False
     triangle_attn_cueq_fallback_threshold: int = 0
     trimul_high_precision: bool = False
+    trimul_mean_normalization: bool = False
     attention_initial_norm: Optional[bool] = True
     version: str = "v1"
 

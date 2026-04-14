@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
 import torch
 
 from tensorrt_bionemo.configs import (DiffusionTransformerConfig,
@@ -87,38 +85,74 @@ class TokenTransformerTRT(BackendBase):
     def _forward_internal(self,
                           a: torch.Tensor,
                           s: torch.Tensor,
-                          z: Optional[torch.Tensor] = None,
-                          mask: Optional[torch.Tensor] = None,
+                          z: torch.Tensor = None,
+                          mask: torch.Tensor = None,
                           **kwargs) -> torch.Tensor:
-        need_unsqueeze = False
-        if a.ndim == 4:
-            # a.shape = (bs, multiplicity, seqlen, dim)
-            # s.shape = (bs, multiplicity, seqlen, dim_single_cond)
-            # For v1 version, z.shape = (bs, 1, seqlen, seqlen, heads_times_blocks)
-            # For v2 version, z.shape = (bs, 1, n_seqs, seqlen, seqlen, heads_times_blocks)
-            # mask.shape = (bs, multiplicity, seqlen)
-            B = a.shape[0]
-            assert B == 1, "Batch size must be 1 for token transformer TRT"
-            a = a.squeeze(0)
-            s = s.squeeze(0)
-            z = z.squeeze(0)
-            mask = mask.squeeze(0)
-            need_unsqueeze = True
+        # Incoming shapes from DiffusionModule (B=1 in practice):
+        #
+        #          Boltz (v2, bias_proj=False)       OF3 (v1, bias_proj=True)
+        # a:       [B, mult, N, 768]       4D       [B, mult, N, 768]       4D
+        # s:       [B, mult, N, 768]       4D       [B, N, 384]             3D  (no mult dim)
+        # z:       [B, 1, N, N, L*H=384]   5D       [B, N, N, 128]          4D  (no prepended 1)
+        # mask:    [B, 1, N]               3D       [B, 1, N]               3D
+        #
+        # TRT engine expects (per iteration):
+        #   a: (mult, N, dim),  s: (mult, N, dim_single_cond),  mask: (mult, N)
+        #   v2 (Boltz): z: (1, N, N, num_heads * num_blocks)  — pre-projected bias
+        #   v1 (OF3):   z: (1, N, N, dim_pairwise)            — raw pair repr
+        diffusion_samples = a.shape[1]
+        max_diffusion_samples = self.config.multiplicity
+
+        a = a.squeeze(0)  # [DS, N, D]
+
+        # Boltz s is 4D [B, mult, N, D] (per-sample); OF3 s is 3D [B, N, D].
+        # For Boltz with mult>1 the squeeze(1) is a no-op leaving s 4D,
+        # so we detect the per-sample case by ndim and slice instead of repeat.
+        s_per_sample = (s.ndim == 4 and s.shape[1] > 1)
+        if s_per_sample:
+            s = s.squeeze(0)  # [DS, N, D]
+        else:
+            # OF3 3D [B,N,D]: squeeze(1) is no-op → stays [1,N,D]
+            # Boltz 4D [B,1,N,D]: squeeze(1) removes singleton → [1,N,D]
+            # Keep dim-0 so repeat_interleave(n,0) → [n,N,D]
+            s = s.squeeze(1)
+
+        # Boltz z is 5D [B,1,N,N,D] → squeeze to 4D; OF3 z is already 4D.
+        if z.ndim == 5:
+            z = z.squeeze(1)
+
+        # mask is [B,1,N] for both models → squeeze dim-1 → [B,N]
+        mask = mask.squeeze(1)
+
         original_dtype = s.dtype
+        outputs = []
+        niters = (diffusion_samples + max_diffusion_samples -
+                  1) // max_diffusion_samples
+        for i in range(niters):
+            lo = i * max_diffusion_samples
+            hi = min(lo + max_diffusion_samples, diffusion_samples)
+            n_repeat = hi - lo
 
-        # TODO: Use config.get_input_names() to get the input names
-        inputs = {
-            "a": a.to(self.dtype),
-            "s": s.to(self.dtype),
-            "z": z.to(self.dtype),
-            "mask": mask.to(self.dtype)
-        }
+            a_i = a[lo:hi]
 
-        # Use the allocator from the base class for execution
-        outputs = self._context_memory_allocator.forward(self, inputs)
-        if need_unsqueeze:
-            return outputs["output_a"].to(original_dtype).unsqueeze(0)
-        return outputs["output_a"].to(original_dtype)
+            if s_per_sample:
+                s_i = s[lo:hi]
+            else:
+                s_i = s.repeat_interleave(n_repeat, 0)
+
+            mask_i = mask.repeat_interleave(n_repeat, 0)
+
+            inputs = {
+                "a": a_i.to(self.config.torch_dtype),
+                "s": s_i.to(self.config.torch_dtype),
+                "z": z.to(self.config.torch_dtype),
+                "mask": mask_i.to(self.config.torch_dtype),
+            }
+
+            allocator = self._context_memory_allocator
+            outputs.append(allocator.forward(self, inputs)["output_a"])
+        outputs = torch.cat(outputs, dim=0)
+        return outputs.to(original_dtype).unsqueeze(0)
 
 
 class EvoformerStackTRT(BackendBase):

@@ -80,7 +80,8 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
     def __init__(self,
                  config: BaseConfig = None,
                  include_load_weights: bool = True,
-                 model_name: Optional[str] = None):
+                 model_name: Optional[str] = None,
+                 diffusion_samples: Optional[int] = None):
         super().__init__()
         self.model_name = model_name or SupMat.OpenFold3
         self.config = config or self.get_pretrained_config(self.model_name)
@@ -92,7 +93,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         self.n_query = self.config.n_query
         self.n_key = self.config.n_key
         self.no_rollout_steps = self.config.no_rollout_steps
-        self.no_rollout_samples = self.config.no_rollout_samples
+        self.no_rollout_samples = self.config.no_rollout_samples if diffusion_samples is None else diffusion_samples
 
         self.noise_schedule = self.config.noise_schedule_config
 

@@ -1128,6 +1128,10 @@ class TemplateEmbedderMultimer(nn.Module):
         # [*, N, N, C_z]
         t = torch.sum(t, dim=-4) / n_templ
         t = torch.nn.functional.relu(t)
+        # Cast back to ``linear_t``'s dtype — ``template_pair_stack`` may emit
+        # bf16 (independent dtype) while ``linear_t`` inherits the outer
+        # TemplateEmbedderMultimer dtype (typically fp32).
+        t = t.to(dtype=self.linear_t.weight.dtype)
         t = self.linear_t(t)
         template_embeds["template_pair_embedding"] = t
 

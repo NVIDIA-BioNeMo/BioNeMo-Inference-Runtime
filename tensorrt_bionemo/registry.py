@@ -366,10 +366,16 @@ class OpenFold3Factory(ModelComponentsFactory):
 
     @classmethod
     def get_default_runtime_args(cls) -> Dict[str, Any]:
+        # Boltz-style kwarg names so the generic ``FoldingEngine`` can forward
+        # the same ``runtime_args`` dict to either model. Mapping to OF3
+        # internals (see ``OpenFold3.forward``):
+        #   recycling_steps    → num_cycles = recycling_steps + 1
+        #   num_sampling_steps → no_rollout_steps   (diffusion rollout length)
+        #   diffusion_samples  → no_rollout_samples (parallel rollout samples)
         return {
-            "num_recycles": 3,
-            "no_rollout_steps": 200,
-            "no_rollout_samples": 1,
+            "recycling_steps": 3,
+            "num_sampling_steps": 200,
+            "diffusion_samples": 1,
         }
 
     @classmethod

@@ -136,8 +136,12 @@ class CIFWriter(BaseWriter):
         # finally add the last chain
         seqs[last_chain_idx] = seq
 
-        # ihm uses 'UNK' for unknown residues, not single-char 'X'
-        _IHM_REMAP = {'X': 'UNK'}
+        # Remap internal canonical_name codes to CIF/IHM standard codes:
+        # 'X' → 'UNK' (ihm uses 'UNK' for unknown protein residues).
+        # 'RX' and 'DX' are the canonical_name values of the RNA/DNA unknown
+        # entries in the ResTypes enum (see tensorrt_bionemo/data/schemas/
+        # basic.py); map them to the CIF standard codes 'N' and 'DN'.
+        _IHM_REMAP = {'X': 'UNK', 'RX': 'N', 'DX': 'DN'}
 
         # now reduce sequences to unique ones (note this won't work if different asyms have different unmodelled regions)
         unique_seqs = {}

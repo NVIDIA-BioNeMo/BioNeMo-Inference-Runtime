@@ -1,0 +1,15 @@
+[
+    {
+        "input_id": "T1038",
+        "polymers": [
+          {
+            "polymer_type": "protein",
+            "chain_id": ["A1"],
+            "sequence": "STTQKTISVSDLPNNCLNASSLKCEIKGISTYNVYYQVENNGVIYSCVSDSAEGLEKCDNSLNLPKRFSKVPVIPITKLDNKRHFSVGTKFFISESLTQDNYPITYNSYPTNGTVCLQTVKLSGDCKITKSNFANPYTVSITSPEKIMGYLIKKPGENVEHKVISFSGSASITFTEEMLDGEHNLLCGDKSAKIPKTNK",
+            "msas": "msas/T1038.a3m",
+            "paired_msas": null,
+            "templates": null
+          }
+        ]
+    }
+]

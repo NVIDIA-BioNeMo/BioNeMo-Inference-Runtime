@@ -23,6 +23,12 @@ from .schemas import AtomType, AtomTypes, ResType, ResTypes
 @lru_cache
 def get_all_residue_types(model: str,
                           include_gap: bool = True) -> list[ResType]:
+    """Return the ordered residue-type list for a given model.
+
+    ``include_gap`` is only honored for the openfold2/alphafold2 branch. The
+    boltz and openfold3 branches always include GAP because their feature
+    schemas require the full restype vocabulary (gap is at a fixed index).
+    """
     if "openfold2" in model or "alphafold2" in model:
         ret = ResTypes.basic_20_residue_types() + [ResTypes.X]
         if include_gap:
@@ -33,6 +39,19 @@ def get_all_residue_types(model: str,
             ResTypes.basic_20_residue_types() + [ResTypes.X] + \
             ResTypes.rna_nucleotide_types() + [ResTypes.RX] + \
             ResTypes.dna_nucleotide_types() + [ResTypes.DX]
+    elif "openfold3" in model:
+        # Order must match RESTYPES_3 in pipeline/models/openfold3/const.py (32 types):
+        #   idx 21-25: A, G, C, U, N   idx 26-30: DA, DG, DC, DT, DN
+        # ResTypes has no RN (RNA any-nucleotide) or DN (DNA any-nucleotide) entries;
+        # RX and DX (unknown) are used as stand-ins for indices 25 and 30.
+        # Do NOT use rna_nucleotide_types() / dna_nucleotide_types() here — their
+        # alphabetical order (A,C,G,U / DA,DC,DG,DT) does not match RESTYPES_3.
+        return ResTypes.basic_20_residue_types() + [
+            ResTypes.X,
+            ResTypes.RA, ResTypes.RG, ResTypes.RC, ResTypes.RU, ResTypes.RX,  # idx 21-25
+            ResTypes.DA, ResTypes.DG, ResTypes.DC, ResTypes.DT, ResTypes.DX,  # idx 26-30
+            ResTypes.GAP,
+        ]
     else:
         raise ValueError(f"Invalid model: {model}")
 

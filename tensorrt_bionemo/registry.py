@@ -365,23 +365,35 @@ class Boltz2AffinityFactory(ModelComponentsFactory):
 class OpenFold3Factory(ModelComponentsFactory):
 
     @classmethod
+    def get_default_runtime_args(cls) -> Dict[str, Any]:
+        return {
+            "num_recycles": 3,
+            "no_rollout_steps": 200,
+            "no_rollout_samples": 1,
+        }
+
+    @classmethod
     def get_model_class(cls) -> Type[nn.Module]:
-        raise NotImplementedError("OpenFold3 model class not implemented")
+        from tensorrt_bionemo.models.openfold3 import OpenFold3
+        return OpenFold3
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError(
-            "OpenFold3 tokenizer not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.openfold3.tokenizer import \
+            Tokenizer
+        return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError(
-            "OpenFold3 feature factory not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.openfold3.feature_factory import \
+            FeatureFactory
+        return FeatureFactory()
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError(
-            "OpenFold3 postprocessor not implemented in pipeline")
+        from tensorrt_bionemo.pipeline.models.openfold3.postprocessor import \
+            PostProcessor
+        return PostProcessor
 
     @classmethod
     def get_trt_building_modules(cls) -> Dict[str, Any]:

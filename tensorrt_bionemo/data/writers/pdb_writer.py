@@ -86,6 +86,12 @@ class PDBWriter:
         if (len(headers) > 0):
             pdb_lines.extend(headers)
 
+        # 'RX' and 'DX' are the canonical_name values of the RNA/DNA unknown
+        # entries in the ResTypes enum (see tensorrt_bionemo/data/schemas/
+        # basic.py). Map them to the PDB standard codes 'N' and 'DN' before
+        # writing ATOM/TER lines.
+        _PDB_REMAP = {'RX': '  N', 'DX': ' DN'}
+
         pdb_lines.append("MODEL     1")
         n = residue_types.shape[0]
         atom_index = 1
@@ -97,17 +103,19 @@ class PDBWriter:
         for i in range(residue_types.shape[0]):
             # Close the previous chain if in a multichain PDB.
             if last_chain_index != chain_indices[i]:
+                prev_cname = self.res_type_mapping[residue_types[i - 1]].canonical_name
                 pdb_lines.append(
                     self._chain_end(
                         atom_index,
-                        self.res_type_mapping[residue_types[i -
-                                                            1]].canonical_name,
+                        _PDB_REMAP.get(prev_cname, prev_cname),
                         chain_ids[chain_indices[i - 1]],
                         residue_indices[i - 1]))
                 last_chain_index = chain_indices[i]
                 atom_index += 1  # Atom index increases at the TER symbol.
 
-            res_name_3 = self.res_type_mapping[residue_types[i]].canonical_name
+            res_name_3 = _PDB_REMAP.get(
+                self.res_type_mapping[residue_types[i]].canonical_name,
+                self.res_type_mapping[residue_types[i]].canonical_name)
 
             for atom_type, pos, mask, b_factor in zip(self.atom_types,
                                                       atom_positions[i],
@@ -152,10 +160,11 @@ class PDBWriter:
             if should_terminate:
                 # Close the chain.
                 res_type = self.res_type_mapping[residue_types[i]]
+                ter_name = _PDB_REMAP.get(res_type.canonical_name, res_type.canonical_name)
                 chain_end = "TER"
                 chain_termination_line = (
                     f"{chain_end:<6}{atom_index:>5}      "
-                    f"{res_type.canonical_name:>3} "
+                    f"{ter_name:>3} "
                     f"{chain_tag:>1}{residue_indices[i]:>4}")
                 pdb_lines.append(chain_termination_line)
                 atom_index += 1

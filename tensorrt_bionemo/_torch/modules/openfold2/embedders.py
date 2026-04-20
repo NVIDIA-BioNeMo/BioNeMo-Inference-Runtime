@@ -653,10 +653,8 @@ class TemplateEmbedder(nn.Module):
             mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
             chunk_size=mc.chunk_size)
-        # TemplatePointwiseAttention is using triangle attention and triangle multiplication, so we don't need to check the dtype of the template_pointwise_att
-        # leave it for optimization
-        assert self.config.template_single_embedder.torch_dtype == self.config.template_pair_embedder.torch_dtype == \
-            self.config.template_pair_stack.torch_dtype, "Sub-modules of TemplateEmbedder must have the same dtype"
+        # Sub-modules may carry independent dtypes; ``forward`` inserts
+        # explicit ``.to(dtype=...)`` casts at each module boundary.
 
     def load_weights(self, weights: dict) -> None:
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -703,6 +701,11 @@ class TemplateEmbedder(nn.Module):
             pair_embeds.append(t)
 
         t_pair = torch.stack(pair_embeds, dim=templ_dim)
+
+        # Cast pair_embedder output to template_pair_stack's dtype — these
+        # modules may carry independent dtypes (e.g., pair_embedder fp32 and
+        # pair_stack bf16 for the SM80 triangle-attention kernel path).
+        t_pair = t_pair.to(dtype=self.config.template_pair_stack.torch_dtype)
 
         # [*, S_t, N, N, C_z]
         t = self.template_pair_stack(
@@ -1108,9 +1111,15 @@ class TemplateEmbedderMultimer(nn.Module):
             template_embeds,
         )
 
+        # Cast pair_embedder output to template_pair_stack's dtype — these
+        # modules may carry independent dtypes (e.g., pair_embedder fp32 and
+        # pair_stack bf16 for the SM80 triangle-attention kernel path).
+        pair_embed = template_embeds["template_pair_embedding"].to(
+            dtype=self.config.template_pair_stack.torch_dtype)
+
         # [*, S_t, N, N, C_z]
         t = self.template_pair_stack(
-            template_embeds["template_pair_embedding"],
+            pair_embed,
             padding_mask_2d.unsqueeze(-3).to(z),
             skip_template_pair_stack=skip_template_pair_stack,
             all_reduce_params=all_reduce_params,

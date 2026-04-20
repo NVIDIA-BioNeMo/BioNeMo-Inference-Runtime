@@ -639,9 +639,9 @@ class FeatureContextGenerator(ContextGeneratorBase):
                 if self.config.is_multimer:
                     raise ValueError(
                         "Model is multimer, but only one chain_id is provided")
+                description = "_".join(chain_ids)
                 context = self.build_monomer_context(
-                    polymers[0]['sequence'], polymers[0]['chain_id'],
-                    polymers[0]['chain_id'],
+                    polymers[0]['sequence'], chain_ids[0], description,
                     MSAParsed.concat(polymers[0]['msas']))
             else:
                 # Homooligomer
@@ -655,7 +655,14 @@ class FeatureContextGenerator(ContextGeneratorBase):
                 "deletion_matrix_int").astype(np.float32)
         features_name = self.unsupervised_features
         if self.config.enable_template:
-            is_template_present = context["template_aatype"].shape[0] > 0
+            # Multimer pads ``template_aatype`` to ``max_templates`` with zeros
+            # (``msa_pairing._pad_templates``), so ``shape[0] > 0`` is misleading.
+            # Use content (any present atom) instead — CPU numpy, free.
+            if "template_all_atom_mask" in context:
+                is_template_present = bool(
+                    context["template_all_atom_mask"].any())
+            else:
+                is_template_present = context["template_aatype"].shape[0] > 0
             context["is_template_present"] = is_template_present
             features_name.extend(self.template_features)
         context = self.np_to_tensor_dict(context, features_name)

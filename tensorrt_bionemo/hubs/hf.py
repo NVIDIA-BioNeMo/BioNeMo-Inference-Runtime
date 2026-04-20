@@ -115,7 +115,7 @@ HF_CHECKPOINTS = {
     SupMat.OpenFold3:
     HFCheckpoint(
         repo_id="OpenFold/OpenFold3",
-        filename="of3_ft3_v1.pt",
+        filename="checkpoints/of3-p2-155k.pt",
         weights_only=True,
         state_dict_key=None,
     ),

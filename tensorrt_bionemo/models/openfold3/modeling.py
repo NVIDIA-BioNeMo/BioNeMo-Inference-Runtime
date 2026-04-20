@@ -305,6 +305,8 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         si_trunk: torch.Tensor,
         zij_trunk: torch.Tensor,
         attn_metadata: dict = None,
+        no_rollout_steps: Optional[int] = None,
+        no_rollout_samples: Optional[int] = None,
     ) -> dict:
         """
         Mini diffusion rollout described in section 4.1.
@@ -330,8 +332,13 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         #         torch.no_grad(),
         #         torch.amp.autocast(device_type="cuda", dtype=torch.float32),
         # ):
+        no_rollout_steps_eff = (no_rollout_steps if no_rollout_steps
+                                is not None else self.no_rollout_steps)
+        no_rollout_samples_eff = (no_rollout_samples if no_rollout_samples
+                                  is not None else self.no_rollout_samples)
+
         noise_schedule = create_noise_schedule(
-            no_rollout_steps=self.no_rollout_steps,
+            no_rollout_steps=no_rollout_steps_eff,
             p=self.noise_schedule.p,
             sigma_data=self.noise_schedule.sigma_data,
             s_max=self.noise_schedule.s_max,
@@ -346,7 +353,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             si_trunk=si_trunk,
             zij_trunk=zij_trunk,
             noise_schedule=noise_schedule,
-            no_rollout_samples=self.no_rollout_samples,
+            no_rollout_samples=no_rollout_samples_eff,
             attn_metadata=attn_metadata,
         )
 
@@ -364,14 +371,25 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
 
         return output
 
-    def forward(self, batch: dict[str, torch.Tensor]):
+    def forward(
+        self,
+        batch: dict[str, torch.Tensor],
+        recycling_steps: int = 3,
+        num_sampling_steps: Optional[int] = 200,
+        diffusion_samples: int = 1,
+    ):
+        # Boltz-style runtime args (mirrors ``Boltz2.forward`` signature so the
+        # generic ``FoldingEngine`` can pass the same ``runtime_args`` dict to
+        # either model). Mapping to OpenFold3 internals:
+        #   recycling_steps     → num_cycles = recycling_steps + 1
+        #   num_sampling_steps  → no_rollout_steps   (diffusion rollout length)
+        #   diffusion_samples   → no_rollout_samples (parallel rollout samples)
+        num_cycles = recycling_steps + 1
 
         attn_metadata = self.generate_attn_metadata(batch)
 
         si_input, si_trunk, zij_trunk = self.feature_extraction(
-            batch=batch,
-            num_cycles=self.num_cycles,
-            attn_metadata=attn_metadata)
+            batch=batch, num_cycles=num_cycles, attn_metadata=attn_metadata)
 
         # Expand sampling dimension for rollout and diffusion
         si_input = si_input.unsqueeze(1)
@@ -385,6 +403,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             si_input=si_input.to(dtype=self.diffusion_module.dtype),
             si_trunk=si_trunk.to(dtype=self.diffusion_module.dtype),
             zij_trunk=zij_trunk.to(dtype=self.diffusion_module.dtype),
-            attn_metadata=attn_metadata)
+            attn_metadata=attn_metadata,
+            no_rollout_steps=num_sampling_steps,
+            no_rollout_samples=diffusion_samples,
+        )
 
         return output

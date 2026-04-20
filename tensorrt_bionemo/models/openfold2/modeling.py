@@ -194,9 +194,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                     torch.bfloat16)
                 config.template_embedder.template_pointwise_attention.set_triangle_attention_backend(
                     "CUEQUIV")
-            # Comment now. This hurt the accuracy.
-            # config.template_embedder.template_pair_stack.set_dtype(
-            #     torch.bfloat16)
+            config.template_embedder.template_pair_stack.set_dtype(
+                torch.bfloat16)
             config.template_embedder.template_pair_stack.set_triangle_attention_backend(
                 "CUEQUIV")
         config.trunk.evoformer_stack.set_dtype(torch.bfloat16)
@@ -256,7 +255,15 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         is_template_present = True
         skip_template_pair_stack = self.config.skip_template_pair_stack
         if "is_template_present" in feats:
-            is_template_present = feats["is_template_present"]
+            val = feats["is_template_present"]
+            # Tensor may be 0-D or [B] depending on executor (Ray batches);
+            # ``not tensor`` raises on multi-element tensors. Reduce to bool:
+            # any sample with a template ⇒ cannot skip.
+            if torch.is_tensor(val):
+                is_template_present = bool(
+                    val.any().item()) if val.numel() else False
+            else:
+                is_template_present = bool(val)
         if not is_template_present:
             # Force to skip the template pair stack for multimer if no template is present.
             skip_template_pair_stack = True

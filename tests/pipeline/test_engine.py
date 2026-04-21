@@ -34,6 +34,7 @@ class MockEngineConfig:
         self.device = Mock(device=TEST_DEVICE)
         self.postprocessor = Mock()
         self.accelerated = None
+        self.profile_inference = False
 
 
 class MockModel(nn.Module):

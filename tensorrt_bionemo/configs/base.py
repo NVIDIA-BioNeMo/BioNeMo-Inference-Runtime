@@ -368,3 +368,4 @@ class EngineConfig(BaseModel):
     device: Optional[DeviceConfig] = None
     accelerated: Optional[dict[str, AcceleratedConfig]] = None
     postprocessor: Optional[PostProcessorConfig] = None
+    profile_inference: bool = False

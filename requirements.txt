@@ -1,10 +1,10 @@
 cuda-python>=13
 omegaconf==2.3.0
 transformers>=4.55.0,<=4.57.1
-cuequivariance==0.8.1
-cuequivariance-ops-cu13==0.8.1
-cuequivariance-ops-torch-cu13==0.8.1
-cuequivariance-torch==0.8.1
+cuequivariance==0.9.1
+cuequivariance-ops-cu13==0.9.1
+cuequivariance-ops-torch-cu13==0.9.1
+cuequivariance-torch==0.9.1
 nvtx
 matplotlib # FIXME: this is added to make nvtx happy
 tensorrt>=10.13.2
@@ -15,3 +15,6 @@ ray[serve,data]==2.54.0  # installs pandas, pyarrow
 uvloop==0.21.0
 modelcif==1.6  # needed for CIFWriter
 rdkit==2025.9.6 # needed for Boltz2 Data pipeline
+nvidia-cutlass-dsl[cu13]>=4.4.2
+apache-tvm-ffi>=0.1.6,<0.2
+torch-c-dlpack-ext==0.1.5

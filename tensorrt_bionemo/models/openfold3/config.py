@@ -17,12 +17,14 @@ from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       EvoformerStackConfig, PairformerConfig)
 from tensorrt_bionemo.registry import SupMat
 
+
 class _Default:
     c_z: int = 128
     c_s: int = 384
     n_query: int = 32
     n_key: int = 128
     c_s_input: int = 449
+
 
 class InputEmbedderAllAtomConfig(BaseConfig):
     c_s_input: int = 449
@@ -112,6 +114,7 @@ class MSAModuleEmbedderConfig(BaseConfig):
     min_subsampled_all_msa: int = 1024
     max_subsampled_all_msa: int = 1024
 
+
 class DiffusionModuleConfig(BaseConfig):
     c_s_input: int = _Default.c_s_input
     c_atom_ref_element: int = 119
@@ -130,30 +133,28 @@ class DiffusionModuleConfig(BaseConfig):
     inf: float = 1e9
     add_noisy_pos: bool = True
     diffusion_conditioning_config: BaseConfig = BaseConfig(
-        c_fourier_emb = 256,
-        max_relative_idx = 32,
-        max_relative_chain = 2
-    )
+        c_fourier_emb=256, max_relative_idx=32, max_relative_chain=2)
     atom_transformer_encoder_config: BaseConfig = BaseConfig(
-        num_blocks = 3,
-        num_heads = 4,
-        dim = 128,
-        dim_single_cond = 128,
-        dim_pairwise = 16,
-        post_layer_norm = False,
-        bias_proj = True,
-        dtype = "float32",
-        eps = 1e-5,
-        inf = 1e9,
-        initial_norm = False,
-        attention_initial_norm = False,
-        use_ada_layer_norm = True,
-        use_separate_layer_norm = True,
-        conditioned_transition_using_silu = True,
-        version = "v1",
-        shared_pair_norm = True,
+        num_blocks=3,
+        num_heads=4,
+        dim=128,
+        dim_single_cond=128,
+        dim_pairwise=16,
+        post_layer_norm=False,
+        bias_proj=True,
+        dtype="float32",
+        eps=1e-5,
+        inf=1e9,
+        initial_norm=False,
+        attention_initial_norm=False,
+        use_ada_layer_norm=True,
+        use_separate_layer_norm=True,
+        conditioned_transition_using_silu=True,
+        version="v1",
+        shared_pair_norm=True,
     )
-    diffusion_transformer_config: BaseConfig = BaseConfig(token_transformer=DiffusionTransformerConfig(
+    diffusion_transformer_config: BaseConfig = BaseConfig(
+        token_transformer=DiffusionTransformerConfig(
             num_blocks=24,
             num_heads=16,
             dim=768,
@@ -167,24 +168,25 @@ class DiffusionModuleConfig(BaseConfig):
             dtype="float32"), )
 
     atom_transformer_decoder_config: BaseConfig = BaseConfig(
-        num_blocks = 3,
-        num_heads = 4,
-        dim = 128,
-        dim_single_cond = 128,
-        dim_pairwise = 16,
-        post_layer_norm = False,
-        bias_proj = True,
-        dtype = "float32",
-        eps = 1e-5,
-        inf = 1e9,
-        initial_norm = False,
-        attention_initial_norm = False,
-        use_ada_layer_norm = True,
-        use_separate_layer_norm = True,
-        conditioned_transition_using_silu = True,
-        version = "v1",
-        shared_pair_norm = True,
+        num_blocks=3,
+        num_heads=4,
+        dim=128,
+        dim_single_cond=128,
+        dim_pairwise=16,
+        post_layer_norm=False,
+        bias_proj=True,
+        dtype="float32",
+        eps=1e-5,
+        inf=1e9,
+        initial_norm=False,
+        attention_initial_norm=False,
+        use_ada_layer_norm=True,
+        use_separate_layer_norm=True,
+        conditioned_transition_using_silu=True,
+        version="v1",
+        shared_pair_norm=True,
     )
+
 
 class SampleDiffusionConfig(BaseConfig):
     gamma_0: float = 0.8
@@ -192,6 +194,7 @@ class SampleDiffusionConfig(BaseConfig):
     noise_scale: float = 1.003
     step_scale: float = 1.5
     use_conditioning: bool = True
+
 
 class AuxiliaryHeadsConfig(BaseConfig):
     c_s_input: int = 449
@@ -201,6 +204,7 @@ class AuxiliaryHeadsConfig(BaseConfig):
     no_bin: int = 39
     max_atoms_per_token: int = 23
     inf: float = 1e9
+    memory_efficient_mode: bool = True
     pairformer: PairformerConfig = PairformerConfig(
         token_s=384,
         token_z=128,
@@ -210,8 +214,7 @@ class AuxiliaryHeadsConfig(BaseConfig):
         num_heads=16,
         trimul_high_precision=False,
         version="v1",
-        dtype="float32"
-    )
+        dtype="float32")
     pde: BaseConfig = BaseConfig(
         c_z=128,
         c_out=64,
@@ -237,11 +240,13 @@ class AuxiliaryHeadsConfig(BaseConfig):
         c_out=64,
     )
 
+
 class NoiseScheduleConfig(BaseConfig):
     sigma_data: int = 16
     s_max: float = 160.0
     s_min: float = 0.0004
     p: int = 7
+
 
 class OpenFold3Config(BaseConfig):
     c_z: int = _Default.c_z
@@ -250,8 +255,8 @@ class OpenFold3Config(BaseConfig):
     n_query: int = _Default.n_query
     n_key: int = _Default.n_key
     no_rollout_steps: int = 200
-    no_rollout_samples: int = 5
-    
+    no_rollout_samples: int = 1
+
     input_embedder_config: BaseConfig = InputEmbedderAllAtomConfig()
     template_embedder_config: BaseConfig = TemplateEmbedderConfig()
     msa_module_embedder_config: BaseConfig = MSAModuleEmbedderConfig()
@@ -287,5 +292,6 @@ class OpenFold3Config(BaseConfig):
             post_layer_norm=False,
             version="v1",
             dtype="float32"), ))
+
 
 PRETRAINED_CONFIG_REGISTRY = {SupMat.OpenFold3: OpenFold3Config}

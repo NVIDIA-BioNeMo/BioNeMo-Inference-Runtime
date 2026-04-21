@@ -134,13 +134,78 @@ class PairformerEmbedding(nn.Module):
 
         return zij.to(dtype=orig_dtype)
 
+    def per_sample_pairformer_emb(
+        self,
+        si_input: torch.Tensor,
+        si: torch.Tensor,
+        zij: torch.Tensor,
+        x_pred: torch.Tensor,
+        single_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+    ):
+        """Memory-efficient path: run pairformer per diffusion sample.
+
+        Instead of expanding zij across all samples (O(samples * N^2 * C_z)),
+        processes one sample at a time to keep peak memory at O(N^2 * C_z).
+
+        x_pred is [B, num_samples, N_token, 3].  si/zij/single_mask may
+        carry a leading sample dim of size 1 (from unsqueeze in the model
+        forward) or the full sample dim.  We strip it before the loop so
+        the pairformer always sees plain [B, N, N, C_z] / [B, N, C_s].
+        """
+        no_samples = x_pred.shape[-3]
+
+        # The TRT-BNM model unsqueezes a sample dim (size 1) onto trunk
+        # outputs and the batch before calling the confidence heads.
+        # Strip that dim so the pairformer sees plain [B, N, ...] tensors.
+        def _strip_sample_dim(t: torch.Tensor, expected_ndim: int):
+            while t.ndim > expected_ndim and t.shape[-(expected_ndim +
+                                                       1)] == 1:
+                t = t.squeeze(-(expected_ndim + 1))
+            return t
+
+        si_input = _strip_sample_dim(si_input, 3)  # -> [B, N, C_s]
+        si = _strip_sample_dim(si, 3)  # -> [B, N, C_s]
+        zij = _strip_sample_dim(zij, 4)  # -> [B, N, N, C_z]
+        pair_mask = _strip_sample_dim(pair_mask, 3)  # -> [B, N, N]
+        # single_mask may be [B, num_samples, N] (from repr atoms); take first sample
+        if single_mask.ndim > 2:
+            single_mask = single_mask[:, 0]
+
+        si_list = []
+        zij_list = []
+
+        for i in range(no_samples):
+            zij_chunk = self.embed_zij(
+                si_input=si_input,
+                zij=zij,
+                x_pred=x_pred[:, i:i + 1],
+            )
+            # embed_zij broadcasts to [B, 1, N, N, C_z]; squeeze sample dim
+            zij_chunk = zij_chunk.squeeze(-4)
+            si_chunk = si
+
+            si_chunk, zij_chunk = self.pairformer_stack(
+                si_chunk,
+                zij_chunk,
+                single_mask,
+                pair_mask,
+            )
+
+            si_list.append(si_chunk.unsqueeze(-3))
+            zij_list.append(zij_chunk.unsqueeze(-4))
+
+            del si_chunk, zij_chunk
+
+        # [B, num_samples, N, C_s] and [B, num_samples, N, N, C_z]
+        return torch.cat(si_list, dim=-3), torch.cat(zij_list, dim=-4)
+
     def pairformer_emb(self, si_input: torch.Tensor, si: torch.Tensor,
                        zij: torch.Tensor, x_pred: torch.Tensor,
                        single_mask: torch.Tensor, pair_mask: torch.Tensor):
         zij = self.embed_zij(si_input=si_input, zij=zij, x_pred=x_pred)
         batch_dims = x_pred.shape[:-2]
 
-        # Expand sample dimension and reshape for DS and cuEq kernels
         def reshape_inputs(x: torch.Tensor, feat_dims: list):
             x = x.expand(*(batch_dims + feat_dims))
             x = x.reshape(-1, *feat_dims)
@@ -149,7 +214,7 @@ class PairformerEmbedding(nn.Module):
         def reshape_outputs(x: torch.Tensor, feat_dims: list):
             return x.reshape(*batch_dims, *feat_dims)
 
-        si = reshape_inputs(x=si, feat_dims=si.shape[-2:]).clone()
+        si = reshape_inputs(x=si, feat_dims=si.shape[-2:])
         zij = reshape_inputs(x=zij, feat_dims=zij.shape[-3:])
         single_mask = reshape_inputs(x=single_mask,
                                      feat_dims=single_mask.shape[-1:])
@@ -161,9 +226,14 @@ class PairformerEmbedding(nn.Module):
 
         return si, zij
 
-    def forward(self, si_input: torch.Tensor, si: torch.Tensor,
-                zij: torch.Tensor, x_pred: torch.Tensor,
-                single_mask: torch.Tensor, pair_mask: torch.Tensor):
+    def forward(self,
+                si_input: torch.Tensor,
+                si: torch.Tensor,
+                zij: torch.Tensor,
+                x_pred: torch.Tensor,
+                single_mask: torch.Tensor,
+                pair_mask: torch.Tensor,
+                apply_per_sample: bool = False):
         """
         Args:
             si_input:
@@ -173,11 +243,16 @@ class PairformerEmbedding(nn.Module):
             zij:
                 [*, N_token, N_token, C_z] Pairwise embedding
             x_pred:
-                [*, N_token, 3] Representative atom predicted coordinates per token
+                Representative atom predicted coordinates per token.
+                Shape: [*, num_samples, N_token, 3] when apply_per_sample=True,
+                or [*, N_token, 3] when apply_per_sample=False (expanded internally).
             single_mask:
                 [*, N_token] Single mask
             pair_mask:
                 [*, N_token, N_token] Pair mask
+            apply_per_sample:
+                When True, run pairformer embedding per diffusion sample
+                to avoid OOM from expanding zij across all samples.
 
         Returns:
             si:
@@ -185,13 +260,24 @@ class PairformerEmbedding(nn.Module):
             zij:
                 [*, N_token, N_token, C_z] Updated pair representation
         """
-
-        si, zij = self.pairformer_emb(si_input=si_input,
-                                      si=si,
-                                      zij=zij,
-                                      x_pred=x_pred,
-                                      single_mask=single_mask,
-                                      pair_mask=pair_mask)
+        if apply_per_sample:
+            si, zij = self.per_sample_pairformer_emb(
+                si_input=si_input,
+                si=si,
+                zij=zij,
+                x_pred=x_pred,
+                single_mask=single_mask,
+                pair_mask=pair_mask,
+            )
+        else:
+            si, zij = self.pairformer_emb(
+                si_input=si_input,
+                si=si,
+                zij=zij,
+                x_pred=x_pred,
+                single_mask=single_mask,
+                pair_mask=pair_mask,
+            )
 
         return si, zij
 
@@ -531,6 +617,8 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         self.dtype = config.torch_dtype
         self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
+        # memory_efficient_mode default to True. This mean we will run pairformer_embedding with sequential mode (for each diffusion sample)
+        self.apply_per_sample = config.memory_efficient_mode
 
         self.pairformer_embedding = PairformerEmbedding(
             pairformer=config.pairformer,
@@ -656,6 +744,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             x_pred=repr_x_pred.to(dtype=self.dtype),
             single_mask=repr_x_mask.to(dtype=self.dtype),
             pair_mask=pair_mask.to(dtype=self.dtype),
+            apply_per_sample=self.apply_per_sample,
         )
 
         # Get atom mask padded to MAX_ATOMS_PER_TOKEN

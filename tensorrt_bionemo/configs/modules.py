@@ -128,6 +128,10 @@ class DiffusionTransformerConfig(BaseConfig):
     # broadcasts it to every block's proj_z.0, matching the reference
     # architecture where one LayerNorm is shared across all blocks.
     shared_pair_norm: bool = False
+    attn_output_gate: bool = True
+    attn_gate_bias: bool = False
+    transition_expansion_factor: int = 2
+    precompute_bias: bool = True
 
 
 class DiffusionTransformerBuildConfig(BuildConfig):

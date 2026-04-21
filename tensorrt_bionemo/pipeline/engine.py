@@ -12,11 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import time
 from typing import Any, Callable, Optional, Type
 
 import numpy as np
 import torch
 import torch.nn as nn
+from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs.base import EngineConfig
 from tensorrt_bionemo.data.schemas import FoldingOutput
@@ -96,6 +98,21 @@ class FoldingEngine:
     def execute(self, batch: dict[str, Any]) -> FoldingOutput:
         """ Execute the model with the input. """
         device_batch = self.transfer_batch_to_device(batch)
+
+        if self.config.profile_inference:
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+
         output = self.model(device_batch, **self.runtime_args)
+
+        if self.config.profile_inference:
+            torch.cuda.synchronize()
+            model_inference_time = time.perf_counter() - t0
+            logger.info(f"Model inference time: {model_inference_time:.4f} s")
+
         output = self.postprocessor(device_batch, output)
+
+        if self.config.profile_inference:
+            output["model_inference_time"] = model_inference_time
+
         return output

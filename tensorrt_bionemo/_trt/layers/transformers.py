@@ -399,10 +399,12 @@ class DiffusionTransformerLayer(Module):
                 "norm_z": True,
                 "o": False,
             },
-            conditioned_transition_using_silu: bool = False):
+            conditioned_transition_using_silu: bool = False,
+            attn_output_gate: bool = True):
         super().__init__()
         self.num_heads = num_heads
         self.need_compute_pair_bias = need_compute_pair_bias
+        self.attn_output_gate = attn_output_gate
         self.adaln = AdaLN(dim, dim_single_cond, eps=eps, dtype=dtype)
 
         self.pair_bias_attn = SelfAttentionPairBias(
@@ -417,12 +419,14 @@ class DiffusionTransformerLayer(Module):
             need_project_z=need_project_z,
             max_batch_size=max_batch_size,
             bias_flags=attn_bias_flags)
-        self.output_projection = Linear(
-            dim_single_cond,
-            dim,
-            dtype=dtype,
-            is_qkv=False,
-        )
+        self.output_projection = None
+        if self.attn_output_gate:
+            self.output_projection = Linear(
+                dim_single_cond,
+                dim,
+                dtype=dtype,
+                is_qkv=False,
+            )
         self.transition = ConditionedTransitionBlock(
             dim_single=dim,
             dim_single_cond=dim_single_cond,
@@ -448,8 +452,9 @@ class DiffusionTransformerLayer(Module):
                                 mask=mask,
                                 compute_pair_bias=self.need_compute_pair_bias,
                                 attention_params=attention_params)
-        b = activation(self.output_projection(s),
-                       trt.ActivationType.SIGMOID) * b  # TODO: fuse here
+        if self.attn_output_gate:
+            b = activation(self.output_projection(s),
+                           trt.ActivationType.SIGMOID) * b  # TODO: fuse here
         a = a + b
         a = a + self.transition(a, s)
         if self.post_lnorm is not None:
@@ -479,8 +484,19 @@ class TokenTransformer(PretrainedModule):
                 attention_initial_norm=config.attention_initial_norm,
                 post_layer_norm=config.post_layer_norm,
                 need_project_z=config.version == "v1",
-                max_batch_size=config.max_batch_size)
-            for i in range(config.num_blocks)
+                max_batch_size=config.max_batch_size,
+                conditioned_transition_using_silu=getattr(
+                    config, 'conditioned_transition_using_silu', False),
+                attn_output_gate=getattr(config, 'attn_output_gate', True),
+                attn_bias_flags={
+                    "q": True,
+                    "k": False,
+                    "v": False,
+                    "g": getattr(config, 'attn_gate_bias', False),
+                    "z": False,
+                    "norm_z": True,
+                    "o": False,
+                }) for i in range(config.num_blocks)
         ])
 
     def forward(self,

@@ -20,6 +20,8 @@ import torch.nn as nn
 from cuequivariance_ops_torch.fused_layer_norm_torch import \
     layer_norm_transpose
 
+from tensorrt_bionemo._torch.custom_ops.fused_ln_proj_moveaxis_pad import \
+    LNProjMoveaxisPad
 from tensorrt_bionemo._torch.distributed import (
     AllReduceParams, get_default_dcp_group_coordinator,
     get_default_tp_group_coordinator)
@@ -29,8 +31,10 @@ from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
 from tensorrt_bionemo._trt.layers.triangle_nodes import (
     TriangleAttentionNodeType, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
+from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 from ..attention_backend import AttentionMetadata
+from ..attention_backend.utils import precompute_pair_masks
 from ..custom_ops.dual_gemm import get_dual_gemm_op
 from .attention import TriangleAttention
 
@@ -56,7 +60,6 @@ class TriangleAttentionNode(nn.Module):
             "k": False,
             "v": False,
             "g": False,
-            "z": False,
             "o": False
         }):
         """
@@ -85,6 +88,7 @@ class TriangleAttentionNode(nn.Module):
         self.tp_rank = self.mapping.tp_rank
         self.gpus_per_node = self.mapping.gpus_per_node
         self.dtype = dtype
+        self.attn_backend = attn_backend
 
         assert self.num_heads % self.tp_size == 0
         self.num_heads = self.num_heads // self.tp_size
@@ -119,6 +123,13 @@ class TriangleAttentionNode(nn.Module):
             attn_backend=attn_backend,
         )
 
+        self.J_padded_multiple = -1
+        if self.attn_backend == "CuTeDSL":
+            self.J_padded_multiple = 8
+        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(
+            D=self.c_in,
+            H=self.tp_size * self.num_heads,
+            dtype=dtype or torch.bfloat16)
         self.dcp_group_comm = None
         if self.dcp_size > 1:
             self.dcp_group_comm = get_default_dcp_group_coordinator()
@@ -157,12 +168,39 @@ class TriangleAttentionNode(nn.Module):
             mask = mask.to(self.dtype)
         return x, mask
 
+    def _prep_bias(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute triangle bias and apply LayerNorm to x.
+
+        Args:
+            x: input tensor [B, I, J, c_in] (already transposed for ending node)
+
+        Returns:
+            (x_normed, triangle_bias):
+                x_normed: [B, I, J, c_in] after LayerNorm
+                triangle_bias: [B, H, I, J_padded] projected and transposed
+        """
+        x = self.layer_norm(x)
+        triangle_bias = self._ln_proj_moveaxis_pad(
+            x,
+            ln_weight=None,
+            ln_bias=None,
+            proj_weight=self.linear.weight,
+            pad_multiple=self.J_padded_multiple,
+            proj_z=self.linear,
+        )
+        return x, triangle_bias
+
     def forward(
-            self,
-            x: torch.Tensor,
-            mask: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        mask_bias: Optional[torch.Tensor] = None,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """
         Forward pass for the triangle attention node. If dcp_size > 1 and chunk_size,
@@ -171,23 +209,31 @@ class TriangleAttentionNode(nn.Module):
 
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
-            mask (Optional[torch.Tensor]): mask tensor [B, I, J]
+            mask (Optional[torch.Tensor]): mask tensor [B, I, J].
+                Ignored when *mask_bias* is provided.
+            mask_bias (Optional[torch.Tensor]): precomputed additive mask bias
+                ([B, I, 1, 1, J] for starting, [B, J, 1, 1, I] for ending).
+                When supplied, the per-layer mask->bias computation is skipped.
             attn_metadata (Optional[AttentionMetadata]): attention metadata
+            buffers: Shared pre-allocated buffer dict.
         """
-        if mask is None:
-            mask = x.new_ones(x.shape[:-1])
-        x, mask = self._ensure_dtype(x, mask)
+        if x.dtype != self.dtype:
+            x = x.to(self.dtype)
         if self.node_type == TriangleAttentionNodeType.ENDING:
             x = x.transpose(1, 2)
-            mask = mask.transpose(1, 2)
 
-        x = self.layer_norm(x)
-        # Compute mask bias
-        mask_bias = (self.inf * (mask - 1))[..., :, None, None, :]
+        if mask_bias is None:
+            if mask is None:
+                mask = x.new_ones(x.shape[:-1])
+            if self.node_type == TriangleAttentionNodeType.ENDING:
+                mask = mask.transpose(1, 2)
+            precomputed = precompute_pair_masks(self.attn_backend,
+                                                mask,
+                                                inf=self.inf,
+                                                dtype=self.dtype)
+            mask_bias = precomputed.mask_bias
 
-        # Compute triangle bias
-        lx = self.linear(x)  # [B, I, J, H]
-        triangle_bias = torch.permute(lx, (0, 3, 1, 2))
+        x, triangle_bias = self._prep_bias(x)
 
         seq_len = x.shape[1]
         x, mask_bias = self._dcp_slice(x, mask_bias)
@@ -203,7 +249,8 @@ class TriangleAttentionNode(nn.Module):
                 chunk_output = self.mha(x_chunk,
                                         biases=biases,
                                         attn_metadata=attn_metadata,
-                                        all_reduce_params=all_reduce_params)
+                                        all_reduce_params=all_reduce_params,
+                                        buffers=buffers)
                 outputs.append(chunk_output)
             output = torch.cat(outputs, dim=1)
         else:
@@ -211,7 +258,8 @@ class TriangleAttentionNode(nn.Module):
             output = self.mha(x,
                               biases=biases,
                               attn_metadata=attn_metadata,
-                              all_reduce_params=all_reduce_params)
+                              all_reduce_params=all_reduce_params,
+                              buffers=buffers)
         output = self._dcp_gather(output)
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)

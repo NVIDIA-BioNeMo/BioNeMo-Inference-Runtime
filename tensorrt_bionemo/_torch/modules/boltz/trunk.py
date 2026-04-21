@@ -19,6 +19,8 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend.utils import (
+    PrecomputedPairMasks, precompute_pair_masks)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
@@ -112,6 +114,7 @@ class MSALayer(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
         chunk_heads_pwa: bool = False,
+        precomputed_masks: Optional[PrecomputedPairMasks] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -120,6 +123,7 @@ class MSALayer(nn.Module):
             token_mask(Tensor): The mask tensor of shape (B, N, N).
             msa_mask(Tensor): The mask tensor of shape (B, S, N).
             chunk_heads_pwa(bool): Chunk pair-weighted averaging by heads.
+            precomputed_masks: Precomputed mask biases for triangle attention.
         Returns:
             Tuple[Tensor, Tensor]: The output tensor of shape (B, N, N, token_z), (B, S, N, msa_s).
         """
@@ -129,12 +133,12 @@ class MSALayer(nn.Module):
             m, all_reduce_params, chunk_size=(32 if chunk_heads_pwa else None))
         z = z + self.outer_product_mean(m, msa_mask, all_reduce_params)
 
-        # Compute pairwise stack
         z = self.pairformer_layer(
             z,
             token_mask,
             attn_metadatas={"triangle_attn": attn_metadata},
-            all_reduce_params=all_reduce_params)
+            all_reduce_params=all_reduce_params,
+            precomputed_masks=precomputed_masks)
         return z, m
 
 
@@ -269,6 +273,14 @@ class MSAModule(nn.Module):
         chunk_heads_pwa = (self.pwa_chunk_token_threshold is not None
                            and n_tokens > self.pwa_chunk_token_threshold)
 
+        first_layer = self.layers[0]
+        precomputed = precompute_pair_masks(
+            first_layer.pairformer_layer.triangle_attn_backend,
+            token_pad_mask,
+            inf=first_layer.inf,
+            dtype=first_layer.dtype,
+        )
+
         for i in range(self.msa_blocks):
             z, m = self.layers[i](z,
                                   m,
@@ -276,7 +288,8 @@ class MSAModule(nn.Module):
                                   msa_mask,
                                   attn_metadata,
                                   all_reduce_params,
-                                  chunk_heads_pwa=chunk_heads_pwa)
+                                  chunk_heads_pwa=chunk_heads_pwa,
+                                  precomputed_masks=precomputed)
         return z
 
 

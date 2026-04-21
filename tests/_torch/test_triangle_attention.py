@@ -26,6 +26,7 @@ from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
 from tensorrt_bionemo._torch.layers.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import skip_cutedsl as _skip_cutedsl
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -40,6 +41,30 @@ class Scenario:
     # chunk_size: int = None
     # chunk_dim: int = None
     torch_dtype: str = "float32"
+
+
+def _make_biases(backend, bs, seq_len, num_heads, dtype, device):
+    """Build [mask_bias, triangle_bias] with the right mask shape per backend."""
+    if backend == "CuTeDSL":
+        mask_bias = torch.randint(0,
+                                  2, (bs, seq_len, seq_len),
+                                  dtype=torch.float32,
+                                  device=device)
+    else:
+        mask_bias = torch.randn(bs,
+                                seq_len,
+                                1,
+                                1,
+                                seq_len,
+                                dtype=dtype,
+                                device=device)
+    triangle_bias = torch.randn(bs,
+                                num_heads,
+                                seq_len,
+                                seq_len,
+                                dtype=dtype,
+                                device=device)
+    return [mask_bias, triangle_bias]
 
 
 @pytest.mark.parametrize("s", [
@@ -123,3 +148,85 @@ def test_triangle_attention_backend(s: Scenario):
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.6
         assert abs(diff0_mean - diff1_mean) <= 0.2
+
+
+@_skip_cutedsl
+@pytest.mark.parametrize("s", [
+    Scenario(backend="CuTeDSL", torch_dtype="bfloat16"),
+])
+def test_triangle_attention_cutedsl(s: Scenario):
+    """CuTeDSL backend uses 3D mask [B, I, J] and only supports fp16/bf16."""
+    torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    metadata_cls = get_attention_backend(s.backend,
+                                         AttentionType.TRIANGLE).Metadata
+    bs = 1
+    dtype = str_dtype_to_torch(s.torch_dtype)
+    device = torch.device('cuda')
+
+    ref_attn = RefTriangleAttention.load_weights(
+        no_heads=s.num_attention_heads)
+    ref_attn = ref_attn.to(device)
+    weights_and_biases = create_triangle_attention_weights(from_ref=ref_attn)
+
+    attn = TriangleAttention(layer_idx=0,
+                             hidden_size=s.hidden_size,
+                             head_dim=s.hidden_size // s.num_attention_heads,
+                             num_attention_heads=s.num_attention_heads,
+                             num_key_value_heads=s.num_key_value_heads,
+                             gating=s.gating,
+                             dtype=dtype,
+                             attn_backend=s.backend)
+    load_triangle_attention_weights_torch(attn,
+                                          weights_and_biases,
+                                          dtype=dtype)
+    attn.to(device)
+    attn_metadata = metadata_cls(mapping=Mapping())
+
+    hidden_states = torch.randn(bs,
+                                s.seq_len,
+                                s.seq_len,
+                                s.hidden_size,
+                                dtype=torch.float32,
+                                device=device)
+
+    binary_mask = torch.randint(0,
+                                2, (bs, s.seq_len, s.seq_len),
+                                dtype=torch.float32,
+                                device=device)
+    triangle_bias = torch.randn(bs,
+                                s.num_attention_heads,
+                                s.seq_len,
+                                s.seq_len,
+                                dtype=torch.float32,
+                                device=device)
+
+    inf_val = 1e9
+    ref_mask_bias = ((binary_mask - 1.0) * inf_val).unsqueeze(-2).unsqueeze(-3)
+    ref_biases = [ref_mask_bias, triangle_bias]
+
+    cutedsl_biases = [binary_mask, triangle_bias.to(dtype)]
+
+    with torch.inference_mode():
+        ref_output_float = ref_attn(hidden_states,
+                                    hidden_states,
+                                    biases=ref_biases)
+
+        ref_attn_typed = ref_attn.to(dtype)
+        ref_biases_typed = [b.to(dtype) for b in ref_biases]
+        ref_output_typed = ref_attn_typed(hidden_states.to(dtype),
+                                          hidden_states.to(dtype),
+                                          biases=ref_biases_typed)
+
+        output = attn(hidden_states.to(dtype),
+                      biases=cutedsl_biases,
+                      attn_metadata=attn_metadata)
+
+    assert output.shape == ref_output_typed.shape
+
+    diff_ours = torch.max(torch.abs(output.float() - ref_output_float))
+    diff_ref = torch.max(torch.abs(ref_output_typed.float() -
+                                   ref_output_float))
+    assert diff_ours <= 2.0 * diff_ref + 1e-3, (
+        f"CuTeDSL diff={diff_ours}, ref bf16 diff={diff_ref}")

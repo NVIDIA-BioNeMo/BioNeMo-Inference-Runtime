@@ -26,9 +26,10 @@ from test_utils.boltz.ref_layers import RefDiffusionModule
 from tensorrt_bionemo._torch.attention_backend.interface import \
     AttentionMetadata
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_indexing_matrix, query_to_keys)
+    create_gather_indices, query_to_keys_optimized)
 from tensorrt_bionemo._torch.modules.boltz.structure import DiffusionModule
 from tensorrt_bionemo.configs import DiffusionTransformerConfig
+from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -43,15 +44,18 @@ class Scenario:
     heads: int = 4
     depth: int = 3
     token_s: int = 768 // 2
+    token_transformer_depth: int = 3
+    token_transformer_heads: int = 16
     multiplicity: int = 1
+    pairwise_attn_backend: str = "SDPA"
 
 
 def init_config(sc: Scenario, ref_module: RefDiffusionModule):
     token_transformer_config = DiffusionTransformerConfig(
         architecture="boltz_token_transformer",
         version="v2",
-        num_blocks=24,
-        num_heads=16,
+        num_blocks=sc.token_transformer_depth,
+        num_heads=sc.token_transformer_heads,
         dim=2 * ref_module.token_s,
         dim_single_cond=2 * ref_module.token_s,
         dtype=sc.dtype)
@@ -90,20 +94,41 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
         dtype=sc.dtype,
     )
 
+    if sc.pairwise_attn_backend != "SDPA":
+        diffusion_module_config.set_pairwise_attention_backend(
+            sc.pairwise_attn_backend)
+
     return diffusion_module_config
 
 
 @pytest.mark.parametrize("sc", [
     Scenario(dtype="float32", multiplicity=5),
-    Scenario(dtype="bfloat16", multiplicity=1)
-])
+    Scenario(dtype="bfloat16", multiplicity=1),
+    Scenario(dtype="bfloat16", multiplicity=5),
+    Scenario(dtype="bfloat16", multiplicity=1,
+             pairwise_attn_backend="CuTeDSL"),
+    Scenario(dtype="bfloat16", multiplicity=5,
+             pairwise_attn_backend="CuTeDSL"),
+],
+                         ids=[
+                             "float32-mult5",
+                             "bfloat16-mult1",
+                             "bfloat16-mult5",
+                             "bfloat16-mult1-cutedsl",
+                             "bfloat16-mult5-cutedsl",
+                         ])
 def test_diffusion_module(sc: Scenario):
+    _skip_if_cutedsl(sc.pairwise_attn_backend)
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = sc.batch_size
     device = torch.device('cuda')
     ref_module = RefDiffusionModule.load_weights().to(device)
+    tt_depth = sc.token_transformer_depth
+    ref_module.token_transformer.layers = \
+        ref_module.token_transformer.layers[:tt_depth]
+    ref_module.token_transformer.num_blocks = tt_depth
     ref_module.eval()
 
     dtype = str_dtype_to_torch(sc.dtype)
@@ -111,8 +136,10 @@ def test_diffusion_module(sc: Scenario):
     K = sc.n_atoms // sc.atom_window_queries
     W = sc.atom_window_queries
     H = sc.atom_window_keys
-    keys_indexing_matrix = create_indexing_matrix(K, W, H, device)
-    to_keys = lambda x: query_to_keys(x, keys_indexing_matrix, W, H)
+    gather_indices, _ = create_gather_indices(K, W, H, device)
+    to_keys = lambda x: query_to_keys_optimized(x, gather_indices, W, H)
+
+    token_trans_bias_dim = sc.token_transformer_depth * sc.token_transformer_heads
 
     q = torch.rand(bs, sc.n_atoms, sc.dim, dtype=torch.float32).to(device)
     c = torch.rand(bs, sc.n_atoms, sc.dim, dtype=torch.float32).to(device)
@@ -131,7 +158,7 @@ def test_diffusion_module(sc: Scenario):
     atom_token_bias = torch.rand(bs,
                                  sc.n_res,
                                  sc.n_res,
-                                 sc.token_s,
+                                 token_trans_bias_dim,
                                  dtype=torch.float32).to(device)
     atom_pad_mask = torch.randint(0,
                                   2, (bs, sc.n_atoms),
@@ -223,6 +250,7 @@ def test_diffusion_module(sc: Scenario):
                 torch.abs(ref_output.float() - ref_output_float))
             diff1_mean = torch.mean(
                 torch.abs(ref_output.float() - ref_output_float))
+
             assert abs(diff0_max - diff1_max) / torch.min(
                 diff0_max, diff1_max) <= 0.5
             assert abs(diff0_mean - diff1_mean) <= 0.2

@@ -19,7 +19,9 @@ import torch
 import torch.nn as nn
 from tensorrt_llm_lite import logger
 
-from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend import (
+    AttentionMetadata, auto_select_pairwise_attention_backend,
+    auto_select_triangle_attention_backend)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
@@ -370,14 +372,22 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             )
         config = config_class()
         config.trunk.set_dtype(torch.bfloat16)
-        config.trunk.set_triangle_attention_backend("CUEQUIV")
+        tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
+        pair_backend = auto_select_pairwise_attention_backend(torch.bfloat16)
+
+        config.trunk.set_triangle_attention_backend(tri_backend)
+        config.trunk.set_pairwise_attention_backend(pair_backend)
         config.trunk.pairformer.s_path_dtype = torch.bfloat16
         config.structure_module.score_model.set_dtype(torch.bfloat16)
+        config.structure_module.score_model.set_pairwise_attention_backend(
+            pair_backend)
 
-        config.confidence_module.set_triangle_attention_backend("CUEQUIV")
+        config.confidence_module.set_triangle_attention_backend(tri_backend)
         config.confidence_module.msa_module.set_dtype(torch.bfloat16)
         config.confidence_module.pairformer.set_dtype(torch.bfloat16)
         config.confidence_module.pairformer.s_path_dtype = torch.bfloat16
+        config.confidence_module.pairformer.set_pairwise_attention_backend(
+            pair_backend)
         return config
 
     def create_attn_metadata(self, n_atoms: int) -> AttentionMetadata:

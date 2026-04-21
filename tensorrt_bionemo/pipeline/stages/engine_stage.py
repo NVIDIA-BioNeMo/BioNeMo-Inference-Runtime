@@ -55,11 +55,13 @@ class FoldingEngineWrapper:
         postprocessor_config = engine_kwargs.get("postprocessor_config", None)
         postprocessor_class = get_postprocessor(model)
         device_config = engine_kwargs.get("device", None) or DeviceConfig()
+        profile_inference = engine_kwargs.get("profile_inference", False)
         engine_config = EngineConfig(name=model,
                                      model=model_config,
                                      device=device_config,
                                      accelerated=accelerated_configs,
-                                     postprocessor=postprocessor_config)
+                                     postprocessor=postprocessor_config,
+                                     profile_inference=profile_inference)
         self.engine = FoldingEngine(engine_config,
                                     model_class,
                                     postprocessor_class,

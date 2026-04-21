@@ -3,6 +3,7 @@ from .allocator import (BaseContextMemoryManager, OnDemandContextMemoryManager,
 from .backend import (FALLBACK_STRATEGIES, AutoFallback, BackendBase,
                       BackendType, FallbackStrategy, TorchFallbackStrategy,
                       TRTFallbackStrategy)
+from .buffers import PreallocatedBuffers, ensure_buffer
 
 __all__ = [
     "AutoFallback",
@@ -16,4 +17,6 @@ __all__ = [
     "SimpleContextMemoryManager",
     "SharedContextMemoryManager",
     "OnDemandContextMemoryManager",
+    "PreallocatedBuffers",
+    "ensure_buffer",
 ]

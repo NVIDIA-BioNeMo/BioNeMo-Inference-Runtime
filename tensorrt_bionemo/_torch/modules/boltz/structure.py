@@ -46,6 +46,7 @@ from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
     num_pocket_contact_info, num_tokens)
+from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class DiffusionConditioning(nn.Module):
@@ -365,6 +366,10 @@ class DiffusionModule(nn.Module):
         )
         # s: [B, multiplicity, N, 2*token_s]
 
+        buffers: Optional[PreallocatedBuffers] = None
+        if self.token_transformer.pairwise_attention_backend == "CuTeDSL":
+            buffers = {}
+
         # Sequence-local Atom Attention and aggregation to coarse-grained tokens
         a, q_skip, c_skip = self.atom_attention_encoder(
             atom_to_token=atom_to_token,
@@ -375,6 +380,7 @@ class DiffusionModule(nn.Module):
             r=r_noisy.to(self.dtype),
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params,
+            buffers=buffers,
         )
         # a: [B, multiplicity, N_res, 2 * token_s]
         # q_skip: [B, multiplicity, N_atoms, atom_s]
@@ -394,6 +400,7 @@ class DiffusionModule(nn.Module):
             mask=mask,
             attn_metadata=token_transformer_attn_metadata,
             all_reduce_params=all_reduce_params,
+            buffers=buffers,
         )
         a = self.a_norm(a)
 
@@ -406,7 +413,8 @@ class DiffusionModule(nn.Module):
             c=c_skip,
             bias=atom_dec_bias,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params)
+            all_reduce_params=all_reduce_params,
+            buffers=buffers)
 
         return r_update, a
 

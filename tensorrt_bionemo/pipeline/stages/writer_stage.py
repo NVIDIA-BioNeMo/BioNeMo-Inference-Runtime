@@ -186,7 +186,7 @@ class WriterUDF(StatefulStageUDF):
                 json.dump(scores, f)
 
         primary_path = output_paths.get(self.format)
-        return {
+        result = {
             "output_path": primary_path,
             "output_paths": json.dumps(output_paths),
             "format": self.format,
@@ -194,6 +194,10 @@ class WriterUDF(StatefulStageUDF):
             "scores": json.dumps(scores),
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
+        for timing_key in ("time_taken", "model_inference_time"):
+            if timing_key in row:
+                result[timing_key] = row[timing_key]
+        return result
 
     def on_row_error(self, row: Dict[str, Any],
                      error: Exception) -> Dict[str, Any]:

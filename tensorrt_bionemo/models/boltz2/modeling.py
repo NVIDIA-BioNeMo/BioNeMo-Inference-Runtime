@@ -20,7 +20,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend import (
+    AttentionMetadata, auto_select_pairwise_attention_backend,
+    auto_select_triangle_attention_backend)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.conditioning import ContactConditioning
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
@@ -267,11 +269,21 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
         config.trunk.set_dtype(torch.bfloat16)
         config.trunk.pairformer.s_path_dtype = torch.bfloat16
-        config.trunk.set_triangle_attention_backend("CUEQUIV")
-        config.structure_module.score_model.set_dtype(torch.bfloat16)
+        tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
+        pair_backend = auto_select_pairwise_attention_backend(torch.bfloat16)
 
-        config.confidence_module.set_triangle_attention_backend("CUEQUIV")
+        config.trunk.set_triangle_attention_backend(tri_backend)
+        config.trunk.set_pairwise_attention_backend(pair_backend)
+
+        config.structure_module.score_model.set_dtype(torch.bfloat16)
+        config.structure_module.score_model.set_pairwise_attention_backend(
+            pair_backend)
+
+        config.confidence_module.set_triangle_attention_backend(tri_backend)
         config.confidence_module.pairformer.set_dtype(torch.bfloat16)
+        config.confidence_module.pairformer.s_path_dtype = torch.bfloat16
+        config.confidence_module.pairformer.set_pairwise_attention_backend(
+            pair_backend)
         return config
 
     def load_weights(self, weights: dict = None) -> None:
@@ -627,10 +639,11 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
         config = Boltz2.get_pretrained_config(model_name)
         config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
         config.trunk.set_dtype(torch.bfloat16)
-        config.trunk.set_triangle_attention_backend("CUEQUIV")
+        tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
+        config.trunk.set_triangle_attention_backend(tri_backend)
         config.structure_module.score_model.set_dtype(torch.bfloat16)
 
-        config.confidence_module.set_triangle_attention_backend("CUEQUIV")
+        config.confidence_module.set_triangle_attention_backend(tri_backend)
         config.confidence_module.pairformer.set_dtype(torch.bfloat16)
 
         config.affinity.module1.set_dtype(torch.bfloat16)

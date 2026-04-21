@@ -5,13 +5,14 @@ import triton.testing
 
 @triton.jit
 def trifast_attention_kernel_fwd(
-        o_ptr, stride_oh, stride_om, stride_on, stride_od, lse_ptr, stride_lseh,
-        stride_lsem, stride_lsen, q_ptr, stride_qh, stride_qm, stride_qn,
-        stride_qd, k_ptr, stride_kh, stride_km, stride_kn, stride_kd, v_ptr,
-        stride_vh, stride_vm, stride_vn, stride_vd, b_ptr, stride_bh, stride_bm,
-        stride_bn, mask_ptr, stride_maskh, stride_maskm, stride_maskn, sm_scale,
-        neg_inf, batch_size, si, seq_len, heads, DIM: tl.constexpr,
-        BLOCK_J: tl.constexpr, BLOCK_K: tl.constexpr, CLOSEST_N: tl.constexpr):
+        o_ptr, stride_oh, stride_om, stride_on, stride_od, lse_ptr,
+        stride_lseh, stride_lsem, stride_lsen, q_ptr, stride_qh, stride_qm,
+        stride_qn, stride_qd, k_ptr, stride_kh, stride_km, stride_kn,
+        stride_kd, v_ptr, stride_vh, stride_vm, stride_vn, stride_vd, b_ptr,
+        stride_bh, stride_bm, stride_bn, mask_ptr, stride_maskh, stride_maskm,
+        stride_maskn, sm_scale, neg_inf, batch_size, si, seq_len, heads,
+        DIM: tl.constexpr, BLOCK_J: tl.constexpr, BLOCK_K: tl.constexpr,
+        CLOSEST_N: tl.constexpr):
     """
     This code from trifast repository: https://github.com/latkins/trifast
     But modified to be enable for building with TensorRT plugins and also used in Torch.
@@ -191,11 +192,15 @@ def create_autotuner() -> triton.runtime.Autotuner:
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 32
-        }, num_warps=1, num_stages=5),
+        },
+                      num_warps=1,
+                      num_stages=5),
         triton.Config({
             "BLOCK_J": 64,
             "BLOCK_K": 32
-        }, num_warps=4, num_stages=2),
+        },
+                      num_warps=4,
+                      num_stages=2),
         triton.Config({
             "BLOCK_J": 128,
             "BLOCK_K": 32
@@ -205,11 +210,15 @@ def create_autotuner() -> triton.runtime.Autotuner:
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 64
-        }, num_warps=4, num_stages=3),
+        },
+                      num_warps=4,
+                      num_stages=3),
         triton.Config({
             "BLOCK_J": 64,
             "BLOCK_K": 16
-        }, num_warps=2, num_stages=3),
+        },
+                      num_warps=2,
+                      num_stages=3),
         triton.Config({
             "BLOCK_J": 128,
             "BLOCK_K": 16
@@ -219,19 +228,27 @@ def create_autotuner() -> triton.runtime.Autotuner:
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 16
-        }, num_warps=2, num_stages=4),
+        },
+                      num_warps=2,
+                      num_stages=4),
         triton.Config({
             "BLOCK_J": 16,
             "BLOCK_K": 32
-        }, num_warps=4, num_stages=2),
+        },
+                      num_warps=4,
+                      num_stages=2),
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 16
-        }, num_warps=4, num_stages=1),
+        },
+                      num_warps=4,
+                      num_stages=1),
         triton.Config({
             "BLOCK_J": 16,
             "BLOCK_K": 64
-        }, num_warps=4, num_stages=1),
+        },
+                      num_warps=4,
+                      num_stages=1),
         triton.Config({
             "BLOCK_J": 128,
             "BLOCK_K": 16
@@ -241,27 +258,39 @@ def create_autotuner() -> triton.runtime.Autotuner:
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 32
-        }, num_warps=8, num_stages=1),
+        },
+                      num_warps=8,
+                      num_stages=1),
         triton.Config({
             "BLOCK_J": 64,
             "BLOCK_K": 32
-        }, num_warps=8, num_stages=1),
+        },
+                      num_warps=8,
+                      num_stages=1),
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 16
-        }, num_warps=2, num_stages=5),
+        },
+                      num_warps=2,
+                      num_stages=5),
         triton.Config({
             "BLOCK_J": 16,
             "BLOCK_K": 16
-        }, num_warps=8, num_stages=1),
+        },
+                      num_warps=8,
+                      num_stages=1),
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 64
-        }, num_warps=8, num_stages=1),
+        },
+                      num_warps=8,
+                      num_stages=1),
         triton.Config({
             "BLOCK_J": 64,
             "BLOCK_K": 64
-        }, num_warps=4, num_stages=1),
+        },
+                      num_warps=4,
+                      num_stages=1),
         triton.Config({
             "BLOCK_J": 128,
             "BLOCK_K": 32
@@ -271,7 +300,9 @@ def create_autotuner() -> triton.runtime.Autotuner:
         triton.Config({
             "BLOCK_J": 16,
             "BLOCK_K": 32
-        }, num_warps=8, num_stages=2),
+        },
+                      num_warps=8,
+                      num_stages=2),
         triton.Config({
             "BLOCK_J": 32,
             "BLOCK_K": 128

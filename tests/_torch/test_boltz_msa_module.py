@@ -25,20 +25,27 @@ from test_utils.boltz.ref_layers import RefMSALayer, RefMSAModule
 
 from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
+from tensorrt_bionemo._torch.attention_backend.utils import \
+    precompute_pair_masks
 from tensorrt_bionemo._torch.modules.boltz.trunk import MSALayer, MSAModule
 from tensorrt_bionemo.configs import MSAModuleConfig
+from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 
 @dataclass(kw_only=True, frozen=True)
 class Scenario:
     torch_dtype: str = "float32"
+    triangle_attn_backend: str = "VANILLA"
 
 
 @pytest.mark.parametrize("sc", [
     Scenario(),
     Scenario(torch_dtype="bfloat16"),
+    Scenario(triangle_attn_backend="CUEQUIV"),
+    Scenario(triangle_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
 ])
 def test_msa_layer(sc: Scenario):
+    _skip_if_cutedsl(sc.triangle_attn_backend)
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
@@ -55,6 +62,7 @@ def test_msa_layer(sc: Scenario):
                          token_z=ref_mod.token_z,
                          pairwise_head_width=ref_mod.pairwise_head_width,
                          pairwise_num_heads=ref_mod.pairwise_num_heads,
+                         triangle_attn_backend=sc.triangle_attn_backend,
                          dtype=dtype)
     load_msa_layer_weights_torch(msa_layer, weights_and_biases, dtype=dtype)
     msa_layer.to(device)
@@ -67,7 +75,7 @@ def test_msa_layer(sc: Scenario):
                              dtype=torch.float32).to(device)
 
     triangle_metadata_cls = get_attention_backend(
-        "VANILLA", AttentionType.TRIANGLE).Metadata
+        sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
     with torch.inference_mode():
         ref_z_float, ref_m_float = ref_mod(z, m, token_mask, msa_mask)
         z = z.to(dtype)
@@ -180,3 +188,74 @@ def test_msa_module(sc: Scenario):
 
     assert ref_z.shape == output_z.shape
     torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Tests for precomputed pair masks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sc", [
+    Scenario(),
+    Scenario(torch_dtype="bfloat16"),
+    Scenario(triangle_attn_backend="CUEQUIV"),
+    Scenario(triangle_attn_backend="CUEQUIV", torch_dtype="bfloat16"),
+    Scenario(triangle_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
+])
+def test_msa_layer_precomputed_masks(sc: Scenario):
+    """Outputs with precomputed masks must exactly match the original path."""
+    _skip_if_cutedsl(sc.triangle_attn_backend)
+    torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    bs = 1
+    dtype = str_dtype_to_torch(sc.torch_dtype)
+    device = torch.device('cuda')
+
+    ref_mod = RefMSALayer.load_weights()
+    ref_mod = ref_mod.to(device)
+    weights_and_biases = create_msa_layer_weights(from_ref=ref_mod)
+
+    msa_layer = MSALayer(msa_s=ref_mod.msa_s,
+                         token_z=ref_mod.token_z,
+                         pairwise_head_width=ref_mod.pairwise_head_width,
+                         pairwise_num_heads=ref_mod.pairwise_num_heads,
+                         triangle_attn_backend=sc.triangle_attn_backend,
+                         dtype=dtype)
+    load_msa_layer_weights_torch(msa_layer, weights_and_biases, dtype=dtype)
+    msa_layer.to(device)
+
+    z = torch.randn(bs, 64, 64, ref_mod.token_z, dtype=dtype, device=device)
+    m = torch.randn(bs, 32, 64, ref_mod.msa_s, dtype=dtype, device=device)
+    token_mask = torch.randint(0,
+                               2, (bs, 64, 64),
+                               dtype=torch.float32,
+                               device=device).to(dtype)
+    msa_mask = torch.randint(0,
+                             2, (bs, 32, 64),
+                             dtype=torch.float32,
+                             device=device).to(dtype)
+
+    triangle_metadata_cls = get_attention_backend(
+        sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
+
+    precomputed = precompute_pair_masks(sc.triangle_attn_backend,
+                                        token_mask,
+                                        inf=msa_layer.inf,
+                                        dtype=dtype)
+
+    with torch.inference_mode():
+        out_z, out_m = msa_layer(z,
+                                 m,
+                                 token_mask,
+                                 msa_mask,
+                                 attn_metadata=triangle_metadata_cls())
+        out_z_pre, out_m_pre = msa_layer(z,
+                                         m,
+                                         token_mask,
+                                         msa_mask,
+                                         attn_metadata=triangle_metadata_cls(),
+                                         precomputed_masks=precomputed)
+
+    torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
+    torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)

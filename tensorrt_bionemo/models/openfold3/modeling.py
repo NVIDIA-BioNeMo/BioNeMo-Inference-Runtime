@@ -18,7 +18,9 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend import (
+    AttentionMetadata, auto_select_pairwise_attention_backend,
+    auto_select_triangle_attention_backend)
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_indexing_matrix, pad_to_multiple_and_divide,
@@ -176,30 +178,35 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
                 f"OpenFold3 pretrained config not found for model name: {model_name}"
             )
         config = config_class()
+        tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
+        pair_backend = auto_select_pairwise_attention_backend(torch.bfloat16)
         config.msa_stack_module_config.set_triangle_attention_backend(
-            "CUEQUIV")
+            tri_backend)
         config.template_embedder_config.set_triangle_attention_backend(
-            "CUEQUIV")
+            tri_backend)
 
         config.trunk.pairformer.set_dtype("bfloat16")
         config.trunk.pairformer.s_path_dtype = torch.bfloat16
-        config.trunk.set_triangle_attention_backend("CUEQUIV")
-        config.diffusion_module_config.diffusion_transformer_config.token_transformer.set_dtype(
+        config.trunk.set_triangle_attention_backend(tri_backend)
+        config.trunk.set_pairwise_attention_backend(pair_backend)
+        config.diffusion_module_config.diffusion_transformer_config.set_dtype(
             "bfloat16")
+        config.diffusion_module_config.diffusion_transformer_config.token_transformer.set_pairwise_attention_backend(
+            pair_backend)
 
-        # config.set_dtype("bfloat16")
-        # config.trunk.pairformer.set_dtype("bfloat16")
         config.msa_stack_module_config.set_dtype("bfloat16")
-        # config.template_embedder_config.set_dtype("bfloat16")
-        # config.msa_module_embedder_config.set_dtype("bfloat16")
+        config.template_embedder_config.template_pair_stack.set_dtype(
+            "bfloat16")
 
         # config.diffusion_module_config.set_dtype("bfloat16")
         # config.diffusion_module_config.diffusion_transformer_config.token_transformer.set_dtype("bfloat16")
 
         config.auxiliary_heads_config.pairformer.set_triangle_attention_backend(
-            "CUEQUIV")
+            tri_backend)
         config.auxiliary_heads_config.pairformer.set_dtype("bfloat16")
         config.auxiliary_heads_config.pairformer.s_path_dtype = torch.bfloat16
+        config.auxiliary_heads_config.pairformer.set_pairwise_attention_backend(
+            pair_backend)
         config.auxiliary_heads_config.set_dtype("bfloat16")
         return config
 

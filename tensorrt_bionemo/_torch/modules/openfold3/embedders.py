@@ -143,7 +143,7 @@ class InputEmbedderAllAtom(nn.Module):
                 [*, N_token, C_s] Single representation
             z:
                 [*, N_token, N_token, C_z] Pair representation
-        """ 
+        """
         #TODO: Check if we need to cast the dtype to float32 here (if accuracy is not affected during inference)
 
         with torch.amp.autocast(device_type="cuda", dtype=torch.float32):
@@ -187,6 +187,7 @@ class InputEmbedderAllAtom(nn.Module):
 
         return s_input, s, z
 
+
 class MSAModuleEmbedder(nn.Module):
     """Sample MSA features and embed them. Implements AF3 Algorithm 8 lines 1-4.
     This section of the MSAModule is separated from the main stack to allow for
@@ -226,7 +227,7 @@ class MSAModuleEmbedder(nn.Module):
         self.dtype = config.torch_dtype
         self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
-        self.config = config 
+        self.config = config
 
         self.linear_m = Linear(config.c_m_feats,
                                config.c_m,
@@ -665,21 +666,20 @@ class TemplatePairEmbedderAllAtom(nn.Module):
 
         # [*, N_token, N_token]
         multichain_pair_mask = (
-            batch["asym_id"][..., None] == batch["asym_id"][..., None, :]
-        )
+            batch["asym_id"][..., None] == batch["asym_id"][..., None, :])
         multichain_pair_mask = multichain_pair_mask[..., None, :, :, None]
 
         # [*, N_templ, N_token, N_token]
         pseudo_beta_pair_mask = (
-            batch["template_pseudo_beta_mask"][..., None]
-            * batch["template_pseudo_beta_mask"][..., None, :]
+            batch["template_pseudo_beta_mask"][..., None] *
+            batch["template_pseudo_beta_mask"][..., None, :]
         )[..., None] * multichain_pair_mask
 
         template_distogram = batch["template_distogram"]
 
         backbone_frame_pair_mask = (
-            batch["template_backbone_frame_mask"][..., None]
-            * batch["template_backbone_frame_mask"][..., None, :]
+            batch["template_backbone_frame_mask"][..., None] *
+            batch["template_backbone_frame_mask"][..., None, :]
         )[..., None] * multichain_pair_mask
 
         template_unit_vector = batch["template_unit_vector"]
@@ -689,11 +689,9 @@ class TemplatePairEmbedderAllAtom(nn.Module):
         template_restype = batch["template_restype"]
         n_token = batch["template_restype"].shape[-2]
         template_restype_ti = template_restype[..., None, :].expand(
-            *template_restype.shape[:-2], -1, n_token, -1
-        )
+            *template_restype.shape[:-2], -1, n_token, -1)
         template_restype_tj = template_restype[..., None, :, :].expand(
-            *template_restype.shape[:-2], n_token, -1, -1
-        )
+            *template_restype.shape[:-2], n_token, -1, -1)
 
         a = torch.cat([
             template_distogram, pseudo_beta_pair_mask,
@@ -781,7 +779,7 @@ class TemplateEmbedderAllAtom(nn.Module):
             tri_attn_start_bias=tri_attn_start_bias,
             tri_attn_end_bias=tri_attn_end_bias,
             inf=self.inf,
-            dtype=self.dtype,
+            dtype=config.template_pair_stack.torch_dtype,
             mapping=self.mapping,
             skip_create_weights=self.skip_create_weights,
             eps=self.eps,
@@ -829,7 +827,18 @@ class TemplateEmbedderAllAtom(nn.Module):
         pair_mask = pair_mask[..., None, :, :].to(dtype=z.dtype)
 
         # [*, N_templ, N_token, N_token, C_z]
+        # The template pair stack may use CuTeDSL triangle attention which
+        # requires bf16/fp16.  Cast inputs to the stack's compute dtype when
+        # the embedder output is wider (e.g. fp32), then cast back afterwards.
+        embed_dtype = template_embeds.dtype
+        stack_block = self.template_pair_stack.blocks[0]
+        stack_dtype = getattr(stack_block, 'dtype', embed_dtype)
+        if embed_dtype != stack_dtype:
+            template_embeds = template_embeds.to(dtype=stack_dtype)
+            pair_mask = pair_mask.to(dtype=stack_dtype)
         t = self.template_pair_stack(t=template_embeds, mask=pair_mask)
+        if t.dtype != embed_dtype:
+            t = t.to(dtype=embed_dtype)
 
         # [*, N_token, N_token, C_z]
         t = torch.sum(t, dim=-4) / n_templ

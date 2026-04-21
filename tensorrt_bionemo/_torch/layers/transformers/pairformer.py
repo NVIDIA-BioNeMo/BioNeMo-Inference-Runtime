@@ -20,6 +20,9 @@ import torch.nn as nn
 from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend.utils import (
+    PrecomputedPairMasks, PrecomputedSingleMasks, precompute_pair_masks,
+    precompute_single_masks)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.transition import Transition
@@ -29,6 +32,7 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class PairformerLayerV1(nn.Module):
@@ -64,6 +68,8 @@ class PairformerLayerV1(nn.Module):
         self.no_update_z = no_update_z
         self.token_s = token_s
         self.token_z = token_z
+        self.triangle_attn_backend = triangle_attn_backend
+        self.pairwise_attn_backend = pairwise_attn_backend
         self.mapping = mapping or Mapping()
 
         if isinstance(s_path_dtype, str):
@@ -159,49 +165,70 @@ class PairformerLayerV1(nn.Module):
         )
 
     def _transform_z(
-            self,
-            z: torch.Tensor,
-            pair_mask: torch.Tensor,
-            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
+        self,
+        z: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        precomputed_masks: Optional[PrecomputedPairMasks] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
         z = z.to(self.dtype)
-        pair_mask = pair_mask.to(self.dtype)
-        z = z + self.tri_attn_start(
-            z,
-            mask=pair_mask,
-            attn_metadata=attn_metadatas.get("triangle_attn"),
-            all_reduce_params=all_reduce_params,
-        )
 
-        z = z + self.tri_attn_end(
-            z,
-            mask=pair_mask,
-            attn_metadata=attn_metadatas.get("triangle_attn"),
-            all_reduce_params=all_reduce_params,
-        )
+        tri_attn_metadata = (attn_metadatas or {}).get("triangle_attn")
+        if precomputed_masks is not None:
+            mb_start = precomputed_masks.mask_bias
+            mb_end = precomputed_masks.mask_bias_transposed
+        else:
+            mb_start = mb_end = None
+            pair_mask = pair_mask.to(self.dtype)
+
+        z = z + self.tri_attn_start(z,
+                                    mask=pair_mask,
+                                    mask_bias=mb_start,
+                                    attn_metadata=tri_attn_metadata,
+                                    all_reduce_params=all_reduce_params,
+                                    buffers=buffers)
+        z = z + self.tri_attn_end(z,
+                                  mask=pair_mask,
+                                  mask_bias=mb_end,
+                                  attn_metadata=tri_attn_metadata,
+                                  all_reduce_params=all_reduce_params,
+                                  buffers=buffers)
 
         z = z + self.transition_z(z)
         return z
 
-    def forward(self,
-                s: torch.Tensor,
-                z: torch.Tensor,
-                mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-                all_reduce_params: Optional[AllReduceParams] = None,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self._transform_z(z, pair_mask, attn_metadatas, all_reduce_params)
+    def forward(
+            self,
+            s: torch.Tensor,
+            z: torch.Tensor,
+            mask: torch.Tensor,
+            pair_mask: torch.Tensor,
+            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+            all_reduce_params: Optional[AllReduceParams] = None,
+            precomputed_masks: Optional[PrecomputedPairMasks] = None,
+            precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
+            buffers: Optional[PreallocatedBuffers] = None,
+            **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+        z = self._transform_z(z,
+                              pair_mask,
+                              attn_metadatas,
+                              all_reduce_params,
+                              precomputed_masks=precomputed_masks,
+                              buffers=buffers)
         if not self.no_update_s:
-            s = s + self.attention(
-                s,
-                z,
-                mask,
-                attn_metadata=attn_metadatas.get("pairwise_attn"),
-                all_reduce_params=all_reduce_params)
+            mask_bias = precomputed_single_masks.mask_bias if precomputed_single_masks else None
+            s = s + self.attention(s,
+                                   z,
+                                   mask,
+                                   attn_metadata=(attn_metadatas
+                                                  or {}).get("pairwise_attn"),
+                                   all_reduce_params=all_reduce_params,
+                                   mask_bias=mask_bias,
+                                   buffers=buffers)
             s = s + self.transition_s(s)
         return s, z
 
@@ -222,18 +249,26 @@ class PairformerNoSeqLayer(PairformerLayerV1):
                          pairwise_num_heads=pairwise_num_heads,
                          **kwargs)
 
-    def forward(self,
-                z: torch.Tensor,
-                pair_mask: torch.Tensor,
-                attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-                all_reduce_params: Optional[AllReduceParams] = None,
-                **kwargs) -> torch.Tensor:
-        _, update_z = super().forward(s=None,
-                                      z=z,
-                                      mask=None,
-                                      pair_mask=pair_mask,
-                                      attn_metadatas=attn_metadatas,
-                                      all_reduce_params=all_reduce_params)
+    def forward(
+            self,
+            z: torch.Tensor,
+            pair_mask: torch.Tensor,
+            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
+            all_reduce_params: Optional[AllReduceParams] = None,
+            precomputed_masks: Optional[PrecomputedPairMasks] = None,
+            precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
+            buffers: Optional[PreallocatedBuffers] = None,
+            **kwargs) -> torch.Tensor:
+        _, update_z = super().forward(
+            s=None,
+            z=z,
+            mask=None,
+            pair_mask=pair_mask,
+            attn_metadatas=attn_metadatas,
+            all_reduce_params=all_reduce_params,
+            precomputed_masks=precomputed_masks,
+            precomputed_single_masks=precomputed_single_masks,
+            buffers=buffers)
         return update_z
 
 
@@ -259,9 +294,24 @@ class PairformerNoSeqModule(nn.Module):
                 pair_mask: torch.Tensor,
                 attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
                 all_reduce_params: Optional[AllReduceParams] = None,
+                buffers: Optional[PreallocatedBuffers] = None,
                 **kwargs) -> torch.Tensor:
+        first_layer = self.layers[0]
+        precomputed = precompute_pair_masks(
+            first_layer.triangle_attn_backend,
+            pair_mask,
+            inf=first_layer.tri_attn_start.inf,
+            dtype=first_layer.dtype,
+        )
+        if buffers is None and first_layer.triangle_attn_backend == "CuTeDSL":
+            buffers = {}
         for layer in self.layers:
-            z = layer(z, pair_mask, attn_metadatas, all_reduce_params)
+            z = layer(z,
+                      pair_mask,
+                      attn_metadatas,
+                      all_reduce_params,
+                      precomputed_masks=precomputed,
+                      buffers=buffers)
         return z
 
 
@@ -283,9 +333,17 @@ class PairformerLayerV2(PairformerLayerV1):
         mask: torch.Tensor,
         pair_mask: torch.Tensor,
         attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        all_reduce_params: Optional[AllReduceParams] = None,
+        precomputed_masks: Optional[PrecomputedPairMasks] = None,
+        precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self._transform_z(z, pair_mask, attn_metadatas, all_reduce_params)
+        z = self._transform_z(z,
+                              pair_mask,
+                              attn_metadatas,
+                              all_reduce_params,
+                              precomputed_masks=precomputed_masks,
+                              buffers=buffers)
         original_s_dtype = s.dtype
         original_z_dtype = z.dtype
 
@@ -293,12 +351,15 @@ class PairformerLayerV2(PairformerLayerV1):
         z = z.to(self.s_path_dtype)
         s = s.to(self.s_path_dtype)
         s_normed = self.pre_norm_s(s)
-        s = s + self.attention(
-            s_normed,
-            z,
-            mask,
-            attn_metadata=attn_metadatas.get("pairwise_attn"),
-            all_reduce_params=all_reduce_params)
+        mask_bias = precomputed_single_masks.mask_bias if precomputed_single_masks else None
+        s = s + self.attention(s_normed,
+                               z,
+                               mask,
+                               attn_metadata=(attn_metadatas
+                                              or {}).get("pairwise_attn"),
+                               all_reduce_params=all_reduce_params,
+                               mask_bias=mask_bias,
+                               buffers=buffers)
         s = s + self.transition_s(s)
         if self.post_layer_norm:
             s = self.post_norm_s(s)
@@ -367,8 +428,31 @@ class PairformerModule(nn.Module):
                 attn_metadatas: Optional[dict[str,
                                               AttentionMetadata]] = dict(),
                 all_reduce_params: Optional[AllReduceParams] = None,
+                buffers: Optional[PreallocatedBuffers] = None,
                 **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+        precomputed = precompute_pair_masks(
+            self.config.triangle_attention_backend,
+            pair_mask,
+            inf=self.config.mask_inf,
+            dtype=self.config.torch_dtype,
+        )
+        precomputed_single = precompute_single_masks(
+            self.config.pairwise_attention_backend,
+            mask,
+            inf=self.config.mask_inf,
+        )
+        _uses_cute = ("CuTeDSL" in (self.config.triangle_attention_backend,
+                                    self.config.pairwise_attention_backend))
+        if buffers is None and _uses_cute:
+            buffers = {}
         for layer in self.layers:
-            s, z = layer(s, z, mask, pair_mask, attn_metadatas,
-                         all_reduce_params)
+            s, z = layer(s,
+                         z,
+                         mask,
+                         pair_mask,
+                         attn_metadatas,
+                         all_reduce_params,
+                         precomputed_masks=precomputed,
+                         precomputed_single_masks=precomputed_single,
+                         buffers=buffers)
         return s, z

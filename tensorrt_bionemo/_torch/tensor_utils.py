@@ -65,7 +65,7 @@ def batched_gather(data: torch.Tensor,
     ]
     remaining_dims[dim - no_batch_dims if dim >= 0 else dim] = inds
     ranges.extend(remaining_dims)
-    return data[ranges]
+    return data[tuple(ranges)]
 
 
 def dict_multimap(fn: Callable, dicts: list[dict]) -> dict:

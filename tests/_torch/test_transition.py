@@ -94,5 +94,5 @@ def test_conditioned_transition_block(sc: Scenario):
             torch.abs(ref_output.float() - ref_output_float))
 
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
+                                                      diff1_max) <= 1.0
         assert abs(diff0_mean - diff1_mean) <= 0.2

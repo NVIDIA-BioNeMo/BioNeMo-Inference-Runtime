@@ -19,11 +19,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
+    get_gated_sigmoid_op
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
+from tensorrt_bionemo.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 
 
@@ -62,7 +65,9 @@ class Transition(nn.Module):
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
-        self.silu = nn.SiLU()
+        self._swiglu = FusedSwiGLU(d=self.hidden,
+                                   three_way=False,
+                                   dtype=dtype or torch.bfloat16)
         self.fc3 = Linear(hidden,
                           out_dim,
                           dtype=dtype,
@@ -82,9 +87,8 @@ class Transition(nn.Module):
         if chunk_size is not None and x.dim() >= 3:
             return self._forward_chunked(x, all_reduce_params, chunk_size)
         x = self.norm(x)
-        x = self.fused_fc2_fc1(x)
-        x, gate = x.split([self.hidden, self.hidden], dim=-1)
-        x = self.silu(gate) * x
+        z = self.fused_fc2_fc1(x)
+        x = self._swiglu(z)
         x = self.fc3(x, all_reduce_params=all_reduce_params)
 
         if mask is not None:
@@ -104,9 +108,8 @@ class Transition(nn.Module):
         for i in range(0, x.shape[1], chunk_size):
             xi = x[:, i:i + chunk_size]
             xi = self.norm(xi)
-            xi = self.fused_fc2_fc1(xi)
-            xi, gate = xi.split([self.hidden, self.hidden], dim=-1)
-            xi = self.silu(gate) * xi
+            zi = self.fused_fc2_fc1(xi)
+            xi = self._swiglu(zi)
             xi = self.fc3(xi, all_reduce_params=all_reduce_params)
             chunks.append(xi)
         return torch.cat(chunks, dim=1)
@@ -143,6 +146,9 @@ class ConditionedTransitionBlock(nn.Module):
         self.dim_inner = int(dim_single * expansion_factor) // mapping.tp_size
         # Fused swiglu_gate linear and a_to_b
         self.using_silu = using_silu
+        self._swiglu = FusedSwiGLU(d=self.dim_inner,
+                                   three_way=not using_silu,
+                                   dtype=dtype or torch.bfloat16)
         if not using_silu:
             self.fused_swl_a_to_b = Linear(
                 self.dim_single,
@@ -187,7 +193,7 @@ class ConditionedTransitionBlock(nn.Module):
             gather_output=True,
             skip_create_weights=skip_create_weights)
 
-        self.silu = nn.SiLU()
+        self._can_fuse_output_gate = (mapping.tp_size == 1)
 
     def forward(
             self,
@@ -205,16 +211,14 @@ class ConditionedTransitionBlock(nn.Module):
         """
         a = self.adaln(a, s)
         z = self.fused_swl_a_to_b(a)
+        b = self._swiglu(z)
+        a = self.b_to_a(b, all_reduce_params=all_reduce_params)
 
-        if not self.using_silu:
-            x, gate, n = z.split(
-                [self.dim_inner, self.dim_inner, self.dim_inner], dim=-1)
-            b = self.silu(gate) * x * n  # TODO: Fused swiglu here
+        if self._can_fuse_output_gate and s.shape[:-1] == a.shape[:-1]:
+            a = get_gated_sigmoid_op(s.dtype)(s, self.output_projection.weight,
+                                              a, self.output_projection.bias)
         else:
-            x, gate = z.split([self.dim_inner, self.dim_inner], dim=-1)
-            b = self.silu(gate) * x
-        a = self.output_projection(s)
-        a = F.sigmoid(a) * self.b_to_a(b, all_reduce_params=all_reduce_params)
+            a = F.sigmoid(self.output_projection(s)) * a
         return a
 
 

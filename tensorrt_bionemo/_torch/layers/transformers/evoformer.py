@@ -18,6 +18,8 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend.utils import (
+    PrecomputedPairMasks, precompute_pair_masks)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import MSAAttention
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
@@ -30,6 +32,7 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class EvoformerBlock(nn.Module):
@@ -240,13 +243,15 @@ class EvoformerBlock(nn.Module):
         return m, z
 
     def forward(
-            self,
-            m: torch.Tensor,
-            z: torch.Tensor,
-            msa_mask: torch.Tensor,
-            pair_mask: torch.Tensor,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
+        self,
+        m: torch.Tensor,
+        z: torch.Tensor,
+        msa_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        precomputed_masks: Optional[PrecomputedPairMasks] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -258,6 +263,10 @@ class EvoformerBlock(nn.Module):
                 [*, N_seq, N_res] MSA mask
             pair_mask:
                 [*, N_res, N_res] pair mask
+            precomputed_masks:
+                Optional precomputed mask biases (avoids redundant computation
+                when called inside a layer loop).
+            buffers: Shared pre-allocated buffer dict for CuTeDSL kernels.
         """
         if self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
@@ -272,23 +281,33 @@ class EvoformerBlock(nn.Module):
                                      mask=msa_mask,
                                      attn_metadata=attn_metadata,
                                      all_reduce_params=all_reduce_params)
-        msa_trans_mask = msa_mask
-        m = m + self.msa_transition(m, mask=msa_trans_mask)
+        m = m + self.msa_transition(m, mask=msa_mask)
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
+
+        if precomputed_masks is not None:
+            mb_start = precomputed_masks.mask_bias
+            mb_end = precomputed_masks.mask_bias_transposed
+        else:
+            mb_start = mb_end = None
+
         z = z + self.tri_attn_start(z,
                                     mask=pair_mask,
+                                    mask_bias=mb_start,
                                     attn_metadata=attn_metadata,
-                                    all_reduce_params=all_reduce_params)
+                                    all_reduce_params=all_reduce_params,
+                                    buffers=buffers)
         z = z + self.tri_attn_end(z,
                                   mask=pair_mask,
+                                  mask_bias=mb_end,
                                   attn_metadata=attn_metadata,
-                                  all_reduce_params=all_reduce_params)
-        pair_trans_mask = pair_mask
-        z = z + self.pair_transition(z, mask=pair_trans_mask)
+                                  all_reduce_params=all_reduce_params,
+                                  buffers=buffers)
+
+        z = z + self.pair_transition(z, mask=pair_mask)
 
         return m, z
 
@@ -357,9 +376,24 @@ class EvoformerStack(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        backend = self.blocks[0].triangle_attn_backend
+        precomputed = precompute_pair_masks(
+            backend,
+            pair_mask,
+            inf=self.blocks[0].inf,
+            dtype=self.blocks[0].dtype,
+        )
+        buffers: Optional[PreallocatedBuffers] = ({} if backend == "CuTeDSL"
+                                                  else None)
         for block in self.blocks:
-            m, z = block(m, z, msa_mask, pair_mask, attn_metadata,
-                         all_reduce_params)
+            m, z = block(m,
+                         z,
+                         msa_mask,
+                         pair_mask,
+                         attn_metadata,
+                         all_reduce_params,
+                         precomputed_masks=precomputed,
+                         buffers=buffers)
         s = self.linear(m[..., 0, :, :])
 
         return m, z, s

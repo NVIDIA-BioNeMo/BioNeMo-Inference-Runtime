@@ -1,0 +1,195 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Persistent .o cache for CuTe DSL compiled kernels.
+
+Compiled kernels are exported as object files (.o) via ``export_to_c``.
+On subsequent runs the .o is loaded (~1 ms) instead of re-generating
+IR + re-JIT'ing (~100 ms per kernel).
+
+Inherits from :class:`~.cache_base.KernelCacheBase` for the unified
+compile / save / load interface shared with the Triton backend.
+
+Usage::
+
+    class MyKernel(CuteKernelCache):
+        def my_compile(self, ...):
+            exe = self.compile(kernel, *fakes)
+            self.save_to_cache(disk_key, exe)
+            ...
+        def my_load(self, ...):
+            exe = self.load_from_cache(disk_key)
+            ...
+
+Controls:
+  BIONEMO_KERNEL_CACHE_ENABLED=0  — disable persistent .o cache (default: enabled)
+  BIONEMO_KERNEL_CACHE_DIR=path   — override default cache directory
+
+Adapted from quack.cache_utils (Copyright (c) 2025, Wentao Guo, Ted Zadouri, Tri Dao).
+"""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+import pickle
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
+
+import cutlass
+import cutlass.cute as cute
+
+if TYPE_CHECKING:
+    from cutlass.cutlass_dsl.tvm_ffi_provider import TVMFFIJitCompiledFunction
+
+from .cache_base import DiskCache, FileLock, KernelCacheBase
+
+__all__ = [
+    "CuteKernelCache",
+    "CACHE_ENABLED",
+    "CACHE_DIR",
+    "EXTRA_SOURCE_DIRS",
+    "get_cache_dir",
+    "FileLock",
+]
+
+CACHE_ENABLED: bool = DiskCache.ENABLED
+CACHE_DIR: str | None = DiskCache._CACHE_DIR
+
+EXTRA_SOURCE_DIRS: list[Path] = []
+
+EXPORT_FUNC_NAME = "kernel"
+LOCK_TIMEOUT = 60
+
+
+def get_cache_dir() -> Path:
+    """Return (and create) the root cache directory."""
+    return DiskCache.get_cache_dir()
+
+
+# ---------------------------------------------------------------------------
+# Source fingerprinting (CuTe-specific — includes cutlass version)
+# ---------------------------------------------------------------------------
+
+
+def _hash_source_dir(h: "hashlib._Hash", root: Path) -> None:
+    """Hash all Python sources under *root* into *h*."""
+    for src in sorted(root.rglob("*.py")):
+        if not src.is_file():
+            continue
+        h.update(src.relative_to(root).as_posix().encode())
+        content = src.read_bytes()
+        h.update(len(content).to_bytes(8, "little"))
+        h.update(content)
+
+
+@functools.lru_cache(maxsize=1)
+def _compute_source_fingerprint() -> str:
+    """Hash kernel source dirs plus runtime ABI stamps into a fingerprint."""
+    h = hashlib.sha256()
+    h.update(f"py{sys.version_info.major}.{sys.version_info.minor}".encode())
+    h.update(f"cutlass={cutlass.__version__}".encode(
+    ) if hasattr(cutlass, "__version__") else b"cutlass=unknown")
+
+    dsl_kernels_dir = Path(__file__).resolve().parent
+    _hash_source_dir(h, dsl_kernels_dir)
+
+    for extra_dir in EXTRA_SOURCE_DIRS:
+        _hash_source_dir(h, Path(extra_dir).resolve())
+
+    return h.hexdigest()
+
+
+def _key_to_hash(key: tuple) -> str:
+    return hashlib.sha256(pickle.dumps(key)).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# CuteKernelCache — KernelCacheBase implementation for CuTe DSL
+# ---------------------------------------------------------------------------
+
+
+class CuteKernelCache(KernelCacheBase):
+    """CuTe DSL kernel cache backed by ``.o`` object files.
+
+    Implements the :class:`~.cache_base.KernelCacheBase` interface:
+
+    * :meth:`compile` — calls ``cute.compile`` with TVM FFI.
+    * :meth:`save_to_cache` — exports the compiled kernel via ``export_to_c``.
+    * :meth:`load_from_cache` — loads the ``.o`` via ``cute.runtime.load_module``.
+    """
+
+    def compile(self,
+                kernel_callable: Any,
+                *fake_tensors: Any,
+                options: str = "--enable-tvm-ffi",
+                **kwargs: Any) -> TVMFFIJitCompiledFunction:
+        """Compile a CuTe DSL kernel with fake tensors.
+
+        Args:
+            kernel_callable: A ``@cute.jit``-decorated class or function.
+            *fake_tensors: Fake tensors describing the kernel signature.
+            options: Compile options string (default includes TVM FFI).
+
+        Returns:
+            The compiled ``TVMFFIJitCompiledFunction``.
+        """
+        return cute.compile(kernel_callable,
+                            *fake_tensors,
+                            options=options,
+                            **kwargs)
+
+    def save_to_cache(self, key: tuple, artifact: Any) -> None:
+        """Export compiled kernel as ``.o`` to disk cache.
+
+        Args:
+            key: Hashable tuple identifying the kernel variant.
+            artifact: Object returned by ``cute.compile`` (has ``export_to_c``).
+        """
+        if not CACHE_ENABLED:
+            return
+
+        sha = _key_to_hash(key)
+        cache_path = get_cache_dir() / _compute_source_fingerprint()
+        cache_path.mkdir(parents=True, exist_ok=True)
+        o_path = cache_path / f"{sha}.o"
+        lock_path = cache_path / f"{sha}.lock"
+
+        try:
+            with FileLock(lock_path, exclusive=True, timeout=LOCK_TIMEOUT):
+                if not o_path.exists():
+                    artifact.export_to_c(
+                        object_file_path=str(o_path),
+                        function_name=EXPORT_FUNC_NAME,
+                    )
+        except Exception as e:
+            from tensorrt_llm_lite.logger import logger
+            logger.warning(f"bionemo kernel cache: export failed for key "
+                           f"{sha}: {e}")
+
+    def load_from_cache(self, key: tuple) -> Optional[Any]:
+        """Load a compiled CuTe DSL kernel from the disk cache.
+
+        Args:
+            key: Same hashable tuple used in :meth:`save_to_cache`.
+
+        Returns:
+            The loaded callable if a cache hit, or ``None``.
+        """
+        if not CACHE_ENABLED:
+            return None
+
+        sha = _key_to_hash(key)
+        cache_path = get_cache_dir() / _compute_source_fingerprint()
+        o_path = cache_path / f"{sha}.o"
+        lock_path = cache_path / f"{sha}.lock"
+
+        try:
+            with FileLock(lock_path, exclusive=False, timeout=LOCK_TIMEOUT):
+                if o_path.exists():
+                    m = cute.runtime.load_module(str(o_path),
+                                                 enable_tvm_ffi=True)
+                    return m[EXPORT_FUNC_NAME]
+        except (RuntimeError, Exception):
+            pass
+        return None

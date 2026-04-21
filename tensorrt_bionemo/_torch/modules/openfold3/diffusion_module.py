@@ -20,16 +20,17 @@ Supplementary Information.
 """
 
 import math
+
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import DiffusionConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    OpenFold3DiffusionTransformer as DiffusionTransformer
 from tensorrt_bionemo._torch.layers.random_augmentation import (
     quaternion_to_matrix, random_quaternions)
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
+    OpenFold3DiffusionTransformer as DiffusionTransformer
 from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import (
     AtomAttentionDecoder, AtomAttentionEncoder)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
@@ -39,7 +40,7 @@ from tensorrt_bionemo.configs import BaseConfig
 def sample_rotations(shape, dtype: torch.dtype,
                      device: torch.device) -> torch.Tensor:
     """Sample random rotation matrices via random unit quaternions."""
-    
+
     n = math.prod(shape)
     q = random_quaternions(n, dtype=dtype, device=device)
     return quaternion_to_matrix(q).reshape(*shape, 3, 3)
@@ -252,12 +253,13 @@ class DiffusionModule(nn.Module):
         Returns:
             [*, N_atom, 3] Denoised atom positions
         """
-        si, zij = self.diffusion_conditioning(batch=batch,
-                                              t=t,
-                                              si_input=si_input,
-                                              si_trunk=si_trunk,
-                                              zij_trunk=zij_trunk,
-                                              use_conditioning=use_conditioning)
+        si, zij = self.diffusion_conditioning(
+            batch=batch,
+            t=t,
+            si_input=si_input,
+            si_trunk=si_trunk,
+            zij_trunk=zij_trunk,
+            use_conditioning=use_conditioning)
 
         xl_noisy = xl_noisy * atom_mask[..., None]
 
@@ -295,11 +297,9 @@ class DiffusionModule(nn.Module):
                                        plm=plm,
                                        attn_metadata=attn_metadata)
         sq_t = t[..., None, None]**2
-        xl_out = (
-            self.sq_sigma_data /
-            (self.sq_sigma_data + sq_t) * xl_noisy +
-            self.sigma_data * t[..., None, None] /
-            torch.sqrt(self.sq_sigma_data + sq_t) * rl_update)
+        xl_out = (self.sq_sigma_data / (self.sq_sigma_data + sq_t) * xl_noisy +
+                  self.sigma_data * t[..., None, None] /
+                  torch.sqrt(self.sq_sigma_data + sq_t) * rl_update)
 
         xl_out = xl_out * atom_mask[..., None]
 
@@ -333,7 +333,7 @@ class SampleDiffusion(nn.Module):
         self.step_scale = config.step_scale
         self.diffusion_module = diffusion_module
         self.use_conditioning = config.use_conditioning
-        
+
     def forward(
         self,
         batch: dict,

@@ -105,7 +105,7 @@ def test_triangle_attention_node(s: AttnNodeScenario):
         mask = mask.to(dtype)
         ref_node = ref_node.to(dtype)
         ref_output = ref_node(x, mask)
-        output = node(x, mask, attn_metadata)
+        output = node(x, mask, attn_metadata=attn_metadata)
 
     assert output.shape == ref_output.shape
     if dtype == torch.float32:

@@ -20,7 +20,7 @@ import triton
 from einops import rearrange
 from torch.library import wrap_triton
 
-from tensorrt_bionemo.triton_kernels.trifast import create_autotuner
+from tensorrt_bionemo.dsl_kernels.triton.trifast import create_autotuner
 
 from .interface import AttentionBackend, AttentionMetadata
 

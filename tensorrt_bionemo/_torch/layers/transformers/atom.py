@@ -22,6 +22,7 @@ from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class AtomTransformer(nn.Module):
@@ -45,6 +46,13 @@ class AtomTransformer(nn.Module):
         super().__init__()
         self.attn_window_queries = attn_window_queries
         self.attn_window_keys = attn_window_keys
+        # Force SDPA for atom transformer: the windowed batch layout
+        # [B, mult, NW, ...] is incompatible with the CuTeDSL kernel's
+        # multiplicity broadcast (batch_b = flat_idx // mult assumes mult
+        # is the innermost batch dim, but NW is innermost here).
+        if getattr(diffusion_transformer_config, 'pairwise_attention_backend',
+                   '') == "CuTeDSL":
+            diffusion_transformer_config.pairwise_attention_backend = "SDPA"
         self.diffusion_transformer: nn.Module = diffusion_transformer_cls(
             diffusion_transformer_config)
 
@@ -53,13 +61,14 @@ class AtomTransformer(nn.Module):
             weights["diffusion_transformer"])
 
     def forward(
-            self,
-            q: torch.Tensor,
-            c: torch.Tensor,
-            bias: Optional[torch.Tensor] = None,
-            mask: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
+        self,
+        q: torch.Tensor,
+        c: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -123,6 +132,7 @@ class AtomTransformer(nn.Module):
             mask=mask,
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params,
+            buffers=buffers,
         )
         a = a.view((B, multiplicity, N, -1))
         return a
@@ -213,7 +223,8 @@ class AtomAttentionEncoder(nn.Module):
         bias: torch.Tensor,
         r: torch.Tensor = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        all_reduce_params: Optional[AllReduceParams] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -267,7 +278,8 @@ class AtomAttentionEncoder(nn.Module):
                               bias=bias.to(self.atom_encoder_dtype),
                               mask=atom_mask.to(self.atom_encoder_dtype),
                               attn_metadata=attn_metadata,
-                              all_reduce_params=all_reduce_params)
+                              all_reduce_params=all_reduce_params,
+                              buffers=buffers)
         q = q.to(self.dtype)
         with torch.autocast("cuda", enabled=False):
             # [B, multiplicity, N_atoms, 2 * token_s]
@@ -365,15 +377,16 @@ class AtomAttentionDecoder(nn.Module):
             weights["atom_feat_to_atom_pos_update.1"])
 
     def forward(
-            self,
-            atom_to_token: torch.Tensor,
-            atom_pad_mask: torch.Tensor,
-            a: torch.Tensor,
-            q: torch.Tensor,
-            c: torch.Tensor,
-            bias: torch.Tensor,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
+        self,
+        atom_to_token: torch.Tensor,
+        atom_pad_mask: torch.Tensor,
+        a: torch.Tensor,
+        q: torch.Tensor,
+        c: torch.Tensor,
+        bias: torch.Tensor,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -422,7 +435,8 @@ class AtomAttentionDecoder(nn.Module):
                               bias=bias.to(self.atom_decoder_dtype),
                               mask=atom_mask.to(self.atom_decoder_dtype),
                               attn_metadata=attn_metadata,
-                              all_reduce_params=all_reduce_params)
+                              all_reduce_params=all_reduce_params,
+                              buffers=buffers)
         q = q.to(self.dtype)
         # [B, multiplicity, N_atoms, 3]
         r_update = self.atom_feat_to_atom_pos_update(q)

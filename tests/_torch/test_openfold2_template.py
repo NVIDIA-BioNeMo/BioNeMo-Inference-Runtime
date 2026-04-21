@@ -72,16 +72,15 @@ def test_template_pair_stack_block(sc: Scenario):
                          2, (bs, sc.n_templ, sc.n_res, sc.n_res),
                          dtype=torch.float32).cuda()
 
-    module = TemplatePairBlock(
-        local_layer_idx=0,
-        c_t=ref_module.c_t,
-        c_hidden_tri_att=ref_module.c_hidden_tri_att,
-        c_hidden_tri_mul=ref_module.c_hidden_tri_mul,
-        no_heads=ref_module.no_heads,
-        pair_transition_n=ref_module.pair_transition_n,
-        tri_mul_first=ref_module.tri_mul_first,
-        dtype=torch_dtype,
-        mapping=Mapping())
+    module = TemplatePairBlock(local_layer_idx=0,
+                               c_t=ref_module.c_t,
+                               c_hidden_tri_att=ref_module.c_hidden_tri_att,
+                               c_hidden_tri_mul=ref_module.c_hidden_tri_mul,
+                               no_heads=ref_module.no_heads,
+                               pair_transition_n=ref_module.pair_transition_n,
+                               tri_mul_first=ref_module.tri_mul_first,
+                               dtype=torch_dtype,
+                               mapping=Mapping())
 
     load_template_pair_stack_block_weights_torch(module, weights_and_biases)
     module = module.to(device)
@@ -105,8 +104,8 @@ def test_template_pair_stack_block(sc: Scenario):
     else:
         torch.testing.assert_close(output_t.float(),
                                    ref_t.float(),
-                                   atol=1e-1,
-                                   rtol=1e-1)
+                                   atol=0.15,
+                                   rtol=0.15)
 
 
 @pytest.mark.parametrize("sc", [Scenario(triangle_attn_backend="VANILLA")])

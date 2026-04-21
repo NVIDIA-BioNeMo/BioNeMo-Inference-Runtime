@@ -20,7 +20,8 @@ from tensorrt_llm_lite.logger import logger
 
 # isort: off
 import tensorrt_bionemo.pipeline.models.openfold2.const as residue_constants
-from tensorrt_bionemo._torch.attention_backend import get_attention_backend
+from tensorrt_bionemo._torch.attention_backend import (
+    auto_select_triangle_attention_backend, get_attention_backend)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.modules.openfold2.confidence import AuxiliaryHeads
 from tensorrt_bionemo._torch.modules.openfold2.embedders import (
@@ -185,7 +186,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 f"OpenFold2 pretrained config not found for model name: {model_name}"
             )
         config = config_class()
-        config.trunk.set_triangle_attention_backend("CUEQUIV")
+        tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
+        config.trunk.set_triangle_attention_backend(tri_backend)
         if config.enable_extra_msa:
             config.trunk.extra_msa_stack.set_dtype(torch.bfloat16)
         if config.enable_template:
@@ -193,11 +195,11 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 config.template_embedder.template_pointwise_attention.set_dtype(
                     torch.bfloat16)
                 config.template_embedder.template_pointwise_attention.set_triangle_attention_backend(
-                    "CUEQUIV")
+                    tri_backend)
             config.template_embedder.template_pair_stack.set_dtype(
                 torch.bfloat16)
             config.template_embedder.template_pair_stack.set_triangle_attention_backend(
-                "CUEQUIV")
+                tri_backend)
         config.trunk.evoformer_stack.set_dtype(torch.bfloat16)
         return config
 

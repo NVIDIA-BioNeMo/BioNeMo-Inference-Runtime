@@ -30,6 +30,7 @@ from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     DiffusionTransformerLayer
+from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -66,6 +67,22 @@ class Scenario:
              num_samples=10,
              torch_dtype="bfloat16",
              backend="SDPA"),
+    Scenario(dim=768,
+             dim_single_cond=768,
+             torch_dtype="bfloat16",
+             backend="CuTeDSL"),
+    Scenario(dim=768,
+             dim_single_cond=768,
+             num_samples=5,
+             torch_dtype="bfloat16",
+             backend="CuTeDSL"),
+    Scenario(dim=768,
+             dim_single_cond=384,
+             num_samples=10,
+             torch_dtype="bfloat16",
+             test_with_openfold3=True,
+             conditioned_transition_using_silu=True,
+             backend="CuTeDSL"),
 ],
                          ids=[
                              "boltz-single-float32",
@@ -77,8 +94,12 @@ class Scenario:
                              "boltz-single-bfloat16-sdpa",
                              "boltz-samples5-float32-sdpa",
                              "boltz-samples10-bfloat16-sdpa",
+                             "boltz-single-bfloat16-cutedsl",
+                             "boltz-samples5-bfloat16-cutedsl",
+                             "openfold3-samples10-bfloat16-cutedsl",
                          ])
 def test_diffusion_transformer_layer(sc: Scenario):
+    _skip_if_cutedsl(sc.backend)
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
@@ -138,8 +159,7 @@ def test_diffusion_transformer_layer(sc: Scenario):
                         sc.seq_len,
                         sc.dim_single_cond,
                         dtype=torch.float32).cuda()
-        mask = torch.randn(bs, sc.num_samples, sc.seq_len,
-                           dtype=torch.float32).cuda()
+        mask = torch.randn(bs, sc.seq_len, dtype=torch.float32).cuda()
 
     z = torch.randn(bs,
                     sc.seq_len,
@@ -177,3 +197,122 @@ def test_diffusion_transformer_layer(sc: Scenario):
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2
+
+
+# ---------------------------------------------------------------------------
+# Tests for precomputed single masks
+# ---------------------------------------------------------------------------
+
+from tensorrt_bionemo._torch.attention_backend.utils import \
+    precompute_single_masks
+
+
+@pytest.mark.parametrize("sc", [
+    Scenario(dim=768, dim_single_cond=768),
+    Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16"),
+    Scenario(dim=768, dim_single_cond=768, num_samples=5),
+    Scenario(dim=768, dim_single_cond=768, backend="SDPA"),
+    Scenario(
+        dim=768, dim_single_cond=768, torch_dtype="bfloat16", backend="SDPA"),
+    Scenario(dim=768, dim_single_cond=768, num_samples=5, backend="SDPA"),
+    Scenario(dim=768,
+             dim_single_cond=768,
+             torch_dtype="bfloat16",
+             backend="CuTeDSL"),
+    Scenario(dim=768,
+             dim_single_cond=768,
+             num_samples=5,
+             torch_dtype="bfloat16",
+             backend="CuTeDSL"),
+],
+                         ids=[
+                             "vanilla-float32",
+                             "vanilla-bfloat16",
+                             "vanilla-samples5-float32",
+                             "sdpa-float32",
+                             "sdpa-bfloat16",
+                             "sdpa-samples5-float32",
+                             "cutedsl-bfloat16",
+                             "cutedsl-samples5-bfloat16",
+                         ])
+def test_diffusion_transformer_layer_precomputed_masks(sc: Scenario):
+    """Outputs with precomputed single masks must exactly match the original path."""
+    _skip_if_cutedsl(sc.backend)
+    torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    bs = 1
+    dtype = str_dtype_to_torch(sc.torch_dtype)
+    device = torch.device('cuda')
+
+    ref_module = BoltzRefDiffusionTransformerLayer.load_weights()
+    ref_module = ref_module.to(device)
+    weights_and_biases = create_diffusion_transformer_layer_weights(
+        from_ref=ref_module)
+
+    attn_pairwise_metadata_cls = get_attention_backend(
+        sc.backend, AttentionType.PAIRWISE).Metadata
+
+    module = DiffusionTransformerLayer(
+        layer_idx=0,
+        num_heads=ref_module.pair_bias_attn.num_heads,
+        dim=sc.dim,
+        dim_single_cond=sc.dim_single_cond,
+        dim_pairwise=sc.dim_pairwise,
+        bias_proj=True,
+        dtype=dtype,
+        attn_backend=sc.backend)
+    load_diffusion_transformer_layer_weights_torch(module,
+                                                   weights_and_biases,
+                                                   dtype=dtype)
+    module.to(device)
+
+    if sc.num_samples == 1:
+        a = torch.randn(bs, sc.seq_len, sc.dim, dtype=dtype, device=device)
+        s = torch.randn(bs,
+                        sc.seq_len,
+                        sc.dim_single_cond,
+                        dtype=dtype,
+                        device=device)
+        mask = torch.randint(0,
+                             2, (bs, sc.seq_len),
+                             dtype=dtype,
+                             device=device)
+    else:
+        a = torch.randn(bs,
+                        sc.num_samples,
+                        sc.seq_len,
+                        sc.dim,
+                        dtype=dtype,
+                        device=device)
+        s = torch.randn(bs,
+                        1,
+                        sc.seq_len,
+                        sc.dim_single_cond,
+                        dtype=dtype,
+                        device=device)
+        mask = torch.randint(0,
+                             2, (bs, sc.seq_len),
+                             dtype=dtype,
+                             device=device)
+
+    z = torch.randn(bs,
+                    sc.seq_len,
+                    sc.seq_len,
+                    sc.dim_pairwise,
+                    dtype=dtype,
+                    device=device)
+
+    precomputed = precompute_single_masks(sc.backend, mask, inf=1e9)
+    attn_metadata = attn_pairwise_metadata_cls(bias_cache={})
+
+    with torch.inference_mode():
+        out = module.forward(a, s, z, mask, attn_metadata=attn_metadata)
+        out_pre = module.forward(a,
+                                 s,
+                                 z,
+                                 mask,
+                                 attn_metadata=attn_metadata,
+                                 mask_bias=precomputed.mask_bias)
+
+    torch.testing.assert_close(out_pre, out, atol=0, rtol=0)

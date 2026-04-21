@@ -98,7 +98,7 @@ class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
             mask_bias = biases[0]
             if mask_bias.ndim == 2:
                 mask_bias = mask_bias[:, None, None, :]
-            attn_mask = mask_bias + biases[1]
+            attn_mask = mask_bias.to(q) + biases[1].to(q)
 
         a = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 

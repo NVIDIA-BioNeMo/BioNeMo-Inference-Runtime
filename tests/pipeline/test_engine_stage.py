@@ -94,7 +94,8 @@ class TestFoldingEngineWrapper:
             model=mock_model_config,
             device=mock_device_config,
             accelerated={"enable_opt": True},
-            postprocessor={"param": "value"})
+            postprocessor={"param": "value"},
+            profile_inference=False)
 
         # Verify FoldingEngine was created
         mock_folding_engine.assert_called_once_with(mock_engine_config,

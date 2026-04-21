@@ -14,7 +14,7 @@
 # the License.
 
 find_package(Python3 REQUIRED)
-set(CUE_OPS_VERSION 0.8.1)
+set(CUE_OPS_VERSION 0.9.1)
 execute_process(
   COMMAND
     ${Python3_EXECUTABLE} -c

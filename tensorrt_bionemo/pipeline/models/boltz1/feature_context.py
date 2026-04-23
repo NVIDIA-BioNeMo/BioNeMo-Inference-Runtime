@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Boltz1 ContextGenerator: reuses Boltz2 structure building and tokenization.
 
-Boltz1 does not use mol_dir/templates; it only needs CCD and optionally MSA.
+Boltz-1 shares the Boltz-2 CCD + mols/ assets: the inherited
+``Boltz2ContextGenerator.__call__`` always loads per-CCD-residue molecule
+pickles for every token (canonical + residue-specific), so ``mol_dir`` is
+required here too. Templates remain unused.
 """
 
 from __future__ import annotations

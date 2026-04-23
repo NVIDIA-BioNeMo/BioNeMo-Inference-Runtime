@@ -144,6 +144,16 @@ HF_MODEL_METADATA: dict[str, list[MetadataFile]] = {
             filename="ccd.pkl",
             env="BOLTZ_CCD_PATH",
         ),
+        # Boltz-1 reuses the Boltz-2 mols.tar: the inherited
+        # Boltz2ContextGenerator.__call__ path always loads per-CCD-residue
+        # molecule pickles via _get_molecules(mol_names), regardless of model.
+        MetadataFile(
+            metadata_key="mol_dir",
+            repo_id="boltz-community/boltz-2",
+            filename="mols.tar",
+            env="BOLTZ_MOL_DIR",
+            prepare=_prepare_tar_archive,
+        ),
     ],
     SupMat.Boltz2: [
         MetadataFile(

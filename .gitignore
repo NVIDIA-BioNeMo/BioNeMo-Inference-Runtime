@@ -1,5 +1,9 @@
 __pycache__/
 .vscode
+
+# tensorrt_bionemo_benchmarking lives entirely in the separate
+# the benchmarking repository repo; nothing from it belongs here.
+tensorrt_bionemo_benchmarking/
 *.engine
 *.engine.config
 *.cache
@@ -54,3 +58,17 @@ compile_commands.json
 .dir-locals.el
 .pip_cache/
 *.pt
+boltz/
+
+# Machine-specific tooling (contains tokens, auth state)
+.env
+.mcp.json
+.gsd
+.gsd-id
+.claude/
+.bg-shell/
+schedule.py
+
+# Sibling repos (cloned locally for reference, not part of this repo)
+nfp-core/
+tensorrt-bionemo-benchmarking/

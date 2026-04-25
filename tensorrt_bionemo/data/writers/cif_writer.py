@@ -122,17 +122,31 @@ class CIFWriter(BaseWriter):
 
         system = modelcif.System(title=system_title)
 
-        # Finding chains and creating entities
+        # Finding chains and creating entities.
+        #
+        # `residue_indices` is PDB-style numbering (per FoldingOutput's
+        # docstring: "not necessarily continuous or 0-indexed"), so values
+        # may be negative, non-contiguous, or duplicated across chains.
+        # ihm.Entity however expects 1-indexed positions in 1..len(entity).
+        # Build a (chain_idx, residue_idx) -> local 1-indexed seq_id map in
+        # residue-encounter order so later calls to .residue(...) and atom
+        # seq_id always match the entity's 1..N range.
         seqs = {}
+        local_seq_id: dict[tuple[int, int], int] = {}
+        chain_pos_counter: dict[int, int] = {}
         seq = []
         last_chain_idx = None
         for i in range(n):
-            if last_chain_idx is not None and last_chain_idx != chain_indices[
-                    i]:
+            c = int(chain_indices[i])
+            r = int(residue_indices[i])
+            if last_chain_idx is not None and last_chain_idx != c:
                 seqs[last_chain_idx] = seq
                 seq = []
             seq.append(restypes[residue_types[i]])
-            last_chain_idx = chain_indices[i]
+            if (c, r) not in local_seq_id:
+                chain_pos_counter[c] = chain_pos_counter.get(c, 0) + 1
+                local_seq_id[(c, r)] = chain_pos_counter[c]
+            last_chain_idx = c
         # finally add the last chain
         seqs[last_chain_idx] = seq
 
@@ -198,7 +212,8 @@ class CIFWriter(BaseWriter):
                         yield modelcif.model.Atom(
                             asym_unit=asym_unit_map[chain_indices[i]],
                             type_symbol=element,
-                            seq_id=residue_indices[i],
+                            seq_id=local_seq_id[(int(chain_indices[i]),
+                                                 int(residue_indices[i]))],
                             atom_id=atom_name,
                             x=pos[0],
                             y=pos[1],
@@ -231,7 +246,9 @@ class CIFWriter(BaseWriter):
                         plddts.append(plddt)
                         self.qa_metrics.append(
                             _LocalPLDDT(
-                                asym_unit_map[chain_idx].residue(residue_idx),
+                                asym_unit_map[chain_idx].residue(
+                                    local_seq_id[(int(chain_idx),
+                                                  int(residue_idx))]),
                                 plddt))
                 # global score
                 self.qa_metrics.append(

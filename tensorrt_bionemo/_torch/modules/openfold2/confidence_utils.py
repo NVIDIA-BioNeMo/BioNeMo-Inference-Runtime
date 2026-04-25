@@ -90,6 +90,13 @@ def compute_tm(
 
     weighted = per_alignment * residue_weights
 
+    # Guard: `weighted` can be empty (no valid residue pairs after masking)
+    # or all-NaN on degenerate inputs. `torch.max` on an empty tensor returns
+    # -inf and `.nonzero()` yields zero indices, so `[0]` raises IndexError.
+    # Return 0.0 (neutral pTM) instead of crashing the whole prediction.
+    if weighted.numel() == 0 or not torch.isfinite(weighted).any():
+        return weighted.new_zeros(())
+
     argmax = (weighted == torch.max(weighted)).nonzero()[0]
     return per_alignment[tuple(argmax)]
 

@@ -276,10 +276,31 @@ def build_wheel(wheel_directory,
                 config_settings=None,
                 metadata_directory=None):
     _run_cmake(need_build=True)
+    # Verify .so files exist before packaging
+    for lib in [KERNELS_LIBRARY_PATH, TRT_PLUGIN_LIBRARY_PATH]:
+        if not lib.exists():
+            raise RuntimeError(
+                f"Build failed: {lib} not found after cmake. "
+                f"Wheel would be incomplete.")
+        print(f"==> Verified: {lib} ({lib.stat().st_size / 1024 / 1024:.1f} MB)")
+
     import setuptools.build_meta as stbm
     wheel_name = stbm.build_wheel(wheel_directory, config_settings,
                                   metadata_directory)
     wheel_path = Path(wheel_directory) / wheel_name
+
+    # Verify .so files are inside the wheel
+    import zipfile
+    with zipfile.ZipFile(wheel_path, 'r') as zf:
+        so_files = [n for n in zf.namelist() if n.endswith('.so')]
+        if not so_files:
+            raise RuntimeError(
+                f"Wheel {wheel_path} contains no .so files. "
+                f"Build packaging failed.")
+        for sf in so_files:
+            info = zf.getinfo(sf)
+            print(f"==> Wheel contains: {sf} ({info.file_size / 1024 / 1024:.1f} MB)")
+
     _inject_examples_into_wheel(wheel_path)
     print(f"==> Built wheel: {wheel_path}")
     # Parse original name

@@ -72,6 +72,7 @@ class TokenTransformerTRT(BackendBase):
         super().__init__(config,
                          context_memory_allocator=context_memory_allocator)
         self.dtype = config.torch_dtype
+        self.pairwise_attention_backend = "VANILLA"
 
     def forward_udf(self,
                     a: torch.Tensor,

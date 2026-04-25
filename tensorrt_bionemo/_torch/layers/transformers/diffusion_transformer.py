@@ -428,7 +428,8 @@ class OpenFold3DiffusionTransformer(nn.Module):
 
         # [NH, D] @ [D, B*I*J_pad] → [NH, B*I*J_pad] with J_pad contiguous
         out = torch.mm(self._W_mega,
-                       z_hat.reshape(-1, D).t())  # [NH, B*I*J_pad]
+                       z_hat.reshape(-1,
+                                     D).t().contiguous())  # [NH, B*I*J_pad]
         out = out.reshape(N, H, B, I, J_pad)
 
         biases: list[torch.Tensor] = []

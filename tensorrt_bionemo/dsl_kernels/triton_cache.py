@@ -126,12 +126,62 @@ logger = logging.getLogger(__name__)
 # Resolve Triton launch hooks once at import time
 # ---------------------------------------------------------------------------
 
+# Triton moved ``knobs`` from ``triton.runtime.knobs`` (3.5) to the top-level
+# ``triton.knobs`` module in 3.6. Try the new location first, then fall back.
+_knobs = None
 try:
-    from triton.runtime import knobs as _knobs
-    ENTER_HOOK = _knobs.runtime.launch_enter_hook
-    EXIT_HOOK = _knobs.runtime.launch_exit_hook
-except Exception:
+    _knobs = triton.knobs  # triton >= 3.6
+except AttributeError:
+    try:
+        from triton.runtime import knobs as _knobs  # triton 3.5
+    except Exception:
+        _knobs = None
+
+if _knobs is not None:
+    ENTER_HOOK = getattr(_knobs.runtime, "launch_enter_hook", None)
+    EXIT_HOOK = getattr(_knobs.runtime, "launch_exit_hook", None)
+else:
     ENTER_HOOK = EXIT_HOOK = None
+
+# ---------------------------------------------------------------------------
+# Triton version compatibility for the cuda.bindings driver fast path
+# ---------------------------------------------------------------------------
+# TRT-BioNemo pins ``triton==3.5``. The cuda.bindings ``DriverLauncher`` path
+# pokes at internals of ``CompiledKernel`` (``packed_metadata``, ``function``
+# slot layout, launch ABI) that change between Triton minor releases. When
+# users install a third-party package that pulls in ``triton>3.5``, the
+# driver path silently mis-launches kernels (wrong arg count, missing
+# constexpr handling, segfault on ``cuLaunchKernel``).
+#
+# Detect the version once at import time. On any mismatch, disable the
+# driver path globally — the ``.run()`` fallback is only ~3 µs slower and
+# remains forward/backward compatible.
+# ---------------------------------------------------------------------------
+
+_SUPPORTED_TRITON_MAJOR_MINOR = (3, 5)
+
+
+def _triton_supports_driver() -> bool:
+    """True only when the installed Triton matches the pinned 3.5 ABI."""
+    raw = getattr(triton, "__version__", "0.0.0")
+    try:
+        major, minor = (int(p) for p in raw.split(".")[:2])
+    except (ValueError, AttributeError):
+        return False
+    return (major, minor) == _SUPPORTED_TRITON_MAJOR_MINOR
+
+
+_DRIVER_TRITON_OK: bool = _triton_supports_driver()
+if not _DRIVER_TRITON_OK:
+    logger.warning(
+        "triton %s is installed but TRT-BioNemo's cuda.bindings driver fast "
+        "path is only validated against triton==%d.%d. Falling back to "
+        "Triton's `.run()` launch path (~3 us slower). Pin ``triton==%d.%d`` "
+        "to re-enable the fast path.",
+        getattr(triton, "__version__", "?"),
+        *_SUPPORTED_TRITON_MAJOR_MINOR,
+        *_SUPPORTED_TRITON_MAJOR_MINOR,
+    )
 
 # ---------------------------------------------------------------------------
 # CachedKernel — wraps a CompiledKernel with optional cuda.bindings launch
@@ -161,6 +211,12 @@ class CachedKernel:
         self._kernel = compiled_kernel
         self._stream = stream or torch.cuda.current_stream()
         self._driver: DriverLauncher | None = None
+
+        # Force-disable the cuda.bindings fast path on triton ABIs we don't
+        # validate against (anything other than the pinned 3.5). See
+        # ``_triton_supports_driver`` above for context.
+        if enable_driver and not _DRIVER_TRITON_OK:
+            enable_driver = False
 
         if enable_driver:
             try:
@@ -386,7 +442,21 @@ class TritonKernelCache(KernelCacheBase):
 
         device = torch.cuda.current_device()
         cache, key_cache, _, _, binder = jit_fn.device_caches[device]
-        ba, spec, opts = binder(*dummy_args, **constexpr_kwargs, debug=False)
+        # Mirror the kwargs preprocessing inside ``JITFunction.run`` so the
+        # ``options`` dict (and therefore the cache key) matches the entry
+        # actually stored in ``cache``. Triton 3.6 added
+        # ``instrumentation_mode``; 3.5 only had ``debug``. Anything not in
+        # the kernel signature ends up in ``options``, which
+        # ``compute_cache_key`` stringifies into the key.
+        runtime_kwargs: dict[str, Any] = {"debug": bool(jit_fn.debug)}
+        if _knobs is not None:
+            if getattr(_knobs.runtime, "debug", False):
+                runtime_kwargs["debug"] = True
+            if hasattr(_knobs.compilation, "instrumentation_mode"):
+                runtime_kwargs["instrumentation_mode"] = (
+                    _knobs.compilation.instrumentation_mode)
+        ba, spec, opts = binder(*dummy_args, **constexpr_kwargs,
+                                **runtime_kwargs)
         key = compute_cache_key(key_cache, spec, opts)
         return CachedKernel(cache[key], stream=stream)
 

@@ -19,14 +19,13 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    compute_block_indices, fix_boundary_blocks, pad_to_multiple_and_divide)
+from tensorrt_bionemo._torch.layers.sequence_local_atom import \
+    pad_to_multiple_and_divide
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     OpenFold3DiffusionTransformer as DiffusionTransformer
 from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import (
@@ -44,8 +43,84 @@ def convert_pair_atom_to_blocks(
     n_key: int,
     attn_metadata: AttentionMetadata,
 ) -> torch.Tensor:
-    """
-    TRT-compatible equivalent of convert_pair_rep_to_blocks.
+    """TRT-compatible equivalent of OSS ``convert_trunk_pair_rep_to_blocks``.
+
+    Goal
+    ----
+    Given the trunk pair representation ``zij_trunk[B, N_tok, N_tok, C]`` and
+    the per-atom token map, produce a *block-local* pair tensor
+    ``plm[B, K, n_query, n_key, C]`` where, for each (block ``k``, query atom
+    ``i``, key atom ``j``):
+
+        plm[b, k, i, j] = zij_trunk[b, tok(q_atom), tok(k_atom)]
+
+    Both implementations agree on this contract — they only differ in *how*
+    the ``(q_token, k_token)`` index pairs are constructed at the block edges
+    where the key window extends past valid atoms.
+
+    OSS reference (``convert_trunk_pair_rep_to_blocks``)
+    ----------------------------------------------------
+    The OSS implementation builds the indices by **right-padding with zero**
+    and then ``unfold``-ing windows:
+
+        1. Right-pad ``atom_to_token_index`` from ``N_atom`` to ``K*n_query``
+           with **zeros** so the length divides ``n_query`` evenly.
+        2. Reshape into ``Q ∈ [B, K, n_query]`` — one row of query indices
+           per block.
+        3. Build the K-side index tensor via the standard
+           ``F.pad(value=0)`` + ``unfold`` recipe used by the rest of OSS:
+           pad each side of ``Q`` by ``(n_key - n_query) / 2`` with **zero**
+           and slide a window of width ``n_key`` over it, giving
+           ``K_idx ∈ [B, K, n_key]``. OOB positions therefore reference
+           token 0.
+        4. Gather ``zij_trunk[b, Q[b,k,i], K_idx[b,k,j]]`` and zero the
+           resulting block via the atom pair mask
+           (``atom_mask_q ⊗ atom_mask_k``) so the spurious "token 0" rows
+           introduced by padding contribute nothing.
+
+    TRT-BNM implementation (this function)
+    --------------------------------------
+    The TRT path produces the **same indices and the same masked output**
+    using only ``gather`` primitives (no ``unfold``, no per-atom Python
+    branching), which keeps the kernel TRT-friendly and avoids TF32
+    precision loss seen with an ``einsum``-based approach (the original
+    bug behind the device-side OOB assert):
+
+        1. Right-pad ``atom_to_token_index`` and ``atom_mask`` to
+           ``K*n_query`` with **zero** and reshape to
+           ``[B, K, n_query]`` (steps 1-2 above — identical).
+        2. Build the K-side window via the precomputed
+           ``attn_metadata.query_to_keys`` callable (a ``gather`` over
+           ``gather_indices`` precomputed once per shape in
+           ``modeling.generate_attn_metadata`` /
+           ``layers.sequence_local_atom.create_gather_indices``). The
+           ``gather_indices`` tensor encodes exactly the same
+           ``F.pad(value=0)+unfold`` mapping as OSS, but with one twist:
+           OOB positions map to a **sentinel index** ``K*n_query`` and the
+           gather source has a **zero row appended** at that index. The
+           gather therefore returns the literal value 0 for every OOB
+           column — bit-exact to OSS's "pad with 0 then unfold" because
+           token 0 is a valid token that gets zeroed by the mask anyway,
+           but here we cut out the middleman and just write 0 directly.
+        3. Apply the atom pair mask
+           ``atom_mask_q ⊗ atom_mask_k`` (where ``atom_mask_k`` is built
+           by the same ``query_to_keys`` gather of the padded atom mask),
+           zeroing every OOB query/key pair.
+
+    The earlier edge-window-shift heuristic (which kept real atoms at the
+    edges by shifting the window inward) is intentionally not used here —
+    it diverged from the OSS reference at every edge block. The dead
+    helpers that implemented it have been removed; this docstring is the
+    only remaining reference.
+
+    Bit-exactness
+    -------------
+    The two implementations are bit-exact on all valid ``N_atom``. When
+    ``N_atom % n_query == 0`` production appends one all-zero trailing
+    block to keep ``K`` consistent across the rest of the model, which is
+    a no-op semantically. See the synthetic-data tests in
+    ``tests/_torch/test_openfold3_convert_trunk_pair_rep_to_blocks.py``
+    for the equivalence proof.
 
     Args:
         batch: dict with:
@@ -54,15 +129,18 @@ def convert_pair_atom_to_blocks(
         zij_trunk:    [B, N_token, N_token, C] or [B, S, N_token, N_token, C]
         n_query:      query window size (must be even; n_key % (n_query//2) == 0)
         n_key:        key window size
-        attn_metadata: AttentionMetadata with query_to_keys callable
+        attn_metadata: must expose ``query_to_keys`` — a callable pre-bound
+            to the precomputed ``gather_indices``, ``W=n_query``, ``H=n_key``.
+            OOB columns must gather from the sentinel zero row inserted at
+            flat index ``K*n_query`` so that the K-side window zero-pads
+            outside ``[0, N_atom)``, matching the OSS reference.
 
     Returns:
         plm: [B, K, n_query, n_key, C]      (no sample dim)
           or [B, S, K, n_query, n_key, C]   (with sample dim)
     """
-    atom_mask = batch["atom_mask"]  # [B, N_atom] or [B, S, N_atom]
-    atom_to_token = batch[
-        "atom_to_token_index"]  # [B, N_atom] or [B, S, N_atom]
+    atom_mask = batch["atom_mask"]
+    atom_to_token = batch["atom_to_token_index"]
 
     has_sample_dim = atom_mask.ndim == 3
 
@@ -70,53 +148,36 @@ def convert_pair_atom_to_blocks(
         B, S, N_atom = atom_mask.shape
         atom_mask = atom_mask.reshape(B * S, N_atom)
         atom_to_token = atom_to_token.reshape(B * S, N_atom)
-        zij_trunk = zij_trunk.reshape(
-            B * S, *zij_trunk.shape[2:])  # [BS, N_tok, N_tok, C]
+        zij_trunk = zij_trunk.reshape(B * S, *zij_trunk.shape[2:])
     else:
         B = atom_mask.shape[0]
 
     BS, N_atom = atom_mask.shape
     device = zij_trunk.device
 
-    # ── Q token indices: pad and block ────────────────────────────────────────
+    # ── Q-side: pad right and reshape to blocks (matches OSS reference) ───────
     q_token_blocked, _ = pad_to_multiple_and_divide(atom_to_token.float(),
                                                     multiple=n_query,
-                                                    dim=1)
+                                                    dim=1)  # [BS, K, n_query]
     K = q_token_blocked.shape[1]
 
-    atom_mask_blocked, _ = pad_to_multiple_and_divide(atom_mask,
-                                                      multiple=n_query,
-                                                      dim=1)
+    atom_mask_blocked, _ = pad_to_multiple_and_divide(
+        atom_mask, multiple=n_query, dim=1)  # [BS, K, n_query]
 
-    # ── K token indices via query_to_keys ──────────────────────────────────────
-    k_token_float = attn_metadata.query_to_keys(
+    # ── K-side: gather with sentinel zero at OOB cols (= OSS zero-pad) ────────
+    # ``attn_metadata.query_to_keys`` zero-pads OOB columns by gathering from
+    # a sentinel row appended at flat index ``K*n_query``. This is bit-exact
+    # to the OSS reference's ``F.pad(value=0)`` + ``unfold`` construction.
+    to_keys = attn_metadata.query_to_keys
+
+    # ``to_keys`` preserves input ndim (4-d in -> 4-d out); only the trailing
+    # singleton feature dim needs squeezing.
+    k_token_idx = to_keys(
         q_token_blocked.unsqueeze(-1)  # [BS, K, n_query, 1]
-    ).squeeze(1).squeeze(-1)  # [BS, K, n_key]
+    ).squeeze(-1).long()  # [BS, K, n_key]
 
-    # flat views needed for boundary-fix and unfold
-    mask_flat = atom_mask_blocked.reshape(BS, K * n_query)  # [BS, N_padded]
-    q_tok_flat = q_token_blocked.reshape(BS, K * n_query)  # [BS, N_padded]
-
-    # ── per-block shift info ───────────────────────────────────────────────────
-    total_shift, is_edge, n_atom_true = compute_block_indices(
-        mask_flat, K, n_query, n_key)
-
-    # ── atom_mask_k via unfold ─────────────────────────────────────────────────
-    left_pad = n_key // 2 - n_query // 2
-    mask_padded = F.pad(mask_flat, (left_pad, n_key), value=0.0)
-    atom_mask_k = mask_padded.unfold(-1, n_key,
-                                     n_query)[:, :K]  # [BS, K, n_key]
-
-    # ── fix edge blocks (k_token + mask) in one combined gather pass ───────────
-    source = torch.stack([q_tok_flat, mask_flat], dim=-1)  # [BS, N_padded, 2]
-    trt_comb = torch.stack([k_token_float, atom_mask_k],
-                           dim=-1)  # [BS, K, n_key, 2]
-
-    fixed = fix_boundary_blocks(trt_comb, source, n_atom_true, total_shift,
-                                is_edge)
-
-    k_token_idx = fixed[..., 0].long()  # [BS, K, n_key]
-    atom_mask_k = fixed[..., 1]  # [BS, K, n_key]
+    atom_mask_k = to_keys(atom_mask_blocked.unsqueeze(-1).float()).squeeze(
+        -1)  # [BS, K, n_key]
 
     q_token_idx = q_token_blocked.long()  # [BS, K, n_query]
 
@@ -128,7 +189,7 @@ def convert_pair_atom_to_blocks(
         k_token_idx.unsqueeze(-2),  # [BS, K, 1, n_key]
     ]  # [BS, K, n_query, n_key, C]
 
-    # ── apply atom pair mask ───────────────────────────────────────────────────
+    # ── apply atom pair mask (OOB padding -> 0) ───────────────────────────────
     atom_pair_mask = atom_mask_blocked.unsqueeze(-1) * atom_mask_k.unsqueeze(
         -2)
     plm = plm * atom_pair_mask.unsqueeze(-1).to(dtype=plm.dtype)
@@ -247,24 +308,20 @@ class RefAtomFeatureEmbedder(nn.Module):
         # vl, vm: [*, N_blocks, N_query, 1], [*, N_blocks, N_key, 1]
         # atom_mask: [*, N_blocks, N_query, N_key]
 
+        # ``attn_metadata.query_to_keys`` preserves input ndim (4-d in -> 4-d
+        # out for the production batched case); the trailing singleton
+        # feature dim of mask/uid is squeezed below.
         d_l, _ = pad_to_multiple_and_divide(batch["ref_pos"],
                                             multiple=n_query,
                                             dim=batch["ref_pos"].ndim - 2)
         d_m = attn_metadata.query_to_keys(d_l)
 
-        if batch["ref_pos"].ndim == 2:
-            d_m = d_m.squeeze(1)
-
         atom_mask, _ = pad_to_multiple_and_divide(
             batch["atom_mask"].unsqueeze(-1),
             multiple=n_query,
             dim=batch["atom_mask"].ndim - 1)
-        if batch["atom_mask"].ndim == 2:
-            atom_mask = atom_mask * attn_metadata.query_to_keys(
-                atom_mask).squeeze(1).squeeze(-1).unsqueeze(-2)
-        else:
-            atom_mask = atom_mask * attn_metadata.query_to_keys(
-                atom_mask).squeeze(-1).unsqueeze(-2)
+        atom_mask = atom_mask * attn_metadata.query_to_keys(atom_mask).squeeze(
+            -1).unsqueeze(-2)
 
         v_l, _ = pad_to_multiple_and_divide(
             batch["ref_space_uid"].unsqueeze(-1),
@@ -272,8 +329,6 @@ class RefAtomFeatureEmbedder(nn.Module):
             dim=batch["ref_space_uid"].ndim - 1)
 
         v_m = attn_metadata.query_to_keys(v_l)
-        if batch["ref_space_uid"].ndim == 2:
-            v_m = v_m.squeeze(1)
 
         # dlm: [*, N_blocks, N_query, N_key, 3]
         # vlm: [*, N_blocks, N_query, N_key, 1]
@@ -618,25 +673,21 @@ class AtomAttentionEncoder(nn.Module):
 
         # Add the combined single conditioning to the pair rep (line 13 - 14)
 
+        # ``attn_metadata.query_to_keys`` preserves input ndim. For the
+        # batched production case (cl ndim==3), pad+block makes cl_l 4-d and
+        # the gather returns 4-d. Mask gets its trailing singleton squeezed.
         cl_l, _ = pad_to_multiple_and_divide(cl,
                                              multiple=self.n_query,
                                              dim=cl.ndim - 2)
 
         cl_m = attn_metadata.query_to_keys(cl_l)
-        if cl.ndim == 3:
-            cl_m = cl_m.squeeze(1)
 
         atom_mask, _ = pad_to_multiple_and_divide(
             batch["atom_mask"].unsqueeze(-1),
             multiple=self.n_query,
             dim=batch["atom_mask"].ndim - 1)
-
-        if batch["atom_mask"].ndim == 2:
-            atom_mask = atom_mask * attn_metadata.query_to_keys(
-                atom_mask).squeeze(1).squeeze(-1).unsqueeze(-2)
-        else:
-            atom_mask = atom_mask * attn_metadata.query_to_keys(
-                atom_mask).squeeze(-1).unsqueeze(-2)
+        atom_mask = atom_mask * attn_metadata.query_to_keys(atom_mask).squeeze(
+            -1).unsqueeze(-2)
 
         # # Note to devs: in previous checkpoints before v13, linear_l and linear_m
         # #  were reversed. Changed it for consistent naming.

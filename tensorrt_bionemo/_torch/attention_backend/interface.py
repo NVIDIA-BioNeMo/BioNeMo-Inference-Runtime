@@ -32,7 +32,11 @@ class AttentionMetadata:
     # Bias caching for diffusion transformer layers
     bias_cache: Optional[dict[str, torch.Tensor]] = None
 
-    # Function to convert query to keys for sequence local atom attention
+    # Function to convert query to keys for sequence-local atom attention.
+    # OSS-equivalent zero-pad path: a gather with a sentinel zero row at OOB
+    # columns. Pre-bound to ``gather_indices``, ``W=n_query``, ``H=n_key`` so
+    # callers only pass the input tensor. Used by both atom attention and
+    # ``convert_pair_atom_to_blocks``.
     query_to_keys: Optional[Callable] = None
 
 

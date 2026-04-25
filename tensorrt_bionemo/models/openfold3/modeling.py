@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import partial
 from typing import Optional
 
 import torch
@@ -23,8 +24,7 @@ from tensorrt_bionemo._torch.attention_backend import (
     auto_select_triangle_attention_backend)
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_indexing_matrix, pad_to_multiple_and_divide,
-    query_to_key_width_edge_masking)
+    create_gather_indices, create_indexing_matrix, query_to_keys_optimized)
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerModule
 from tensorrt_bionemo._torch.modules.openfold3.confidence import \
@@ -153,21 +153,21 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         W = self.n_query
         H = self.n_key
         device = batch["atom_mask"].device
+        # keys_indexing_matrix is retained for backward compatibility with
+        # code paths that may consult it; the actual query-to-keys op uses
+        # the bit-exact gather path below.
         self.keys_indexing_matrix = create_indexing_matrix(K, W, H, device)
+        gather_indices, _ = create_gather_indices(K, W, H, device)
 
-        mask_blocked, _ = pad_to_multiple_and_divide(batch["atom_mask"],
-                                                     multiple=self.n_query,
-                                                     dim=1)
-        to_keys = query_to_key_width_edge_masking(
-            n_q=self.n_query,
-            n_k=self.n_key,
-            idx=self.keys_indexing_matrix,
-            atom_mask=mask_blocked)
-        attn_metadata = AttentionMetadata(
-            query_to_keys=to_keys,
-            bias_cache={},
-        )
-        return attn_metadata
+        # Single OSS-equivalent zero-pad query→keys callable, pre-bound to
+        # ``gather_indices``, ``W``, ``H``. Consumed by both atom attention
+        # and ``convert_pair_atom_to_blocks``. Mirrors the Boltz-1/2 pattern.
+        query_to_keys_func = partial(query_to_keys_optimized,
+                                     gather_indices=gather_indices,
+                                     W=W,
+                                     H=H)
+        return AttentionMetadata(query_to_keys=query_to_keys_func,
+                                 bias_cache={})
 
     def get_pretrained_config(self,
                               model_name: str = SupMat.OpenFold3

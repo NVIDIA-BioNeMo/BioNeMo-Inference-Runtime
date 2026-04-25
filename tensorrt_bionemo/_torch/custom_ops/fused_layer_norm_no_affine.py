@@ -32,18 +32,24 @@ def _layer_norm_no_affine_kernel(
     eps: tl.constexpr,
     OUT_DTYPE: tl.constexpr = tl.bfloat16,
 ):
-    row = tl.program_id(0)
+    # ``tl.program_id`` is i32. For OF3 token-transformer at I=J=4832
+    # we get N_rows = 1*4832*4832 = 23,348,224 and D = 128, so
+    # ``row * D`` peaks at 2.99e9 — past INT32_MAX (2.15e9) — and
+    # silently wraps, producing an illegal address. Promote to i64
+    # before the multiply so the byte offset stays correct.
+    row = tl.program_id(0).to(tl.int64)
     offs = tl.arange(0, BLOCK_D)
     mask = offs < D
 
-    z = tl.load(Z_ptr + row * D + offs, mask=mask, other=0.0).to(tl.float32)
+    base = row * D
+    z = tl.load(Z_ptr + base + offs, mask=mask, other=0.0).to(tl.float32)
 
     mean = tl.sum(z, axis=0) / D
     z_c = z - mean
     var = tl.sum(z_c * z_c, axis=0) / D
     z_hat = z_c * tl.rsqrt(var + eps)
 
-    tl.store(OUT_ptr + row * D + offs, z_hat.to(OUT_DTYPE), mask=mask)
+    tl.store(OUT_ptr + base + offs, z_hat.to(OUT_DTYPE), mask=mask)
 
 
 _TORCH_TO_TL_DTYPE = {

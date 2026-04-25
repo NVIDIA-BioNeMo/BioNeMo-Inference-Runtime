@@ -99,8 +99,15 @@ def _moveaxis_pad_kernel(
     BLOCK_H: tl.constexpr,
 ):
     # 3D grid: axis-0 = b, axis-1 = i, axis-2 = J tile
-    b_idx = tl.program_id(0)
-    i_idx = tl.program_id(1)
+    # Promote b_idx/i_idx to i64 for pointer arithmetic. Today's
+    # OF3 token-level shape (B=1, I=J=4832, H=16) keeps every term
+    # below 2^31, but
+    #   inp_stride_b = I * J * H
+    # already reaches 3.74e8 at this size and crosses INT32_MAX once
+    # any of (B>5, H>=64, I/J>=8k) holds. Defensive i64 promotion is
+    # a no-op when the offset already fits.
+    b_idx = tl.program_id(0).to(tl.int64)
+    i_idx = tl.program_id(1).to(tl.int64)
     pid_j = tl.program_id(2)
 
     j_off = pid_j * BLOCK_J + tl.arange(0, BLOCK_J)  # [BLOCK_J]

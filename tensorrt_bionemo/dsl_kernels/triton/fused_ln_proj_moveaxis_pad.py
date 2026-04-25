@@ -94,16 +94,23 @@ def _fused_ln_proj_moveaxis_pad_kernel(
     Each program handles one (b, i, j_tile, head_block).
     """
     pid_j = tl.program_id(0)
-    pid_i = tl.program_id(1)
+    pid_i = tl.program_id(1).to(tl.int64)
     head_batch_idx = tl.program_id(2)
 
     num_head_blks = tl.cdiv(NUM_HEADS, HEADS_PER_BLK)
-    batch_idx = head_batch_idx // num_head_blks
+    batch_idx = (head_batch_idx // num_head_blks).to(tl.int64)
     head_blk_idx = head_batch_idx % num_head_blks
 
     offs_j = pid_j * TILE_J + tl.arange(0, TILE_J)
     offs_d = tl.arange(0, DIM_D)
     offs_h = head_blk_idx * HEADS_PER_BLK + tl.arange(0, HEADS_PER_BLK)
+    # ``pid_i`` and ``batch_idx`` are promoted to i64 above because at
+    # OF3 token-transformer scale (I=J=4832, D=128) the per-row offset
+    #   pid_i * z_stride_i = 4831 * (J*D) = 2.99e9
+    # overflows i32 (INT32_MAX = 2.15e9). The same applies to
+    #   batch_idx * z_stride_b
+    # for B>1 or H growth on the output side. ``pid_j`` and offsets in
+    # the J/D/H dims stay i32 (max ~5k) — no overflow risk there.
 
     mask_j = offs_j < J
     mask_h = offs_h < NUM_HEADS

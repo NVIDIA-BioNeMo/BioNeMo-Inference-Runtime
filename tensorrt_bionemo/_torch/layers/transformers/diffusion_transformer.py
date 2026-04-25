@@ -385,7 +385,7 @@ class OpenFold3DiffusionTransformer(nn.Module):
             if ln is not None:
                 w = w * ln.weight.data.unsqueeze(0)  # [H, D] * [1, D]
             parts.append(w)
-        self._W_mega = torch.cat(parts, dim=0)  # [N*H, D]
+        self._W_mega = torch.cat(parts, dim=0).contiguous()  # [N*H, D]
 
     def _precompute_all_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
         """Mega-GEMM transposed: one GEMM → zero-copy per-layer views.

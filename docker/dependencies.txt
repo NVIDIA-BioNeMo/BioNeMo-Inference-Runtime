@@ -75,4 +75,4 @@ tiktoken
 blobfile
 openai-harmony==0.0.4
 #nvidia-cutlass-dsl==4.2.0; python_version >= "3.12"
-cuequivariance_torch==0.7.0
+cuequivariance_torch==0.10.0

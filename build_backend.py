@@ -8,7 +8,7 @@ ROOT_DIR = Path(__file__).parent.resolve()
 TRT_ROOT_DIR = os.environ.get("TRT_ROOT_DIR", "/usr/local/tensorrt")
 CMAKE_BUILD_TYPE = os.environ.get("CMAKE_BUILD_TYPE", "Release")
 RECOMPILE_CPP = int(os.environ.get("RECOMPILE_CPP", "0"))
-CUEQ_VERSION = os.environ.get("CUEQ_VERSION", "0.9.1")
+CUEQ_VERSION = os.environ.get("CUEQ_VERSION", "0.10.0")
 
 LIBS_DIR = ROOT_DIR / "tensorrt_bionemo" / "libs"
 KERNELS_LIBRARY_NAME = "kernels_tensorrt_bionemo"

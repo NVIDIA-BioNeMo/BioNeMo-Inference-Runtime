@@ -811,6 +811,179 @@ def convert_hf_msa_module_torch(config: BaseConfig = None,
     return tbnm_state_dict
 
 
+def _convert_pairformer_no_seq_block_torch(module_state_dict: dict,
+                                           block_prefix: str, tbnm_prefix: str,
+                                           out_dict: dict) -> None:
+    """Convert a single ``PairformerNoSeqLayer`` block of HF weights into the
+    TRT-BNM dict-of-lists layout consumed by
+    :func:`recursive_calling_load_weights`.
+
+    Args:
+        module_state_dict: Flat HF state-dict already stripped of any outer
+            prefix (e.g. ``"template_module."``).
+        block_prefix: HF prefix for this block (e.g. ``"pairformer.layers.0"``).
+        tbnm_prefix: TRT-BNM target prefix (typically the same as
+            ``block_prefix``).
+        out_dict: Output dict, mutated in place.
+    """
+    for name in ["tri_mul_out", "tri_mul_in"]:
+        out_dict[f"{tbnm_prefix}.{name}.norm_in"] = [{
+            'weight':
+            module_state_dict[f"{block_prefix}.{name}.norm_in.weight"],
+            'bias':
+            module_state_dict[f"{block_prefix}.{name}.norm_in.bias"],
+        }]
+
+        w = module_state_dict[f"{block_prefix}.{name}.p_in.weight"]
+        p_in_0_weight, p_in_1_weight = w.chunk(2, dim=0)
+        out_dict[f"{tbnm_prefix}.{name}.p_in"] = [
+            {
+                'weight': p_in_0_weight
+            },
+            {
+                'weight': p_in_1_weight
+            },
+        ]
+
+        w = module_state_dict[f"{block_prefix}.{name}.g_in.weight"]
+        g_in_0_weight, g_in_1_weight = w.chunk(2, dim=0)
+        out_dict[f"{tbnm_prefix}.{name}.g_in"] = [
+            {
+                'weight': g_in_0_weight
+            },
+            {
+                'weight': g_in_1_weight
+            },
+        ]
+        out_dict[f"{tbnm_prefix}.{name}.norm_out"] = [{
+            'weight':
+            module_state_dict[f"{block_prefix}.{name}.norm_out.weight"],
+            'bias':
+            module_state_dict[f"{block_prefix}.{name}.norm_out.bias"],
+        }]
+        out_dict[f"{tbnm_prefix}.{name}.p_out"] = [{
+            'weight':
+            module_state_dict[f"{block_prefix}.{name}.p_out.weight"],
+        }]
+        out_dict[f"{tbnm_prefix}.{name}.g_out"] = [{
+            'weight':
+            module_state_dict[f"{block_prefix}.{name}.g_out.weight"],
+        }]
+
+    for name in ["start", "end"]:
+        out_dict[f"{tbnm_prefix}.tri_attn_{name}.layer_norm"] = [{
+            'weight':
+            module_state_dict[
+                f"{block_prefix}.tri_att_{name}.layer_norm.weight"],
+            'bias':
+            module_state_dict[
+                f"{block_prefix}.tri_att_{name}.layer_norm.bias"],
+        }]
+        out_dict[f"{tbnm_prefix}.tri_attn_{name}.linear"] = [{
+            'weight':
+            module_state_dict[f"{block_prefix}.tri_att_{name}.linear.weight"],
+        }]
+        out_dict[f"{tbnm_prefix}.tri_attn_{name}.mha.qkv_proj"] = [
+            {
+                'weight':
+                module_state_dict[
+                    f"{block_prefix}.tri_att_{name}.mha.linear_q.weight"]
+            },
+            {
+                'weight':
+                module_state_dict[
+                    f"{block_prefix}.tri_att_{name}.mha.linear_k.weight"]
+            },
+            {
+                'weight':
+                module_state_dict[
+                    f"{block_prefix}.tri_att_{name}.mha.linear_v.weight"]
+            },
+        ]
+        out_dict[f"{tbnm_prefix}.tri_attn_{name}.mha.o_proj"] = [{
+            'weight':
+            module_state_dict[
+                f"{block_prefix}.tri_att_{name}.mha.linear_o.weight"]
+        }]
+        out_dict[f"{tbnm_prefix}.tri_attn_{name}.mha.g_proj"] = [{
+            'weight':
+            module_state_dict[
+                f"{block_prefix}.tri_att_{name}.mha.linear_g.weight"]
+        }]
+
+    out_dict[f"{tbnm_prefix}.transition_z.norm"] = [{
+        'weight':
+        module_state_dict[f"{block_prefix}.transition_z.norm.weight"],
+        'bias':
+        module_state_dict[f"{block_prefix}.transition_z.norm.bias"],
+    }]
+    out_dict[f"{tbnm_prefix}.transition_z.fused_fc2_fc1"] = [
+        {
+            'weight':
+            module_state_dict[f"{block_prefix}.transition_z.fc2.weight"]
+        },
+        {
+            'weight':
+            module_state_dict[f"{block_prefix}.transition_z.fc1.weight"]
+        },
+    ]
+    out_dict[f"{tbnm_prefix}.transition_z.fc3"] = [{
+        'weight':
+        module_state_dict[f"{block_prefix}.transition_z.fc3.weight"]
+    }]
+
+
+def convert_hf_template_module_torch(config: BaseConfig = None,
+                                     mapping: Mapping = None,
+                                     local_checkpoint: str = None,
+                                     model_name: str = "boltz-2",
+                                     weights: dict = None,
+                                     **kwargs):
+    """Convert ``template_module.*`` weights from an HF Boltz-2 checkpoint
+    into the TRT-BNM ``TemplateV2Module`` dict-of-lists layout used by
+    :func:`recursive_calling_load_weights`.
+    """
+    if weights is None:
+        state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
+    else:
+        state_dict = weights
+
+    prefix = "template_module."
+    module_state_dict = {
+        k.replace(prefix, ""): v
+        for k, v in state_dict.items() if k.startswith(prefix)
+    }
+
+    tbnm_state_dict = {}
+    tbnm_state_dict["z_norm"] = [{
+        "weight": module_state_dict["z_norm.weight"],
+        "bias": module_state_dict["z_norm.bias"],
+    }]
+    tbnm_state_dict["v_norm"] = [{
+        "weight": module_state_dict["v_norm.weight"],
+        "bias": module_state_dict["v_norm.bias"],
+    }]
+    tbnm_state_dict["z_proj"] = [{
+        "weight": module_state_dict["z_proj.weight"]
+    }]
+    tbnm_state_dict["a_proj"] = [{
+        "weight": module_state_dict["a_proj.weight"]
+    }]
+    tbnm_state_dict["u_proj"] = [{
+        "weight": module_state_dict["u_proj.weight"]
+    }]
+
+    num_blocks = config.template_blocks
+    for i in range(num_blocks):
+        _convert_pairformer_no_seq_block_torch(
+            module_state_dict,
+            block_prefix=f"pairformer.layers.{i}",
+            tbnm_prefix=f"pairformer.layers.{i}",
+            out_dict=tbnm_state_dict,
+        )
+    return tbnm_state_dict
+
+
 def convert_hf_input_embedder_torch(config: BaseConfig,
                                     mapping: Mapping = None,
                                     local_checkpoint: str = None,

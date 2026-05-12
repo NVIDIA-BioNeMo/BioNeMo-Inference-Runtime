@@ -213,12 +213,18 @@ class RefTriangleAttentionNode(nn.Module):
         # [B, H, I, J]
         lx = self.linear(x)
         if lx.dim() == 4:
-            triangle_bias = torch.permute(
-                lx, (0, 3, 1, 2))  # TA.permute_final_dims(lx, (2, 0, 1))
+            # (B, I, J, H) -> (B, H, I, J); then unsqueeze a "starting row"
+            # broadcast dim so the bias is shaped (B, 1, H, I, J) and
+            # broadcasts properly against attention scores of shape
+            # (B, I_start, H, J, J) for any batch size. For B=1 this is
+            # numerically identical to the original (B, H, I, J) tensor
+            # whose leading "1" used to be prepended implicitly.
+            triangle_bias = torch.permute(lx, (0, 3, 1, 2)).unsqueeze(
+                1)  # (B, 1, H, I, J)
         elif lx.dim() == 3:
             triangle_bias = torch.permute(
-                lx,
-                (2, 0, 1))  # TA.permute_final_dims(lx, (2, 0, 1)), [*, H, I, J]
+                lx, (2, 0,
+                     1))  # TA.permute_final_dims(lx, (2, 0, 1)), [*, H, I, J]
 
         mask_bias: Optional[torch.Tensor] = None
         if mask is not None:
@@ -331,8 +337,10 @@ class RefPairformerLayer(nn.Module):
         if not self.no_update_s:
             self.attention = RefPairwiseSelfAttention(token_s, token_z,
                                                       num_heads)
-        self.tri_mul_out = RefTriangleMultiplicationNode(token_z, outgoing=True)
-        self.tri_mul_in = RefTriangleMultiplicationNode(token_z, outgoing=False)
+        self.tri_mul_out = RefTriangleMultiplicationNode(token_z,
+                                                         outgoing=True)
+        self.tri_mul_in = RefTriangleMultiplicationNode(token_z,
+                                                        outgoing=False)
         self.tri_attn_start = RefTriangleAttentionNode(token_z,
                                                        pairwise_head_width,
                                                        pairwise_num_heads,
@@ -348,10 +356,11 @@ class RefPairformerLayer(nn.Module):
         self.transition_z = RefTransition(token_z, token_z * 4)
 
     @classmethod
-    def load_weights(cls,
-                     model: str = "boltz-1",
-                     layer_path: str = "pairformer_module.layers.0",
-                     state_dict: Optional[dict] = None) -> 'RefPairformerLayer':
+    def load_weights(
+            cls,
+            model: str = "boltz-1",
+            layer_path: str = "pairformer_module.layers.0",
+            state_dict: Optional[dict] = None) -> 'RefPairformerLayer':
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         m = cls(128, 128)  # fake token_s and token_z
@@ -660,8 +669,10 @@ class RefPairformerNoSeqLayer(nn.Module):
         self.pairwise_head_width = pairwise_head_width
         self.pairwise_num_heads = pairwise_num_heads
 
-        self.tri_mul_out = RefTriangleMultiplicationNode(token_z, outgoing=True)
-        self.tri_mul_in = RefTriangleMultiplicationNode(token_z, outgoing=False)
+        self.tri_mul_out = RefTriangleMultiplicationNode(token_z,
+                                                         outgoing=True)
+        self.tri_mul_in = RefTriangleMultiplicationNode(token_z,
+                                                        outgoing=False)
         self.tri_attn_start = RefTriangleAttentionNode(token_z,
                                                        pairwise_head_width,
                                                        pairwise_num_heads,
@@ -723,7 +734,8 @@ class RefPairformerNoSeqLayer(nn.Module):
 
         return m
 
-    def forward(self, z: torch.Tensor, pair_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, z: torch.Tensor,
+                pair_mask: torch.Tensor) -> torch.Tensor:
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
         if z.dtype != pair_mask.dtype:
@@ -754,7 +766,8 @@ class RefPairformerNoSeqModule(nn.Module):
             for _ in range(num_blocks)
         ])
 
-    def forward(self, z: torch.Tensor, pair_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, z: torch.Tensor,
+                pair_mask: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
             z = layer(z, pair_mask)
         return z
@@ -926,7 +939,8 @@ class RefAffinityHeadsTransformer(nn.Module):
             cls,
             model: str = "boltz-2-affinity",
             layer_path: str = "affinity_module1.affinity_heads",
-            state_dict: Optional[dict] = None) -> 'RefAffinityHeadsTransformer':
+            state_dict: Optional[dict] = None
+    ) -> 'RefAffinityHeadsTransformer':
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
@@ -949,7 +963,8 @@ class RefAffinityHeadsTransformer(nn.Module):
             (f"{layer_path}.to_affinity_logits_binary.weight",
              f"{layer_path}.to_affinity_logits_binary.bias"),
         ]
-        token_z = state_dict[f"{layer_path}.affinity_out_mlp.0.weight"].shape[0]
+        token_z = state_dict[f"{layer_path}.affinity_out_mlp.0.weight"].shape[
+            0]
         input_token_s = state_dict[
             f"{layer_path}.to_affinity_pred_value.0.weight"].shape[0]
         m = cls(token_z=token_z, input_token_s=input_token_s)
@@ -1136,7 +1151,8 @@ class RefPairWeightedAveraging(nn.Module):
         ]
         c_m = state_dict[f"{layer_path}.norm_m.weight"].shape[0]
         c_z = state_dict[f"{layer_path}.norm_z.weight"].shape[0]
-        c_h_times_num_heads = state_dict[f"{layer_path}.proj_m.weight"].shape[0]
+        c_h_times_num_heads = state_dict[f"{layer_path}.proj_m.weight"].shape[
+            0]
         num_heads = state_dict[f"{layer_path}.proj_z.weight"].shape[0]
         c_h = c_h_times_num_heads // num_heads
         m = cls(c_m=c_m, c_z=c_z, c_h=c_h, num_heads=num_heads)
@@ -1216,10 +1232,11 @@ class RefOuterProductMean(nn.Module):
                                 bias=bias_flags["proj_o"])
 
     @classmethod
-    def load_weights(cls,
-                     model: str = "boltz-2",
-                     layer_path: str = "msa_module.layers.0.outer_product_mean",
-                     state_dict: Optional[dict] = None):
+    def load_weights(
+            cls,
+            model: str = "boltz-2",
+            layer_path: str = "msa_module.layers.0.outer_product_mean",
+            state_dict: Optional[dict] = None):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
@@ -1434,9 +1451,10 @@ class RefMSAModule(nn.Module):
         msa_layers = []
         for i in range(msa_blocks):
             msa_layers.append(
-                RefMSALayer.load_weights(state_dict=state_dict,
-                                         model=model,
-                                         layer_path=f"{layer_path}.layers.{i}"))
+                RefMSALayer.load_weights(
+                    state_dict=state_dict,
+                    model=model,
+                    layer_path=f"{layer_path}.layers.{i}"))
         token_z = msa_layers[0].token_z
         pairwise_head_width = msa_layers[0].pairwise_head_width
         pairwise_num_heads = msa_layers[0].pairwise_num_heads
@@ -1559,7 +1577,8 @@ class RefAtomEmbedding(nn.Module):
 
         atom_feature_dim = state_dict[
             f"{layer_path}.embed_atom_features.weight"].shape[1]
-        atom_s = state_dict[f"{layer_path}.embed_atom_features.weight"].shape[0]
+        atom_s = state_dict[f"{layer_path}.embed_atom_features.weight"].shape[
+            0]
         atom_z = state_dict[
             f"{layer_path}.embed_atompair_ref_pos.weight"].shape[0]
         token_s = None
@@ -2170,10 +2189,10 @@ class RefSingleConditioning(nn.Module):
                 state_dict=state_dict)
             transitions.append(transition)
 
-        fourier_embed = RefFourierEmbedding.load_weights(model=model,
-                                                         layer_path=layer_path +
-                                                         ".fourier_embed",
-                                                         state_dict=state_dict)
+        fourier_embed = RefFourierEmbedding.load_weights(
+            model=model,
+            layer_path=layer_path + ".fourier_embed",
+            state_dict=state_dict)
         token_s = state_dict[
             "structure_module.score_model.single_conditioner.norm_single.weight"].shape[
                 0] // 2
@@ -2254,12 +2273,12 @@ class RefSingleConditioning(nn.Module):
 
 class RefDiffusionModule(nn.Module):
 
-    def __init__(self, token_s: int, atom_s: int, atoms_per_window_queries: int,
-                 atoms_per_window_keys: int, dim_fourier: int,
-                 atom_encoder_depth: int, atom_encoder_heads: int,
-                 token_transformer_depth: int, token_transformer_heads: int,
-                 atom_decoder_depth: int, atom_decoder_heads: int,
-                 conditioning_transition_layers: int):
+    def __init__(self, token_s: int, atom_s: int,
+                 atoms_per_window_queries: int, atoms_per_window_keys: int,
+                 dim_fourier: int, atom_encoder_depth: int,
+                 atom_encoder_heads: int, token_transformer_depth: int,
+                 token_transformer_heads: int, atom_decoder_depth: int,
+                 atom_decoder_heads: int, conditioning_transition_layers: int):
         super().__init__()
 
         self.token_s = token_s
@@ -2306,12 +2325,13 @@ class RefDiffusionModule(nn.Module):
         self.a_norm = nn.LayerNorm(2 * token_s)
 
     @classmethod
-    def load_weights(cls,
-                     attn_window_queries: int = 32,
-                     attn_window_keys: int = 128,
-                     model: str = "boltz-2",
-                     layer_path: str = "structure_module.score_model",
-                     state_dict: Optional[dict] = None) -> 'RefDiffusionModule':
+    def load_weights(
+            cls,
+            attn_window_queries: int = 32,
+            attn_window_keys: int = 128,
+            model: str = "boltz-2",
+            layer_path: str = "structure_module.score_model",
+            state_dict: Optional[dict] = None) -> 'RefDiffusionModule':
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
 
@@ -2444,3 +2464,168 @@ class RefDiffusionModule(nn.Module):
             attn_metadata=attn_metadata)
 
         return r_update
+
+
+class RefTemplateV2Module(nn.Module):
+    """Reference: boltz/model/modules/trunkv2.py::TemplateV2Module.
+
+    The reference implementation deliberately mirrors the upstream module
+    so test scripts can compare TRT-BNM's :class:`TemplateV2Module` against
+    a plain PyTorch path. The only deviation from upstream is that the
+    inner ``pairformer`` is built from :class:`RefPairformerNoSeqModule`.
+    """
+
+    def __init__(self,
+                 token_z: int = 128,
+                 template_dim: int = 64,
+                 template_blocks: int = 2,
+                 pairwise_head_width: int = 32,
+                 pairwise_num_heads: int = 4,
+                 min_dist: float = 3.25,
+                 max_dist: float = 50.75,
+                 num_bins: int = 38,
+                 num_tokens: int = 33) -> None:
+        super().__init__()
+        self.token_z = token_z
+        self.template_dim = template_dim
+        self.template_blocks = template_blocks
+        self.pairwise_head_width = pairwise_head_width
+        self.pairwise_num_heads = pairwise_num_heads
+        self.min_dist = min_dist
+        self.max_dist = max_dist
+        self.num_bins = num_bins
+        self.num_tokens = num_tokens
+
+        self.relu = nn.ReLU()
+        self.z_norm = nn.LayerNorm(token_z)
+        self.v_norm = nn.LayerNorm(template_dim)
+        self.z_proj = nn.Linear(token_z, template_dim, bias=False)
+        self.a_proj = nn.Linear(num_tokens * 2 + num_bins + 5,
+                                template_dim,
+                                bias=False)
+        self.u_proj = nn.Linear(template_dim, token_z, bias=False)
+        self.pairformer = RefPairformerNoSeqModule(
+            num_blocks=template_blocks,
+            token_z=template_dim,
+            pairwise_head_width=pairwise_head_width,
+            pairwise_num_heads=pairwise_num_heads)
+
+    def forward(self, z: torch.Tensor, feats: dict[str, torch.Tensor],
+                pair_mask: torch.Tensor) -> torch.Tensor:
+        res_type = feats["template_restype"]
+        frame_rot = feats["template_frame_rot"]
+        frame_t = feats["template_frame_t"]
+        frame_mask = feats["template_mask_frame"]
+        cb_coords = feats["template_cb"]
+        ca_coords = feats["template_ca"]
+        cb_mask = feats["template_mask_cb"]
+        visibility_ids = feats["visibility_ids"]
+        template_mask = feats["template_mask"].any(dim=2).float()
+        num_templates = template_mask.sum(dim=1).clamp(min=1)
+
+        b_cb_mask = cb_mask[:, :, :, None] * cb_mask[:, :, None, :]
+        b_frame_mask = frame_mask[:, :, :, None] * frame_mask[:, :, None, :]
+        b_cb_mask = b_cb_mask[..., None]
+        b_frame_mask = b_frame_mask[..., None]
+
+        B, T = res_type.shape[:2]  # noqa: N806
+        tmlp_pair_mask = (
+            visibility_ids[:, :, :, None] == visibility_ids[:, :,
+                                                            None, :]).float()
+
+        with torch.autocast(device_type="cuda", enabled=False):
+            cb_dists = torch.cdist(cb_coords.float(), cb_coords.float())
+            boundaries = torch.linspace(self.min_dist,
+                                        self.max_dist,
+                                        self.num_bins - 1,
+                                        device=cb_dists.device)
+            distogram = (cb_dists[..., None] > boundaries).sum(dim=-1).long()
+            distogram = F.one_hot(distogram, num_classes=self.num_bins).float()
+
+            frame_rot_f = frame_rot.float().unsqueeze(2).transpose(-1, -2)
+            frame_t_f = frame_t.float().unsqueeze(2).unsqueeze(-1)
+            ca_coords_f = ca_coords.float().unsqueeze(3).unsqueeze(-1)
+            vector = torch.matmul(frame_rot_f, (ca_coords_f - frame_t_f))
+            norm = torch.norm(vector, dim=-1, keepdim=True)
+            unit_vector = torch.where(norm > 0, vector / norm,
+                                      torch.zeros_like(vector)).squeeze(-1)
+
+            a_tij = torch.cat([
+                distogram,
+                b_cb_mask.float(), unit_vector,
+                b_frame_mask.float()
+            ],
+                              dim=-1)
+            a_tij = a_tij * tmlp_pair_mask.unsqueeze(-1)
+
+            res_type_f = res_type.float()
+            res_i = res_type_f[:, :, :, None].expand(-1, -1, -1,
+                                                     res_type.size(2), -1)
+            res_j = res_type_f[:, :, None, :].expand(-1, -1, res_type.size(2),
+                                                     -1, -1)
+            a_tij = torch.cat([a_tij, res_i, res_j], dim=-1)
+            # Upstream relies on an outer ``autocast(enabled=True)`` to recast
+            # ``a_tij`` back to the model dtype on exit from the inner
+            # ``autocast(enabled=False)`` block before this linear. Our tests
+            # don't wrap the call in autocast, so cast explicitly to match the
+            # projection's weight dtype.
+            a_tij = self.a_proj(a_tij.to(self.a_proj.weight.dtype))
+
+        N = z.shape[1]  # noqa: N806
+        pair_mask_t = pair_mask[:, None].expand(-1, T, -1,
+                                                -1).reshape(B * T, N, N)
+        v = self.z_proj(self.z_norm(z[:, None])) + a_tij
+        v = v.view(B * T, N, N, self.template_dim)
+        v = v + self.pairformer(v, pair_mask_t)
+        v = self.v_norm(v)
+        v = v.view(B, T, N, N, self.template_dim)
+
+        # ``template_mask`` and ``num_templates`` are kept in fp32 to mirror
+        # upstream. An outer ``autocast(enabled=True)`` would cast both back to
+        # the model dtype; without autocast we cast explicitly so the
+        # subsequent linear sees a dtype that matches its weight.
+        template_mask = template_mask[:, :, None, None, None].to(v)
+        num_templates = num_templates[:, None, None, None].to(v)
+        u = (v * template_mask).sum(dim=1) / num_templates
+        u = self.u_proj(self.relu(u))
+        return u
+
+    @classmethod
+    def load_weights(
+            cls,
+            model: str = "boltz-2",
+            layer_path: str = "template_module",
+            state_dict: Optional[dict] = None) -> 'RefTemplateV2Module':
+        if state_dict is None:
+            state_dict = load_weights(model, local_files_only=False)
+
+        z_proj_w = state_dict[f"{layer_path}.z_proj.weight"]
+        a_proj_w = state_dict[f"{layer_path}.a_proj.weight"]
+        u_proj_w = state_dict[f"{layer_path}.u_proj.weight"]
+        token_z = z_proj_w.shape[1]
+        template_dim = z_proj_w.shape[0]
+
+        pairformer_path = f"{layer_path}.pairformer"
+        all_keys = len([
+            k for k in state_dict.keys()
+            if k.startswith(f"{pairformer_path}.layers.")
+        ])
+        keys_layer_0 = [
+            k for k in state_dict.keys()
+            if k.startswith(f"{pairformer_path}.layers.0.")
+        ]
+        num_blocks = all_keys // max(len(keys_layer_0), 1)
+
+        m = cls(token_z=token_z,
+                template_dim=template_dim,
+                template_blocks=num_blocks)
+        m.z_norm.weight.data.copy_(state_dict[f"{layer_path}.z_norm.weight"])
+        m.z_norm.bias.data.copy_(state_dict[f"{layer_path}.z_norm.bias"])
+        m.v_norm.weight.data.copy_(state_dict[f"{layer_path}.v_norm.weight"])
+        m.v_norm.bias.data.copy_(state_dict[f"{layer_path}.v_norm.bias"])
+        m.z_proj.weight.data.copy_(z_proj_w)
+        m.a_proj.weight.data.copy_(a_proj_w)
+        m.u_proj.weight.data.copy_(u_proj_w)
+        m.pairformer = RefPairformerNoSeqModule.load_weights(
+            state_dict=state_dict, layer_path=pairformer_path)
+        return m

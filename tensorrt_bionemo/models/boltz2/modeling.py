@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tensorrt_llm_lite.logger import logger
 
+# isort: off
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
@@ -52,12 +53,12 @@ from tensorrt_bionemo.pipeline.models.boltz2.const import (
 from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY, Boltz2AffinityConfig
-from .convert import (convert_hf_affinity_module_torch,
-                      convert_hf_confidence_module_torch,
-                      convert_hf_diffusion_conditioning_torch,
-                      convert_hf_input_embedder_torch,
-                      convert_hf_msa_module_torch, convert_hf_pairformer_torch,
-                      convert_hf_structure_module_torch)
+from .convert import (
+    convert_hf_affinity_module_torch, convert_hf_confidence_module_torch,
+    convert_hf_diffusion_conditioning_torch, convert_hf_input_embedder_torch,
+    convert_hf_msa_module_torch, convert_hf_pairformer_torch,
+    convert_hf_structure_module_torch, convert_hf_template_module_torch)
+# isort: on
 
 
 class Boltz2ModuleRegistry(ModuleRegistry):
@@ -275,6 +276,15 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         config.trunk.set_triangle_attention_backend(tri_backend)
         config.trunk.set_pairwise_attention_backend(pair_backend)
 
+        # The template module is off by default; when callers flip
+        # ``trunk.use_templates_v2`` on we still want its inner pairformer
+        # (which operates on ``template_dim`` channels) to run in bf16.
+        config.trunk.template_module.pairformer.set_dtype(torch.bfloat16)
+        config.trunk.template_module.pairformer.set_triangle_attention_backend(
+            tri_backend)
+        config.trunk.template_module.pairformer.set_pairwise_attention_backend(
+            pair_backend)
+
         config.structure_module.score_model.set_dtype(torch.bfloat16)
         config.structure_module.score_model.set_pairwise_attention_backend(
             pair_backend)
@@ -364,6 +374,12 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             config=self.trunk_config.pairformer,
             weights=weights,
             model_name=self.model_name)
+        if getattr(self.trunk_config, "use_templates_v2", False):
+            trunk_weights[
+                "template_module"] = convert_hf_template_module_torch(
+                    config=self.trunk_config.template_module,
+                    weights=weights,
+                    model_name=self.model_name)
         # construct the remaining weights for the trunk module
         for subname in ["s_norm", "z_norm", "s_recycle", "z_recycle"]:
             if subname not in trunk_weights:
@@ -431,6 +447,12 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             keys = [
                 "msa", "has_deletion", "deletion_value", "msa_paired",
                 "msa_mask", "token_pad_mask"
+            ]
+        elif module_name == "template":
+            keys = [
+                "template_restype", "template_frame_rot", "template_frame_t",
+                "template_mask_frame", "template_cb", "template_ca",
+                "template_mask_cb", "visibility_ids", "template_mask"
             ]
         else:
             raise ValueError(f"Module name {module_name} not supported")
@@ -502,12 +524,16 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             feed_dict["contact_conditioning"], feed_dict["contact_threshold"])
 
         # Do trunk
+        template_feats = None
+        if getattr(self.trunk_config, "use_templates_v2", False):
+            template_feats = self.get_module_feed_dict(feed_dict, "template")
         s, z = self.trunk(s_init=s_init,
                           z_init=z_init,
                           s_inputs=s_inputs,
                           **self.get_module_feed_dict(feed_dict, "trunk"),
                           recycling_steps=recycling_steps,
-                          all_reduce_params=all_reduce_params)
+                          all_reduce_params=all_reduce_params,
+                          template_feats=template_feats)
         # Run distogram module
         pair_distogram = self.distogram_module(z)
 

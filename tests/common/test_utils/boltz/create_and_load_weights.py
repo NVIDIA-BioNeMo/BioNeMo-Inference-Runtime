@@ -2606,3 +2606,57 @@ def load_diffusion_module_weights_torch(module,
 
     module.a_norm.weight.data.copy_(a_norm_weight.to("cuda"))
     module.a_norm.bias.data.copy_(a_norm_bias.to("cuda"))
+
+
+def create_template_module_weights(from_ref: RefTemplateV2Module = None):
+    """Collect the weights of a :class:`RefTemplateV2Module` so they can be
+    loaded into the TRT-BNM :class:`TemplateV2Module` for tests.
+    """
+    assert from_ref is not None, "from_ref is required"
+    z_norm_weight = from_ref.z_norm.weight.data
+    z_norm_bias = from_ref.z_norm.bias.data
+    v_norm_weight = from_ref.v_norm.weight.data
+    v_norm_bias = from_ref.v_norm.bias.data
+    z_proj_weight = from_ref.z_proj.weight.data
+    a_proj_weight = from_ref.a_proj.weight.data
+    u_proj_weight = from_ref.u_proj.weight.data
+    pairformer_layers_weights = [
+        create_pairformer_layer_weights(from_ref=from_ref.pairformer.layers[i],
+                                        include_s_path=False)
+        for i in range(from_ref.template_blocks)
+    ]
+    return (z_norm_weight, z_norm_bias, v_norm_weight, v_norm_bias,
+            z_proj_weight, a_proj_weight, u_proj_weight,
+            pairformer_layers_weights)
+
+
+def load_template_module_weights_torch(module,
+                                       weights_and_biases,
+                                       dtype=torch.float32):
+    """Load template-v2 module weights produced by
+    :func:`create_template_module_weights` into a TRT-BNM
+    :class:`TemplateV2Module` instance.
+    """
+    (z_norm_weight, z_norm_bias, v_norm_weight, v_norm_bias, z_proj_weight,
+     a_proj_weight, u_proj_weight,
+     pairformer_layers_weights) = weights_and_biases
+
+    module.z_norm.weight.data.copy_(z_norm_weight.to("cuda"))
+    module.z_norm.bias.data.copy_(z_norm_bias.to("cuda"))
+    module.v_norm.weight.data.copy_(v_norm_weight.to("cuda"))
+    module.v_norm.bias.data.copy_(v_norm_bias.to("cuda"))
+    module.z_proj.load_weights([{
+        "weight": z_proj_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    module.a_proj.load_weights([{
+        "weight": a_proj_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    module.u_proj.load_weights([{
+        "weight": u_proj_weight.to(dtype).to("cuda"),
+        "bias": None
+    }])
+    for i, layer_weights in enumerate(pairformer_layers_weights):
+        load_pairformer_layer_weights_torch(module.pairformer.layers[i],
+                                            layer_weights, dtype)

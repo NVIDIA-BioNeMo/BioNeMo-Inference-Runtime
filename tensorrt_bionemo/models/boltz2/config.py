@@ -33,6 +33,9 @@ class _Default:
     fix_sym_check: bool = True
     cyclic_pos_enc: bool = True
     bond_type_feature: bool = True
+    template_dim: int = 64
+    template_blocks: int = 2
+    template_num_bins: int = 38
 
 
 class InputEmbedderConfig(BaseConfig):
@@ -63,7 +66,38 @@ class InputEmbedderConfig(BaseConfig):
     )
 
 
+class TemplateV2ModuleConfig(BaseConfig):
+    """Configuration for the Boltz-2 TemplateV2 module.
+
+    Mirrors the upstream ``TemplateV2Module`` signature in
+    ``boltz/model/modules/trunkv2.py``. The inner ``pairformer`` operates
+    on ``template_dim`` channels (not ``token_z``).
+    """
+    token_z: int = _Default.token_z
+    template_dim: int = _Default.template_dim
+    template_blocks: int = _Default.template_blocks
+    pairwise_head_width: int = 32
+    pairwise_num_heads: int = 4
+    min_dist: float = 3.25
+    max_dist: float = 50.75
+    num_bins: int = _Default.template_num_bins
+    num_tokens: int = num_tokens
+    pairformer: PairformerConfig = PairformerConfig(
+        token_s=_Default.token_s,
+        token_z=_Default.template_dim,
+        pairwise_head_width=32,
+        pairwise_num_heads=4,
+        num_blocks=_Default.template_blocks,
+        num_heads=16,
+        no_update_s=True,
+        trimul_high_precision=False,
+        attention_initial_norm=False,
+        version="v2",
+    )
+
+
 class TrunkConfig(BaseConfig):
+    use_templates_v2: bool = False
     msa_module: MSAModuleConfig = MSAModuleConfig(
         msa_s=64,
         token_z=_Default.token_z,
@@ -90,6 +124,7 @@ class TrunkConfig(BaseConfig):
         attention_initial_norm=False,
         version="v2",
     )
+    template_module: TemplateV2ModuleConfig = TemplateV2ModuleConfig()
 
 
 class AtomDiffusionConfig(BaseConfig):

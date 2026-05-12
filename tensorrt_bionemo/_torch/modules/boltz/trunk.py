@@ -28,6 +28,7 @@ from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 from tensorrt_bionemo._torch.layers.transformers.pairformer import (
     PairformerModule, PairformerNoSeqLayer)
 from tensorrt_bionemo._torch.layers.transition import Transition
+from tensorrt_bionemo._torch.modules.boltz.template import TemplateV2Module
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
@@ -311,6 +312,14 @@ class Trunk(nn.Module):
 
         self.mapping = config.mapping or Mapping()
 
+        # Optional Boltz-2 v2 template module. Off by default; enabled via
+        # ``TrunkConfig.use_templates_v2`` (e.g. when loading a checkpoint
+        # trained with ``use_templates_v2=True``).
+        self.use_templates_v2 = getattr(config, "use_templates_v2", False)
+        self.template_module: Optional[TemplateV2Module] = None
+        if self.use_templates_v2:
+            self.template_module = TemplateV2Module(config.template_module)
+
         self.s_norm = nn.LayerNorm(token_s,
                                    dtype=self.dtype,
                                    eps=config.norm_epsilon)
@@ -342,6 +351,7 @@ class Trunk(nn.Module):
             dict: {
                 "msa_module": dict,
                 "pairformer_module": dict,
+                "template_module": dict (optional, only if use_templates_v2),
                 ...
             }
         """
@@ -349,10 +359,18 @@ class Trunk(nn.Module):
         pairformer_module_weights = weights.pop("pairformer_module")
         self.msa_module.load_weights(weights=msa_module_weights)
         self.pairformer_module.load_weights(weights=pairformer_module_weights)
-        # Skip loading the weights for the msa_module and pairformer_module,
-        # they are already loaded above
-        filter_func = lambda name, _: name.startswith(
-            "msa_module") or name.startswith("pairformer_module")
+
+        template_module_weights = weights.pop("template_module", None)
+        if template_module_weights is not None:
+            assert self.template_module is not None, (
+                "Got template_module weights but the trunk was built without "
+                "use_templates_v2=True")
+            self.template_module.load_weights(weights=template_module_weights)
+
+        # Skip loading the weights for the submodules already loaded above
+        filter_func = lambda name, _: (name.startswith(
+            "msa_module") or name.startswith("pairformer_module") or name.
+                                       startswith("template_module"))
         loaded_weight = recursive_calling_load_weights(self, weights,
                                                        filter_func)
         # verify whether all the weights are loaded
@@ -374,7 +392,8 @@ class Trunk(nn.Module):
         token_pad_mask: torch.Tensor,
         recycling_steps: int = 3,
         all_reduce_params: Optional[AllReduceParams] = None,
-        attn_metadata: Optional[AttentionMetadata] = None
+        attn_metadata: Optional[AttentionMetadata] = None,
+        template_feats: Optional[dict[str, torch.Tensor]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """ Recycling forward pass for Boltz1-2
         Args:
@@ -390,6 +409,9 @@ class Trunk(nn.Module):
             recycling_steps(int): The number of recycling steps.
             all_reduce_params(Optional[AllReduceParams]): The all reduce parameters.
             attn_metadata(Optional[AttentionMetadata]): The attention metadata.
+            template_feats(Optional[dict]): Per-template features required by
+                :class:`TemplateV2Module` when ``use_templates_v2`` is enabled.
+                Ignored when the template module is not built.
         Returns:
             Tuple[Tensor, Tensor]: The output sequence and pairwise embeddings of shape (B, N, token_s), (B, N, N, token_z).
         """
@@ -404,9 +426,20 @@ class Trunk(nn.Module):
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
 
+        run_template = (self.template_module is not None
+                        and template_feats is not None)
+
         for _ in range(recycling_steps):
             s = s_init + self.s_recycle(self.s_norm(s))
             z = z_init + self.z_recycle(self.z_norm(z))
+
+            if run_template:
+                z = z + self.template_module(
+                    z,
+                    template_feats,
+                    pair_mask,
+                    attn_metadata=attn_metadata,
+                    all_reduce_params=all_reduce_params).to(self.dtype)
 
             z = z + self.msa_module(z,
                                     s_inputs,

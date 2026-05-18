@@ -8,7 +8,7 @@
       "swizzle_b": 3,
       "load_bias_before_gemm": true
     },
-    "147457": {
+    "384": {
       "m_block_size": 128,
       "n_block_size": 64,
       "num_threads": 256,

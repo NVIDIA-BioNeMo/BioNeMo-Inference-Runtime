@@ -12,21 +12,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Load CuTe kernel tuning configs from JSON files.
+"""Load CuTe kernel tuning configs from JSON files (vLLM fused_moe pattern).
 
-One JSON file per (problem shape, SM) pair, named ``K{K}_N{N}_sm{sm}.json``
-for gated sigmoid and ``D{D}_sm{sm}.json`` for attention. Each file has::
+One JSON file per (problem shape, SM) pair, named
+``K{K}_N{N}_sm{sm}.json`` for gated sigmoid / dual GEMM and
+``D{D}_sm{sm}.json`` for attention. Each file has::
 
     {
         "implementation": "<dotted.module.ClassName>",
         "configs": {
-            "<m_bucket_key>": { ...tile parameters... },
+            "<op-specific lookup key>": { ...op-specific value... },
             ...
         }
     }
 
 ``implementation`` is the dotted import path of the CuTe kernel class to
-construct
+construct. The inner key format under ``configs`` is op-specific: a
+stringified M bucket for gated sigmoid and attention; a flat pipe-separated
+key for dual GEMM (e.g. ``"S=512|t=0"``) that maps directly to tile params
+(no nested table — the dual-GEMM loader filters by ``t=`` and picks the
+closest ``S=`` anchor).
+The loader treats all keys as raw strings and leaves parsing to the
+caller.
+
 Override search path: set ``TRTBNM_TUNED_CONFIG_FOLDER`` to a directory
 containing the same filenames (checked before the package defaults).
 """
@@ -66,12 +74,12 @@ class KernelConfigBundle:
 
     Attributes:
         implementation: Dotted import path of the kernel class.
-        configs: ``{m_bucket_key: params_dict}``.
+        configs: Raw config map; keys and structure are op-specific.
         source_path: Filesystem path the bundle was loaded from.
     """
 
     implementation: str
-    configs: dict[int, dict[str, Any]]
+    configs: dict[str, Any]
     source_path: str
 
 
@@ -107,10 +115,7 @@ def load_kernel_configs(
         )
         return KernelConfigBundle(
             implementation=raw["implementation"],
-            configs={
-                int(mk): v
-                for mk, v in raw["configs"].items()
-            },
+            configs=dict(raw["configs"]),
             source_path=path,
         )
 

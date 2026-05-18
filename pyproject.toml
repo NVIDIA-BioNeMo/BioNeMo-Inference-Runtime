@@ -28,7 +28,9 @@ exclude = ["cpp*"]
 
 [tool.setuptools.package-data]
 "tensorrt_bionemo" = [
-    "libs/*.so"
+    "libs/*.so",
+    "_torch/custom_ops/configs/**/*.json",
+    "_torch/attention_backend/configs/**/*.json",
 ]
 
 [project]

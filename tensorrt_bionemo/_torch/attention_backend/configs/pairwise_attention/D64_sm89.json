@@ -1,0 +1,19 @@
+{
+  "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm80_attn_pb_optimized.FlashAttentionForwardAmpere",
+  "configs": {
+    "0": {
+      "m_block_size": 128,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "262145": {
+      "m_block_size": 128,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 4,
+      "load_bias_before_gemm": true
+    }
+  }
+}

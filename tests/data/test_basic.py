@@ -70,6 +70,64 @@ class TestPolymer:
         with pytest.raises(ValueError):
             Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A")
 
+    def test_ccd_ligand_requires_sequence(self):
+        with pytest.raises(ValueError):
+            Polymer(polymer_type=PolymerType.CCD_LIGAND, chain_id="L")
+
+    def test_smiles_ligand_requires_sequence(self):
+        with pytest.raises(ValueError):
+            Polymer(polymer_type=PolymerType.SMILES_LIGAND, chain_id="L")
+
+    def test_ccd_ligand_create(self):
+        ligand = Polymer(polymer_type=PolymerType.CCD_LIGAND,
+                         chain_id="L",
+                         sequence="ATP")
+        assert ligand["polymer_type"] == PolymerType.CCD_LIGAND.value
+        assert ligand["sequence"] == "ATP"
+
+    def test_ccd_ligand_create_multi_component(self):
+        ligand = Polymer(polymer_type=PolymerType.CCD_LIGAND,
+                         chain_id="L",
+                         sequence="ATP_FAD")
+        assert ligand["sequence"] == "ATP_FAD"
+        assert ligand["sequence"].split("_") == ["ATP", "FAD"]
+
+    @pytest.mark.parametrize("bad_sequence", [
+        "atp",
+        "ATP_",
+        "_ATP",
+        "ATP__FAD",
+        "ATP-FAD",
+        "ATP FAD",
+        "TOOLONG",
+        "",
+    ])
+    def test_ccd_ligand_rejects_invalid_sequence(self, bad_sequence):
+        with pytest.raises(ValueError):
+            Polymer(polymer_type=PolymerType.CCD_LIGAND,
+                    chain_id="L",
+                    sequence=bad_sequence)
+
+    def test_smiles_ligand_create(self):
+        ligand = Polymer(polymer_type=PolymerType.SMILES_LIGAND,
+                         chain_id="L",
+                         sequence="CCO")
+        assert ligand["polymer_type"] == PolymerType.SMILES_LIGAND.value
+        assert ligand["sequence"] == "CCO"
+
+    def test_ligand_types_reject_templates(self):
+        tmpl = Template(content="data_x\n", format="cif")
+        with pytest.raises(ValueError):
+            Polymer(polymer_type=PolymerType.CCD_LIGAND,
+                    chain_id="L",
+                    sequence="ATP",
+                    templates=[tmpl])
+        with pytest.raises(ValueError):
+            Polymer(polymer_type=PolymerType.SMILES_LIGAND,
+                    chain_id="L",
+                    sequence="CCO",
+                    templates=[tmpl])
+
 
 class TestResTypes:
 
@@ -125,16 +183,33 @@ class TestAtomTypes:
 class TestPolymerType:
 
     def test_polymer_types(self):
-        assert PolymerType.PROTEIN == "protein"
-        assert PolymerType.RNA == "rna"
-        assert PolymerType.DNA == "dna"
-        assert PolymerType.LIGAND == "ligand"
+        assert PolymerType.PROTEIN.value == "protein"
+        assert PolymerType.RNA.value == "rna"
+        assert PolymerType.DNA.value == "dna"
+        assert PolymerType.CCD_LIGAND.value == "ccd_ligand"
+        assert PolymerType.SMILES_LIGAND.value == "smiles_ligand"
 
     def test_fasta_default_polymer_type(self):
         fasta_path = SAMPLES_DIR / "T1094.fasta"
         parsed = read_fasta(fasta_path)
         molecule = parsed["sequences"][0]
         assert molecule["polymer_type"] == PolymerType.PROTEIN.value
+
+    def test_openfold3_polymer_type_mapping_covers_all_types(self):
+        """Both ligand variants must map to MOL_TYPE_LIGAND in the OF3
+        token-feature pipeline; otherwise a CCD or SMILES ligand would be
+        silently routed to protein/RNA/DNA."""
+        from tensorrt_bionemo.pipeline.models.openfold3.const import (
+            MOL_TYPE_DNA, MOL_TYPE_LIGAND, MOL_TYPE_PROTEIN, MOL_TYPE_RNA,
+            POLYMER_TYPE_TO_MOL_TYPE)
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.PROTEIN.value] == \
+            MOL_TYPE_PROTEIN
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.RNA.value] == MOL_TYPE_RNA
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.DNA.value] == MOL_TYPE_DNA
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.CCD_LIGAND.value] == \
+            MOL_TYPE_LIGAND
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.SMILES_LIGAND.value] == \
+            MOL_TYPE_LIGAND
 
 
 class TestInputRequest:

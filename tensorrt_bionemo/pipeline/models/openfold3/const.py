@@ -127,7 +127,8 @@ POLYMER_TYPE_TO_MOL_TYPE = {
     "protein": MOL_TYPE_PROTEIN,
     "rna": MOL_TYPE_RNA,
     "dna": MOL_TYPE_DNA,
-    "ligand": MOL_TYPE_LIGAND,
+    "ccd_ligand": MOL_TYPE_LIGAND,
+    "smiles_ligand": MOL_TYPE_LIGAND,
 }
 
 # ---------------------------------------------------------------------------

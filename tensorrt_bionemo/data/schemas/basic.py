@@ -22,10 +22,25 @@ import numpy as np
 
 
 class PolymerType(str, Enum):
+    """Polymer kind. Tells consumers how to interpret ``Polymer.sequence``.
+
+    Sequence convention by type:
+
+    - ``PROTEIN``: 1-letter amino-acid sequence (e.g. ``"ACDE"``).
+    - ``RNA`` / ``DNA``: 1-letter nucleotide sequence (e.g. ``"AUGC"``).
+    - ``CCD_LIGAND``: one CCD code or an underscore-joined list of CCD
+      codes from the Chemical Component Dictionary (e.g. ``"ATP"`` or
+      ``"ATP_FAD"`` for a multi-component ligand). Matches the
+      Protenix lossless convention; upstream AF3/OF3 ``ccd_codes``
+      lists round-trip through ``sequence.split("_")``.
+    - ``SMILES_LIGAND``: a SMILES string for a custom small molecule
+      (e.g. ``"CCO"`` for ethanol).
+    """
     PROTEIN = "protein"
     RNA = "rna"
     DNA = "dna"
-    LIGAND = "ligand"
+    CCD_LIGAND = "ccd_ligand"
+    SMILES_LIGAND = "smiles_ligand"
 
 
 @dataclass
@@ -307,12 +322,22 @@ class Polymer(dict):
                 f"Chain ID must be a string or list of strings, got {type(chain_id).__name__}"
             )
 
+    _CCD_LIGAND_PATTERN = re.compile(r'^[A-Z0-9]{1,5}(?:_[A-Z0-9]{1,5})*$')
+
     @staticmethod
     def _validate_polymer_fields(polymer_type: PolymerType,
                                  sequence: Optional[str],
                                  templates: Optional[List]) -> None:
         if sequence is None:
             raise ValueError(f"{polymer_type.value} must have 'sequence'")
+
+        if polymer_type == PolymerType.CCD_LIGAND:
+            if not Polymer._CCD_LIGAND_PATTERN.match(sequence):
+                raise ValueError(
+                    f"ccd_ligand sequence {sequence!r} must be one CCD code "
+                    f"or an underscore-joined list of CCD codes "
+                    f"(uppercase A-Z0-9, each token 1-5 chars), "
+                    f"e.g. 'ATP' or 'ATP_FAD'.")
 
         if templates is not None and len(templates) > 0:
             if polymer_type != PolymerType.PROTEIN:

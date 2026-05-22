@@ -276,14 +276,15 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         config.trunk.set_triangle_attention_backend(tri_backend)
         config.trunk.set_pairwise_attention_backend(pair_backend)
 
-        # The template module is off by default; when callers flip
-        # ``trunk.use_templates_v2`` on we still want its inner pairformer
-        # (which operates on ``template_dim`` channels) to run in bf16.
-        config.trunk.template_module.pairformer.set_dtype(torch.bfloat16)
-        config.trunk.template_module.pairformer.set_triangle_attention_backend(
-            tri_backend)
-        config.trunk.template_module.pairformer.set_pairwise_attention_backend(
-            pair_backend)
+        if getattr(config.trunk, "use_templates_v2", False):
+            # The template module is off by default; when callers flip
+            # ``trunk.use_templates_v2`` on we still want its inner pairformer
+            # (which operates on ``template_dim`` channels) to run in bf16.
+            config.trunk.template_module.pairformer.set_dtype(torch.bfloat16)
+            config.trunk.template_module.pairformer.set_triangle_attention_backend(
+                tri_backend)
+            config.trunk.template_module.pairformer.set_pairwise_attention_backend(
+                pair_backend)
 
         config.structure_module.score_model.set_dtype(torch.bfloat16)
         config.structure_module.score_model.set_pairwise_attention_backend(
@@ -638,7 +639,7 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
                  include_load_weights: bool = True):
 
         if config is None:
-            config = Boltz2.get_pretrained_config()
+            config = Boltz2Affinity.get_pretrained_config()
 
         super().__init__(config=config, include_load_weights=False)
 
@@ -662,18 +663,19 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
     @staticmethod
     def get_pretrained_config(
             model_name: str = SupMat.Boltz2Affinity) -> Boltz2AffinityConfig:
+        # ``Boltz2.get_pretrained_config`` resolves ``model_name`` via
+        # ``PRETRAINED_CONFIG_REGISTRY`` (returns ``Boltz2AffinityConfig``
+        # for ``SupMat.Boltz2Affinity``) and configures the trunk,
+        # structure_module, and confidence_module subtrees: bf16 dtype,
+        # pairformer ``s_path_dtype = bf16``, and auto-selected
+        # triangle/pairwise attention backends. The affinity submodules
+        # are not walked by that helper, so we configure them here.
         config = Boltz2.get_pretrained_config(model_name)
-        config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
-        config.trunk.set_dtype(torch.bfloat16)
         tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
-        config.trunk.set_triangle_attention_backend(tri_backend)
-        config.structure_module.score_model.set_dtype(torch.bfloat16)
-
-        config.confidence_module.set_triangle_attention_backend(tri_backend)
-        config.confidence_module.pairformer.set_dtype(torch.bfloat16)
-
-        config.affinity.module1.set_dtype(torch.bfloat16)
-        config.affinity.module2.set_dtype(torch.bfloat16)
+        for affinity_module_config in (config.affinity.module1,
+                                       config.affinity.module2):
+            affinity_module_config.set_dtype(torch.bfloat16)
+            affinity_module_config.set_triangle_attention_backend(tri_backend)
         return config
 
     def load_weights(self, weights: dict = None) -> None:
@@ -743,8 +745,16 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
             feed_dict["affinity_token_mask"],
             include_mask_for_head=True)
 
-        z_affinity = affinity_output_dictionary[
-            'z'] * cross_pair_mask_0.unsqueeze(-1)
+        affinity_dtype = self.config.affinity.module1.torch_dtype
+        assert (self.config.affinity.module2.torch_dtype == affinity_dtype), (
+            "Boltz2Affinity expects affinity.module1 and affinity.module2 to "
+            "share the same dtype; got "
+            f"{affinity_dtype} vs {self.config.affinity.module2.torch_dtype}.")
+        cross_pair_mask_0 = cross_pair_mask_0.to(affinity_dtype)
+        cross_pair_mask_1 = cross_pair_mask_1.to(affinity_dtype)
+        z_affinity = (affinity_output_dictionary['z'].to(affinity_dtype) *
+                      cross_pair_mask_0.unsqueeze(-1))
+        s_inputs_affinity = s_inputs_affinity.to(affinity_dtype)
 
         affinity_probabilities = []
         affinity_pred_values = []

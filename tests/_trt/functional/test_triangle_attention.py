@@ -26,6 +26,7 @@ from test_utils.boltz.ref_attn import plain_mha
 
 from tensorrt_bionemo._trt.functional import (AttentionBackend,
                                               triangle_attention)
+from tests._torch import make_left_aligned_mask
 
 
 @pytest.mark.parametrize("use_mask", [True, False], ids=["mask", "nomask"])
@@ -69,7 +70,11 @@ def test_triangle_attention(use_mask, backend, use_tf32, dtype, si, sj, sk):
                     device="cuda",
                     requires_grad=False)
     if use_mask:
-        mask = torch.randint(0, 2, (bs, si, sk)).bool().cuda()
+        mask = make_left_aligned_mask(bs,
+                                      si,
+                                      sk,
+                                      dtype=torch.float32,
+                                      device="cuda").bool()
     else:
         mask = torch.ones((bs, si, sk)).bool().cuda()
     bias = torch.randn(

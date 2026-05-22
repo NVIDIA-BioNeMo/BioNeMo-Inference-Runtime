@@ -26,6 +26,7 @@ from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
 from tensorrt_bionemo._torch.layers.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import make_left_aligned_pair_mask
 from tests._torch import skip_cutedsl as _skip_cutedsl
 
 
@@ -44,12 +45,17 @@ class Scenario:
 
 
 def _make_biases(backend, bs, seq_len, num_heads, dtype, device):
-    """Build [mask_bias, triangle_bias] with the right mask shape per backend."""
+    """Build [mask_bias, triangle_bias] with the right mask shape per backend.
+
+    For the CuTeDSL left-mask kernel ``mask_bias`` is the int32 ``actual_s_kv``
+    leading-1s count per row, derived from a left-aligned pair mask.
+    """
     if backend == "CuTeDSL":
-        mask_bias = torch.randint(0,
-                                  2, (bs, seq_len, seq_len),
-                                  dtype=torch.float32,
-                                  device=device)
+        pair_mask = make_left_aligned_pair_mask(bs,
+                                                seq_len,
+                                                dtype=torch.float32,
+                                                device=device)
+        mask_bias = (pair_mask > 0.5).sum(dim=-1).to(dtype=torch.int32)
     else:
         mask_bias = torch.randn(bs,
                                 seq_len,
@@ -191,10 +197,10 @@ def test_triangle_attention_cutedsl(s: Scenario):
                                 dtype=torch.float32,
                                 device=device)
 
-    binary_mask = torch.randint(0,
-                                2, (bs, s.seq_len, s.seq_len),
-                                dtype=torch.float32,
-                                device=device)
+    binary_mask = make_left_aligned_pair_mask(bs,
+                                              s.seq_len,
+                                              dtype=torch.float32,
+                                              device=device)
     triangle_bias = torch.randn(bs,
                                 s.num_attention_heads,
                                 s.seq_len,
@@ -206,7 +212,8 @@ def test_triangle_attention_cutedsl(s: Scenario):
     ref_mask_bias = ((binary_mask - 1.0) * inf_val).unsqueeze(-2).unsqueeze(-3)
     ref_biases = [ref_mask_bias, triangle_bias]
 
-    cutedsl_biases = [binary_mask, triangle_bias.to(dtype)]
+    actual_s_kv = (binary_mask > 0.5).sum(dim=-1).to(dtype=torch.int32)
+    cutedsl_biases = [actual_s_kv, triangle_bias.to(dtype)]
 
     with torch.inference_mode():
         ref_output_float = ref_attn(hidden_states,

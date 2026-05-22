@@ -24,6 +24,7 @@ from test_utils.boltz.ref_layers import RefTemplateV2Module
 
 from tensorrt_bionemo._torch.modules.boltz.template import TemplateV2Module
 from tensorrt_bionemo.models.boltz2.config import TemplateV2ModuleConfig
+from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 
@@ -125,10 +126,12 @@ def test_template_v2_module(sc: Scenario):
 
     B, T, N = 1, 3, 32
     z = torch.randn(B, N, N, token_z, dtype=torch.float32, device=device)
-    pair_mask = torch.randint(0,
-                              2, (B, N, N),
-                              dtype=torch.float32,
-                              device=device)
+    seq_mask = make_left_aligned_mask(B,
+                                      N,
+                                      dtype=torch.float32,
+                                      device=device,
+                                      min_valid=N // 2)
+    pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
     feats = _make_template_feats(B, T, N, num_tokens, num_bins, device)
 
     with torch.inference_mode():
@@ -143,17 +146,35 @@ def test_template_v2_module(sc: Scenario):
         out = mod(z_dt, feats, pair_mask_dt)
 
     assert ref_out.shape == out.shape
+
+    # Padded query rows in the inner pairformer's triangle attention softmax
+    # over fully-masked keys -> NaN in the PyTorch reference; the CuTeDSL
+    # left-mask kernel sees ``actual_s_kv`` clamped to >= 1 and emits
+    # arithmetic garbage there. Both implementations agree on the *valid*
+    # sub-block (rows/cols where ``seq_mask == 1``), so only compare there.
+    keep = pair_mask.float().unsqueeze(-1)  # [B, N, N, 1]
+
+    def _masked(x: torch.Tensor) -> torch.Tensor:
+        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0,
+                                neginf=0.0) * keep
+
     if dtype == torch.float32:
-        torch.testing.assert_close(out, ref_out, atol=1e-3, rtol=1e-4)
+        torch.testing.assert_close(_masked(out),
+                                   _masked(ref_out),
+                                   atol=1e-3,
+                                   rtol=1e-4)
     else:
         # Compare bf16 outputs against ref_float using the same statistical
         # pattern as ``test_boltz_msa_module.test_msa_layer``: the TRT-BNM
         # path's deviation from the fp32 reference should be on the same
         # order as the ref-bf16 path's deviation from fp32.
-        diff0_max = torch.max(torch.abs(out.float() - ref_float.float()))
-        diff0_mean = torch.mean(torch.abs(out.float() - ref_float.float()))
-        diff1_max = torch.max(torch.abs(ref_out.float() - ref_float.float()))
-        diff1_mean = torch.mean(torch.abs(ref_out.float() - ref_float.float()))
+        d_out = _masked(out) - _masked(ref_float)
+        d_ref = _masked(ref_out) - _masked(ref_float)
+
+        diff0_max = torch.max(torch.abs(d_out))
+        diff0_mean = torch.mean(torch.abs(d_out))
+        diff1_max = torch.max(torch.abs(d_ref))
+        diff1_mean = torch.mean(torch.abs(d_ref))
 
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5

@@ -32,6 +32,7 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import make_left_aligned_pair_mask
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -96,8 +97,10 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     attn_metadata = metadata_cls(mapping=Mapping())
     x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in,
                     dtype=torch.float32).cuda()
-    mask = torch.randint(0, 2, (bs, s.seq_len, s.seq_len),
-                         dtype=torch.float32).cuda()
+    mask = make_left_aligned_pair_mask(bs,
+                                       s.seq_len,
+                                       dtype=torch.float32,
+                                       device="cuda")
 
     with torch.inference_mode():
         ref_output_float = ref_node(x, mask)
@@ -167,10 +170,10 @@ def test_triangle_multiplication_node(s: MulNodeScenario):
                                                     dtype)
 
     x = torch.randn(bs, s.seq_len, s.seq_len, ref_node.dim, device="cuda")
-    mask = torch.randint(0,
-                         2, (1, s.seq_len, s.seq_len),
-                         device="cuda",
-                         dtype=torch.float32)
+    mask = make_left_aligned_pair_mask(1,
+                                       s.seq_len,
+                                       device="cuda",
+                                       dtype=torch.float32)
 
     with torch.inference_mode():
         ref_output_float = ref_node(x, mask)

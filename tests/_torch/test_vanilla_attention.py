@@ -20,23 +20,23 @@ from test_utils.boltz.ref_attn import plain_mha
 
 from tensorrt_bionemo._torch.attention_backend.interface import \
     AttentionMetadata
-from tensorrt_bionemo._torch.attention_backend.pairwise_attention_cute import (
-    PairwiseAttentionCuTe, PairwiseAttentionCuTeMetadata)
-from tensorrt_bionemo._torch.attention_backend.triangle_attention_cute import (
-    TriangleAttentionCuTe, TriangleAttentionCuTeMetadata)
+from tensorrt_bionemo._torch.attention_backend.pairwise_attention_cute_left_mask import (
+    PairwiseAttentionCuTeLeftMask, PairwiseAttentionCuTeLeftMaskMetadata)
+from tensorrt_bionemo._torch.attention_backend.triangle_attention_cute_left_mask import (
+    TriangleAttentionCuTeLeftMask, TriangleAttentionCuTeLeftMaskMetadata)
 from tensorrt_bionemo._torch.attention_backend.vanilla import (
     VanillaPairwiseAttention, VanillaTriangleAttention)
-from tests._torch import skip_if_no_cutedsl
+from tests._torch import make_left_aligned_mask, skip_if_no_cutedsl
 
 
-def _pw_meta(kv_packed: bool) -> PairwiseAttentionCuTeMetadata:
-    m = PairwiseAttentionCuTeMetadata()
+def _pw_meta(kv_packed: bool) -> PairwiseAttentionCuTeLeftMaskMetadata:
+    m = PairwiseAttentionCuTeLeftMaskMetadata()
     m.kv_packed = kv_packed
     return m
 
 
-def _tri_meta(qkv_packed: bool) -> TriangleAttentionCuTeMetadata:
-    m = TriangleAttentionCuTeMetadata()
+def _tri_meta(qkv_packed: bool) -> TriangleAttentionCuTeLeftMaskMetadata:
+    m = TriangleAttentionCuTeLeftMaskMetadata()
     m.qkv_packed = qkv_packed
     return m
 
@@ -128,7 +128,8 @@ def test_vanilla_attention_for_pairwise(batch_size, dtype):
 
 
 # ---------------------------------------------------------------------------
-# CuTeDSL pairwise attention vs Vanilla — self & cross attention, with mult
+# CuTeDSL left-mask pairwise attention vs Vanilla — self & cross attention,
+# with mult
 # ---------------------------------------------------------------------------
 
 
@@ -154,9 +155,17 @@ def test_vanilla_attention_for_pairwise(batch_size, dtype):
                          ])
 @pytest.mark.parametrize("kv_packed", [False, True],
                          ids=["separate", "packed"])
-def test_cutedsl_vs_vanilla_pairwise(batch_size, q_size, kv_size, num_heads,
-                                     head_dim, mult, kv_packed):
-    """Compare CuTeDSL pairwise attention against vanilla reference."""
+@pytest.mark.parametrize("mask_form", ["binary", "actual_s_kv"])
+def test_pairwise_left_mask_vs_vanilla(batch_size, q_size, kv_size, num_heads,
+                                       head_dim, mult, kv_packed, mask_form):
+    """Compare CuTeDSL left-mask pairwise attention against vanilla reference.
+
+    Exercises both ``biases[0]`` input forms accepted by
+    :class:`PairwiseAttentionCuTeLeftMask`:
+      * ``binary``     - left-aligned float 0/1 mask ``[B, Sk]`` (reduced
+                         internally to ``actual_s_kv``);
+      * ``actual_s_kv``- pre-reduced int32 count of leading 1s ``[B]``.
+    """
     skip_if_no_cutedsl()
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
@@ -178,11 +187,14 @@ def test_cutedsl_vs_vanilla_pairwise(batch_size, q_size, kv_size, num_heads,
         k = torch.randn(B_flat, Sk, H * D, dtype=dtype, device=device)
         v = torch.randn(B_flat, Sk, H * D, dtype=dtype, device=device)
 
-    binary_mask = torch.randint(0,
-                                2, (B, Sk),
-                                dtype=torch.float32,
-                                device=device)
-    binary_mask[:, 0] = 1.0
+    binary_mask = make_left_aligned_mask(B,
+                                         Sk,
+                                         dtype=torch.float32,
+                                         device=device)
+    if mask_form == "binary":
+        cute_mask_input = binary_mask
+    else:
+        cute_mask_input = binary_mask.sum(dim=-1).to(torch.int32)
     pair_bias = torch.randn(B, H, Sq, Sk, dtype=dtype, device=device)
 
     additive_mask = (1.0 - binary_mask) * -1e9
@@ -204,23 +216,24 @@ def test_cutedsl_vs_vanilla_pairwise(batch_size, q_size, kv_size, num_heads,
         biases=[additive_mask_expanded, pair_bias_expanded],
         metadata=AttentionMetadata())
 
-    cute_attn = PairwiseAttentionCuTe(0, H, D, num_kv_heads=H)
+    cute_attn = PairwiseAttentionCuTeLeftMask(0, H, D, num_kv_heads=H)
     cute_out = cute_attn.forward(q,
                                  k,
                                  v,
-                                 biases=[binary_mask, pair_bias],
+                                 biases=[cute_mask_input, pair_bias],
                                  metadata=_pw_meta(kv_packed))
 
     assert cute_out.shape == vanilla_out.shape, (
         f"Shape mismatch: cute={cute_out.shape}, vanilla={vanilla_out.shape}")
     diff_max = torch.max(torch.abs(cute_out.float() - vanilla_out.float()))
     diff_mean = torch.mean(torch.abs(cute_out.float() - vanilla_out.float()))
-    assert diff_max < 1e-1, f"Max diff {diff_max} too large"
-    assert diff_mean < 1e-2, f"Mean diff {diff_mean} too large"
+    assert diff_max < 1e-1, f"max diff {diff_max:.4f} >= 1e-1"
+    assert diff_mean < 1e-2, f"mean diff {diff_mean:.4f} >= 1e-2"
 
 
 # ---------------------------------------------------------------------------
-# CuTeDSL triangle attention vs Vanilla — non-trivial J (J != J_padded)
+# CuTeDSL left-mask triangle attention vs Vanilla — non-trivial J
+# (J != J_padded) and all three accepted ``actual_s_kv`` shapes
 # ---------------------------------------------------------------------------
 
 
@@ -250,14 +263,23 @@ def test_cutedsl_vs_vanilla_pairwise(batch_size, q_size, kv_size, num_heads,
                          ])
 @pytest.mark.parametrize("qkv_packed", [False, True],
                          ids=["separate", "packed"])
-def test_cutedsl_vs_vanilla_triangle(bs, I, J, num_heads, head_dim,
-                                     qkv_packed):
-    """Compare CuTeDSL triangle attention against vanilla reference.
+@pytest.mark.parametrize("s_kv_shape", ["BI", "flat", "B_broadcast"])
+def test_triangle_left_mask_vs_vanilla(bs, I, J, num_heads, head_dim,
+                                       qkv_packed, s_kv_shape):
+    """Compare CuTeDSL left-mask triangle attention against vanilla reference.
 
     Non-multiple-of-8 J values force the kernel to pad (J_padded != J),
     exercising the pad/unpad paths in the backend.
     Tests both qkv_packed=True (non-contiguous slices from a fused buffer)
     and qkv_packed=False (independent contiguous tensors).
+
+    The ``s_kv_shape`` axis covers the three forms accepted by
+    :func:`_to_actual_s_kv_int32`:
+      * ``BI``           - per-row leading-1s count ``[B, I]`` (general).
+      * ``flat``         - already-flattened ``[B*I]``.
+      * ``B_broadcast``  - one count per batch ``[B]``, broadcast across I
+                           (typical OpenFold2 ``pair_mask = seq_mask^T seq_mask``
+                           shape).
     """
     skip_if_no_cutedsl()
     torch.manual_seed(42)
@@ -278,11 +300,32 @@ def test_cutedsl_vs_vanilla_triangle(bs, I, J, num_heads, head_dim,
         k = torch.randn(bs, I, J, H * D, dtype=dtype, device=device)
         v = torch.randn(bs, I, J, H * D, dtype=dtype, device=device)
 
-    binary_mask = torch.randint(0,
-                                2, (bs, I, J),
-                                dtype=torch.float32,
-                                device=device)
-    binary_mask[..., 0] = 1.0
+    # Build a left-aligned binary mask. For ``B_broadcast`` every row of a
+    # given batch shares the same count (so the [B] broadcast contract holds);
+    # for ``BI``/``flat`` each (b, i) row gets its own random count.
+    if s_kv_shape == "B_broadcast":
+        n_valid_b = torch.randint(low=1,
+                                  high=J + 1,
+                                  size=(bs, ),
+                                  device=device,
+                                  dtype=torch.int64)
+        n_valid = n_valid_b.unsqueeze(1).expand(bs, I).contiguous()
+    else:
+        n_valid = None
+    binary_mask = make_left_aligned_mask(bs,
+                                         I,
+                                         J,
+                                         dtype=torch.float32,
+                                         device=device,
+                                         n_valid=n_valid)
+    s_kv_BI = binary_mask.sum(dim=-1).to(torch.int32)  # [B, I]
+    if s_kv_shape == "BI":
+        actual_s_kv = s_kv_BI
+    elif s_kv_shape == "flat":
+        actual_s_kv = s_kv_BI.reshape(bs * I).contiguous()
+    else:
+        actual_s_kv = s_kv_BI[:, 0].contiguous()  # [B]
+
     pair_bias = torch.randn(bs, H, J, J, dtype=dtype, device=device)
 
     additive_mask = (1.0 - binary_mask) * -1e9
@@ -296,16 +339,16 @@ def test_cutedsl_vs_vanilla_triangle(bs, I, J, num_heads, head_dim,
         biases=[additive_mask_vanilla, pair_bias],
         metadata=AttentionMetadata())
 
-    cute_attn = TriangleAttentionCuTe(0, H, D, num_kv_heads=H)
+    cute_attn = TriangleAttentionCuTeLeftMask(0, H, D, num_kv_heads=H)
     cute_out = cute_attn.forward(q,
                                  k,
                                  v,
-                                 biases=[binary_mask, pair_bias],
+                                 biases=[actual_s_kv, pair_bias],
                                  metadata=_tri_meta(qkv_packed))
 
     assert cute_out.shape == vanilla_out.shape, (
         f"Shape mismatch: cute={cute_out.shape}, vanilla={vanilla_out.shape}")
     diff_max = torch.max(torch.abs(cute_out.float() - vanilla_out.float()))
     diff_mean = torch.mean(torch.abs(cute_out.float() - vanilla_out.float()))
-    assert diff_max < 1e-1, f"Max diff {diff_max} too large"
-    assert diff_mean < 1e-2, f"Mean diff {diff_mean} too large"
+    assert diff_max < 1e-1, f"max diff {diff_max:.4f} >= 1e-1"
+    assert diff_mean < 1e-2, f"mean diff {diff_mean:.4f} >= 1e-2"

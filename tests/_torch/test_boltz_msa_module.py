@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +29,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
     precompute_pair_masks
 from tensorrt_bionemo._torch.modules.boltz.trunk import MSALayer, MSAModule
 from tensorrt_bionemo.configs import MSAModuleConfig
+from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 
@@ -69,8 +70,17 @@ def test_msa_layer(sc: Scenario):
 
     z = torch.randn(bs, 64, 64, ref_mod.token_z, dtype=torch.float32).cuda()
     m = torch.randn(bs, 32, 64, ref_mod.msa_s, dtype=torch.float32).cuda()
-    token_mask = torch.randint(0, 2, (bs, 64, 64),
-                               dtype=torch.float32).to(device)
+    # Real left-aligned mask with n_valid in [N/2, N]: keeps the masking
+    # path exercised while avoiding pathologically tight masks (n_valid = 1
+    # would leave 63/64 rows fully masked, where the PyTorch reference
+    # collapses to NaN via softmax-of-all-(-inf) and the CuTeDSL left-mask
+    # kernel runs an ``actual_s_kv = 1`` no-op tile of garbage).
+    seq_mask = make_left_aligned_mask(bs,
+                                      64,
+                                      dtype=torch.float32,
+                                      device=device,
+                                      min_valid=32)
+    token_mask = seq_mask[..., None] * seq_mask[..., None, :]
     msa_mask = torch.randint(0, 2, (bs, 32, 64),
                              dtype=torch.float32).to(device)
 
@@ -93,32 +103,53 @@ def test_msa_layer(sc: Scenario):
 
     assert ref_z.shape == output_z.shape
     assert ref_m.shape == output_m.shape
+
+    # With a real left-aligned mask, padded query rows in
+    # ``pair_weighted_averaging`` softmax over fully-masked keys -> NaN in
+    # the PyTorch reference; the CuTeDSL left-mask kernel sees
+    # ``actual_s_kv`` clamped to >= 1 and emits arithmetic garbage there.
+    # Both implementations agree on the *valid* sub-block; only compare
+    # there.
+    z_keep = token_mask.float().unsqueeze(-1)  # [B, N, N, 1]
+    m_keep = seq_mask.float()[:, None, :, None]  # [B, 1, N, 1]
+
+    def _masked(x: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
+        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0,
+                                neginf=0.0) * keep
+
     if dtype == torch.float32:
-        torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-4)
-        torch.testing.assert_close(ref_m, output_m, atol=1e-3, rtol=1e-4)
+        torch.testing.assert_close(_masked(ref_z, z_keep),
+                                   _masked(output_z, z_keep),
+                                   atol=1e-3,
+                                   rtol=1e-4)
+        torch.testing.assert_close(_masked(ref_m, m_keep),
+                                   _masked(output_m, m_keep),
+                                   atol=1e-3,
+                                   rtol=1e-4)
     else:
-        # This is right way to check float16 and bfloat16 accuracy
-        diff0_max = torch.max(torch.abs(output_m.float() -
-                                        ref_m_float.float()))
-        diff0_mean = torch.mean(
-            torch.abs(output_m.float() - ref_m_float.float()))
-        diff1_max = torch.max(torch.abs(ref_m.float() - ref_m_float.float()))
-        diff1_mean = torch.mean(torch.abs(ref_m.float() - ref_m_float.float()))
-
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
-        assert abs(diff0_mean - diff1_mean) <= 0.2
-
-        diff0_max = torch.max(torch.abs(output_z.float() -
-                                        ref_z_float.float()))
-        diff0_mean = torch.mean(
-            torch.abs(output_z.float() - ref_z_float.float()))
-        diff1_max = torch.max(torch.abs(ref_z.float() - ref_z_float.float()))
-        diff1_mean = torch.mean(torch.abs(ref_z.float() - ref_z_float.float()))
-
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
-        assert abs(diff0_mean - diff1_mean) <= 0.2
+        # Asymmetric tolerance: ``ours`` must be no more than ``tol_mult``×
+        # worse than the bf16 reference's distance to the fp32 ground
+        # truth.  This passes when ``ours`` is *more* accurate than the ref
+        # (which happens for the CuTeDSL left-mask path: the kernel keeps
+        # internal fp32 accumulation while the bf16 reference module's
+        # chain of bf16 ops loses precision).
+        tol_mult = 2.0
+        for name, out_v, ref_v, ref_f32_v, keep in [
+            ("m", output_m, ref_m, ref_m_float, m_keep),
+            ("z", output_z, ref_z, ref_z_float, z_keep),
+        ]:
+            d_out = _masked(out_v, keep) - _masked(ref_f32_v, keep)
+            d_ref = _masked(ref_v, keep) - _masked(ref_f32_v, keep)
+            d_out_max = torch.max(torch.abs(d_out))
+            d_ref_max = torch.max(torch.abs(d_ref))
+            assert d_out_max <= tol_mult * d_ref_max + 1e-3, (
+                f"{name} max: ours_diff={d_out_max.item()}, "
+                f"ref_diff={d_ref_max.item()}")
+            d_out_mean = torch.mean(torch.abs(d_out))
+            d_ref_mean = torch.mean(torch.abs(d_ref))
+            assert d_out_mean <= tol_mult * d_ref_mean + 1e-3, (
+                f"{name} mean: ours_diff={d_out_mean.item()}, "
+                f"ref_diff={d_ref_mean.item()}")
 
 
 @pytest.mark.parametrize("sc", [
@@ -164,7 +195,10 @@ def test_msa_module(sc: Scenario):
     deletion_value = torch.randn(B, N_msa, N, dtype=torch.float32).cuda()
     msa_paired = torch.randint(0, 2, (B, N_msa, N), dtype=torch.float32).cuda()
     msa_mask = torch.randint(0, 2, (B, N_msa, N), dtype=torch.float32).cuda()
-    token_pad_mask = torch.randint(0, 2, (B, N), dtype=torch.float32).cuda()
+    token_pad_mask = make_left_aligned_mask(B,
+                                            N,
+                                            dtype=torch.float32,
+                                            device="cuda")
     pair_mask = token_pad_mask[:, :, None] * token_pad_mask[:, None, :]
 
     triangle_metadata_cls = get_attention_backend(
@@ -227,10 +261,12 @@ def test_msa_layer_precomputed_masks(sc: Scenario):
 
     z = torch.randn(bs, 64, 64, ref_mod.token_z, dtype=dtype, device=device)
     m = torch.randn(bs, 32, 64, ref_mod.msa_s, dtype=dtype, device=device)
-    token_mask = torch.randint(0,
-                               2, (bs, 64, 64),
-                               dtype=torch.float32,
-                               device=device).to(dtype)
+    # Build ``token_mask`` as the outer product of a left-aligned 1D seq
+    # mask. The CuTeDSL precompute (and the underlying left-mask kernel)
+    # require this layout; for other backends a left-aligned mask is still
+    # a valid input, so this works for every scenario.
+    seq_mask = make_left_aligned_mask(bs, 64, dtype=dtype, device=device)
+    token_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(dtype)
     msa_mask = torch.randint(0,
                              2, (bs, 32, 64),
                              dtype=torch.float32,

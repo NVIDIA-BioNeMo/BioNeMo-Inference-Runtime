@@ -14,11 +14,12 @@
 # limitations under the License.
 
 import torch
+from test_utils.openfold3.ref_layers_from_oss import \
+    RefSwiGLUTransitionFromOF3OSS
 
-from test_utils.openfold3.ref_layers_from_oss import RefSwiGLUTransitionFromOF3OSS
 
-
-def create_pair_transition_weights(from_ref: RefSwiGLUTransitionFromOF3OSS = None):
+def create_pair_transition_weights(
+        from_ref: RefSwiGLUTransitionFromOF3OSS = None):
     layer_norm_weight = from_ref.layer_norm.weight.data
     layer_norm_bias = from_ref.layer_norm.bias.data
     linear_a_weight = from_ref.swiglu.linear_a.weight.data
@@ -42,8 +43,7 @@ def load_pair_transition_weights_torch(module,
     module.fc3.weight.data.copy_(linear_out_weight.to(dtype).to("cuda"))
 
 
-def create_msa_pair_weighted_averaging_weights(
-        from_ref = None):
+def create_msa_pair_weighted_averaging_weights(from_ref=None):
     layer_norm_m_weight = from_ref.layer_norm_m.weight.data
     layer_norm_m_bias = from_ref.layer_norm_m.bias.data
     layer_norm_z_weight = from_ref.layer_norm_z.weight.data
@@ -61,14 +61,25 @@ def create_msa_pair_weighted_averaging_weights(
 def load_msa_pair_weighted_averaging_weights_torch(module,
                                                    weights_and_biases,
                                                    dtype=torch.float32):
-    layer_norm_m_weight, layer_norm_m_bias, layer_norm_z_weight, layer_norm_z_bias, linear_z_weight, linear_v_weight, linear_o_weight, linear_g_weight = weights_and_biases
-    module.layer_norm_m.weight.data.copy_(
-        layer_norm_m_weight.to(dtype).to("cuda"))
-    module.layer_norm_m.bias.data.copy_(layer_norm_m_bias.to(dtype).to("cuda"))
-    module.layer_norm_z.weight.data.copy_(
-        layer_norm_z_weight.to(dtype).to("cuda"))
-    module.layer_norm_z.bias.data.copy_(layer_norm_z_bias.to(dtype).to("cuda"))
-    module.linear_z.weight.data.copy_(linear_z_weight.to(dtype).to("cuda"))
-    module.linear_v.weight.data.copy_(linear_v_weight.to(dtype).to("cuda"))
-    module.linear_o.weight.data.copy_(linear_o_weight.to(dtype).to("cuda"))
-    module.linear_g.weight.data.copy_(linear_g_weight.to(dtype).to("cuda"))
+    """Load reference ``PairWeightedAveraging`` weights into the production
+    module. The production module fuses ``linear_v`` and ``linear_g`` into
+    a single ``fused_proj_m_g`` layer (output split: ``[v, g]`` along
+    dim=-1, see ``pair_averaging.py:122``); we concatenate them along the
+    output dim (dim=0 of the Linear weight, since ``Linear.weight`` has
+    shape ``(out, in)``).
+    """
+    (layer_norm_m_weight, layer_norm_m_bias, layer_norm_z_weight,
+     layer_norm_z_bias, linear_z_weight, linear_v_weight, linear_o_weight,
+     linear_g_weight) = weights_and_biases
+    module.norm_m.weight.data.copy_(layer_norm_m_weight.to(dtype).to("cuda"))
+    module.norm_m.bias.data.copy_(layer_norm_m_bias.to(dtype).to("cuda"))
+    module.norm_z.weight.data.copy_(layer_norm_z_weight.to(dtype).to("cuda"))
+    module.norm_z.bias.data.copy_(layer_norm_z_bias.to(dtype).to("cuda"))
+    module.proj_z.weight.data.copy_(linear_z_weight.to(dtype).to("cuda"))
+    module.fused_proj_m_g.weight.data.copy_(
+        torch.cat([
+            linear_v_weight.to(dtype).to("cuda"),
+            linear_g_weight.to(dtype).to("cuda"),
+        ],
+                  dim=0))
+    module.proj_o.weight.data.copy_(linear_o_weight.to(dtype).to("cuda"))

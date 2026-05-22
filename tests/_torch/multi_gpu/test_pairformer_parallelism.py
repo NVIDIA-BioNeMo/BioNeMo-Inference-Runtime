@@ -34,6 +34,7 @@ from tensorrt_bionemo._torch.distributed import (
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import make_left_aligned_mask
 from tests.common.test_utils.mpi import set_mpi_env
 from tests.common.test_utils.tensor import mismatch_percentage
 
@@ -236,10 +237,11 @@ def test_pairformer_parallelism(scenario: PairformerScenario):
                     scenario.seq_len,
                     scenario.token_z,
                     dtype=torch.float32)
-    mask = torch.randint(0, 2, (bs, scenario.seq_len), dtype=torch.float32)
-    pair_mask = torch.randint(0,
-                              2, (bs, scenario.seq_len, scenario.seq_len),
-                              dtype=torch.float32)
+    mask = make_left_aligned_mask(bs,
+                                  scenario.seq_len,
+                                  dtype=torch.float32,
+                                  device="cpu")
+    pair_mask = mask[..., None] * mask[..., None, :]
 
     weights_and_biases = create_pairformer_layer_weights(
         token_s=scenario.token_s,

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +29,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerLayerV1
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl_single
 
 
@@ -101,12 +102,18 @@ def test_pairformer_layer(sc: Scenario):
 
     s = torch.randn(bs, sc.seq_len, ref_layer.token_s).to(device)
     z = torch.randn(bs, sc.seq_len, sc.seq_len, ref_layer.token_z).to(device)
-    mask = torch.randint(0, 2, (bs, sc.seq_len),
-                         dtype=torch.float32).to(device)
-    # pair_mask = torch.randn(bs, sc.seq_len, sc.seq_len).to(device)
-    pair_mask = torch.randint(0,
-                              2, (bs, sc.seq_len, sc.seq_len),
-                              dtype=torch.float32).to(device)
+    # Use a real left-aligned mask with substantial padding (~half of the
+    # rows): keeps the bf16 ratio check meaningful (mask cuts down softmax
+    # accumulation noise) while staying compatible with the CuTeDSL
+    # left-mask kernel's ``actual_s_kv`` contract.  Fully-padded query rows
+    # exist; the kernel handles them (early-exit work tile) and the
+    # PyTorch reference produces NaN there, which we filter out below.
+    mask = make_left_aligned_mask(bs,
+                                  sc.seq_len,
+                                  dtype=torch.float32,
+                                  device=device,
+                                  min_valid=sc.seq_len // 2)
+    pair_mask = mask[..., None] * mask[..., None, :]
 
     attn_metadatas = {
         "triangle_attn": triangle_metadata_cls(mapping=Mapping()),
@@ -144,22 +151,49 @@ def test_pairformer_layer(sc: Scenario):
 
     assert ref_s.shape == output_s.shape
     assert ref_z.shape == output_z.shape
+
+    # Filter out fully-padded query rows: the PyTorch reference's softmax
+    # produces NaN at those rows, and the CuTeDSL left-mask kernel emits an
+    # early-exit (zero/garbage) tile.  Both implementations agree on the
+    # valid sub-block; only compare there.
+    s_keep = mask.float().unsqueeze(-1)  # [B, N, 1]
+    z_keep = pair_mask.float().unsqueeze(-1)  # [B, N, N, 1]
+
+    def _masked(x: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
+        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0,
+                                neginf=0.0) * keep
+
     if dtype == torch.float32:
-        torch.testing.assert_close(ref_s, output_s, atol=1e-3, rtol=1e-3)
-        torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-3)
+        torch.testing.assert_close(_masked(ref_s, s_keep),
+                                   _masked(output_s, s_keep),
+                                   atol=1e-3,
+                                   rtol=1e-3)
+        torch.testing.assert_close(_masked(ref_z, z_keep),
+                                   _masked(output_z, z_keep),
+                                   atol=1e-3,
+                                   rtol=1e-3)
     else:
-        # This is right way to check float16 and bfloat16 accuracy
-        diff0_max = torch.max(torch.abs(output_s.float() - ref_s_float))
-        diff1_max = torch.max(torch.abs(ref_s.float() - ref_s_float))
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
-
-        # This is right way to check float16 and bfloat16 accuracy
-        diff0_max = torch.max(torch.abs(output_z.float() - ref_z_float))
-        diff1_max = torch.max(torch.abs(ref_z.float() - ref_z_float))
-
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
+        # Asymmetric tolerance: ``ours`` must be no more than ``tol_mult``×
+        # worse than the bf16 reference's distance to the fp32 ground
+        # truth.  The previous ``|d0-d1| / min(d0, d1) <= 0.5`` ratio
+        # check was symmetric and would *fail* when ``ours`` is
+        # significantly *more* accurate than the reference (which happens
+        # when the CuTeDSL left-mask kernel preserves higher-precision
+        # accumulation than the eager bf16 reference's chain of bf16 ops).
+        # See test_openfold2_evoformer_block / test_boltz_msa_module which
+        # already use this asymmetric form.
+        tol_mult = 2.0
+        for name, out_v, ref_v, ref_f32_v, keep in [
+            ("s", output_s, ref_s, ref_s_float, s_keep),
+            ("z", output_z, ref_z, ref_z_float, z_keep),
+        ]:
+            diff_ours = torch.max(
+                torch.abs(_masked(out_v, keep) - _masked(ref_f32_v, keep)))
+            diff_ref = torch.max(
+                torch.abs(_masked(ref_v, keep) - _masked(ref_f32_v, keep)))
+            assert diff_ours <= tol_mult * diff_ref + 1e-3, (
+                f"{name}: ours_diff={diff_ours.item()}, "
+                f"ref_diff={diff_ref.item()}")
 
 
 # ---------------------------------------------------------------------------
@@ -201,25 +235,27 @@ def test_precompute_pair_masks(backend_name: str, dtype: torch.dtype):
                                expected_bias_t)
 
 
-def _align_up(x: int, align: int) -> int:
-    return (x + align - 1) // align * align
-
-
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("seq_len", [16, 13])
-def test_precompute_pair_masks_cutedsl(dtype: torch.dtype, seq_len: int):
-    """CuTeDSL masks must be float32 with last dim padded to a multiple of 8."""
+def test_precompute_pair_masks_cutedsl_left_aligned(dtype: torch.dtype,
+                                                    seq_len: int):
+    """CuTeDSL precompute returns int32 ``actual_s_kv`` per row in ``mask_bias``.
+
+    Left-aligned ``pair_mask = seq_mask[..., None] * seq_mask[..., None, :]``
+    case: ``mask_bias[b, i] == n_valid[b]`` for valid rows and ``0`` for
+    padded rows.
+    """
     device = torch.device("cuda")
     B, I, J = 2, seq_len, seq_len
     inf_val = 1e9
-    ALIGN = 8
-    J_padded = _align_up(J, ALIGN)
-    I_padded = _align_up(I, ALIGN)
 
-    pair_mask = torch.randint(0,
-                              2, (B, I, J),
-                              dtype=torch.float32,
-                              device=device)
+    n_valid = torch.tensor([seq_len, max(1, seq_len - 3)],
+                           dtype=torch.int64,
+                           device=device)
+    seq_mask = (torch.arange(seq_len, device=device).view(1, seq_len)
+                < n_valid.view(B, 1)).to(torch.float32)
+    pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
+
     precomputed = precompute_pair_masks("CuTeDSL",
                                         pair_mask,
                                         inf=inf_val,
@@ -228,24 +264,47 @@ def test_precompute_pair_masks_cutedsl(dtype: torch.dtype, seq_len: int):
     assert isinstance(precomputed, PrecomputedPairMasks)
     assert precomputed.pair_mask is pair_mask
 
-    assert precomputed.mask_bias.dtype == torch.float32
-    assert precomputed.mask_bias_transposed.dtype == torch.float32
+    assert precomputed.mask_bias.dtype == torch.int32
+    assert precomputed.mask_bias_transposed.dtype == torch.int32
 
-    assert precomputed.mask_bias.shape == (B, I, J_padded)
-    assert precomputed.mask_bias_transposed.shape == (B, J, I_padded)
+    assert precomputed.mask_bias.shape == (B, I)
+    assert precomputed.mask_bias_transposed.shape == (B, J)
 
-    assert precomputed.mask_bias.shape[-1] % ALIGN == 0
-    assert precomputed.mask_bias_transposed.shape[-1] % ALIGN == 0
+    expected = torch.where(seq_mask.bool(),
+                           n_valid.view(B, 1).to(torch.int32),
+                           torch.zeros_like(seq_mask, dtype=torch.int32))
+    torch.testing.assert_close(precomputed.mask_bias, expected)
+    torch.testing.assert_close(precomputed.mask_bias_transposed, expected)
 
-    mask_f32 = pair_mask.to(torch.float32)
-    torch.testing.assert_close(precomputed.mask_bias[..., :J], mask_f32)
-    torch.testing.assert_close(precomputed.mask_bias_transposed[..., :I],
-                               mask_f32.transpose(-2, -1))
 
-    if J_padded > J:
-        assert (precomputed.mask_bias[..., J:] == 0).all()
-    if I_padded > I:
-        assert (precomputed.mask_bias_transposed[..., I:] == 0).all()
+@pytest.mark.parametrize("seq_len", [16, 13])
+def test_precompute_pair_masks_cutedsl_rejects_non_left_aligned(seq_len: int):
+    """CuTeDSL precompute requires a left-aligned ``pair_mask``.
+
+    The underlying left-mask kernel interprets ``actual_s_kv = sum(>0.5)``
+    as the count of leading 1s per row (i.e. the row is ``1...1 0...0``).
+    Feeding a non-left-aligned mask would silently produce wrong attention
+    masking, so the precompute now rejects such inputs with an explicit
+    AssertionError instead of swallowing the bug.
+    """
+    device = torch.device("cuda")
+    B, I, J = 2, seq_len, seq_len
+
+    # Random 0/1 mask: with high probability it is not non-increasing along
+    # at least one axis, so the precompute must reject it.
+    torch.manual_seed(0)
+    pair_mask = torch.randint(0,
+                              2, (B, I, J),
+                              dtype=torch.float32,
+                              device=device)
+    # Force an interior zero so the input is guaranteed non-left-aligned
+    # regardless of the random draw.
+    pair_mask[0, 0, 0] = 1.0
+    pair_mask[0, 0, 1] = 0.0
+    pair_mask[0, 0, 2] = 1.0
+
+    with pytest.raises(AssertionError, match="left-aligned"):
+        precompute_pair_masks("CuTeDSL", pair_mask)
 
 
 @pytest.mark.parametrize("sc", [
@@ -312,11 +371,8 @@ def test_pairformer_layer_precomputed_masks(sc: Scenario):
                     ref_layer.token_z,
                     dtype=dtype,
                     device=device)
-    mask = torch.randint(0, 2, (bs, sc.seq_len), dtype=dtype, device=device)
-    pair_mask = torch.randint(0,
-                              2, (bs, sc.seq_len, sc.seq_len),
-                              dtype=torch.float32,
-                              device=device).to(dtype)
+    mask = make_left_aligned_mask(bs, sc.seq_len, dtype=dtype, device=device)
+    pair_mask = (mask[..., None] * mask[..., None, :]).to(dtype)
 
     attn_metadatas = {
         "triangle_attn": triangle_metadata_cls(mapping=Mapping()),

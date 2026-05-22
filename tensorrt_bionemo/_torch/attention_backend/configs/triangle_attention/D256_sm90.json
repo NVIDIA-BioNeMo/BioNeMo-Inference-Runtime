@@ -1,19 +1,23 @@
 {
-  "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm80_triangle_attn_optimized.TriangleAttentionForwardAmpere",
+  "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm90_triangle_attn_left_mask.HopperFusedMultiHeadAttentionForward",
   "configs": {
     "0": {
-      "m_block_size": 128,
-      "n_block_size": 64,
-      "num_threads": 256,
-      "swizzle_b": 3,
-      "load_bias_before_gemm": true
+      "mma_tiler_mn": [
+        64,
+        64
+      ],
+      "is_persistent": true,
+      "kv_stage": 3,
+      "raster_factor": 4
     },
     "384": {
-      "m_block_size": 128,
-      "n_block_size": 64,
-      "num_threads": 256,
-      "swizzle_b": 3,
-      "load_bias_before_gemm": true
+      "mma_tiler_mn": [
+        64,
+        64
+      ],
+      "is_persistent": true,
+      "kv_stage": 3,
+      "raster_factor": 0
     }
   }
 }

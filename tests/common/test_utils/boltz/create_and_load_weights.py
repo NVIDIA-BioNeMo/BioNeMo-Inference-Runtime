@@ -421,7 +421,7 @@ def load_self_pairwise_attention_weights_torch(module,
     module.proj_o.load_weights(o_proj_weights)
     module.proj_g.load_weights(g_proj_weights)
 
-    if norm_z_weight is not None and norm_z_bias is not None and z_weight is not None:
+    if norm_z_weight is not None and z_weight is not None:
         z_1_proj_weights = [{
             "weight":
             z_weight.to(dtype).to("cuda"),
@@ -429,7 +429,15 @@ def load_self_pairwise_attention_weights_torch(module,
             z_bias.to(dtype).to("cuda") if z_bias is not None else None
         }]
         module.proj_z[0].weight.data.copy_(norm_z_weight.to(dtype).to("cuda"))
-        module.proj_z[0].bias.data.copy_(norm_z_bias.to(dtype).to("cuda"))
+        # OF3 uses LayerNorm(bias=False) so ref has no LN bias to copy.
+        # Mod's LN was constructed with default bias=True, so zero it to
+        # mimic the bias-free reference.
+        if module.proj_z[0].bias is not None:
+            if norm_z_bias is not None:
+                module.proj_z[0].bias.data.copy_(
+                    norm_z_bias.to(dtype).to("cuda"))
+            else:
+                module.proj_z[0].bias.data.zero_()
         module.proj_z[1].load_weights(z_1_proj_weights)
 
 

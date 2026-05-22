@@ -13,14 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import sys
-
 from unittest.mock import MagicMock
-import tests
 
+import tests
 from tests.common.test_utils.basic import path_for_package_in_repo
 
 # List dependencies you want to skip
-MOCK_MODULES = ['gemmi'] # Add all missing dependencies here
+MOCK_MODULES = ['gemmi']  # Add all missing dependencies here
 
 # Inject mock modules BEFORE importing
 for mod_name in MOCK_MODULES:
@@ -28,23 +27,24 @@ for mod_name in MOCK_MODULES:
 sys.modules['gemmi'].__version__ = "0.7.3"
 
 # Now add 3rdparty to path and import
-sys.path.insert(0, str(path_for_package_in_repo(tests).parent / '3rdparty/openfold-3'))
+sys.path.insert(
+    0, str(path_for_package_in_repo(tests).parent / '3rdparty/openfold-3'))
 
 import openfold3.core.config.default_linear_init_config as lin_init
-from openfold3.core.model.layers.msa import (
-    MSAPairWeightedAveraging as OF3OSS_MSAPairWeightedAveraging)
-from openfold3.core.model.latent.msa_module import (
-    MSAModuleBlock as OF3OSS_MSAModuleBlock)
-from openfold3.core.model.latent.template_module import (
-    TemplatePairBlock as OF3OSS_TemplatePairBlock)
-from openfold3.core.model.layers.transition import (
-    SwiGLUTransition as OF3OSS_SwiGLUTransition)
-from openfold3.core.model.layers.outer_product_mean import (
-    OuterProductMean as OF3OSS_OuterProductMean)
-from openfold3.core.model.layers.triangular_attention import (
-    TriangleAttention as OF3OSS_TriangleAttention)
-from openfold3.core.model.layers.triangular_multiplicative_update import (
-    TriangleMultiplicativeUpdate as OF3OSS_TriangleMultiplicativeUpdate)
+from openfold3.core.model.latent.msa_module import \
+    MSAModuleBlock as OF3OSS_MSAModuleBlock
+from openfold3.core.model.latent.template_module import \
+    TemplatePairBlock as OF3OSS_TemplatePairBlock
+from openfold3.core.model.layers.msa import \
+    MSAPairWeightedAveraging as OF3OSS_MSAPairWeightedAveraging
+from openfold3.core.model.layers.outer_product_mean import \
+    OuterProductMean as OF3OSS_OuterProductMean
+from openfold3.core.model.layers.transition import \
+    SwiGLUTransition as OF3OSS_SwiGLUTransition
+from openfold3.core.model.layers.triangular_attention import \
+    TriangleAttention as OF3OSS_TriangleAttention
+from openfold3.core.model.layers.triangular_multiplicative_update import \
+    TriangleMultiplicativeUpdate as OF3OSS_TriangleMultiplicativeUpdate
 
 from tensorrt_bionemo.hubs import load_weights
 from tests.common.test_utils.basic import setattr_safe
@@ -52,20 +52,21 @@ from tests.common.test_utils.basic import setattr_safe
 
 class RefMSAPairWeightedAveragingFromOF3OSS(OF3OSS_MSAPairWeightedAveraging):
 
-    def __init__(self,
-                 c_in: int = 64,
-                 c_hidden: int = 8,
-                 c_z: int = 128,
-                 no_heads: int = 8,
-                 inf: float = 1e9,
-                 linear_init_params=lin_init.msa_pair_avg_init,
-                 ):
+    def __init__(
+        self,
+        c_in: int = 64,
+        c_hidden: int = 8,
+        c_z: int = 128,
+        no_heads: int = 8,
+        inf: float = 1e9,
+        linear_init_params=lin_init.msa_pair_avg_init,
+    ):
         super().__init__(c_in=c_in,
-                            c_hidden=c_hidden,
-                            c_z=c_z,
-                            no_heads=no_heads,
-                            inf=inf,
-                            linear_init_params=linear_init_params)
+                         c_hidden=c_hidden,
+                         c_z=c_z,
+                         no_heads=no_heads,
+                         inf=inf,
+                         linear_init_params=linear_init_params)
 
     @classmethod
     def load_weights(cls,
@@ -92,10 +93,10 @@ class RefMSAPairWeightedAveragingFromOF3OSS(OF3OSS_MSAPairWeightedAveraging):
                     a, c_in = weight.shape
                     c_hidden = a // no_heads
 
-        m = cls(c_in=c_in, 
-                c_hidden=c_hidden, 
-                c_z=c_z, 
-                no_heads=no_heads, 
+        m = cls(c_in=c_in,
+                c_hidden=c_hidden,
+                c_z=c_z,
+                no_heads=no_heads,
                 inf=1e9,
                 linear_init_params=lin_init.msa_pair_avg_init)
         m.load_state_dict(filter_state_dict)
@@ -106,11 +107,10 @@ class RefMSAPairWeightedAveragingFromOF3OSS(OF3OSS_MSAPairWeightedAveraging):
 class RefSwiGLUTransitionFromOF3OSS(OF3OSS_SwiGLUTransition):
 
     @classmethod
-    def load_weights(
-            cls,
-            model: str = "openfold3",
-            layer_path: str = "msa_module.blocks.0",
-            state_dict: dict = None):
+    def load_weights(cls,
+                     model: str = "openfold3",
+                     layer_path: str = "msa_module.blocks.0",
+                     state_dict: dict = None):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
 
@@ -136,6 +136,7 @@ class RefSwiGLUTransitionFromOF3OSS(OF3OSS_SwiGLUTransition):
 
 
 class RefOuterProductMeanFromOF3OSS(OF3OSS_OuterProductMean):
+
     @classmethod
     def load_weights(cls,
                      model: str = "openfold3",
@@ -144,7 +145,9 @@ class RefOuterProductMeanFromOF3OSS(OF3OSS_OuterProductMean):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
 
-        c_m: int = None; c_z: int = None; c_hidden: int = None
+        c_m: int = None
+        c_z: int = None
+        c_hidden: int = None
 
         filter_state_dict = {}
         for layer_name, weight in state_dict.items():
@@ -153,14 +156,14 @@ class RefOuterProductMeanFromOF3OSS(OF3OSS_OuterProductMean):
                 layer_name_postfix = layer_name.replace(layer_path + ".", "")
 
                 filter_state_dict[layer_name_postfix] = weight
-                
+
                 if layer_name_postfix == 'layer_norm.weight':
                     c_m = weight.shape[-1]
                 elif layer_name_postfix == 'linear_1.weight':
                     c_hidden = weight.shape[0]
                 elif layer_name_postfix == 'linear_out.weight':
                     c_z = weight.shape[0]
-                    
+
         m = cls(c_m=c_m, c_z=c_z, c_hidden=c_hidden)
         m.load_state_dict(filter_state_dict)
 
@@ -168,16 +171,20 @@ class RefOuterProductMeanFromOF3OSS(OF3OSS_OuterProductMean):
 
 
 class RefTriangleAttentionFromOF3OSS(OF3OSS_TriangleAttention):
+
     @classmethod
-    def load_weights(cls,
-                     model: str = "openfold3",
-                     layer_path: str = "msa_module.blocks.0.pair_stack.tri_att_start",
-                     state_dict: dict = None,
-                     starting: bool = True):
+    def load_weights(
+            cls,
+            model: str = "openfold3",
+            layer_path: str = "msa_module.blocks.0.pair_stack.tri_att_start",
+            state_dict: dict = None,
+            starting: bool = True):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
 
-        c_in: int = None; c_hidden: int = None; no_heads: int = None
+        c_in: int = None
+        c_hidden: int = None
+        no_heads: int = None
 
         filter_state_dict = {}
         for layer_name, weight in state_dict.items():
@@ -190,11 +197,12 @@ class RefTriangleAttentionFromOF3OSS(OF3OSS_TriangleAttention):
                     no_heads = weight.shape[0]
                 elif layer_name_postfix == "mha.linear_q.weight":
                     c_hidden = weight.shape[0] // no_heads
- 
+
                 filter_state_dict[layer_name_postfix] = weight
-        m = cls(c_in=c_in, 
-                c_hidden=c_hidden, 
-                no_heads=no_heads, starting=starting, 
+        m = cls(c_in=c_in,
+                c_hidden=c_hidden,
+                no_heads=no_heads,
+                starting=starting,
                 linear_init_params=lin_init.tri_att_init)
         m.load_state_dict(filter_state_dict)
 
@@ -202,16 +210,19 @@ class RefTriangleAttentionFromOF3OSS(OF3OSS_TriangleAttention):
 
 
 class RefTriangleMultiplicationFromOF3OSS(OF3OSS_TriangleMultiplicativeUpdate):
+
     @classmethod
-    def load_weights(cls,
-                     model: str = "openfold3",
-                     layer_path: str = "msa_module.blocks.0.pair_stack.tri_att_start",
-                     state_dict: dict = None,
-                     _outgoing: bool = True):
+    def load_weights(
+            cls,
+            model: str = "openfold3",
+            layer_path: str = "msa_module.blocks.0.pair_stack.tri_att_start",
+            state_dict: dict = None,
+            _outgoing: bool = True):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
 
-        c_z: int = None; c_hidden: int = None
+        c_z: int = None
+        c_hidden: int = None
 
         filter_state_dict = {}
         for layer_name, weight in state_dict.items():
@@ -238,8 +249,8 @@ class RefMSAModuleBlockFromOF3OSS(OF3OSS_MSAModuleBlock):
             state_dict = load_weights(model, local_files_only=False)
 
         msa_att_row = RefMSAPairWeightedAveragingFromOF3OSS.load_weights(
-             model=model,
-             layer_path=f"{layer_path}.msa_att_row",
+            model=model,
+            layer_path=f"{layer_path}.msa_att_row",
             state_dict=state_dict)
 
         msa_transition = RefSwiGLUTransitionFromOF3OSS.load_weights(
@@ -267,34 +278,35 @@ class RefMSAModuleBlockFromOF3OSS(OF3OSS_MSAModuleBlock):
             layer_path=f"{layer_path}.pair_stack.tri_att_start",
             state_dict=state_dict,
             starting=True)
-        
+
         # for OF3 OSS, the adjustment for the 'end' version of tri att
         # is done outside of the TriangleAttention classes
         tri_att_end = RefTriangleAttentionFromOF3OSS.load_weights(
             model=model,
             layer_path=f"{layer_path}.pair_stack.tri_att_end",
-            state_dict=state_dict, 
+            state_dict=state_dict,
             starting=True)
         pair_transition = RefSwiGLUTransitionFromOF3OSS.load_weights(
             model=model,
             layer_path=f"{layer_path}.pair_stack.pair_transition",
             state_dict=state_dict)
-        m = cls(c_m=msa_att_row.c_in,
-                c_z=outer_product_mean.c_z,
-                c_hidden_msa_att=msa_att_row.c_hidden,
-                c_hidden_opm=outer_product_mean.c_hidden,
-                c_hidden_mul=tri_mul_out.c_hidden,
-                c_hidden_pair_att=tri_att_start.c_hidden,
-                no_heads_msa=msa_att_row.no_heads,
-                no_heads_pair=tri_att_start.no_heads,
-                transition_n=msa_transition.n,
-                transition_type="swiglu",
-                msa_dropout=0.,
-                pair_dropout=0.,
-                fuse_projection_weights=False,
-                opm_first=False,
-                inf=msa_att_row.inf,
-                eps=1e-5 if not hasattr(msa_att_row,"eps") else msa_att_row.eps)
+        m = cls(
+            c_m=msa_att_row.c_in,
+            c_z=outer_product_mean.c_z,
+            c_hidden_msa_att=msa_att_row.c_hidden,
+            c_hidden_opm=outer_product_mean.c_hidden,
+            c_hidden_mul=tri_mul_out.c_hidden,
+            c_hidden_pair_att=tri_att_start.c_hidden,
+            no_heads_msa=msa_att_row.no_heads,
+            no_heads_pair=tri_att_start.no_heads,
+            transition_n=msa_transition.n,
+            transition_type="swiglu",
+            msa_dropout=0.,
+            pair_dropout=0.,
+            fuse_projection_weights=False,
+            opm_first=False,
+            inf=msa_att_row.inf,
+            eps=1e-5 if not hasattr(msa_att_row, "eps") else msa_att_row.eps)
         setattr_safe(m, "msa_att_row", msa_att_row)
         setattr_safe(m, "msa_transition", msa_transition)
         setattr_safe(m, "outer_product_mean", outer_product_mean)
@@ -333,19 +345,25 @@ class RefTemplatePairBlockFromOF3OSS(OF3OSS_TemplatePairBlock):
             layer_path=f"{layer_path}.tri_att_start",
             state_dict=state_dict,
             starting=True)
-        
+
         # for OF3 OSS, the adjustment for the 'end' version of tri att
         # is done outside of the TriangleAttention classes
         tri_att_end = RefTriangleAttentionFromOF3OSS.load_weights(
             model=model,
             layer_path=f"{layer_path}.tri_att_end",
-            state_dict=state_dict, 
+            state_dict=state_dict,
             starting=True)
         pair_transition = RefSwiGLUTransitionFromOF3OSS.load_weights(
             model=model,
             layer_path=f"{layer_path}.pair_transition",
             state_dict=state_dict)
 
+        # ``ckpt_per_template`` controls activation-checkpointing per
+        # template inside ``TemplatePairBlock`` and is wired off in
+        # OF3's all-atom model config (see
+        # ``openfold3/projects/of3_all_atom/config/model_config.py``).
+        # The OSS class made it a required positional argument, so we
+        # must pass it explicitly.
         m = cls(c_t=tri_mul_out.c_z,
                 c_hidden_tri_att=tri_att_start.c_hidden,
                 c_hidden_tri_mul=tri_mul_out.c_hidden,
@@ -355,6 +373,7 @@ class RefTemplatePairBlockFromOF3OSS(OF3OSS_TemplatePairBlock):
                 transition_type="swiglu",
                 dropout_rate=0.,
                 fuse_projection_weights=False,
+                ckpt_per_template=False,
                 inf=1e9)
 
         setattr_safe(m, "tri_mul_out", tri_mul_out)

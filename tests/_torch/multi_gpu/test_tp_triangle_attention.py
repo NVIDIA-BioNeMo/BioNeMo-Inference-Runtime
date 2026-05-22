@@ -30,6 +30,7 @@ from tensorrt_bionemo._torch.distributed import (
     register_tp_group_coordinator)
 from tensorrt_bionemo._torch.layers.attention import TriangleAttention
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import make_left_aligned_pair_mask
 from tests.common.test_utils.mpi import set_mpi_env
 
 
@@ -141,11 +142,17 @@ def test_triangle_attn_forward(backend, dtype, num_attention_heads):
     hidden_size = 128
     tensor_parallel_size = 2
     bs = 1
-    original_mask = torch.randint(0, 2, (bs, seq_len, 1, 1, seq_len))
-    biases = [
-        original_mask.to(dtype) * torch.finfo(dtype).min,
-        torch.randn(bs, num_attention_heads, seq_len, seq_len, dtype=dtype)
-    ]
+    pair_mask = make_left_aligned_pair_mask(bs,
+                                            seq_len,
+                                            dtype=torch.float32,
+                                            device="cpu")
+    original_mask = pair_mask.unsqueeze(2).unsqueeze(2)  # [B, I, 1, 1, J]
+    biases = [(1.0 - original_mask).to(dtype) * torch.finfo(dtype).min,
+              torch.randn(bs,
+                          num_attention_heads,
+                          seq_len,
+                          seq_len,
+                          dtype=dtype)]
     x = torch.randn(bs, seq_len, seq_len, hidden_size, dtype=dtype)
 
     weights_and_biases = create_triangle_attention_weights(

@@ -28,6 +28,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
     precompute_pair_masks
 from tensorrt_bionemo._torch.modules.openfold2.trunk import ExtraMSABlock
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 
@@ -106,12 +107,21 @@ def test_extra_msa_block(sc: Scenario):
                     sc.n_res,
                     ref_module.c_z,
                     dtype=torch.float32).cuda()
-    msa_mask = torch.randint(0,
-                             2, (bs, sc.n_seq, sc.n_res),
-                             dtype=torch.float32).cuda()
-    pair_mask = torch.randint(0,
-                              2, (bs, sc.n_res, sc.n_res),
-                              dtype=torch.float32).cuda()
+    # In production, both ``seq_mask`` and ``msa_row_mask`` are
+    # left-aligned (``ones`` + right-only zero padding in the collator),
+    # and ``msa_mask[b, s, n] = msa_row_mask[b, s] * seq_mask[b, n]``.
+    seq_mask = make_left_aligned_mask(bs,
+                                      sc.n_res,
+                                      dtype=torch.float32,
+                                      device="cuda",
+                                      min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs,
+                                          sc.n_seq,
+                                          dtype=torch.float32,
+                                          device="cuda",
+                                          min_valid=sc.n_seq // 2)
+    msa_mask = msa_row_mask[..., None] * seq_mask[..., None, :]
+    pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
 
     module = _create_extra_msa_block(ref_module, sc, torch_dtype)
 
@@ -193,14 +203,19 @@ def test_extra_msa_block_precomputed_masks(sc: Scenario):
                     ref_module.c_z,
                     dtype=torch_dtype,
                     device=device)
-    msa_mask = torch.randint(0,
-                             2, (bs, sc.n_seq, sc.n_res),
-                             dtype=torch.float32,
-                             device=device).to(torch_dtype)
-    pair_mask = torch.randint(0,
-                              2, (bs, sc.n_res, sc.n_res),
-                              dtype=torch.float32,
-                              device=device).to(torch_dtype)
+    seq_mask = make_left_aligned_mask(bs,
+                                      sc.n_res,
+                                      dtype=torch.float32,
+                                      device=device,
+                                      min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs,
+                                          sc.n_seq,
+                                          dtype=torch.float32,
+                                          device=device,
+                                          min_valid=sc.n_seq // 2)
+    msa_mask = (msa_row_mask[..., None] *
+                seq_mask[..., None, :]).to(torch_dtype)
+    pair_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
 
     precomputed = precompute_pair_masks(sc.triangle_attn_backend,
                                         pair_mask,

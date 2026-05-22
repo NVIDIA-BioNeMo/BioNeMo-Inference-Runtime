@@ -1,13 +1,12 @@
 from .cuequiv import CuEquivAttention, CuEquivAttentionMetadata
 from .interface import AttentionBackend, AttentionMetadata, AttentionType
-from .pairwise_attention_cute import (PairwiseAttentionCuTe,
-                                      PairwiseAttentionCuTeMetadata,
-                                      PairwiseAttentionKernelConfig)
+from .pairwise_attention_cute_left_mask import (
+    PairwiseAttentionCuTeLeftMask, PairwiseAttentionCuTeLeftMaskMetadata,
+    PairwiseAttentionLeftMaskKernelConfig)
 from .sdpa import SDPAAttentionMetadata, SDPAPairwiseAttention
-from .triangle_attention_cute import (TriangleAttentionCuTe,
-                                      TriangleAttentionCuTeMetadata,
-                                      TriangleAttentionKernelConfig,
-                                      get_kernel_config)
+from .triangle_attention_cute_left_mask import (
+    TriangleAttentionCuTeLeftMask, TriangleAttentionCuTeLeftMaskMetadata,
+    TriangleAttentionLeftMaskKernelConfig)
 from .trifast import TrifastAttention, TrifastAttentionMetadata
 from .utils import (PrecomputedPairMasks, PrecomputedSingleMasks,
                     auto_select_pairwise_attention_backend,
@@ -28,13 +27,12 @@ __all__ = [
     "SDPAAttentionMetadata",
     "CuEquivAttention",
     "CuEquivAttentionMetadata",
-    "PairwiseAttentionCuTe",
-    "PairwiseAttentionCuTeMetadata",
-    "PairwiseAttentionKernelConfig",
-    "TriangleAttentionCuTe",
-    "TriangleAttentionCuTeMetadata",
-    "TriangleAttentionKernelConfig",
-    "get_kernel_config",
+    "PairwiseAttentionCuTeLeftMask",
+    "PairwiseAttentionCuTeLeftMaskMetadata",
+    "PairwiseAttentionLeftMaskKernelConfig",
+    "TriangleAttentionCuTeLeftMask",
+    "TriangleAttentionCuTeLeftMaskMetadata",
+    "TriangleAttentionLeftMaskKernelConfig",
     "TrifastAttention",
     "TrifastAttentionMetadata",
     "AttentionType",

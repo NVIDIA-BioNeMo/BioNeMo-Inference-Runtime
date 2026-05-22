@@ -28,6 +28,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerBlock
 from tensorrt_bionemo.mapping import Mapping
+from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 
@@ -95,12 +96,23 @@ def test_evoformer_block(sc: Scenario):
                     sc.n_res,
                     ref_module.c_z,
                     dtype=torch.float32).cuda()
-    msa_mask = torch.randint(0,
-                             2, (bs, sc.n_seq, sc.n_res),
-                             dtype=torch.float32).cuda()
-    pair_mask = torch.randint(0,
-                              2, (bs, sc.n_res, sc.n_res),
-                              dtype=torch.float32).cuda()
+    # In production, both ``seq_mask`` and ``msa_row_mask`` are
+    # left-aligned (``ones`` + right-only zero padding in the collator),
+    # and ``msa_mask[b, s, n] = msa_row_mask[b, s] * seq_mask[b, n]``.
+    # Build the same structure here so the CuTeDSL MSA-row attention's
+    # left-mask kernel sees the production padding pattern.
+    seq_mask = make_left_aligned_mask(bs,
+                                      sc.n_res,
+                                      dtype=torch.float32,
+                                      device="cuda",
+                                      min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs,
+                                          sc.n_seq,
+                                          dtype=torch.float32,
+                                          device="cuda",
+                                          min_valid=sc.n_seq // 2)
+    msa_mask = msa_row_mask[..., None] * seq_mask[..., None, :]
+    pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
 
     module = _create_evoformer_block(ref_module, sc, torch_dtype)
 
@@ -119,21 +131,42 @@ def test_evoformer_block(sc: Scenario):
 
         output_m, output_z = module(m_t, z_t, msa_mask_t, pair_mask_t)
 
+    # Mask outputs at padded positions before comparing: PyTorch reference
+    # produces NaN at fully-masked-key softmax rows (seq_mask padding) and
+    # the CuTeDSL MSA-row attention emits early-exit (garbage) tiles for
+    # MSA rows where ``msa_row_mask = 0``.  Both implementations agree on
+    # the *valid* sub-block; only compare there.
+    m_keep = (msa_row_mask[..., None] *
+              seq_mask[..., None, :]).unsqueeze(-1).float()  # [B, S, N, 1]
+    z_keep = pair_mask.unsqueeze(-1).float()  # [B, N, N, 1]
+
+    def _masked(x: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
+        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0,
+                                neginf=0.0) * keep
+
     if torch_dtype == torch.float32:
-        torch.testing.assert_close(output_m, ref_m_f32, atol=1e-3, rtol=1e-4)
-        torch.testing.assert_close(output_z, ref_z_f32, atol=1e-3, rtol=1e-4)
+        torch.testing.assert_close(_masked(output_m, m_keep),
+                                   _masked(ref_m_f32, m_keep),
+                                   atol=1e-3,
+                                   rtol=1e-4)
+        torch.testing.assert_close(_masked(output_z, z_keep),
+                                   _masked(ref_z_f32, z_keep),
+                                   atol=1e-3,
+                                   rtol=1e-4)
     else:
         ref_module_typed = ref_module.to(torch_dtype)
         with torch.no_grad():
             ref_m_typed, ref_z_typed = ref_module_typed(
                 m_t, z_t, msa_mask_t, pair_mask_t)
 
-        for name, out, ref_typed, ref_f32 in [
-            ("MSA", output_m, ref_m_typed, ref_m_f32),
-            ("Pair", output_z, ref_z_typed, ref_z_f32),
+        for name, out, ref_typed, ref_f32, keep in [
+            ("MSA", output_m, ref_m_typed, ref_m_f32, m_keep),
+            ("Pair", output_z, ref_z_typed, ref_z_f32, z_keep),
         ]:
-            diff_ours = torch.max(torch.abs(out.float() - ref_f32))
-            diff_ref = torch.max(torch.abs(ref_typed.float() - ref_f32))
+            diff_ours = torch.max(
+                torch.abs(_masked(out, keep) - _masked(ref_f32, keep)))
+            diff_ref = torch.max(
+                torch.abs(_masked(ref_typed, keep) - _masked(ref_f32, keep)))
             assert diff_ours <= 2.0 * diff_ref + 1e-3, (
                 f"{name}: ours_diff={diff_ours}, ref_diff={diff_ref}")
 
@@ -181,14 +214,19 @@ def test_evoformer_block_precomputed_masks(sc: Scenario):
                     ref_module.c_z,
                     dtype=torch_dtype,
                     device=device)
-    msa_mask = torch.randint(0,
-                             2, (bs, sc.n_seq, sc.n_res),
-                             dtype=torch_dtype,
-                             device=device)
-    pair_mask = torch.randint(0,
-                              2, (bs, sc.n_res, sc.n_res),
-                              dtype=torch.float32,
-                              device=device).to(torch_dtype)
+    seq_mask = make_left_aligned_mask(bs,
+                                      sc.n_res,
+                                      dtype=torch.float32,
+                                      device=device,
+                                      min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs,
+                                          sc.n_seq,
+                                          dtype=torch.float32,
+                                          device=device,
+                                          min_valid=sc.n_seq // 2)
+    msa_mask = (msa_row_mask[..., None] *
+                seq_mask[..., None, :]).to(torch_dtype)
+    pair_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
 
     precomputed = precompute_pair_masks(sc.triangle_attn_backend,
                                         pair_mask,

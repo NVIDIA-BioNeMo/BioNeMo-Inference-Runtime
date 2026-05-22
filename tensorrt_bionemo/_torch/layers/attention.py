@@ -152,7 +152,11 @@ class TriangleAttention(nn.Module):
             biases: Include two biases:
                 - mask_bias: [B, I, 1, 1, J]
                 - triangle_bias: [B, H, J, J]
-            buffers: Shared pre-allocated buffer dict.
+            buffers: Optional dict of shared pre-allocated output buffers
+                (e.g. ``tri_attn_output`` and ``tri_attn_lse``) to avoid
+                per-call allocation. The LSE buffer is consumed by the
+                left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper
+                SM90).
         # TODO: Need to implement DCP here, 1D-mapping, 2D-mapping context
         """
         biases = self._slice_biases(biases)
@@ -165,12 +169,20 @@ class TriangleAttention(nn.Module):
                                  (q.shape[0] * q.shape[1], q.shape[2],
                                   self.num_heads, self.head_dim), q.dtype,
                                  q.device) if buffers is not None else None
+        # LSE companion: [B*I, J, H, 1] float32. Consumed by the left-mask
+        # CuTeDSL kernels (Ampere SM80/86/89 and Hopper SM90); ignored by all
+        # other backends (they accept it via **kwargs without using it).
+        attn_lse_buf = ensure_buffer(buffers, "tri_attn_lse",
+                                     (q.shape[0] * q.shape[1], q.shape[2],
+                                      self.num_heads, 1), torch.float32,
+                                     q.device) if buffers is not None else None
         mha_o = self.attn.forward(q,
                                   k,
                                   v,
                                   biases=biases,
                                   metadata=attn_metadata,
-                                  output=attn_buf)
+                                  output=attn_buf,
+                                  output_lse=attn_lse_buf)
         if self.g_proj is not None:
             mha_flat = mha_o.reshape(-1, self.num_heads * self.head_dim)
             _gs_op = get_gated_sigmoid_op(mha_flat.dtype)
@@ -714,7 +726,10 @@ class AttentionPairBias(nn.Module):
                 Used in sequence-local atom attention to avoid recomputing
                 the gathered mask each layer.
             buffers: Optional dict of shared pre-allocated output buffers
-                (e.g. ``pw_attn_output``) to avoid per-call allocation.
+                (e.g. ``pw_attn_output`` and ``pw_attn_lse``) to avoid
+                per-call allocation. The LSE buffer is consumed by the
+                left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper
+                SM90).
 
         Returns:
             Output tensor with the same shape as *s*.
@@ -735,12 +750,21 @@ class AttentionPairBias(nn.Module):
                                  (_b_flat, q.shape[-2], self.num_heads,
                                   self.head_dim), q.dtype,
                                  q.device) if buffers is not None else None
+        # LSE companion: [B_flat, Sq, H, 1] float32. Consumed by the
+        # left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper SM90);
+        # ignored by all other backends (they accept it via **kwargs without
+        # using it).
+        attn_lse_buf = ensure_buffer(buffers, "pw_attn_lse",
+                                     (_b_flat, q.shape[-2], self.num_heads,
+                                      1), torch.float32,
+                                     q.device) if buffers is not None else None
         mha_o = self.attn.forward(q,
                                   k,
                                   v,
                                   biases=biases,
                                   metadata=attn_metadata,
-                                  output=attn_buf)
+                                  output=attn_buf,
+                                  output_lse=attn_lse_buf)
         batch_dims = mha_o.shape[:-2]
         o = mha_o.reshape(-1, self.num_heads * self.head_dim)
 
@@ -844,7 +868,7 @@ class MSAAttention(nn.Module):
             m = permute_final_dims(m, (1, 0, 2))
             mask = permute_final_dims(mask, (1, 0))
         if self.triangle_attn_backend == "CuTeDSL":
-            mask_bias = mask.to(torch.float32)
+            mask_bias = (mask > 0.5).sum(dim=-1).to(torch.int32).contiguous()
         else:
             mask_bias = ((mask - 1.0) * self.inf)
             mask_bias = mask_bias.unsqueeze(-2).unsqueeze(-3)

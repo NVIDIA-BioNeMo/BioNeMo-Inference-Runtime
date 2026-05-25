@@ -204,21 +204,23 @@ class AffinityHeadsTransformer(nn.Module):
         Returns:
             pred_value: (batch_size, 1)
             logits_binary: (batch_size, 1)
+            affinity_embedding: (batch_size, token_s) pooled representation after
+                affinity_out_mlp (matches OSS boltz AffinityHeadsTransformer).
         """
         g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
             torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7)
         g = self.affinity_out_mlp_linear_0(g)
         g = F.relu(g)
         g = self.affinity_out_mlp_linear_1(g)
-        g = F.relu(g)
+        affinity_embedding = F.relu(g)
 
-        pred_value = self.to_affinity_pred_value_0(g)
+        pred_value = self.to_affinity_pred_value_0(affinity_embedding)
         pred_value = F.relu(pred_value)
         pred_value = self.to_affinity_pred_value_1(pred_value)
         pred_value = F.relu(pred_value)
         pred_value = self.to_affinity_pred_value_2(pred_value)
 
-        pred_score = self.to_affinity_pred_score_0(g)
+        pred_score = self.to_affinity_pred_score_0(affinity_embedding)
         pred_score = F.relu(pred_score)
         pred_score = self.to_affinity_pred_score_1(pred_score)
         pred_score = F.relu(pred_score)
@@ -226,7 +228,7 @@ class AffinityHeadsTransformer(nn.Module):
 
         logits_binary = self.to_affinity_logits_binary(pred_score)
 
-        return pred_value, logits_binary
+        return pred_value, logits_binary, affinity_embedding
 
 
 class AffinityModule(nn.Module):
@@ -324,7 +326,7 @@ class AffinityModule(nn.Module):
         cross_pair_mask_1: torch.Tensor,
         attn_metadatas: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             s: (B, I, token_s)
@@ -332,6 +334,11 @@ class AffinityModule(nn.Module):
             distogram: (B, num_dist_bins, num_dist_bins)
             cross_pair_mask_0: (B, num_dist_bins, num_dist_bins)
             cross_pair_mask_1: (B, num_dist_bins, num_dist_bins, 1)
+
+        Returns:
+            pred_value: (B, 1)
+            logits_binary: (B, 1)
+            affinity_embedding: (B, token_s)
         """
         assert len(s.shape) == 3, "s must be (B, I, token_s)"
         assert len(z.shape) == 4, "z must be (B, I, I, token_z)"
@@ -352,6 +359,7 @@ class AffinityModule(nn.Module):
                                   pair_mask=cross_pair_mask_0,
                                   attn_metadatas=attn_metadatas,
                                   all_reduce_params=all_reduce_params)
-        pred_value, logits_binary = self.affinity_heads(z, cross_pair_mask_1)
+        pred_value, logits_binary, affinity_embedding = self.affinity_heads(
+            z, cross_pair_mask_1)
 
-        return pred_value, logits_binary
+        return pred_value, logits_binary, affinity_embedding

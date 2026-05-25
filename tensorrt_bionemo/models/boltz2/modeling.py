@@ -758,13 +758,14 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
 
         affinity_probabilities = []
         affinity_pred_values = []
+        affinity_embeddings = []
         for boundaries, affinity_module in zip(
             [self.boundaries_1, self.boundaries_2],
             [self.affinity_module1, self.affinity_module2]):
             distogram = compute_distogram(best_coords, boundaries,
                                           feed_dict["token_to_rep_atom"])
 
-            affinity_module_output = affinity_module(
+            pred_value, logits_binary, affinity_embedding = affinity_module(
                 s=s_inputs_affinity,
                 z=z_affinity,
                 distogram=distogram,
@@ -774,14 +775,21 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
                 all_reduce_params=all_reduce_params,
             )
 
-            affinity_pred_values.append(affinity_module_output[0])
-            affinity_probabilities.append(F.sigmoid(affinity_module_output[1]))
+            affinity_pred_values.append(pred_value)
+            affinity_probabilities.append(F.sigmoid(logits_binary))
+            affinity_embeddings.append(affinity_embedding)
 
+        affinity_embedding_1 = affinity_embeddings[0]
+        affinity_embedding_2 = affinity_embeddings[1]
         boltz2_output_dictionary.update({
             "affinity_pred_value":
             torch.concat(affinity_pred_values).mean(),
             "affinity_probability_binary":
-            torch.concat(affinity_probabilities).mean()
+            torch.concat(affinity_probabilities).mean(),
+            "affinity_embedding":
+            (affinity_embedding_1 + affinity_embedding_2) / 2,
+            "affinity_embedding1": affinity_embedding_1,
+            "affinity_embedding2": affinity_embedding_2,
         })
 
         return boltz2_output_dictionary

@@ -90,12 +90,15 @@ def test_boltz_affinity_module(sc: Scenario):
     with torch.no_grad():
         ref_pred, ref_logits = ref_module(s, z, distogram, cross_pair_mask_0,
                                           cross_pair_mask_1)
-        out_pred, out_logits = affinity_module(s,
-                                               z,
-                                               distogram,
-                                               cross_pair_mask_0,
-                                               cross_pair_mask_1,
-                                               attn_metadatas=attn_metadatas)
+        out_pred, out_logits, out_embedding = affinity_module(
+            s,
+            z,
+            distogram,
+            cross_pair_mask_0,
+            cross_pair_mask_1,
+            attn_metadatas=attn_metadatas,
+        )
 
     torch.testing.assert_close(ref_pred, out_pred, rtol=1e-5, atol=1e-3)
     torch.testing.assert_close(ref_logits, out_logits, rtol=1e-5, atol=1e-3)
+    assert out_embedding.shape[-1] == sc.token_s

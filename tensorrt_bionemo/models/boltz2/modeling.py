@@ -671,7 +671,8 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
         # triangle/pairwise attention backends. The affinity submodules
         # are not walked by that helper, so we configure them here.
         config = Boltz2.get_pretrained_config(model_name)
-        tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
+        # Affinity cross_pair_mask is bipartite, not left-aligned; CuTeDSL rejects it.
+        tri_backend = "CUEQUIV"
         for affinity_module_config in (config.affinity.module1,
                                        config.affinity.module2):
             affinity_module_config.set_dtype(torch.bfloat16)

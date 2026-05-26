@@ -122,7 +122,7 @@ Inside the container, `pwd` is `/workspace/release_artifacts`, laid out as:
 ├── scripts/run_pipeline.py         # §5 entry point
 ├── notebooks/openfold2_full_pipeline.ipynb  # §6 entry point
 ├── data/samples/{monomers,homopolymers,heterooligomers}/   # bundled inputs, auto-detected
-├── skills/module-onboard/          # Claude Code CLI skill (see MODULE_ONBOARDING_GUIDE.md)
+├── .claude/skills/module-onboard/          # Claude Code CLI skill (see MODULE_ONBOARDING_GUIDE.md)
 ├── default.yaml                    # quick_start.sh defaults (MODEL_NAME, OUTPUT_DIR, …)
 ├── quick_start.sh                  # zero-setup wrapper around §§1–5 (host-side)
 ├── ADVANCED.md                     # advanced guide (TRT, benchmarking, env vars, …)
@@ -165,7 +165,6 @@ Confirm GPU, PyTorch CUDA, `tensorrt_bionemo`, and the builder CLI in the **same
 nvidia-smi
 python -c "import torch; assert torch.cuda.is_available(); print('CUDA OK:', torch.cuda.get_device_name(0))"
 python -c "import tensorrt_bionemo; import tensorrt as trt; print('tensorrt_bionemo OK, TensorRT:', trt.__version__)"
-trtbnm-build --help
 ```
 
 > If you bind-mount a `tensorrt_bionemo/` git checkout that shadows the installed package, run the import checks from `cd /tmp` first.
@@ -194,7 +193,7 @@ python scripts/run_pipeline.py
 MODEL_NAME=boltz-2 python scripts/run_pipeline.py
 
 # OpenFold3 — needs HuggingFace auth (gated repo). See Appendix A in ADVANCED.md.
-MODEL_NAME=openfold3 python scripts/run_pipeline.py
+MODEL_NAME=openfold3 HF_TOKEN=hf_xxx python scripts/run_pipeline.py
 
 # Multi-GPU data-parallel via Ray replicas (one engine per GPU)
 MODEL_NAME=boltz-2 python scripts/run_pipeline.py --replicas 4
@@ -277,4 +276,3 @@ jupyter nbconvert --to notebook --execute \
 - **Environment variable reference** (every `quick_start.sh` / `run_pipeline.py` knob in one table; YAML-key + env-var + default columns) → [`ADVANCED.md` Appendix B](ADVANCED.md#appendix-b--environment-variable-reference)
 - **Data-pipeline support matrix** (monomer/multimer, MSA, templates, ligands) → [`ADVANCED.md` Appendix C](ADVANCED.md#appendix-c--data-pipeline-support-matrix)
 - **Onboarding a custom module to TRT-BioNeMo** (Claude Code skill, RF3 Pairformer + DiT reference conversions, weight-remap walkthroughs) → [`MODULE_ONBOARDING_GUIDE.md`](MODULE_ONBOARDING_GUIDE.md)
-- **`trtbnm-build --help`** for the full builder CLI reference.

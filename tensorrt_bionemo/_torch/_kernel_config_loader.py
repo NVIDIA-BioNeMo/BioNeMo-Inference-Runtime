@@ -101,7 +101,8 @@ def load_kernel_configs(
     user_dir = os.environ.get(_TUNED_CONFIG_ENV)
     if user_dir:
         candidates.append(os.path.join(user_dir, file_name))
-    candidates.append(os.path.join(configs_dir, file_name))
+    else:    
+        candidates.append(os.path.join(configs_dir, file_name))
 
     for path in candidates:
         if not os.path.exists(path):

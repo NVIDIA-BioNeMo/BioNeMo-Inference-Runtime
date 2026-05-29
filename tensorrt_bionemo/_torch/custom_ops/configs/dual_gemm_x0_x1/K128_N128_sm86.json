@@ -1,0 +1,53 @@
+{
+  "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm80_dualgemm_x0x1_splitkv1._DualGemmX0X1KernelSplitKv1",
+  "configs": {
+    "S=256|b=0": {
+      "cta_tiler": [64, 128, 32],
+      "num_stages": 3,
+      "atom_layout_mnk": [4, 2, 1],
+      "raster_factor": 2
+    },
+    "S=768|b=0": {
+      "cta_tiler": [64, 128, 32],
+      "num_stages": 3,
+      "atom_layout_mnk": [2, 2, 1],
+      "raster_factor": 1
+    },
+    "S=1280|b=0": {
+      "cta_tiler": [128, 64, 32],
+      "num_stages": 4,
+      "atom_layout_mnk": [2, 2, 1],
+      "raster_factor": 2
+    },
+    "S=1792|b=0": {
+      "cta_tiler": [128, 64, 32],
+      "num_stages": 3,
+      "atom_layout_mnk": [4, 2, 1],
+      "raster_factor": 2
+    },
+    "S=256|b=1": {
+      "cta_tiler": [64, 64, 32],
+      "num_stages": 3,
+      "atom_layout_mnk": [2, 4, 1],
+      "raster_factor": 2
+    },
+    "S=768|b=1": {
+      "cta_tiler": [128, 64, 32],
+      "num_stages": 4,
+      "atom_layout_mnk": [2, 4, 1],
+      "raster_factor": 2
+    },
+    "S=1280|b=1": {
+      "cta_tiler": [128, 64, 32],
+      "num_stages": 4,
+      "atom_layout_mnk": [2, 4, 1],
+      "raster_factor": 2
+    },
+    "S=1792|b=1": {
+      "cta_tiler": [128, 64, 32],
+      "num_stages": 2,
+      "atom_layout_mnk": [2, 2, 1],
+      "raster_factor": 2
+    }
+  }
+}

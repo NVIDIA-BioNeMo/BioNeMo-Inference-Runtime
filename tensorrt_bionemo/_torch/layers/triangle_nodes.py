@@ -36,6 +36,7 @@ from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
 from ..custom_ops.dual_gemm import get_dual_gemm_op
+from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
 from .attention import TriangleAttention
 
 
@@ -388,11 +389,17 @@ class TriangleMultiplicationNode(nn.Module):
                                                   dual_gemm_type="x_x",
                                                   N=self.dim,
                                                   K=self.hidden_dim)
-        self._dual_gemm_x0_x1_op = get_dual_gemm_op(self.high_precision_dtype,
-                                                    transpose_out=False,
-                                                    dual_gemm_type="x0_x1",
-                                                    N=self.dim,
-                                                    K=self.hidden_dim)
+        # Dedicated x0_x1 dispatcher: routes to CuTe (SM 80/86/89), legacy
+        # CUTLASS (SM 90), or cuEquiv / vanilla otherwise based on
+        # ``(high_precision_dtype, N=self.dim, K=self.hidden_dim)``. Note
+        # that ``high_precision=True`` -> fp32 -> vanilla fallback (the
+        # CuTe / CUTLASS / cuEquiv paths only accept fp16 / bf16).
+        self._dual_gemm_x0_x1_op = get_dual_gemm_x0_x1_op(
+            self.high_precision_dtype,
+            transpose_out=False,
+            N=self.dim,
+            K=self.hidden_dim,
+        )
         self._dual_gemm_x_x_op_transpose = get_dual_gemm_op(
             self.dtype,
             transpose_out=True,

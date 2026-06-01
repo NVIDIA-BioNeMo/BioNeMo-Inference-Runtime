@@ -61,7 +61,22 @@ class PairformerLayerV1(nn.Module):
                  s_path_dtype: Union[str, torch.dtype, None] = None,
                  trimul_high_precision: bool = True,
                  trimul_mean_normalization: bool = False,
+                 pair_mask_left_aligned: bool = True,
                  **kwargs):
+        """Pairformer layer.
+
+        Args:
+            pair_mask_left_aligned: Whether the runtime ``pair_mask`` is
+                guaranteed left-aligned (``1...1 0...0``) along both
+                masked axes. Threaded into the two ``TriangleMultiplicationNode``
+                ctors so they steer the x_x dual GEMM dispatcher away from
+                the CuTe LM kernel when ``False`` (e.g. Boltz-2 affinity
+                ``cross_pair_mask`` is bipartite). Also gates the
+                ``int32`` ``actual_seqlen`` fast-path in
+                :meth:`_transform_z` (it forwards
+                ``precomputed_masks.mask_bias`` as ``actual_seqlen`` only
+                when the pair_mask is trustworthy).
+        """
         super().__init__()
         self.dtype = dtype
         self.no_update_s = no_update_s
@@ -70,6 +85,7 @@ class PairformerLayerV1(nn.Module):
         self.token_z = token_z
         self.triangle_attn_backend = triangle_attn_backend
         self.pairwise_attn_backend = pairwise_attn_backend
+        self.pair_mask_left_aligned = pair_mask_left_aligned
         self.mapping = mapping or Mapping()
 
         if isinstance(s_path_dtype, str):
@@ -105,6 +121,7 @@ class PairformerLayerV1(nn.Module):
             max_tri_mul_tp_size=max_tri_mul_tp_size,
             high_precision=trimul_high_precision,
             mean_normalization=trimul_mean_normalization,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
         self.tri_mul_in = TriangleMultiplicationNode(
             layer_idx=layer_idx,
@@ -117,6 +134,7 @@ class PairformerLayerV1(nn.Module):
             max_tri_mul_tp_size=max_tri_mul_tp_size,
             high_precision=trimul_high_precision,
             mean_normalization=trimul_mean_normalization,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
         self.tri_attn_start = TriangleAttentionStartingNode(
             token_z,
@@ -173,8 +191,27 @@ class PairformerLayerV1(nn.Module):
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
-        z = z + self.tri_mul_out(z, mask=pair_mask)
-        z = z + self.tri_mul_in(z, mask=pair_mask)
+        # For the CuTeDSL triangle-attention backend, ``mask_bias`` /
+        # ``mask_bias_transposed`` ARE the per-row int32 valid-count
+        # tensors (``actual_s_kv`` / ``actual_s_kv_t``) the dual_gemm_x_x
+        # LM kernel wants for ``tri_mul_out`` / ``tri_mul_in`` -- reusing
+        # them lets every layer skip the in-wrapper ``mask.sum(-1)``
+        # reduction at zero extra cost. For default backends ``mask_bias``
+        # is a float additive bias instead, so we gate on int32 dtype and
+        # fall back to the wrapper-side reduction otherwise.
+        # Additionally gated on ``pair_mask_left_aligned``: the prefix
+        # encoding is only correct for left-aligned masks, so for
+        # bipartite cases (affinity ``cross_pair_mask``) we drop the
+        # fast-path even when an int32 tensor is present.
+        tri_out_actual_seqlen = tri_in_actual_seqlen = None
+        if (self.pair_mask_left_aligned and precomputed_masks is not None
+                and precomputed_masks.mask_bias.dtype == torch.int32):
+            tri_out_actual_seqlen = precomputed_masks.mask_bias
+            tri_in_actual_seqlen = precomputed_masks.mask_bias_transposed
+        z = z + self.tri_mul_out(
+            z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen)
+        z = z + self.tri_mul_in(
+            z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen)
         z = z.to(self.dtype)
 
         tri_attn_metadata = (attn_metadatas or {}).get("triangle_attn")

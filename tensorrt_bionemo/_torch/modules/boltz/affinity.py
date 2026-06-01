@@ -204,8 +204,9 @@ class AffinityHeadsTransformer(nn.Module):
         Returns:
             pred_value: (batch_size, 1)
             logits_binary: (batch_size, 1)
-            affinity_embedding: (batch_size, token_s) pooled representation after
-                affinity_out_mlp (matches OSS boltz AffinityHeadsTransformer).
+            affinity_embedding: (batch_size, token_s) pooled representation
+                after ``affinity_out_mlp`` (matches OSS boltz
+                ``AffinityHeadsTransformer``).
         """
         g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
             torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7)
@@ -283,6 +284,13 @@ class AffinityModule(nn.Module):
             dtype=config.torch_dtype,
             mapping=config.mapping)
 
+        # Affinity ``cross_pair_mask`` is bipartite (receptor rows have
+        # interior 1's in the ligand-column range, not a left-aligned
+        # prefix), so the trimul x_x dual GEMM must avoid the CuTeDSL LM
+        # kernel -- it masks via a per-row prefix count and would
+        # silently produce wrong outputs. ``pair_mask_left_aligned=False``
+        # routes the dispatcher to cuEquiv / CUTLASS instead, which
+        # consume the full ``mask`` tensor and handle arbitrary masks.
         self.pairformer_stack = PairformerNoSeqModule(
             num_blocks=config.pairformer_num_blocks,
             token_z=config.token_z,
@@ -292,7 +300,8 @@ class AffinityModule(nn.Module):
             eps=config.norm_epsilon,
             inf=config.mask_inf,
             mapping=config.mapping,
-            triangle_attn_backend=config.triangle_attention_backend)
+            triangle_attn_backend=config.triangle_attention_backend,
+            pair_mask_left_aligned=False)
 
         self.affinity_heads = AffinityHeadsTransformer(
             token_z=config.token_z,

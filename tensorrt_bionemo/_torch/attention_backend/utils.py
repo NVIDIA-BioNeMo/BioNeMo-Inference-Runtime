@@ -142,6 +142,13 @@ class PrecomputedPairMasks:
                 Assumes a left-aligned ``1...1 0...0`` mask, which holds when
                 ``pair_mask`` is the outer product of a left-aligned
                 ``seq_mask``.
+
+            For the CuTeDSL backend, this tensor doubles as the dual_gemm_x_x
+            ``actual_seqlen`` consumed by ``TriangleMultiplicationNode``
+            (OUTGOING / ``tri_mul_out``): the LM dual_gemm kernel treats each
+            ``(b, i)`` pair-tensor row as a separate kernel batch of length
+            ``J`` and masks row ``g_m`` via
+            ``g_m % J < mask_bias[g_m // J]``.
         mask_bias_transposed: Per-row mask payload for TriangleAttentionEndingNode
             (whose input is transposed before the kernel call).
             Shape / semantics depend on the backend:
@@ -149,6 +156,15 @@ class PrecomputedPairMasks:
               * CuTeDSL left-mask kernel: ``int32`` count along the
                 transposed axis (``actual_s_kv``), shape ``[B, J]``,
                 ``mask_bias_transposed[b, j] = (pair_mask[b, :, j] > 0.5).sum()``.
+
+            For the CuTeDSL backend, this tensor doubles as the dual_gemm_x_x
+            ``actual_seqlen`` consumed by ``TriangleMultiplicationNode``
+            (INCOMING / ``tri_mul_in``) -- the per-column counterpart of
+            ``mask_bias``. For the typical outer-product symmetric pair mask
+            ``mask_bias`` and ``mask_bias_transposed`` are numerically equal,
+            but threading the transposed view through ``tri_mul_in`` keeps
+            the wiring symmetric with the rest of the precompute consumers
+            and handles non-square pair tensors correctly.
     """
     pair_mask: torch.Tensor
     mask_bias: torch.Tensor
@@ -261,6 +277,13 @@ def _cutedsl_precompute_pair_masks(
             "(``1...1 0...0``) pair_mask along both the last and "
             "second-to-last dims (e.g. the outer product of a left-aligned "
             "seq_mask). Got a pair_mask with interior zeros.")
+    # ``actual_s_kv`` (per-row valid J count, int32 ``[B, I]``) doubles as
+    # the dual_gemm_x_x ``actual_seqlen`` for ``tri_mul_out`` -- the LM
+    # dual_gemm kernel masks row ``g_m`` via
+    # ``g_m % J < actual_s_kv[g_m // J]``. Likewise ``actual_s_kv_t``
+    # (``[B, J]``) is the ``tri_mul_in`` counterpart. The two are exposed
+    # through ``mask_bias`` / ``mask_bias_transposed`` directly so no
+    # separate field is needed.
     actual_s_kv = mask_bool.sum(dim=-1).to(dtype=torch.int32).contiguous()
     actual_s_kv_t = mask_bool.sum(dim=-2).to(dtype=torch.int32).contiguous()
     return PrecomputedPairMasks(

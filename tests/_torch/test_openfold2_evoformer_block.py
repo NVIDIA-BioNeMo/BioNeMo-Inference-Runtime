@@ -15,6 +15,7 @@
 
 import os
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -23,8 +24,8 @@ from test_utils.openfold.create_and_load_weights import (
     create_evoformer_block_weights, load_evoformer_block_weights_torch)
 from test_utils.openfold.ref_layers import RefEvoformerBlock
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    precompute_pair_masks
+from tensorrt_bionemo._torch.attention_backend.utils import (
+    PrecomputedPairMasks, precompute_pair_masks)
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerBlock
 from tensorrt_bionemo.mapping import Mapping
@@ -243,3 +244,124 @@ def test_evoformer_block_precomputed_masks(sc: Scenario):
 
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
+
+
+# ---------------------------------------------------------------------------
+# Tests for dual_gemm_x_x ``actual_seqlen`` wiring in ``EvoformerBlock.forward``
+# ---------------------------------------------------------------------------
+
+
+class _SpyModule(torch.nn.Module):
+    """``nn.Module`` wrapper around a ``MagicMock`` so PyTorch accepts it as a
+    submodule replacement.  Forwards ``call_args`` / ``reset_mock`` through
+    to the inner mock for spy-style assertions."""
+
+    def __init__(self, output_like: torch.Tensor):
+        super().__init__()
+        self._spy = MagicMock(return_value=torch.zeros_like(output_like))
+
+    def forward(self, *args, **kwargs):
+        return self._spy(*args, **kwargs)
+
+    @property
+    def call_args(self):
+        return self._spy.call_args
+
+    def reset_mock(self):
+        self._spy.reset_mock()
+
+
+def test_evoformer_block_actual_seqlen_wiring():
+    """``EvoformerBlock.forward`` forwards ``mask_bias`` /
+    ``mask_bias_transposed`` as ``actual_seqlen`` to ``tri_mul_out`` /
+    ``tri_mul_in`` only when the precomputed masks are in the CuTeDSL
+    ``int32`` per-row-count form.  For default-backend (float additive
+    bias) precomputed masks, and when no precomputed masks are supplied,
+    both nodes must receive ``actual_seqlen=None`` so the dual_gemm_x_x
+    wrapper falls back to the in-call ``mask.sum(-1)`` reduction.
+    """
+    torch.manual_seed(0)
+    sc = Scenario(triangle_attn_backend="VANILLA")
+    device = torch.device("cuda")
+    torch_dtype = torch.float32
+
+    ref_module = RefEvoformerBlock.load_weights()
+    ref_module = ref_module.to(device)
+    module = _create_evoformer_block(ref_module, sc, torch_dtype).to(device)
+
+    B = 1
+    m = torch.randn(B,
+                    sc.n_seq,
+                    sc.n_res,
+                    ref_module.c_m,
+                    dtype=torch_dtype,
+                    device=device)
+    z = torch.randn(B,
+                    sc.n_res,
+                    sc.n_res,
+                    ref_module.c_z,
+                    dtype=torch_dtype,
+                    device=device)
+    msa_mask = torch.ones(B,
+                          sc.n_seq,
+                          sc.n_res,
+                          dtype=torch_dtype,
+                          device=device)
+    pair_mask = torch.ones(B,
+                           sc.n_res,
+                           sc.n_res,
+                           dtype=torch_dtype,
+                           device=device)
+
+    module.outer_product_mean = _SpyModule(z)
+    module.msa_att_row = _SpyModule(m)
+    if not module.no_column_attention:
+        module.msa_att_col = _SpyModule(m)
+    module.msa_transition = _SpyModule(m)
+    module.tri_mul_out = _SpyModule(z)
+    module.tri_mul_in = _SpyModule(z)
+    module.tri_attn_start = _SpyModule(z)
+    module.tri_attn_end = _SpyModule(z)
+    module.pair_transition = _SpyModule(z)
+
+    mb_int32 = torch.zeros(B, sc.n_res, dtype=torch.int32, device=device)
+    mb_int32_t = torch.zeros(B, sc.n_res, dtype=torch.int32, device=device)
+    pre_cutedsl = PrecomputedPairMasks(
+        pair_mask=pair_mask,
+        mask_bias=mb_int32,
+        mask_bias_transposed=mb_int32_t,
+    )
+    module(m, z, msa_mask, pair_mask, precomputed_masks=pre_cutedsl)
+    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is mb_int32
+    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is mb_int32_t
+
+    module.tri_mul_out.reset_mock()
+    module.tri_mul_in.reset_mock()
+    mb_float = torch.zeros(B,
+                           sc.n_res,
+                           1,
+                           1,
+                           sc.n_res,
+                           dtype=torch_dtype,
+                           device=device)
+    mb_float_t = torch.zeros(B,
+                             sc.n_res,
+                             1,
+                             1,
+                             sc.n_res,
+                             dtype=torch_dtype,
+                             device=device)
+    pre_default = PrecomputedPairMasks(
+        pair_mask=pair_mask,
+        mask_bias=mb_float,
+        mask_bias_transposed=mb_float_t,
+    )
+    module(m, z, msa_mask, pair_mask, precomputed_masks=pre_default)
+    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
+    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+
+    module.tri_mul_out.reset_mock()
+    module.tri_mul_in.reset_mock()
+    module(m, z, msa_mask, pair_mask, precomputed_masks=None)
+    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
+    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is None

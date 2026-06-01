@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -405,3 +406,264 @@ def test_pairformer_layer_precomputed_masks(sc: Scenario):
 
     torch.testing.assert_close(out_s_pre, out_s, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
+
+
+# ---------------------------------------------------------------------------
+# Tests for dual_gemm_x_x ``actual_seqlen`` wiring in ``_transform_z``
+# ---------------------------------------------------------------------------
+
+
+class _SpyModule(torch.nn.Module):
+    """``nn.Module`` wrapper around a ``MagicMock`` so PyTorch accepts it as a
+    submodule replacement.  Forwards ``call_args`` / ``reset_mock`` through
+    to the inner mock for spy-style assertions."""
+
+    def __init__(self, output_like: torch.Tensor):
+        super().__init__()
+        self._spy = MagicMock(return_value=torch.zeros_like(output_like))
+
+    def forward(self, *args, **kwargs):
+        return self._spy(*args, **kwargs)
+
+    @property
+    def call_args(self):
+        return self._spy.call_args
+
+    def reset_mock(self):
+        self._spy.reset_mock()
+
+
+def test_precomputed_pair_masks_no_actual_seqlen_field():
+    """``PrecomputedPairMasks`` exposes the int32 per-row counts (when the
+    CuTeDSL backend produces them) directly via ``mask_bias`` /
+    ``mask_bias_transposed`` -- no dedicated ``actual_seqlen`` field.
+    Catches accidental re-introduction of the field.
+    """
+    field_names = {f.name for f in fields(PrecomputedPairMasks)}
+    assert field_names == {"pair_mask", "mask_bias", "mask_bias_transposed"}
+    assert "actual_seqlen" not in field_names
+
+
+def _make_minimal_pairformer_layer(
+        triangle_attn_backend: str = "VANILLA",
+        dtype: torch.dtype = torch.bfloat16) -> PairformerLayerV1:
+    """Cheap PairformerLayerV1 with no weight load, suitable for wiring spies."""
+    return PairformerLayerV1(
+        layer_idx=0,
+        token_s=8,
+        token_z=8,
+        num_heads=2,
+        pairwise_head_width=4,
+        pairwise_num_heads=2,
+        dtype=dtype,
+        triangle_attn_backend=triangle_attn_backend,
+        pairwise_attn_backend="VANILLA",
+        skip_create_weights=True,
+        attention_initial_norm=True,
+    )
+
+
+def test_pairformer_transform_z_actual_seqlen_wiring():
+    """``_transform_z`` forwards ``mask_bias`` / ``mask_bias_transposed`` as
+    ``actual_seqlen`` to ``tri_mul_out`` / ``tri_mul_in`` only when the
+    precomputed masks are in the CuTeDSL ``int32`` per-row-count form
+    (``mask_bias.dtype == torch.int32``).  For the default backends'
+    float additive-bias form, and when no precomputed masks are supplied,
+    both nodes must receive ``actual_seqlen=None`` so the dual_gemm_x_x
+    wrapper falls back to the in-call ``mask.sum(-1)`` reduction.
+    """
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    B, N = 1, 16
+
+    layer = _make_minimal_pairformer_layer(dtype=dtype).to(device)
+    token_z = layer.token_z
+
+    z = torch.randn(B, N, N, token_z, dtype=dtype, device=device)
+    pair_mask = torch.ones(B, N, N, dtype=dtype, device=device)
+
+    layer.tri_mul_out = _SpyModule(z)
+    layer.tri_mul_in = _SpyModule(z)
+    layer.tri_attn_start = _SpyModule(z)
+    layer.tri_attn_end = _SpyModule(z)
+    layer.transition_z = _SpyModule(z)
+
+    mb_int32 = torch.zeros(B, N, dtype=torch.int32, device=device)
+    mb_int32_t = torch.zeros(B, N, dtype=torch.int32, device=device)
+    pre_cutedsl = PrecomputedPairMasks(
+        pair_mask=pair_mask,
+        mask_bias=mb_int32,
+        mask_bias_transposed=mb_int32_t,
+    )
+    layer._transform_z(z, pair_mask, precomputed_masks=pre_cutedsl)
+    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is mb_int32
+    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is mb_int32_t
+
+    layer.tri_mul_out.reset_mock()
+    layer.tri_mul_in.reset_mock()
+    mb_float = torch.zeros(B, N, 1, 1, N, dtype=dtype, device=device)
+    mb_float_t = torch.zeros(B, N, 1, 1, N, dtype=dtype, device=device)
+    pre_default = PrecomputedPairMasks(
+        pair_mask=pair_mask,
+        mask_bias=mb_float,
+        mask_bias_transposed=mb_float_t,
+    )
+    layer._transform_z(z, pair_mask, precomputed_masks=pre_default)
+    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
+    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+
+    layer.tri_mul_out.reset_mock()
+    layer.tri_mul_in.reset_mock()
+    layer._transform_z(z, pair_mask, precomputed_masks=None)
+    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
+    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for the ``pair_mask_left_aligned`` flag
+# ---------------------------------------------------------------------------
+
+
+def test_get_dual_gemm_x_x_op_pair_mask_left_aligned_flag():
+    """The x_x dispatcher must NOT return the CuTeDSL backend when the
+    caller declares ``pair_mask_left_aligned=False``: the CuTe LM kernel
+    silently produces wrong outputs for bipartite / interior-zero masks
+    (it applies a per-row prefix-count mask). The flag should route to
+    cuEquiv (default fallback) or CUTLASS (SM90) instead.
+    """
+    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import (
+        _invoke_cute_dual_gemm_x_x, get_dual_gemm_x_x_op)
+
+    op_default = get_dual_gemm_x_x_op(torch.bfloat16,
+                                      transpose_out=False,
+                                      N=128,
+                                      K=128,
+                                      pair_mask_left_aligned=True)
+
+    op_bipartite = get_dual_gemm_x_x_op(torch.bfloat16,
+                                        transpose_out=False,
+                                        N=128,
+                                        K=128,
+                                        pair_mask_left_aligned=False)
+    assert op_bipartite is not _invoke_cute_dual_gemm_x_x, (
+        "pair_mask_left_aligned=False must route around the CuTe LM "
+        f"kernel, got {op_bipartite.__name__}")
+
+    op_transpose = get_dual_gemm_x_x_op(torch.bfloat16,
+                                        transpose_out=True,
+                                        N=128,
+                                        K=128,
+                                        pair_mask_left_aligned=False)
+    assert op_transpose is not _invoke_cute_dual_gemm_x_x
+
+    del op_default
+
+
+def test_pairformer_pair_mask_left_aligned_propagates_to_trimul():
+    """The Pairformer ctor flag must reach both ``TriangleMultiplicationNode``
+    children and the underlying x_x dual GEMM ops they hold."""
+    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import \
+        _invoke_cute_dual_gemm_x_x
+
+    layer_aligned = _make_minimal_pairformer_layer()
+    assert layer_aligned.pair_mask_left_aligned is True
+    assert layer_aligned.tri_mul_out.pair_mask_left_aligned is True
+    assert layer_aligned.tri_mul_in.pair_mask_left_aligned is True
+
+    layer_bipartite = PairformerLayerV1(
+        layer_idx=0,
+        token_s=8,
+        token_z=128,
+        num_heads=2,
+        pairwise_head_width=4,
+        pairwise_num_heads=2,
+        dtype=torch.bfloat16,
+        triangle_attn_backend="VANILLA",
+        pairwise_attn_backend="VANILLA",
+        skip_create_weights=True,
+        attention_initial_norm=True,
+        pair_mask_left_aligned=False,
+    )
+    assert layer_bipartite.pair_mask_left_aligned is False
+    assert layer_bipartite.tri_mul_out.pair_mask_left_aligned is False
+    assert layer_bipartite.tri_mul_in.pair_mask_left_aligned is False
+    assert (layer_bipartite.tri_mul_out._dual_gemm_x_x_op
+            is not _invoke_cute_dual_gemm_x_x)
+    assert (layer_bipartite.tri_mul_in._dual_gemm_x_x_op
+            is not _invoke_cute_dual_gemm_x_x)
+    assert (layer_bipartite.tri_mul_out._dual_gemm_x_x_op_transpose
+            is not _invoke_cute_dual_gemm_x_x)
+
+
+def test_pairformer_transform_z_skips_actual_seqlen_when_not_left_aligned():
+    """When the Pairformer is told the pair_mask is bipartite
+    (``pair_mask_left_aligned=False``), ``_transform_z`` must NOT
+    forward the int32 ``mask_bias`` / ``mask_bias_transposed`` to
+    ``tri_mul_out`` / ``tri_mul_in`` as ``actual_seqlen`` -- the
+    per-row prefix count is incorrect for non-left-aligned masks and
+    would produce silently wrong outputs on the CuTe LM kernel."""
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    B, N = 1, 16
+
+    layer = PairformerLayerV1(
+        layer_idx=0,
+        token_s=8,
+        token_z=8,
+        num_heads=2,
+        pairwise_head_width=4,
+        pairwise_num_heads=2,
+        dtype=dtype,
+        triangle_attn_backend="VANILLA",
+        pairwise_attn_backend="VANILLA",
+        skip_create_weights=True,
+        attention_initial_norm=True,
+        pair_mask_left_aligned=False,
+    ).to(device)
+
+    z = torch.randn(B, N, N, layer.token_z, dtype=dtype, device=device)
+    pair_mask = torch.ones(B, N, N, dtype=dtype, device=device)
+
+    layer.tri_mul_out = _SpyModule(z)
+    layer.tri_mul_in = _SpyModule(z)
+    layer.tri_attn_start = _SpyModule(z)
+    layer.tri_attn_end = _SpyModule(z)
+    layer.transition_z = _SpyModule(z)
+
+    mb_int32 = torch.zeros(B, N, dtype=torch.int32, device=device)
+    mb_int32_t = torch.zeros(B, N, dtype=torch.int32, device=device)
+    pre = PrecomputedPairMasks(pair_mask=pair_mask,
+                               mask_bias=mb_int32,
+                               mask_bias_transposed=mb_int32_t)
+    layer._transform_z(z, pair_mask, precomputed_masks=pre)
+    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
+    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+
+
+def test_pairformer_no_seq_module_forwards_pair_mask_left_aligned():
+    """``PairformerNoSeqModule``/``PairformerNoSeqLayer`` inherit kwargs
+    forwarding from ``PairformerLayerV1``: ``pair_mask_left_aligned``
+    must reach every layer in the stack (the affinity construction
+    relies on this)."""
+    from tensorrt_bionemo._torch.layers.transformers.pairformer import \
+        PairformerNoSeqModule
+
+    stack = PairformerNoSeqModule(
+        num_blocks=2,
+        token_z=8,
+        pairwise_head_width=4,
+        pairwise_num_heads=2,
+        dtype=torch.bfloat16,
+        eps=1e-5,
+        triangle_attn_backend="VANILLA",
+        pairwise_attn_backend="VANILLA",
+        skip_create_weights=True,
+        pair_mask_left_aligned=False,
+    )
+    assert len(stack.layers) == 2
+    for layer in stack.layers:
+        assert layer.pair_mask_left_aligned is False
+        assert layer.tri_mul_out.pair_mask_left_aligned is False
+        assert layer.tri_mul_in.pair_mask_left_aligned is False

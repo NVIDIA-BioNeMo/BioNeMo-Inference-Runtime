@@ -16,7 +16,10 @@
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.custom_ops.dual_gemm import get_dual_gemm_op
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import \
+    get_dual_gemm_x0_x1_op
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import \
+    get_dual_gemm_x_x_op
 
 
 def create_linear_layers(K: int = 128,
@@ -55,11 +58,7 @@ def test_fused_sigmoid_gated_dual_gemm():
     ref_x = linear0(x).sigmoid() * linear1(x)
     ref_x = ref_x * mask.unsqueeze(-1)
 
-    op = get_dual_gemm_op(dtype,
-                          transpose_out=False,
-                          dual_gemm_type="x_x",
-                          N=N,
-                          K=K)
+    op = get_dual_gemm_x_x_op(dtype, transpose_out=False, N=N, K=K)
     out = op(x, linear0.weight, linear1.weight, linear0.bias, linear1.bias,
              mask)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)
@@ -74,11 +73,7 @@ def test_fused_sigmoid_gated_dual_gemm():
     ref_x = linear0(x).sigmoid() * linear1(x)
     ref_x = ref_x * mask.unsqueeze(-1)
 
-    op = get_dual_gemm_op(dtype,
-                          transpose_out=False,
-                          dual_gemm_type="x_x",
-                          N=N,
-                          K=K)
+    op = get_dual_gemm_x_x_op(dtype, transpose_out=False, N=N, K=K)
     out = op(x, linear0.weight, linear1.weight, linear0.bias, linear1.bias,
              mask)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)
@@ -100,11 +95,7 @@ def test_fused_sigmoid_gated_dual_gemm_dual_x():
                      device="cuda").contiguous().to(dtype)
     ref_x = linear0(x0).sigmoid() * linear1(x1)
 
-    op = get_dual_gemm_op(dtype,
-                          transpose_out=False,
-                          dual_gemm_type="x0_x1",
-                          N=N,
-                          K=K)
+    op = get_dual_gemm_x0_x1_op(dtype, transpose_out=False, N=N, K=K)
     out = op(x0, x1, linear0.weight, linear1.weight, linear0.bias,
              linear1.bias, None)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)
@@ -114,11 +105,7 @@ def test_fused_sigmoid_gated_dual_gemm_dual_x():
                                             dtype=dtype,
                                             has_bias=True)
     ref_x = linear0(x0).sigmoid() * linear1(x1)
-    op = get_dual_gemm_op(dtype,
-                          transpose_out=False,
-                          dual_gemm_type="x0_x1",
-                          N=N,
-                          K=K)
+    op = get_dual_gemm_x0_x1_op(dtype, transpose_out=False, N=N, K=K)
     out = op(x0, x1, linear0.weight, linear1.weight, linear0.bias,
              linear1.bias, None)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)

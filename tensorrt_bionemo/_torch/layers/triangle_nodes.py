@@ -35,8 +35,8 @@ from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
-from ..custom_ops.dual_gemm import get_dual_gemm_op
 from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
+from ..custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 from .attention import TriangleAttention
 
 
@@ -303,7 +303,24 @@ class TriangleMultiplicationNode(nn.Module):
             skip_create_weights: bool = False,
             max_tri_mul_tp_size: bool = False,
             high_precision: bool = True,
-            mean_normalization: bool = False):
+            mean_normalization: bool = False,
+            pair_mask_left_aligned: bool = True):
+        """Triangle multiplication node.
+
+        Args:
+            pair_mask_left_aligned: Whether the runtime ``mask`` passed to
+                ``forward`` is guaranteed to be left-aligned along its
+                masked axis (``1...1 0...0``). The CuTe ``dual_gemm_x_x``
+                LM kernel masks via a per-row ``actual_seqlen`` prefix
+                count, so it only produces correct outputs under that
+                invariant. Default ``True`` for typical outer-product
+                ``pair_mask = seq[..., None] * seq[..., None, :]``; set
+                ``False`` for bipartite / interior-zero masks such as
+                Boltz-2 affinity ``cross_pair_mask`` -- the dispatcher
+                then routes the x_x dual GEMM around the CuTe path
+                (cuEquiv / CUTLASS / vanilla all consume ``mask``
+                directly without the prefix assumption).
+        """
         super().__init__()
         if hidden_dim is None:
             hidden_dim = dim
@@ -318,6 +335,7 @@ class TriangleMultiplicationNode(nn.Module):
         self.dtype = dtype
         self.high_precision = high_precision
         self.mean_normalization = mean_normalization
+        self.pair_mask_left_aligned = pair_mask_left_aligned
         self.eps = eps
 
         self.dim = dim // self.tp_size
@@ -384,11 +402,6 @@ class TriangleMultiplicationNode(nn.Module):
 
         # TODO: Make this threshold configurable
         self._forward_impl_v2_threshold = 384
-        self._dual_gemm_x_x_op = get_dual_gemm_op(self.dtype,
-                                                  transpose_out=False,
-                                                  dual_gemm_type="x_x",
-                                                  N=self.dim,
-                                                  K=self.hidden_dim)
         # Dedicated x0_x1 dispatcher: routes to CuTe (SM 80/86/89), legacy
         # CUTLASS (SM 90), or cuEquiv / vanilla otherwise based on
         # ``(high_precision_dtype, N=self.dim, K=self.hidden_dim)``. Note
@@ -400,12 +413,15 @@ class TriangleMultiplicationNode(nn.Module):
             N=self.dim,
             K=self.hidden_dim,
         )
-        self._dual_gemm_x_x_op_transpose = get_dual_gemm_op(
-            self.dtype,
-            transpose_out=True,
-            dual_gemm_type="x_x",
-            N=self.dim,
-            K=self.hidden_dim)
+        self._dual_gemm_x_x_op = get_dual_gemm_x_x_op(self.dtype,
+                                                      transpose_out=False,
+                                                      N=2*self.hidden_dim,
+                                                      K=self.dim)
+        self._dual_gemm_x_x_op_transpose = get_dual_gemm_x_x_op(
+            self.dtype, 
+            transpose_out=True, 
+            N=2*self.hidden_dim, 
+            K=self.dim)
 
     def _dcp_slice(self, x: torch.Tensor,
                    mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -496,20 +512,51 @@ class TriangleMultiplicationNode(nn.Module):
             x = x.to(self.dtype)
         return x
 
-    def _forward_impl_v1(self, x: torch.Tensor,
-                         mask: torch.Tensor) -> torch.Tensor:
+    def _forward_impl_v1(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
         """ This version is used for short sequences in eager mode
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
+            actual_seqlen (Optional[torch.Tensor]): precomputed ``int32[B, I]``
+                per-row valid-J count for the CuTe dual_gemm_x_x backend
+                (same as ``actual_s_kv`` from CuTeDSL precompute).
+                Under DCP: OUTGOING slices it on I to match the sliced
+                rows; INCOMING (slices on J) drops it and lets the wrapper
+                recompute from the sliced ``mask``.
         """
         x = self._ensure_dtype(x)
         x = self.norm_in(x)
 
         x, mask = self._dcp_slice(x, mask)
+        # ``actual_seqlen[b, i] = mask[b, i, :].sum()``; align it with the
+        # DCP-sliced mask:
+        #   * OUTGOING slices on I -> slice ``actual_seqlen`` on dim 1
+        #     (per-row counts on the kept I rows are unchanged).
+        #   * INCOMING slices on J -> per-(b, i) J counts shrink, so the
+        #     precomputed value no longer matches; let the dual_gemm
+        #     wrapper recompute from the sliced ``mask``.
+        dg_actual_seqlen = actual_seqlen
+        if dg_actual_seqlen is not None and self.dcp_size > 1:
+            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+                seq_len_full = dg_actual_seqlen.shape[1]
+                shard = seq_len_full // self.dcp_size
+                st = self.dcp_rank * shard
+                et = (self.dcp_rank + 1) * shard
+                dg_actual_seqlen = dg_actual_seqlen[:, st:et].contiguous()
+            else:
+                dg_actual_seqlen = None
         x_in = x
-        x = self._dual_gemm_x_x_op(x, self.g_in.weight, self.p_in.weight,
-                                   self.g_in.bias, self.p_in.bias, mask)
+        x = self._dual_gemm_x_x_op(x,
+                                   self.g_in.weight,
+                                   self.p_in.weight,
+                                   self.g_in.bias,
+                                   self.p_in.bias,
+                                   mask,
+                                   actual_seqlen=dg_actual_seqlen)
         x = x.to(self.high_precision_dtype)
 
         a, b = x.split([self.dim, self.dim], dim=-1)
@@ -532,13 +579,21 @@ class TriangleMultiplicationNode(nn.Module):
         x = self._ensure_dtype(x)
         return x
 
-    def _forward_impl_v2(self, x: torch.Tensor,
-                         mask: torch.Tensor) -> torch.Tensor:
+    def _forward_impl_v2(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
         """ This version is used for long sequences and int the compile mode.
         Distributed is not supported yet.
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
+            actual_seqlen (Optional[torch.Tensor]): precomputed ``int32[B, I]``
+                per-row valid-J count for the CuTe dual_gemm_x_x backend
+                (same as ``actual_s_kv`` from CuTeDSL precompute). v2 does
+                not slice for DCP (distributed unsupported), so the value
+                is always safe to forward when supplied.
         """
         x = self._ensure_dtype(x)
         x = layer_norm_transpose(x,
@@ -557,6 +612,7 @@ class TriangleMultiplicationNode(nn.Module):
             self.p_in.bias,
             mask,
             transpose_out=True,
+            actual_seqlen=actual_seqlen,
         )
 
         a, b = torch.chunk(ab, 2, dim=0)
@@ -586,19 +642,52 @@ class TriangleMultiplicationNode(nn.Module):
                                      self.p_out.bias)
         return x
 
-    def _eager_mode_forward(self, x: torch.Tensor,
-                            mask: torch.Tensor) -> torch.Tensor:
+    def _eager_mode_forward(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
         seq_len = x.shape[-2]
         is_distributed = self.dcp_size > 1 or self.tp_size > 1
         if seq_len < self._forward_impl_v2_threshold or is_distributed:
-            return self._forward_impl_v1(x, mask)
-        return self._forward_impl_v2(x, mask)
+            return self._forward_impl_v1(x, mask, actual_seqlen=actual_seqlen)
+        return self._forward_impl_v2(x, mask, actual_seqlen=actual_seqlen)
 
-    def _compile_mode_forward(self, x: torch.Tensor,
-                              mask: torch.Tensor) -> torch.Tensor:
-        return self._forward_impl_v2(x, mask)
+    def _compile_mode_forward(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
+        return self._forward_impl_v2(x, mask, actual_seqlen=actual_seqlen)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self,
+                x: torch.Tensor,
+                mask: torch.Tensor,
+                actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            x: input pair tensor ``[B, I, J, c_in]``.
+            mask: pair mask ``[B, I, J]`` (1 = valid, 0 = padded).
+            actual_seqlen: optional precomputed ``int32[B, I]`` per-row
+                valid-J count consumed by the CuTe dual_gemm_x_x backend
+                (the LM kernel treats each ``(b, i)`` row as a separate
+                kernel batch). When supplied, it is forwarded to the
+                gated GEMM so the wrapper can skip its internal
+                ``mask.sum(-1)`` reduction (which would otherwise repeat
+                at every layer). When threading from
+                :class:`~tensorrt_bionemo._torch.attention_backend.utils.PrecomputedPairMasks`,
+                ``tri_mul_out`` (``OUTGOING``) should be passed
+                ``precomputed_masks.mask_bias`` (which for the CuTeDSL
+                backend is ``actual_s_kv``, the per-row ``[B, I]`` int32
+                valid-J count); ``tri_mul_in`` (``INCOMING``) the
+                analogous ``precomputed_masks.mask_bias_transposed``
+                (``actual_s_kv_t``, ``[B, J]``).  Only meaningful when
+                the precompute came from the CuTeDSL backend; default
+                backends store an additive bias in those fields and
+                callers must pass ``None`` instead.
+        """
         if not torch.compiler.is_compiling():
-            return self._eager_mode_forward(x, mask)
-        return self._compile_mode_forward(x, mask)
+            return self._eager_mode_forward(x,
+                                            mask,
+                                            actual_seqlen=actual_seqlen)
+        return self._compile_mode_forward(x, mask, actual_seqlen=actual_seqlen)

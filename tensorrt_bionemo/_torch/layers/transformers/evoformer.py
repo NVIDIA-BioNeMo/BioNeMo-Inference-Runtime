@@ -285,8 +285,22 @@ class EvoformerBlock(nn.Module):
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
-        z = z + self.tri_mul_out(z, mask=pair_mask)
-        z = z + self.tri_mul_in(z, mask=pair_mask)
+        # For the CuTeDSL triangle-attention backend, ``mask_bias`` /
+        # ``mask_bias_transposed`` ARE the per-row int32 valid-count
+        # tensors (``actual_s_kv`` / ``actual_s_kv_t``) the dual_gemm_x_x
+        # LM kernel wants for ``tri_mul_out`` / ``tri_mul_in`` -- reusing
+        # them lets every layer skip the in-wrapper ``mask.sum(-1)``
+        # reduction. Default backends use ``mask_bias`` as a float
+        # additive bias, so we gate on int32 dtype.
+        tri_out_actual_seqlen = tri_in_actual_seqlen = None
+        if (precomputed_masks is not None
+                and precomputed_masks.mask_bias.dtype == torch.int32):
+            tri_out_actual_seqlen = precomputed_masks.mask_bias
+            tri_in_actual_seqlen = precomputed_masks.mask_bias_transposed
+        z = z + self.tri_mul_out(
+            z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen)
+        z = z + self.tri_mul_in(
+            z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen)
 
         if precomputed_masks is not None:
             mb_start = precomputed_masks.mask_bias

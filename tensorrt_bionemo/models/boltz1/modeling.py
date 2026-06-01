@@ -388,6 +388,7 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         config.confidence_module.pairformer.s_path_dtype = torch.bfloat16
         config.confidence_module.pairformer.set_pairwise_attention_backend(
             pair_backend)
+
         return config
 
     def create_attn_metadata(self, n_atoms: int) -> AttentionMetadata:

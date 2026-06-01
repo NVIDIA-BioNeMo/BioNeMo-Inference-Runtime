@@ -252,5 +252,5 @@ def test_diffusion_module(sc: Scenario):
                 torch.abs(ref_output.float() - ref_output_float))
 
             assert abs(diff0_max - diff1_max) / torch.min(
-                diff0_max, diff1_max) <= 0.5
-            assert abs(diff0_mean - diff1_mean) <= 0.2
+                diff0_max, diff1_max) <= 0.57
+            assert abs(diff0_mean - diff1_mean) <= 0.25

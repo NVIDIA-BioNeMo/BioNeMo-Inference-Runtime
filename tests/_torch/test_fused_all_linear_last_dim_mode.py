@@ -19,7 +19,6 @@ from dataclasses import dataclass
 import pytest
 import torch
 import torch.nn as nn
-from pdb import set_trace as bp
 from tensorrt_bionemo._torch.layers.linear import Linear,TensorParallelMode, WeightMode, WeightsLoadingConfig
 
 class SampleModule(nn.Module):

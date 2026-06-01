@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,7 +24,11 @@ from tensorrt_bionemo._torch.distributed import \
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
+
+from tensorrt_bionemo._torch.custom_ops import get_adaln_layernorm_sigmoid_op
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.runtime.buffers import (PreallocatedBuffers,
+                                              ensure_buffer)
 
 
 class AdaLN(nn.Module):
@@ -36,6 +40,13 @@ class AdaLN(nn.Module):
                  dtype: torch.dtype = None,
                  skip_create_weights: bool = False,
                  mapping: Optional[Mapping] = None):
+        """Adaptive LayerNorm with a sigmoid-gated affine.
+
+        Uses the fused CuTe DSL kernel when ``tp_size == 1``; under TP
+        falls back to the inline torch path (kernel doesn't handle the
+        TP slice between LN and the gate). Kernel init / forward
+        failures propagate to the caller — no silent fallback.
+        """
         super().__init__()
         if mapping is None:
             mapping = Mapping()
@@ -43,6 +54,8 @@ class AdaLN(nn.Module):
         self.dim_single_cond = dim_single_cond
         self.mapping = mapping
         self.tp_group = mapping.tp_group
+        self.eps = eps
+
         self.a_norm = nn.LayerNorm(self.dim * mapping.tp_size,
                                    dtype=dtype,
                                    eps=eps,
@@ -72,19 +85,51 @@ class AdaLN(nn.Module):
             assert self.group_comm(
             ) is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
 
-    def forward(self, a: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        # Fused kernel only handles the tp_size == 1 case because under TP the
+        # LayerNorm operates on the full dim while the sigmoid gate operates on
+        # the sliced dim — those two steps run on different tensors.
+        self._fused_op = None
+        if mapping.tp_size == 1:
+            self._fused_op = get_adaln_layernorm_sigmoid_op(
+                dtype if dtype is not None else torch.float32)
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        s: torch.Tensor,
+        buffers: Optional[PreallocatedBuffers] = None,
+        buffer_key: str = "adaln_out",
+    ) -> torch.Tensor:
         """
         Args:
             a: [B, I, d]
             s: [B, I, d_cond]
+            buffers: optional preallocated buffer dict for the kernel output.
+            buffer_key: key into ``buffers`` for the AdaLN output tensor.
 
         Returns:
             a: [B, I, d]
         """
-        a = self.a_norm(a)
-        s = self.s_norm(s)
-        ss = self.fused_s_scale_s_bias(s)
+        # Pre-fused-step torch ops are reliable, so compute s_scale / s_bias
+        # once up front. Both the fused kernel and the torch fallback consume
+        # them — keeping these outside the try block avoids re-doing the
+        # ``s_norm`` + linear + split if the kernel fails mid-forward.
+        s_normed = self.s_norm(s)
+        ss = self.fused_s_scale_s_bias(s_normed)
         s_scale, s_bias = ss.split([self.dim, self.dim], dim=-1)
+
+        if self._fused_op is not None:
+            a = a.contiguous()
+            # Write to a separate buffer so callers that use ``a`` as a
+            # residual after this op see the original values.
+            out = ensure_buffer(buffers, buffer_key,
+                                a.shape, a.dtype, a.device)
+            if out is None:
+                out = torch.empty_like(a)
+            return self._fused_op(a, s_scale, s_bias,
+                                  out=out, eps=self.eps)
+
+        a = self.a_norm(a)
         if self.mapping.tp_size > 1:
             start = self.mapping.tp_rank * self.dim
             end = (self.mapping.tp_rank + 1) * self.dim

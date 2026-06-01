@@ -132,7 +132,8 @@ class DiffusionTransformerLayer(nn.Module):
             **kwargs) -> torch.Tensor:
         """ First version of DiffusionTransformerLayer, does not support multiplicity > 1 and atom encoder, decoder"""
         if self.initial_norm:
-            b = self.adaln(a, s)
+            b = self.adaln(a, s, buffers=buffers,
+                           buffer_key="dit_bsd_scratch")
         else:
             b = a
 
@@ -151,7 +152,7 @@ class DiffusionTransformerLayer(nn.Module):
         if self.attn_output_gate:
             if self._can_fuse_output_gate and s.shape[:-1] == b.shape[:-1]:
                 _gs_op = get_gated_sigmoid_op(b.dtype)
-                gs_buf = ensure_buffer(buffers, "dit_gate_output", b.shape,
+                gs_buf = ensure_buffer(buffers, "dit_bsd_scratch", b.shape,
                                        b.dtype, b.device)
                 b = _gs_op(s,
                            self.output_projection.weight,
@@ -161,7 +162,10 @@ class DiffusionTransformerLayer(nn.Module):
             else:
                 b = F.sigmoid(self.output_projection(s)) * b
         a = a + b
-        a = a + self.transition(a, s, all_reduce_params=all_reduce_params)
+        a = a + self.transition(a, s,
+                                all_reduce_params=all_reduce_params,
+                                buffers=buffers,
+                                buffer_key="dit_bsd_scratch")
         if self.post_lnorm is not None:
             a = self.post_lnorm(a)
         return a

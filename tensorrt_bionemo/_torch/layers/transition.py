@@ -28,6 +28,7 @@ from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
+from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class Transition(nn.Module):
@@ -199,24 +200,32 @@ class ConditionedTransitionBlock(nn.Module):
             self,
             a: torch.Tensor,
             s: torch.Tensor,
-            all_reduce_params: Optional[AllReduceParams] = None
+            all_reduce_params: Optional[AllReduceParams] = None,
+            buffers: Optional[PreallocatedBuffers] = None,
+            buffer_key: str = "cond_trans_adaln",
     ) -> torch.Tensor:
         """
         Args:
             a: [B, I, d]
             s: [B, I, d_cond]
+            buffers: optional preallocated buffer dict, forwarded to AdaLN.
+            buffer_key: key into ``buffers`` for the AdaLN output tensor.
 
         Returns:
             a: [B, I, d]
         """
-        a = self.adaln(a, s)
+        a = self.adaln(a, s, buffers=buffers, buffer_key=buffer_key)
         z = self.fused_swl_a_to_b(a)
         b = self._swiglu(z)
         a = self.b_to_a(b, all_reduce_params=all_reduce_params)
 
         if self._can_fuse_output_gate and s.shape[:-1] == a.shape[:-1]:
-            a = get_gated_sigmoid_op(s.dtype)(s, self.output_projection.weight,
-                                              a, self.output_projection.bias)
+            # Reuse the AdaLN output buffer — fused_swl_a_to_b consumed it
+            # above, same [B, I, d] shape as gated_sigmoid output.
+            a = get_gated_sigmoid_op(s.dtype)(
+                s, self.output_projection.weight,
+                a, self.output_projection.bias,
+                output=buffers.get(buffer_key) if buffers is not None else None)
         else:
             a = F.sigmoid(self.output_projection(s)) * a
         return a

@@ -208,6 +208,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         config.auxiliary_heads_config.pairformer.set_pairwise_attention_backend(
             pair_backend)
         config.auxiliary_heads_config.set_dtype("bfloat16")
+
         return config
 
     def load_weights(self, weights: dict = None):

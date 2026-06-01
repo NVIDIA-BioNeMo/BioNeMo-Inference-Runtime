@@ -170,6 +170,12 @@ def test_x0_x1_dual_gemm(sc: Scenario):
                  seq_lens=[100, 512],
                  dtype=torch.bfloat16,
                  transpose_out=True),
+        # M = B*I*J must be padded to a multiple of 8 for the CuTe epilogue.
+        Scenario(N=128,
+                 K=128,
+                 seq_lens=[123],
+                 dtype=torch.bfloat16,
+                 transpose_out=True),
     ],
     ids=[
         "sc_N128_K128_b0_m0_bf16",
@@ -182,6 +188,7 @@ def test_x0_x1_dual_gemm(sc: Scenario):
         "sc_N256_K128_b0_m0_bf16",
         "sc_N256_K128_b1_m1_bf16",
         "sc_N128_K128_b0_m0_bf16_t1",
+        "sc_N128_K128_b0_m0_bf16_t1_m_unaligned",
     ])
 def test_x_x_dual_gemm(sc: Scenario):
     """Test CuTe DSL dual GEMM x_x against fp32 reference.

@@ -93,7 +93,7 @@ class Scenario:
 
 
 @pytest.mark.parametrize("sc", [
-    Scenario(N=128, K=128, seq_lens=[100], dtype=torch.bfloat16),
+    Scenario(N=128, K=128, dtype=torch.bfloat16),
     Scenario(N=128, K=128, dtype=torch.bfloat16, has_bias=True),
     Scenario(N=128, K=128, dtype=torch.float16),
     Scenario(N=128, K=128, dtype=torch.float16, has_bias=True),

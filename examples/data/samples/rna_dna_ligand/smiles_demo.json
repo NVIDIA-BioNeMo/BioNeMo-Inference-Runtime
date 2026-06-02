@@ -1,0 +1,23 @@
+[
+    {
+        "input_id": "smiles_demo",
+        "polymers": [
+          {
+            "polymer_type": "protein",
+            "chain_id": ["A"],
+            "sequence": "MYTVKPGDTMWKIAVKYQIGISEIIAANPQIKNPNLIYPGQKINIPNILEHHHHHH",
+            "msas": [{"path": "msas/T1152_0.a3m", "format": "a3m"}],
+            "paired_msas": null,
+            "templates": null
+          },
+          {
+            "polymer_type": "smiles_ligand",
+            "chain_id": ["B"],
+            "sequence": "N[C@@H](Cc1ccc(O)cc1)C(=O)O",
+            "msas": null,
+            "paired_msas": null,
+            "templates": null
+          }
+        ]
+    }
+]

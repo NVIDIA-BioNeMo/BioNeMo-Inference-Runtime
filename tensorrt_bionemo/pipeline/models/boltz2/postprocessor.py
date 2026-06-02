@@ -28,8 +28,13 @@ import torch
 from pydantic import BaseModel
 
 from tensorrt_bionemo.data.schemas import FoldingOutput
-from tensorrt_bionemo.data.schemas.basic import AtomTypes
+from tensorrt_bionemo.data.schemas.basic import (AtomTypes, MOL_TYPE_DNA,
+                                                  MOL_TYPE_LIGAND,
+                                                  MOL_TYPE_PROTEIN,
+                                                  MOL_TYPE_RNA)
 from tensorrt_bionemo.pipeline.base import PostProcessorBase
+from tensorrt_bionemo.pipeline.models.boltz2.const import (chain_type_ids,
+                                                            tokens)
 
 NUM_ATOM_TYPES = len(AtomTypes.all_types())  # 37
 
@@ -37,6 +42,25 @@ _ATOM_NAME_TO_IDX: dict[str, int] = {
     at.name: i
     for i, at in enumerate(AtomTypes.all_types())
 }
+
+# Remap Boltz2's internal chain_type_ids (PROTEIN=0, DNA=1, RNA=2, NONPOLYMER=3)
+# to FoldingOutput's canonical mol-type convention (PROTEIN=0, RNA=1, DNA=2,
+# LIGAND=3). The two encodings differ in the DNA / RNA slot ordering, plus
+# Boltz2 calls ligands ``NONPOLYMER``.
+_BOLTZ_TO_FOLDING_MOL_TYPE = np.full(
+    max(chain_type_ids.values()) + 1, MOL_TYPE_PROTEIN, dtype=np.int64
+)
+_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["PROTEIN"]]    = MOL_TYPE_PROTEIN
+_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["RNA"]]        = MOL_TYPE_RNA
+_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["DNA"]]        = MOL_TYPE_DNA
+_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["NONPOLYMER"]] = MOL_TYPE_LIGAND
+
+# Map Boltz2 ``res_type`` argmax index → 3-letter residue name. Index 0 is
+# Boltz2's "<pad>", index 1 is the gap "-"; both produce "UNK" so the CIF
+# writer doesn't render bogus residue codes for padded positions.
+_BOLTZ_RES_NAMES: list[str] = list(tokens)
+_BOLTZ_RES_NAMES[0] = "UNK"
+_BOLTZ_RES_NAMES[1] = "UNK"
 
 
 class PostProcessorConfig(BaseModel):
@@ -111,11 +135,38 @@ class PostProcessor(PostProcessorBase):
             batch["res_type"])[0].numpy()  # (N_tokens_pad, C)
         residue_types = res_type_onehot[:n_tokens].argmax(axis=-1).astype(
             np.int64)
+        # Boltz2's residue_types index into the full 33-entry token table
+        # (PAD, GAP, 20 amino acids, X, RA..RX, DA..DX). Writers built from
+        # ``get_all_residue_types("boltz-2")`` have the same 33-entry
+        # ``self.res_types`` so they can recover RA/DA/etc. natively.
+        residue_types_raw = residue_types
 
         residue_indices = _cpu(
             batch["residue_index"])[0].numpy()[:n_tokens].astype(np.int64) + 1
         chain_indices = _cpu(batch["asym_id"])[0].numpy()[:n_tokens].astype(
             np.int64)
+
+        # --- Per-residue CCD codes + mol-type (canonical encoding) --------------
+        # ``residue_names`` carries the 3-letter CCD code per residue so the
+        # CIF writer can emit "TYR"/"SAH"/"DA"/etc. on ligand/HETATM rows
+        # instead of falling back to "UNK". ``mol_types`` lets the writer
+        # classify chains explicitly (protein/RNA/DNA/ligand) without relying
+        # on the all-X heuristic.
+        residue_names: list[str] = [
+            _BOLTZ_RES_NAMES[i] if 0 <= i < len(_BOLTZ_RES_NAMES) else "UNK"
+            for i in residue_types_raw.tolist()
+        ]
+        if "mol_type" in batch:
+            boltz_mol_types = _cpu(
+                batch["mol_type"])[0].numpy()[:n_tokens].astype(np.int64)
+            # Clamp out-of-range values (defensive — should not happen) before
+            # indexing the remap table.
+            boltz_mol_types = np.clip(
+                boltz_mol_types, 0, len(_BOLTZ_TO_FOLDING_MOL_TYPE) - 1)
+            mol_types_out = _BOLTZ_TO_FOLDING_MOL_TYPE[boltz_mol_types].astype(
+                np.int64)
+        else:
+            mol_types_out = None
 
         # --- Per-token confidence (best sample) ---------------------------------
         plddt = _cpu(output["plddt"])[0, best_idx].numpy()[:n_tokens]
@@ -144,6 +195,8 @@ class PostProcessor(PostProcessorBase):
             iptm=iptm,
             pae=pae,
             max_pae=max_pae,
+            residue_names=residue_names,
+            mol_types=mol_types_out,
         )
 
         # --- Boltz2-specific extras ---------------------------------------------

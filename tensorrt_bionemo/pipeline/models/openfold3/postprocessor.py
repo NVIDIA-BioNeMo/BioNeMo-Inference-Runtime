@@ -114,8 +114,15 @@ class PostProcessor(PostProcessorBase):
         residue_indices = _cpu(
             batch["residue_index"]).squeeze(0).numpy()[:n_tokens].astype(
             np.int64)
+        # OF3's StructureFeatureGenerator emits 1-based ``asym_id`` (see
+        # ``_renumber_chain_ids`` — chains are numbered from 1). The
+        # ``FoldingOutput`` contract and downstream writers expect 0-based
+        # chain indices: ``CIFWriter._chain_id_from_index(0)`` → "A",
+        # 1 → "B", etc. Without this shift, every chain is rendered one
+        # letter past its true ID and chain "A" disappears, breaking OST
+        # chain-mapping (T1152 lDDT crashed to 0.0).
         chain_indices = _cpu(
-            batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
+            batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64) - 1
 
         # --- Confidence scores from logits ---
         plddt = _compute_plddt(output, best_idx, n_tokens, atom_to_token,
@@ -127,6 +134,20 @@ class PostProcessor(PostProcessorBase):
 
         b_factors = np.repeat(
             plddt[:, None], NUM_ATOM_TYPES, axis=-1) * atom_mask_out
+
+        # Per-residue identity for the comprehensive CIF writer: 3-letter CCD
+        # code per token and the canonical mol-type id.
+        struct = batch.get("_row", batch).get("structure") if isinstance(
+            batch, dict) else None
+        residue_names: list[str] | None = None
+        mol_types_out: np.ndarray | None = None
+        if struct is not None:
+            tnames = struct.get("token_resnames")
+            tmtypes = struct.get("token_mol_types")
+            if tnames is not None and len(tnames) >= n_tokens:
+                residue_names = list(tnames[:n_tokens])
+            if tmtypes is not None and len(tmtypes) >= n_tokens:
+                mol_types_out = np.asarray(tmtypes[:n_tokens], dtype=np.int64)
 
         result = FoldingOutput(
             atom_positions=atom_positions,
@@ -140,6 +161,8 @@ class PostProcessor(PostProcessorBase):
             iptm=iptm,
             pae=pae,
             max_pae=max_pae,
+            residue_names=residue_names,
+            mol_types=mol_types_out,
         )
 
         return result

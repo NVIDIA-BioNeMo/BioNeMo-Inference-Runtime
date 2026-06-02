@@ -54,6 +54,17 @@ class AtomType:
 
 
 class AtomTypes:
+    """Atom-name universe used by FoldingOutput / writers.
+
+    Indices 0-36 cover the 37 AlphaFold-style protein atoms. Newer indices
+    37+ cover nucleic-acid backbones, nucleobase atoms, and the common
+    PDB/CCD ligand atom names (numeric suffixes on C/N/O/S/P, primed
+    sugar names). Adding entries here is additive — the protein order
+    stays fixed so existing models that consume the 37-slot layout keep
+    their indices, and the new entries simply extend the universe for
+    non-protein chains.
+    """
+    # ----- Protein (indices 0-36) — DO NOT REORDER ---------------------
     N = AtomType(name="N")
     CA = AtomType(name="CA")
     C = AtomType(name="C")
@@ -92,10 +103,170 @@ class AtomTypes:
     NZ = AtomType(name="NZ")
     OXT = AtomType(name="OXT")
 
+    # ----- Nucleic-acid backbone (sugar + phosphate) ------------------
+    P = AtomType(name="P")
+    OP1 = AtomType(name="OP1")
+    OP2 = AtomType(name="OP2")
+    OP3 = AtomType(name="OP3")
+    O5_prime = AtomType(name="O5'")
+    C5_prime = AtomType(name="C5'")
+    C4_prime = AtomType(name="C4'")
+    O4_prime = AtomType(name="O4'")
+    C3_prime = AtomType(name="C3'")
+    O3_prime = AtomType(name="O3'")
+    C2_prime = AtomType(name="C2'")
+    O2_prime = AtomType(name="O2'")
+    C1_prime = AtomType(name="C1'")
+    S5_prime = AtomType(name="S5'")  # SAM/SAH-style methionine-adenosine link
+
+    # ----- Nucleobase atoms (purines + pyrimidines + thymine methyl) --
+    N1 = AtomType(name="N1")
+    N2 = AtomType(name="N2")
+    N3 = AtomType(name="N3")
+    N4 = AtomType(name="N4")
+    N6 = AtomType(name="N6")
+    N7 = AtomType(name="N7")
+    N9 = AtomType(name="N9")
+    N11 = AtomType(name="N11")  # e.g. PRF (a CASP15 RNA-ligand cofactor)
+    C2 = AtomType(name="C2")
+    C4 = AtomType(name="C4")
+    C5 = AtomType(name="C5")
+    C6 = AtomType(name="C6")
+    C7 = AtomType(name="C7")  # thymine methyl
+    C8 = AtomType(name="C8")
+    O2 = AtomType(name="O2")
+    O4 = AtomType(name="O4")
+    O6 = AtomType(name="O6")
+
+    # ----- Common ligand atom names (carbohydrates, cofactors, etc.) --
+    C1 = AtomType(name="C1")
+    C3 = AtomType(name="C3")
+    C9 = AtomType(name="C9")
+    C10 = AtomType(name="C10")
+    C11 = AtomType(name="C11")
+    C12 = AtomType(name="C12")
+    C13 = AtomType(name="C13")
+    C14 = AtomType(name="C14")
+    C15 = AtomType(name="C15")
+    C16 = AtomType(name="C16")
+    C17 = AtomType(name="C17")
+    C18 = AtomType(name="C18")
+    C19 = AtomType(name="C19")
+    C20 = AtomType(name="C20")
+    O1 = AtomType(name="O1")
+    O3 = AtomType(name="O3")
+    O5 = AtomType(name="O5")
+    O7 = AtomType(name="O7")
+    O8 = AtomType(name="O8")
+    O9 = AtomType(name="O9")
+    N5 = AtomType(name="N5")
+    N8 = AtomType(name="N8")
+    N10 = AtomType(name="N10")
+    S1 = AtomType(name="S1")
+    S2 = AtomType(name="S2")
+    P1 = AtomType(name="P1")
+    P2 = AtomType(name="P2")
+
     _all_types = [
-        N, CA, C, CB, O, CG, CG1, CG2, OG, OG1, SG, CD, CD1, CD2, ND1, ND2,
-        OD1, OD2, SD, CE, CE1, CE2, CE3, NE, NE1, NE2, OE1, OE2, CH2, NH1, NH2,
-        OH, CZ, CZ2, CZ3, NZ, OXT
+        # protein (indices 0-36)
+        N,
+        CA,
+        C,
+        CB,
+        O,
+        CG,
+        CG1,
+        CG2,
+        OG,
+        OG1,
+        SG,
+        CD,
+        CD1,
+        CD2,
+        ND1,
+        ND2,
+        OD1,
+        OD2,
+        SD,
+        CE,
+        CE1,
+        CE2,
+        CE3,
+        NE,
+        NE1,
+        NE2,
+        OE1,
+        OE2,
+        CH2,
+        NH1,
+        NH2,
+        OH,
+        CZ,
+        CZ2,
+        CZ3,
+        NZ,
+        OXT,
+        # nucleic backbone (37-50)
+        P,
+        OP1,
+        OP2,
+        OP3,
+        O5_prime,
+        C5_prime,
+        C4_prime,
+        O4_prime,
+        C3_prime,
+        O3_prime,
+        C2_prime,
+        O2_prime,
+        C1_prime,
+        S5_prime,
+        # nucleobases (51-68)
+        N1,
+        N2,
+        N3,
+        N4,
+        N6,
+        N7,
+        N9,
+        N11,
+        C2,
+        C4,
+        C5,
+        C6,
+        C7,
+        C8,
+        O2,
+        O4,
+        O6,
+        # common ligand atoms (69-)
+        C1,
+        C3,
+        C9,
+        C10,
+        C11,
+        C12,
+        C13,
+        C14,
+        C15,
+        C16,
+        C17,
+        C18,
+        C19,
+        C20,
+        O1,
+        O3,
+        O5,
+        O7,
+        O8,
+        O9,
+        N5,
+        N8,
+        N10,
+        S1,
+        S2,
+        P1,
+        P2,
     ]
     _by_name = {atom.name: atom for atom in _all_types}
 
@@ -457,6 +628,15 @@ class InputParsed(dict):
         super().__init__(input_id=input_id, polymers=polymers)
 
 
+# Canonical mol-type encoding used by ``FoldingOutput.mol_types``. Producers
+# whose internal encoding differs must remap to this convention in their
+# postprocessor so downstream writers can rely on a single contract.
+MOL_TYPE_PROTEIN = 0
+MOL_TYPE_RNA = 1
+MOL_TYPE_DNA = 2
+MOL_TYPE_LIGAND = 3
+
+
 class FoldingOutput(dict):
 
     def __init__(
@@ -472,6 +652,8 @@ class FoldingOutput(dict):
         iptm: Optional[float] = None,
         pae: Optional[np.ndarray] = None,
         max_pae: Optional[float] = None,
+        residue_names: Optional[list[str]] = None,
+        mol_types: Optional[np.ndarray] = None,
     ):
         """
         Args:
@@ -511,6 +693,18 @@ class FoldingOutput(dict):
             max_pae: scalar
                 Maximum possible Predicted Aligned Error value in angstroms, used
                 for normalizing the PAE matrix.
+            residue_names: (num_res,) list of strings, optional
+                Per-residue CCD/PDB three-letter codes (``"ALA"``, ``"TYR"``,
+                ``"SAH"``, ``"DA"``, ``"A"`` for RNA adenine, …). When
+                provided, the CIF writer uses these for HETATM identity and
+                Entity ``ChemComp`` construction instead of the protein
+                heuristic. Producers that don't preserve CCD identity (e.g.
+                AlphaFold2-style pipelines) leave this as ``None``.
+            mol_types: (num_res,) integer ndarray, optional
+                Per-residue molecule-type id (0=protein, 1=RNA, 2=DNA,
+                3=ligand). Lets the writer classify chains explicitly rather
+                than inferring from residue letters. When ``None``, writers
+                fall back to the legacy classification heuristics.
         """
         super().__init__(atom_positions=atom_positions,
                          residue_types=residue_types,
@@ -522,7 +716,9 @@ class FoldingOutput(dict):
                          ptm=ptm,
                          iptm=iptm,
                          pae=pae,
-                         max_pae=max_pae)
+                         max_pae=max_pae,
+                         residue_names=residue_names,
+                         mol_types=mol_types)
 
     def get_scores(self) -> dict:
         # Ensure all scores are json-able.

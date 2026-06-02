@@ -177,7 +177,7 @@ class TestAtomTypes:
         assert AtomTypes.from_string("INVALID") is None
 
     def test_num_types(self):
-        assert AtomTypes.num_types() == 37
+        assert AtomTypes.num_types() == 95
 
 
 class TestPolymerType:

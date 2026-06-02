@@ -13,12 +13,80 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 from tensorrt_bionemo.data.schemas.basic import (AtomType, AtomTypes,
                                                  FoldingOutput, ResType,
                                                  ResTypes)
 from tensorrt_bionemo.logger import logger
+
+
+# Shared helpers used by ``CIFWriter`` and ``PDBWriter`` to map residue
+# names + classify chains consistently. Centralised here so the two writers
+# can't drift apart on how they label RNA / DNA / non-polymer chains.
+#
+# Internal ResType ``name`` codes → CIF/IHM/PDB standard codes.
+#
+# - ``X``  → ``UNK``  (modelcif/ihm and PDB both use ``UNK`` for unknown
+#   protein residues; Boltz2 also emits ``X`` for every per-atom-tokenised
+#   ligand atom on a NONPOLYMER chain).
+# - ``RA``/``RC``/``RG``/``RU`` → ``A``/``C``/``G``/``U`` (RNA: the bare
+#   1-letter is what both ihm.RNAAlphabet and the PDB residue-name field
+#   expect. Our internal ResTypes use the ``R`` prefix so the 1-letter
+#   name doesn't collide with the 20-AA codes ``A`` and ``G``).
+# - ``RX`` → ``N``, ``DX`` → ``DN`` (unknown nucleotide stand-ins).
+# - DNA names (``DA``/``DC``/``DG``/``DT``) already match the CIF/PDB
+#   convention and pass through unchanged.
+_IHM_REMAP: dict[str, str] = {
+    "X": "UNK",
+    "RA": "A",
+    "RC": "C",
+    "RG": "G",
+    "RU": "U",
+    "RX": "N",
+    "DX": "DN",
+}
+
+_RNA_RESNAMES: set[str] = {"RA", "RC", "RG", "RU", "RX"}
+_DNA_RESNAMES: set[str] = {"DA", "DC", "DG", "DT", "DX"}
+_PAD_RESNAMES: set[str] = {"-", "<PAD>"}
+
+# Canonical mol-type ints in ``FoldingOutput`` (see
+# ``tensorrt_bionemo/data/schemas/basic.py``): 0=protein, 1=RNA, 2=DNA,
+# 3=ligand. Writers map these to their chain-classification labels.
+_MOL_TYPE_TO_KIND: dict[int, str] = {
+    0: "protein",
+    1: "rna",
+    2: "dna",
+    3: "nonpoly",
+}
+
+
+def _classify_chain(restype_names: tuple[str, ...]) -> str:
+    """Classify a chain by its residue-name set: ``protein|rna|dna|nonpoly``.
+
+    Used by writers when the producer did not populate the explicit
+    ``mol_types`` field on ``FoldingOutput``. A chain becomes:
+
+    * ``rna`` if every non-pad residue is in ``_RNA_RESNAMES``,
+    * ``dna`` if every non-pad residue is in ``_DNA_RESNAMES``,
+    * ``nonpoly`` if every non-pad residue is ``X`` (Boltz2's NONPOLYMER
+      tokenizer emits per-atom residues all of type ``X`` for ligand
+      chains, so this heuristic catches them cleanly without changing
+      the FoldingOutput schema),
+    * ``protein`` otherwise (real protein chains contain at least one
+      of the 20 amino acids beyond ``X``).
+    """
+    uniq = set(restype_names) - _PAD_RESNAMES
+    if uniq and uniq.issubset(_RNA_RESNAMES):
+        return "rna"
+    if uniq and uniq.issubset(_DNA_RESNAMES):
+        return "dna"
+    if uniq and uniq.issubset({"X"}):
+        return "nonpoly"
+    return "protein"
 
 
 class BaseWriter(ABC):

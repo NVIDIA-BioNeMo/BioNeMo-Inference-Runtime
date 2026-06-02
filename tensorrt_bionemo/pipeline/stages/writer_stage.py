@@ -149,7 +149,9 @@ class WriterUDF(StatefulStageUDF):
                                ptm=row.get("ptm", None),
                                iptm=row.get("iptm", None),
                                pae=row.get("pae", None),
-                               max_pae=row.get("max_pae", None))
+                               max_pae=row.get("max_pae", None),
+                               residue_names=row.get("residue_names", None),
+                               mol_types=row.get("mol_types", None))
         row_id = row.get(self.RECORD_ID_IN_BATCH_COLUMN)
 
         output_paths: Dict[str, Optional[str]] = {}

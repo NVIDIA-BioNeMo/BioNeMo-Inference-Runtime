@@ -239,3 +239,187 @@ class TestPDBWriter:
 
         # Should contain PARENT line
         assert "PARENT" in pdb_content
+
+
+# ---------------------------------------------------------------------------
+# Multi-polymer test suite (RNA / DNA / non-polymer ligand chains)
+# ---------------------------------------------------------------------------
+
+from tests.common.test_utils.synthetic_folding_outputs import (
+    dna_only_folding,
+    many_chains_folding,
+    multi_polymer_folding,
+    nonpoly_ligand_folding,
+    of3_mappings,
+    rna_only_folding,
+)
+from tensorrt_bionemo.data.writers.pdb_writer import PDB_MAX_CHAINS
+
+
+class TestPDBWriterMultiPolymer:
+    """Exercises PDBWriter on RNA / DNA / non-polymer / mixed chain inputs."""
+
+    @pytest.fixture
+    def writer(self):
+        res_map, atom_map = of3_mappings()
+        return PDBWriter(res_type_mapping=res_map,
+                         atom_type_mapping=atom_map,
+                         output_path="test.pdb")
+
+    # ----- RNA -------------------------------------------------------
+
+    def test_rna_only_emits_atom_rows_with_nucleic_residue_name(self, writer):
+        """RNA chain → ATOM rows with single-letter residue name in cols 18-20.
+
+        Residue name field is 3 chars right-justified; ``A`` renders as
+        ``"  A"`` (two leading spaces).
+        """
+        out = writer.write(rna_only_folding(sequence="AGCU",
+                                            with_residue_names=True,
+                                            with_mol_types=True))
+        atom_lines = [l for l in out.split("\n") if l.startswith("ATOM")]
+        assert atom_lines, "RNA chain should produce ATOM rows"
+        # PDB residue-name field is columns 18-20 (1-indexed; 17-19 0-indexed).
+        # Each ATOM row should have a single-letter nucleotide right-justified
+        # in those 3 columns: '  A' for adenine, etc.
+        for line in atom_lines:
+            res_name_field = line[17:20]
+            assert res_name_field.strip() in {"A", "G", "C", "U"}, (
+                f"unexpected res name {res_name_field!r} in: {line[:30]}"
+            )
+        # No HETATM for an RNA polymer chain
+        assert not any(l.startswith("HETATM") for l in out.split("\n"))
+
+    def test_rna_heuristic_without_residue_names(self, writer):
+        """Without ``residue_names``, _IHM_REMAP maps internal 'RA'/'RG'/...
+        codes to the single-letter PDB residue names. Heuristic
+        classification should still emit ATOM rows (polymer chain)."""
+        out = writer.write(rna_only_folding(sequence="AG"))
+        atom_lines = [l for l in out.split("\n") if l.startswith("ATOM")]
+        assert atom_lines, "RNA heuristic should produce ATOM rows"
+
+    # ----- DNA -------------------------------------------------------
+
+    def test_dna_only_emits_two_letter_residue_name(self, writer):
+        """DNA residues use 2-letter codes (DA/DG/DC/DT) in the 3-char field."""
+        out = writer.write(dna_only_folding(sequence="ACGT",
+                                            with_residue_names=True,
+                                            with_mol_types=True))
+        atom_lines = [l for l in out.split("\n") if l.startswith("ATOM")]
+        assert atom_lines, "DNA chain should produce ATOM rows"
+        for line in atom_lines:
+            res_name_field = line[17:20].strip()
+            assert res_name_field in {"DA", "DG", "DC", "DT"}, (
+                f"unexpected DNA res name {res_name_field!r}"
+            )
+
+    # ----- Non-polymer (ligand) --------------------------------------
+
+    def test_nonpoly_emits_hetatm_record_type(self, writer):
+        """Non-polymer chains emit ``HETATM`` (cols 1-6) not ``ATOM``."""
+        out = writer.write(nonpoly_ligand_folding(
+            atom_names=["C1", "C2", "N2"],
+            ccd_code="NAG",
+            with_mol_types=True,
+        ))
+        hetatm_lines = [l for l in out.split("\n") if l.startswith("HETATM")]
+        assert hetatm_lines, "non-polymer chain should produce HETATM rows"
+        # Real CCD code surfaces in cols 18-20
+        for line in hetatm_lines:
+            assert line[17:20].strip() == "NAG"
+
+    def test_no_ter_after_nonpoly_chain(self, writer):
+        """Per PDB v3.3, ``TER`` does not follow a HETATM (non-polymer) group."""
+        out = writer.write(nonpoly_ligand_folding(
+            atom_names=["C1", "C2"], ccd_code="NAG", with_mol_types=True))
+        # Single nonpoly chain: no TER lines should appear.
+        ter_lines = [l for l in out.split("\n") if l.startswith("TER")]
+        assert not ter_lines, (
+            f"unexpected TER after nonpoly chain: {ter_lines}"
+        )
+
+    def test_nonpoly_heuristic_unk_fallback(self, writer):
+        """Without residue_names or mol_types, all-X residues classify as
+        nonpoly via the heuristic and HETATM rows use ``UNK``."""
+        out = writer.write(nonpoly_ligand_folding(
+            atom_names=["C1", "N2"], ccd_code=None, with_mol_types=False))
+        hetatm_lines = [l for l in out.split("\n") if l.startswith("HETATM")]
+        assert hetatm_lines, "heuristic should still flag chain as nonpoly"
+        for line in hetatm_lines:
+            assert line[17:20].strip() == "UNK"
+
+    # ----- Multi-polymer combo ---------------------------------------
+
+    def test_multi_polymer_record_types_and_ter_placement(self, writer):
+        """Protein chain ends with ``TER``, nonpoly does not."""
+        out = writer.write(multi_polymer_folding())
+        lines = out.split("\n")
+        atom_lines = [l for l in lines if l.startswith("ATOM")]
+        hetatm_lines = [l for l in lines if l.startswith("HETATM")]
+        ter_lines = [l for l in lines if l.startswith("TER")]
+        assert atom_lines, "polymer chains should emit ATOM rows"
+        assert hetatm_lines, "nonpoly chain should emit HETATM rows"
+        # Three polymer chains (protein, RNA, DNA) → 3 TERs.
+        assert len(ter_lines) == 3, (
+            f"expected 3 TER lines (one per polymer chain), got {len(ter_lines)}"
+        )
+        # CCD codes surface
+        assert "ALA" in out and "TYR" in out and "NAG" in out
+
+    def test_multi_polymer_chain_id_mapping(self, writer):
+        """Chains 0..3 should map to PDB chain IDs ``A``..``D``."""
+        out = writer.write(multi_polymer_folding())
+        # Each ATOM/HETATM line has chain ID at column 22 (1-indexed; 21 0-indexed)
+        atom_lines = [l for l in out.split("\n")
+                      if l.startswith(("ATOM", "HETATM"))]
+        seen = {l[21] for l in atom_lines}
+        assert seen == {"A", "B", "C", "D"}, (
+            f"expected chains A-D, saw {sorted(seen)}"
+        )
+
+    # ----- Line width / column format --------------------------------
+
+    def test_all_record_lines_padded_to_80_chars(self, writer):
+        """Legacy PDB columnar contract — every line is exactly 80 chars."""
+        out = writer.write(multi_polymer_folding())
+        for line in out.split("\n"):
+            if line == "":
+                continue
+            assert len(line) == 80, (
+                f"line not padded to 80 chars (got {len(line)}): {line!r}"
+            )
+
+    # ----- Chain limit -----------------------------------------------
+
+    def test_pdb_max_chain_constant(self):
+        """PDB single-char chain field caps at 62 (A-Z + a-z + 0-9)."""
+        assert PDB_MAX_CHAINS == 62
+
+    def test_within_chain_limit_succeeds(self, writer):
+        """62 chains (chain indices 0..61) fits PDB's single-char asym_id."""
+        out = writer.write(many_chains_folding(n_chains=PDB_MAX_CHAINS))
+        # Sample a few chain letters to confirm they made it into the file.
+        for letter in "AZaz09":
+            # Each letter should appear at column 22 somewhere.
+            atom_lines = [l for l in out.split("\n")
+                          if l.startswith("ATOM") and l[21] == letter]
+            assert atom_lines, f"chain {letter} missing from output"
+
+    def test_too_many_chains_raises(self, writer):
+        """63rd chain (index 62) overflows the 1-char asym_id field."""
+        with pytest.raises(ValueError, match="62 chains"):
+            writer.write(many_chains_folding(n_chains=PDB_MAX_CHAINS + 1))
+
+    # ----- File round-trip -------------------------------------------
+
+    def test_write_to_file_contains_hetatm_ccd_codes(self, tmp_path):
+        res_map, atom_map = of3_mappings()
+        out_path = tmp_path / "multi.pdb"
+        writer = PDBWriter(res_type_mapping=res_map,
+                           atom_type_mapping=atom_map,
+                           output_path=str(out_path))
+        writer.write(multi_polymer_folding())
+        text = out_path.read_text()
+        # Both ATOM and HETATM records persist to disk with correct codes
+        assert "ATOM" in text and "HETATM" in text
+        assert "ALA" in text and "NAG" in text

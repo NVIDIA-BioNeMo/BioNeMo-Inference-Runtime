@@ -45,6 +45,59 @@ def _center_random_augmentation(
     return atom_coords
 
 
+def _fill_nonpolymer_frames(
+    tokens: list[Token],
+    structure: Structure,
+    coord_data: np.ndarray,
+    frame_data_arr: np.ndarray,
+    resolved_frame_data: list,
+) -> None:
+    """In-place: replace ligand-token frames with (nearest_1, self, nearest_2).
+
+    Mirrors OSS ``compute_frames_nonpolymer`` (featurizerv2 lines 97-176).
+    For each ``NONPOLYMER`` chain with >=3 atoms, builds a per-atom frame from
+    the chain's intra-chain pairwise distances, preferring resolved atoms.
+    """
+    import math as _math
+
+    asym_id_token = np.array([t.asym_id for t in tokens], dtype=np.int64)
+    coords_flat = coord_data[0]  # (n_atoms, 3) for ensemble 0
+
+    token_idx = 0
+    for chain in structure.chains:
+        if chain.mol_type != chain_type_ids["NONPOLYMER"]:
+            continue
+        chain_tokens = (asym_id_token == chain.asym_id)
+        n_tok = int(chain_tokens.sum())
+        if n_tok < 3:
+            continue
+        # For NONPOLYMER chains, num_atoms == num_tokens (per-atom tokenization).
+        chain_token_idxs = np.where(chain_tokens)[0]
+        atom_idxs = np.array([tokens[i].atom_idx for i in chain_token_idxs],
+                             dtype=np.int64)
+        chain_coords = coords_flat[atom_idxs]
+        resolved = np.array(
+            [structure.atoms[int(ai)].is_present for ai in atom_idxs],
+            dtype=np.float32,
+        )
+        diff = chain_coords[:, None, :] - chain_coords[None, :, :]
+        dist = np.sqrt((diff**2).sum(axis=-1))
+        resolved_pair = 1.0 - (resolved[None, :] * resolved[:, None])
+        resolved_pair[resolved_pair == 1.0] = _math.inf
+        order = np.argsort(dist + resolved_pair, axis=1)
+        # frame = (1st neighbor, self [0], 2nd neighbor) in absolute atom indices
+        frame_local = np.stack([order[:, 1], order[:, 0], order[:, 2]], axis=1)
+        frame_abs = atom_idxs[frame_local]  # (n_tok, 3)
+        frame_data_arr[chain_token_idxs] = frame_abs
+        for local_pos, ti in enumerate(chain_token_idxs):
+            triplet = frame_abs[local_pos]
+            resolved_frame_data[ti] = bool(
+                structure.atoms[int(triplet[0])].is_present
+                and structure.atoms[int(triplet[1])].is_present
+                and structure.atoms[int(triplet[2])].is_present)
+        token_idx += n_tok
+
+
 def _frame_resolved_mask_oss(
     token_atoms: list,
     mol_type: int,
@@ -369,6 +422,21 @@ def process_atom_features(
         if token.atom_num >= 3 and token.res_name in ref_atoms and ref_atoms[
                 token.res_name][:3] == ["N", "CA", "C"]:
             frame_data.append([start, start + 1, start + 2])
+        elif (token.atom_num >= 3 and token.res_name in ref_atoms
+              and chain.mol_type
+              in (chain_type_ids["DNA"], chain_type_ids["RNA"])):
+            # Nucleic acid frame: C1' (idx_0), C3' (idx_2), C4' (idx_1)
+            # matches OSS featurizerv2 compute_frames_polymer.
+            try:
+                ref = ref_atoms[token.res_name]
+                idx_c1 = ref.index("C1'")
+                idx_c3 = ref.index("C3'")
+                idx_c4 = ref.index("C4'")
+                frame_data.append(
+                    [start + idx_c1, start + idx_c3, start + idx_c4])
+            except ValueError:
+                frame_data.append(
+                    [token.center_idx, token.center_idx, token.center_idx])
         else:
             frame_data.append(
                 [token.center_idx, token.center_idx, token.center_idx])
@@ -382,6 +450,19 @@ def process_atom_features(
     # OSS compute_frames path: frame_resolved_mask = resolved_frame_data & mask_collinear (featurizerv2 line 1470, 176)
     coord_data = np.concatenate(coord_data_list, axis=1)
     frame_data_arr = np.array(frame_data, dtype=np.int64)
+
+    # OSS compute_frames_nonpolymer: for each NONPOLYMER chain, replace the
+    # per-token frame with (closest1, self, closest2) based on intra-chain
+    # pairwise distances. Resolved-mask atoms are preferred (unresolved pairs
+    # get distance += inf).
+    _fill_nonpolymer_frames(
+        tokens=tokens,
+        structure=structure,
+        coord_data=coord_data,
+        frame_data_arr=frame_data_arr,
+        resolved_frame_data=resolved_frame_data,
+    )
+
     frames_expanded = coord_data[0][frame_data_arr]  # (n_tokens, 3, 3)
     v1 = frames_expanded[:, 1] - frames_expanded[:, 0]
     v2 = frames_expanded[:, 1] - frames_expanded[:, 2]
@@ -490,7 +571,7 @@ def process_atom_features(
         plddt = pad_dim(plddt, 0, pad_len_atom)
         atom_idx += pad_len_atom
 
-    frames_idx = torch.tensor(frame_data, dtype=torch.long).unsqueeze(0)
+    frames_idx = torch.from_numpy(frame_data_arr).long().unsqueeze(0)
     frame_resolved_mask = torch.from_numpy(
         resolved_frame_data_np).float().unsqueeze(0)
     if max_tokens is not None and n_tokens < max_tokens:
@@ -528,28 +609,63 @@ def _msa_from_parsed(
     msa_parsed: Optional[Any],
     num_residues: int,
     prot_letter_to_token: dict,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build (msa, deletion, paired) from MSAParsed.
+    default_query: Optional[list[int]] = None,
+    visited: Optional[set[str]] = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[str]]:
+    """Build (msa, deletion, paired, keys) from MSAParsed.
 
-    Paired is a binary flag: row 0 (query) = 1, rest = 0. Without taxonomy
-    data there is no cross-chain pairing, matching OSS construct_paired_msa
-    for monomer / no-taxonomy inputs.
+    The output always starts with a canonical query row built from
+    ``default_query`` (the chain's residue token ids) and then appends
+    non-query rows after dedup. This mirrors how the OSS combined CSV
+    pipeline collapses duplicate queries across paired and unpaired pools
+    while still surfacing the canonical query as row 0.
+
+    ``visited``: optional caller-owned dedup set. Non-query keys are added
+    here so subsequent calls can avoid producing rows the caller has
+    already accepted (used for cross-pool dedup between paired+unpaired
+    MSAs). The canonical query key is always inserted up-front so neither
+    pool re-emits it as a non-query row.
     """
+
+    if default_query is not None:
+        if len(default_query) != num_residues:
+            raise ValueError(
+                f"default_query length {len(default_query)} does not match "
+                f"num_residues {num_residues}")
+        query_row = torch.tensor([default_query], dtype=torch.long)
+    else:
+        query_row = torch.zeros(1, num_residues, dtype=torch.long)
+    query_del = torch.zeros(1, num_residues, dtype=torch.float32)
+    query_paired = torch.ones(1, num_residues, dtype=torch.float32)
+
+    # Canonical key for the query so that file-query rows are dropped as dups.
+    query_key = "".join(_unkable_letter(t) for t in (default_query or []))
+    local_visited = visited if visited is not None else set()
+    if query_key:
+        local_visited.add(query_key)
+
+    def _empty():
+        return query_row, query_del, query_paired, [query_key]
+
     seqs = msa_parsed.get("sequences") if msa_parsed is not None else None
     if seqs is None or (hasattr(seqs, '__len__') and len(seqs) == 0):
-        msa = torch.zeros(1, num_residues, dtype=torch.long)
-        deletion = torch.zeros(1, num_residues, dtype=torch.float32)
-        paired = torch.ones(1, num_residues, dtype=torch.float32)
-        return msa, deletion, paired
+        return _empty()
     raw_val = msa_parsed.get("raw")
     raw_list = raw_val if raw_val is not None else msa_parsed["sequences"]
+
     rows = []
     del_rows = []
+    kept_keys: list[str] = [query_key]
     for raw in raw_list:
+        s = str(raw)
+        key = s.replace("-", "").upper()
+        if key in local_visited:
+            continue
+        local_visited.add(key)
         res_types = []
         del_counts = []
         del_count = 0
-        for c in raw:
+        for c in s:
             if c.islower():
                 del_count += 1
             else:
@@ -560,17 +676,49 @@ def _msa_from_parsed(
         if len(res_types) == num_residues:
             rows.append(res_types)
             del_rows.append(del_counts)
+            kept_keys.append(key)
     if not rows:
-        msa = torch.zeros(1, num_residues, dtype=torch.long)
-        deletion = torch.zeros(1, num_residues, dtype=torch.float32)
-        paired = torch.ones(1, num_residues, dtype=torch.float32)
-        return msa, deletion, paired
-    msa = torch.tensor(rows, dtype=torch.long)
-    deletion = torch.tensor(del_rows, dtype=torch.float32)
+        return _empty()
+    body = torch.tensor(rows, dtype=torch.long)
+    body_del = torch.tensor(del_rows, dtype=torch.float32)
+    msa = torch.cat([query_row, body], dim=0)
+    deletion = torch.cat([query_del, body_del], dim=0)
     n_rows = msa.shape[0]
     paired = torch.zeros(n_rows, num_residues, dtype=torch.float32)
-    paired[0, :] = 1.0  # query row is always paired
-    return msa, deletion, paired
+    paired[0, :] = 1.0  # canonical query row is always paired
+    return msa, deletion, paired, kept_keys
+
+
+_TOKEN_TO_ONE = None
+
+
+def _unkable_letter(token_id: int) -> str:
+    """Map a TRT-BNM Boltz2 token id back to a 1-letter MSA char.
+
+    Used to build the dedup key for the canonical query row so it
+    collapses with file-query rows that were tokenised the same way.
+    """
+    global _TOKEN_TO_ONE
+    if _TOKEN_TO_ONE is None:
+        # Lazy build: invert prot/rna/dna letter→token maps; use the first
+        # one-letter symbol that maps to each token id.
+        from .const import (dna_letter_to_token, prot_letter_to_token,
+                            rna_letter_to_token, token_ids)
+        candidates = {}
+        for letter, three in prot_letter_to_token.items():
+            tid = token_ids.get(three)
+            if tid is not None:
+                candidates.setdefault(tid, letter)
+        for letter, t in rna_letter_to_token.items():
+            tid = token_ids.get(t)
+            if tid is not None:
+                candidates.setdefault(tid, letter)
+        for letter, t in dna_letter_to_token.items():
+            tid = token_ids.get(t)
+            if tid is not None:
+                candidates.setdefault(tid, letter)
+        _TOKEN_TO_ONE = candidates
+    return _TOKEN_TO_ONE.get(int(token_id), "X").upper()
 
 
 def process_msa_features(
@@ -586,29 +734,32 @@ def process_msa_features(
     from .const import prot_letter_to_token
 
     num_residues = len(tokens)
+    # Per-chain default query rows (used when a chain has no MSA): take the
+    # chain's token res_types in order. Matches OSS ``dummy_msa``.
+    num_chains = (max((t.asym_id for t in tokens), default=-1) + 1)
+    chain_tokens: list[list[int]] = [[] for _ in range(num_chains)]
+    for t in tokens:
+        chain_tokens[t.asym_id].append(t.res_type)
+
     if msa_parsed_per_chain is None or (hasattr(msa_parsed_per_chain,
                                                 '__len__')
                                         and len(msa_parsed_per_chain) == 0):
-        msa, deletion, paired = _msa_from_parsed(None, num_residues,
-                                                 prot_letter_to_token)
+        default_q = ([t.res_type for t in tokens] if num_chains > 0 else None)
+        msa, deletion, paired, _ = _msa_from_parsed(None,
+                                                    num_residues,
+                                                    prot_letter_to_token,
+                                                    default_query=default_q)
     else:
-        num_chains = max(t.asym_id for t in tokens) + 1
-        residues_per_chain = [
-            sum(1 for t in tokens if t.asym_id == i) for i in range(num_chains)
-        ]
+        residues_per_chain = [len(c) for c in chain_tokens]
 
-        # Parse unpaired MSA per chain.
-        parts_msa, parts_del, parts_paired = [], [], []
-        for i in range(num_chains):
-            Lc = residues_per_chain[i]
-            mp = msa_parsed_per_chain[i] if i < len(
-                msa_parsed_per_chain) else None
-            m, d, p = _msa_from_parsed(mp, Lc, prot_letter_to_token)
-            parts_msa.append(m)
-            parts_del.append(d)
-            parts_paired.append(p)
+        # Per-chain dedup set covers BOTH the paired and unpaired pools so
+        # sequences in the paired pool are not double-counted in the
+        # unpaired pool (matches OSS main.py CSV-combined behavior).
+        chain_visited: list[set[str]] = [set() for _ in range(num_chains)]
 
-        # Parse paired (taxonomy) MSA per chain.
+        # Parse paired (taxonomy) MSA FIRST so rows that appear in BOTH pools
+        # land in the paired pool (with paired=1) rather than being absorbed
+        # into the unpaired pool.
         paired_parts_msa, paired_parts_del = [], []
         n_taxonomy_pairs = 0
         if paired_msa_per_chain is not None and len(paired_msa_per_chain) > 0:
@@ -616,40 +767,77 @@ def process_msa_features(
                 Lc = residues_per_chain[i]
                 pp = (paired_msa_per_chain[i]
                       if i < len(paired_msa_per_chain) else None)
-                pm, pd, _ = _msa_from_parsed(pp, Lc, prot_letter_to_token)
+                pm, pd, _, _ = _msa_from_parsed(pp,
+                                                Lc,
+                                                prot_letter_to_token,
+                                                default_query=chain_tokens[i],
+                                                visited=chain_visited[i])
                 paired_parts_msa.append(pm)
                 paired_parts_del.append(pd)
             n_taxonomy_pairs = max(
                 (pm.shape[0] - 1 for pm in paired_parts_msa), default=0)
             n_taxonomy_pairs = min(n_taxonomy_pairs, max_paired)
 
-        # Heterodimer: multiple distinct MSA sources → taxonomy self-pair row.
-        n_distinct = len(
-            set(id(mp) for mp in msa_parsed_per_chain if mp is not None))
-        is_heterodimer = num_chains > 1 and n_distinct > 1
-
-        # Build combined per-chain MSA: [paired_non_query, unpaired_non_query].
-        # OSS keeps paired seqs in the unpaired pool (visited set is a no-op),
-        # so all non-query seqs appear in both paired rows AND unpaired rows.
-        combined_msa, combined_del = [], []
+        # Parse unpaired MSA per chain; the shared dedup set already
+        # contains the paired keys so duplicates are filtered out.
+        parts_msa, parts_del, parts_paired = [], [], []
         for i in range(num_chains):
-            parts = [parts_msa[i][0:1]]  # query row
-            parts_d = [parts_del[i][0:1]]
-            if paired_parts_msa:
-                pm = paired_parts_msa[i]
-                pd = paired_parts_del[i]
-                if pm.shape[0] > 1:
-                    parts.append(pm[1:])
-                    parts_d.append(pd[1:])
+            Lc = residues_per_chain[i]
+            mp = msa_parsed_per_chain[i] if i < len(
+                msa_parsed_per_chain) else None
+            m, d, p, _ = _msa_from_parsed(mp,
+                                          Lc,
+                                          prot_letter_to_token,
+                                          default_query=chain_tokens[i],
+                                          visited=chain_visited[i])
+            parts_msa.append(m)
+            parts_del.append(d)
+            parts_paired.append(p)
+
+        # OSS ``parse_csv`` assigns taxonomy=0 to the query row (``key=0``
+        # in the production CSV); ``construct_paired_msa`` then groups those
+        # tax=0 entries cross-chain and emits one "query self-pair" row after
+        # the initial query. That tax=0 marking only exists when the OSS
+        # pre-processing reads paired CSV input — a3m parsing leaves
+        # taxonomy=-1, ``taxonomy_map`` ends up empty (line 307 filters
+        # tax==-1; line 315 drops single-occurrence groups), and OSS emits
+        # NO self-pair row.
+        #
+        # Gate on the presence of actual taxonomy pairs (n_taxonomy_pairs>0)
+        # rather than chain count: if no paired MSA contributed any rows,
+        # we're in the a3m-only no-taxonomy case and must NOT emit the
+        # self-pair row. Otherwise multi-chain a3m inputs over-count by one.
+        has_query_self_pair = n_taxonomy_pairs > 0
+
+        # OSS quirk: ``construct_paired_msa`` builds ``available[c]`` using a
+        # malformed ``visited`` set (the comprehension nests tax_id and
+        # (chain, seq_idx) so the membership test never matches). The result
+        # is that paired sequences also flow into the "unpaired body". Match
+        # that: per-chain body = paired_non_query ++ unpaired_non_query in
+        # the order they were parsed.
+        body_msa = []
+        body_del = []
+        for i in range(num_chains):
+            parts = []
+            parts_d = []
+            if paired_parts_msa and paired_parts_msa[i].shape[0] > 1:
+                parts.append(paired_parts_msa[i][1:])
+                parts_d.append(paired_parts_del[i][1:])
             if parts_msa[i].shape[0] > 1:
                 parts.append(parts_msa[i][1:])
                 parts_d.append(parts_del[i][1:])
-            combined_msa.append(torch.cat(parts, dim=0))
-            combined_del.append(torch.cat(parts_d, dim=0))
+            if parts:
+                body_msa.append(torch.cat(parts, dim=0))
+                body_del.append(torch.cat(parts_d, dim=0))
+            else:
+                body_msa.append(
+                    torch.zeros((0, residues_per_chain[i]), dtype=torch.long))
+                body_del.append(
+                    torch.zeros((0, residues_per_chain[i]),
+                                dtype=torch.float32))
+        max_non_query = max((b.shape[0] for b in body_msa), default=0)
 
-        max_non_query = max(cm.shape[0] - 1 for cm in combined_msa)
-        # Row layout: query + self-pair? + taxonomy pairs + unpaired
-        n_header = 1 + (1 if is_heterodimer else 0) + n_taxonomy_pairs
+        n_header = 1 + (1 if has_query_self_pair else 0) + n_taxonomy_pairs
         max_unpaired = max(max_seqs - n_header, 0)
         max_non_query = min(max_non_query, max_unpaired)
         total_rows = n_header + max_non_query
@@ -658,48 +846,94 @@ def process_msa_features(
         deletion = torch.zeros(total_rows, num_residues, dtype=torch.float32)
         paired = torch.zeros(total_rows, num_residues, dtype=torch.float32)
 
+        # Per-chain MSA presence flag (used in the self-pair row to mask out
+        # ligand / no-MSA chains the way OSS does).
+        chain_has_msa = [
+            (i < len(msa_parsed_per_chain)
+             and msa_parsed_per_chain[i] is not None
+             and msa_parsed_per_chain[i].get("raw")) or
+            (paired_msa_per_chain is not None and i < len(paired_msa_per_chain)
+             and paired_msa_per_chain[i] is not None
+             and paired_msa_per_chain[i].get("raw")) for i in range(num_chains)
+        ]
+
         col = 0
         for i in range(num_chains):
             Lc = residues_per_chain[i]
-            cm = combined_msa[i]
-            cd = combined_del[i]
-            # Row 0: query.
-            msa[0, col:col + Lc] = cm[0]
-            deletion[0, col:col + Lc] = cd[0]
+            # Row 0: canonical query (always — every chain contributes its
+            # own residue tokens here, even ligand-only chains).
+            msa[0, col:col + Lc] = parts_msa[i][0]
+            deletion[0, col:col + Lc] = parts_del[i][0]
             paired[0, col:col + Lc] = 1.0
 
             r_off = 1
-            # Taxonomy self-pair (heterodimer): duplicate of query, paired=1.
-            if is_heterodimer:
-                msa[r_off, col:col + Lc] = cm[0]
-                deletion[r_off, col:col + Lc] = cd[0]
-                paired[r_off, col:col + Lc] = 1.0
+
+            # Query self-pair (OSS taxonomy=0 cross-chain row).
+            # Only chains in the taxonomy=0 group (i.e. those that have an
+            # MSA contributing a tax=0 query) get the canonical query here;
+            # ligand / no-MSA chains receive gaps and paired=0, matching
+            # OSS ``construct_paired_msa`` behavior for missing chains in a
+            # taxonomy group.
+            if has_query_self_pair:
+                if chain_has_msa[i]:
+                    msa[r_off, col:col + Lc] = parts_msa[i][0]
+                    deletion[r_off, col:col + Lc] = parts_del[i][0]
+                    paired[r_off, col:col + Lc] = 1.0
+                # else: leave gap (msa is gap-initialised) and paired=0.
                 r_off += 1
 
-            # Taxonomy-paired rows from paired MSA non-query seqs, paired=1.
+            # Taxonomy-paired rows from paired MSA non-query seqs.
+            # OSS marks ``paired=1`` only for chains that are *in* the
+            # taxonomy group (i.e. chains whose paired MSA actually has a
+            # sequence at that index). Chains without an MSA entry receive
+            # gaps and ``paired=0``.
             if paired_parts_msa:
                 pm = paired_parts_msa[i]
                 pd = paired_parts_del[i]
-                n_avail = pm.shape[0] - 1  # non-query rows in this chain
+                n_avail = pm.shape[0] - 1
                 for j in range(n_taxonomy_pairs):
                     if j < n_avail:
                         msa[r_off + j, col:col + Lc] = pm[1 + j]
                         deletion[r_off + j, col:col + Lc] = pd[1 + j]
-                    paired[r_off + j, col:col + Lc] = 1.0
+                        paired[r_off + j, col:col + Lc] = 1.0
+                    # else: chain doesn't contribute to this taxonomy → leave
+                    # msa as gap and paired as 0.
             r_off += n_taxonomy_pairs
 
-            # Unpaired rows: non-query sequences, capped to fit max_seqs.
-            n_unpaired = min(cm.shape[0] - 1, max_non_query)
-            if n_unpaired > 0:
-                msa[r_off:r_off + n_unpaired,
-                    col:col + Lc] = cm[1:1 + n_unpaired]
-                deletion[r_off:r_off + n_unpaired,
-                         col:col + Lc] = cd[1:1 + n_unpaired]
+            # Unpaired (body) rows: per-chain available pool after cross-pool
+            # dedup. Each chain pops sequentially; chains with fewer rows are
+            # padded with gaps for the remaining columns.
+            n_body = min(body_msa[i].shape[0], max_non_query)
+            if n_body > 0:
+                msa[r_off:r_off + n_body, col:col + Lc] = body_msa[i][:n_body]
+                deletion[r_off:r_off + n_body,
+                         col:col + Lc] = body_del[i][:n_body]
             col += Lc
     # Keep layout (N_MSA, L) to match Boltz2 featurizerv2; do not transpose.
     msa_one_hot = one_hot(msa, num_classes=num_tokens)
     msa_mask = torch.ones_like(msa, dtype=torch.float32)
     profile = msa_one_hot.float().mean(dim=0)
+
+    # Real per-row deletion counts, matching the bundled OSS reference
+    # ``src/boltz/data/feature/featurizerv2.py``
+    # (its ``construct_paired_msa`` reads the full ``all_deletions`` array per
+    # chain), which is the path the CASP15 benchmark
+    # (``Boltz2InferenceDataModule`` -> ``Boltz2Featurizer``) scores against.
+    #
+    # NOTE — historical OSS bug: an older ``construct_paired_msa`` reassigned
+    # ``chain_deletions`` to a slice of itself inside the inner loop, e.g.::
+    #
+    #     chain_deletions = chain_msa.deletions
+    #     for sequence in chain_msa.sequences:
+    #         ...
+    #         chain_deletions = chain_deletions[del_start:del_end]
+    #
+    # After the first sequence, ``chain_deletions`` was a slice of itself, so
+    # every subsequent ``[del_start:del_end]`` indexed into the already-shortened
+    # array and came out empty — silently dropping all non-query deletion counts
+    # (``deletion_value`` became all zero). That bug is fixed in the bundled OSS,
+    # so we compute and use the real deletions here. Zeroing them diverges from
+    # the bundled OSS and measurably degrades lDDT on MSA-bearing protein samples.
     has_deletion = deletion > 0
     deletion_val = np.pi / 2 * np.arctan(deletion.numpy() / 3)
     deletion_val = torch.from_numpy(deletion_val.astype(np.float32))
@@ -760,23 +994,94 @@ def load_dummy_templates_features(
     }
 
 
-def process_residue_constraint_features() -> dict[str, torch.Tensor]:
-    """No constraints: empty tensors."""
+def _stack_idx(items: list[dict], expected_arity: int) -> torch.Tensor:
+    """Stack per-constraint ``atom_idxs`` tuples into a ``(arity, N)`` tensor."""
+    if not items:
+        return torch.empty((expected_arity, 0), dtype=torch.long)
+    rows = []
+    for c in items:
+        idxs = list(c["atom_idxs"])
+        if len(idxs) != expected_arity:
+            raise ValueError(
+                f"constraint atom_idxs arity mismatch: expected {expected_arity}, "
+                f"got {len(idxs)} for {c}")
+        rows.append(idxs)
+    arr = np.asarray(rows, dtype=np.int64).T  # (arity, N)
+    return torch.from_numpy(arr).long()
+
+
+def process_residue_constraint_features(
+    constraints: Optional[dict] = None, ) -> dict[str, torch.Tensor]:
+    """Build constraint feature tensors from per-residue RDKit constraints.
+
+    ``constraints`` is a dict with optional keys ``rdkit_bounds``,
+    ``chiral_atoms``, ``stereo_bonds``, ``planar_bonds``, ``planar_ring_5``,
+    and ``planar_ring_6``. Each value is a list of per-constraint dicts whose
+    ``atom_idxs`` are already shifted to global atom indices. Missing or
+    empty keys fall through to zero-sized tensors that the model consumes
+    safely.
+    """
+    c = constraints or {}
+    rdkit_bounds = c.get("rdkit_bounds") or []
+    chiral_atoms = c.get("chiral_atoms") or []
+    stereo_bonds = c.get("stereo_bonds") or []
+    planar_bonds = c.get("planar_bonds") or []
+    planar_ring_5 = c.get("planar_ring_5") or []
+    planar_ring_6 = c.get("planar_ring_6") or []
+
+    rdkit_bounds_index = _stack_idx(rdkit_bounds, expected_arity=2)
+    if rdkit_bounds:
+        rdkit_bounds_bond_mask = torch.tensor(
+            [bool(c["is_bond"]) for c in rdkit_bounds], dtype=torch.bool)
+        rdkit_bounds_angle_mask = torch.tensor(
+            [bool(c["is_angle"]) for c in rdkit_bounds], dtype=torch.bool)
+        rdkit_upper_bounds = torch.tensor(
+            [float(c["upper_bound"]) for c in rdkit_bounds],
+            dtype=torch.float32)
+        rdkit_lower_bounds = torch.tensor(
+            [float(c["lower_bound"]) for c in rdkit_bounds],
+            dtype=torch.float32)
+    else:
+        rdkit_bounds_bond_mask = torch.empty(0, dtype=torch.bool)
+        rdkit_bounds_angle_mask = torch.empty(0, dtype=torch.bool)
+        rdkit_upper_bounds = torch.empty(0, dtype=torch.float32)
+        rdkit_lower_bounds = torch.empty(0, dtype=torch.float32)
+
+    chiral_atom_index = _stack_idx(chiral_atoms, expected_arity=4)
+    chiral_reference_mask = torch.tensor(
+        [bool(c["is_reference"]) for c in chiral_atoms],
+        dtype=torch.bool) if chiral_atoms else torch.empty(0, dtype=torch.bool)
+    chiral_atom_orientations = torch.tensor(
+        [bool(c["is_r"]) for c in chiral_atoms],
+        dtype=torch.bool) if chiral_atoms else torch.empty(0, dtype=torch.bool)
+
+    stereo_bond_index = _stack_idx(stereo_bonds, expected_arity=4)
+    stereo_reference_mask = torch.tensor(
+        [bool(c["is_reference"]) for c in stereo_bonds],
+        dtype=torch.bool) if stereo_bonds else torch.empty(0, dtype=torch.bool)
+    stereo_bond_orientations = torch.tensor(
+        [bool(c["is_e"]) for c in stereo_bonds],
+        dtype=torch.bool) if stereo_bonds else torch.empty(0, dtype=torch.bool)
+
+    planar_bond_index = _stack_idx(planar_bonds, expected_arity=6)
+    planar_ring_5_index = _stack_idx(planar_ring_5, expected_arity=5)
+    planar_ring_6_index = _stack_idx(planar_ring_6, expected_arity=6)
+
     return {
-        "rdkit_bounds_index": torch.empty((2, 0), dtype=torch.long),
-        "rdkit_bounds_bond_mask": torch.empty(0, dtype=torch.bool),
-        "rdkit_bounds_angle_mask": torch.empty(0, dtype=torch.bool),
-        "rdkit_upper_bounds": torch.empty(0, dtype=torch.float32),
-        "rdkit_lower_bounds": torch.empty(0, dtype=torch.float32),
-        "chiral_atom_index": torch.empty((4, 0), dtype=torch.long),
-        "chiral_reference_mask": torch.empty(0, dtype=torch.bool),
-        "chiral_atom_orientations": torch.empty(0, dtype=torch.bool),
-        "stereo_bond_index": torch.empty((4, 0), dtype=torch.long),
-        "stereo_reference_mask": torch.empty(0, dtype=torch.bool),
-        "stereo_bond_orientations": torch.empty(0, dtype=torch.bool),
-        "planar_bond_index": torch.empty((6, 0), dtype=torch.long),
-        "planar_ring_5_index": torch.empty((5, 0), dtype=torch.long),
-        "planar_ring_6_index": torch.empty((6, 0), dtype=torch.long),
+        "rdkit_bounds_index": rdkit_bounds_index,
+        "rdkit_bounds_bond_mask": rdkit_bounds_bond_mask,
+        "rdkit_bounds_angle_mask": rdkit_bounds_angle_mask,
+        "rdkit_upper_bounds": rdkit_upper_bounds,
+        "rdkit_lower_bounds": rdkit_lower_bounds,
+        "chiral_atom_index": chiral_atom_index,
+        "chiral_reference_mask": chiral_reference_mask,
+        "chiral_atom_orientations": chiral_atom_orientations,
+        "stereo_bond_index": stereo_bond_index,
+        "stereo_reference_mask": stereo_reference_mask,
+        "stereo_bond_orientations": stereo_bond_orientations,
+        "planar_bond_index": planar_bond_index,
+        "planar_ring_5_index": planar_ring_5_index,
+        "planar_ring_6_index": planar_ring_6_index,
     }
 
 

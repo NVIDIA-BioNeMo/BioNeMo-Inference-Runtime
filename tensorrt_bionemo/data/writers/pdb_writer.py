@@ -203,6 +203,19 @@ class PDBWriter(BaseWriter):
 
         n = residue_types.shape[0]
 
+        # Both fields are consumed below as residue-aligned arrays. Validate
+        # length up-front so an off-by-N producer fails loudly here instead
+        # of silently misclassifying residues via wrong indices. Mirrors the
+        # equivalent check in CIFWriter so the two writers stay aligned.
+        if residue_names is not None and len(residue_names) != n:
+            raise ValueError(
+                f"PDBWriter: residue_names length ({len(residue_names)}) "
+                f"must equal n_res ({n})")
+        if mol_types is not None and len(mol_types) != n:
+            raise ValueError(
+                f"PDBWriter: mol_types length ({len(mol_types)}) "
+                f"must equal n_res ({n})")
+
         # ── normalise chain_indices to a numpy array ──────────────────
         if chain_indices is None:
             chain_indices = np.zeros(n, dtype=np.int64)
@@ -214,6 +227,16 @@ class PDBWriter(BaseWriter):
                 f"chain index {int(unique_chains.max())} exceeds the limit. "
                 "Use CIFWriter for systems with more chains."
             )
+
+        # ── Fail fast if nothing renders ──────────────────────────────
+        # If every atom is masked out (e.g. a single-chain K⁺ ion whose
+        # atom name is outside the AtomTypes universe) we'd emit an
+        # empty MODEL/ENDMDL block. Surface that as a clear error
+        # instead — mirrors CIFWriter's all-empty fail-fast.
+        if n > 0 and not bool(np.any(atom_mask >= 0.5)):
+            raise ValueError(
+                "PDBWriter: no renderable atoms (atom_mask is all zero). "
+                "All atom names fell outside the AtomTypes universe.")
 
         # ── ResType-name and atom-name tables (per-index lookups) ─────
         restypes: list[str] = [x.name for x in self.res_types]
@@ -246,8 +269,18 @@ class PDBWriter(BaseWriter):
         chain_kind: dict[int, str] = {}
         for c, seq in chain_to_seq.items():
             if mol_types is not None:
-                first_i = chain_to_token_idx[c][0]
-                mt = int(mol_types[first_i])
+                # All residues in a chain must agree on mol_type — anything
+                # else is a producer bug we want surfaced, not silently
+                # masked by picking the first residue's value. Mirrors the
+                # equivalent check in CIFWriter.
+                chain_mol_types = {
+                    int(mol_types[i]) for i in chain_to_token_idx[c]
+                }
+                if len(chain_mol_types) != 1:
+                    raise ValueError(
+                        f"PDBWriter: mixed mol_types in chain "
+                        f"{PDB_CHAIN_IDS[c]}: {sorted(chain_mol_types)}")
+                mt = next(iter(chain_mol_types))
                 chain_kind[c] = _MOL_TYPE_TO_KIND.get(mt, "protein")
             else:
                 chain_kind[c] = _classify_chain(tuple(seq))

@@ -155,14 +155,16 @@ class Boltz2TemplateFeatureGenerator(FeatureGeneratorBase):
 
 
 class Boltz2ResidueConstraintFeatureGenerator(FeatureGeneratorBase):
-    """Generates residue constraint feature tensors (empty when no constraints)."""
+    """Generates residue constraint feature tensors from per-residue RDKit data."""
 
     def __call__(
         self,
         batch: dict[str, torch.Tensor],
         context: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
-        return process_residue_constraint_features()
+        row = _row(context)
+        constraints = row.get("residue_constraints") or {}
+        return process_residue_constraint_features(constraints=constraints)
 
 
 class Boltz2ChainConstraintFeatureGenerator(FeatureGeneratorBase):

@@ -24,12 +24,11 @@ import numpy as np
 from modelcif import dumper, model, qa_metric  # noqa: F401
 
 from tensorrt_bionemo.data.schemas.basic import FoldingOutput
-from tensorrt_bionemo.data.writers.base_writer import (
-    BaseWriter,
-    _IHM_REMAP,
-    _MOL_TYPE_TO_KIND,
-    _classify_chain,
-)
+from tensorrt_bionemo.data.writers.base_writer import (_IHM_REMAP,
+                                                       _MOL_TYPE_TO_KIND,
+                                                       BaseWriter,
+                                                       _classify_chain)
+from tensorrt_bionemo.logger import logger
 
 
 def _chain_id_from_index(idx: int) -> str:
@@ -96,22 +95,38 @@ class CIFWriter(BaseWriter):
             The mmCIF document as a string.
         """
         residue_types: np.ndarray = folding_output["residue_types"]
-        atom_positions: np.ndarray = folding_output["atom_positions"]   # (n_res, n_atoms, 3)
-        atom_mask: np.ndarray = folding_output["atom_mask"]              # (n_res, n_atoms)
-        residue_indices: np.ndarray = folding_output["residue_indices"]  # 1-based, PDB-style
-        b_factors: np.ndarray = folding_output["b_factors"]              # (n_res, n_atoms)
-        plddt: Optional[np.ndarray] = folding_output.get("plddt")        # (n_res,) or None
+        atom_positions: np.ndarray = folding_output[
+            "atom_positions"]  # (n_res, n_atoms, 3)
+        atom_mask: np.ndarray = folding_output["atom_mask"]  # (n_res, n_atoms)
+        residue_indices: np.ndarray = folding_output[
+            "residue_indices"]  # 1-based, PDB-style
+        b_factors: np.ndarray = folding_output["b_factors"]  # (n_res, n_atoms)
+        plddt: Optional[np.ndarray] = folding_output.get(
+            "plddt")  # (n_res,) or None
 
         # Optional per-residue identity fields. When the producer fills them
         # we can emit real CCD codes ("TYR", "SAH", "DA"…) on HETATM rows and
         # classify chains by an explicit mol-type rather than the all-X
         # heuristic. Producers that don't carry CCD identity leave both None
         # and fall back to the legacy paths.
-        residue_names: Optional[list[str]] = folding_output.get("residue_names")
+        residue_names: Optional[list[str]] = folding_output.get(
+            "residue_names")
         mol_types: Optional[np.ndarray] = folding_output.get("mol_types")
 
         chain_indices = folding_output["chain_indices"]
         n = residue_types.shape[0]
+
+        # Both fields are consumed below as residue-aligned arrays. Validate
+        # length up-front so an off-by-N producer fails loudly here instead of
+        # silently misclassifying residues via wrong indices.
+        if residue_names is not None and len(residue_names) != n:
+            raise ValueError(
+                f"CIFWriter: residue_names length ({len(residue_names)}) "
+                f"must equal n_res ({n})")
+        if mol_types is not None and len(mol_types) != n:
+            raise ValueError(
+                f"CIFWriter: mol_types length ({len(mol_types)}) "
+                f"must equal n_res ({n})")
 
         # ── normalise chain_indices to a numpy array ──────────────────────
         if chain_indices is None:
@@ -119,15 +134,13 @@ class CIFWriter(BaseWriter):
         elif not isinstance(chain_indices, np.ndarray):
             raise TypeError(
                 "CIFWriter: folding_output['chain_indices'] must be a "
-                f"np.ndarray or None, got {type(chain_indices).__name__}"
-            )
+                f"np.ndarray or None, got {type(chain_indices).__name__}")
         else:
             ci_min = int(chain_indices.min()) if chain_indices.size else 0
             if ci_min < 0:
                 raise ValueError(
                     f"CIFWriter: chain_indices contains negative values "
-                    f"(min={ci_min})"
-                )
+                    f"(min={ci_min})")
 
         # ── ResType-name and atom-name tables (per-index lookups) ─────────
         restypes: list[str] = [x.name for x in self.res_types]
@@ -166,6 +179,41 @@ class CIFWriter(BaseWriter):
                 else:
                     chain_to_cif[c].append(_IHM_REMAP.get(short, short))
 
+        # ── Drop chains with no renderable atoms ──────────────────────────
+        #
+        # A residue/token only contributes atoms whose name maps into the
+        # ``AtomTypes`` universe; producers (e.g. the Boltz2 postprocessor)
+        # silently drop atoms with unknown names. A monatomic-ion ligand whose
+        # sole atom name is outside the universe — e.g. a K⁺ chain (CCD "K",
+        # atom "K") — therefore ends up with an all-zero ``atom_mask`` and
+        # zero modeled atoms. ``modelcif`` raises if such an empty AsymUnit is
+        # referenced by the Assembly ("asym IDs … don't have coordinates in
+        # any Model"), so we exclude empty chains from the Entities, the
+        # AsymUnits, and the Assembly entirely.
+        chain_has_atoms: dict[int, bool] = defaultdict(bool)
+        for i in range(n):
+            c = int(chain_indices[i])
+            if not chain_has_atoms[c] and bool(np.any(atom_mask[i] >= 0.5)):
+                chain_has_atoms[c] = True
+        empty_chains = [
+            c for c in sorted(chain_to_seq) if not chain_has_atoms[c]
+        ]
+        if empty_chains:
+            dropped = ", ".join(_chain_id_from_index(c) for c in empty_chains)
+            # If every chain is empty there is nothing to render; modelcif
+            # would later fail with an opaque "asym IDs don't have
+            # coordinates" error. Fail fast with a clearer message instead.
+            if len(empty_chains) == len(chain_to_seq):
+                raise ValueError(
+                    f"CIFWriter: no renderable atoms in any chain "
+                    f"(dropped asym id(s): {dropped}). All atom names fell "
+                    "outside the AtomTypes universe.")
+            logger.warning(
+                "CIFWriter: dropping %d chain(s) with no renderable atoms "
+                "(asym id(s): %s). This typically happens for monatomic-ion "
+                "ligands whose atom name is outside the AtomTypes universe "
+                "(e.g. K⁺/Na⁺/Zn²⁺).", len(empty_chains), dropped)
+
         # ── Classify each chain once: polymer kind or non-polymer ─────────
         #
         # Prefer the explicit per-residue ``mol_types`` from the producer
@@ -174,9 +222,19 @@ class CIFWriter(BaseWriter):
         chain_kind: dict[int, str] = {}
         for c, seq in chain_to_seq.items():
             if mol_types is not None:
-                first_i = next(i for i in range(n)
-                               if int(chain_indices[i]) == c)
-                mt = int(mol_types[first_i])
+                # All residues in a chain must agree on mol_type — anything
+                # else is a producer bug we want surfaced, not silently
+                # masked by picking the first residue's value.
+                chain_mol_types = {
+                    int(mol_types[i]) for i in range(n)
+                    if int(chain_indices[i]) == c
+                }
+                if len(chain_mol_types) != 1:
+                    raise ValueError(
+                        f"CIFWriter: mixed mol_types in chain "
+                        f"{_chain_id_from_index(c)}: "
+                        f"{sorted(chain_mol_types)}")
+                mt = next(iter(chain_mol_types))
                 chain_kind[c] = _MOL_TYPE_TO_KIND.get(mt, "protein")
             else:
                 chain_kind[c] = _classify_chain(tuple(seq))
@@ -189,10 +247,13 @@ class CIFWriter(BaseWriter):
         # Entity each. Without this dedup, IHM's ``modelcif.Entity`` rejects
         # the second "Non-polymer ligand subunit" with a Duplicate entity
         # ValueError.
-        polymer_entities: dict[tuple[str, tuple[str, ...]], modelcif.Entity] = {}
+        polymer_entities: dict[tuple[str, tuple[str, ...]],
+                               modelcif.Entity] = {}
         nonpoly_entities: dict[tuple[str, ...], modelcif.Entity] = {}
         entities_map: dict[int, modelcif.Entity] = {}
         for c, seq in chain_to_seq.items():
+            if not chain_has_atoms[c]:
+                continue
             kind = chain_kind[c]
             cif_seq = chain_to_cif[c]
             if kind == "nonpoly":
@@ -203,10 +264,11 @@ class CIFWriter(BaseWriter):
                 # ``UNK`` (the legacy heuristic path).
                 key = tuple(cif_seq)
                 if key not in nonpoly_entities:
-                    chem_comps = [ihm.NonPolymerChemComp(id=name) for name in cif_seq]
+                    chem_comps = [
+                        ihm.NonPolymerChemComp(id=name) for name in cif_seq
+                    ]
                     nonpoly_entities[key] = modelcif.Entity(
-                        chem_comps, description="Non-polymer ligand subunit"
-                    )
+                        chem_comps, description="Non-polymer ligand subunit")
                 entities_map[c] = nonpoly_entities[key]
                 continue
             # Polymer (protein/RNA/DNA) chain. ``ihm.{LPeptide,RNA,DNA}Alphabet``
@@ -231,6 +293,8 @@ class CIFWriter(BaseWriter):
         asym_unit_map: dict[int, modelcif.AsymUnit] = {}
         chain_is_het: dict[int, bool] = {}
         for c in sorted(chain_to_seq):
+            if not chain_has_atoms[c]:
+                continue
             chain_id = _chain_id_from_index(c)
             is_het = chain_kind[c] == "nonpoly"
             chain_is_het[c] = is_het
@@ -240,9 +304,8 @@ class CIFWriter(BaseWriter):
                 % chain_id,
                 id=chain_id,
             )
-        modeled_assembly = modelcif.Assembly(
-            asym_unit_map.values(), name="Modeled assembly"
-        )
+        modeled_assembly = modelcif.Assembly(asym_unit_map.values(),
+                                             name="Modeled assembly")
 
         # ── pLDDT QA metric classes ───────────────────────────────────────
         class _LocalPLDDT(modelcif.qa_metric.Local, modelcif.qa_metric.PLDDT):
@@ -250,7 +313,8 @@ class CIFWriter(BaseWriter):
             software = None
             description = "Predicted lddt"
 
-        class _GlobalPLDDT(modelcif.qa_metric.Global, modelcif.qa_metric.PLDDT):
+        class _GlobalPLDDT(modelcif.qa_metric.Global,
+                           modelcif.qa_metric.PLDDT):
             name = "pLDDT"
             software = None
             description = "Global pLDDT, mean of per-residue pLDDTs"
@@ -268,18 +332,21 @@ class CIFWriter(BaseWriter):
         _plddt = plddt
 
         class _MyModel(modelcif.model.AbInitioModel):
+
             def get_atoms(self):
                 for i in range(n):
                     c = int(_chain_indices[i])
+                    if c not in _asym_unit_map:
+                        continue
                     r = int(_residue_indices[i])
                     asym = _asym_unit_map[c]
                     seq_id = _local_seq_id[(c, r)]
                     het = _chain_is_het[c]
                     for atom_name, pos, mask, b_factor in zip(
-                        _atom_types,
-                        _atom_positions[i],
-                        _atom_mask[i],
-                        _b_factors[i],
+                            _atom_types,
+                            _atom_positions[i],
+                            _atom_mask[i],
+                            _b_factors[i],
                     ):
                         if mask < 0.5:
                             continue
@@ -313,6 +380,8 @@ class CIFWriter(BaseWriter):
                 values: list[float] = []
                 for i in range(n):
                     c = int(_chain_indices[i])
+                    if c not in _asym_unit_map:
+                        continue
                     r = int(_residue_indices[i])
                     key = (c, r)
                     if key in seen:
@@ -330,18 +399,16 @@ class CIFWriter(BaseWriter):
                     values.append(v)
                     self.qa_metrics.append(
                         _LocalPLDDT(
-                            _asym_unit_map[c].residue(_local_seq_id[key]), v
-                        )
-                    )
+                            _asym_unit_map[c].residue(_local_seq_id[key]), v))
                 if values:
-                    self.qa_metrics.append(_GlobalPLDDT(float(np.mean(values))))
+                    self.qa_metrics.append(_GlobalPLDDT(float(
+                        np.mean(values))))
 
         system = modelcif.System(title=system_title)
         m = _MyModel(assembly=modeled_assembly, name="Best scoring model")
         m.add_scores()
         system.model_groups.append(
-            modelcif.model.ModelGroup([m], name="All models")
-        )
+            modelcif.model.ModelGroup([m], name="All models"))
 
         fh = io.StringIO()
         modelcif.dumper.write(fh, [system])

@@ -35,10 +35,19 @@ def get_all_residue_types(model: str,
             ret.append(ResTypes.GAP)
         return ret
     elif "boltz" in model:
+        # Order must match boltz2's ``tokens`` table in
+        # pipeline/models/boltz2/const.py (33 entries):
+        #   idx 23-26: A, G, C, U  (biological purine-first order, NOT alphabetical)
+        #   idx 28-31: DA, DG, DC, DT
+        # The model emits residue_type indices against THIS table; if the
+        # writer's res_types list is alphabetical (RA, RC, RG, RU) instead,
+        # the CIF writer's entity_seq lookup swaps C↔G and breaks lDDT
+        # scoring on RNA/DNA chains. Do NOT use rna_nucleotide_types() /
+        # dna_nucleotide_types() here — their alphabetical order is wrong.
         return [ResTypes.PAD, ResTypes.GAP] + \
             ResTypes.basic_20_residue_types() + [ResTypes.X] + \
-            ResTypes.rna_nucleotide_types() + [ResTypes.RX] + \
-            ResTypes.dna_nucleotide_types() + [ResTypes.DX]
+            [ResTypes.RA, ResTypes.RG, ResTypes.RC, ResTypes.RU] + [ResTypes.RX] + \
+            [ResTypes.DA, ResTypes.DG, ResTypes.DC, ResTypes.DT] + [ResTypes.DX]
     elif "openfold3" in model:
         # Order must match RESTYPES_3 in pipeline/models/openfold3/const.py (32 types):
         #   idx 21-25: A, G, C, U, N   idx 26-30: DA, DG, DC, DT, DN

@@ -1,13 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Tokenize Structure into Tokens and TokenBonds (no OSS imports)."""
+"""Tokenize a :class:`Structure` into :class:`Token`/:class:`TokenBond` lists.
+
+Polymer chains (protein/RNA/DNA) yield one token per residue. Non-polymer
+(ligand) chains yield one token per atom — mirroring the OSS Boltz2
+``tokenize_structure``. Inter-residue connectivity is left to the model;
+intra-residue bonds (only present for ligand residues) become token-level
+bonds via the ``atom_to_token`` mapping.
+"""
 
 from __future__ import annotations
 
 import numpy as np
 
-from .const import (Structure, Token, TokenBond, chain_type_ids, token_ids,
-                    unk_token)
+from .const import Structure, Token, TokenBond, chain_type_ids, unk_token_ids
 
 
 def compute_frame(
@@ -36,18 +42,35 @@ def compute_frame(
     return rot_tuples, t_tup
 
 
+_IDENTITY_ROT: tuple[tuple[float, float, float], ...] = (
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, 0.0, 1.0),
+)
+_ZERO_T = (0.0, 0.0, 0.0)
+
+
+def _get_unk_token_id(mol_type: int) -> int:
+    """Return the UNK token id appropriate for a chain mol_type."""
+    if mol_type == chain_type_ids["DNA"]:
+        return unk_token_ids["DNA"]
+    if mol_type == chain_type_ids["RNA"]:
+        return unk_token_ids["RNA"]
+    return unk_token_ids["PROTEIN"]
+
+
 def tokenize_structure(
         struct: Structure) -> tuple[list[Token], list[TokenBond]]:
-    """
-    Tokenize a Structure into list of Token and list of TokenBond.
-    Supports protein chains only (standard residues = one token per residue).
+    """Tokenize a Structure into list of Token and list of TokenBond.
+
+    Polymer (PROTEIN/RNA/DNA) chains produce one token per residue. Non-polymer
+    chains produce one token per atom (matches OSS Boltz2).
     """
     tokens: list[Token] = []
     token_bonds: list[TokenBond] = []
     atom_to_token: dict[int, int] = {}
     token_idx = 0
     coords = struct.coords
-    # Offset for coords: we use direct indexing (single conformer)
     offset = 0
 
     chains = [c for c, m in zip(struct.chains, struct.mask) if m]
@@ -55,11 +78,52 @@ def tokenize_structure(
         res_start = chain.res_idx
         res_end = chain.res_idx + chain.res_num
         is_protein = chain.mol_type == chain_type_ids["PROTEIN"]
+        is_nonpolymer = chain.mol_type == chain_type_ids["NONPOLYMER"]
         affinity_mask = False
 
         for res in struct.residues[res_start:res_end]:
             atom_start = res.atom_idx
             atom_end = res.atom_idx + res.atom_num
+
+            if is_nonpolymer:
+                # Non-polymer (ligand): one token per atom.
+                unk_id = unk_token_ids["PROTEIN"]
+                for i in range(atom_start, atom_end):
+                    atom = struct.atoms[i]
+                    atom_pos = (
+                        float(coords[offset + i, 0]),
+                        float(coords[offset + i, 1]),
+                        float(coords[offset + i, 2]),
+                    )
+                    is_present = bool(res.is_present and atom.is_present)
+                    token = Token(
+                        token_idx=token_idx,
+                        atom_idx=i,
+                        atom_num=1,
+                        res_idx=res.res_idx,
+                        res_type=unk_id,
+                        res_name=res.name,
+                        sym_id=chain.sym_id,
+                        asym_id=chain.asym_id,
+                        entity_id=chain.entity_id,
+                        mol_type=chain.mol_type,
+                        center_idx=i,
+                        disto_idx=i,
+                        center_coords=atom_pos,
+                        disto_coords=atom_pos,
+                        resolved_mask=is_present,
+                        disto_mask=is_present,
+                        modified=False,
+                        frame_rot=_IDENTITY_ROT,
+                        frame_t=_ZERO_T,
+                        frame_mask=False,
+                        cyclic_period=chain.cyclic_period,
+                        affinity_mask=affinity_mask,
+                    )
+                    tokens.append(token)
+                    atom_to_token[i] = token_idx
+                    token_idx += 1
+                continue
 
             if res.is_standard:
                 center_coords = (
@@ -75,16 +139,12 @@ def tokenize_structure(
                 is_present = res.is_present
                 is_disto_present = res.is_present
 
-                frame_rot: tuple[tuple[float, float, float], ...] = (
-                    (1.0, 0.0, 0.0),
-                    (0.0, 1.0, 0.0),
-                    (0.0, 0.0, 1.0),
-                )
-                frame_t = (0.0, 0.0, 0.0)
+                frame_rot: tuple[tuple[float, float, float],
+                                 ...] = _IDENTITY_ROT
+                frame_t = _ZERO_T
                 frame_mask = False
 
                 if is_protein and res.atom_num >= 3:
-                    # N, CA, C are first three in ref_atoms
                     a0 = struct.atoms[res.atom_idx]
                     a1 = struct.atoms[res.atom_idx + 1]
                     a2 = struct.atoms[res.atom_idx + 2]
@@ -125,12 +185,17 @@ def tokenize_structure(
                     atom_to_token[i] = token_idx
                 token_idx += 1
             else:
-                # Non-standard (e.g. modified): use unk token, one token per residue
-                unk_id = token_ids[unk_token["PROTEIN"]]
+                # Modified polymer residue: per-residue token with mol_type-aware UNK.
+                unk_id = _get_unk_token_id(chain.mol_type)
                 center_coords = (
                     float(coords[offset + res.atom_center, 0]),
                     float(coords[offset + res.atom_center, 1]),
                     float(coords[offset + res.atom_center, 2]),
+                )
+                disto_coords = (
+                    float(coords[offset + res.atom_disto, 0]),
+                    float(coords[offset + res.atom_disto, 1]),
+                    float(coords[offset + res.atom_disto, 2]),
                 )
                 token = Token(
                     token_idx=token_idx,
@@ -146,13 +211,12 @@ def tokenize_structure(
                     center_idx=res.atom_center,
                     disto_idx=res.atom_disto,
                     center_coords=center_coords,
-                    disto_coords=center_coords,
+                    disto_coords=disto_coords,
                     resolved_mask=res.is_present,
                     disto_mask=res.is_present,
                     modified=True,
-                    frame_rot=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0,
-                                                                  1.0)),
-                    frame_t=(0.0, 0.0, 0.0),
+                    frame_rot=_IDENTITY_ROT,
+                    frame_t=_ZERO_T,
                     frame_mask=False,
                     cyclic_period=chain.cyclic_period,
                     affinity_mask=affinity_mask,

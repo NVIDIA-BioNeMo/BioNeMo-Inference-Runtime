@@ -1,6 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Boltz2 ContextGenerator: build structure from CCD, tokenize; features from generators."""
+"""Boltz2 ContextGenerator.
+
+Builds the per-row context for the downstream feature pipeline:
+
+* Constructs a :class:`Structure` from :class:`InputParsed` (protein, RNA, DNA,
+  CCD ligand, SMILES ligand).
+* Tokenizes the structure to produce :class:`Token` / :class:`TokenBond` lists.
+* Loads the per-residue RDKit molecules required for atom-level features. CCD
+  components are loaded from ``mol_dir``; SMILES ligands are generated on the
+  fly inside :mod:`structure` and injected directly into the molecules dict.
+* Parses one MSA entry per chain — non-protein chains get an empty/None entry
+  which the MSA featurizer interprets as single-sequence mode.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +53,8 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
     """Generate Boltz2 feature dict from InputParsed using CCD and mols/.
 
     CCD and molecules are loaded lazily on first call and cached for reuse.
+    SMILES-derived ligand molecules are generated per-call (they are
+    request-dependent) and merged into the returned molecules map.
     """
 
     def __init__(
@@ -76,18 +90,21 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
         return self._ccd
 
     def _get_molecules(self, names: set[str]) -> dict[str, bytes]:
-        """Return binary-serialized molecules, loading only uncached ones."""
+        """Return binary-serialized molecules, loading only uncached ones from mol_dir."""
         missing = names - self._molecules_cache.keys()
         if missing:
             loaded = _load_molecules(self._mol_dir, list(missing))
             self._molecules_cache.update(loaded)
             for k, v in loaded.items():
-                self._molecules_binary_cache[k] = v.ToBinary(
-                    Chem.PropertyPickleOptions.AllProps)
+                self._molecules_binary_cache[k] = self._serialize_mol(v)
         return {
             k: self._molecules_binary_cache[k]
             for k in names if k in self._molecules_binary_cache
         }
+
+    @staticmethod
+    def _serialize_mol(mol) -> bytes:
+        return mol.ToBinary(Chem.PropertyPickleOptions.AllProps)
 
     def __call__(self, parsed: InputParsed) -> dict[str, torch.Tensor]:
         if not parsed.get("polymers"):
@@ -98,25 +115,40 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
             raise ValueError("mol_dir must be set and exist")
 
         ccd = self._get_ccd()
-        structure = build_structure_from_input(parsed, ccd)
+        structure, extra_mols, constraints = build_structure_from_input(
+            parsed, ccd)
         tokens, token_bonds = tokenize_structure(structure)
 
+        # CCD-backed mol names (canonical tokens + per-residue ligand codes).
         mol_names = set(canonical_tokens)
+        extra_names = set(extra_mols.keys())
         for t in tokens:
-            mol_names.add(t.res_name)
+            if t.res_name not in extra_names:
+                mol_names.add(t.res_name)
         molecules_bin = self._get_molecules(mol_names)
         missing = [n for n in mol_names if n not in molecules_bin]
         if missing:
             raise ValueError(f"Missing molecules in mol_dir: {missing}")
 
+        # Merge SMILES-derived mols (serialised same way as disk-loaded ones).
+        for name, mol in extra_mols.items():
+            molecules_bin[name] = self._serialize_mol(mol)
+
         msa_per_chain = []
         paired_msa_per_chain = []
         for poly in parsed.get("polymers") or []:
             chain_ids = poly.get("chain_id") or ["_"]
-            n_chains_in_poly = len(chain_ids) if isinstance(chain_ids,
-                                                            list) else 1
-            msa_entry = self._load_msa_entry(poly.get("msas"))
-            paired_entry = self._load_msa_entry(poly.get("paired_msas"))
+            n_chains_in_poly = (len(chain_ids)
+                                if isinstance(chain_ids, list) else 1)
+            ptype = (poly.get("polymer_type") or "protein").lower()
+            # Only protein chains carry MSAs in Boltz2; for nucleic acids /
+            # ligands fall through to the gap-only "single-sequence" path.
+            if ptype == "protein":
+                msa_entry = self._load_msa_entry(poly.get("msas"))
+                paired_entry = self._load_msa_entry(poly.get("paired_msas"))
+            else:
+                msa_entry = None
+                paired_entry = None
             for _ in range(n_chains_in_poly):
                 msa_per_chain.append(msa_entry)
                 paired_msa_per_chain.append(paired_entry)
@@ -131,6 +163,7 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
             "molecules": molecules_bin,
             "msa_parsed_per_chain": msa_per_chain,
             "paired_msa_per_chain": paired_msa_per_chain,
+            "residue_constraints": constraints,
         }
 
     @staticmethod

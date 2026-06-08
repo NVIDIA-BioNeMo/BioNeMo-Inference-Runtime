@@ -261,18 +261,14 @@ def _compute_flatness_constraints(mol, idx_map):
     Uses RDKit's substructure matcher with the same SMARTS patterns as
     OSS ``compute_flatness_constraints``.
 
-    Property-cache initialization: the SMARTS patterns use ``[ar5^2]``
-    and ``[ar6^2]`` which require both aromaticity and hybridization
-    queries to resolve. Mols loaded from ``ccd.pkl`` carry per-atom
-    ``IsAromatic`` flags but their property cache, SSSR, and
-    hybridization fields are typically not initialized (RDKit's
-    aromaticity QueryAtom matcher silently returns 0 matches in that
-    state — even ``c1ccccc1`` fails on a phenyl ring). OSS sidesteps
-    this by loading mols from ``moldir/{ccd}.pkl`` which were pickled
-    after sanitization. TRT-BNM uses the larger ``ccd.pkl`` blob, so
-    we lazily warm the property cache here before substructure
-    matching. The four calls are idempotent and graph-determined, so
-    they're safe to run on a shared CCD mol reference.
+    Prep: OSS ``compute_flatness_constraints`` runs the SMARTS matcher on the
+    mol with its *shipped* aromaticity/hybridization state and does NOT
+    re-perceive (no ``SetAromaticity`` / ``SetHybridization``). We match that:
+    initialize ring info + valence cache only. Re-perceiving aromaticity here
+    surfaces aromatic rings the OSS reference does not (e.g. an extra
+    ``planar_ring_5`` on ccd.pkl ligands) and diverges from OSS. The
+    consequence is that ``[ar5^2]`` / ``[ar6^2]`` only match where the mol
+    already carries the perceived state — exactly OSS behavior.
 
     Returns three lists of dicts (planar bonds, aromatic 5-rings,
     aromatic 6-rings); each dict has ``atom_idxs`` mapped through
@@ -283,8 +279,6 @@ def _compute_flatness_constraints(mol, idx_map):
     try:
         Chem.GetSSSR(mol)
         mol.UpdatePropertyCache(strict=False)
-        Chem.SetAromaticity(mol)
-        Chem.SetHybridization(mol)
     except Exception:
         # Best effort — fall through to SMARTS matching with whatever
         # state the mol has. Worst case: 0 constraints, same as before.
@@ -341,19 +335,18 @@ def _parse_ccd_ligand_residue(
         "planar_ring_6": [],
     }
 
-    # Warm RDKit's property cache (aromaticity, hybridization, SSSR) on the
-    # shared CCD mol. ``ccd.pkl`` mols ship with per-atom IsAromatic flags
-    # but no full property cache, which silently breaks aromatic-query SMARTS
-    # matching (``[ar6^2]``, ``[ar5^2]``) AND causes bond types to be parsed
-    # incorrectly (aromatic bonds get classified as single/double per their
-    # Kekulé form instead of as ``AROMATIC``). The calls are idempotent and
-    # graph-determined, so they're safe on a shared mol reference.
+    # Initialize ring info + valence cache (needed by the distance-bounds
+    # matrix and SMARTS matching), but do NOT re-perceive aromaticity or
+    # hybridization. OSS boltz1 ``parse_ccd_residue`` computes these
+    # constraints on the ccd.pkl mol using its *shipped* aromaticity flags —
+    # it never calls ``SetAromaticity`` / ``SetHybridization``. Re-perceiving
+    # changes bond orders (shifting RDKit distance bounds ~0.1-0.2 A) and
+    # surfaces aromatic rings the OSS reference does not, so it must not be
+    # done here. Match OSS exactly: cache only, no re-perception.
     try:
         from rdkit import Chem as _Chem
         _Chem.GetSSSR(ref_mol)
         ref_mol.UpdatePropertyCache(strict=False)
-        _Chem.SetAromaticity(ref_mol)
-        _Chem.SetHybridization(ref_mol)
     except Exception:
         pass
 
@@ -454,8 +447,10 @@ def _build_smiles_mol(smiles: str, name: str):
     if mol is None:
         raise ValueError(f"Failed to parse SMILES for {name}: {smiles!r}")
     mol = Chem.AddHs(mol)
-    Chem.AssignStereochemistry(mol, force=True, cleanIt=True)
+    # OSS schema.py sets atom names from CanonicalRankAtoms, then assigns
+    # stereochemistry (this order matters; do not swap).
     canonical_order = Chem.CanonicalRankAtoms(mol)
+    Chem.AssignStereochemistry(mol, force=True, cleanIt=True)
     for atom, can_idx in zip(mol.GetAtoms(), canonical_order):
         atom_name = atom.GetSymbol().upper() + str(int(can_idx) + 1)
         if len(atom_name) > 4:
@@ -464,12 +459,27 @@ def _build_smiles_mol(smiles: str, name: str):
             )
         atom.SetProp("name", atom_name)
 
-    rc = AllChem.EmbedMolecule(mol, randomSeed=42)
-    if rc != 0:
-        rc = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
-    if rc != 0:
+    # Replicate OSS schema.compute_3d_conformer exactly: ETKDGv3 embed with a
+    # random-coords fallback, then UFF-optimize (maxIters=1000). The prior
+    # implementation used a plain EmbedMolecule(randomSeed=42) with no UFF
+    # relaxation, which produced a different conformer geometry than the OSS
+    # reference (ref_pos diverged). The conformer is named "Computed" so the
+    # downstream _get_conformer / _select_conformer picks it deterministically.
+    options = AllChem.ETKDGv3()
+    options.clearConfs = False
+    conf_id = AllChem.EmbedMolecule(mol, options)
+    if conf_id == -1:
+        options.useRandomCoords = True
+        conf_id = AllChem.EmbedMolecule(mol, options)
+    if conf_id == -1:
         raise ValueError(
             f"Failed to compute 3D conformer for SMILES {smiles!r}")
+    try:
+        AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=1000)
+    except (RuntimeError, ValueError):
+        pass  # force-field / sanitization issue — keep the embedded coords
+    conformer = mol.GetConformer(conf_id)
+    conformer.SetProp("name", "Computed")
     mol_no_h = Chem.RemoveHs(mol, sanitize=False)
     # ``RemoveHs(sanitize=False)`` strips the ``_CIPRank`` properties that
     # ``compute_chiral_atom_constraints`` and ``compute_stereo_bond_constraints``

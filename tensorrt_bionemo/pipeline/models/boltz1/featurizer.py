@@ -15,7 +15,6 @@ Differences from Boltz2 (featurizerv2):
 
 from __future__ import annotations
 
-import random
 from typing import Any, Optional
 
 import numpy as np
@@ -29,7 +28,7 @@ from tensorrt_bionemo.pipeline.models.boltz2.const import (
 from tensorrt_bionemo._torch.tensor_utils import pad_dim
 from tensorrt_bionemo.pipeline.models.boltz2.featurizer import (
     _center_random_augmentation, _compute_collinear_mask, _convert_atom_name,
-    _frame_resolved_mask_oss)
+    _fill_nonpolymer_frames, _frame_resolved_mask_oss)
 # isort: on
 
 # Boltz1 pocket contact info (from OSS boltz.data.const)
@@ -151,7 +150,6 @@ def process_atom_features(
     disto_coords_list = []
     atom_idx = 0
     chain_res_ids: dict = {}
-    res_index_to_conf_id: dict = {}
 
     for token_id, token in enumerate(tokens_list):
         chain_idx, res_id = token.asym_id, token.res_idx
@@ -160,17 +158,6 @@ def process_atom_features(
             chain_res_ids[key] = len(chain_res_ids)
         new_idx = chain_res_ids[key]
 
-        mol = molecules.get(token.res_name)
-        if mol is None:
-            raise ValueError(f"Missing molecule for residue: {token.res_name}")
-        atom_name_to_ref = {a.GetProp("name"): a for a in mol.GetAtoms()}
-        conf_ids = [int(c.GetId()) for c in mol.GetConformers()]
-        if (chain_idx, res_id) not in res_index_to_conf_id:
-            res_index_to_conf_id[(chain_idx, res_id)] = int(
-                random.choice(conf_ids)) if conf_ids else 0
-        conf_id = res_index_to_conf_id[(chain_idx, res_id)]
-        conformer = mol.GetConformer(conf_id)
-
         start = token.atom_idx
         end = token.atom_idx + token.atom_num
         token_atoms = structure.atoms[start:end]
@@ -178,18 +165,16 @@ def process_atom_features(
         ref_space_uid.extend([new_idx] * token.atom_num)
         atom_to_token.extend([token_id] * token.atom_num)
 
+        # OSS boltz1 process_atom_features reads ref_element / ref_charge /
+        # ref_pos (conformer) straight from structure.atoms — these were
+        # populated from the CCD ref_mol during parsing (the same ccd.pkl mols
+        # boltz1 inference uses). We do NOT re-load a mol_dir molecule: mol_dir
+        # mols carry a different conformer set, which made ref_pos diverge.
         for a in token_atoms:
             atom_name_list.append(_convert_atom_name(a.name))
-            ref_atom = atom_name_to_ref.get(a.name)
-            if ref_atom is not None:
-                atom_element_list.append(ref_atom.GetAtomicNum())
-                atom_charge_list.append(ref_atom.GetFormalCharge())
-                pos = conformer.GetAtomPosition(ref_atom.GetIdx())
-                atom_conformer_list.append((pos.x, pos.y, pos.z))
-            else:
-                atom_element_list.append(a.element)
-                atom_charge_list.append(a.charge)
-                atom_conformer_list.append(a.conformer)
+            atom_element_list.append(a.element)
+            atom_charge_list.append(a.charge)
+            atom_conformer_list.append(a.conformer)
 
         token_to_rep_atom.append(atom_idx + token.disto_idx - start)
         chain = structure.chains[token.asym_id]
@@ -203,10 +188,25 @@ def process_atom_features(
         disto_coords_list.append(structure.coords[token.disto_idx].astype(
             np.float32))
 
-        # Frame data
+        # Frame data (matches OSS boltz1 featurizer.py process_atom_features):
+        # protein -> N/CA/C; RNA/DNA -> C1'/C3'/C4'; NONPOLYMER frames are
+        # rebuilt below by _fill_nonpolymer_frames.
         if (token.atom_num >= 3 and token.res_name in ref_atoms
                 and ref_atoms[token.res_name][:3] == ["N", "CA", "C"]):
             frame_data.append([start, start + 1, start + 2])
+        elif (token.atom_num >= 3 and token.res_name in ref_atoms
+              and chain.mol_type
+              in (chain_type_ids["DNA"], chain_type_ids["RNA"])):
+            try:
+                ref = ref_atoms[token.res_name]
+                idx_c1 = ref.index("C1'")
+                idx_c3 = ref.index("C3'")
+                idx_c4 = ref.index("C4'")
+                frame_data.append(
+                    [start + idx_c1, start + idx_c3, start + idx_c4])
+            except ValueError:
+                frame_data.append(
+                    [token.center_idx, token.center_idx, token.center_idx])
         else:
             frame_data.append(
                 [token.center_idx, token.center_idx, token.center_idx])
@@ -223,6 +223,19 @@ def process_atom_features(
 
     # Frame collinear mask
     frame_data_arr = np.array(frame_data, dtype=np.int64)
+
+    # OSS boltz1 compute_frames_nonpolymer: for each NONPOLYMER chain with >=3
+    # atoms, replace the per-atom token frame with (nearest_1, self, nearest_2)
+    # from intra-chain pairwise distances (resolved atoms preferred). Identical
+    # algorithm to boltz2 _fill_nonpolymer_frames; coord_data is (1, n_atoms, 3).
+    _fill_nonpolymer_frames(
+        tokens=tokens_list,
+        structure=structure,
+        coord_data=coord_data,
+        frame_data_arr=frame_data_arr,
+        resolved_frame_data=resolved_frame_data,
+    )
+
     frames_expanded = coord_data[0][frame_data_arr]
     v1 = frames_expanded[:, 1] - frames_expanded[:, 0]
     v2 = frames_expanded[:, 1] - frames_expanded[:, 2]
@@ -304,8 +317,10 @@ def process_atom_features(
         token_to_rep_atom_t = pad_dim(token_to_rep_atom_t, 1, pad_len_atom)
         r_set_to_rep_atom_t = pad_dim(r_set_to_rep_atom_t, 1, pad_len_atom)
 
-    # Boltz1: frames have no ensemble dim
-    frames_idx = torch.tensor(frame_data, dtype=torch.long)
+    # Boltz1: frames have no ensemble dim. Use frame_data_arr (NOT the raw
+    # frame_data list) so the NONPOLYMER frames rebuilt in-place by
+    # _fill_nonpolymer_frames above are reflected here.
+    frames_idx = torch.from_numpy(frame_data_arr).long()
     frame_resolved_mask = torch.from_numpy(resolved_frame_np).bool()
 
     if max_tokens is not None and n_tokens < max_tokens:

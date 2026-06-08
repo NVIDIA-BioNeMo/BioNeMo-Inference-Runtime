@@ -136,15 +136,31 @@ def deletion_matrix_from_raw(raw_sequences: list[str],
 def compute_deletion_value(deletion_matrix: torch.Tensor) -> torch.Tensor:
     """Compute scaled deletion value from raw deletion counts.
 
-    Formula: 2/pi * atan(count / 3.0), maps [0, inf) → [0, 1).
+    Reproduces OSS's `core/data/pipelines/featurization/msa.py:106-108`:
+
+        features["deletion_value"] = torch.atan(deletion_matrix / 3.0) * (
+            2.0 / torch.acos(torch.zeros(1, device=deletion_matrix.device)) * 2
+        ).to(torch.float32)
+
+    Python operator precedence gives `(2.0 / acos(0)) * 2 = (2 / (π/2)) * 2 =
+    (4/π) * 2 = 8/π ≈ 2.546`. The textbook formula would be `atan(x/3) * 2/π`
+    (maps [0, ∞) → [0, 1)); OSS instead multiplies by `8/π`, mapping
+    [0, ∞) → [0, 4). This is almost certainly a parenthesization bug in
+    OSS, but the checkpoint was trained on these inflated values — see
+    D-15 overturn for the profile-bug case (the same model-vs-OSS-feature
+    parity argument applies to `deletion_value`).
+
+    01-07 Cycle 7 Plan A': changed from `2/pi` (textbook) to `8/pi` (OSS
+    reproduction) after `deletion_value` was promoted DETERMINISTIC and
+    L1 comparison surfaced the ~4x scale mismatch.
 
     Args:
         deletion_matrix: [N_rows, N_tokens] int tensor of deletion counts.
 
     Returns:
-        [N_rows, N_tokens] float32 tensor in [0, 1).
+        [N_rows, N_tokens] float32 tensor in [0, 4).
     """
-    return (torch.atan(deletion_matrix.float() / 3.0) * (2.0 / math.pi)).to(
+    return (torch.atan(deletion_matrix.float() / 3.0) * (8.0 / math.pi)).to(
         torch.float32)
 
 

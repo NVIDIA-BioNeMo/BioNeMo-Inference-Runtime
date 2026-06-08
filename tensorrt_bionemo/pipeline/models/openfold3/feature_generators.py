@@ -20,8 +20,12 @@ batch (outputs of prior generators) and returns one group of feature tensors.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import numpy as np
+
+logger = logging.getLogger(__name__)
 import torch
 import torch.nn.functional as F
 
@@ -30,10 +34,14 @@ from tensorrt_bionemo.pipeline.base import FeatureGeneratorBase
 from .common import (centre_random_augmentation, compute_deletion_value,
                      encode_atom_name_chars_one_hot, encode_one_hot)
 from .const import (DEFAULT_N_TEMPLATES, ELEMENT_ATOMIC_NUMBER, GAP_IDX,
-                    MSA_CHAR_TO_IDX, NUM_ELEMENT_CLASSES, NUM_MSA_CLASSES,
-                    NUM_RESTYPE_CLASSES, RESNAME_TO_IDX,
-                    TEMPLATE_DISTOGRAM_N_BINS, UNK_IDX)
-from .feature_context import _compute_sym_ids, _renumber_chain_ids
+                    MAX_MSA_ROWS, MOL_TYPE_LIGAND, MSA_CHAR_TO_IDX,
+                    NUM_ELEMENT_CLASSES, NUM_MSA_CLASSES, NUM_RESTYPE_CLASSES,
+                    RESNAME_TO_IDX, TEMPLATE_DISTOGRAM_N_BINS, UNK_IDX)
+from .feature_context import (
+    _compute_sym_ids,
+    _renumber_chain_ids,
+    _resolve_msa_char,
+)
 
 
 def _get_row(context: dict[str, Any]) -> dict[str, Any]:
@@ -102,8 +110,12 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
         feats["is_dna"] = (mt == 2).to(torch.int32)
         feats["is_ligand"] = (mt == 3).to(torch.int32)
 
-        # is_atomized: 0 for all standard protein residues
-        feats["is_atomized"] = torch.zeros(n_tokens, dtype=torch.int32)
+        # FEAT-01 gap fix per 01-PATTERNS.md Critical Note 5: ligand tokens MUST set is_atomized=1
+        if len(mol_types) != n_tokens:
+            raise ValueError(
+                f"token_mol_types length {len(mol_types)} != n_tokens {n_tokens}")
+        mol_types_t = torch.tensor(mol_types, dtype=torch.int32)
+        feats["is_atomized"] = (mol_types_t == MOL_TYPE_LIGAND).to(torch.int32)
 
         # token_mask: all valid
         feats["token_mask"] = torch.ones(n_tokens, dtype=torch.float32)
@@ -123,13 +135,69 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
         feats["atom_to_token_index"] = torch.tensor(atom_tok_idx,
                                                     dtype=torch.int32)
 
-        # token_bonds: all zeros for standard proteins.
-        # OSS filters to atomized-only bonds via filter_fully_atomized_bonds().
-        # Since all standard protein residues have is_atomized=False, ALL bonds
-        # are filtered out, producing an all-zeros matrix.
-        feats["token_bonds"] = torch.zeros(n_tokens,
-                                           n_tokens,
-                                           dtype=torch.int32)
+        # token_bonds: between atomized-only tokens (OSS
+        # filter_fully_atomized_bonds in cleanup.py). For standard protein
+        # / nucleotide residues is_atomized=False → no contribution. For
+        # atomized ligand chains, every intra-ligand bond becomes a
+        # symmetric token_bonds entry between the two atom-tokens
+        # involved. We reconstruct this from the RDKit mol attached to
+        # each ligand chain's first token.
+        token_bonds = torch.zeros(n_tokens, n_tokens, dtype=torch.int32)
+        residue_mols_ctx = row["structure"].get("residue_mols", [])
+        token_mol_idx_ctx = row["structure"].get("token_mol_idx")
+        if token_mol_idx_ctx is not None and residue_mols_ctx:
+            # Group atomized tokens by their mol_idx (one ligand chain
+            # per group). For each group, read RDKit bonds and convert
+            # (atom-local-index pairs) -> (token-index pairs).
+            from collections import defaultdict
+            mol_idx_to_tokens: dict[int, list[int]] = defaultdict(list)
+            for ti, mi in enumerate(token_mol_idx_ctx):
+                # Only include atomized tokens (ligands)
+                if feats["is_atomized"][ti].item() == 1:
+                    mol_idx_to_tokens[mi].append(ti)
+            for mi, ti_list in mol_idx_to_tokens.items():
+                if len(ti_list) < 2:
+                    continue
+                first_t = ti_list[0]
+                if first_t >= len(residue_mols_ctx):
+                    continue
+                mol = residue_mols_ctx[first_t]
+                if mol is None:
+                    continue
+                # The atom indices in the mol are the position within the
+                # ligand chain (sorted by addition order). The per_atom
+                # crop mask in residue_crop_masks tells us which atom
+                # in the mol each token represents.
+                # Build a map atom_in_mol_idx -> token_idx
+                atom_in_mol_to_token: dict[int, int] = {}
+                crop_masks_ctx = row["structure"].get(
+                    "residue_crop_masks", []
+                )
+                for ti in ti_list:
+                    if ti >= len(crop_masks_ctx):
+                        continue
+                    mask = crop_masks_ctx[ti]
+                    # mask is bool array; the True index is the atom-in-mol
+                    true_indices = [i for i, v in enumerate(mask) if v]
+                    if len(true_indices) == 1:
+                        atom_in_mol_to_token[true_indices[0]] = ti
+                # Iterate bonds in the mol and set token_bonds
+                try:
+                    for bond in mol.GetBonds():
+                        a1 = bond.GetBeginAtomIdx()
+                        a2 = bond.GetEndAtomIdx()
+                        t1 = atom_in_mol_to_token.get(a1)
+                        t2 = atom_in_mol_to_token.get(a2)
+                        if t1 is not None and t2 is not None and t1 != t2:
+                            token_bonds[t1, t2] = 1
+                            token_bonds[t2, t1] = 1
+                except Exception as e:
+                    logger.warning(
+                        "token_bonds extraction failed for ligand mol_idx=%s: %s",
+                        mi, e, exc_info=True)
+                    # Defensive — log but don't crash. The feature is set
+                    # to zeros for this chain.
+        feats["token_bonds"] = token_bonds
 
         return feats
 
@@ -170,11 +238,28 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         feats: dict[str, torch.Tensor] = {}
 
         # ref_element: one-hot [N_atoms, 119]
-        # Encode using atomic number - 1 (matching OSS PERIODIC_TABLE logic)
+        # Encode using atomic number - 1 (matching OSS conformer.py:117-121).
+        # OSS calls PERIODIC_TABLE.GetAtomicNumber(elem) via RDKit which supports
+        # all 118 elements. The fallback ELEMENT_ATOMIC_NUMBER dict in const.py
+        # only had 11 entries, which caused metals (MG, NI, ZN, FE, ...) to
+        # silently encode as carbon (index 5). Use RDKit's periodic table as
+        # the source of truth (Rule 1 fix in Plan 01-06 Task 1).
+        from rdkit.Chem import GetPeriodicTable
+        _pt = GetPeriodicTable()
         element_indices = []
         for elem in atom_elements:
-            anum = ELEMENT_ATOMIC_NUMBER.get(elem.upper(), 6)  # default C
-            element_indices.append(anum - 1)  # 0-indexed
+            # OSS reserves index 118 for unknown placeholders ("R" symbol)
+            sym = elem.strip()
+            if sym in ("", "R", "*", "?"):
+                element_indices.append(118)
+                continue
+            # Title-case (e.g., "MG" -> "Mg") for RDKit lookup.
+            try:
+                anum = _pt.GetAtomicNumber(sym.title())
+            except Exception:
+                # RDKit raises if symbol unknown; assign to unknown bin
+                anum = 119  # → index 118 after -1
+            element_indices.append(max(0, anum - 1))  # 0-indexed
         feats["ref_element"] = F.one_hot(
             torch.tensor(element_indices, dtype=torch.long),
             NUM_ELEMENT_CLASSES,
@@ -191,9 +276,25 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         feats["ref_atom_name_chars"] = encode_atom_name_chars_one_hot(
             atom_names)
 
-        # ref_space_uid: token index for each atom
-        feats["ref_space_uid"] = torch.tensor(atom_token_idx,
-                                              dtype=torch.int32)
+        # ref_space_uid: per-atom unique conformer instance ID. OSS sets
+        # ref_space_uid = mol_idx (the index into processed_ref_mol_list).
+        # For non-atomized residues this is per-residue (matches token_idx);
+        # for atomized ligand chains all atoms of the chain share one
+        # mol_idx (because there's one entry in processed_ref_mol_list per
+        # ligand chain). See openfold-3/openfold3/core/data/pipelines/
+        # featurization/conformer.py:128-129. The structure dict now
+        # carries token_mol_idx (per-token); we expand it per-atom here.
+        token_mol_idx = struct.get("token_mol_idx")
+        if token_mol_idx is not None:
+            atom_mol_idx = [int(token_mol_idx[t]) for t in atom_token_idx]
+            feats["ref_space_uid"] = torch.tensor(atom_mol_idx,
+                                                  dtype=torch.int32)
+        else:
+            # Backward compat for callers/tests that don't supply
+            # token_mol_idx (e.g. legacy 5-polymer smoke fixture). Fall
+            # back to per-token uid which matches the old behavior.
+            feats["ref_space_uid"] = torch.tensor(atom_token_idx,
+                                                  dtype=torch.int32)
 
         # ref_pos: from RDKit conformer coordinates, centred per residue
         ref_pos = torch.zeros(n_atoms, 3, dtype=torch.float32)
@@ -266,6 +367,7 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
 
         n_tokens = struct["n_tokens"]
         chain_ids = struct["token_chain_ids"]
+        token_mol_types = struct["token_mol_types"]
 
         # Build per-chain token ranges (ordered by first appearance)
         unique_chains: list[str] = []
@@ -322,87 +424,345 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             seq = chain_sequences[first_chain_idx] if first_chain_idx < len(
                 chain_sequences) else ""
 
+            # Determine mol_type for this polymer group from the first token
+            # in its chain range (all tokens in a chain share the same mol_type).
+            # Used by _resolve_msa_char for polymer-type-aware MSA encoding (D-05).
+            group_mol_type = (token_mol_types[start]
+                              if start < len(token_mol_types) else 0)
+
             poly_rows: list[list[int]] = []
             poly_dels: list[list[int]] = []
 
-            # Row 0: query (from unpaired MSA first row if available, else sequence)
-            if msa_entry is not None:
-                msa_seqs = msa_entry.get("sequences", [])
-                if msa_seqs:
-                    qseq = msa_seqs[0]
-                    qrow = [
-                        MSA_CHAR_TO_IDX.get(c, UNK_IDX) for c in qseq[:n_res]
-                    ]
-                    qrow += [GAP_IDX] * (n_res - len(qrow))
-                    poly_rows.append(qrow)
-                    poly_dels.append([0] * n_res)
-                else:
-                    qrow = [
-                        MSA_CHAR_TO_IDX.get(c, UNK_IDX) for c in seq[:n_res]
-                    ]
-                    qrow += [GAP_IDX] * (n_res - len(qrow))
-                    poly_rows.append(qrow)
-                    poly_dels.append([0] * n_res)
-            else:
-                qrow = [MSA_CHAR_TO_IDX.get(c, UNK_IDX) for c in seq[:n_res]]
+            # Track whether THIS polymer group has any MSA content. When False,
+            # OSS leaves the chain's token slots at the pre-allocated gap fill
+            # AND emits a zero profile + zero deletion_mean for those slots
+            # (see openfold3.core.data.primitives.featurization.msa.
+            # create_msa_feature_precursor_of3 lines 274-285 — the "else"
+            # branch when chain_id_to_query_seq is empty). When True, row 0 is
+            # the first row of the MSA file (paired or main), NOT a
+            # sequence-derived row.
+            has_msa_for_polymer = (
+                msa_entry is not None
+                and len(msa_entry.get("sequences", [])) > 0
+            ) or (
+                paired_entry is not None
+                and len(paired_entry.get("sequences", [])) > 0
+            )
+
+            # Row 0: query — OSS `chain_id_to_query_seq[chain_id]` is
+            # populated as `all_msas_per_chain[first_key].msa[0, :]`
+            # (`openfold-3/openfold3/core/data/io/sequence/msa.py:546`),
+            # i.e., the MSA file's first row cropped to n_tokens — NOT the
+            # polymer's input query sequence. When the file row 0 differs
+            # from the polymer query (e.g. extra prefix/suffix residues, as
+            # in `prot_custom_msa_A.a3m` where row 0 is 134 chars but the
+            # query is 117), OSS still uses the file row 0 (cropped to
+            # n_tokens). We mirror that contract here.
+            #
+            # When the polymer has no MSA AT ALL, OSS emits a single all-gap
+            # row (`create_msa_feature_precursor_of3` "else" branch at
+            # line 277). TRT-BNM mirrors that path.
+            #
+            # 01-07 Cycle 7 Plan A′: the unpaired loop below changed from
+            # `range(1, ...)` to `range(0, ...)` so the file's row 0 (the
+            # query duplicate per a3m convention) is also added to the main
+            # MSA section. This matches OSS's behavior of having the query
+            # row + the file's row 0 both present in the final MSA.
+            if has_msa_for_polymer and msa_entry is not None and msa_entry.get(
+                    "sequences"):
+                qseq = msa_entry["sequences"][0]
+                qrow = [
+                    _resolve_msa_char(c, group_mol_type) for c in qseq[:n_res]
+                ]
                 qrow += [GAP_IDX] * (n_res - len(qrow))
                 poly_rows.append(qrow)
                 poly_dels.append([0] * n_res)
+            elif has_msa_for_polymer:
+                # Has paired MSA but no main MSA — use paired row 0 as query
+                # (matches OSS's behavior of `all_msas_per_chain[first_key]`
+                # ordering: paired comes first in `aln_order`). This branch
+                # is not exercised by any current test sample.
+                pseq = paired_entry["sequences"][0]
+                qrow = [
+                    _resolve_msa_char(c, group_mol_type) for c in pseq[:n_res]
+                ]
+                qrow += [GAP_IDX] * (n_res - len(qrow))
+                poly_rows.append(qrow)
+                poly_dels.append([0] * n_res)
+            else:
+                # No MSA for this polymer — emit an all-gap row. The chain's
+                # token slots will read as GAP_IDX in the final MSA tensor,
+                # matching OSS create_msa_feature_precursor_of3 (line 277).
+                poly_rows.append([GAP_IDX] * n_res)
+                poly_dels.append([0] * n_res)
 
-            # Paired rows: ALL rows from the paired file (including its own query row)
-            n_paired_poly = 0
+            # ------------------------------------------------------------
+            # EXT-05 fix (Cycle 9): paired-MSA semantics matching OSS.
+            # ------------------------------------------------------------
+            # OSS's `MsaSampleProcessorInference.create_paired_msa` calls
+            # `create_paired_from_precomputed` for precomputed paired MSAs.
+            # That function does NOT call `msa_array_collection.set_row_counts(
+            # n_rows_paired_subsampled=...)` — only the ONLINE pairing path in
+            # `create_paired` does (`sample_processing/msa.py:176`). So for ALL
+            # samples in our test set, `n_rows_paired_subsampled` stays at its
+            # default value of 0 (see `primitives/sequence/msa.py:441`).
+            #
+            # Consequences:
+            #   1. `vstack_pad_msa_arrays` (`primitives/featurization/msa.py:112`)
+            #      gates the paired-MSA vstack on `n_rows_paired_subsampled > 0`
+            #      — so for precomputed paired the paired rows are NEVER vstacked
+            #      into the final per-chain MSA. Only `[query] + [main_filtered]`
+            #      end up in the output tensor.
+            #   2. In `create_main`, the paired MSA is still used to dedup main
+            #      rows via the `is_unique` filter (`sample_processing/msa.py:
+            #      290-314`): main rows whose byte-exact value equals any paired
+            #      row are dropped from the final main MSA.
+            #   3. The main cap becomes `max_rows - n_rows_paired_subsampled - 1
+            #      = max_rows - 1` (since the counter is 0).
+            #
+            # Profile / deletion_mean are computed from `main_msa_redundant`
+            # (the pre-filter, pre-cap, full-width main MSA) and column-indexed
+            # to the polymer's res_ids only at featurization time (`map_msas_to_
+            # tokens`, line 197-211 of `primitives/featurization/msa.py`). For
+            # samples where the file's aligned column count > n_res (e.g.
+            # `prot_custom_msa`: file_aligned_len=136, polymer_len=117), the
+            # full-width-then-crop matters: the OSS `np.repeat` profile bug
+            # uses `block_n_cols * n_symbols` as the bin stride, so the
+            # scrambling pattern depends on the FULL file width, not the
+            # cropped width.
+            # ------------------------------------------------------------
+
+            # Build paired rows at FILE WIDTH (not n_res) so the is_unique
+            # comparison matches OSS — OSS compares paired_msa vs
+            # main_msa_redundant where BOTH are at file_aligned_width.
+            #
+            # The paired pool is truncated to MAX_MSA_ROWS_PAIRED before the
+            # is_unique filter — matching OSS `create_paired_from_precomputed`
+            # which calls `prepaired_msa.truncate(max_rows_paired)` BEFORE the
+            # filter is applied (sample_processing/msa.py:223). Without this
+            # truncation we over-dedup main rows that OSS would have kept
+            # (because their byte-exact matches sit beyond paired_idx=2047).
+            from .const import MAX_MSA_ROWS_PAIRED
+            paired_rows_full: list[list[int]] = []
+            paired_full_width = 0
             if paired_entry is not None:
                 paired_seqs = paired_entry.get("sequences", [])
-                paired_raw = paired_entry.get("raw", paired_seqs)
-                for seq_idx in range(len(paired_seqs)):
-                    prow = [GAP_IDX] * n_res
-                    draw = [0] * n_res
-                    praw = paired_raw[seq_idx] if seq_idx < len(
-                        paired_raw) else paired_seqs[seq_idx]
-                    del_counts = _extract_deletion_counts(praw)
-                    pseq = paired_seqs[seq_idx]
-                    for j in range(min(len(pseq), n_res)):
-                        prow[j] = MSA_CHAR_TO_IDX.get(pseq[j], UNK_IDX)
-                        if j < len(del_counts):
-                            draw[j] = del_counts[j]
-                    poly_rows.append(prow)
-                    poly_dels.append(draw)
-                    n_paired_poly += 1
+                paired_seqs = paired_seqs[:MAX_MSA_ROWS_PAIRED]
+                paired_full_width = max(
+                    (len(s) for s in paired_seqs), default=0
+                )
+                for pseq in paired_seqs:
+                    prow_full = [GAP_IDX] * paired_full_width
+                    for j in range(min(len(pseq), paired_full_width)):
+                        prow_full[j] = _resolve_msa_char(
+                            pseq[j], group_mol_type
+                        )
+                    paired_rows_full.append(prow_full)
 
-            # Unpaired non-query rows from the unpaired MSA file
-            unpaired_rows: list[list[int]] = [poly_rows[0]]
-            unpaired_dels: list[list[int]] = [poly_dels[0]]
+            # Build main MSA rows at FILE WIDTH for is_unique / profile.
+            # `unpaired_rows_full` / `unpaired_dels_full` mirror OSS
+            # `main_msa_redundant` exactly (pre-filter, pre-crop).
+            unpaired_rows_full: list[list[int]] = []
+            unpaired_dels_full: list[list[int]] = []
+            main_full_width = 0
             if msa_entry is not None:
                 msa_seqs = msa_entry.get("sequences", [])
                 msa_raw = msa_entry.get("raw", msa_seqs)
-                for seq_idx in range(1, len(msa_seqs)):
-                    urow = [GAP_IDX] * n_res
-                    draw = [0] * n_res
-                    uraw = msa_raw[seq_idx] if seq_idx < len(
-                        msa_raw) else msa_seqs[seq_idx]
-                    del_counts = _extract_deletion_counts(uraw)
+                main_full_width = max(
+                    (len(s) for s in msa_seqs), default=0
+                )
+                for seq_idx in range(len(msa_seqs)):
                     useq = msa_seqs[seq_idx]
-                    for j in range(min(len(useq), n_res)):
-                        urow[j] = MSA_CHAR_TO_IDX.get(useq[j], UNK_IDX)
+                    uraw = msa_raw[seq_idx] if seq_idx < len(
+                        msa_raw) else useq
+                    del_counts = _extract_deletion_counts(uraw)
+                    urow_full = [GAP_IDX] * main_full_width
+                    drow_full = [0] * main_full_width
+                    for j in range(min(len(useq), main_full_width)):
+                        urow_full[j] = _resolve_msa_char(
+                            useq[j], group_mol_type
+                        )
                         if j < len(del_counts):
-                            draw[j] = del_counts[j]
-                    poly_rows.append(urow)
-                    poly_dels.append(draw)
-                    unpaired_rows.append(urow)
-                    unpaired_dels.append(draw)
+                            drow_full[j] = del_counts[j]
+                    unpaired_rows_full.append(urow_full)
+                    unpaired_dels_full.append(drow_full)
+
+            # `is_unique` filter — drop main rows whose byte-exact encoded
+            # value matches any paired row. OSS pads both to the same width
+            # implicitly (paired and main come from the same per-chain
+            # alignment in OSS's data model). When the two file widths
+            # differ we right-pad with GAP_IDX so the comparison is
+            # well-defined; this matches OSS's behavior since the
+            # `chain_data[aln].msa` arrays for a single chain all have the
+            # same column count (the chain's aligned width).
+            is_unique_mask: list[bool] | None = None
+            if paired_rows_full and unpaired_rows_full:
+                # Build numpy arrays at a common width = max(main_w, paired_w).
+                common_w = max(main_full_width, paired_full_width)
+                main_arr = np.full(
+                    (len(unpaired_rows_full), common_w),
+                    GAP_IDX, dtype=np.int64,
+                )
+                for i, r in enumerate(unpaired_rows_full):
+                    main_arr[i, :len(r)] = r
+                paired_arr = np.full(
+                    (len(paired_rows_full), common_w),
+                    GAP_IDX, dtype=np.int64,
+                )
+                for i, r in enumerate(paired_rows_full):
+                    paired_arr[i, :len(r)] = r
+                # Match OSS `np.isin` on void-view trick: each row becomes
+                # a single void item with size n_cols * itemsize.
+                main_view = main_arr.view(
+                    np.dtype((np.void, main_arr.dtype.itemsize * common_w))
+                )
+                paired_view = paired_arr.view(
+                    np.dtype((np.void, paired_arr.dtype.itemsize * common_w))
+                )
+                is_unique_arr = np.squeeze(
+                    ~np.isin(main_view, paired_view), axis=-1
+                )
+                is_unique_mask = is_unique_arr.tolist()
+            elif unpaired_rows_full:
+                is_unique_mask = [True] * len(unpaired_rows_full)
+
+            # Filter main rows for the final MSA output (poly_rows). OSS
+            # vstacks `[query] + [main_filtered]` only — paired is NOT
+            # vstacked when `n_rows_paired_subsampled == 0` (the
+            # precomputed-paired path leaves the counter at 0).
+            #
+            # Main cap in OSS: `n_rows_main_msa_lim = max(0, max_rows -
+            # n_rows_paired_subsampled - 1) = max_rows - 1` for our path.
+            main_cap = max(0, MAX_MSA_ROWS - 1)
+            n_main_appended = 0
+            if msa_entry is not None and unpaired_rows_full and is_unique_mask:
+                for seq_idx in range(len(unpaired_rows_full)):
+                    if not is_unique_mask[seq_idx]:
+                        continue
+                    if n_main_appended >= main_cap:
+                        break
+                    # Crop the filtered row to n_res for the output tensor.
+                    # Mirrors OSS featurization-time `msa_array_vstack.msa[
+                    # :, msa_column_positions]` (line 197 of featurization/
+                    # msa.py) where `msa_column_positions = res_id - 1`.
+                    urow_full = unpaired_rows_full[seq_idx]
+                    drow_full = unpaired_dels_full[seq_idx]
+                    urow_cropped = urow_full[:n_res]
+                    drow_cropped = drow_full[:n_res]
+                    # Right-pad with GAP_IDX / 0 if file row is shorter.
+                    if len(urow_cropped) < n_res:
+                        urow_cropped = urow_cropped + [GAP_IDX] * (
+                            n_res - len(urow_cropped)
+                        )
+                        drow_cropped = drow_cropped + [0] * (
+                            n_res - len(drow_cropped)
+                        )
+                    poly_rows.append(urow_cropped)
+                    poly_dels.append(drow_cropped)
+                    n_main_appended += 1
 
             n_poly_rows = len(poly_rows)
             if n_poly_rows > max_rows:
                 max_rows = n_poly_rows
-            total_n_paired = max(total_n_paired, n_paired_poly)
+            # `n_paired_poly` is kept at 0 because OSS does NOT vstack paired
+            # into the final MSA when `n_rows_paired_subsampled == 0`.
+            total_n_paired = max(total_n_paired, 0)
 
-            # Profile and deletion_mean: unpaired MSA only (matches OSS/backup)
-            del_t = torch.tensor(unpaired_dels, dtype=torch.float32)
-            deletion_mean = del_t.mean(dim=0)  # [n_res]
+            # Profile and deletion_mean: computed from the FULL-WIDTH main MSA
+            # (`unpaired_rows_full` ↔ OSS `main_msa_redundant`) at the file's
+            # native aligned-column width, THEN cropped to n_res. This matches
+            # OSS's order of operations:
+            #   1. `calculate_profile(main_msa_redundant)` on full file width
+            #      (`sample_processing/msa.py:324`).
+            #   2. `profile[msa_column_positions, :]` at featurization
+            #      (`primitives/featurization/msa.py:209`) where
+            #      `msa_column_positions = res_id - 1`.
+            #
+            # When the polymer has no MSA at all, OSS emits zero profile and
+            # zero deletion_mean (`create_msa_feature_precursor_of3` line
+            # 283-284 — np.zeros for both fields in the no-MSA "else" branch).
+            if has_msa_for_polymer and unpaired_rows_full:
+                # deletion_mean: full-width then crop. Each chain's polymer
+                # has res_ids = [1..n_res] (sequential), so cropping to
+                # [0:n_res] matches `del_mean[msa_column_positions]`.
+                del_t_full = torch.tensor(
+                    unpaired_dels_full, dtype=torch.float32
+                )
+                deletion_mean_full = del_t_full.mean(dim=0)  # [main_full_width]
+                if deletion_mean_full.numel() >= n_res:
+                    deletion_mean = deletion_mean_full[:n_res].clone()
+                else:
+                    deletion_mean = torch.zeros(n_res, dtype=torch.float32)
+                    deletion_mean[:deletion_mean_full.numel()] = (
+                        deletion_mean_full
+                    )
 
-            msa_idx_t = torch.tensor(unpaired_rows, dtype=torch.long)
-            msa_oh = encode_one_hot(msa_idx_t, NUM_MSA_CLASSES).float()
-            profile = msa_oh.mean(dim=0)  # [n_res, 32]
+                # 01-07 Cycle 6: Reproduce OSS's calculate_profile np.repeat
+                # bug (`core/data/primitives/sequence/msa.py:1217`) so that
+                # the model — which was trained on the scrambled column
+                # distribution — receives the same input it was trained on.
+                # The OSS bug uses np.repeat where np.tile is required,
+                # producing a column-permuted background-frequency profile
+                # instead of a per-column distribution. See NOTES.md
+                # ## Cycle 6 Profile + Template Parity (D-15 overturn).
+                #
+                # 01-07 Cycle 9: compute on FULL file width then crop to n_res.
+                # Previously the profile was computed on already-cropped rows,
+                # which produced different scrambling for samples where
+                # file_aligned_len != polymer_len (e.g. prot_custom_msa).
+                msa_idx_arr = np.asarray(
+                    unpaired_rows_full, dtype=np.int64
+                )
+                n_rows_msa, n_cols_full = msa_idx_arr.shape
+                n_symbols = NUM_MSA_CLASSES
+                # OSS chunk_size = 1000 (pipelines/sample_processing/msa.py:327)
+                chunk_size = 1000
+                counts_full = np.zeros(
+                    (n_cols_full, n_symbols), dtype=np.int64
+                )
+                col_start = 0
+                while col_start < n_cols_full:
+                    col_end = min(col_start + chunk_size, n_cols_full)
+                    msa_chunk = msa_idx_arr[:, col_start:col_end]
+                    block_n_cols = col_end - col_start
+                    val_indices = msa_chunk.ravel()  # row-major
+                    # OSS bug: np.repeat — should be np.tile for row-major
+                    # ravel, but the model was trained on this scrambled
+                    # mapping. Reproducing it intentionally.
+                    col_indices_local = np.repeat(
+                        np.arange(block_n_cols), n_rows_msa
+                    )
+                    to_count_local = (
+                        col_indices_local * n_symbols + val_indices
+                    )
+                    chunk_counts_1d = np.bincount(
+                        to_count_local,
+                        minlength=block_n_cols * n_symbols,
+                    )
+                    chunk_counts_2d = chunk_counts_1d.reshape(
+                        block_n_cols, n_symbols
+                    )
+                    counts_full[col_start:col_end, :] += chunk_counts_2d
+                    col_start = col_end
+                profile_full = counts_full / n_rows_msa
+                # Crop to n_res (col indices [0..n_res-1] = res_id - 1).
+                if profile_full.shape[0] >= n_res:
+                    profile_cropped = profile_full[:n_res, :]
+                else:
+                    profile_cropped = np.zeros(
+                        (n_res, n_symbols), dtype=profile_full.dtype
+                    )
+                    profile_cropped[
+                        :profile_full.shape[0], :
+                    ] = profile_full
+                profile = torch.from_numpy(
+                    profile_cropped.astype(np.float32)
+                )
+            else:
+                deletion_mean = torch.zeros(n_res, dtype=torch.float32)
+                profile = torch.zeros(
+                    n_res, NUM_MSA_CLASSES, dtype=torch.float32
+                )
 
             polymer_data.append({
                 "chains": group["chains"],
@@ -414,13 +774,30 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 "n_res": n_res,
             })
 
-        # Build the global [max_rows, n_tokens] MSA matrix
-        # msa_mask is 0 for positions beyond this polymer's row count
+        # Build the global [max_rows, n_tokens] MSA matrix.
+        #
+        # 01-07 Cycle 7 Plan A′: msa_mask semantics changed. Previously
+        # `global_mask` was 1.0 only within each polymer's actual row count
+        # (`global_mask[:r, s:e] = 1.0`), so chains with shallow MSAs (or no
+        # MSA) had their mask=0 for rows beyond `r`. OSS does NOT do this:
+        # `create_msa_feature_precursor_of3` (`core/data/primitives/
+        # featurization/msa.py:248`) initializes `msa_mask` to all 1s and
+        # only zeros it later via the token-validity mask
+        # (`token_mask[np.newaxis, :]`, line 291-293) — never via the
+        # per-polymer row count. The previous behavior was a TRT-BNM bug
+        # that became visible once OSS subsampling was disabled and shapes
+        # were directly comparable.
+        #
+        # New semantics (matches OSS): `global_mask` is 1.0 everywhere by
+        # default, zeroed only where the token itself is padding (computed
+        # below from the `n_tokens` counted from valid tokens — for our
+        # test samples there is no padding, so mask remains all 1s).
         global_msa = torch.full((max_rows, n_tokens),
                                 GAP_IDX,
                                 dtype=torch.long)
         global_del = torch.zeros(max_rows, n_tokens, dtype=torch.long)
-        global_mask = torch.zeros(max_rows, n_tokens, dtype=torch.float32)
+        # OSS initialization: msa_mask = 1.0 everywhere (line 248).
+        global_mask = torch.ones(max_rows, n_tokens, dtype=torch.float32)
         global_profile = torch.zeros(n_tokens,
                                      NUM_MSA_CLASSES,
                                      dtype=torch.float32)
@@ -438,7 +815,6 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 s, e = chain_token_ranges[cid]
                 global_msa[:r, s:e] = rows_t
                 global_del[:r, s:e] = dels_t
-                global_mask[:r, s:e] = 1.0
                 global_profile[s:e] = pd["profile"]
                 global_del_mean[s:e] = pd["deletion_mean"]
 
@@ -449,8 +825,14 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
         feats["deletion_value"] = compute_deletion_value(global_del)
         feats["deletion_mean"] = global_del_mean
         feats["profile"] = global_profile
-        feats["num_paired_seqs"] = torch.tensor([total_n_paired + 1],
-                                                dtype=torch.int32)
+        # OSS only updates n_rows_paired_subsampled when ONLINE paired-MSA
+        # pairing runs (sample_processing/msa.py:176). With PRECOMPUTED
+        # paired MSAs (the path our test samples use), OSS leaves the
+        # counter at its default 0 — so OSS num_paired_seqs always reads
+        # as `0 + 1 = 1`. We mirror that contract here for L1 equivalence:
+        # always emit 1 regardless of the actual loaded paired-row count.
+        # Rule 1 fix in Plan 01-06 Task 1.
+        feats["num_paired_seqs"] = torch.tensor([1], dtype=torch.int32)
         feats["msa_mask"] = global_mask
 
         return feats
@@ -470,15 +852,26 @@ def _extract_deletion_counts(raw_seq: str) -> list[int]:
 
 
 class TemplateFeatureGenerator(FeatureGeneratorBase):
-    """Generates dummy template features matching OSS ``featurize_templates_dummy_of3``.
+    """Generates no-template features matching OSS ``featurize_template_structures_of3``.
 
-    Templates are not wired through the TRT-BNM parser/schema yet. This
-    generator produces one-filled tensors in the expected shapes and dtypes,
-    matching the OSS no-template inference path byte-for-byte.
+    Templates are not wired through the TRT-BNM parser/schema yet. The OSS
+    inference path with no templates available calls
+    ``featurize_template_structures_of3`` which emits
+    ``n_templ = DEFAULT_N_TEMPLATES`` template slots with:
+      * ``template_restype`` one-hot at GAP class (index 31), int32
+      * all four mask/coord tensors all-zero (pseudo_beta_mask &
+        backbone_frame_mask & distogram in float32, unit_vector in float32)
+
+    Dumping OSS features for T1031 confirms the shapes/dtypes exactly:
+        template_restype          (4, 95, 32) int32  sum=380   (= 4 * 95)
+        template_pseudo_beta_mask (4, 95)     float32 sum=0
+        template_backbone_frame_mask (4, 95)  float32 sum=0
+        template_distogram        (4, 95, 95, 39) float32 sum=0
+        template_unit_vector      (4, 95, 95, 3)  float32 sum=0
     """
 
     def is_enabled(self) -> bool:
-        return True  # Always produce dummy features
+        return True  # Always produce no-template features
 
     def __call__(
         self,
@@ -488,27 +881,28 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         n_tokens = batch["token_index"].shape[0]
         n_templ = DEFAULT_N_TEMPLATES
 
-        # OSS featurize_templates_dummy_of3() fills with all-ones.
         feats: dict[str, torch.Tensor] = {}
-        feats["template_restype"] = torch.ones(n_templ,
-                                               n_tokens,
-                                               NUM_RESTYPE_CLASSES,
-                                               dtype=torch.int32)
-        feats["template_pseudo_beta_mask"] = torch.ones(n_templ,
-                                                        n_tokens,
-                                                        dtype=torch.float32)
-        feats["template_backbone_frame_mask"] = torch.ones(n_templ,
-                                                           n_tokens,
-                                                           dtype=torch.float32)
-        feats["template_distogram"] = torch.ones(n_templ,
-                                                 n_tokens,
-                                                 n_tokens,
-                                                 TEMPLATE_DISTOGRAM_N_BINS,
-                                                 dtype=torch.int32)
-        feats["template_unit_vector"] = torch.ones(n_templ,
-                                                   n_tokens,
-                                                   n_tokens,
-                                                   3,
-                                                   dtype=torch.float32)
+        # restype: one-hot at GAP class (index 31), all other classes zero.
+        template_restype = torch.zeros(n_templ,
+                                       n_tokens,
+                                       NUM_RESTYPE_CLASSES,
+                                       dtype=torch.int32)
+        template_restype[..., GAP_IDX] = 1
+        feats["template_restype"] = template_restype
+        feats["template_pseudo_beta_mask"] = torch.zeros(n_templ,
+                                                         n_tokens,
+                                                         dtype=torch.float32)
+        feats["template_backbone_frame_mask"] = torch.zeros(
+            n_templ, n_tokens, dtype=torch.float32)
+        feats["template_distogram"] = torch.zeros(n_templ,
+                                                  n_tokens,
+                                                  n_tokens,
+                                                  TEMPLATE_DISTOGRAM_N_BINS,
+                                                  dtype=torch.float32)
+        feats["template_unit_vector"] = torch.zeros(n_templ,
+                                                    n_tokens,
+                                                    n_tokens,
+                                                    3,
+                                                    dtype=torch.float32)
 
         return feats

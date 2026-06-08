@@ -71,10 +71,28 @@ _PROTEIN_1TO3 = {
 AA_1_TO_IDX = {k: RESNAME_TO_IDX[v] for k, v in _PROTEIN_1TO3.items()}
 AA_1_TO_IDX["X"] = 20  # unknown
 
-# MSA character to index (protein only for now)
+# Nucleotide restype maps — mirrors OSS residues.py DNA_RESTYPE_1TO3 / RNA_RESTYPE_1TO3
+# (no OSS imports per project constraints).
+DNA_RESTYPE_1TO3 = {"A": "DA", "G": "DG", "C": "DC", "T": "DT", "N": "DN"}
+DNA_RESTYPE_3TO1 = {v: k for k, v in DNA_RESTYPE_1TO3.items()}
+
+RNA_RESTYPE_1TO3 = {"A": "A", "G": "G", "C": "C", "U": "U", "N": "N"}
+RNA_RESTYPE_3TO1 = {v: k for k, v in RNA_RESTYPE_1TO3.items()}
+
+# Index maps for nucleotides — map 1-letter input codes to RESNAME_TO_IDX entries.
+# RNA indices 21-25: A->21, G->22, C->23, U->24, N->25 (from RESTYPES_3)
+RNA_1_TO_IDX = {k: RESNAME_TO_IDX[v] for k, v in RNA_RESTYPE_1TO3.items()}
+# DNA indices 26-30: DA->26, DG->27, DC->28, DT->29, DN->30
+DNA_1_TO_IDX = {k: RESNAME_TO_IDX[v] for k, v in DNA_RESTYPE_1TO3.items()}
+
+# MSA character to index (protein + RNA-exclusive char)
 MSA_CHAR_TO_IDX = dict(AA_1_TO_IDX)
 MSA_CHAR_TO_IDX["-"] = 31  # gap
 MSA_CHAR_TO_IDX["."] = 31  # gap variant
+# RNA-exclusive char: U is unique to RNA and not present in protein alphabet.
+# Shared chars A/G/C/N overlap protein and RNA alphabets; mol_type dispatch in
+# MsaFeatureGenerator resolves ambiguity at generation time (D-05).
+MSA_CHAR_TO_IDX["U"] = RESNAME_TO_IDX["U"]  # index 24: RNA Uracil
 
 # Gap index
 GAP_IDX = 31
@@ -112,6 +130,15 @@ DEFAULT_N_TEMPLATES = 4
 # ---------------------------------------------------------------------------
 # MSA constants
 # ---------------------------------------------------------------------------
+# Match the OSS schema default at
+# ``openfold-3/openfold3/projects/of3_all_atom/config/dataset_config_components.py:70``
+# (``MSASettings(max_rows=16384, max_rows_paired=8191)``). The OSS dump path
+# (``workdir/openfold3-port/feature_equiv/dump_oss_of3_features.py``) uses
+# this default, and ``dump_oss_of3_features.py`` is the ground truth for L1
+# feature equivalence. A prior cycle had lowered this to 4096 to match a
+# narrower OSS *debug* runner — but the dump path doesn't use that runner,
+# so the lower cap produced shape mismatches on samples with > 4096 rows
+# (T1152: 15873, smiles_demo: 15873, T1047s1: 8498, 6m3u: 4921).
 MAX_MSA_ROWS = 16384
 MAX_MSA_ROWS_PAIRED = 8191
 
@@ -127,8 +154,9 @@ POLYMER_TYPE_TO_MOL_TYPE = {
     "protein": MOL_TYPE_PROTEIN,
     "rna": MOL_TYPE_RNA,
     "dna": MOL_TYPE_DNA,
-    "ccd_ligand": MOL_TYPE_LIGAND,
-    "smiles_ligand": MOL_TYPE_LIGAND,
+    "ligand": MOL_TYPE_LIGAND,
+    "ccd_ligand": MOL_TYPE_LIGAND,    # CCD-code ligand variant (TRT-BNM schema)
+    "smiles_ligand": MOL_TYPE_LIGAND, # SMILES ligand variant (TRT-BNM schema)
 }
 
 # ---------------------------------------------------------------------------

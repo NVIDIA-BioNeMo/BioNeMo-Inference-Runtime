@@ -14,7 +14,11 @@
 # limitations under the License.
 """OpenFold3 feature factory: generators and collators for the feature stage."""
 
+import random
 from typing import Any, Callable
+
+import numpy as np
+import torch
 
 from tensorrt_bionemo.pipeline.base import (
     FeatureCollatorSpec,
@@ -33,7 +37,20 @@ from .feature_generators import (
 
 
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
-    """No-op pre-init; all setup is handled in the ContextGenerator."""
+    """Seed Python, NumPy, and Torch RNGs from context['random_seed'].
+
+    Implements FEAT-05 tri-seeding: all three global RNGs are seeded so that
+    stochastic feature generators (ConformerFeatureGenerator's random
+    augmentation via torch.randn, RDKit ETKDGv3 seeds via stdlib random) are
+    fully reproducible given the same random_seed.
+    """
+    seed = context.get("random_seed", 0)
+    if seed is None:
+        seed = 0
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     return context
 
 

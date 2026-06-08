@@ -89,7 +89,14 @@ class PostProcessor(PostProcessorBase):
         # --- Decode atom names ---
         flat_atom_names = _decode_flat_atom_names(batch, atom_mask_bool)
 
-        # --- Remap into 37-atom-type layout ---
+        # --- Remap into the 95-slot atom layout ---
+        # NUM_ATOM_TYPES = len(AtomTypes.all_types()) = 95. The universe
+        # covers protein backbone+sidechain (0-36), nucleic backbone (37-50),
+        # nucleobases (51-68) and common ligand atom labels (C1, O7, N2…
+        # 69-94). Ligand tokens are atomized (one atom = one token), so
+        # writing each atom to its own (token, atom-name-slot) does not
+        # collide with neighbouring tokens: there's no shared vocabulary
+        # problem here because each ligand atom owns its own row.
         atom_positions = np.zeros(
             (n_tokens, NUM_ATOM_TYPES, 3), dtype=np.float32)
         atom_mask_out = np.zeros(
@@ -114,15 +121,15 @@ class PostProcessor(PostProcessorBase):
         residue_indices = _cpu(
             batch["residue_index"]).squeeze(0).numpy()[:n_tokens].astype(
             np.int64)
-        # OF3's StructureFeatureGenerator emits 1-based ``asym_id`` (see
-        # ``_renumber_chain_ids`` — chains are numbered from 1). The
-        # ``FoldingOutput`` contract and downstream writers expect 0-based
-        # chain indices: ``CIFWriter._chain_id_from_index(0)`` → "A",
-        # 1 → "B", etc. Without this shift, every chain is rendered one
-        # letter past its true ID and chain "A" disappears, breaking OST
-        # chain-mapping (T1152 lDDT crashed to 0.0).
+        # OF3 asym_id is 1-indexed per OSS contract (see feature_context.py
+        # _renumber_chain_ids → chains numbered 1..N alphabetically). The
+        # FoldingOutput / CIF-writer chain_indices contract expects 0-indexed
+        # chain IDs (chain_tags[0] == 'A'). Subtract 1 to convert so chain A
+        # writes as 'A' rather than 'B' in the produced CIF.
+        # (Surfaced by Plan 07 e2e — OST_CMD chain_mapping was offset by 1.)
         chain_indices = _cpu(
-            batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64) - 1
+            batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
+        chain_indices = chain_indices - 1
 
         # --- Confidence scores from logits ---
         plddt = _compute_plddt(output, best_idx, n_tokens, atom_to_token,
@@ -136,7 +143,9 @@ class PostProcessor(PostProcessorBase):
             plddt[:, None], NUM_ATOM_TYPES, axis=-1) * atom_mask_out
 
         # Per-residue identity for the comprehensive CIF writer: 3-letter CCD
-        # code per token and the canonical mol-type id.
+        # code per token and the canonical mol-type id. Surfaces ligand
+        # ("SAH"/"TYR"/etc.) and nucleotide ("DA"/"A"/...) on HETATM rows
+        # rather than the protein-letter heuristic.
         struct = batch.get("_row", batch).get("structure") if isinstance(
             batch, dict) else None
         residue_names: list[str] | None = None

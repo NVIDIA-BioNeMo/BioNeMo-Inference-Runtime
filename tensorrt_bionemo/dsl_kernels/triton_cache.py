@@ -392,6 +392,17 @@ def _compile_in_subprocess(
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_compiled_kernel(obj: Any) -> bool:
+    """True if *obj* exposes the Triton ``CompiledKernel`` launch ABI we use.
+
+    ``CachedKernel`` and the cuda.bindings driver path read ``.function``,
+    ``.packed_metadata`` and call ``.run()``; if all three are present the
+    object the launch returned is the compiled kernel we want.
+    """
+    return (obj is not None and hasattr(obj, "function")
+            and hasattr(obj, "packed_metadata") and hasattr(obj, "run"))
+
+
 class TritonKernelCache(KernelCacheBase):
     """Triton kernel cache with cold-cache subprocess compilation.
 
@@ -430,24 +441,42 @@ class TritonKernelCache(KernelCacheBase):
         Returns:
             A :class:`CachedKernel` wrapping the compiled kernel.
 
-        .. todo::
-            Triton > 3.5 may change the internal ``device_caches`` layout,
-            causing a ``KeyError`` when looking up the compiled kernel.
-            The cache introspection below relies on undocumented internals
-            (``device_caches``, ``compute_cache_key``); revisit when
-            upgrading Triton.
+        Notes:
+            Since Triton 3.6, ``JITFunction.run`` (invoked by
+            ``jit_fn[grid](...)``) returns the resolved ``CompiledKernel``, so
+            we capture it directly from the launch instead of re-deriving the
+            cache key from Triton internals. The legacy ``device_caches`` /
+            ``compute_cache_key`` introspection (:meth:`_lookup_compiled`) is
+            kept only as a fallback for Triton builds whose ``run`` does not
+            return the kernel.
         """
-        jit_fn[grid](*dummy_args, **constexpr_kwargs)
+        # Primary path (Triton >= 3.6): the launch returns the compiled kernel.
+        compiled = jit_fn[grid](*dummy_args, **constexpr_kwargs)
         torch.cuda.synchronize()
 
+        if not _looks_like_compiled_kernel(compiled):
+            compiled = self._lookup_compiled(jit_fn, dummy_args,
+                                             constexpr_kwargs)
+        return CachedKernel(compiled, stream=stream)
+
+    @staticmethod
+    def _lookup_compiled(
+        jit_fn: JITFunction,
+        dummy_args: tuple,
+        constexpr_kwargs: dict,
+    ) -> Any:
+        """Fallback: fetch the ``CompiledKernel`` from Triton's per-device cache.
+
+        Used only when ``jit_fn[grid](...)`` does not return the kernel (Triton
+        builds older than 3.6). Relies on undocumented internals
+        (``device_caches``, ``compute_cache_key``) and mirrors the kwargs
+        preprocessing inside ``JITFunction.run`` so the recomputed cache key
+        matches the stored entry. ``instrumentation_mode`` exists from 3.6;
+        3.5 only had ``debug``. Anything not in the kernel signature ends up in
+        ``options``, which ``compute_cache_key`` stringifies into the key.
+        """
         device = torch.cuda.current_device()
         cache, key_cache, _, _, binder = jit_fn.device_caches[device]
-        # Mirror the kwargs preprocessing inside ``JITFunction.run`` so the
-        # ``options`` dict (and therefore the cache key) matches the entry
-        # actually stored in ``cache``. Triton 3.6 added
-        # ``instrumentation_mode``; 3.5 only had ``debug``. Anything not in
-        # the kernel signature ends up in ``options``, which
-        # ``compute_cache_key`` stringifies into the key.
         runtime_kwargs: dict[str, Any] = {"debug": bool(jit_fn.debug)}
         if _knobs is not None:
             if getattr(_knobs.runtime, "debug", False):
@@ -458,7 +487,7 @@ class TritonKernelCache(KernelCacheBase):
         ba, spec, opts = binder(*dummy_args, **constexpr_kwargs,
                                 **runtime_kwargs)
         key = compute_cache_key(key_cache, spec, opts)
-        return CachedKernel(cache[key], stream=stream)
+        return cache[key]
 
     def compile_for_dtypes(
         self,

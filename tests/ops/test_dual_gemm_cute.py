@@ -29,7 +29,8 @@ import torch
 
 from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe
 from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import DualGemmXxCuTe
-from tests._torch import make_left_aligned_mask, skip_if_no_cutedsl
+from tests._torch import (make_left_aligned_mask, skip_if_no_cutedsl,
+                          skip_if_not_sm90)
 
 
 def _ref_x0_x1_dual_gemm(
@@ -294,3 +295,91 @@ def test_x_x_dual_gemm_actual_seqlen_overrides_mask():
                                out_with_mask,
                                atol=0.0,
                                rtol=0.0)
+
+
+# ---------------------------------------------------------------------------
+# SM90 (Hopper) kernel coverage
+#
+# On Hopper the wrappers resolve the persistent ping-pong kernel
+# (``DualGemmSm90Pingpong``) instead of the SM80/86/89 universal kernel, so on
+# this hardware every test above already exercises it. The tests below add the
+# coverage those don't:
+#   * explicit guards that the Hopper path is selected (not a silent SM80 /
+#     cuEquivariance fallback), and
+#   * correctness at the larger ``S=2048`` tuned bucket (``raster_factor=4``),
+#     which the ``seq_len <= 1024`` cases above never reach.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("N", [128, 256])
+def test_x_x_dual_gemm_sm90_uses_hopper_kernel(N: int):
+    """The x_x wrapper must resolve the SM90 ping-pong kernel on Hopper.
+
+    Guards against a silent fall-back to an SM80 tile (wrong calling
+    convention) or to the cuEquivariance path, which would make the
+    ``is_sm90`` branch in ``__call__`` dead on this hardware.
+    """
+    skip_if_not_sm90()
+    assert DualGemmXxCuTe()._kernel_is_sm90(128, N) is True
+
+
+def test_x0_x1_dual_gemm_sm90_uses_hopper_kernel():
+    """The x0_x1 wrapper must resolve the SM90 ping-pong kernel on Hopper."""
+    skip_if_not_sm90()
+    assert DualGemmX0X1CuTe()._kernel_is_sm90(128, 128) is True
+
+
+@pytest.mark.parametrize(
+    "N,transpose_out",
+    [(128, False), (128, True), (256, False), (256, True)],
+    ids=["N128_t0", "N128_t1", "N256_t0", "N256_t1"],
+)
+def test_x_x_dual_gemm_large_anchor(N: int, transpose_out: bool):
+    """Exercise the ``S=2048`` tuned bucket for the x_x variant.
+
+    Uses a rectangular ``[1, 4, 2048, K]`` input so the per-sample side
+    length anchor ``S = J_outer = 2048`` selects the large bucket (a
+    distinct compiled kernel -- ``raster_factor=4`` on SM90) while
+    ``M = 4 * 2048`` stays small enough to run cheaply.
+    """
+    skip_if_no_cutedsl()
+    torch.manual_seed(0)
+    K, dtype = 128, torch.bfloat16
+
+    W0 = torch.randn(N, K, dtype=dtype, device="cuda")
+    W1 = torch.randn(N, K, dtype=dtype, device="cuda")
+    X = torch.randn(1, 4, 2048, K, device="cuda").contiguous().to(dtype)
+
+    ref = _ref_x_x_dual_gemm(X, W0, W1, transpose_out=transpose_out)
+    out = DualGemmXxCuTe()(X, W0, W1, transpose_out=transpose_out)
+
+    torch.testing.assert_close(
+        out,
+        ref,
+        atol=1e-2,
+        rtol=1e-2,
+        msg=lambda m: f"N={N}, transpose_out={transpose_out}: {m}",
+    )
+
+
+def test_x0_x1_dual_gemm_large_anchor():
+    """Exercise the ``S=2048`` SM90 bucket for the x0_x1 variant.
+
+    ``S = round(sqrt(M))`` for x0_x1 (no separate ``J`` axis), so a flat
+    ``[1, M, K]`` input with ``M`` just past the 512<->2048 midpoint
+    (``1280**2``) lands in the large bucket.
+    """
+    skip_if_not_sm90()
+    torch.manual_seed(0)
+    K, N, dtype = 128, 128, torch.bfloat16
+    M = 1300 * 1300  # sqrt == 1300 > 1280 midpoint -> S=2048 bucket
+
+    W0 = torch.randn(N, K, dtype=dtype, device="cuda")
+    W1 = torch.randn(N, K, dtype=dtype, device="cuda")
+    X0 = torch.randn(1, M, K, device="cuda").to(dtype)
+    X1 = torch.randn(1, M, K, device="cuda").to(dtype)
+
+    ref = _ref_x0_x1_dual_gemm(X0, X1, W0, W1)
+    out = DualGemmX0X1CuTe()(X0, X1, W0, W1)
+
+    torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)

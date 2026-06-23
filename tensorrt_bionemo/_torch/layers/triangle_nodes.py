@@ -413,15 +413,21 @@ class TriangleMultiplicationNode(nn.Module):
             N=self.dim,
             K=self.hidden_dim,
         )
-        self._dual_gemm_x_x_op = get_dual_gemm_x_x_op(self.dtype,
-                                                      transpose_out=False,
-                                                      N=2*self.hidden_dim,
-                                                      K=self.dim)
+        # ``pair_mask_left_aligned`` must propagate so a bipartite /
+        # interior-zero pair mask routes around the CuTe LM kernel (which
+        # masks via a per-row prefix count and is silently wrong otherwise).
+        self._dual_gemm_x_x_op = get_dual_gemm_x_x_op(
+            self.dtype,
+            transpose_out=False,
+            N=2 * self.hidden_dim,
+            K=self.dim,
+            pair_mask_left_aligned=self.pair_mask_left_aligned)
         self._dual_gemm_x_x_op_transpose = get_dual_gemm_x_x_op(
-            self.dtype, 
-            transpose_out=True, 
-            N=2*self.hidden_dim, 
-            K=self.dim)
+            self.dtype,
+            transpose_out=True,
+            N=2 * self.hidden_dim,
+            K=self.dim,
+            pair_mask_left_aligned=self.pair_mask_left_aligned)
 
     def _dcp_slice(self, x: torch.Tensor,
                    mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

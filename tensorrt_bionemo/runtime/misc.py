@@ -41,6 +41,28 @@ def CUASSERT(cuda_ret):
     return None
 
 
+def query_sm_count(device: Optional[int] = None, default: int = 132) -> int:
+    """Query the multiprocessor (SM) count of a CUDA device.
+
+    Falls back to ``default`` if the query fails for any reason (e.g. no CUDA
+    device available or a driver error).
+
+    Args:
+        device: CUDA device ordinal. Defaults to the current device.
+        default: Value returned if the SM count cannot be queried.
+    """
+    try:
+        if device is None:
+            device = torch.cuda.current_device()
+        err, sm_count = cudart.cudaDeviceGetAttribute(
+            cudart.cudaDeviceAttr.cudaDevAttrMultiProcessorCount, device)
+        if err != cudart.cudaError_t.cudaSuccess:
+            return default
+        return sm_count
+    except Exception:
+        return default
+
+
 def ensure_contiguous(func):
     """
     Decorator to ensure all torch.Tensor inputs are contiguous.

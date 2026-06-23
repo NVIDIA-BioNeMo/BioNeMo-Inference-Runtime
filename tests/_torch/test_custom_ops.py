@@ -21,6 +21,8 @@ from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import \
 from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import \
     get_dual_gemm_x_x_op
 
+from . import make_left_aligned_pair_mask
+
 
 def create_linear_layers(K: int = 128,
                          N: int = 256,
@@ -51,10 +53,11 @@ def test_fused_sigmoid_gated_dual_gemm():
                                             has_bias=False)
     x = torch.randn(1, seq_len, seq_len, K,
                     device="cuda").contiguous().to(dtype)
-    mask = torch.randint(0,
-                         2, (1, seq_len, seq_len),
-                         device="cuda",
-                         dtype=torch.float32).to(dtype)
+    # The default ``get_dual_gemm_x_x_op`` dispatch (pair_mask_left_aligned=
+    # True) routes to the CuTe LM kernel, which masks via a per-row prefix
+    # count -- a random binary mask violates that contract, so use a
+    # left-aligned pair mask matching the kernel's assumption.
+    mask = make_left_aligned_pair_mask(1, seq_len, dtype=dtype, device="cuda")
     ref_x = linear0(x).sigmoid() * linear1(x)
     ref_x = ref_x * mask.unsqueeze(-1)
 

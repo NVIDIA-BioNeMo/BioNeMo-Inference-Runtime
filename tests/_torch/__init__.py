@@ -16,15 +16,52 @@
 import pytest
 import torch
 
-_CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
-
 SM_VERSION: int = (torch.cuda.get_device_capability()[0] * 10 +
                    torch.cuda.get_device_capability()[1]
                    if torch.cuda.is_available() else 0)
 
-SKIP_CUTEDSL_REASON = (
-    f"CuTeDSL kernel requires SM{'/'.join(str(s) for s in _CUTEDSL_SUPPORTED_SM)} "
-    f"(current SM{SM_VERSION})")
+# The generic CuTeDSL SM range (Ampere through Hopper). Most kernels run on
+# the whole range; ``skip_if_no_cutedsl`` / ``skip_if_cutedsl`` look up an
+# op-specific override below by op name when one is supplied.
+_CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
+
+# Per-op CuTeDSL SM overrides. Empty today: every CuTeDSL op was verified to
+# run on the whole generic range from its dispatch / config coverage in
+# ``tensorrt_bionemo/_torch``:
+#   * gated_sigmoid            -- get_gated_sigmoid_op gates on
+#                                 ``sm in (80, 86, 89, 90)``.
+#   * dual_gemm_x_x / x0_x1     -- get_dual_gemm_*_op use
+#                                 ``_TUNED_SMS = (80, 86, 89, 90)``; JSON
+#                                 configs exist for all four (the SM90
+#                                 ping-pong is just the kernel the ``sm90``
+#                                 configs resolve to, not a distinct op).
+#   * adaln_layernorm_sigmoid   -- runs on every SM (``sm < 90`` uses the
+#                                 default single-bucket schedule).
+#   * triangle_attention /      -- left-mask kernels ship Ampere (SM80) +
+#     pairwise_attention           Hopper (SM90) classes with configs for
+#                                 80/86/89/90.
+# Add an entry only when an op's kernel support genuinely diverges from the
+# generic range; ``skip_if_no_cutedsl`` / ``skip_if_cutedsl`` then honor it.
+# (Tests that assert an SM-specific *kernel path* should use a direct SM
+# gate like ``skip_if_not_sm90`` instead -- that's a test requirement, not an
+# op-support fact.)
+_CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {}
+
+
+def _cutedsl_supported_sm(op_name: str | None = None) -> tuple[int, ...]:
+    """SM versions the CuTeDSL kernel for *op_name* supports.
+
+    Unknown / ``None`` op names fall back to the generic CuTeDSL range.
+    """
+    return _CUTEDSL_OP_SUPPORTED_SM.get(op_name, _CUTEDSL_SUPPORTED_SM)
+
+
+def _cutedsl_skip_reason(supported: tuple[int, ...]) -> str:
+    return (f"CuTeDSL kernel requires SM{'/'.join(str(s) for s in supported)} "
+            f"(current SM{SM_VERSION})")
+
+
+SKIP_CUTEDSL_REASON = _cutedsl_skip_reason(_CUTEDSL_SUPPORTED_SM)
 
 skip_cutedsl = pytest.mark.skipif(
     SM_VERSION not in _CUTEDSL_SUPPORTED_SM,
@@ -32,16 +69,48 @@ skip_cutedsl = pytest.mark.skipif(
 )
 
 
-def skip_if_no_cutedsl():
-    """Call inside a test body to skip when CuTeDSL is unsupported."""
-    if SM_VERSION not in _CUTEDSL_SUPPORTED_SM:
-        pytest.skip(SKIP_CUTEDSL_REASON)
+def skip_if_no_cutedsl(op_name: str | None = None):
+    """Call inside a test body to skip when the current GPU can't run the
+    CuTeDSL kernel for *op_name*.
+
+    Args:
+        op_name: Optional op identifier. Architecture-specific kernels (e.g.
+            ``"dual_gemm_sm90"``, the Hopper-only ping-pong dual GEMM) are
+            checked against their own SM set; ``None`` or any unlisted name
+            uses the generic CuTeDSL range.
+    """
+    supported = _cutedsl_supported_sm(op_name)
+    if SM_VERSION not in supported:
+        pytest.skip(_cutedsl_skip_reason(supported))
 
 
-def skip_if_cutedsl(backend_name: str):
-    """Skip if *backend_name* is ``"CuTeDSL"`` and the GPU doesn't support it."""
-    if backend_name == "CuTeDSL" and SM_VERSION not in _CUTEDSL_SUPPORTED_SM:
-        pytest.skip(SKIP_CUTEDSL_REASON)
+def skip_if_cutedsl(backend_name: str, op_name: str | None = None):
+    """Skip if *backend_name* is ``"CuTeDSL"`` and the current GPU can't run
+    the CuTeDSL kernel for *op_name*.
+
+    Args:
+        backend_name: Attention / module backend selected by the test; the
+            check is a no-op unless it is ``"CuTeDSL"``.
+        op_name: Optional op identifier classified against
+            ``_CUTEDSL_OP_SUPPORTED_SM`` (e.g. ``"triangle_attention"``).
+            ``None`` or any unlisted name uses the generic CuTeDSL range.
+    """
+    if backend_name != "CuTeDSL":
+        return
+    supported = _cutedsl_supported_sm(op_name)
+    if SM_VERSION not in supported:
+        pytest.skip(_cutedsl_skip_reason(supported))
+
+
+def skip_if_not_sm90():
+    """Skip when the current GPU isn't Hopper (SM90).
+
+    For tests that assert / exercise an SM90-specific *kernel path* (e.g.
+    the Hopper ping-pong dual GEMM) rather than just needing *a* CuTeDSL
+    kernel for the op.
+    """
+    if SM_VERSION != 90:
+        pytest.skip(f"requires SM90 (current SM{SM_VERSION})")
 
 
 def make_left_aligned_mask(

@@ -165,12 +165,24 @@ def test_gated_sigmoid_cute_2d(sc: Scenario):
              dtype=torch.bfloat16,
              N_out=256,
              K=128),
+    Scenario(M_values=[33, 127, 511],
+             has_bias=True,
+             dtype=torch.bfloat16,
+             N_out=768,
+             K=384),
+    Scenario(M_values=[33, 127, 511],
+             has_bias=False,
+             dtype=torch.bfloat16,
+             N_out=768,
+             K=384),
 ],
                          ids=[
                              "N64_K64_bias",
                              "N64_K64_nobias",
                              "N256_K128_bias",
                              "N256_K128_nobias",
+                             "N768_K384_bias",
+                             "N768_K384_nobias",
                          ])
 def test_gated_sigmoid_cute_varied_kn(sc: Scenario):
     """Test with non-default K and N_out dimensions."""
@@ -226,6 +238,94 @@ def test_gated_sigmoid_cute_batched(shape, has_bias):
     out = cute_op(s, W, mha, bias)
 
     torch.testing.assert_close(out, ref, atol=0.05, rtol=1e-2)
+
+
+# ---------------------------------------------------------------------------
+# Broadcasting tests (gate `s` shared across a multiplicity dim of `mha_out`)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("has_bias", [True, False], ids=["bias", "nobias"])
+@pytest.mark.parametrize(
+    "B,S,I,K,N_out",
+    [
+        (2, 4, 130, 128, 128),  # I not a multiple of any tile dim
+        (1, 3, 65, 128, 128),   # single batch, odd inner
+        (3, 1, 200, 128, 128),  # mult==1 via a size-1 broadcast dim
+        (2, 5, 1, 128, 128),    # inner==1
+        (4, 2, 33, 128, 128),   # many small batches, odd inner
+        (1, 5, 76, 384, 768),   # OF3 token diffusion: K != N
+        (1, 5, 76, 768, 768),   # OF3 token diffusion: K == N
+    ],
+    ids=["B2S4I130", "B1S3I65", "B3S1I200", "B2S5I1", "B4S2I33",
+         "B1S5I76_K384_N768", "B1S5I76_K768_N768"])
+def test_gated_sigmoid_cute_broadcast(B, S, I, K, N_out, has_bias):
+    """Gate `s` is [B, 1, I, K], shared across S samples of mha_out [B, S, I, N]."""
+    skip_if_no_cutedsl()
+    torch.manual_seed(42)
+    dtype = torch.bfloat16
+
+    cute_op = GatedSigmoidCuTe()
+    W = torch.randn(N_out, K, dtype=dtype, device="cuda")
+    bias = torch.randn(N_out, dtype=dtype, device="cuda") if has_bias else None
+
+    s = torch.randn(B, 1, I, K, dtype=dtype, device="cuda")
+    mha = torch.randn(B, S, I, N_out, dtype=dtype, device="cuda")
+
+    ref = _ref_gated_sigmoid(s, W, mha, bias)
+    out = cute_op(s, W, mha, bias)
+
+    assert out.shape == mha.shape
+    torch.testing.assert_close(
+        out,
+        ref,
+        atol=0.05,
+        rtol=1e-2,
+        msg=lambda m: f"B={B}, S={S}, I={I}, K={K}, N={N_out}, bias={has_bias}: {m}")
+
+
+@pytest.mark.parametrize("has_bias", [True, False], ids=["bias", "nobias"])
+def test_gated_sigmoid_cute_broadcast_3d(has_bias):
+    """Broadcast with the multiplicity as the leading dim: s [1, I, K]."""
+    skip_if_no_cutedsl()
+    torch.manual_seed(0)
+    dtype = torch.bfloat16
+    K, N_out, S, I = 256, 128, 6, 257
+
+    cute_op = GatedSigmoidCuTe()
+    W = torch.randn(N_out, K, dtype=dtype, device="cuda")
+    bias = torch.randn(N_out, dtype=dtype, device="cuda") if has_bias else None
+
+    s = torch.randn(1, I, K, dtype=dtype, device="cuda")
+    mha = torch.randn(S, I, N_out, dtype=dtype, device="cuda")
+
+    ref = _ref_gated_sigmoid(s, W, mha, bias)
+    out = cute_op(s, W, mha, bias)
+
+    assert out.shape == mha.shape
+    torch.testing.assert_close(out, ref, atol=0.05, rtol=1e-2)
+
+
+def test_gated_sigmoid_broadcast_matches_nonbroadcast():
+    """Broadcasting S samples == expanding `s` and running the dense kernel."""
+    skip_if_no_cutedsl()
+    torch.manual_seed(123)
+    dtype = torch.bfloat16
+    K, N_out, B, S, I = 128, 128, 2, 4, 70
+
+    cute_op = GatedSigmoidCuTe()
+    W = torch.randn(N_out, K, dtype=dtype, device="cuda")
+    bias = torch.randn(N_out, dtype=dtype, device="cuda")
+
+    s = torch.randn(B, 1, I, K, dtype=dtype, device="cuda")
+    mha = torch.randn(B, S, I, N_out, dtype=dtype, device="cuda")
+
+    out_bcast = cute_op(s, W, mha, bias)
+    # Materialize the broadcast and run the dense (mult==1) path.
+    s_dense = s.expand(B, S, I, K).contiguous()
+    out_dense = cute_op(s_dense, W, mha, bias)
+
+    torch.testing.assert_close(out_bcast, out_dense, atol=0.0, rtol=0.0)
 
 
 # ---------------------------------------------------------------------------

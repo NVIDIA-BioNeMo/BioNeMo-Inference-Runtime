@@ -219,9 +219,12 @@ class ConditionedTransitionBlock(nn.Module):
         b = self._swiglu(z)
         a = self.b_to_a(b, all_reduce_params=all_reduce_params)
 
-        if self._can_fuse_output_gate and s.shape[:-1] == a.shape[:-1]:
+        if self._can_fuse_output_gate:
+            # The gated-sigmoid op broadcasts `s` (gate) across the
+            # multiplicity dim of `a` when their leading shapes differ,
+            # falling back to torch internally for unsupported patterns.
             # Reuse the AdaLN output buffer — fused_swl_a_to_b consumed it
-            # above, same [B, I, d] shape as gated_sigmoid output.
+            # above, same shape as the gated_sigmoid output.
             a = get_gated_sigmoid_op(s.dtype)(
                 s, self.output_projection.weight,
                 a, self.output_projection.bias,

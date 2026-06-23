@@ -96,3 +96,51 @@ def test_conditioned_transition_block(sc: Scenario):
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 1.0
         assert abs(diff0_mean - diff1_mean) <= 0.2
+
+
+@pytest.mark.parametrize("mult", [3, 5], ids=["S3", "S5"])
+def test_conditioned_transition_block_broadcast(mult: int):
+    """Cond input `s` is shared (size-1 multiplicity dim) while `a` varies.
+
+    Exercises the broadcast path of the fused gated-sigmoid output gate:
+    ``a`` is ``[B, S, I, d]`` and ``s`` is ``[B, 1, I, d_cond]``.
+    """
+    torch.manual_seed(42)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    bs, seq_len, dim = 2, 96, 768
+    dtype = torch.bfloat16
+    device = torch.device('cuda')
+
+    ref_cond_trans = RefConditionedTransitionBlock.load_weights().to(device)
+    weights_and_biases = create_conditioned_transition_block_weights(
+        from_ref=ref_cond_trans)
+
+    cond_trans = ConditionedTransitionBlock(dim_single=dim,
+                                            dim_single_cond=dim,
+                                            expansion_factor=2,
+                                            dtype=dtype)
+    load_conditioned_transition_block_weights_torch(cond_trans,
+                                                    weights_and_biases,
+                                                    dtype=dtype)
+    cond_trans.to(device)
+
+    a = torch.randn(bs, mult, seq_len, dim, dtype=torch.float32).cuda()
+    s = torch.randn(bs, 1, seq_len, dim, dtype=torch.float32).cuda()
+
+    with torch.inference_mode():
+        ref_output_float = ref_cond_trans(a, s)
+        a = a.to(dtype)
+        s = s.to(dtype)
+        ref_cond_trans = ref_cond_trans.to(dtype)
+
+        ref_output = ref_cond_trans(a, s)
+        output = cond_trans.forward(a, s)
+
+    assert output.shape == a.shape
+    diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
+    diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
+    diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
+    diff1_mean = torch.mean(torch.abs(ref_output.float() - ref_output_float))
+    assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 1.0
+    assert abs(diff0_mean - diff1_mean) <= 0.2

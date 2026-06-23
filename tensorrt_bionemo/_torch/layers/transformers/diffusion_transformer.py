@@ -150,7 +150,10 @@ class DiffusionTransformerLayer(nn.Module):
             mask_bias_local=mask_bias_local,
             buffers=buffers)
         if self.attn_output_gate:
-            if self._can_fuse_output_gate and s.shape[:-1] == b.shape[:-1]:
+            if self._can_fuse_output_gate:
+                # The gated-sigmoid op broadcasts `s` (gate) across the
+                # multiplicity dim of `b` when their leading shapes differ,
+                # falling back to torch internally for unsupported patterns.
                 _gs_op = get_gated_sigmoid_op(b.dtype)
                 gs_buf = ensure_buffer(buffers, "dit_bsd_scratch", b.shape,
                                        b.dtype, b.device)

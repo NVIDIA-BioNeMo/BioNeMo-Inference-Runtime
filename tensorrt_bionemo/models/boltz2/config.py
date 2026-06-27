@@ -17,7 +17,8 @@ from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       MSAModuleConfig, PairformerConfig)
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.pipeline.models.boltz2.const import num_tokens
-
+from tensorrt_bionemo._torch.graph_optimization.config_schema import \
+    CUDAGraphOptimizationConfig
 
 class _Default:
     token_s: int = 384
@@ -178,6 +179,8 @@ class ScoreModelConfig(BaseConfig):
         conditioned_transition_using_silu=False,
         expansion_factor=2,
         version="v2",
+        graph_optimization_config=CUDAGraphOptimizationConfig(
+                graph_optimization_mode="cuda_graphs_via_torch")
     )
     atom_decoder: DiffusionTransformerConfig = DiffusionTransformerConfig(
         num_blocks=3,

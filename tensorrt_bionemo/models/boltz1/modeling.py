@@ -23,6 +23,8 @@ from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
+from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+    CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import \
@@ -80,10 +82,9 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                 getter=lambda mod:
                 (mod.structure_module.score_model.token_transformer),
                 setter=lambda mod, opt: setattr(
-                    mod.structure_module.score_model, "token_transformer", opt
-                ),
+                    mod.structure_module.score_model, "token_transformer", opt),
                 trt_cls=TokenTransformerTRT,
-                compiled_cls=None,
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "structure_msa":
             ModuleSpec(

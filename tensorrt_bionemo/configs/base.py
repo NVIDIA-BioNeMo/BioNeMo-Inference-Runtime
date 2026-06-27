@@ -34,7 +34,6 @@ class BackendType:
     @classmethod
     def is_supported(cls, backend: str) -> bool:
         return backend in [cls.TRT, cls.TORCH]
-
     @staticmethod
     def from_str(backend: str) -> "BackendType":
         if backend == "trt":
@@ -61,6 +60,12 @@ class BaseConfig(BaseModel):
     pairwise_attention_backend: str = "SDPA"
     support_batch: bool = True
     backend: Union[str, BackendType] = BackendType.TORCH
+    # Opt-in CUDA-graph compilation for this module. Holds a
+    # ``None | BaseGraphOptimizationConfig`` (typed ``Any`` to avoid a config <->
+    # graph_optimization import cycle). ``None`` means "leave eager"; a config
+    # marks this module for wrapping by ``trtbnm_apply_graph_optimization`` /
+    # ``OptimizedModuleSetterMixin.optimize`` when ``backend == TORCH``.
+    graph_optimization_config: Optional[Any] = None
     # This function is used to determine if the module needs to fallback to the torch backend based on the input arguments
     need_fallback: Optional[Callable] = Field(exclude=True, default=None)
     max_batch_size: int = 1

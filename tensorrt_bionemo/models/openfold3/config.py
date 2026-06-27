@@ -15,6 +15,8 @@
 
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       EvoformerStackConfig, PairformerConfig)
+from tensorrt_bionemo._torch.graph_optimization.config_schema import \
+    CUDAGraphOptimizationConfig
 from tensorrt_bionemo.registry import SupMat
 
 
@@ -165,7 +167,9 @@ class DiffusionModuleConfig(BaseConfig):
             use_separate_layer_norm=False,
             conditioned_transition_using_silu=True,
             version="v1",
-            dtype="float32"), )
+            dtype="float32",
+            graph_optimization_config=CUDAGraphOptimizationConfig(
+                graph_optimization_mode="cuda_graphs_via_torch")), )
 
     atom_transformer_decoder_config: BaseConfig = BaseConfig(
         num_blocks=3,

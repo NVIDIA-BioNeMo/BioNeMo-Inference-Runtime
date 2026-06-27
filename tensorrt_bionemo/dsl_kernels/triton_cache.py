@@ -198,8 +198,10 @@ class CachedKernel:
 
     **Fallback (Triton .run()):** :meth:`launch` calls the compiled
     kernel's C-level ``.run()`` directly, bypassing ``JITFunction.run()``
-    and its ~17 µs of Python overhead.  The cached CUDA stream avoids
-    the 5 µs cost of ``torch.cuda.current_stream().cuda_stream`` per call.
+    and its ~17 µs of Python overhead.  The launch stream is read from
+    ``torch.cuda.current_stream()`` per call (~5 µs) so the kernel always
+    runs on the active stream, e.g. a side/capture stream during
+    CUDA-graph warmup/capture.
     """
 
     __slots__ = ("_kernel", "_stream", "_driver")
@@ -255,7 +257,12 @@ class CachedKernel:
         gx = grid[0]
         gy = grid[1] if gs > 1 else 1
         gz = grid[2] if gs > 2 else 1
-        stream = self._stream.cuda_stream
+        # Read the CURRENT stream at launch time, not a stream cached at
+        # construction. The kernel must run on whatever stream is active
+        # (e.g. a side/capture stream during CUDA-graph warmup/capture);
+        # using a stale cached stream silently runs it on the wrong stream
+        # and races with the surrounding torch ops.
+        stream = torch.cuda.current_stream().cuda_stream
         lm = kernel.launch_metadata(grid, stream, *args)
         kernel.run(gx, gy, gz, stream, kernel.function, kernel.packed_metadata,
                    lm, ENTER_HOOK, EXIT_HOOK, *args)

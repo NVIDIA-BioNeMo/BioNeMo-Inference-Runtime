@@ -47,6 +47,9 @@ from tensorrt_bionemo.registry import SupMat
 from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
 
+from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+    CUDAGraphOptimizationTracker
+
 
 class OpenFold3ModuleRegistry(ModuleRegistry):
 
@@ -67,7 +70,7 @@ class OpenFold3ModuleRegistry(ModuleRegistry):
                     mod.sample_diffusion.diffusion_module,
                     "diffusion_transformer", opt),
                 trt_cls=TokenTransformerTRT,
-                compiled_cls=None,
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
         }
 

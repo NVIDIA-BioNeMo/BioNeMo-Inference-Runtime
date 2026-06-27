@@ -60,6 +60,8 @@ from .convert import (
     convert_hf_structure_module_torch, convert_hf_template_module_torch)
 # isort: on
 
+from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+    CUDAGraphOptimizationTracker
 
 class Boltz2ModuleRegistry(ModuleRegistry):
 
@@ -86,10 +88,9 @@ class Boltz2ModuleRegistry(ModuleRegistry):
                 getter=lambda mod:
                 (mod.structure_module.score_model.token_transformer),
                 setter=lambda mod, opt: setattr(
-                    mod.structure_module.score_model, "token_transformer", opt
-                ),
+                    mod.structure_module.score_model, "token_transformer", opt),
                 trt_cls=TokenTransformerTRT,
-                compiled_cls=None,
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "structure_msa":
             ModuleSpec(

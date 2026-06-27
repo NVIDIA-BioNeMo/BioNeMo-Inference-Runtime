@@ -22,6 +22,8 @@ from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
 from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
+from tensorrt_bionemo._torch.graph_optimization.config_schema import \
+    GraphOptimizationMode
 
 
 @dataclass
@@ -40,6 +42,7 @@ class ModuleSpec:
     setter: Callable
     trt_cls: Optional[type] = None
     compiled_cls: Optional[type] = None
+    graph_optimization_cls: Optional[type] = None
 
 
 class ModuleRegistry(ABC):
@@ -51,7 +54,7 @@ class ModuleRegistry(ABC):
             configs: A dictionary of AcceleratedConfig for the accelerated modules.
         """
         self._configs = {}
-        all_known = set(self.get_accelerated_modules().keys())
+        all_known: dict[str, ModuleSpec] = self.get_accelerated_modules()
         for k, v in configs.items():
             if k not in all_known:
                 logger.warning(f"Unknown module: {k}")
@@ -146,7 +149,18 @@ class OptimizedModuleSetterMixin(ABC):
                 opt_m.config.need_fallback = (
                     optimized_modules.get_module_need_fallback(module_name))
 
-            # ── torch.compile path ──────────────────────────────────────
-            # TODO: Implement torch.compile path
+            # ── torch + CUDA-graph path ─────────────────────────────────
+            # Mirrors the TRT path (req 4.1): the eager module is replaced by a
+            # graph-compilation tracker that keeps the original as its eager
+            # ``inner_module`` / fallback.
+            elif backend == BackendType.TORCH and spec.graph_optimization_cls is not None:
+                org = spec.getter(self)
+                graph_config = getattr(acc_config.default, "graph_optimization_config",
+                                       None) if acc_config.default else None
+                if graph_config is not None and graph_config.graph_optimization_mode != GraphOptimizationMode.NO_OPTIMIZATION:
+                    opt_m = spec.graph_optimization_cls(config=graph_config,
+                                                       inner_module=org)
+                    opt_m.set_fallback_module(org)
+                    spec.setter(self, opt_m)
 
         return self

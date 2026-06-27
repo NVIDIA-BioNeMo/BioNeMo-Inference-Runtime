@@ -291,8 +291,8 @@ class DriverLauncher:
     Requires ``pip install cuda-python`` (the ``cuda.bindings`` package).
     """
 
-    __slots__ = ('_func', '_module', '_block_x', '_shmem', '_stream', 'params',
-                 '_kp', '_n_params')
+    __slots__ = ('_func', '_module', '_block_x', '_shmem', '_stream',
+                 '_stream_handle', 'params', '_kp', '_n_params')
 
     def __init__(
         self,
@@ -326,6 +326,12 @@ class DriverLauncher:
             import torch
             cu_stream = _drv.CUstream(torch.cuda.current_stream().cuda_stream)
         self._stream = cu_stream
+        # Raw handle backing self._stream. launch() compares the current
+        # stream's handle against this to detect a stream switch and refresh
+        # self._stream, so the kernel always runs on the active stream rather
+        # than a stream cached at construction. Initialized to None so the
+        # first launch always re-reads the current stream.
+        self._stream_handle = None
 
         self.params: list = []
         for pt in param_types:
@@ -340,6 +346,15 @@ class DriverLauncher:
 
     def launch(self, grid_x: int, grid_y: int = 1, grid_z: int = 1) -> None:
         """Launch the kernel.  Caller must set ``params[i].value`` first."""
+        # Honor the CURRENT stream at launch time. Only rebuild the CUstream
+        # wrapper when the active stream actually changes, so the common
+        # single-stream case stays cheap while side/capture streams (CUDA-graph
+        # warmup/capture) are still respected.
+        import torch
+        cur = torch.cuda.current_stream().cuda_stream
+        if cur != self._stream_handle:
+            self._stream = _drv.CUstream(cur)
+            self._stream_handle = cur
         (err, ) = _drv.cuLaunchKernel(
             self._func,
             grid_x,

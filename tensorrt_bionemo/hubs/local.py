@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import io
 import logging
 import os
-from collections import namedtuple
+from collections import OrderedDict, defaultdict, namedtuple
 from pathlib import Path
 from typing import Optional, Union
 
@@ -26,6 +27,18 @@ from tensorrt_bionemo.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
 logger = logging.getLogger(__name__)
 
+BOLTZ_MODEL_NAMES = frozenset({
+    SupMat.Boltz1,
+    SupMat.Boltz2,
+    SupMat.Boltz2Affinity,
+})
+
+# MD5 digests of official HuggingFace Boltz checkpoints.
+BOLTZ_CHECKPOINT_MD5 = {
+    "boltz2_conf.ckpt": "2f0a1775bf8fc366a1a85e2019eca288",
+    "boltz2_aff.ckpt": "8e93dadedd6edb7a4d170f6051b99ec0",
+}
+
 LocalCheckpoint = namedtuple("LocalCheckpoint",
                              ["env", "weights_only", "state_dict_key"])
 
@@ -33,19 +46,19 @@ LOCAL_CHECKPOINTS = {
     SupMat.Boltz1:
     LocalCheckpoint(
         env="BOLTZ1_CKPT",
-        weights_only=False,
+        weights_only=True,
         state_dict_key="state_dict",
     ),
     SupMat.Boltz2:
     LocalCheckpoint(
         env="BOLTZ2_CKPT",
-        weights_only=False,
+        weights_only=True,
         state_dict_key="state_dict",
     ),
     SupMat.Boltz2Affinity:
     LocalCheckpoint(
         env="BOLTZ2_AFFINITY_CKPT",
-        weights_only=False,
+        weights_only=True,
         state_dict_key="state_dict",
     ),
     SupMat.OpenFold2_FT2:
@@ -202,6 +215,47 @@ def _load_of3_state_dict(local_checkpoint: str):
     return state_dict
 
 
+def _load_boltz_state_dict(local_checkpoint: str):
+    unsafe_globals = [
+        (Dummy, 'omegaconf.base.ContainerMetadata'),
+        (Dummy, 'omegaconf.base.Metadata'),
+        (Dummy, 'omegaconf.dictconfig.DictConfig'),
+        (Dummy, 'omegaconf.listconfig.ListConfig'),
+        (Dummy, 'omegaconf.nodes.AnyNode'),
+        (Dummy, 'typing.Any'),
+        OrderedDict,
+        defaultdict,
+        int,
+        bool,
+        float,
+        str,
+        tuple,
+        list,
+        dict,
+    ]
+    with torch.serialization.safe_globals(unsafe_globals):
+        return torch.load(local_checkpoint,
+                          map_location="cpu",
+                          weights_only=True)
+
+
+def verify_boltz_checkpoint_md5(path: str | Path, filename: str) -> None:
+    """Verify MD5 of a downloaded Boltz checkpoint against known digests."""
+    expected = BOLTZ_CHECKPOINT_MD5.get(Path(filename).name)
+    if expected is None:
+        return
+    digest = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != expected:
+        raise ValueError(
+            f"MD5 mismatch for {filename}: expected {expected}, got {actual}. "
+            "The checkpoint file may be corrupted or tampered with."
+        )
+
+
 def load_local_weights(
     name: str,
     return_raw: bool = False,
@@ -230,8 +284,12 @@ def load_local_weights(
     if return_raw:
         return cached_file
     cached_file.close()
-    if name == "openfold3":  # OpenFold3 has a different structure, we specifically extract the model weights
+    if name == SupMat.OpenFold3:
         state_dict = _load_of3_state_dict(filepath)
+    elif name in BOLTZ_MODEL_NAMES:
+        state_dict = _load_boltz_state_dict(filepath)
+        if state_dict_key is not None:
+            state_dict = state_dict[state_dict_key]
     else:
         try:
             state_dict = torch.load(filepath, weights_only=weights_only)

@@ -22,6 +22,10 @@ import torch
 from huggingface_hub import hf_hub_download
 from tensorrt_llm_lite.logger import logger
 
+from tensorrt_bionemo.hubs.local import (_load_boltz_state_dict,
+                                       _load_of3_state_dict,
+                                       BOLTZ_MODEL_NAMES,
+                                       verify_boltz_checkpoint_md5)
 from tensorrt_bionemo.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
 HFCheckpoint = namedtuple(
@@ -32,21 +36,21 @@ HF_CHECKPOINTS = {
     HFCheckpoint(
         repo_id="boltz-community/boltz-1",
         filename="boltz1_conf.ckpt",
-        weights_only=False,
+        weights_only=True,
         state_dict_key="state_dict",
     ),
     SupMat.Boltz2:
     HFCheckpoint(
         repo_id="boltz-community/boltz-2",
         filename="boltz2_conf.ckpt",
-        weights_only=False,
+        weights_only=True,
         state_dict_key="state_dict",
     ),
     SupMat.Boltz2Affinity:
     HFCheckpoint(
         repo_id="boltz-community/boltz-2",
         filename="boltz2_aff.ckpt",
-        weights_only=False,
+        weights_only=True,
         state_dict_key="state_dict",
     ),
     SupMat.OpenFold2_FT2:
@@ -129,7 +133,8 @@ def load_state_dict_from_hf(
         state_dict_key: Optional[str] = None,
         cache_dir: Optional[Union[str, Path]] = None,
         local_files_only: bool = False,
-        return_raw: bool = False) -> Union[io.BytesIO, dict[str]]:
+        return_raw: bool = False,
+        name: Optional[str] = None) -> Union[io.BytesIO, dict[str]]:
     """ Load a state dict from the Hugging Face Hub """
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "hf"
@@ -140,12 +145,18 @@ def load_state_dict_from_hf(
     if return_raw:
         return cached_file
     logger.debug(f"Loading state dict from {cached_file}")
-    try:
-        state_dict = torch.load(cached_file, weights_only=weights_only)
-    except TypeError:
-        state_dict = torch.load(cached_file,
-                                weights_only=weights_only,
-                                map_location="cpu")
+    if name in BOLTZ_MODEL_NAMES:
+        verify_boltz_checkpoint_md5(cached_file, filename)
+        state_dict = _load_boltz_state_dict(cached_file)
+    elif name == SupMat.OpenFold3:
+        state_dict = _load_of3_state_dict(cached_file)
+    else:
+        try:
+            state_dict = torch.load(cached_file, weights_only=weights_only)
+        except TypeError:
+            state_dict = torch.load(cached_file,
+                                    weights_only=weights_only,
+                                    map_location="cpu")
     if state_dict_key is not None:
         state_dict = state_dict[state_dict_key]
     return state_dict
@@ -164,10 +175,13 @@ def load_hf_weights(
     default_repo_id = checkpoint.repo_id
     if repo_id is None:
         repo_id = default_repo_id
-    return load_state_dict_from_hf(repo_id=repo_id,
-                                   filename=checkpoint.filename,
-                                   weights_only=checkpoint.weights_only,
-                                   state_dict_key=checkpoint.state_dict_key,
-                                   local_files_only=local_files_only,
-                                   cache_dir=cache_path,
-                                   return_raw=return_raw)
+    return load_state_dict_from_hf(
+        repo_id=repo_id,
+        filename=checkpoint.filename,
+        weights_only=checkpoint.weights_only,
+        state_dict_key=checkpoint.state_dict_key,
+        local_files_only=local_files_only,
+        cache_dir=cache_path,
+        return_raw=return_raw,
+        name=name,
+    )

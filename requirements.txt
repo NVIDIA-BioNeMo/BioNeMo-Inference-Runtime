@@ -15,7 +15,7 @@ ray[serve,data]==2.54.0  # installs pandas, pyarrow
 uvloop==0.21.0
 modelcif==1.6  # needed for CIFWriter
 rdkit==2025.9.6 # needed for Boltz2 Data pipeline
-nvidia-cutlass-dsl[cu13]>=4.4.2
+nvidia-cutlass-dsl[cu13]==4.5.2
 apache-tvm-ffi>=0.1.6,<0.2
 torch-c-dlpack-ext==0.1.5
 biotite==1.6.0

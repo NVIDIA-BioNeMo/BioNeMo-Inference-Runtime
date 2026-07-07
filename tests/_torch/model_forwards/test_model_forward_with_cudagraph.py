@@ -90,15 +90,10 @@ DIFFUSION_SAMPLES = 1
 
 # lDDT floor between the original and cuda-graph predictions. They share weights,
 # inputs, and RNG, so a correct graph should yield near-identical structures
-# (lDDT ≈ 1.0). The floor is per-model: Boltz-2's eager forward is
+# (lDDT ≈ 1.0). The floor is per-model: Boltz-2 and OF3 eager forward is
 # deterministic so its graph matches eager bit-for-bit (0.98 leaves headroom
-# for benign sampling noise), while OpenFold3's eager forward is
-# non-deterministic run-to-run (see test_model_forward_eager_determinism.py),
-# so its graph and eager trajectories drift over the diffusion
-# rollout — a much looser 0.05 floor.  Note that these tests assert that
-# the state GRAPH_VERIFIED is reached for every captured key, demonstrating
-# that the graph replay is a bit-exact reproduction of eager.
-LDDT_PARITY_FLOOR = {"boltz-2": 0.98, "openfold3": 0.05}
+# for benign sampling noise)
+LDDT_PARITY_FLOOR = {"boltz-2": 0.98, "openfold3": 0.98}
 
 _SAMPLES_AVAILABLE = MONOMERS_DIR.is_dir() and all(
     (MONOMERS_DIR / f"{sid}.json").exists() for sid in SAMPLE_IDS)

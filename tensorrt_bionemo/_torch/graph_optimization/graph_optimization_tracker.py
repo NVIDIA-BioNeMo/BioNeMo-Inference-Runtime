@@ -372,8 +372,8 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
 
     def forward(self, *args, **kwargs) -> Tensor | tuple[Tensor, ...]:
         """Graph-compile per input key, reverting to eager when unsafe."""
-        # CUDA graphs capture an inference forward. Under autograd or while
-        # training, run eager and do not create/advance any per-key state.
+        # CUDA graphs capture an inference forward.  Under autograd, run eager.
+        # Do not do eager for self.training=True.
         if torch.is_grad_enabled():
             return self.inner_module(*args, **kwargs)
 

@@ -155,12 +155,16 @@ class OptimizedModuleSetterMixin(ABC):
             # ``inner_module`` / fallback.
             elif backend == BackendType.TORCH and spec.graph_optimization_cls is not None:
                 org = spec.getter(self)
-                graph_config = getattr(acc_config.default, "graph_optimization_config",
-                                       None) if acc_config.default else None
-                if graph_config is not None and graph_config.graph_optimization_mode != GraphOptimizationMode.NO_OPTIMIZATION:
-                    opt_m = spec.graph_optimization_cls(config=graph_config,
-                                                       inner_module=org)
-                    opt_m.set_fallback_module(org)
-                    spec.setter(self, opt_m)
+                graph_config = getattr(acc_config.default, 
+                                        "graph_optimization_config",
+                                        None) if acc_config.default else None
+                
+                if graph_config is not None:
+                    graph_mode = getattr(graph_config, "graph_optimization_mode", None)
+                    if graph_mode != GraphOptimizationMode.NO_OPTIMIZATION:
+                        opt_m = spec.graph_optimization_cls(config=graph_config,
+                                                        inner_module=org)
+                        opt_m.set_fallback_module(org)
+                        spec.setter(self, opt_m)
 
         return self

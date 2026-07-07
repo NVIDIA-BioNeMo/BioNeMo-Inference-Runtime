@@ -26,25 +26,17 @@ Each model is run through the public ``build_processor`` API on the in-process
 inputs, over the same three bundled CASP14 monomers. The two runs' predicted
 structures are then compared per target (CA lDDT + max coordinate deviation).
 
-The two models land on opposite sides of this baseline, and the test pins both:
+Both models are on the deterministic side of this baseline after mr204, and the
+test pins that for each:
 
   * **Boltz-2** — fully deterministic: the two eager runs are **bit-identical**
     (max\\|Δcoord\\| == 0, CA lDDT == 1.0) for every target. This is why its
     CUDA-graph replay matches eager bit-for-bit.
-  * **OpenFold3** — **not** bit-identical: its ``bias_proj=True`` token
-    transformer uses the mega-GEMM precomputed-bias + CuTeDSL pairwise-attention
-    path, which is non-deterministic run-to-run. Tiny per-step differences
-    amplify over the 200-step rollout, so the two eager runs diverge in
-    coordinates (max\\|Δcoord\\| > 0) for every target, and the divergence is
-    large enough to lower CA lDDT below 1.0 for at least the worst-affected
-    target — independent of CUDA graphs. (CA lDDT alone is a lenient local
-    metric that can stay at 1.0 under >1 Å drift, so bit-identicality is the
-    reliable per-target discriminator; see the assertions.)
+  * **OpenFold3** — fully deterministic: the two eager runs are **bit-identical**
+    (max\\|Δcoord\\| == 0, CA lDDT == 1.0) for every target. This is why its
+    CUDA-graph replay matches eager bit-for-bit.
 
-This documents the non-determinism as a known property (so the openfold3
-CUDA-graph parity failure is correctly read as a kernel issue, not a graph bug)
-and would catch a regression in either direction (boltz-2 losing determinism, or
-openfold3 silently changing path).
+
 """
 
 import json
@@ -72,7 +64,7 @@ from tests.common.test_utils.seeding import seed_everything
 # must be bit-identical is the property under test (see module docstring).
 MODEL_SOURCES = ("openfold3", "boltz-2")
 # Expected run-to-run determinism of the eager forward, per model.
-EXPECT_DETERMINISTIC = {"openfold3": False, "boltz-2": True}
+EXPECT_DETERMINISTIC = {"openfold3": True, "boltz-2": True}
 SEED = 42
 
 # Bundled sample data (no Git LFS — real files shipped in the repo).
@@ -82,8 +74,9 @@ MONOMERS_DIR = SAMPLES_DIR / "monomers"
 # Three smallest CASP14 monomers (≈95 / 100 residues).
 SAMPLE_IDS = ("T1031", "T1033")
 
-# Diffusion runtime args. A long rollout is what makes a non-deterministic
-# model's two trajectories diverge measurably (per-step noise accumulates).
+# Diffusion runtime args. A long rollout is what would surface any residual
+# non-determinism — per-step noise accumulates over the trajectory — so it is
+# the strongest setting for this determinism baseline.
 RECYCLING_STEPS = 3
 NUM_SAMPLING_STEPS = 200
 DIFFUSION_SAMPLES = 1
@@ -351,7 +344,8 @@ def test_eager_run_to_run_determinism(model_source):
         # preserved), so a per-target ``lddt < 1.0`` check is not robust for the
         # non-deterministic model — only the aggregate (worst target) is.
         if expect_deterministic:
-            # Boltz-2: every target's two eager runs must be bit-identical.
+            # After mr204 both models are deterministic: every target's two
+            # eager runs must be bit-identical.
             for sid in SAMPLE_IDS:
                 lddt, max_dev = results[sid]
                 assert max_dev == 0.0 and lddt == 1.0, (

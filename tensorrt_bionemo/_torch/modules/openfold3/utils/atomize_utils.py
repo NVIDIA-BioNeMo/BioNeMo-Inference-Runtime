@@ -20,11 +20,13 @@ from typing import Literal
 import math
 import torch
 
+from tensorrt_bionemo._torch.utils import _deterministic_algorithms
 from tensorrt_bionemo._torch.modules.openfold3.utils.residues import STANDARD_PROTEIN_RESIDUES_ORDER
 from tensorrt_bionemo._torch.modules.openfold3.utils.token_atom_constants import (
     TOKEN_TYPES_WITH_GAP,
     atom_name_to_index_by_restype,
 )
+
 
 def broadcast_token_feat_to_atoms(
     token_mask: torch.Tensor,
@@ -46,7 +48,7 @@ def broadcast_token_feat_to_atoms(
         token_dim:
             Token dimension
         max_num_atoms_per_token:
-            Maximum number of atoms per tokenx
+            Maximum number of atoms per token
     Returns:
         atom_feat:
             [*, N_atom] Broadcasted atom-level feature (if max_num_atoms_per_token
@@ -130,6 +132,13 @@ def aggregate_atom_feat_to_tokens(
     """
     Aggregate atom-level features to token-level features with mean or sum aggregation.
 
+    The atom->token scatter is accumulated under a deterministic-algorithms context (see
+    ``_deterministic_algorithms``), so the result is bit-identical run-to-run;
+    the output is cast back to the input dtype before returning. This matters
+    because the aggregation runs on every diffusion rollout step, where CUDA
+    ``scatter_add_``'s non-deterministic atomic-add order would otherwise
+    compound into divergent structures.
+
     Args:
         token_mask:
             [*, N_token] Token mask
@@ -154,6 +163,11 @@ def aggregate_atom_feat_to_tokens(
     batch_dims = token_mask.shape[:-1]
     feat_batch_dims = atom_feat.shape[:atom_dim]
     feat_dims = atom_feat.shape[atom_dim:][1:]
+    # Accumulate the atom->token scatter under deterministic algorithms
+    # (see ``_deterministic_algorithms``): CUDA ``scatter_add_`` is otherwise
+    # non-deterministic run-to-run, and that per-call noise amplifies over the
+    # diffusion rollout into divergent structures. The result is cast back to
+    # ``orig_dtype`` before returning.
     atom_feat = atom_feat * atom_mask.reshape(atom_mask.shape + (1,) * len(feat_dims))
 
     # Mask out atoms that are not part of the structure
@@ -175,28 +189,33 @@ def aggregate_atom_feat_to_tokens(
     if aggregate_fn not in ["mean", "sum"]:
         raise ValueError(f"Invalid aggregation function: {aggregate_fn}")
 
-    # Compute summed token-level feature
+    # Compute summed token-level feature (deterministic scatter -- see note above)
     token_feat = torch.zeros(
         (*feat_batch_dims, n_token + 1, *feat_dims),
         device=atom_feat.device,
         dtype=atom_feat.dtype,
-    ).scatter_add_(
-        index=repeated_atom_to_token_index.long(), src=atom_feat, dim=atom_dim
     )
+    with _deterministic_algorithms():
+        token_feat.scatter_add_(
+            index=repeated_atom_to_token_index.long(), src=atom_feat, dim=atom_dim
+        )
     token_feat = token_feat.reshape((*feat_batch_dims, n_token + 1, -1))[
         ..., :n_token, :
     ].reshape((*feat_batch_dims, n_token, *feat_dims))
 
     # Compute mean token-level feature
     if aggregate_fn == "mean":
-        # Compute number of atoms (non-masked) per token
+        # Compute number of atoms (non-masked) per token (int32 accumulation;
+        # integer addition is associative, so no need for deterministic scatter)
+        INTEGER_ADDITION_DTYPE = torch.int32
         token_num_atoms = torch.zeros(
-            (*batch_dims, n_token + 1), device=atom_feat.device, dtype=atom_feat.dtype
+            (*batch_dims, n_token + 1), device=atom_feat.device, dtype=INTEGER_ADDITION_DTYPE
         ).scatter_add_(
-            index=atom_to_token_index.long(),
-            src=atom_mask.to(dtype=atom_feat.dtype),
+            index=atom_to_token_index.to(torch.int64),
+            src=atom_mask.to(INTEGER_ADDITION_DTYPE),
             dim=-1,
-        )[..., :n_token]
+        )
+        token_num_atoms = token_num_atoms[..., :n_token]
 
         token_feat = token_feat / (
             token_num_atoms.reshape(token_num_atoms.shape + (1,) * len(feat_dims)) + eps

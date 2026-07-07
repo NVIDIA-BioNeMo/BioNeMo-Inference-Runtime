@@ -36,8 +36,8 @@ local passes).
 
 import os
 
-os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")
-os.environ.setdefault("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE", "0")
+os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
 
 import torch  # noqa: E402  (imported after the env vars above on purpose)
 

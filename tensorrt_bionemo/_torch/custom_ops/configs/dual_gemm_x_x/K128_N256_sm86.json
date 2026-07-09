@@ -1,6 +1,86 @@
 {
   "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm80_dual_gemm_x_x_universal.DualGemmSm80XxLM",
   "configs": {
+    "S=128|t=0": {
+      "cta_tiler": [
+        64,
+        128,
+        32
+      ],
+      "num_stages": 2,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": true,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "GLOBAL",
+      "cache_mode_B": "GLOBAL"
+    },
+    "S=128|t=1": {
+      "cta_tiler": [
+        64,
+        64,
+        32
+      ],
+      "num_stages": 2,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": true,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "ALWAYS",
+      "cache_mode_B": "GLOBAL"
+    },
+    "S=256|t=0": {
+      "cta_tiler": [
+        64,
+        128,
+        32
+      ],
+      "num_stages": 2,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": true,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "ALWAYS",
+      "cache_mode_B": "GLOBAL"
+    },
+    "S=256|t=1": {
+      "cta_tiler": [
+        64,
+        64,
+        32
+      ],
+      "num_stages": 4,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": true,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "GLOBAL",
+      "cache_mode_B": "GLOBAL"
+    },
     "S=512|t=0": {
       "cta_tiler": [
         64,

@@ -8,18 +8,9 @@
       ],
       "num_stages": 0,
       "tile_k_multiplier": 4,
-      "raster_factor": 0
+      "raster_factor": 2
     },
     "S=128|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 4
-    },
-    "S=384|t=0": {
       "tile_shape_mn": [
         64,
         128
@@ -28,7 +19,16 @@
       "tile_k_multiplier": 8,
       "raster_factor": 0
     },
-    "S=384|t=1": {
+    "S=256|t=0": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 4,
+      "raster_factor": 1
+    },
+    "S=256|t=1": {
       "tile_shape_mn": [
         64,
         128
@@ -44,7 +44,7 @@
       ],
       "num_stages": 0,
       "tile_k_multiplier": 4,
-      "raster_factor": 2
+      "raster_factor": 1
     },
     "S=512|t=1": {
       "tile_shape_mn": [
@@ -52,8 +52,8 @@
         128
       ],
       "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 1
+      "tile_k_multiplier": 4,
+      "raster_factor": 0
     },
     "S=768|t=0": {
       "tile_shape_mn": [
@@ -61,7 +61,7 @@
         128
       ],
       "num_stages": 0,
-      "tile_k_multiplier": 8,
+      "tile_k_multiplier": 4,
       "raster_factor": 0
     },
     "S=768|t=1": {
@@ -70,8 +70,8 @@
         128
       ],
       "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 0
+      "tile_k_multiplier": 4,
+      "raster_factor": 4
     },
     "S=1536|t=0": {
       "tile_shape_mn": [
@@ -80,7 +80,7 @@
       ],
       "num_stages": 0,
       "tile_k_multiplier": 8,
-      "raster_factor": 1
+      "raster_factor": 4
     },
     "S=1536|t=1": {
       "tile_shape_mn": [
@@ -88,26 +88,8 @@
         128
       ],
       "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 1
-    },
-    "S=2048|t=0": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
       "tile_k_multiplier": 4,
-      "raster_factor": 1
-    },
-    "S=2048|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 0
+      "raster_factor": 4
     }
   }
 }

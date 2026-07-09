@@ -271,12 +271,20 @@ def _cutedsl_precompute_pair_masks(
     # The CuTeDSL left-mask kernel assumes each row along the masked axis is
     # ``1...1 0...0``. Equivalently, the row must be non-increasing. Verify
     # this along both axes since we reduce over each independently below.
-    assert torch.all(mask_bool[..., :-1] >= mask_bool[..., 1:]) and \
-        torch.all(mask_bool[..., :-1, :] >= mask_bool[..., 1:, :]), (
-            "CuTeDSL precompute_pair_masks requires a left-aligned "
-            "(``1...1 0...0``) pair_mask along both the last and "
-            "second-to-last dims (e.g. the outer product of a left-aligned "
-            "seq_mask). Got a pair_mask with interior zeros.")
+    # ``torch.all(...)`` in a bool context forces a device->host sync, which is
+    # illegal while a CUDA graph is capturing (``operation not permitted when
+    # stream is capturing``) -- and this precompute runs inside the graphed
+    # region for graph-optimized modules (e.g. the Protenix trunk pairformer,
+    # called once per recycling cycle). Skip the (debug) validation during
+    # capture; it already ran during the graph tracker's eager warmup for this
+    # shape, and the mask is left-aligned by construction in inference.
+    if not torch.cuda.is_current_stream_capturing():
+        assert torch.all(mask_bool[..., :-1] >= mask_bool[..., 1:]) and \
+            torch.all(mask_bool[..., :-1, :] >= mask_bool[..., 1:, :]), (
+                "CuTeDSL precompute_pair_masks requires a left-aligned "
+                "(``1...1 0...0``) pair_mask along both the last and "
+                "second-to-last dims (e.g. the outer product of a left-aligned "
+                "seq_mask). Got a pair_mask with interior zeros.")
     # ``actual_s_kv`` (per-row valid J count, int32 ``[B, I]``) doubles as
     # the dual_gemm_x_x ``actual_seqlen`` for ``tri_mul_out`` -- the LM
     # dual_gemm kernel masks row ``g_m`` via

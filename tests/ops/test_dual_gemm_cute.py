@@ -27,10 +27,12 @@ from typing import Optional
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import DualGemmXxCuTe
-from tests._torch import (make_left_aligned_mask, skip_if_no_cutedsl,
-                          skip_if_not_sm90)
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import (
+    DualGemmX0X1CuTe, get_dual_gemm_x0_x1_op)
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import (
+    DualGemmXxCuTe, get_dual_gemm_x_x_op)
+from tests._torch import (SM_VERSION, make_left_aligned_mask,
+                          skip_if_no_cutedsl, skip_if_not_sm90)
 
 
 def _ref_x0_x1_dual_gemm(
@@ -93,21 +95,37 @@ class Scenario:
     rtol: float = 1e-2
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(N=128, K=128, dtype=torch.bfloat16),
-    Scenario(N=128, K=128, dtype=torch.bfloat16, has_bias=True),
-    Scenario(N=128, K=128, dtype=torch.float16),
-    Scenario(N=128, K=128, dtype=torch.float16, has_bias=True),
-],
-                         ids=[
-                             "sc_N128_K128_b0_bf16",
-                             "sc_N128_K128_b1_bf16",
-                             "sc_N128_K128_b0_fp16",
-                             "sc_N128_K128_b1_fp16",
-                         ])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(N=128, K=128, dtype=torch.bfloat16),
+        Scenario(N=128, K=128, dtype=torch.bfloat16, has_bias=True),
+        Scenario(N=128, K=128, dtype=torch.float16),
+        Scenario(N=128, K=128, dtype=torch.float16, has_bias=True),
+        # ProtenixV2 trimul out-proj (c_z=256) -- CuTeDSL on SM80/86/89/90.
+        # ``|b=1`` reuses the tuned ``|b=0`` tiles (no separate bias tune).
+        Scenario(N=256, K=256, seq_lens=[100, 256], dtype=torch.bfloat16),
+        Scenario(N=256,
+                 K=256,
+                 seq_lens=[100, 256],
+                 dtype=torch.bfloat16,
+                 has_bias=True),
+    ],
+    ids=[
+        "sc_N128_K128_b0_bf16",
+        "sc_N128_K128_b1_bf16",
+        "sc_N128_K128_b0_fp16",
+        "sc_N128_K128_b1_fp16",
+        "sc_N256_K256_b0_bf16",
+        "sc_N256_K256_b1_bf16",
+    ])
 def test_x0_x1_dual_gemm(sc: Scenario):
     """Test CuTe DSL dual GEMM x0_x1 against fp32 reference."""
     skip_if_no_cutedsl()
+    if (sc.N, sc.K) == (256, 256) and SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(
+            f"Protenix (N=256,K=256) x0_x1 CuTeDSL is SM80/86/89/90 only "
+            f"(current SM{SM_VERSION})")
     torch.manual_seed(42)
 
     cute_op = DualGemmX0X1CuTe()
@@ -165,6 +183,24 @@ def test_x0_x1_dual_gemm(sc: Scenario):
                  dtype=torch.bfloat16,
                  has_bias=True,
                  has_mask=True),
+        # ProtenixV2 trimul (c_z=256, hidden=256) -- CuTeDSL on SM80/86/89/90.
+        Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16),
+        Scenario(N=512,
+                 K=256,
+                 seq_lens=[100, 256],
+                 dtype=torch.bfloat16,
+                 has_mask=True),
+        Scenario(N=512,
+                 K=256,
+                 seq_lens=[100, 256],
+                 dtype=torch.bfloat16,
+                 transpose_out=True),
+        Scenario(N=512,
+                 K=256,
+                 seq_lens=[100, 256],
+                 dtype=torch.bfloat16,
+                 has_mask=True,
+                 transpose_out=True),
         # transpose_out=True -- exercises the col-major output allocator.
         Scenario(N=128,
                  K=128,
@@ -188,6 +224,10 @@ def test_x0_x1_dual_gemm(sc: Scenario):
         "sc_N128_K128_b0_m1_fp16",
         "sc_N256_K128_b0_m0_bf16",
         "sc_N256_K128_b1_m1_bf16",
+        "sc_N512_K256_b0_m0_bf16",
+        "sc_N512_K256_b0_m1_bf16",
+        "sc_N512_K256_b0_m0_bf16_t1",
+        "sc_N512_K256_b0_m1_bf16_t1",
         "sc_N128_K128_b0_m0_bf16_t1",
         "sc_N128_K128_b0_m0_bf16_t1_m_unaligned",
     ])
@@ -201,6 +241,10 @@ def test_x_x_dual_gemm(sc: Scenario):
       * transpose_out: optional output transpose
     """
     skip_if_no_cutedsl()
+    if (sc.N, sc.K) == (512, 256) and SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(
+            f"Protenix (N=512,K=256) x_x CuTeDSL is SM80/86/89/90 only "
+            f"(current SM{SM_VERSION})")
     torch.manual_seed(42)
 
     cute_op = DualGemmXxCuTe()
@@ -295,6 +339,45 @@ def test_x_x_dual_gemm_actual_seqlen_overrides_mask():
                                out_with_mask,
                                atol=0.0,
                                rtol=0.0)
+
+
+# ---------------------------------------------------------------------------
+# ProtenixV2 (N, K) dispatcher coverage
+#
+# ``(512, 256)`` / ``(256, 256)`` are gated to SM80/SM86/SM89/SM90. On those
+# SMs the dispatcher must select the CuTe path; elsewhere it must fall back
+# (vanilla / cuequiv) rather than try to load a missing JSON.
+# ---------------------------------------------------------------------------
+
+
+def test_x_x_protenix_shape_dispatches_cute_on_sm80_sm86_sm89_sm90():
+    """Protenix ``(N=512, K=256)`` must hit CuTeDSL on SM80/86/89/90."""
+    skip_if_no_cutedsl()
+    if SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(f"requires SM80/86/89/90 (current SM{SM_VERSION})")
+    op = get_dual_gemm_x_x_op(torch.bfloat16, N=512, K=256)
+    assert op.__name__ == "_invoke_cute_dual_gemm_x_x"
+
+
+def test_x0_x1_protenix_shape_dispatches_cute_on_sm80_sm86_sm89_sm90():
+    """Protenix ``(N=256, K=256)`` must hit CuTeDSL on SM80/86/89/90."""
+    skip_if_no_cutedsl()
+    if SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(f"requires SM80/86/89/90 (current SM{SM_VERSION})")
+    op = get_dual_gemm_x0_x1_op(torch.bfloat16, N=256, K=256)
+    assert op.__name__ == "_invoke_cute_dual_gemm_x0_x1"
+
+
+def test_x_x_protenix_sm90_uses_hopper_kernel():
+    """Protenix x_x ``(512, 256)`` must resolve the SM90 ping-pong kernel."""
+    skip_if_not_sm90()
+    assert DualGemmXxCuTe()._kernel_is_sm90(256, 512) is True
+
+
+def test_x0_x1_protenix_sm90_uses_hopper_kernel():
+    """Protenix x0_x1 ``(256, 256)`` must resolve the SM90 ping-pong kernel."""
+    skip_if_not_sm90()
+    assert DualGemmX0X1CuTe()._kernel_is_sm90(256, 256) is True
 
 
 # ---------------------------------------------------------------------------

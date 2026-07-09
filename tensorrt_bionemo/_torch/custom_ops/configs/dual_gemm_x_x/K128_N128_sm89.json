@@ -1,6 +1,90 @@
 {
-  "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm80_dual_gemm_x_x_universal.DualGemmSm80XxLM",
+  "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm80_dual_gemm_x_x_k128.DualGemmSm80LMFullK",
   "configs": {
+    "S=128|t=0": {
+      "cta_tiler": [
+        64,
+        64,
+        32
+      ],
+      "K_size": 128,
+      "num_stages": 3,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": false,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "GLOBAL",
+      "cache_mode_B": "GLOBAL"
+    },
+    "S=128|t=1": {
+      "cta_tiler": [
+        64,
+        64,
+        32
+      ],
+      "K_size": 128,
+      "num_stages": 3,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": false,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "GLOBAL",
+      "cache_mode_B": "GLOBAL"
+    },
+    "S=256|t=0": {
+      "cta_tiler": [
+        64,
+        64,
+        32
+      ],
+      "K_size": 128,
+      "num_stages": 4,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": true,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "GLOBAL",
+      "cache_mode_B": "GLOBAL"
+    },
+    "S=256|t=1": {
+      "cta_tiler": [
+        64,
+        64,
+        32
+      ],
+      "K_size": 128,
+      "num_stages": 4,
+      "atom_layout_mnk": [
+        2,
+        2,
+        1
+      ],
+      "raster_factor": 2,
+      "swizzle_AB": "auto",
+      "swizzle_C": "auto",
+      "load_bias_before_gemm": true,
+      "bias_direct_gmem": true,
+      "cache_mode_A": "GLOBAL",
+      "cache_mode_B": "GLOBAL"
+    },
     "S=512|t=0": {
       "cta_tiler": [
         64,
@@ -23,7 +107,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "GLOBAL"
+      "cache_mode_B": "GLOBAL",
+      "K_size": 128
     },
     "S=512|t=1": {
       "cta_tiler": [
@@ -43,7 +128,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=768|t=0": {
       "cta_tiler": [
@@ -67,7 +153,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": false,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=768|t=1": {
       "cta_tiler": [
@@ -87,7 +174,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=1024|t=0": {
       "cta_tiler": [
@@ -111,7 +199,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "GLOBAL",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=1024|t=1": {
       "cta_tiler": [
@@ -135,7 +224,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "GLOBAL",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=1536|t=0": {
       "cta_tiler": [
@@ -159,7 +249,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "GLOBAL",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=1536|t=1": {
       "cta_tiler": [
@@ -183,7 +274,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": false,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=1792|t=0": {
       "cta_tiler": [
@@ -207,7 +299,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "GLOBAL",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=1792|t=1": {
       "cta_tiler": [
@@ -231,7 +324,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": false,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=2048|t=0": {
       "cta_tiler": [
@@ -251,7 +345,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": true,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     },
     "S=2048|t=1": {
       "cta_tiler": [
@@ -275,7 +370,8 @@
       "load_bias_before_gemm": true,
       "bias_direct_gmem": false,
       "cache_mode_A": "ALWAYS",
-      "cache_mode_B": "ALWAYS"
+      "cache_mode_B": "ALWAYS",
+      "K_size": 128
     }
   }
 }

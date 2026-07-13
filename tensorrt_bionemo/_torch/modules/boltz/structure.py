@@ -73,17 +73,28 @@ class DiffusionConditioning(nn.Module):
         eps: float = 1e-5,
         version: str = "v1",
         dtype: torch.dtype = torch.float32,
+        pairwise_conditioner_dtype: Optional[torch.dtype] = None,
+        token_trans_bias_dtype: Optional[torch.dtype] = None,
         mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ) -> None:
         super().__init__()
+        self.dtype = dtype
+        # The token-transformer bias [N, N, depth*heads] is the large one (depth=24, heads=16 ->
+        # 384); build it directly in ``token_trans_bias_dtype`` (bf16) since the token transformer
+        # consumes it at that precision anyway. ``None`` keeps it at ``dtype``.
+        self.token_trans_bias_dtype = token_trans_bias_dtype or dtype
 
+        # The pairwise conditioner's [N, N, 2*hidden] FFN dominates memory here; run it at a possibly
+        # reduced precision (``pairwise_conditioner_dtype``, e.g. bf16) and cast the result back to
+        # ``self.dtype`` in ``forward`` so the rest of conditioning (heads etc.) is unchanged.
+        # ``None`` keeps it at ``dtype``.
         self.pairwise_conditioner = PairwiseConditioning(
             token_z=token_z,
             dim_token_rel_pos_feats=token_z,
             num_transitions=conditioning_transition_layers,
             eps=eps,
-            dtype=dtype,
+            dtype=pairwise_conditioner_dtype or dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights,
         )
@@ -126,8 +137,11 @@ class DiffusionConditioning(nn.Module):
         for _ in range(token_transformer_depth):
             self.token_trans_proj_z.append(
                 nn.Sequential(
-                    nn.LayerNorm(token_z),
-                    nn.Linear(token_z, token_transformer_heads, bias=False),
+                    nn.LayerNorm(token_z, dtype=self.token_trans_bias_dtype),
+                    nn.Linear(token_z,
+                              token_transformer_heads,
+                              bias=False,
+                              dtype=self.token_trans_bias_dtype),
                 ))
 
     def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor],
@@ -191,7 +205,7 @@ class DiffusionConditioning(nn.Module):
         z = self.pairwise_conditioner(
             z_trunk,
             relative_position_encoding,
-        )
+        ).to(self.dtype)
 
         q, c, p = self.atom_embedding(**self.get_module_feed_dict(
             feature_dict, "atom_embedding"),
@@ -209,9 +223,12 @@ class DiffusionConditioning(nn.Module):
             atom_dec_bias.append(layer(p))
         atom_dec_bias = torch.cat(atom_dec_bias, dim=-1)
 
+        # Cast z once and build the large [N, N, depth*heads] token-transformer bias directly in the
+        # (bf16) token_trans_bias dtype -- it feeds the token transformer at that precision anyway.
         token_trans_bias = []
+        z_ttb = z.to(self.token_trans_bias_dtype)
         for layer in self.token_trans_proj_z:
-            token_trans_bias.append(layer(z))
+            token_trans_bias.append(layer(z_ttb))
         token_trans_bias = torch.cat(token_trans_bias, dim=-1)
 
         return q, c, atom_enc_bias, atom_dec_bias, token_trans_bias

@@ -100,7 +100,6 @@ class TemplatePairStackConfig(BaseConfig):
     pair_transition_n: int = 2
     tri_mul_first: bool = False
     trimul_high_precision: bool = False
-    triangle_attn_node_chunk_size: int = 512
 
 
 class TemplatePointwiseAttentionConfig(BaseConfig):
@@ -180,8 +179,6 @@ class TrunkConfig(BaseConfig):
         opm_first=False,
         transition_n=4,
         trimul_high_precision=False,
-        opm_chunk_size=16,
-        opm_mask_chunk_size=256,
     )
 
 

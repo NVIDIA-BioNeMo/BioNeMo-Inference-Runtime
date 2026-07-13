@@ -18,6 +18,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 from tensorrt_llm_lite.logger import logger
 
 # isort: off
@@ -63,6 +64,7 @@ from .convert import (
 from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
     CUDAGraphOptimizationTracker
 
+
 class Boltz2ModuleRegistry(ModuleRegistry):
 
     def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
@@ -88,7 +90,8 @@ class Boltz2ModuleRegistry(ModuleRegistry):
                 getter=lambda mod:
                 (mod.structure_module.score_model.token_transformer),
                 setter=lambda mod, opt: setattr(
-                    mod.structure_module.score_model, "token_transformer", opt),
+                    mod.structure_module.score_model, "token_transformer", opt
+                ),
                 trt_cls=TokenTransformerTRT,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
@@ -119,6 +122,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
         self.confidence_prediction = self.config.confidence_prediction
         self.skip_run_structure = self.config.skip_run_structure
+        self.recompute_rel_pos = getattr(self.config, "recompute_rel_pos",
+                                         False)
         # Setup for input embedder
         self.input_embedder_dtype = self.config.input_embedder.torch_dtype
         self.input_embedder_mapping = self.config.input_embedder.mapping
@@ -235,6 +240,10 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             use_residue_feats_atoms,
             version="v2",
             dtype=self.structure_module_dtype,
+            pairwise_conditioner_dtype=str_dtype_to_torch(
+                score_model_config.pairwise_conditioning_dtype),
+            token_trans_bias_dtype=str_dtype_to_torch(
+                score_model_config.token_trans_bias_dtype),
             mapping=self.structure_module_mapping,
             skip_create_weights=False,
         )
@@ -494,6 +503,13 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> dict[str, torch.Tensor]:
 
+        # Training-only feats: never read in inference (forward + postprocessor). Drop them up front
+        # so they don't sit on the GPU -- disto_target is ~7.9 GB, the atom-map feats ~1 GB each at
+        # N~4000. Handles feed_dicts from the OSS data pipeline, which still emits these.
+        for _train_only_key in ("disto_target", "token_to_center_atom",
+                                "r_set_to_rep_atom"):
+            feed_dict.pop(_train_only_key, None)
+
         if steering_args is None:
             steering_args = self.steering_args
 
@@ -513,18 +529,25 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         # Initialize pairwise embeddings
         z_init = (self.z_init_1(s_inputs)[:, :, None] +
                   self.z_init_2(s_inputs)[:, None, :])
-        relative_position_encoding = self.rel_pos(
-            **self.get_module_feed_dict(feed_dict,
-                                        "relative_position_encoding"), )
-        z_init = z_init + relative_position_encoding
+        rel_pos_feats = self.get_module_feed_dict(
+            feed_dict, "relative_position_encoding")
+        relative_position_encoding = self.rel_pos(**rel_pos_feats)
+        # In-place accumulation: z_init is a freshly-owned [B,N,N,c_z] (from the broadcast add
+        # above), so fold each term into it rather than allocating a new z_init per '+' (each of
+        # which is ~8 GB fp32 at N~4000). Inference-only.
+        z_init += relative_position_encoding
+        if self.recompute_rel_pos:
+            # Consumed into z_init above; drop the [N,N,token_z] encoding rather than hold it
+            # (~15 GB fp32 at N~5k) across the trunk -- recomputed from rel_pos_feats (tiny [B,N]
+            # index tensors) just before diffusion_conditioning below.
+            relative_position_encoding = None
 
-        z_init = z_init + self.token_bonds(feed_dict["token_bonds"].float())
+        z_init += self.token_bonds(feed_dict["token_bonds"].float())
 
         if self.config.bond_type_feature:
-            z_init = z_init + self.token_bonds_type(
-                feed_dict["type_bonds"].long())
-        z_init = z_init + self.contact_conditioning(
-            feed_dict["contact_conditioning"], feed_dict["contact_threshold"])
+            z_init += self.token_bonds_type(feed_dict["type_bonds"].long())
+        z_init += self.contact_conditioning(feed_dict["contact_conditioning"],
+                                            feed_dict["contact_threshold"])
 
         # Do trunk
         template_feats = None
@@ -541,6 +564,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         pair_distogram = self.distogram_module(z)
 
         # Run diffusion conditioning module
+        if self.recompute_rel_pos:
+            relative_position_encoding = self.rel_pos(**rel_pos_feats)
         q, c, atom_enc_bias, atom_dec_bias, token_trans_bias = self.diffusion_conditioning(
             s_trunk=s,
             z_trunk=z,
@@ -571,6 +596,12 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             steering_args=steering_args,
         )
         x_pred = struct_module_output["sample_atom_coords"]
+
+        # Free diffusion-stage outputs before the confidence module (~12 GB at large N): the
+        # conditioning tensors and the sampler output dict are done once x_pred is extracted and are
+        # not read by the confidence stage.
+        del q, c, atom_enc_bias, atom_dec_bias, token_trans_bias
+        del network_condition_kwargs, struct_module_output
 
         feed_dict["frames_idx"] = feed_dict["frames_idx"].squeeze(1)
 
@@ -791,8 +822,10 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
             torch.concat(affinity_probabilities).mean(),
             "affinity_embedding":
             (affinity_embedding_1 + affinity_embedding_2) / 2,
-            "affinity_embedding1": affinity_embedding_1,
-            "affinity_embedding2": affinity_embedding_2,
+            "affinity_embedding1":
+            affinity_embedding_1,
+            "affinity_embedding2":
+            affinity_embedding_2,
         })
 
         return boltz2_output_dictionary

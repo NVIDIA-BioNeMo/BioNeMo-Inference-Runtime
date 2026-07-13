@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
-                                      EvoformerStackConfig, PairformerConfig)
 from tensorrt_bionemo._torch.graph_optimization.config_schema import \
     CUDAGraphOptimizationConfig
+from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
+                                      EvoformerStackConfig, PairformerConfig)
 from tensorrt_bionemo.registry import SupMat
 
 
@@ -72,17 +72,15 @@ class TemplateEmbedderConfig(BaseConfig):
         c_out=64,
     )
 
-    template_pair_stack: BaseConfig = BaseConfig(
-        c_t=64,
-        c_hidden_tri_att=16,
-        c_hidden_tri_mul=64,
-        no_blocks=2,
-        no_heads=4,
-        tri_mul_first=True,
-        trimul_high_precision=False,
-        pair_transition_n=2,
-        triangle_attn_node_chunk_size=512,
-        transition_type="swiglu")
+    template_pair_stack: BaseConfig = BaseConfig(c_t=64,
+                                                 c_hidden_tri_att=16,
+                                                 c_hidden_tri_mul=64,
+                                                 no_blocks=2,
+                                                 no_heads=4,
+                                                 tri_mul_first=True,
+                                                 trimul_high_precision=False,
+                                                 pair_transition_n=2,
+                                                 transition_type="swiglu")
 
 
 class MSAModuleStackConfig(EvoformerStackConfig):
@@ -102,8 +100,6 @@ class MSAModuleStackConfig(EvoformerStackConfig):
     inf: float = 1e9
     support_batch: bool = True
     msa_att_row_chunk_size: int = 4
-    opm_chunk_size: int = 32
-    opm_mask_chunk_size: int = 256
     trimul_high_precision: bool = False
 
 

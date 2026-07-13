@@ -187,6 +187,63 @@ class Boltz2ConfidenceHeads(nn.Module):
         self.to_resolved_logits.load_weights(weights["to_resolved_logits"])
         self.to_plddt_logits.load_weights(weights["to_plddt_logits"])
 
+    def _compute_pae_outputs(self,
+                             z,
+                             x_pred,
+                             feats,
+                             multiplicity,
+                             is_same_chain=None,
+                             is_different_chain=None):
+        """Compute the pae-derived outputs (``pae`` + ptm/iptm/...) in a helper."""
+        if self.use_separate_heads:
+            pae_intra_logits = self.to_pae_intra_logits(z)
+            pae_intra_logits = pae_intra_logits * is_same_chain.float(
+            ).unsqueeze(-1)
+
+            pae_inter_logits = self.to_pae_inter_logits(z)
+            pae_inter_logits = pae_inter_logits * is_different_chain.float(
+            ).unsqueeze(-1)
+
+            pae_logits = pae_inter_logits + pae_intra_logits
+        else:
+            pae_logits = self.to_pae_logits(z)
+
+        out: Dict[str, torch.Tensor] = {
+            "pae": compute_aggregated_metric(pae_logits, end=32)
+        }
+        try:
+            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
+                pae_logits, x_pred, feats)
+            out["ptm"] = ptm
+            out["iptm"] = iptm
+            out["ligand_iptm"] = ligand_iptm
+            out["protein_iptm"] = protein_iptm
+            out["pair_chains_iptm"] = pair_chains_iptm
+        except Exception as e:
+            print(f"Error in compute_ptms: {e}")
+            for _k in ("ptm", "iptm", "ligand_iptm", "protein_iptm",
+                       "pair_chains_iptm"):
+                out[_k] = z.new_zeros((z.shape[0], z.shape[1]),
+                                      dtype=torch.float32)
+        return out
+
+    def _compute_pde(self, z, is_same_chain=None, is_different_chain=None):
+        """Compute the aggregated ``pde`` metric in a helper."""
+        z_sym = z + z.transpose(2, 3)
+        if self.use_separate_heads:
+            pde_intra_logits = self.to_pde_intra_logits(z_sym)
+            pde_intra_logits = pde_intra_logits * is_same_chain.float(
+            ).unsqueeze(-1)
+
+            pde_inter_logits = self.to_pde_inter_logits(z_sym)
+            pde_inter_logits = pde_inter_logits * is_different_chain.float(
+            ).unsqueeze(-1)
+
+            pde_logits = pde_inter_logits + pde_intra_logits
+        else:
+            pde_logits = self.to_pde_logits(z_sym)
+        return compute_aggregated_metric(pde_logits, end=32)
+
     def forward(
         self,
         s: torch.Tensor,
@@ -218,6 +275,8 @@ class Boltz2ConfidenceHeads(nn.Module):
                 Output dictionary containing the confidence heads.
         """
 
+        is_same_chain = None
+        is_different_chain = None
         if self.use_separate_heads:
             asym_id_token = feats["asym_id"]
             is_same_chain = asym_id_token.unsqueeze(
@@ -226,31 +285,11 @@ class Boltz2ConfidenceHeads(nn.Module):
                                                      multiplicity)
             is_different_chain = ~is_same_chain
 
-        if self.use_separate_heads:
-            pae_intra_logits = self.to_pae_intra_logits(z)
-            pae_intra_logits = pae_intra_logits * is_same_chain.float(
-            ).unsqueeze(-1)
-
-            pae_inter_logits = self.to_pae_inter_logits(z)
-            pae_inter_logits = pae_inter_logits * is_different_chain.float(
-            ).unsqueeze(-1)
-
-            pae_logits = pae_inter_logits + pae_intra_logits
-        else:
-            pae_logits = self.to_pae_logits(z)
-
-        if self.use_separate_heads:
-            pde_intra_logits = self.to_pde_intra_logits(z + z.transpose(2, 3))
-            pde_intra_logits = pde_intra_logits * is_same_chain.float(
-            ).unsqueeze(-1)
-
-            pde_inter_logits = self.to_pde_inter_logits(z + z.transpose(2, 3))
-            pde_inter_logits = pde_inter_logits * is_different_chain.float(
-            ).unsqueeze(-1)
-
-            pde_logits = pde_inter_logits + pde_intra_logits
-        else:
-            pde_logits = self.to_pde_logits(z + z.transpose(2, 3))
+        # Compute the pae + pde outputs here, in helpers, so their [N, N, num_bins] logits and the
+        # softmax-aggregation temporaries free on return.
+        pae_out = self._compute_pae_outputs(z, x_pred, feats, multiplicity,
+                                            is_same_chain, is_different_chain)
+        pde = self._compute_pde(z, is_same_chain, is_different_chain)
 
         plddt_logits = self.to_plddt_logits(s)
 
@@ -289,9 +328,8 @@ class Boltz2ConfidenceHeads(nn.Module):
         complex_iplddt = (plddt * token_pad_mask * iplddt_weight).sum(
             dim=-1) / torch.sum(token_pad_mask * iplddt_weight, dim=-1)
 
-        # Compute the gPDE and giPDE
+        # Compute the gPDE and giPDE (pde was aggregated up front in _compute_pde)
 
-        pde = compute_aggregated_metric(pde_logits, end=32)
         pred_distogram_prob = repeat_with_multiplicity(
             nn.functional.softmax(pred_distogram_logits, dim=-1), multiplicity)
 
@@ -325,24 +363,9 @@ class Boltz2ConfidenceHeads(nn.Module):
             complex_pde=complex_pde,
             complex_ipde=complex_ipde,
         )
-        # out_dict["pae_logits"] = pae_logits
-        out_dict["pae"] = compute_aggregated_metric(pae_logits, end=32)
-
-        try:
-            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
-                pae_logits, x_pred, feats)
-            out_dict["ptm"] = ptm
-            out_dict["iptm"] = iptm
-            out_dict["ligand_iptm"] = ligand_iptm
-            out_dict["protein_iptm"] = protein_iptm
-            out_dict["pair_chains_iptm"] = pair_chains_iptm
-        except Exception as e:
-            print(f"Error in compute_ptms: {e}")
-            out_dict["ptm"] = torch.zeros_like(complex_plddt)
-            out_dict["iptm"] = torch.zeros_like(complex_plddt)
-            out_dict["ligand_iptm"] = torch.zeros_like(complex_plddt)
-            out_dict["protein_iptm"] = torch.zeros_like(complex_plddt)
-            out_dict["pair_chains_iptm"] = torch.zeros_like(complex_plddt)
+        # pae / ptm outputs were computed up front (see _compute_pae_outputs) so pae_logits freed
+        # before this section; merge them in here.
+        out_dict.update(pae_out)
 
         return out_dict
 
@@ -506,6 +529,34 @@ class Boltz2ConfidenceModule(nn.Module):
             raise ValueError(
                 f"The following weights are not loaded: {not_loaded_weight}")
 
+    def _build_pairformer_inputs(self, x_pred_chunk, s, z, feats,
+                                 token_to_rep_atom, current_multiplicity):
+        """Build ``(d, s_t, z_t, mask, pair_mask)`` for the confidence pairformer.
+
+        Kept in a helper so the large fp32 ``distogram``-embed + ``pair_z`` intermediates (~16 GB at
+        large N) are freed on return -- only the (pairformer-dtype) inputs survive into the stack.
+        """
+        d, distogram = compute_distogram(x_pred_chunk, self.boundaries,
+                                         token_to_rep_atom,
+                                         current_multiplicity)
+        distogram = self.dist_bin_pairwise_embed(distogram)
+        pair_z = repeat_with_multiplicity(z, current_multiplicity) + distogram
+
+        pf_dtype = self.config.pairformer.torch_dtype
+        mask = repeat_with_multiplicity(feats["token_pad_mask"],
+                                        current_multiplicity)
+        mask = mask.flatten(0, 1).to(pf_dtype)
+
+        pair_mask = (feats["token_pad_mask"][:, :, None] *
+                     feats["token_pad_mask"][:, None, :])
+        pair_mask = repeat_with_multiplicity(pair_mask, current_multiplicity)
+        pair_mask = pair_mask.flatten(0, 1).to(pf_dtype)
+
+        s_t = repeat_with_multiplicity(s, current_multiplicity).flatten(
+            0, 1).to(pf_dtype)
+        z_t = pair_z.flatten(0, 1).to(pf_dtype)
+        return d, s_t, z_t, mask, pair_mask
+
     def forward(self,
                 s_inputs,
                 s,
@@ -600,20 +651,30 @@ class Boltz2ConfidenceModule(nn.Module):
                 token_index=feats["token_index"],
                 sym_id=feats["sym_id"],
             )
-            z = z + relative_position_encoding
-            z = z + self.token_bonds(feats["token_bonds"].float())
+            # In-place accumulation: z (a freshly-owned z_norm output) is the accumulator, so each
+            # [N, N, c_z] add reuses its buffer instead of allocating a new fp32 temporary.
+            z += relative_position_encoding
+            z += self.token_bonds(feats["token_bonds"].float())
             if self.bond_type_feature:
-                z = z + self.token_bonds_type(feats["type_bonds"].long())
-            z = z + self.contact_conditioning(
+                z += self.token_bonds_type(feats["type_bonds"].long())
+            z += self.contact_conditioning(
                 contact_conditioning=feats["contact_conditioning"],
                 contact_threshold=feats["contact_threshold"])
 
-        z = (z + self.s_to_z(s_inputs)[:, :, None, :] +
-             self.s_to_z_transpose(s_inputs)[:, None, :, :])
+        z += self.s_to_z(s_inputs)[:, :, None, :]
+        z += self.s_to_z_transpose(s_inputs)[:, None, :, :]
         if self.add_s_to_z_prod:
-            z = z + self.s_to_z_prod_out(
+            z += self.s_to_z_prod_out(
                 self.s_to_z_prod_in1(s_inputs)[:, :, None, :] *
                 self.s_to_z_prod_in2(s_inputs)[:, None, :, :])
+
+        z = z.to(self.config.pairformer.torch_dtype)
+
+        # These raw pair feats are fully consumed by the z-init above (and by the trunk before this
+        # module); drop them so their [N, N, *] buffers free before the per-sample pairformer loop.
+        for _feat_key in ("contact_conditioning", "contact_threshold",
+                          "token_bonds", "type_bonds"):
+            feats.pop(_feat_key, None)
 
         token_to_rep_atom = feats["token_to_rep_atom"]
         out_dicts_chunks = []
@@ -621,27 +682,11 @@ class Boltz2ConfidenceModule(nn.Module):
         x_chunks = x_pred.chunk(niter, dim=1)
         for x_pred_chunk in x_chunks:
             current_multiplicity = x_pred_chunk.shape[1]
-            d, distogram = compute_distogram(x_pred_chunk, self.boundaries,
-                                             token_to_rep_atom,
-                                             current_multiplicity)
-            distogram = self.dist_bin_pairwise_embed(distogram)
-            pair_z = repeat_with_multiplicity(z,
-                                              current_multiplicity) + distogram
-
-            mask = repeat_with_multiplicity(feats["token_pad_mask"],
-                                            current_multiplicity)
-            mask = mask.flatten(0, 1).to(self.config.pairformer.torch_dtype)
-
-            pair_mask = feats["token_pad_mask"][:, :, None] * feats[
-                "token_pad_mask"][:, None, :]
-            pair_mask = repeat_with_multiplicity(pair_mask,
-                                                 current_multiplicity)
-            pair_mask = pair_mask.flatten(0, 1).to(
-                self.config.pairformer.torch_dtype)
-
-            s_t = repeat_with_multiplicity(s, current_multiplicity).flatten(
-                0, 1).to(self.config.pairformer.torch_dtype)
-            z_t = pair_z.flatten(0, 1).to(self.config.pairformer.torch_dtype)
+            # Build pairformer inputs in a helper so the fp32 distogram-embed + pair_z (~16 GB)
+            # intermediates are freed on return, before the pairformer stack runs.
+            d, s_t, z_t, mask, pair_mask = self._build_pairformer_inputs(
+                x_pred_chunk, s, z, feats, token_to_rep_atom,
+                current_multiplicity)
 
             s_t, z_t = self.pairformer_stack(
                 s_t,
@@ -732,6 +777,29 @@ class Boltz1ConfidenceHeads(nn.Module):
                 gather_output=True,
                 skip_create_weights=self.config.skip_create_weights)
 
+    def _compute_pde(self, z):
+        """Aggregate ``pde`` in a helper so the ``[N, N, num_pde_bins]`` ``pde_logits`` (+ its
+        aggregation temporaries) free on return -- only the small ``[..., N, N]`` pde survives into
+        the complex-metric section.
+        """
+        pde_logits = self.to_pde_logits(z + z.transpose(-3, -2))
+        return compute_aggregated_metric(pde_logits, end=32)
+
+    def _compute_pae_outputs(self, z, x_pred, feature_dict):
+        """Compute the pae + ptm outputs in a helper so the ``[N, N, num_pae_bins]`` ``pae_logits``
+        and its softmax-aggregation temporaries free on return.
+        """
+        pae_logits = self.to_pae_logits(z)
+        out = {"pae": compute_aggregated_metric(pae_logits, end=32)}
+        ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
+            pae_logits, x_pred, feature_dict)
+        out["ptm"] = ptm
+        out["iptm"] = iptm
+        out["ligand_iptm"] = ligand_iptm
+        out["protein_iptm"] = protein_iptm
+        out["pair_chains_iptm"] = pair_chains_iptm
+        return out
+
     def forward(
         self,
         s: torch.Tensor,
@@ -760,9 +828,10 @@ class Boltz1ConfidenceHeads(nn.Module):
         token_type = repeat_with_multiplicity(feature_dict["mol_type"],
                                               multiplicity)
 
-        # Compute the pLDDT, PDE, PAE, and resolved logits
+        # Compute the pLDDT logits; pde is aggregated in a helper so its [N, N, num_pde_bins]
+        # pde_logits frees on return (before the plddt/complex-metric section below).
         plddt_logits = self.to_plddt_logits(s)
-        pde_logits = self.to_pde_logits(z + z.transpose(-3, -2))
+        pde = self._compute_pde(z)
 
         # Weights used to compute the interface pLDDT
         ligand_weight = 2
@@ -792,8 +861,7 @@ class Boltz1ConfidenceHeads(nn.Module):
             dim=-1) / (torch.sum(token_pad_mask * iplddt_weight, dim=-1) +
                        1e-5)
 
-        # Compute the aggregated PDE and iPDE
-        pde = compute_aggregated_metric(pde_logits, end=32)
+        # Compute the aggregated PDE and iPDE (pde was aggregated up front in _compute_pde)
         pred_distogram_prob = nn.functional.softmax(pred_distogram_logits,
                                                     dim=-1)
         pred_distogram_prob = repeat_with_multiplicity(pred_distogram_prob,
@@ -825,16 +893,8 @@ class Boltz1ConfidenceHeads(nn.Module):
             complex_ipde=complex_ipde,
         )
         if self.config.compute_pae:
-            pae_logits = self.to_pae_logits(z)
-            # out_dict["pae_logits"] = pae_logits
-            out_dict["pae"] = compute_aggregated_metric(pae_logits, end=32)
-            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
-                pae_logits, x_pred, feature_dict)
-            out_dict["ptm"] = ptm
-            out_dict["iptm"] = iptm
-            out_dict["ligand_iptm"] = ligand_iptm
-            out_dict["protein_iptm"] = protein_iptm
-            out_dict["pair_chains_iptm"] = pair_chains_iptm
+            # pae + ptm in a helper so pae_logits + its aggregation temporaries free on return.
+            out_dict.update(self._compute_pae_outputs(z, x_pred, feature_dict))
         return out_dict
 
 
@@ -1045,6 +1105,19 @@ class Boltz1ConfidenceModule(nn.Module):
             raise ValueError(f"Module name {module_name} not supported")
         return {key: feed_dict.get(key, None) for key in keys}
 
+    def _add_distogram(self, x_chunk, z_chunk, token_to_rep_atom, n_samples):
+        """Fold the distogram embedding into ``z_chunk`` in a helper so the large fp32 ``distogram``
+        intermediate (~8 GB at large N) frees on return, before the msa_module/pairformer run.
+        """
+        d, distogram = compute_distogram(x_chunk,
+                                         self.boundaries,
+                                         token_to_rep_atom,
+                                         n_samples,
+                                         dtype=self.config.torch_dtype)
+        distogram = self.dist_bin_pairwise_embed(distogram)
+        z_chunk += distogram  # [B, mult, N_tokens, N_tokens, token_z]
+        return d, z_chunk
+
     def forward(
         self,
         s: torch.Tensor,
@@ -1116,20 +1189,26 @@ class Boltz1ConfidenceModule(nn.Module):
         relative_position_encoding = self.rel_pos(
             **self.get_module_feed_dict(feature_dict,
                                         "relative_position_encoding"), )
-        z_init = z_init + relative_position_encoding
-        z_init = z_init + self.token_bonds(feature_dict["token_bonds"].float())
+        # In-place accumulation into the freshly-built z_init / z, avoiding per-term [N, N, c_z]
+        # fp32 temporaries during pair init.
+        z_init += relative_position_encoding
+        z_init += self.token_bonds(feature_dict["token_bonds"].float())
 
         # Apply recycling
         s = s_init + self.s_recycle(self.s_norm(s))
         z = z_init + self.z_recycle(self.z_norm(z))
 
-        z = (z + (self.s_to_z(s_inputs)[:, :, None, :] +
-                  self.s_to_z_transpose(s_inputs)[:, None, :, :]))
+        z += self.s_to_z(s_inputs)[:, :, None, :]
+        z += self.s_to_z_transpose(s_inputs)[:, None, :, :]
 
         if self.config.add_s_to_z_prod:
-            z = z + self.s_to_z_prod_out(
+            z += self.s_to_z_prod_out(
                 (self.s_to_z_prod_in1(s_inputs)[:, :, None, :] *
                  self.s_to_z_prod_in2(s_inputs)[:, None, :, :]))
+
+        # token_bonds is fully consumed by the z-init above (and by the trunk before this module);
+        # drop it so its [N, N, 1] buffer frees before the per-sample pairformer loop.
+        feature_dict.pop("token_bonds", None)
 
         s = repeat_with_multiplicity(s, multiplicity)
         z = repeat_with_multiplicity(z, multiplicity)
@@ -1149,14 +1228,10 @@ class Boltz1ConfidenceModule(nn.Module):
                 s_diffusion_chunk = self.s_diffusion_norm(s_diffusion_chunk)
                 s_chunk = s_chunk + self.s_diffusion_to_s(s_diffusion_chunk)
             token_to_rep_atom = feature_dict["token_to_rep_atom"]
-            d, distogram = compute_distogram(x_chunk,
-                                             self.boundaries,
-                                             token_to_rep_atom,
-                                             n_samples,
-                                             dtype=self.config.torch_dtype)
-
-            distogram = self.dist_bin_pairwise_embed(distogram)
-            z_chunk = z_chunk + distogram  # [B, mult, N_tokens, N_tokens, token_z]
+            # Fold distogram into z_chunk in a helper so the fp32 distogram embed frees on return,
+            # before the msa_module + pairformer_module run.
+            d, z_chunk = self._add_distogram(x_chunk, z_chunk,
+                                             token_to_rep_atom, n_samples)
 
             mask = feature_dict["token_pad_mask"]
             pair_mask = mask[:, :,

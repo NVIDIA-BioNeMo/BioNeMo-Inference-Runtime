@@ -23,6 +23,7 @@ from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, PrecomputedSingleMasks, precompute_pair_masks,
     precompute_single_masks)
+from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_TRANSITION
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.transition import Transition
@@ -52,7 +53,6 @@ class PairformerLayerV1(nn.Module):
                  max_transition_tp_size: bool = False,
                  max_attention_pairwise_tp_size: bool = False,
                  max_tri_mul_tp_size: bool = False,
-                 triangle_attn_node_chunk_size: int = 0,
                  mapping: Optional[Mapping] = None,
                  triangle_attn_backend: str = "VANILLA",
                  pairwise_attn_backend: str = "VANILLA",
@@ -143,7 +143,6 @@ class PairformerLayerV1(nn.Module):
             inf=inf,
             layer_idx=layer_idx,
             dtype=dtype,
-            chunk_size=triangle_attn_node_chunk_size,
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             attn_backend=triangle_attn_backend,
@@ -155,7 +154,6 @@ class PairformerLayerV1(nn.Module):
             inf=inf,
             layer_idx=layer_idx,
             dtype=dtype,
-            chunk_size=triangle_attn_node_chunk_size,
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             attn_backend=triangle_attn_backend,
@@ -180,6 +178,11 @@ class PairformerLayerV1(nn.Module):
             max_transition_tp_size=max_transition_tp_size,
             mapping=mapping,
             skip_create_weights=skip_create_weights,
+            # Row-chunk the pair FFN at large N so its [N, N, 2*hidden] intermediate never
+            # materializes at full N (~26 GB -> a few GB). Position-wise => numerically identical,
+            # and only triggers above the policy threshold. Covers every Pairformer variant
+            # (trunk / confidence / MSA) since they all build transition_z through this base class.
+            auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION),
         )
 
     def _transform_z(
@@ -434,8 +437,6 @@ class PairformerModule(nn.Module):
                     max_transition_tp_size=config.max_transition_tp_size,
                     max_attention_pairwise_tp_size=config.
                     max_attention_pairwise_tp_size,
-                    triangle_attn_node_chunk_size=config.
-                    triangle_attn_node_chunk_size,
                     max_tri_mul_tp_size=config.max_tri_mul_tp_size,
                     mapping=config.mapping,
                     skip_create_weights=config.skip_create_weights,

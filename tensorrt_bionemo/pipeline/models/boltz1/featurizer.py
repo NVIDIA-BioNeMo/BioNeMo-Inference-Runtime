@@ -4,7 +4,6 @@
 
 Differences from Boltz2 (featurizerv2):
 - MSA is one-hot (N_MSA, L, 33) instead of token indices (N_MSA, L)
-- disto_target has no ensemble dim: (L, L, 64) vs (L, L, 1, 64)
 - frames_idx / frame_resolved_mask have no ensemble dim: (L, 3) / (L,)
 - Has pocket_feature, no template/contact/method/affinity/backbone features
 - ref_atom_name_chars uses % num_bins encoding
@@ -138,7 +137,6 @@ def process_atom_features(
     n_tokens = len(tokens_list)
     atom_to_token = []
     token_to_rep_atom = []
-    r_set_to_rep_atom = []
     ref_space_uid = []
     atom_name_list = []
     atom_element_list = []
@@ -147,7 +145,6 @@ def process_atom_features(
     frame_data = []
     resolved_frame_data = []
     coord_data_list = []
-    disto_coords_list = []
     atom_idx = 0
     chain_res_ids: dict = {}
 
@@ -178,15 +175,10 @@ def process_atom_features(
 
         token_to_rep_atom.append(atom_idx + token.disto_idx - start)
         chain = structure.chains[token.asym_id]
-        if chain.mol_type != chain_type_ids[
-                "NONPOLYMER"] and token.resolved_mask:
-            r_set_to_rep_atom.append(atom_idx + token.center_idx - start)
 
         # Coord data: single conformer (no ensemble)
         token_coords = np.array(structure.coords[start:end], dtype=np.float32)
         coord_data_list.append(token_coords)
-        disto_coords_list.append(structure.coords[token.disto_idx].astype(
-            np.float32))
 
         # Frame data (matches OSS boltz1 featurizer.py process_atom_features):
         # protein -> N/CA/C; RNA/DNA -> C1'/C3'/C4'; NONPOLYMER frames are
@@ -244,15 +236,6 @@ def process_atom_features(
                                  dtype=np.float32)
     resolved_frame_np = resolved_frame_np * mask_collinear
 
-    # Distogram (no ensemble dim)
-    disto_coords = np.array(disto_coords_list, dtype=np.float32)
-    t_center = torch.from_numpy(disto_coords).float()
-    t_dists = torch.cdist(t_center, t_center)
-    boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
-    distogram = (t_dists.unsqueeze(-1) > boundaries).sum(dim=-1).long()
-    disto_target = one_hot(distogram,
-                           num_classes=num_bins)  # (L, L, 64) no ensemble
-
     # Build tensors
     atom_name_arr = np.array(atom_name_list, dtype=np.int32)
     atom_element_arr = np.array(atom_element_list, dtype=np.int64)
@@ -266,7 +249,6 @@ def process_atom_features(
     pad_mask = torch.ones(atom_idx, dtype=torch.float32)
     atom_to_token_t = torch.tensor(atom_to_token, dtype=torch.long)
     token_to_rep_atom_t = torch.tensor(token_to_rep_atom, dtype=torch.long)
-    r_set_to_rep_atom_t = torch.tensor(r_set_to_rep_atom, dtype=torch.long)
 
     ref_pos = torch.from_numpy(atom_conformer_arr).float()
     # Boltz1: ref_atom_name_chars uses % num_bins (line 827 in OSS featurizer.py)
@@ -297,7 +279,6 @@ def process_atom_features(
     ref_element = one_hot(ref_element, num_classes=num_elements)
     atom_to_token_t = one_hot(atom_to_token_t, num_classes=n_tokens)
     token_to_rep_atom_t = one_hot(token_to_rep_atom_t, num_classes=atom_idx)
-    r_set_to_rep_atom_t = one_hot(r_set_to_rep_atom_t, num_classes=atom_idx)
 
     # Pad atoms
     pad_len_atom = (((atom_idx - 1) // atoms_per_window_queries + 1) *
@@ -315,7 +296,6 @@ def process_atom_features(
         coords = pad_dim(coords, 1, pad_len_atom)
         atom_to_token_t = pad_dim(atom_to_token_t, 0, pad_len_atom)
         token_to_rep_atom_t = pad_dim(token_to_rep_atom_t, 1, pad_len_atom)
-        r_set_to_rep_atom_t = pad_dim(r_set_to_rep_atom_t, 1, pad_len_atom)
 
     # Boltz1: frames have no ensemble dim. Use frame_data_arr (NOT the raw
     # frame_data list) so the NONPOLYMER frames rebuilt in-place by
@@ -325,12 +305,10 @@ def process_atom_features(
 
     if max_tokens is not None and n_tokens < max_tokens:
         pl = max_tokens - n_tokens
-        disto_target = pad_dim(pad_dim(disto_target, 0, pl), 1, pl)
         frames_idx = pad_dim(frames_idx, 0, pl)
         frame_resolved_mask = pad_dim(frame_resolved_mask, 0, pl)
         atom_to_token_t = pad_dim(atom_to_token_t, 1, pl)
         token_to_rep_atom_t = pad_dim(token_to_rep_atom_t, 0, pl)
-        r_set_to_rep_atom_t = pad_dim(r_set_to_rep_atom_t, 0, pl)
 
     return {
         "ref_pos": ref_pos,
@@ -343,8 +321,6 @@ def process_atom_features(
         "atom_pad_mask": pad_mask,
         "atom_to_token": atom_to_token_t,
         "token_to_rep_atom": token_to_rep_atom_t,
-        "r_set_to_rep_atom": r_set_to_rep_atom_t,
-        "disto_target": disto_target,
         "frames_idx": frames_idx,
         "frame_resolved_mask": frame_resolved_mask,
     }

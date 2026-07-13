@@ -17,6 +17,9 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
+                                                OUTER_PRODUCT_MEAN,
+                                                ChunkPolicy, chunk_apply)
 from tensorrt_bionemo._torch.distributed import (
     AllReduceParams, get_default_tp_group_coordinator)
 from tensorrt_bionemo.mapping import Mapping
@@ -42,12 +45,10 @@ class OuterProductMean(nn.Module):
                      "proj_b": False,
                      "proj_o": True
                  },
-                 chunk_size: Optional[int] = None,
-                 mask_chunk_size: Optional[int] = None,
-                 efficient_memory_threshold: Optional[int] = None,
                  dtype: Optional[torch.dtype] = None,
                  skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None) -> None:
+                 mapping: Optional[Mapping] = None,
+                 chunk_policy: Optional[ChunkPolicy] = None) -> None:
         """Initialize the outer product mean layer.
 
         Args:
@@ -68,8 +69,10 @@ class OuterProductMean(nn.Module):
         self.dtype = dtype
         self.mapping = mapping or Mapping()
         self.norm_before_output = norm_before_output
-        self.chunk_size = chunk_size
-        self.mask_chunk_size = mask_chunk_size
+        # Output token-row chunking policy: chunk when the token dim N exceeds the (memory-scaled)
+        # threshold. ``None`` uses the registry default.
+        self.chunk_policy = (chunk_policy if chunk_policy is not None else
+                             CHUNK_REGISTRY.get(OUTER_PRODUCT_MEAN))
         assert self.c_hidden % self.mapping.tp_size == 0, \
             "c_hidden must be divisible by tp_size"
         self.c_hidden = self.c_hidden // self.mapping.tp_size
@@ -99,98 +102,51 @@ class OuterProductMean(nn.Module):
             self.group_comm = get_default_tp_group_coordinator()
             assert self.group_comm is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
 
-        self._efficient_memory_threshold = efficient_memory_threshold or 2048
+    def _compute_num_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Pair-occupancy normalizer ``num_mask[b, i, j] = sum_s mask[b, s, i] * mask[b, s, j]``.
 
-    @torch.compiler.disable
-    def _compute_mask_with_chunking(self, mask: torch.Tensor) -> torch.Tensor:
-        for i in range(0, mask.shape[1], self.mask_chunk_size):
-            if i == 0:
-                num_mask = (
-                    mask[:, i:i + self.mask_chunk_size, None, :] *
-                    mask[:, i:i + self.mask_chunk_size, :, None]).sum(1)
-            else:
-                num_mask += (
-                    mask[:, i:i + self.mask_chunk_size, None, :] *
-                    mask[:, i:i + self.mask_chunk_size, :, None]).sum(1)
-        if self.norm_mask_by_eps:
-            num_mask = num_mask + self.mask_eps
-        else:
-            num_mask = num_mask.clamp(min=1)
-        return num_mask
-
-    def _low_latency_z_mat_proj_o(
-            self,
-            z_out: torch.Tensor = None,
-            z: torch.Tensor = None,
-            sliced_weight: torch.Tensor = None) -> torch.Tensor:
-        # This will create a double memory copy, because z is not contiguous
-        z = z.reshape(*z.shape[:3], -1)
-
-        # The matmul here also create a memory buffer approx to z
-        if z_out is None:
-            z_out = z @ sliced_weight
-        else:
-            z_out.add_(z @ sliced_weight)
-        return z_out
-
-    def _efficient_memory_z_mat_proj_o(
-            self,
-            z_out: torch.Tensor = None,
-            z: torch.Tensor = None,
-            sliced_weight: torch.Tensor = None) -> torch.Tensor:
-        if z_out is None:
-            z_out = torch.zeros(*z.shape[:3],
-                                sliced_weight.shape[1],
-                                device=z.device,
-                                dtype=z.dtype)
-
-        c = z.shape[-2]
-        d = z.shape[-1]
-        sliced_weight = sliced_weight.reshape(c, d, -1)
-
-        # Quite similar to K-Stream GEMM algorithm.
-        for i in range(0, c):
-            z_out.add_((z[:, :, :, i, :] @ sliced_weight[i, ...]).contiguous())
-        return z_out
-
-    @torch.compiler.disable
-    def _compute_output_with_chunking(self, m: torch.Tensor, a: torch.Tensor,
-                                      b: torch.Tensor,
-                                      num_mask: torch.Tensor) -> torch.Tensor:
-        """ This is similar to split on TP but for single device
-        See: https://github.com/jwohlwend/boltz/blob/v2.2.0/src/boltz/model/layers/outer_product_mean.py
+        This is exactly ``mask.T @ mask`` over the sequence dim, so ``torch.bmm`` contracts ``S``
+        inside the GEMM and never materializes the ``[B, S, N, N]`` outer product (which is why the
+        old path chunked ``S``). ``mask`` is ``[B, S, N, 1]``; returns ``[B, N, N, 1]``.
         """
-        for i in range(0, self.c_hidden, self.chunk_size):
-            a_chunk = a[:, :, :, i:i + self.chunk_size]
-            proj_o_sliced_weight = self.proj_o.weight[:, i * self.c_hidden:
-                                                      (i + self.chunk_size) *
-                                                      self.c_hidden]
-            # The enisum consume very large memory
-            # if I=J=3000, C=16, D=32, the memory about 8.6GB
-            # So we implement two different functions to compute the output
-            # The first function is efficient memory but low latency
-            # The second function is low memory but higher latency
-            z = torch.einsum("bsic,bsjd->bijcd", a_chunk, b)
-            if self.norm_before_output:
-                z.div_(num_mask.unsqueeze(-1))
-            di = z.shape[-4]
-            dj = z.shape[-3]
-            if di * dj > self._efficient_memory_threshold**2:
-                compute_z_out_func = self._efficient_memory_z_mat_proj_o
-            else:
-                compute_z_out_func = self._low_latency_z_mat_proj_o
-            # Project to output
-            if i == 0:
-                z_out = compute_z_out_func(None, z.to(m),
-                                           proj_o_sliced_weight.T)
-            else:
-                z_out = compute_z_out_func(z_out, z.to(m),
-                                           proj_o_sliced_weight.T)
-        if self.proj_o.bias is not None:
-            z_out.add_(self.proj_o.bias)  # add bias
+        m = mask.squeeze(-1)  # [B, S, N]
+        # ``bmm`` has no integer CUDA kernel; cast bool/int masks to fp32 (exact counts). Float
+        # masks (e.g. the cast bf16/fp32 mask) are used as-is, matching the old mul+sum dtype.
+        if not m.is_floating_point():
+            m = m.float()
+        num_mask = torch.bmm(m.transpose(1, 2),
+                             m).unsqueeze(-1)  # [B, N, N, 1]
+        if self.norm_mask_by_eps:
+            return num_mask + self.mask_eps  # OpenFold family
+        return num_mask.clamp(min=1)  # Boltz family
+
+    def _forward_impl(
+        self,
+        a_rows: torch.Tensor,
+        num_mask: torch.Tensor,
+        b: torch.Tensor,
+        out_dtype: torch.dtype,
+        all_reduce_params: Optional[AllReduceParams] = None,
+    ) -> torch.Tensor:
+        """Outer-product-mean for a slice of output token-rows ``i`` (position-wise over ``i``).
+
+        Args:
+            a_rows: ``a`` transposed to ``[B, i, S, c_hidden]`` (output-row dim moved to dim=1 so it
+                slices in lockstep with ``num_mask``).
+            num_mask: ``[B, i, N(j), 1]`` normalizer for these rows.
+            b: full ``[B, S, N(j), c_hidden]`` -- the contracted key side, not chunked.
+            out_dtype: dtype for the ``proj_o`` input / output.
+        """
+        a = a_rows.transpose(1, 2)  # [B, S, i, c_hidden]
+        # [B, i, N, c_hidden, c_hidden] -- the row-chunked dominant intermediate.
+        z = torch.einsum("bsic,bsjd->bijcd", a, b)
+        if self.norm_before_output:
+            z.div_(num_mask.unsqueeze(-1))
+        z = z.reshape(*z.shape[:3], -1)  # [B, i, N, c_hidden**2]
+        z = self.proj_o(z.to(out_dtype), all_reduce_params=all_reduce_params)
         if not self.norm_before_output:
-            z_out.div_(num_mask)
-        return z_out
+            z.div_(num_mask)
+        return z
 
     def forward(
             self,
@@ -221,30 +177,27 @@ class OuterProductMean(nn.Module):
         if self.mapping.tp_size > 1:
             b = self.group_comm.all_gather(b, dim=-1)
 
-        if self.mask_chunk_size is not None:
-            num_mask = self._compute_mask_with_chunking(mask)
-        else:
-            mask = mask[:, :, None, :] * mask[:, :, :, None]
-            if self.norm_mask_by_eps:
-                # This for OF family models
-                num_mask = mask.sum(1) + self.mask_eps
-            else:
-                # This for Boltz family models
-                num_mask = mask.sum(1).clamp(min=1)
+        # num_mask via a single batched matmul (mask.T @ mask over S) -- no [B, S, N, N] intermediate
+        # is materialized.
+        num_mask = self._compute_num_mask(mask)
 
-        if self.chunk_size is None:
-            z = torch.einsum("bsic,bsjd->bijcd", a, b)
-        else:
-            return self._compute_output_with_chunking(m, a, b, num_mask)
-
-        if z.is_contiguous():
-            z = z.view(*z.shape[:3], -1)
-        else:
-            z = z.reshape(*z.shape[:3], -1)
-        if self.norm_before_output:
-            z.div_(num_mask)
-
-        z = self.proj_o(z.to(m.dtype), all_reduce_params=all_reduce_params)
-        if not self.norm_before_output:
-            z.div_(num_mask)
-        return z
+        # Row-chunk the output token dim (concat) to bound the dominant [i, N, c_hidden**2] einsum.
+        # ``a``'s token dim is dim=2, so move it to dim=1 to slice in lockstep with ``num_mask``
+        # (i at dim=1); ``b`` (the contracted key side) passes through whole. ``chunk_apply`` falls
+        # back to a single dense call below the policy threshold.
+        policy = self.chunk_policy
+        if policy is not None:
+            return chunk_apply(self._forward_impl,
+                               a.transpose(1, 2),
+                               num_mask,
+                               policy=policy,
+                               cat_dim=1,
+                               b=b,
+                               out_dtype=m.dtype,
+                               all_reduce_params=all_reduce_params)
+        # Policy explicitly disabled -> single dense full-row call.
+        return self._forward_impl(a.transpose(1, 2),
+                                  num_mask,
+                                  b=b,
+                                  out_dtype=m.dtype,
+                                  all_reduce_params=all_reduce_params)

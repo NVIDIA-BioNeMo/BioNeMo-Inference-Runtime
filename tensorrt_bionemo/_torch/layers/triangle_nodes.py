@@ -35,6 +35,8 @@ from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
+from ..auto_chunk import (CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy,
+                          chunk_apply)
 from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
 from ..custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 from .attention import TriangleAttention
@@ -52,7 +54,7 @@ class TriangleAttentionNode(nn.Module):
         inf: float = 1e9,
         layer_idx: int = 0,
         dtype: torch.dtype = None,
-        chunk_size: int = 0,
+        chunk_policy: Optional[ChunkPolicy] = None,
         mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
@@ -71,7 +73,8 @@ class TriangleAttentionNode(nn.Module):
             node_type (TriangleAttentionNodeType): whether this is the starting node
             inf (float): infinity value
             dtype (torch.dtype): data type
-            chunk_size (int): chunk size
+            chunk_policy (Optional[ChunkPolicy]): query-row chunking policy; ``None`` uses the
+                shared ``triangle_attention`` policy from ``CHUNK_REGISTRY``.
             mapping (Mapping): mapping
             skip_create_weights (bool): whether to skip creating weights
             attn_backend (str): attention backend
@@ -93,11 +96,11 @@ class TriangleAttentionNode(nn.Module):
 
         assert self.num_heads % self.tp_size == 0
         self.num_heads = self.num_heads // self.tp_size
-        self.chunk_size = chunk_size
-
-        if self.chunk_size > 0:
-            assert self.chunk_size % self.dcp_size == 0
-            self.chunk_size = self.chunk_size // self.dcp_size
+        # Query-row chunking policy (registry default unless overridden). Attention within each row
+        # is independent, so row-chunking is numerically identical; bounds the [chunk, J, H, ...]
+        # attention temporaries at large N.
+        self.chunk_policy = (chunk_policy if chunk_policy is not None else
+                             CHUNK_REGISTRY.get(TRIANGLE_ATTENTION))
         self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype)
         self.linear = Linear(
             self.c_in,
@@ -194,6 +197,22 @@ class TriangleAttentionNode(nn.Module):
         )
         return x, triangle_bias
 
+    def _mha_slice(
+        self,
+        x: torch.Tensor,
+        mask_bias: torch.Tensor,
+        triangle_bias: torch.Tensor,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
+    ) -> torch.Tensor:
+        """Run MHA for a (possibly row-chunked) slice of ``x``; ``triangle_bias`` is shared."""
+        return self.mha(x,
+                        biases=[mask_bias, triangle_bias],
+                        attn_metadata=attn_metadata,
+                        all_reduce_params=all_reduce_params,
+                        buffers=buffers)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -236,31 +255,27 @@ class TriangleAttentionNode(nn.Module):
 
         x, triangle_bias = self._prep_bias(x)
 
-        seq_len = x.shape[1]
         x, mask_bias = self._dcp_slice(x, mask_bias)
-        if self.chunk_size > 0:
-            niters = (seq_len + self.chunk_size - 1) // self.chunk_size
-            outputs = []
-            for i in range(niters):
-                start = i * self.chunk_size
-                end = start + self.chunk_size
-                x_chunk = x[:, start:end, ...]
-                chunk_mask_bias = mask_bias[:, start:end, ...]
-                biases = [chunk_mask_bias, triangle_bias]
-                chunk_output = self.mha(x_chunk,
-                                        biases=biases,
-                                        attn_metadata=attn_metadata,
-                                        all_reduce_params=all_reduce_params,
-                                        buffers=buffers)
-                outputs.append(chunk_output)
-            output = torch.cat(outputs, dim=1)
+        # Row-chunk the query dim (mask_bias slices in lockstep; triangle_bias is shared across
+        # rows so it passes through). ``chunk_apply`` falls back to a single dense call below the
+        # policy threshold, so small N is unaffected.
+        if self.chunk_policy is not None:
+            output = chunk_apply(self._mha_slice,
+                                 x,
+                                 mask_bias,
+                                 policy=self.chunk_policy,
+                                 cat_dim=1,
+                                 triangle_bias=triangle_bias,
+                                 attn_metadata=attn_metadata,
+                                 all_reduce_params=all_reduce_params,
+                                 buffers=buffers)
         else:
-            biases = [mask_bias, triangle_bias]
-            output = self.mha(x,
-                              biases=biases,
-                              attn_metadata=attn_metadata,
-                              all_reduce_params=all_reduce_params,
-                              buffers=buffers)
+            output = self._mha_slice(x,
+                                     mask_bias,
+                                     triangle_bias,
+                                     attn_metadata=attn_metadata,
+                                     all_reduce_params=all_reduce_params,
+                                     buffers=buffers)
         output = self._dcp_gather(output)
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)

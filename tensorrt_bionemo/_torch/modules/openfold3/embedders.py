@@ -771,8 +771,6 @@ class TemplateEmbedderAllAtom(nn.Module):
             trimul_high_precision=config.template_pair_stack.
             trimul_high_precision,
             triangle_attn_backend=config.triangle_attention_backend,
-            triangle_attn_node_chunk_size=config.template_pair_stack.
-            triangle_attn_node_chunk_size,
             transition_type=config.template_pair_stack.transition_type,
             tri_mul_out_bias=tri_mul_out_bias,
             tri_mul_in_bias=tri_mul_in_bias,

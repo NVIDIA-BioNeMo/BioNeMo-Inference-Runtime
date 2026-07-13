@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy, chunk_apply
 from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
     get_gated_sigmoid_op
 from tensorrt_bionemo._torch.distributed import AllReduceParams
@@ -42,10 +43,20 @@ class Transition(nn.Module):
                  dtype: torch.dtype = None,
                  max_transition_tp_size: bool = True,
                  mapping: Optional[Mapping] = None,
-                 skip_create_weights: bool = False):
+                 skip_create_weights: bool = False,
+                 auto_chunk_policy: Optional[ChunkPolicy] = None):
         super().__init__()
         if out_dim is None:
             out_dim = dim
+
+        # Opt-in row-chunking policy. Only the trunk Pairformer's ``transition_z`` sets it, whose
+        # input is always the [B, N, N, C] pair tensor (dim=1 == N, the row axis chunk_apply slices),
+        # so the [.., N, .., 2*hidden] intermediate never materializes at full N (numerically
+        # identical, position-wise). ``None`` (default) keeps the plain dense path everywhere else --
+        # notably the diffusion-module transitions, which are latency-sensitive and whose input shape
+        # differs (dim=1 may be a sample/multiplicity axis, not a chunkable row dim), so they MUST
+        # stay dense. See tensorrt_bionemo/_torch/auto_chunk.py.
+        self.auto_chunk_policy = auto_chunk_policy
 
         mapping = mapping or Mapping()
         if max_transition_tp_size:
@@ -83,10 +94,25 @@ class Transition(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
-        chunk_size: Optional[int] = None,
     ) -> torch.Tensor:
-        if chunk_size is not None and x.dim() >= 3:
-            return self._forward_chunked(x, all_reduce_params, chunk_size)
+        # Row-chunk the FFN (position-wise, numerically identical) through ``chunk_apply`` when an
+        # ``auto_chunk_policy`` is set (e.g. the trunk Pairformer's transition_z or the MSA
+        # transition). Below the policy threshold ``chunk_apply`` falls back to a single dense call,
+        # so small problems are unaffected.
+        if self.auto_chunk_policy is not None:
+            return chunk_apply(self._forward_impl,
+                               x,
+                               mask,
+                               policy=self.auto_chunk_policy,
+                               all_reduce_params=all_reduce_params)
+        return self._forward_impl(x, mask, all_reduce_params=all_reduce_params)
+
+    def _forward_impl(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+    ) -> torch.Tensor:
         x = self.norm(x)
         z = self.fused_fc2_fc1(x)
         x = self._swiglu(z)
@@ -97,23 +123,6 @@ class Transition(nn.Module):
                 mask = mask.unsqueeze(-1)
             x = x * mask
         return x
-
-    def _forward_chunked(
-        self,
-        x: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams],
-        chunk_size: int,
-    ) -> torch.Tensor:
-        """Chunk along dim=1 (e.g. MSA sequence dim) to bound peak memory."""
-        chunks = []
-        for i in range(0, x.shape[1], chunk_size):
-            xi = x[:, i:i + chunk_size]
-            xi = self.norm(xi)
-            zi = self.fused_fc2_fc1(xi)
-            xi = self._swiglu(zi)
-            xi = self.fc3(xi, all_reduce_params=all_reduce_params)
-            chunks.append(xi)
-        return torch.cat(chunks, dim=1)
 
 
 class ConditionedTransitionBlock(nn.Module):
@@ -197,12 +206,12 @@ class ConditionedTransitionBlock(nn.Module):
         self._can_fuse_output_gate = (mapping.tp_size == 1)
 
     def forward(
-            self,
-            a: torch.Tensor,
-            s: torch.Tensor,
-            all_reduce_params: Optional[AllReduceParams] = None,
-            buffers: Optional[PreallocatedBuffers] = None,
-            buffer_key: str = "cond_trans_adaln",
+        self,
+        a: torch.Tensor,
+        s: torch.Tensor,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
+        buffer_key: str = "cond_trans_adaln",
     ) -> torch.Tensor:
         """
         Args:
@@ -225,10 +234,12 @@ class ConditionedTransitionBlock(nn.Module):
             # falling back to torch internally for unsupported patterns.
             # Reuse the AdaLN output buffer — fused_swl_a_to_b consumed it
             # above, same shape as the gated_sigmoid output.
-            a = get_gated_sigmoid_op(s.dtype)(
-                s, self.output_projection.weight,
-                a, self.output_projection.bias,
-                output=buffers.get(buffer_key) if buffers is not None else None)
+            a = get_gated_sigmoid_op(s.dtype)(s,
+                                              self.output_projection.weight,
+                                              a,
+                                              self.output_projection.bias,
+                                              output=buffers.get(buffer_key)
+                                              if buffers is not None else None)
         else:
             a = F.sigmoid(self.output_projection(s)) * a
         return a

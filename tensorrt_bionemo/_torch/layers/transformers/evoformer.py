@@ -53,10 +53,7 @@ class EvoformerBlock(nn.Module):
                  opm_first: bool = False,
                  triangle_attn_backend: str = 'VANILLA',
                  support_batch: bool = True,
-                 opm_chunk_size: Optional[int] = None,
-                 opm_mask_chunk_size: Optional[int] = None,
                  dtype: Optional[torch.dtype] = None,
-                 triangle_attn_node_chunk_size: int = 0,
                  trimul_high_precision: bool = False,
                  eps: float = 1e-5,
                  inf: float = 1e9,
@@ -77,8 +74,6 @@ class EvoformerBlock(nn.Module):
         self.opm_first = opm_first
         self.triangle_attn_backend = triangle_attn_backend
         self.support_batch = support_batch
-        self.opm_chunk_size = opm_chunk_size
-        self.opm_mask_chunk_size = opm_mask_chunk_size
         self.dtype = dtype
         self.eps = eps
         self.inf = inf
@@ -127,8 +122,6 @@ class EvoformerBlock(nn.Module):
                 "proj_o": True
             } if outer_product_mean_bias is None else outer_product_mean_bias,
             dtype=dtype,
-            chunk_size=opm_chunk_size,
-            mask_chunk_size=opm_mask_chunk_size,
             mapping=mapping,
             skip_create_weights=skip_create_weights)
 
@@ -174,7 +167,6 @@ class EvoformerBlock(nn.Module):
             no_heads_pair,
             inf=inf,
             layer_idx=local_layer_idx,
-            chunk_size=triangle_attn_node_chunk_size,
             mha_bias_flags={
                 "q": False,
                 "k": False,
@@ -193,7 +185,6 @@ class EvoformerBlock(nn.Module):
             no_heads_pair,
             inf=inf,
             layer_idx=local_layer_idx,
-            chunk_size=triangle_attn_node_chunk_size,
             mha_bias_flags={
                 "q": False,
                 "k": False,
@@ -361,8 +352,6 @@ class EvoformerStack(nn.Module):
                     skip_create_weights=config.skip_create_weights,
                     mapping=config.mapping,
                     trimul_high_precision=config.trimul_high_precision,
-                    opm_chunk_size=config.opm_chunk_size,
-                    opm_mask_chunk_size=config.opm_mask_chunk_size,
                 ))
         self.linear = Linear(config.c_m,
                              config.c_s,

@@ -280,14 +280,17 @@ def test_msa_layer_precomputed_masks(sc: Scenario):
                                         inf=msa_layer.inf,
                                         dtype=dtype)
 
+    # MSALayer accumulates into z/m *in place* (memory opt), so it consumes its inputs. Give each
+    # call its own copy, otherwise the second call would run on the first call's mutated z/m rather
+    # than the same inputs -- the two mask paths must be compared on identical inputs.
     with torch.inference_mode():
-        out_z, out_m = msa_layer(z,
-                                 m,
+        out_z, out_m = msa_layer(z.clone(),
+                                 m.clone(),
                                  token_mask,
                                  msa_mask,
                                  attn_metadata=triangle_metadata_cls())
-        out_z_pre, out_m_pre = msa_layer(z,
-                                         m,
+        out_z_pre, out_m_pre = msa_layer(z.clone(),
+                                         m.clone(),
                                          token_mask,
                                          msa_mask,
                                          attn_metadata=triangle_metadata_cls(),

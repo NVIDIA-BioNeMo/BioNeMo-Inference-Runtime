@@ -17,6 +17,9 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
+                                                PAIR_WEIGHTED_AVERAGING,
+                                                ChunkPolicy, chunk_apply)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo.mapping import Mapping
 
@@ -36,7 +39,8 @@ class PairWeightedAveraging(nn.Module):
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
                  skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None) -> None:
+                 mapping: Optional[Mapping] = None,
+                 chunk_policy: Optional[ChunkPolicy] = None) -> None:
         """
         Args:
             c_m(int): The dimension of the input sequence.
@@ -48,12 +52,19 @@ class PairWeightedAveraging(nn.Module):
             dtype(torch.dtype): The data type of the input tensor.
             skip_create_weights(bool): Whether to skip creating weights.
             mapping(Optional[Mapping]): The mapping of the input tensor.
+            chunk_policy(Optional[ChunkPolicy]): Head-chunking policy; ``None`` uses the shared
+                ``pair_weighted_averaging`` policy from ``CHUNK_REGISTRY``.
         """
         super().__init__()
         self.c_m = c_m
         self.c_z = c_z
         self.c_h = c_h
         self.inf = inf
+        # Head-reduction chunking policy (registry default unless explicitly overridden). At large
+        # N the eager path is run in head-groups and summed -> bounds the [B, H, S, N, D] einsum
+        # temporaries. Numerically identical (proj_o has no bias; output is a sum over heads).
+        self.chunk_policy = (chunk_policy if chunk_policy is not None else
+                             CHUNK_REGISTRY.get(PAIR_WEIGHTED_AVERAGING))
 
         self.mapping = mapping
         if mapping is None:
@@ -101,7 +112,6 @@ class PairWeightedAveraging(nn.Module):
         m: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        chunk_heads: bool = False,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         """
@@ -109,16 +119,36 @@ class PairWeightedAveraging(nn.Module):
             m(torch.Tensor): The input sequence tensor (B, S, N, D)
             z(torch.Tensor): The input pairwise tensor (B, N, N, D)
             mask(torch.Tensor): The pairwise mask tensor (B, N, N)
-            chunk_heads(bool): Process heads one-at-a-time to reduce peak memory.
         Returns:
             torch.Tensor: The output tensor (B, S, N, D)
         """
         m = self.norm_m(m)
         z = self.norm_z(z)
 
-        if chunk_heads and not self.training:
-            return self._forward_chunked(m, z, mask, all_reduce_params)
+        # Row-chunk the sequence dim S (concat) when the registry policy trips on S. Each S-slice is
+        # independent -- the attention mixes only the token dims -- so this is numerically identical
+        # to the dense path. ``chunk_apply`` falls back to a single dense call below threshold.
+        # Inference-only.
+        if self.chunk_policy is not None and not self.training:
+            return chunk_apply(self._forward_impl,
+                               m,
+                               policy=self.chunk_policy,
+                               cat_dim=1,
+                               z=z,
+                               mask=mask,
+                               all_reduce_params=all_reduce_params)
+        return self._forward_impl(m,
+                                  z,
+                                  mask,
+                                  all_reduce_params=all_reduce_params)
 
+    def _forward_impl(
+        self,
+        m: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        all_reduce_params: Optional[AllReduceParams] = None,
+    ) -> torch.Tensor:
         vg = self.fused_proj_m_g(m)
         v, g = vg.split([self.c_h * self.num_heads, self.c_h * self.num_heads],
                         dim=-1)
@@ -136,52 +166,3 @@ class PairWeightedAveraging(nn.Module):
         o = o.reshape(*o.shape[:3], self.num_heads * self.c_h)
         o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o
-
-    def _forward_chunked(
-        self,
-        m: torch.Tensor,
-        z: torch.Tensor,
-        mask: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None,
-    ) -> torch.Tensor:
-        """Process one head at a time to reduce peak memory."""
-        fused_w = self.fused_proj_m_g.weight  # (2*H*D, c_m)
-        proj_z_w = self.proj_z.weight  # (H, c_z)
-        proj_o_w = self.proj_o.weight  # (c_m, H*D)
-
-        o_out: Optional[torch.Tensor] = None
-        for h in range(self.num_heads):
-            hd_s = h * self.c_h
-            hd_e = hd_s + self.c_h
-
-            v = m @ fused_w[hd_s:hd_e].T  # (B,S,N,D)
-            v = v.reshape(*v.shape[:3], 1, self.c_h)
-            v = v.permute(0, 3, 1, 2, 4)  # (B,1,S,N,D)
-
-            g_w = fused_w[self.c_h * self.num_heads +
-                          hd_s:self.c_h * self.num_heads + hd_e]
-            g = (m @ g_w.T).sigmoid()  # (B,S,N,D)
-
-            b = z @ proj_z_w[h:h + 1].T  # (B,N,N,1)
-            b = b.permute(0, 3, 1, 2)  # (B,1,N,N)
-            b = b + (1 - mask[:, None]) * -self.inf
-            w = torch.softmax(b, dim=-1)
-
-            o = torch.einsum("bhij,bhsjd->bhsid", w, v)
-            o = o.permute(0, 2, 3, 1, 4)
-            o = o.reshape(*o.shape[:3], self.c_h)
-            o = g * o  # (B,S,N,D)
-
-            chunk_out = o @ proj_o_w[:, hd_s:hd_e].T  # (B,S,N,c_m)
-            if o_out is None:
-                o_out = chunk_out
-            else:
-                o_out = o_out + chunk_out
-            del v, g, b, w, o, chunk_out
-
-        if (all_reduce_params is not None
-                and hasattr(self.proj_o, 'all_reduce')
-                and self.proj_o.all_reduce):
-            from tensorrt_bionemo._torch.distributed import allreduce
-            o_out = allreduce(o_out, all_reduce_params)
-        return o_out

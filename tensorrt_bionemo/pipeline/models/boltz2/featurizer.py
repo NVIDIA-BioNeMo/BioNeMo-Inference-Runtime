@@ -312,11 +312,8 @@ def process_atom_features(
         int(structure.ensemble[int(e)]["atom_coord_idx"])
         for e in ensemble_ref_idxs
     ]
-    num_ens = len(ensemble_atom_starts)
     atom_to_token = []
     token_to_rep_atom = []
-    token_to_center_atom = []
-    r_set_to_rep_atom = []
     ref_space_uid = []
     atom_name_list = []
     atom_element_list = []
@@ -382,11 +379,7 @@ def process_atom_features(
                 atom_chirality_list.append(a.chirality)
 
         token_to_rep_atom.append(atom_idx + token.disto_idx - start)
-        token_to_center_atom.append(atom_idx + token.center_idx - start)
         chain = structure.chains[token.asym_id]
-        if chain.mol_type != chain_type_ids[
-                "NONPOLYMER"] and token.resolved_mask:
-            r_set_to_rep_atom.append(atom_idx + token.center_idx - start)
 
         if chain.mol_type == chain_type_ids["PROTEIN"]:
             for a in token_atoms:
@@ -476,13 +469,6 @@ def process_atom_features(
     disto_coords_ensemble = torch.from_numpy(disto_coords_ensemble).float()
     disto_coords_ensemble = disto_coords_ensemble.permute(1, 0, 2)
 
-    boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
-    t_center = torch.from_numpy(disto_coords_ensemble[0].numpy()).float()
-    t_dists = torch.cdist(t_center, t_center)
-    distogram = (t_dists.unsqueeze(-1) > boundaries).sum(dim=-1).long()
-    disto_target = one_hot(distogram, num_classes=num_bins).unsqueeze(2)
-    disto_target = disto_target.expand(-1, -1, num_ens, -1)
-
     atom_name_arr = np.array(atom_name_list, dtype=np.int32)
     atom_element_arr = np.array(atom_element_list, dtype=np.int64)
     atom_charge_arr = np.array(atom_charge_list, dtype=np.float32)
@@ -499,9 +485,6 @@ def process_atom_features(
     pad_mask = torch.ones(atom_idx, dtype=torch.float32)
     atom_to_token_t = torch.tensor(atom_to_token, dtype=torch.long)
     token_to_rep_atom_t = torch.tensor(token_to_rep_atom, dtype=torch.long)
-    r_set_to_rep_atom_t = torch.tensor(r_set_to_rep_atom, dtype=torch.long)
-    token_to_center_atom_t = torch.tensor(token_to_center_atom,
-                                          dtype=torch.long)
     bfactor = torch.tensor(atom_bfactor_list, dtype=torch.float32)
     plddt = torch.tensor(atom_plddt_list, dtype=torch.float32)
 
@@ -543,9 +526,6 @@ def process_atom_features(
     ref_element = one_hot(ref_element, num_classes=num_elements)
     atom_to_token_t = one_hot(atom_to_token_t, num_classes=n_tokens)
     token_to_rep_atom_t = one_hot(token_to_rep_atom_t, num_classes=atom_idx)
-    r_set_to_rep_atom_t = one_hot(r_set_to_rep_atom_t, num_classes=atom_idx)
-    token_to_center_atom_t = one_hot(token_to_center_atom_t,
-                                     num_classes=atom_idx)
 
     pad_len_atom = (((atom_idx - 1) // atoms_per_window_queries + 1) *
                     atoms_per_window_queries - atom_idx)
@@ -564,9 +544,6 @@ def process_atom_features(
         coords = pad_dim(coords, 1, pad_len_atom)
         atom_to_token_t = pad_dim(atom_to_token_t, 0, pad_len_atom)
         token_to_rep_atom_t = pad_dim(token_to_rep_atom_t, 1, pad_len_atom)
-        token_to_center_atom_t = pad_dim(token_to_center_atom_t, 1,
-                                         pad_len_atom)
-        r_set_to_rep_atom_t = pad_dim(r_set_to_rep_atom_t, 1, pad_len_atom)
         bfactor = pad_dim(bfactor, 0, pad_len_atom)
         plddt = pad_dim(plddt, 0, pad_len_atom)
         atom_idx += pad_len_atom
@@ -576,7 +553,6 @@ def process_atom_features(
         resolved_frame_data_np).float().unsqueeze(0)
     if max_tokens is not None and n_tokens < max_tokens:
         pl = max_tokens - n_tokens
-        disto_target = pad_dim(pad_dim(disto_target, 1, pl), 2, pl)
         disto_coords_ensemble = pad_dim(disto_coords_ensemble, 1, pl)
         frames_idx = pad_dim(frames_idx, 1, pl)
         frame_resolved_mask = pad_dim(frame_resolved_mask, 1, pl)
@@ -594,9 +570,6 @@ def process_atom_features(
         "atom_pad_mask": pad_mask,
         "atom_to_token": atom_to_token_t,
         "token_to_rep_atom": token_to_rep_atom_t,
-        "r_set_to_rep_atom": r_set_to_rep_atom_t,
-        "token_to_center_atom": token_to_center_atom_t,
-        "disto_target": disto_target,
         "disto_coords_ensemble": disto_coords_ensemble,
         "bfactor": bfactor,
         "plddt": plddt,

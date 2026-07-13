@@ -15,7 +15,6 @@
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 import pytest
 import torch
@@ -39,8 +38,6 @@ class Scenario:
     n_seq: int = 128
     dtype: str = "float32"
     triangle_attn_backend: str = "VANILLA"
-    opm_chunk_size: Optional[int] = None
-    opm_mask_chunk_size: Optional[int] = None
 
 
 def _create_extra_msa_block(ref_module, sc, torch_dtype):
@@ -60,11 +57,8 @@ def _create_extra_msa_block(ref_module, sc, torch_dtype):
         triangle_attn_backend=sc.triangle_attn_backend,
         support_batch=True,
         dtype=torch_dtype,
-        triangle_attn_node_chunk_size=0,
         eps=ref_module.eps,
         inf=ref_module.inf,
-        opm_chunk_size=sc.opm_chunk_size,
-        opm_mask_chunk_size=sc.opm_mask_chunk_size,
         mapping=Mapping(),
     )
 
@@ -72,18 +66,9 @@ def _create_extra_msa_block(ref_module, sc, torch_dtype):
 @pytest.mark.parametrize("sc", [
     Scenario(triangle_attn_backend="VANILLA"),
     Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="VANILLA",
-             opm_chunk_size=16,
-             opm_mask_chunk_size=16),
-    Scenario(triangle_attn_backend="CUEQUIV",
-             opm_chunk_size=16,
-             opm_mask_chunk_size=16),
     Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
 ],
-                         ids=[
-                             "vanilla", "cueequiv", "vanilla_chunked",
-                             "cueequiv_chunked", "cutedsl_bf16"
-                         ])
+                         ids=["vanilla", "cueequiv", "cutedsl_bf16"])
 def test_extra_msa_block(sc: Scenario):
     _skip_if_cutedsl(sc.triangle_attn_backend)
     torch.manual_seed(42)

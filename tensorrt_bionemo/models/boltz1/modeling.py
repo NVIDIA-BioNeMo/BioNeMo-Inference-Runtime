@@ -18,6 +18,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 from tensorrt_llm_lite import logger
+from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
@@ -82,7 +83,8 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                 getter=lambda mod:
                 (mod.structure_module.score_model.token_transformer),
                 setter=lambda mod, opt: setattr(
-                    mod.structure_module.score_model, "token_transformer", opt),
+                    mod.structure_module.score_model, "token_transformer", opt
+                ),
                 trt_cls=TokenTransformerTRT,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
@@ -121,6 +123,8 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         self.trunk_mapping = self.config.trunk.mapping
         self.trunk_dtype = self.config.trunk.torch_dtype
         self.trunk_config = self.config.trunk
+        self.recompute_rel_pos = getattr(self.config, "recompute_rel_pos",
+                                         False)
 
         # Setup steering params:
         self.steering_args = BoltzSteeringParams(contact_guidance_update=False)
@@ -225,6 +229,10 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             use_atom_backbone_feat=False,
             use_residue_feats_atoms=False,
             dtype=self.structure_module_dtype,
+            pairwise_conditioner_dtype=str_dtype_to_torch(
+                score_model_config.pairwise_conditioning_dtype),
+            token_trans_bias_dtype=str_dtype_to_torch(
+                score_model_config.token_trans_bias_dtype),
             mapping=self.structure_module_mapping,
             skip_create_weights=False,
         )
@@ -418,6 +426,13 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         all_reduce_params: Optional[AllReduceParams] = None
     ) -> dict[str, torch.Tensor]:
 
+        # Training-only feats: never read in inference (forward + postprocessor). Drop them up front
+        # so they don't sit on the GPU -- disto_target is ~7.9 GB and r_set_to_rep_atom ~1 GB at
+        # N~4000. Handles feed_dicts from the OSS data pipeline, which still emits these. (Boltz1 has
+        # no token_to_center_atom.)
+        for _train_only_key in ("disto_target", "r_set_to_rep_atom"):
+            feed_dict.pop(_train_only_key, None)
+
         if steering_args is None:
             steering_args = self.steering_args
 
@@ -435,11 +450,19 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         s_init = self.s_init(s_inputs)
         z_init = (self.z_init_1(s_inputs)[:, :, None] +
                   self.z_init_2(s_inputs)[:, None, :])
-        relative_position_encoding = self.rel_pos(
-            **self.get_module_feed_dict(feed_dict,
-                                        "relative_position_encoding"), )
-        z_init = z_init + relative_position_encoding
-        z_init = z_init + self.token_bonds(feed_dict["token_bonds"].float())
+        rel_pos_feats = self.get_module_feed_dict(
+            feed_dict, "relative_position_encoding")
+        relative_position_encoding = self.rel_pos(**rel_pos_feats)
+        # In-place accumulation: z_init is a freshly-owned [B,N,N,c_z] (from the broadcast add
+        # above), so fold each term into it rather than allocating a new z_init per '+' (each of
+        # which is ~8 GB fp32 at N~4000). Inference-only.
+        z_init += relative_position_encoding
+        if self.recompute_rel_pos:
+            # Consumed into z_init above; drop the [N,N,token_z] encoding rather than hold it
+            # (~15 GB fp32 at N~5k) across the trunk -- recomputed from rel_pos_feats (tiny [B,N]
+            # index tensors) just before diffusion_conditioning below.
+            relative_position_encoding = None
+        z_init += self.token_bonds(feed_dict["token_bonds"].float())
 
         # Run trunk module
         s, z = self.trunk(**self.get_module_feed_dict(feed_dict, "trunk"),
@@ -452,6 +475,8 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         pair_distogram = self.distogram_module(z)
 
         # Run diffusion conditioning module
+        if self.recompute_rel_pos:
+            relative_position_encoding = self.rel_pos(**rel_pos_feats)
         q, c, atom_enc_bias, atom_dec_bias, token_trans_bias = self.diffusion_conditioning(
             s_trunk=s,
             z_trunk=z,
@@ -481,13 +506,24 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             all_reduce_params=all_reduce_params,
             steering_args=steering_args,
         )
+
+        # Free diffusion-stage condition tensors before the confidence module (~12 GB at large N):
+        # they are consumed by the sampler above and not read by the confidence stage.
+        del q, c, atom_enc_bias, atom_dec_bias, token_trans_bias
+        del network_condition_kwargs
+
+        # Keep only the sampler outputs the confidence stage / return dict need, then drop the rest
+        # of the sampler output dict.
+        x_pred = struct_module_output["sample_atom_coords"]
+        s_diffusion = (struct_module_output["diff_token_repr"] if
+                       self.confidence_module_config.use_s_diffusion else None)
+        del struct_module_output
+
         confidence_module_output = self.confidence_module(
             s=s,
             z=z,
-            s_diffusion=(struct_module_output["diff_token_repr"]
-                         if self.confidence_module_config.use_s_diffusion else
-                         None),
-            x_pred=struct_module_output["sample_atom_coords"],
+            s_diffusion=s_diffusion,
+            x_pred=x_pred,
             feature_dict=feed_dict,
             pred_distogram_logits=pair_distogram.float(),
             multiplicity=diffusion_samples,
@@ -507,7 +543,7 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             "token_masks":
             feed_dict["token_pad_mask"],
             "coords":
-            struct_module_output["sample_atom_coords"],
+            x_pred,
             "complex_plddt":
             confidence_module_output["complex_plddt"],
             "complex_iplddt":

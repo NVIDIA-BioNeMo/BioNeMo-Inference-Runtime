@@ -47,7 +47,6 @@ class TemplatePairBlock(nn.Module):
                  eps: float = 1e-5,
                  inf: float = 1e9,
                  triangle_attn_backend: str = 'VANILLA',
-                 triangle_attn_node_chunk_size: int = 0,
                  skip_create_weights: bool = False,
                  mapping: Optional[Mapping] = None,
                  **kwargs):
@@ -110,8 +109,7 @@ class TemplatePairBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
-            high_precision=trimul_high_precision
-        )
+            high_precision=trimul_high_precision)
 
         self.tri_mul_in = TriangleMultiplicationNode(
             layer_idx=local_layer_idx,
@@ -124,8 +122,7 @@ class TemplatePairBlock(nn.Module):
             mapping=mapping,
             skip_create_weights=skip_create_weights,
             max_tri_mul_tp_size=True,
-            high_precision=trimul_high_precision
-        )
+            high_precision=trimul_high_precision)
 
         self.tri_attn_start = TriangleAttentionStartingNode(
             c_t,
@@ -133,7 +130,6 @@ class TemplatePairBlock(nn.Module):
             no_heads,
             inf=inf,
             layer_idx=local_layer_idx,
-            chunk_size=triangle_attn_node_chunk_size,
             mha_bias_flags=tri_attn_start_bias,
             attn_backend=triangle_attn_backend,
             dtype=dtype,
@@ -145,7 +141,6 @@ class TemplatePairBlock(nn.Module):
             no_heads,
             inf=inf,
             layer_idx=local_layer_idx,
-            chunk_size=triangle_attn_node_chunk_size,
             mha_bias_flags=tri_attn_end_bias,
             attn_backend=triangle_attn_backend,
             dtype=dtype,
@@ -169,7 +164,6 @@ class TemplatePairBlock(nn.Module):
         else:
             raise ValueError(
                 f"Transition type {transition_type} is not available")
-            
 
     def trimul_update(self, single: torch.Tensor,
                       single_mask: torch.Tensor) -> torch.Tensor:
@@ -201,13 +195,13 @@ class TemplatePairBlock(nn.Module):
             single_mask,
             attn_metadata=attn_metadata,
             all_reduce_params=all_reduce_params)
-                   
+
         single = single + self.tri_attn_end(
             single,
             single_mask,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params)  
-        
+            all_reduce_params=all_reduce_params)
+
         return single
 
     def forward(
@@ -248,14 +242,14 @@ class TemplatePairBlock(nn.Module):
                     attn_metadata=attn_metadata,
                     all_reduce_params=all_reduce_params)
                 single = self.trimul_update(single, single_mask)
-            
+
             single = single + self.pair_transition(
                 single, single_mask, all_reduce_params=all_reduce_params)
 
             single_templates[i] = single
 
         z = torch.cat(single_templates, dim=-4)
-        
+
         return z
 
 
@@ -273,7 +267,6 @@ class TemplatePairStack(nn.Module):
                  inf: float = 1e9,
                  eps: float = 1e-5,
                  triangle_attn_backend: str = 'VANILLA',
-                 triangle_attn_node_chunk_size: int = 0,
                  transition_type: str = "relu",
                  tri_mul_out_bias: Optional[dict] = None,
                  tri_mul_in_bias: Optional[dict] = None,
@@ -314,7 +307,6 @@ class TemplatePairStack(nn.Module):
                 mapping=mapping,
                 skip_create_weights=skip_create_weights,
                 triangle_attn_backend=triangle_attn_backend,
-                triangle_attn_node_chunk_size=triangle_attn_node_chunk_size,
                 transition_type=transition_type,
                 tri_mul_out_bias=tri_mul_out_bias,
                 tri_mul_in_bias=tri_mul_in_bias,
@@ -364,7 +356,6 @@ class TemplatePointwiseAttention(nn.Module):
                  inf: float = 1e9,
                  eps: float = 1e-5,
                  triangle_attn_backend: str = 'VANILLA',
-                 triangle_attn_node_chunk_size: int = 0,
                  chunk_size: int = 256,
                  dtype: torch.dtype = torch.float32,
                  mapping: Optional[Mapping] = None,

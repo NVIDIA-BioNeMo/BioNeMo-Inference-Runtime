@@ -13,12 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from tensorrt_bionemo._torch.graph_optimization.config_schema import \
+    CUDAGraphOptimizationConfig
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       MSAModuleConfig, PairformerConfig)
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.pipeline.models.boltz2.const import num_tokens
-from tensorrt_bionemo._torch.graph_optimization.config_schema import \
-    CUDAGraphOptimizationConfig
+
 
 class _Default:
     token_s: int = 384
@@ -108,9 +109,6 @@ class TrunkConfig(BaseConfig):
         pairwise_num_heads=4,
         num_tokens=num_tokens,
         use_paired_feature=True,
-        opm_chunk_size=16,
-        opm_mask_chunk_size=256,
-        pwa_chunk_token_threshold=1280,
         trimul_high_precision=False,
         version="v2",
     )
@@ -158,6 +156,13 @@ class ScoreModelConfig(BaseConfig):
     atoms_per_window_queries: int = _Default.atoms_per_window_queries
     atoms_per_window_keys: int = _Default.atoms_per_window_keys
     conditioning_transition_layers: int = 2
+    # Precision for the PairwiseConditioning FFN (its [N, N, 2*hidden] intermediate dominates
+    # memory). bf16 halves it vs fp32; the output is cast back to the structure-module dtype so
+    # downstream conditioning is unchanged.
+    pairwise_conditioning_dtype: str = "bfloat16"
+    # Precision for the token-transformer bias [N, N, depth*heads]. bf16 halves it vs fp32; the
+    # token transformer consumes it at bf16 anyway, so this is essentially free.
+    token_trans_bias_dtype: str = "bfloat16"
 
     atom_encoder: DiffusionTransformerConfig = DiffusionTransformerConfig(
         num_blocks=3,
@@ -180,8 +185,7 @@ class ScoreModelConfig(BaseConfig):
         expansion_factor=2,
         version="v2",
         graph_optimization_config=CUDAGraphOptimizationConfig(
-                graph_optimization_mode="cuda_graphs_via_torch")
-    )
+            graph_optimization_mode="cuda_graphs_via_torch"))
     atom_decoder: DiffusionTransformerConfig = DiffusionTransformerConfig(
         num_blocks=3,
         num_heads=4,
@@ -264,6 +268,7 @@ class Boltz2Config(BaseConfig):
     use_residue_feats_atoms: bool = _Default.use_residue_feats_atoms
     confidence_prediction: bool = True
     skip_run_structure: bool = False
+    recompute_rel_pos: bool = True
 
     input_embedder: InputEmbedderConfig = InputEmbedderConfig()
 

@@ -21,6 +21,7 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
+from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_TRANSITION
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
@@ -42,15 +43,13 @@ class MSALayer(nn.Module):
                  token_z: int,
                  pairwise_head_width: int = 32,
                  pairwise_num_heads: int = 4,
-                 opm_chunk_size: Optional[int] = None,
-                 opm_mask_chunk_size: Optional[int] = None,
-                 opm_efficient_memory_threshold: Optional[int] = None,
                  layer_idx: int = 0,
                  eps: float = 1e-5,
                  inf: float = 1e9,
                  dtype: torch.dtype = None,
                  skip_create_weights: bool = False,
                  triangle_attn_backend: str = "VANILLA",
+                 trimul_high_precision: bool = False,
                  mapping: Optional[Mapping] = None) -> None:
         super().__init__()
         self.msa_s = msa_s
@@ -70,7 +69,11 @@ class MSALayer(nn.Module):
             eps=eps,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            mapping=mapping)
+            mapping=mapping,
+            # Row-chunk the MSA-transition FFN over the sequence dim S at large S (position-wise,
+            # numerically identical) -- replaces the old chunk_heads_pwa-coupled chunk_size, now that
+            # PWA auto-chunks via its own registry policy.
+            auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION))
 
         self.pair_weighted_averaging = PairWeightedAveraging(
             c_m=msa_s,
@@ -93,14 +96,12 @@ class MSALayer(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             triangle_attn_backend=triangle_attn_backend,
+            trimul_high_precision=trimul_high_precision,
             mapping=mapping)
         self.outer_product_mean = OuterProductMean(
             c_in=msa_s,
             c_hidden=32,
             c_out=token_z,
-            chunk_size=opm_chunk_size,
-            mask_chunk_size=opm_mask_chunk_size,
-            efficient_memory_threshold=opm_efficient_memory_threshold,
             eps=eps,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
@@ -114,7 +115,6 @@ class MSALayer(nn.Module):
         msa_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
-        chunk_heads_pwa: bool = False,
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -123,16 +123,17 @@ class MSALayer(nn.Module):
             m(Tensor): The input tensor of shape (B, S, N, msa_s).
             token_mask(Tensor): The mask tensor of shape (B, N, N).
             msa_mask(Tensor): The mask tensor of shape (B, S, N).
-            chunk_heads_pwa(bool): Chunk pair-weighted averaging by heads.
             precomputed_masks: Precomputed mask biases for triangle attention.
         Returns:
             Tuple[Tensor, Tensor]: The output tensor of shape (B, N, N, token_z), (B, S, N, msa_s).
         """
-        m = m + self.pair_weighted_averaging(m, z, token_mask, chunk_heads_pwa,
-                                             all_reduce_params)
-        m = m + self.msa_transition(
-            m, all_reduce_params, chunk_size=(32 if chunk_heads_pwa else None))
-        z = z + self.outer_product_mean(m, msa_mask, all_reduce_params)
+        # PWA and msa_transition auto-chunk internally via their registry policies at large N/S.
+        m += self.pair_weighted_averaging(m,
+                                          z,
+                                          token_mask,
+                                          all_reduce_params=all_reduce_params)
+        m += self.msa_transition(m, all_reduce_params=all_reduce_params)
+        z += self.outer_product_mean(m, msa_mask, all_reduce_params)
 
         z = self.pairformer_layer(
             z,
@@ -161,15 +162,13 @@ class MSAModule(nn.Module):
         self.pairwise_head_width = config.pairwise_head_width
         self.pairwise_num_heads = config.pairwise_num_heads
         self.use_paired_feature = config.use_paired_feature
-        self.opm_chunk_size = config.opm_chunk_size
-        self.opm_mask_chunk_size = config.opm_mask_chunk_size
-        self.opm_efficient_memory_threshold = getattr(
-            config, 'opm_efficient_memory_threshold', None)
-        self.pwa_chunk_token_threshold = getattr(config,
-                                                 'pwa_chunk_token_threshold',
-                                                 None)
         self.dtype = config.torch_dtype
         self.version = config.version
+        # Propagate the config's trimul precision to the MSA-module pairformer. Without this the
+        # MSALayer leaves PairformerNoSeqLayer at PairformerLayerV1's default (high_precision=True
+        # -> fp32 -> the memory-heavy vanilla dual-GEMM); MSAModuleConfig sets it False.
+        self.trimul_high_precision = getattr(config, "trimul_high_precision",
+                                             False)
 
         if config.version == "v1":
             s_input_dim = self.token_s + 2 * self.num_tokens + 1 + len(
@@ -205,13 +204,10 @@ class MSAModule(nn.Module):
                     pairwise_num_heads=self.pairwise_num_heads,
                     eps=config.norm_epsilon,
                     inf=config.mask_inf,
-                    opm_chunk_size=self.opm_chunk_size,
-                    opm_mask_chunk_size=self.opm_mask_chunk_size,
-                    opm_efficient_memory_threshold=self.
-                    opm_efficient_memory_threshold,
                     dtype=self.dtype,
                     skip_create_weights=config.skip_create_weights,
                     triangle_attn_backend=config.triangle_attention_backend,
+                    trimul_high_precision=self.trimul_high_precision,
                     mapping=self.mapping))
 
     def load_weights(self, weights: dict):
@@ -270,10 +266,6 @@ class MSAModule(nn.Module):
         m = self.msa_proj(m.to(self.dtype))
         m = m + self.s_proj(emb).unsqueeze(1)
 
-        n_tokens = z.shape[1]
-        chunk_heads_pwa = (self.pwa_chunk_token_threshold is not None
-                           and n_tokens > self.pwa_chunk_token_threshold)
-
         first_layer = self.layers[0]
         precomputed = precompute_pair_masks(
             first_layer.pairformer_layer.triangle_attn_backend,
@@ -289,7 +281,6 @@ class MSAModule(nn.Module):
                                   msa_mask,
                                   attn_metadata,
                                   all_reduce_params,
-                                  chunk_heads_pwa=chunk_heads_pwa,
                                   precomputed_masks=precomputed)
         return z
 

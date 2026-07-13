@@ -22,9 +22,10 @@ from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
 from tensorrt_bionemo._torch.layers.transition import Transition
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import \
     relpos_complex
+from tensorrt_bionemo.mapping import Mapping
+
 
 class ContactConditioning(nn.Module):
     """ Boltz2 Contact Conditioning """
@@ -63,25 +64,29 @@ class ContactConditioning(nn.Module):
         final_contact_conditioning = contact_conditioning[:, :, :, 2:]
         contact_threshold_normalized = (contact_threshold - self.cutoff_min
                                         ) / (self.cutoff_max - self.cutoff_min)
-        contact_threshold_fourier = self.fourier_embedding(
-            contact_threshold_normalized.flatten()).reshape(
-                contact_threshold_normalized.shape + (-1, ))
+        # Inline the Fourier features into the cat instead of binding them to a variable, so the
+        # [N,N,token_z] fp32 fourier tensor (~15 GB at N~5k) is freed right after the cat rather
+        # than kept live through the encoder + masking below.
+        final_contact_conditioning = self.encoder(
+            torch.cat(
+                [
+                    final_contact_conditioning,
+                    contact_threshold_normalized.unsqueeze(-1),
+                    self.fourier_embedding(
+                        contact_threshold_normalized.flatten()).reshape(
+                            contact_threshold_normalized.shape + (-1, )),
+                ],
+                dim=-1,
+            ))
 
-        final_contact_conditioning = torch.cat(
-            [
-                final_contact_conditioning,
-                contact_threshold_normalized.unsqueeze(-1),
-                contact_threshold_fourier,
-            ],
-            dim=-1,
-        )
-        final_contact_conditioning = self.encoder(final_contact_conditioning)
-
-        final_contact_conditioning = (
-            final_contact_conditioning *
-            (1 - contact_conditioning[:, :, :, 0:2].sum(dim=-1, keepdim=True))
-            + self.encoding_unspecified * contact_conditioning[:, :, :, 0:1] +
-            self.encoding_unselected * contact_conditioning[:, :, :, 1:2])
+        # Fold the unspecified/unselected masking IN PLACE (the encoder output is freshly owned):
+        # the original built 3-4 separate [N,N,token_z] temporaries for the multiply + two adds.
+        mask = 1 - contact_conditioning[:, :, :, 0:2].sum(dim=-1, keepdim=True)
+        final_contact_conditioning *= mask
+        final_contact_conditioning += (self.encoding_unspecified *
+                                       contact_conditioning[:, :, :, 0:1])
+        final_contact_conditioning += (self.encoding_unselected *
+                                       contact_conditioning[:, :, :, 1:2])
         return final_contact_conditioning
 
 
@@ -139,6 +144,11 @@ class PairwiseConditioning(nn.Module):
             token_rel_pos_feats: torch.Tensor,
             all_reduce_params: Optional[AllReduceParams] = None
     ) -> torch.Tensor:
+        # Cast inputs to the conditioner dtype so the [N, N, *] init-proj + FFN run at that
+        # precision even when the trunk feeds a higher-precision (e.g. fp32) pair rep.
+        if self.dtype is not None:
+            z_trunk = z_trunk.to(self.dtype)
+            token_rel_pos_feats = token_rel_pos_feats.to(self.dtype)
         z = torch.cat((z_trunk, token_rel_pos_feats), dim=-1)
         z = self.init_proj_norm(z)
         z = self.init_proj_linear(z)
@@ -239,6 +249,7 @@ class SingleConditioning(nn.Module):
 
         return s, normed_fourier if not self.disable_times else None
 
+
 class DiffusionConditioning(nn.Module):
     """
     Implements AF3 Algorithm 21 — Diffusion conditioning for AlphaFold3.
@@ -311,6 +322,10 @@ class DiffusionConditioning(nn.Module):
                                gather_output=True,
                                skip_create_weights=skip_create_weights)
 
+        # Diffusion-conditioning transitions intentionally stay dense (no ``auto_chunk_policy``):
+        # auto row-chunking is opt-in for the trunk Pairformer's transition_z only. The diffusion
+        # path is latency-sensitive and its transition inputs can differ from the [B, N, N, C] pair
+        # tensor the pair policy assumes.
         self.transition_z = nn.ModuleList([
             Transition(dim=self.c_z,
                        hidden=self.c_z * 2,
@@ -377,7 +392,7 @@ class DiffusionConditioning(nn.Module):
         ).to(dtype=zij_trunk.dtype)
 
         zij = torch.cat([zij_trunk, relpos_zij], dim=-1)
-        
+
         zij = self.linear_z(self.layer_norm_z(zij))
 
         # Single conditioning
@@ -406,12 +421,15 @@ class DiffusionConditioning(nn.Module):
 
         return si, zij
 
-    def forward(self, 
-                batch: dict, t: torch.Tensor, 
-                si_input: torch.Tensor,
-                si_trunk: torch.Tensor,
-                zij_trunk: torch.Tensor,
-                use_conditioning: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+            self,
+            batch: dict,
+            t: torch.Tensor,
+            si_input: torch.Tensor,
+            si_trunk: torch.Tensor,
+            zij_trunk: torch.Tensor,
+            use_conditioning: bool = True
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             batch:

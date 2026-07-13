@@ -23,22 +23,29 @@ from test_utils.boltz.create_and_load_weights import (
     create_outer_product_mean_weights, load_outer_product_mean_weights_torch)
 from test_utils.boltz.ref_layers import RefOuterProductMean
 
+from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 
 
 @dataclass(kw_only=True, frozen=True)
 class Scenario:
     torch_dtype: str = "float32"
-    chunk_size: Optional[int] = None
-    mask_chunk_size: Optional[int] = None
+    # Output token-rows per chunk via a registry-style ChunkPolicy. Row-chunking is numerically
+    # identical, so the chunked output must still match the ref.
+    policy_chunk: Optional[int] = None
 
 
 @pytest.mark.parametrize("sc", [
     Scenario(),
     Scenario(torch_dtype="bfloat16"),
-    Scenario(chunk_size=16, mask_chunk_size=16),
+    Scenario(policy_chunk=16),
+    Scenario(policy_chunk=8),
+    Scenario(policy_chunk=12, torch_dtype="bfloat16"),
 ],
-                         ids=["float32", "bfloat16", "chunked"])
+                         ids=[
+                             "float32", "bfloat16", "policy_chunk16",
+                             "policy_chunk8", "policy_chunk_partial_bf16"
+                         ])
 def test_outer_product_mean(sc: Scenario):
     torch.manual_seed(42)
     os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
@@ -52,12 +59,15 @@ def test_outer_product_mean(sc: Scenario):
 
     weights_and_biases = create_outer_product_mean_weights(from_ref=ref_m)
 
+    # A low min_size makes the policy trip at the test's token count, so `policy_chunk` scenarios
+    # exercise the registry-driven output-row chunking.
+    chunk_policy = (ChunkPolicy(chunk_size=sc.policy_chunk, min_size=1)
+                    if sc.policy_chunk is not None else None)
     outer_product_mean = OuterProductMean(c_in=ref_m.c_in,
                                           c_hidden=ref_m.c_hidden,
                                           c_out=ref_m.c_out,
-                                          chunk_size=sc.chunk_size,
-                                          mask_chunk_size=sc.mask_chunk_size,
-                                          dtype=dtype)
+                                          dtype=dtype,
+                                          chunk_policy=chunk_policy)
     load_outer_product_mean_weights_torch(outer_product_mean,
                                           weights_and_biases,
                                           dtype=dtype)
@@ -89,3 +99,38 @@ def test_outer_product_mean(sc: Scenario):
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
                                                       diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2
+
+
+@pytest.mark.parametrize("rows", [8, 16, 40, 7],
+                         ids=["r8", "r16", "r40_all", "r7_partial"])
+def test_outer_product_mean_chunk_matches_dense(rows: int):
+    """Output token-row chunking (registry policy) matches the dense path.
+
+    Same instance dense vs chunked (no golden weights needed); each output row ``i`` depends only on
+    ``a[:, :, i]``, so slicing the output token dim and concatenating is numerically identical.
+    """
+    torch.manual_seed(0)
+    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
+    device = torch.device('cuda')
+
+    opm = OuterProductMean(c_in=32, c_hidden=8, c_out=16,
+                           dtype=torch.float32).to(device)
+    opm.eval()
+    # Constructed weights are zero-initialized (production loads them); give them real values so
+    # the dense-vs-chunked comparison is meaningful rather than 0 == 0.
+    with torch.no_grad():
+        for p in opm.parameters():
+            p.normal_(mean=0.0, std=0.1)
+    m = torch.randn(1, 6, 40, 32, device=device)  # N=40 output rows
+    mask = torch.randint(0, 2, (1, 6, 40), dtype=torch.float32, device=device)
+
+    with torch.inference_mode():
+        # Registry default (memory-scaled min_size) not tripped at N=40 -> dense.
+        dense = opm(m, mask)
+
+        # Registry-style policy chunking over output token-rows (rows=7 hits a partial tail).
+        opm.chunk_policy = ChunkPolicy(chunk_size=rows, min_size=1)
+        policy = opm(m, mask)
+
+    torch.testing.assert_close(policy, dense, atol=1e-4, rtol=1e-4)

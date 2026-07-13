@@ -35,7 +35,6 @@ class PairformerConfig(BaseConfig):
     max_transition_tp_size: bool = True
     max_attention_pairwise_tp_size: bool = True
     max_tri_mul_tp_size: bool = True
-    triangle_attn_node_chunk_size: int = 0
     no_update_s: bool = False
     no_update_z: bool = False
     s_path_dtype: Optional[Union[str, torch.dtype]] = None
@@ -189,10 +188,6 @@ class MSAModuleConfig(BaseConfig):
     pairwise_head_width: int = None
     pairwise_num_heads: int = None
     use_paired_feature: bool = True
-    opm_chunk_size: int = None
-    opm_mask_chunk_size: int = None
-    opm_efficient_memory_threshold: Optional[int] = None
-    pwa_chunk_token_threshold: Optional[int] = None
     version: str = "v1"
 
 
@@ -210,11 +205,8 @@ class EvoformerStackConfig(BaseConfig):
     no_blocks: int = None
     no_column_attention: bool = False
     opm_first: bool = False
-    chunk_size: int = 0
     n_seq: int = 516
     trimul_high_precision: bool = False
-    opm_chunk_size: Optional[int] = None
-    opm_mask_chunk_size: Optional[int] = None
 
 
 class EvoformerStackBuildConfig(BuildConfig):
@@ -280,9 +272,6 @@ class ExtraMSAStackConfig(BaseConfig):
     transition_n: int = None
     opm_first: bool = False
     support_batch: bool = True
-    chunk_size: int = 0
-    opm_chunk_size: Optional[int] = None
-    opm_mask_chunk_size: Optional[int] = None
     max_msa_size: int = 5120
     padding_inputs: bool = True
     trimul_high_precision: bool = False

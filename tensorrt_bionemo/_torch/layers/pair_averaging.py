@@ -16,10 +16,13 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
                                                 PAIR_WEIGHTED_AVERAGING,
                                                 ChunkPolicy, chunk_apply)
+from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import (
+    PairWeightedAveragingCuTe, get_pair_weighted_averaging_op)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo.mapping import Mapping
 
@@ -52,7 +55,7 @@ class PairWeightedAveraging(nn.Module):
             dtype(torch.dtype): The data type of the input tensor.
             skip_create_weights(bool): Whether to skip creating weights.
             mapping(Optional[Mapping]): The mapping of the input tensor.
-            chunk_policy(Optional[ChunkPolicy]): Head-chunking policy; ``None`` uses the shared
+            chunk_policy(Optional[ChunkPolicy]): Sequence-row chunking policy; ``None`` uses the shared
                 ``pair_weighted_averaging`` policy from ``CHUNK_REGISTRY``.
         """
         super().__init__()
@@ -60,9 +63,9 @@ class PairWeightedAveraging(nn.Module):
         self.c_z = c_z
         self.c_h = c_h
         self.inf = inf
-        # Head-reduction chunking policy (registry default unless explicitly overridden). At large
-        # N the eager path is run in head-groups and summed -> bounds the [B, H, S, N, D] einsum
-        # temporaries. Numerically identical (proj_o has no bias; output is a sum over heads).
+        # Sequence-row chunking policy for the eager fallback (registry default unless explicitly
+        # overridden). The fused kernel is already memory-bounded and takes precedence when
+        # available; otherwise chunking bounds the [B, H, S, N, D] eager intermediate.
         self.chunk_policy = (chunk_policy if chunk_policy is not None else
                              CHUNK_REGISTRY.get(PAIR_WEIGHTED_AVERAGING))
 
@@ -107,6 +110,13 @@ class PairWeightedAveraging(nn.Module):
             skip_create_weights=skip_create_weights,
         )
 
+        # Eligibility for the fused PWA CuTe op (the einsum -> sigmoid(gate) -> proj_o chain):
+        # single-GPU (so proj_o is unsharded and no all-reduce is needed) and the kernel's fixed
+        # dims (H=8, D=c_h=32, c_m=64). The op itself further gates on SM/dtype/j-pad and falls back.
+        self._pwa_op_eligible = (self.mapping.tp_size == 1
+                                 and self.num_heads == 8 and self.c_h == 32
+                                 and c_m == 64)
+
     def forward(
         self,
         m: torch.Tensor,
@@ -125,11 +135,16 @@ class PairWeightedAveraging(nn.Module):
         m = self.norm_m(m)
         z = self.norm_z(z)
 
-        # Row-chunk the sequence dim S (concat) when the registry policy trips on S. Each S-slice is
-        # independent -- the attention mixes only the token dims -- so this is numerically identical
-        # to the dense path. ``chunk_apply`` falls back to a single dense call below threshold.
+        # Fused CuTe path: collapses einsum -> gate -> proj_o so the
+        # [B,H,S,N,D] intermediate is never materialized. The op further gates
+        # on SM/dtype/j-padding support.
+        if self._pwa_op_eligible:
+            op = get_pair_weighted_averaging_op(m.dtype)
+            if isinstance(op, PairWeightedAveragingCuTe):
+                return self._forward_fused(m, z, mask, op)
+
         # Inference-only.
-        if self.chunk_policy is not None and not self.training:
+        if self.chunk_policy is not None:
             return chunk_apply(self._forward_impl,
                                m,
                                policy=self.chunk_policy,
@@ -166,3 +181,38 @@ class PairWeightedAveraging(nn.Module):
         o = o.reshape(*o.shape[:3], self.num_heads * self.c_h)
         o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
         return o
+
+    def _forward_fused(
+        self,
+        m: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        op: PairWeightedAveragingCuTe,
+    ) -> torch.Tensor:
+        """Fused PWA via the CuTe op. Prepares the kernel inputs -- softmax'd pair weights ``w``
+        (zero-padded on j to a multiple of 8), values ``v``, the RAW (pre-sigmoid) gate ``g``, and
+        ``proj_o.weight`` -- and returns the [B,S,N,c_m] projection (the kernel applies the sigmoid,
+        fuses the value-GEMM + gate + proj_o, and never materializes o[B,H,S,N,D])."""
+        vg = self.fused_proj_m_g(m)
+        v, g = vg.split([self.c_h * self.num_heads, self.c_h * self.num_heads],
+                        dim=-1)
+        # v, g are [B, S, N, H*D] views of vg (last dim H*D contiguous, N strided). The kernel reads
+        # per-head D-blocks straight from this layout (head h = the h-th D-block), so we pass them
+        # AS-IS -- no permute, no .contiguous(): that avoids two full [B,S,N,H*D]-sized copies, which
+        # were the dominant memory/latency cost of the fused path.
+
+        b = self.proj_z(z)
+        b = b.permute(0, 3, 1, 2)  # [B, H, N, N]
+        b = b + (1 - mask[:, None]) * -self.inf
+        w = torch.softmax(b, dim=-1)  # [B, H, N, N]
+
+        N = w.shape[-1]
+        Jp = (N + 7) // 8 * 8
+        if Jp != N:
+            w = F.pad(w,
+                      (0, Jp -
+                       N))  # [B, H, N, Jp]   (pad value 0 -- required; w only)
+
+        # g is the RAW gate [B, S, N, H*D] (kernel applies sigmoid); proj_o.weight is [c_m, H*D].
+        # tp_size==1 (eligibility) -> proj_o is unsharded, so no all-reduce is needed.
+        return op(w, v, g, self.proj_o.weight)

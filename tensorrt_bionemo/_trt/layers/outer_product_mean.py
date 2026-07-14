@@ -33,7 +33,7 @@ class OuterProductMean(Module):
                  mask_eps: float = 1e-3,
                  norm_mask_by_eps: bool = False,
                  norm_before_output: bool = True,
-                 cast_to_float_before_einsum: bool = True,
+                 cast_to_float_before_einsum: bool = False,
                  bias_flags: dict[str, bool] = {
                      "proj_a": False,
                      "proj_b": False,

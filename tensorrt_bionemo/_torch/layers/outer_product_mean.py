@@ -20,6 +20,8 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
                                                 OUTER_PRODUCT_MEAN,
                                                 ChunkPolicy, chunk_apply)
+from tensorrt_bionemo._torch.custom_ops.outer_product_mean import (
+    OuterProductMeanCuTe, get_outer_product_mean_op)
 from tensorrt_bionemo._torch.distributed import (
     AllReduceParams, get_default_tp_group_coordinator)
 from tensorrt_bionemo.mapping import Mapping
@@ -39,7 +41,7 @@ class OuterProductMean(nn.Module):
                  mask_eps: float = 1e-3,
                  norm_mask_by_eps: bool = False,
                  norm_before_output: bool = True,
-                 cast_to_float_before_einsum: bool = True,
+                 cast_to_float_before_einsum: bool = False,
                  bias_flags: dict[str, bool] = {
                      "proj_a": False,
                      "proj_b": False,
@@ -73,6 +75,11 @@ class OuterProductMean(nn.Module):
         # threshold. ``None`` uses the registry default.
         self.chunk_policy = (chunk_policy if chunk_policy is not None else
                              CHUNK_REGISTRY.get(OUTER_PRODUCT_MEAN))
+        # The fused custom op handles the full OPM without materializing the
+        # [B, N, N, c_hidden**2] intermediate. If it is unavailable, forward
+        # falls through to the registry-driven eager row-chunking path.
+        self._opm_eligible = (self.mapping.tp_size == 1 and self.c_hidden == 32
+                              and self.c_out == 128)
         assert self.c_hidden % self.mapping.tp_size == 0, \
             "c_hidden must be divisible by tp_size"
         self.c_hidden = self.c_hidden // self.mapping.tp_size
@@ -102,7 +109,10 @@ class OuterProductMean(nn.Module):
             self.group_comm = get_default_tp_group_coordinator()
             assert self.group_comm is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
 
-    def _compute_num_mask(self, mask: torch.Tensor) -> torch.Tensor:
+    def _compute_num_mask(
+            self,
+            mask: torch.Tensor,
+            dtype: Optional[torch.dtype] = None) -> torch.Tensor:
         """Pair-occupancy normalizer ``num_mask[b, i, j] = sum_s mask[b, s, i] * mask[b, s, j]``.
 
         This is exactly ``mask.T @ mask`` over the sequence dim, so ``torch.bmm`` contracts ``S``
@@ -110,9 +120,12 @@ class OuterProductMean(nn.Module):
         old path chunked ``S``). ``mask`` is ``[B, S, N, 1]``; returns ``[B, N, N, 1]``.
         """
         m = mask.squeeze(-1)  # [B, S, N]
-        # ``bmm`` has no integer CUDA kernel; cast bool/int masks to fp32 (exact counts). Float
-        # masks (e.g. the cast bf16/fp32 mask) are used as-is, matching the old mul+sum dtype.
-        if not m.is_floating_point():
+        # The fused kernel requires fp32 normalization. The eager path preserves
+        # the floating mask dtype; bool/int masks use fp32 because CUDA bmm has
+        # no integer implementation and occupancy counts are represented exactly.
+        if dtype is not None and m.dtype != dtype:
+            m = m.to(dtype)
+        elif not m.is_floating_point():
             m = m.float()
         num_mask = torch.bmm(m.transpose(1, 2),
                              m).unsqueeze(-1)  # [B, N, N, 1]
@@ -168,23 +181,40 @@ class OuterProductMean(nn.Module):
         m = self.norm(m)
         ab = self.fused_proj_a_b(m)
         a, b = ab.split([self.c_hidden, self.c_hidden], dim=-1)
+
+        # Masked projections. Kept in the model dtype so the fused SM80 kernel
+        # can consume them directly (it accumulates in fp32 internally); the
+        # eager path casts to fp32 below when configured.
+        a = a * mask
+        b = b * mask
+
+        opm_op = None
+        use_fused_opm = False
+        if self._opm_eligible:
+            opm_op = get_outer_product_mean_op(a.dtype)
+            use_fused_opm = isinstance(opm_op, OuterProductMeanCuTe)
+
+        # The fused CuTe OPM kernel expects fp32 num_mask. Eager fallback keeps
+        # the mask dtype to preserve the old PyTorch path's dtype behavior.
+        num_mask = self._compute_num_mask(
+            mask, dtype=torch.float32 if use_fused_opm else mask.dtype)
+
+        if use_fused_opm:
+            return opm_op(a,
+                          b,
+                          num_mask.squeeze(-1),
+                          self.proj_o.weight,
+                          self.proj_o.bias,
+                          norm_before=self.norm_before_output)
+
+        # The fused kernel is unavailable (unsupported dtype/hardware/dims or
+        # tensor parallelism), so use the memory-bounded eager fallback below.
         if self.cast_to_float_before_einsum:
-            a = (a * mask).float()
-            b = (b * mask).float()
-        else:
-            a = a * mask
-            b = b * mask
+            a = a.float()
+            b = b.float()
         if self.mapping.tp_size > 1:
             b = self.group_comm.all_gather(b, dim=-1)
 
-        # num_mask via a single batched matmul (mask.T @ mask over S) -- no [B, S, N, N] intermediate
-        # is materialized.
-        num_mask = self._compute_num_mask(mask)
-
-        # Row-chunk the output token dim (concat) to bound the dominant [i, N, c_hidden**2] einsum.
-        # ``a``'s token dim is dim=2, so move it to dim=1 to slice in lockstep with ``num_mask``
-        # (i at dim=1); ``b`` (the contracted key side) passes through whole. ``chunk_apply`` falls
-        # back to a single dense call below the policy threshold.
         policy = self.chunk_policy
         if policy is not None:
             return chunk_apply(self._forward_impl,

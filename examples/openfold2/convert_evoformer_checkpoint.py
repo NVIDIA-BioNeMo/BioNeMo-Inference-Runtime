@@ -122,7 +122,7 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].model_dump(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(mode="json"), f, indent=4)
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,
                           tp_size=args.tp_size,

@@ -73,14 +73,14 @@ def convert(worker_rank, world_size, configs, args):
                                                        exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TRT}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TRT].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TRT].model_dump(mode="json"), f, indent=4)
     # Dump for torch config
     if args.backend == 'all' or args.backend == BackendType.TORCH:
         (args.output_dir / f'{BackendType.TORCH}').mkdir(parents=True,
                                                          exist_ok=True)
         with (args.output_dir /
               f'{BackendType.TORCH}/config.json').open('w') as f:
-            json.dump(configs[BackendType.TORCH].to_dict(), f, indent=4)
+            json.dump(configs[BackendType.TORCH].model_dump(mode="json"), f, indent=4)
 
     for rank in range(worker_rank, world_size, args.workers):
         mapping = Mapping(world_size=world_size,

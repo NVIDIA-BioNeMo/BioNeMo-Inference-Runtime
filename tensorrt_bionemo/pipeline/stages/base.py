@@ -287,10 +287,17 @@ class StatefulStageUDF:
 
     async def udf_for_rows(
             self, rows: List[Dict[str, Any]]) -> AsyncIterator[Dict[str, Any]]:
+        import time as _time
         for row in rows:
             idx = row[self.IDX_IN_BATCH_COLUMN]
             try:
+                _t0 = _time.perf_counter()
                 result = await self.udf_for_item(row)
+                # Accumulate per-stage wall time (always on). Carrying the prior dict
+                # means it survives both update_row=True (merge) and =False (replace).
+                _timing = dict(row.get("stage_timing_s") or {})
+                _timing[self.__class__.__name__] = _time.perf_counter() - _t0
+                result["stage_timing_s"] = _timing
                 result["__inference_error__"] = {
                     "error_msg": None,
                     "traceback": None

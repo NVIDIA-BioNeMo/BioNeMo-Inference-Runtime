@@ -130,7 +130,7 @@ class FoldingEngineUDF(StatefulStageUDF):
                                                                          Any],
                                  time_taken: float) -> Dict[str, Any]:
         """Create a successful prediction response."""
-        return {
+        resp = {
             **output,
             "time_taken": time_taken,
             "__inference_error__": {
@@ -139,6 +139,12 @@ class FoldingEngineUDF(StatefulStageUDF):
             },
             self.IDX_IN_BATCH_COLUMN: row[self.IDX_IN_BATCH_COLUMN],
         }
+        # This stage uses update_row=False (replaces the row), so explicitly carry
+        # the upstream per-stage timing forward and tag the engine's own time (always on).
+        _timing = dict(row.get("stage_timing_s") or {})
+        _timing["FoldingEngine"] = output.get("model_inference_time", time_taken)
+        resp["stage_timing_s"] = _timing
+        return resp
 
     def _create_error_response(self, row: Dict[str, Any], error_msg: str,
                                traceback_str: str) -> Dict[str, Any]:

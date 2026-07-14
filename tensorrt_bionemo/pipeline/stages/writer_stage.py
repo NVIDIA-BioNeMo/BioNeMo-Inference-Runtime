@@ -196,7 +196,8 @@ class WriterUDF(StatefulStageUDF):
             "scores": json.dumps(scores),
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
-        for timing_key in ("time_taken", "model_inference_time"):
+        for timing_key in ("time_taken", "model_inference_time",
+                           "model_inference_time_samples", "stage_timing_s"):
             if timing_key in row:
                 result[timing_key] = row[timing_key]
         return result

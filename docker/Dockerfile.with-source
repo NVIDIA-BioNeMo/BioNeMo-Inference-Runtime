@@ -1,9 +1,96 @@
-ARG BASE_IMAGE=tensorrt-llm
-ARG BASE_TAG=base
+# syntax=docker/dockerfile:1
+#
+# stage graph is:
+#
+#         requirements_stage
+#              └► copy_source_stage
+#                      └► prod_stage  (FROM copy_source_stage)
+#                      ├► dev_stage   (FROM copy_source_stage)
+#
+# The source-independent work (apt CUDA deps, ccache, pip upgrade) lives in the
+# first stage so it stays cached across source edits; COPY . happens later so a
+# code change only re-runs the copy + the package install below it.
+#
+# ------------------------------------------------------------------------
+# requirements stage
+#   - requirements change infrequently, slow download
+# -------------------------------------------------------------------------
+ARG BASE_IMAGE=trtbnm_base
+ARG BASE_TAG=trtllm1.2.0_80649a8_with_cuda_deps
+FROM ${BASE_IMAGE}:${BASE_TAG} AS requirements_stage
 
-FROM ${BASE_IMAGE}:${BASE_TAG}
+# collect arg variables
+ARG CMAKE_BUILD_TYPE='Release'
+ENV CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+
+ARG RECOMPILE_CPP='1'
+ENV RECOMPILE_CPP=${RECOMPILE_CPP}
+
+# Persist the ccache directory across builds via a BuildKit cache mount (see
+# the install RUNs below). build_backend.py wires ccache as the CXX/CUDA
+# compiler launcher, so this makes the forced RECOMPILE_CPP=1 rebuilds
+# incremental instead of compiling the whole C++/CUDA extension from scratch.
+ENV CCACHE_DIR="/root/.ccache"
+RUN mkdir -p "${CCACHE_DIR}"
+ENV _PIP_CACHE_DIR="/root/.cache/pip"
+
+# Decided Strategy 1, refer Dockerfile.trtbnm_base
+# # cuda-13.0 and cuda-13.1 toolkits are each incomplete.
+# #   Strategy 2 is described below to address:
+# #
+# #     The CUDA toolkit /usr/local/cuda (13.1) provides nvcc but
+# #     ships no cublas and lacks the unversioned libnvrtc.so symlink, while cuda-13.0
+# #     provides the complete cublas + nvrtc headers and libs. These vars bridge the
+# #     two so the C++/CUDA extension can build: CUDA_HOME/PATH point nvcc at 13.1;
+# #     CUDAFLAGS/CXXFLAGS add 13.0's headers (e.g. cublasLt.h) to the compile include
+# #     path; CMAKE_LIBRARY_PATH lets find_library resolve nvrtc/cublas from 13.0; and
+# #     LIBRARY_PATH/LD_LIBRARY_PATH make 13.0's libs available at link and run time.
+# ENV CUDA13=/usr/local/cuda-13.0/targets/x86_64-linux
+# ENV CUDA_HOME=/usr/local/cuda
+# ENV CMAKE_LIBRARY_PATH="$CUDA13/lib"
+# ENV CUDAFLAGS="-I$CUDA13/include" 
+# ENV CXXFLAGS="-I$CUDA13/include"
+# ENV LIBRARY_PATH="$CUDA13/lib:$LIBRARY_PATH"
+# ENV LD_LIBRARY_PATH="$CUDA13/lib:$LD_LIBRARY_PATH"
+# ENV PATH="${CUDA_HOME}/bin:${PATH}"
+
+RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
+    pip install --upgrade pip
 
 ENV PROJECT_WORKDIR=/workspace/tensorrt-bionemo
-
 WORKDIR ${PROJECT_WORKDIR}
+COPY requirements.txt ./
+RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
+    pip install -r requirements.txt
+
+# ------------------------------------------------------------------------
+# copy source
+#   - kept after the cuda-deps install so source edits don't invalidate it
+# -------------------------------------------------------------------------
+FROM requirements_stage AS copy_source_stage
 COPY . ${PROJECT_WORKDIR}/
+
+# ------------------------------------------------------
+# install tensorrt-bionemo for prod
+#   - including cpp object files
+# -----------------------------------------------------
+FROM copy_source_stage AS prod_stage
+
+RUN --mount=type=cache,target=${CCACHE_DIR} \
+    --mount=type=cache,target=${_PIP_CACHE_DIR} \
+    CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+    RECOMPILE_CPP=${RECOMPILE_CPP} \
+    pip install --no-build-isolation --no-deps -v .
+
+# ------------------------------------------------------------------------
+# install tensorrt-bionemo for development and testing
+#   - including cpp object files
+# -------------------------------------------------------------------------
+FROM copy_source_stage AS dev_stage
+
+RUN --mount=type=cache,target=${CCACHE_DIR} \
+    --mount=type=cache,target=${_PIP_CACHE_DIR} \
+    CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+    RECOMPILE_CPP=${RECOMPILE_CPP} \
+    pip install --no-build-isolation -v -e .[dev]
+

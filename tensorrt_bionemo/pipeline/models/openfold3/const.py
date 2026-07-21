@@ -125,7 +125,16 @@ NUM_CHAR_CLASSES = 64
 TEMPLATE_DISTOGRAM_MIN_BIN = 3.25
 TEMPLATE_DISTOGRAM_MAX_BIN = 50.75
 TEMPLATE_DISTOGRAM_N_BINS = 39
+# Upper edge of the final open-ended distogram bin (OSS inf_value=1e8).
+TEMPLATE_DISTOGRAM_INF_VALUE = 1e8
 DEFAULT_N_TEMPLATES = 4
+
+# Direct-CIF template settings (protein-only), mirroring the OSS OpenFold-3
+# inference config: take_top_k=True, min_n_tokens_per_chain=5,
+# cif_direct_min_score=0.1.
+TEMPLATE_TAKE_TOP_K = True
+TEMPLATE_MIN_TOKENS_PER_CHAIN = 5
+TEMPLATE_CIF_DIRECT_MIN_SCORE = 0.1
 
 # ---------------------------------------------------------------------------
 # MSA constants

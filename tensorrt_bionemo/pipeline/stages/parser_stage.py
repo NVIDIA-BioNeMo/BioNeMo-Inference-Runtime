@@ -231,7 +231,8 @@ class ParserUDF(StatefulStageUDF):
                 raise ValueError("Template has no content or path")
 
         return TemplateParsed(content=content,
-                              format=template.get("format", "cif"))
+                              format=template.get("format", "cif"),
+                              chain_id=template.get("chain_id"))
 
     def _parse_polymer(self, polymer_data,
                        cache: FileContentCache) -> PolymerParsed:

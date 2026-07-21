@@ -58,6 +58,7 @@ compile_commands.json
 .dir-locals.el
 .pip_cache/
 *.pt
+!tests/**/data/*_golden.pt
 boltz/
 
 # Machine-specific tooling (contains tokens, auth state)

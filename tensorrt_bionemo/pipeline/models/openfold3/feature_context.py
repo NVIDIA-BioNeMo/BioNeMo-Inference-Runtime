@@ -777,9 +777,32 @@ class OpenFold3ContextGenerator(ContextGeneratorBase):
             for _ in range(n_chains):
                 chain_sequences.append(sequence)
 
+        # Per-chain template records + query sequences for the direct-CIF path
+        # (protein only), keyed by the original chain_id string.
+        templates_per_chain: dict[str, list] = {}
+        template_query_seq: dict[str, str] = {}
+        for poly in polymers:
+            if poly.get("polymer_type", "protein") != "protein":
+                continue
+            templates = poly.get("templates")
+            if not templates:
+                continue
+            chain_id = poly.get("chain_id")
+            if isinstance(chain_id, list):
+                cids = chain_id
+            elif chain_id is not None:
+                cids = [chain_id]
+            else:
+                cids = ["A"]
+            for cid in cids:
+                templates_per_chain[cid] = list(templates)
+                template_query_seq[cid] = poly.get("sequence", "") or ""
+
         return {
             "structure": struct,
             "msa_per_chain": msa_per_chain,
             "paired_msa_per_chain": paired_msa_per_chain,
             "chain_sequences": chain_sequences,
+            "templates_per_chain": templates_per_chain,
+            "template_query_seq": template_query_seq,
         }

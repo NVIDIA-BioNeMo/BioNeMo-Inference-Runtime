@@ -18,7 +18,13 @@
                 "format": "a3m"
               }
             ],
-            "templates": null
+            "templates": [
+              {
+                "path": "templates/9a8g_A.cif",
+                "format": "cif",
+                "chain_id": "A"
+              }
+            ]
           },
           {
             "polymer_type": "protein",

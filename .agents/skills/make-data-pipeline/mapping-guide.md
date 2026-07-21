@@ -93,7 +93,7 @@ Typical OSS code has:
 |---|---|---|
 | `make_sequence_features()` | `FeatureContextGenerator.make_sequence_features()` | Returns aatype, residue_index, seq_length |
 | `make_msa_features()` | `FeatureContextGenerator.make_msa_features()` | Returns msa, deletion_matrix, num_alignments |
-| `make_template_features()` | `FeatureContextGenerator.empty_template_feats()` | Placeholder; full impl reads templates |
+| `make_template_features()` | `FeatureContextGenerator.empty_template_feats()` | Placeholder in this OF2 mapping. A full impl reads real templates — see the "Template featurization (protein-only)" recipe in `SKILL.md` (Phase 4) and the worked OF3 direct-CIF port. The empty path must be byte-identical to the OSS no-template stub (all-zero masks + restype at GAP class). |
 | `np_to_tensor_dict()` | `FeatureContextGenerator.np_to_tensor_dict()` | Numpy → torch conversion with feature filtering |
 | MSA pairing + chain merging | `MultimerFeaturePairAndMerge.__call__()` | Combines per-chain features for multimer |
 | `add_assembly_features()` | `FeatureContextGenerator.add_assembly_features()` | Adds asym_id, sym_id, entity_id |

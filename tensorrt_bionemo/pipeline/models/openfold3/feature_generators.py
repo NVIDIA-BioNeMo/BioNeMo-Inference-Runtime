@@ -852,37 +852,25 @@ def _extract_deletion_counts(raw_seq: str) -> list[int]:
 
 
 class TemplateFeatureGenerator(FeatureGeneratorBase):
-    """Generates no-template features matching OSS ``featurize_template_structures_of3``.
+    """Generates OF3 template features (``featurize_template_structures_of3``).
 
-    Templates are not wired through the TRT-BNM parser/schema yet. The OSS
-    inference path with no templates available calls
-    ``featurize_template_structures_of3`` which emits
-    ``n_templ = DEFAULT_N_TEMPLATES`` template slots with:
-      * ``template_restype`` one-hot at GAP class (index 31), int32
-      * all four mask/coord tensors all-zero (pseudo_beta_mask &
-        backbone_frame_mask & distogram in float32, unit_vector in float32)
+    Two paths, both producing ``n_templ = DEFAULT_N_TEMPLATES`` slots:
 
-    Dumping OSS features for T1031 confirms the shapes/dtypes exactly:
-        template_restype          (4, 95, 32) int32  sum=380   (= 4 * 95)
-        template_pseudo_beta_mask (4, 95)     float32 sum=0
-        template_backbone_frame_mask (4, 95)  float32 sum=0
-        template_distogram        (4, 95, 95, 39) float32 sum=0
-        template_unit_vector      (4, 95, 95, 3)  float32 sum=0
+    * **No templates supplied** (common case): the no-template placeholder —
+      restype one-hot at the GAP class, all-zero masks/coords/distogram/
+      unit-vector, byte-identical to OSS no-template inference.
+    * **Direct-CIF templates supplied** (protein only): parse each CIF, align its
+      best chain to the query via kalign, build per-token pseudo-beta /
+      backbone-frame precursors, then apply the OSS featurization math with
+      inter/intra-chain masking. See ``template_logic.py``.
     """
 
     def is_enabled(self) -> bool:
-        return True  # Always produce no-template features
+        return True  # Always produces template features (placeholder or real)
 
-    def __call__(
-        self,
-        batch: dict[str, torch.Tensor],
-        context: dict[str, Any],
-    ) -> dict[str, torch.Tensor]:
-        n_tokens = batch["token_index"].shape[0]
+    def _no_template_feats(self, n_tokens: int) -> dict[str, torch.Tensor]:
         n_templ = DEFAULT_N_TEMPLATES
-
         feats: dict[str, torch.Tensor] = {}
-        # restype: one-hot at GAP class (index 31), all other classes zero.
         template_restype = torch.zeros(n_templ,
                                        n_tokens,
                                        NUM_RESTYPE_CLASSES,
@@ -904,5 +892,128 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
                                                     n_tokens,
                                                     3,
                                                     dtype=torch.float32)
+        return feats
 
+    def __call__(
+        self,
+        batch: dict[str, torch.Tensor],
+        context: dict[str, Any],
+    ) -> dict[str, torch.Tensor]:
+        n_tokens = batch["token_index"].shape[0]
+        row = _get_row(context)
+        templates_per_chain = row.get("templates_per_chain") or {}
+        if not templates_per_chain:
+            return self._no_template_feats(n_tokens)
+
+        from .common import (create_template_distogram, create_template_restype,
+                             create_template_unit_vector)
+        from .const import (MOL_TYPE_PROTEIN, TEMPLATE_CIF_DIRECT_MIN_SCORE,
+                            TEMPLATE_DISTOGRAM_INF_VALUE,
+                            TEMPLATE_DISTOGRAM_MAX_BIN,
+                            TEMPLATE_DISTOGRAM_MIN_BIN,
+                            TEMPLATE_MIN_TOKENS_PER_CHAIN, TEMPLATE_TAKE_TOP_K)
+        from .template_logic import (fill_precursor_for_chain,
+                                     resolve_template_idx_map,
+                                     select_template_for_cif)
+
+        struct = row["structure"]
+        token_chain_ids = struct["token_chain_ids"]
+        token_res_ids = struct["token_res_ids"]
+        token_mol_types = struct["token_mol_types"]
+        template_query_seq = row.get("template_query_seq") or {}
+
+        n_templ = DEFAULT_N_TEMPLATES
+        res_names = np.full((n_templ, n_tokens), "GAP", dtype=np.dtype("U3"))
+        pb_coords = np.full((n_templ, n_tokens, 3), np.nan, dtype=np.float64)
+        frame_coords = np.full((n_templ, n_tokens, 3, 3),
+                               np.nan,
+                               dtype=np.float64)
+
+        # Group protein tokens by their original chain_id, preserving order.
+        for cid in dict.fromkeys(token_chain_ids):
+            token_pos = [
+                i for i in range(n_tokens)
+                if token_chain_ids[i] == cid
+                and token_mol_types[i] == MOL_TYPE_PROTEIN
+            ]
+            if len(token_pos) < TEMPLATE_MIN_TOKENS_PER_CHAIN:
+                continue
+            templates = templates_per_chain.get(cid)
+            if not templates:
+                continue
+            query_seq = template_query_seq.get(cid, "")
+            token_pos_by_res_id = {
+                int(token_res_ids[i]): i
+                for i in token_pos
+            }
+
+            selected = []
+            for tmpl in templates:
+                content = tmpl.get("content")
+                if content is None:
+                    continue
+                sel = select_template_for_cif(
+                    query_seq=query_seq,
+                    content=content,
+                    fmt=tmpl.get("format", "cif"),
+                    specified_chain_id=tmpl.get("chain_id"),
+                    min_score=TEMPLATE_CIF_DIRECT_MIN_SCORE,
+                )
+                if sel is not None:
+                    selected.append(sel)
+
+            # Inference takes the top-k templates by alignment score.
+            selected.sort(key=lambda s: s.score, reverse=True)
+            if not TEMPLATE_TAKE_TOP_K:  # pragma: no cover - inference is top-k
+                pass
+            topk = selected[:n_templ]
+
+            # Keep/drop per OSS ``map_token_pos_to_template_residues`` (see
+            # ``resolve_template_idx_map``). OSS takes top-k first, then drops —
+            # dropped templates are not backfilled, so survivors pack into the
+            # lowest free slots in score order.
+            chain_len = len(token_pos)
+            slot = 0
+            for sel in topk:
+                if slot >= n_templ:
+                    break
+                eff_idx = resolve_template_idx_map(sel, chain_len)
+                if eff_idx is None:
+                    continue  # dropped: consumes no template slot
+                if eff_idx.shape[0] > 0:
+                    fill_precursor_for_chain(sel, slot, eff_idx,
+                                             token_pos_by_res_id, res_names,
+                                             pb_coords, frame_coords)
+                # A kept template still occupies a slot (all-GAP if empty).
+                slot += 1
+
+        # A pseudo-beta / backbone frame is present iff its coords are not NaN.
+        pb_mask = torch.tensor(~np.isnan(pb_coords).any(axis=-1),
+                               dtype=torch.float32)
+        bb_mask = torch.tensor(~np.isnan(frame_coords).any(axis=(-2, -1)),
+                               dtype=torch.float32)
+
+        # Inter/intra-chain pair mask from asym_id, shaped [1, N, N, 1] to
+        # broadcast over templates and the last feature dim.
+        asym = np.asarray(_renumber_chain_ids(token_chain_ids))
+        mc_pair = torch.tensor(
+            (asym[:, None] == asym[None, :]).astype(np.float32),
+            dtype=torch.float32)[None, :, :, None]
+
+        feats: dict[str, torch.Tensor] = {}
+        feats["template_restype"] = create_template_restype(
+            res_names, pb_mask, RESNAME_TO_IDX, UNK_IDX, NUM_RESTYPE_CLASSES)
+        feats["template_pseudo_beta_mask"] = pb_mask
+        feats["template_backbone_frame_mask"] = bb_mask
+        feats["template_distogram"] = create_template_distogram(
+            pb_coords,
+            pb_mask,
+            mc_pair,
+            TEMPLATE_DISTOGRAM_MIN_BIN,
+            TEMPLATE_DISTOGRAM_MAX_BIN,
+            TEMPLATE_DISTOGRAM_N_BINS,
+            TEMPLATE_DISTOGRAM_INF_VALUE,
+        )
+        feats["template_unit_vector"] = create_template_unit_vector(
+            frame_coords, bb_mask, mc_pair)
         return feats

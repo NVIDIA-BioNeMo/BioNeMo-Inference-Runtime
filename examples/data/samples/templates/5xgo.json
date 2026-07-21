@@ -1,0 +1,399 @@
+[
+  {
+    "input_id": "5xgo",
+    "polymers": [
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "A"
+        ],
+        "sequence": "LLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "B"
+        ],
+        "sequence": "NLLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "C"
+        ],
+        "sequence": "LLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "D"
+        ],
+        "sequence": "NLLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "E"
+        ],
+        "sequence": "LLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "F"
+        ],
+        "sequence": "NLLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "G"
+        ],
+        "sequence": "NLLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "H"
+        ],
+        "sequence": "NLLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "I"
+        ],
+        "sequence": "NLLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "J"
+        ],
+        "sequence": "LLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "K"
+        ],
+        "sequence": "NLLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "L"
+        ],
+        "sequence": "LLYTRNDVSDSEKKATVELLNRQVIQFIDLSLITKQAHWNMRGANFIAVHEMLDGFRTALIDHLDTMAERAVQLGGVALGTTQVINSKTPLKSYPLDIHNVQDHLKELADRYAIVANDVRKAIGEAKDDDTADILTAASRDLDKFLWFIECNLDL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/bbab6f2b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/6b7bc222.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/91c8cea2.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4d2e13d5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "ccd_ligand",
+        "chain_id": [
+          "M"
+        ],
+        "sequence": "CL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": null
+      },
+      {
+        "polymer_type": "ccd_ligand",
+        "chain_id": [
+          "N"
+        ],
+        "sequence": "CL",
+        "msas": null,
+        "paired_msas": null,
+        "templates": null
+      }
+    ]
+  }
+]

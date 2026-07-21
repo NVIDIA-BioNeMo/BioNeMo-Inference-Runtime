@@ -425,8 +425,14 @@ class Template(dict):
     def __init__(self,
                  content: Optional[str] = None,
                  path: Optional[str] = None,
-                 format: str = "cif"):
-        super().__init__(content=content, path=path, format=format)
+                 format: str = "cif",  # noqa: A002 — public field name mirrors the JSON schema "format" key; callers pass format=
+                 chain_id: Optional[str] = None):
+        # ``chain_id`` selects which chain of a multi-chain template CIF to use;
+        # ``None`` = auto-select the best-aligning chain.
+        super().__init__(content=content,
+                         path=path,
+                         format=format,
+                         chain_id=chain_id)
 
     def is_file(self) -> bool:
         return self["path"] is not None
@@ -596,8 +602,11 @@ class MSAParsed(dict):
 
 class TemplateParsed(dict):
 
-    def __init__(self, content: Optional[str] = None, format: str = "cif"):
-        super().__init__(content=content, format=format)
+    def __init__(self,
+                 content: Optional[str] = None,
+                 format: str = "cif",  # noqa: A002 — public field name mirrors the JSON schema "format" key; callers pass format=
+                 chain_id: Optional[str] = None):
+        super().__init__(content=content, format=format, chain_id=chain_id)
 
 
 class PolymerParsed(dict):

@@ -21,3 +21,4 @@ torch-c-dlpack-ext==0.1.5
 biotite==1.6.0
 datasets==4.8.4 # https://github.com/huggingface/datasets/issues/7344
 lru-dict==1.4.1
+kalign-python==3.6.0

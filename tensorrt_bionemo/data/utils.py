@@ -12,12 +12,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
+import tempfile
 from functools import lru_cache
+from pathlib import Path
+from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
 
 from .schemas import AtomType, AtomTypes, ResType, ResTypes
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache
@@ -83,3 +89,60 @@ def sequence_to_onehot(sequence: str,
 
     indices = torch.tensor(indices, dtype=torch.long)
     return F.one_hot(indices, num_classes=len(restype_to_idx))
+
+
+# ---------------------------------------------------------------------------
+# Structure fetching (RCSB PDB mmCIF) — model-agnostic template helper.
+# ---------------------------------------------------------------------------
+def fetch_cif(pdb_id: str,
+              target_dir: Optional[Union[str, Path]] = None) -> Path:
+    """Fetch one mmCIF file from the RCSB PDB via ``biotite.database.rcsb``.
+
+    Args:
+        pdb_id: 4-character PDB ID (case-insensitive), e.g. ``"6KWC"``.
+        target_dir: Directory to write ``<pdb_id>.cif`` into (created if
+            missing; a fresh temp dir when ``None``). An existing file is reused.
+
+    Returns:
+        Path to the fetched ``.cif`` file.
+
+    Raises:
+        ValueError: If ``pdb_id`` is not a 4-character alphanumeric ID.
+        biotite.database.RequestError: If the PDB ID cannot be fetched.
+    """
+    from biotite.database.rcsb import fetch
+
+    pdb_id = pdb_id.strip()
+    if len(pdb_id) != 4 or not pdb_id.isalnum():
+        raise ValueError(
+            f"Invalid PDB ID {pdb_id!r}: expected 4 alphanumeric characters.")
+
+    if target_dir is None:
+        target_dir = tempfile.mkdtemp(prefix="trtbnm_templates_")
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    result = fetch(pdb_id, format="cif", target_path=str(target_dir))
+    path = Path(result)
+    logger.info("Fetched template CIF %s -> %s", pdb_id, path)
+    return path
+
+
+def fetch_cifs(pdb_ids: list[str],
+               target_dir: Optional[Union[str, Path]] = None) -> dict[str, Path]:
+    """Fetch multiple mmCIF files; returns ``{pdb_id: path}``.
+
+    When ``target_dir`` is ``None`` a single shared temporary template directory
+    is created and reused for all IDs. Fetch failures are logged and skipped so
+    one bad ID does not abort the rest.
+    """
+    if target_dir is None:
+        target_dir = tempfile.mkdtemp(prefix="trtbnm_templates_")
+
+    out: dict[str, Path] = {}
+    for pdb_id in pdb_ids:
+        try:
+            out[pdb_id] = fetch_cif(pdb_id, target_dir)
+        except Exception as e:  # noqa: BLE001 - report-and-continue for batch
+            logger.warning("Failed to fetch CIF %s: %s", pdb_id, e)
+    return out

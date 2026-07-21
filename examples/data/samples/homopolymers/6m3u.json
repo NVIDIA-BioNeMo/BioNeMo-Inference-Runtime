@@ -8,7 +8,13 @@
             "sequence": "ELAKYGLPGVAQLRSRESYVLSYDPRTRGALWVLEQLRPERLRGDGDRSAADFREDDSVHAYHRATNADYRGSGFDRGALAAAANHRWSQRAMDDTFYLSNVAPQVPHLNQNAWNNLERYSRSLTRTYQNVYVCTGPLFLPRTEADGKSYVKYQVIGKNHVAVPTHFFKVLILEAAGGQIELRSYVMPNAPVDETIPLERFLVPIESIERASGLLFVPNILARAGNLKAI",
             "msas": "msas/6m3u.a3m",
             "paired_msas": null,
-            "templates": null
+            "templates": [
+              {
+                "path": "templates/9m0g_A.cif",
+                "format": "cif",
+                "chain_id": "A"
+              }
+            ]
           }
         ]
     }

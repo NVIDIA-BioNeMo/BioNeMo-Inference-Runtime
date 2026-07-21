@@ -449,6 +449,25 @@ Pipelines that process small molecules or non-standard residues frequently compu
 
 **Equivalence-test discipline for cheminformatics features:** include at least one input where each computed feature kind *must* be non-empty (the manifest's curated SMILES, a known multi-component CCD ligand with explicit stereo, etc.). The Phase 8 categorisation table is the place to record these as "DETERMINISTIC, expect non-empty for sample X" so a future regression that leaves them empty fails the test loudly.
 
+### Template featurization (protein-only)
+
+If the target model consumes structural templates (OF2/OF3/Boltz-style), templates are a **first-class, in-scope input** (schema: `Template`/`TemplateParsed`, protein-only). Do not stub them out as "not supported" — port the real featurization and gate the whole path on template presence. Worked reference: the OpenFold3 direct-CIF port in `workdir/openfold3-port/template_equiv/implementation-notes.md` (L1 21/21 vs OSS on the NIM `data_with_template` set). Emit templates from a `FeatureGeneratorBase` (e.g. `TemplateFeatureGenerator`) reading the parsed templates off `context["_row"]`.
+
+**The direct-CIF path (what inference actually uses).** OSS template pipelines usually have a search/cache path *and* a direct path where the user supplies the template mmCIF. Inference uses the direct path. The pipeline is: for each protein chain, (1) parse each attached template mmCIF, (2) select a chain, (3) align that chain's sequence to the query, (4) map query token positions → template residues, (5) extract per-residue backbone atoms, (6) compute the model's `template_*` tensors (typically restype one-hot, pseudo-beta mask, backbone-frame mask, distogram, unit-vector).
+
+**Pitfalls — every one of these was a real L1 divergence in the OF3 port:**
+
+1. **The no-template path must be byte-identical to the OSS no-template stub — not all-ones.** A disabled/absent-template path does **not** emit `mask=1` everywhere; OSS emits **all-zero** masks + restype one-hot at the **GAP class**. Getting this wrong silently degrades every no-template prediction while looking populated. Verify the no-template branch is byte-identical to OSS before touching the real path.
+2. **Use the exact same aligner as OSS.** OSS `run_kalign` uses `kalign`; substituting biopython `PairwiseAligner` produces different alignments and fails L1. Match the aligner (add it as a pinned dependency if OSS also uses it) rather than approximating.
+3. **Match the OSS altloc policy when reading the CIF.** biotite defaults to `altloc="first"` (conformer 'A'); OSS selects highest-occupancy (`altloc="occupancy"`). Restype + masks match either way, but distogram/unit-vector *values* diverge on multi-altloc templates. Parse with the same policy OSS uses.
+4. **Source the alignment sequence the way OSS does.** OSS aligns against the per-entity `entity_poly.pdbx_seq_one_letter_code_can` (parent one-letter code for modified residues, e.g. MSE→'M'). A `pdbx_poly_seq_scheme` 3→1 mapping that emits 'X' for modified residues shifts the alignment locally. Use `entity_poly` for the alignment sequence; keep `poly_seq_scheme` for per-position res_names/coords.
+5. **Chain selection.** `chain_id` selects a specific template chain; `None` = auto-select the chain with the best alignment (seq_id × coverage) to the query — mirror the OSS auto-select rule exactly.
+6. **Port the OSS keep/drop rule faithfully; don't approximate with a flat coverage heuristic.** OSS drops a template unless it aligns to every query residue — *except* its non-standard-residue cleaning branch re-aligns the counts, so a modified-residue template survives at partial coverage. Replicate the two regimes; a `matched == chain_len` heuristic is wrong on modified-residue templates.
+7. **Unresolved residues keep their restype (coords stay NaN and are masked) — they are not GAP.** OSS runs the missing-backbone check *after* inserting canonical atom names for unresolved residues, so every aligned polymer residue retains its restype.
+8. **Deterministic top-k for inference.** OSS inference sets `take_top_k=True` (not the random `TemplateSettings()` default). Hardcode top-k so the single supplied template is never randomly dropped.
+
+**Validation (Phase 8 + Phase 9).** Add an L1 equivalence check on the `template_*` tensors (atol ~1e-4) that also asserts the reference is **non-empty** (e.g. `unit_vector` nonzero) so a match is real, not empty==empty. Use a self-template (query == template, seq_id=1) to exercise the full alignment path, a multichain hetero-dimer to exercise per-chain mapping, and — where the production format ships real templates — that curated set (for OF3, the NIM `data_with_template` targets). For Phase 9, report no-template vs with-template lDDT on **leakage-free homolog** templates (distinct PDB entries, not the target's GT); a working path shows a non-zero template mask and measurable lDDT gains on template-amenable targets.
+
 ### Step 2 — `feature_collators.py`
 
 Implement `FeatureCollatorBase` subclasses for each ensembled transform from your function inventory:
@@ -1545,10 +1564,7 @@ The basic input schema (`tensorrt_bionemo.data.schemas.basic`) now supports thes
 - **DNA** — `PolymerType.DNA`, with `sequence` as a 1-letter nucleotide string.
 - **CCD ligands / small molecules** — `PolymerType.CCD_LIGAND`, with `sequence` as one CCD code or an underscore-joined list of CCD codes, e.g. `"ATP"` or `"ATP_FAD"`. This maps to AF3/OF3 `ccdCodes` / `ccd_codes` via `sequence.split("_")`.
 - **SMILES ligands / small molecules** — `PolymerType.SMILES_LIGAND`, with `sequence` as the SMILES string.
-
-**Not covered by this skill's default porting scope unless explicitly requested:**
-
-- **Protein templates** — the basic schema has a `templates` field for protein only, but template feature pipelines are not covered by default. If the target model requires templates, document this as an explicit extension and validate it separately.
+- **Protein structural templates** — `Template` / `TemplateParsed` on protein polymers (see `basic.py`, `Template` at ~L423). Each `Template` carries `path`/`content` (mmCIF), `format`, and `chain_id`. Templates are **protein-only** (schema validation forbids them on non-protein polymers, matching OSS, which only featurizes protein template chains). This is a **first-class, in-scope input** — port it when the target model consumes templates. See the [template featurization recipe](#template-featurization-protein-only) in Phase 4 and the worked OpenFold3 port in `workdir/openfold3-port/template_equiv/implementation-notes.md` (direct-CIF path, L1 21/21 vs OSS on the NIM `data_with_template` set).
 
 **Still not represented by the basic schema unless explicitly added elsewhere:**
 
@@ -1588,7 +1604,7 @@ If the OSS code depends on a library not in `requirements.txt`:
 - **`SampleRepeater` replaces the ensemble loop.** Do not implement your own recycling loop. Wrap collator specs in `SampleRepeater` with `get_n_iters`.
 - **Order matches OSS exactly.** Generators and collators run in spec list order. Match the OSS `nonensembled_transform_fns()` and `ensembled_transform_fns()` execution order exactly.
 - **Multimer is a separate variant.** If the model has monomer + multimer modes, implement both (separate tokenizer/factory classes or config-gated logic). Don't try to unify incompatible data flows.
-- **Template features are optional.** Gate with `is_enabled()` → `self.config.enable_template`. The pipeline must work when templates are absent.
+- **Templates are a first-class protein input, but the no-template path is a trap.** When templates are present, port the real featurization (see [Template featurization](#template-featurization-protein-only) in Phase 4) — do not stub it. When they are absent, the no-template output must be **byte-identical to the OSS no-template stub** (all-zero masks + restype one-hot at the GAP class), NOT all-ones. Gate the real path on template presence; never emit `mask=1` everywhere for the empty path.
 - **Pattern B context rows are not tensors.** In Pattern B pipelines, `context["_row"]` may contain non-tensor data (structures, molecule objects, parsed MSAs). Don't try to convert everything to tensors in the context generator — let feature generators handle the conversion.
 - **`features_merger_func` overwrites on key collision.** Both `dict_context_merger` and `default_context_and_feature_merger` use `dict.update()` — if a generator produces a key that already exists in the context, the generator's value wins. Be careful not to accidentally shadow important context data.
 - **Config must cover all accessed fields.** Every `self.config.X` reference in a generator/collator must have a corresponding field in the model's `BaseConfig` subclass. Missing fields produce `AttributeError` at runtime.

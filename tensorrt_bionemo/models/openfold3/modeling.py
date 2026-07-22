@@ -22,6 +22,8 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
+from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+    CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_gather_indices, create_indexing_matrix, query_to_keys_optimized)
@@ -30,7 +32,7 @@ from tensorrt_bionemo._torch.layers.transformers.pairformer import \
 from tensorrt_bionemo._torch.modules.openfold3.confidence import \
     AuxiliaryHeadsAllAtom
 from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import (
-    DiffusionModule, SampleDiffusion, create_noise_schedule)
+    DiffusionModule, OpenFold3SampleDiffusion, create_noise_schedule)
 from tensorrt_bionemo._torch.modules.openfold3.embedders import (
     InputEmbedderAllAtom, MSAModuleEmbedder, TemplateEmbedderAllAtom)
 from tensorrt_bionemo._torch.modules.openfold3.trunk import MSAModuleStack
@@ -46,9 +48,6 @@ from tensorrt_bionemo.registry import SupMat
 
 from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
-
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
-    CUDAGraphOptimizationTracker
 
 
 class OpenFold3ModuleRegistry(ModuleRegistry):
@@ -140,7 +139,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             config=self.config.trunk.pairformer)
         self.diffusion_module = DiffusionModule(
             config=self.config.diffusion_module_config)
-        self.sample_diffusion = SampleDiffusion(
+        self.sample_diffusion = OpenFold3SampleDiffusion(
             config=self.config.sample_diffusion_config,
             diffusion_module=self.diffusion_module)
         self.aux_heads = AuxiliaryHeadsAllAtom(

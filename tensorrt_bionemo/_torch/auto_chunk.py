@@ -96,9 +96,18 @@ DEFAULT_AUTOCHUNK_MIN = DEFAULT_AUTOCHUNK_MIN_REF
 
 # Registry keys for the known chunkable ops (use these instead of bare strings).
 PAIR_TRANSITION = "pair_transition"
+DIFFUSION_PAIR_TRANSITION = "diffusion_pair_transition"
+MSA_TRANSITION = "msa_transition"
 PAIR_WEIGHTED_AVERAGING = "pair_weighted_averaging"
 OUTER_PRODUCT_MEAN = "outer_product_mean"
 TRIANGLE_ATTENTION = "triangle_attention"
+
+# OSS Protenix ``MSAStack.msa_chunk_size`` default: chunk MSA rows (dim S of
+# ``[B, S, N, C_m]``) so the SwiGLU ``[S, N, 2*hidden]`` transient stays bounded.
+DEFAULT_MSA_CHUNK_ROWS = 2048
+# Engage MSA-row chunking once S exceeds this (independent of the N-residue
+# memory-scaled pair threshold — deep MSAs OOMs at modest N, e.g. H1185).
+DEFAULT_MSA_AUTOCHUNK_MIN = 2048
 
 T = TypeVar("T")
 
@@ -219,6 +228,23 @@ CHUNK_REGISTRY = ChunkRegistry()
 CHUNK_REGISTRY.register(
     PAIR_TRANSITION,
     ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
+# Diffusion pair-conditioning transition_z: same row-chunk semantics as trunk
+# transition_z ([B, N, N, C], dim=1), but a separate registry key so diffusion
+# thresholds can be tuned independently. Single-conditioning transition_s stays
+# dense (its dim=1 is the sample axis).
+CHUNK_REGISTRY.register(
+    DIFFUSION_PAIR_TRANSITION,
+    ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
+# MSA Transition (SwiGLU on ``[B, S, N, C_m]``): chunk the MSA-row dim S, matching
+# OSS ``MSAStack.inference_forward`` (msa_chunk_size=2048). Without this, deep
+# MSAs at moderate N (CASP15 H1185: S≈35k, N≈1332) allocate ~45 GB for the fused
+# ``2*hidden`` projection and OOM on 80 GB while OSS fits.
+CHUNK_REGISTRY.register(
+    MSA_TRANSITION,
+    ChunkPolicy(chunk_size=DEFAULT_MSA_CHUNK_ROWS,
+                min_size=DEFAULT_MSA_AUTOCHUNK_MIN,
+                dim=1,
+                min_rank=4))
 # PairWeightedAveraging: sequence dim S (the einsum's non-token, row-safe axis).
 CHUNK_REGISTRY.register(
     PAIR_WEIGHTED_AVERAGING,

@@ -363,6 +363,9 @@ class AttentionPairBias(nn.Module):
     `use_separate_layer_norm=True` is used for OpenFold3, while Boltz and
     OpenFold2 keep it disabled. OpenFold3 may also disable pair normalization
     (`pair_norm=False`) before projecting the pair bias.
+
+    With `chain_kv_norm=True`, local key/value inputs are gathered from the
+    query-normalized representation before applying their AdaLN.
     """
 
     def __init__(self,
@@ -380,6 +383,7 @@ class AttentionPairBias(nn.Module):
                  max_attention_pairwise_tp_size: bool = True,
                  use_separate_layer_norm: bool = False,
                  use_ada_layer_norm: bool = True,
+                 chain_kv_norm: bool = False,
                  gate_bias: bool = False,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
@@ -394,6 +398,7 @@ class AttentionPairBias(nn.Module):
         # Use separate layer norm for query and key instead of a shared one (e.g. OpenFold3).
         self.use_separate_layer_norm = use_separate_layer_norm
         self.use_ada_layer_norm = use_ada_layer_norm
+        self.chain_kv_norm = chain_kv_norm
         self.inf = inf
 
         self.num_key_value_heads = num_heads
@@ -566,22 +571,34 @@ class AttentionPairBias(nn.Module):
             query_to_keys = attn_metadata.query_to_keys
 
             if query_to_keys is not None:
-                kv_in = query_to_keys(s)
                 if mask_bias_local is not None:
                     mask_bias = mask_bias_local
                 else:
                     mask = query_to_keys(mask.unsqueeze(-1)).squeeze(-1)
                     mask_bias = None
-                if self.use_separate_layer_norm:
-                    if self.use_ada_layer_norm:
-                        assert single_embedding is not None, \
-                            "single_embedding is required for AdaLN"
-                        single_embedding_kv = query_to_keys(single_embedding)
-                        s = self.layer_norm_a_q(s, single_embedding)
-                        kv_in = self.layer_norm_a_k(kv_in, single_embedding_kv)
-                    else:
-                        s = self.layer_norm_a_q(s)
-                        kv_in = self.layer_norm_a_k(kv_in)
+                if self.use_separate_layer_norm and self.chain_kv_norm:
+                    # Gather commutes with the per-row query AdaLN.
+                    assert self.use_ada_layer_norm, \
+                        "chain_kv_norm requires use_ada_layer_norm"
+                    assert single_embedding is not None, \
+                        "single_embedding is required for AdaLN"
+                    s = self.layer_norm_a_q(s, single_embedding)
+                    kv_in = self.layer_norm_a_k(
+                        query_to_keys(s), query_to_keys(single_embedding))
+                else:
+                    kv_in = query_to_keys(s)
+                    if self.use_separate_layer_norm:
+                        if self.use_ada_layer_norm:
+                            assert single_embedding is not None, \
+                                "single_embedding is required for AdaLN"
+                            single_embedding_kv = query_to_keys(
+                                single_embedding)
+                            s = self.layer_norm_a_q(s, single_embedding)
+                            kv_in = self.layer_norm_a_k(
+                                kv_in, single_embedding_kv)
+                        else:
+                            s = self.layer_norm_a_q(s)
+                            kv_in = self.layer_norm_a_k(kv_in)
 
         return s, kv_in, mask, mask_bias
 

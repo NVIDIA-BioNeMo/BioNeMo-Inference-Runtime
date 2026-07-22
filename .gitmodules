@@ -7,3 +7,6 @@
 [submodule "3rdparty/openfold-3"]
 	path = 3rdparty/openfold-3
 	url = https://github.com/aqlaboratory/openfold-3.git
+[submodule "3rdparty/protenix"]
+	path = 3rdparty/protenix
+	url = https://github.com/bytedance/Protenix.git

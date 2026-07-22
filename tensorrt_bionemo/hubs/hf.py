@@ -22,10 +22,12 @@ import torch
 from huggingface_hub import hf_hub_download
 from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo.hubs.local import (_load_boltz_state_dict,
-                                       _load_of3_state_dict,
-                                       BOLTZ_MODEL_NAMES,
-                                       verify_boltz_checkpoint_md5)
+from tensorrt_bionemo.hubs.local import (BOLTZ_MODEL_NAMES,
+                                         PROTENIX_MODEL_NAMES,
+                                         _load_boltz_state_dict,
+                                         _load_of3_state_dict,
+                                         _load_protenix_state_dict,
+                                         verify_boltz_checkpoint_md5)
 from tensorrt_bionemo.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
 HFCheckpoint = namedtuple(
@@ -123,6 +125,13 @@ HF_CHECKPOINTS = {
         weights_only=True,
         state_dict_key=None,
     ),
+    SupMat.ProtenixV2:
+    HFCheckpoint(
+        repo_id="TMF001/protenix-v2-weights",
+        filename="protenix-v2.pt",
+        weights_only=True,
+        state_dict_key=None,
+    ),
 }
 
 
@@ -150,6 +159,8 @@ def load_state_dict_from_hf(
         state_dict = _load_boltz_state_dict(cached_file)
     elif name == SupMat.OpenFold3:
         state_dict = _load_of3_state_dict(cached_file)
+    elif name in PROTENIX_MODEL_NAMES:
+        state_dict = _load_protenix_state_dict(cached_file)
     else:
         try:
             state_dict = torch.load(cached_file, weights_only=weights_only)

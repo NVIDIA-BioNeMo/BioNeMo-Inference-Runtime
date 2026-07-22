@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,6 +38,22 @@ def pad_to_multiple_and_divide(tensor: torch.Tensor,
     tensor_shape.insert(dim + 1, multiple)
     tensor = tensor.reshape(tensor_shape)
     return tensor, current_size
+
+
+def to_blocks(x: torch.Tensor, num_blocks: int, window: int) -> torch.Tensor:
+    """Pad ``[B, N, D]`` and reshape to ``[B, num_blocks, window, D]``.
+
+    An explicit block count avoids an extra block when ``N`` is divisible by
+    ``window``.
+    """
+    B, N, D = x.shape
+    pad = num_blocks * window - N
+    if pad < 0:
+        raise ValueError(
+            f"num_blocks*window ({num_blocks * window}) < N ({N})")
+    if pad > 0:
+        x = F.pad(x, (0, 0, 0, pad))
+    return x.reshape(B, num_blocks, window, D)
 
 
 def create_indexing_matrix(K: int, W: int, H: int,

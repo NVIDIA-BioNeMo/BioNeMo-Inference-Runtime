@@ -22,9 +22,11 @@ import torch
 # isort: off
 from tensorrt_bionemo._torch.auto_chunk import (
     _AUTOCHUNK_MIN_FLOOR, AUTOCHUNK_MIN_AUTO, CHUNK_REGISTRY,
-    DEFAULT_AUTOCHUNK_MIN_REF, DEFAULT_PAIR_CHUNK_ROWS, OUTER_PRODUCT_MEAN,
-    PAIR_TRANSITION, PAIR_WEIGHTED_AVERAGING, TRIANGLE_ATTENTION, ChunkPolicy,
-    ChunkRegistry, chunk_apply, default_autochunk_min, iter_chunks)
+    DEFAULT_AUTOCHUNK_MIN_REF, DEFAULT_MSA_AUTOCHUNK_MIN,
+    DEFAULT_MSA_CHUNK_ROWS, DEFAULT_PAIR_CHUNK_ROWS, DIFFUSION_PAIR_TRANSITION,
+    MSA_TRANSITION, OUTER_PRODUCT_MEAN, PAIR_TRANSITION,
+    PAIR_WEIGHTED_AVERAGING, TRIANGLE_ATTENTION, ChunkPolicy, ChunkRegistry,
+    chunk_apply, default_autochunk_min, iter_chunks)
 # isort: on
 
 
@@ -183,11 +185,18 @@ def test_registry_enable_disable():
 
 def test_global_registry_builtin_defaults():
     # Read-only assertions on the shared registry (do NOT mutate it here).
-    for name in (PAIR_TRANSITION, PAIR_WEIGHTED_AVERAGING, OUTER_PRODUCT_MEAN,
+    for name in (PAIR_TRANSITION, DIFFUSION_PAIR_TRANSITION, MSA_TRANSITION,
+                 PAIR_WEIGHTED_AVERAGING, OUTER_PRODUCT_MEAN,
                  TRIANGLE_ATTENTION):
         assert name in CHUNK_REGISTRY
     assert CHUNK_REGISTRY.get(
         PAIR_TRANSITION).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(
+        DIFFUSION_PAIR_TRANSITION).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(
+        MSA_TRANSITION).chunk_size == DEFAULT_MSA_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(
+        MSA_TRANSITION).min_size == DEFAULT_MSA_AUTOCHUNK_MIN
     assert CHUNK_REGISTRY.get(OUTER_PRODUCT_MEAN).chunk_size == 128
     # Triangle attention is off by default (flash kernels already bound memory).
     assert CHUNK_REGISTRY.get(TRIANGLE_ATTENTION).enabled is False

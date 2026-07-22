@@ -1,44 +1,7 @@
-from typing import Optional, Tuple
+import math
+from typing import Optional
 
 import torch
-
-from tensorrt_bionemo.mapping import Mapping
-
-
-def compute_random_augmentation(
-        batch_size: int = 1,
-        multiplicity: int = 1,
-        s_trans: float = 1.0,
-        device: Optional[torch.device] = None,
-        dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Compute random augmentation for the coordinates.
-    Args:
-        multiplicity (int):
-            The number of diffusion samples. Default: 1
-        s_trans (float):
-            The translation scale. Default: 1.0
-        device (Optional[torch.device]):
-            The device to compute the random augmentation. Default: None
-        dtype (torch.dtype):
-            The dtype to compute the random augmentation. Default: torch.float32
-        mapping (Optional[Mapping]):
-            The device mesh mapping to compute the random augmentation. Unused for now
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor]: The random rotation matrix and the random translation.
-
-    TODO: For the multiple gpus, need a distributed version of this function.
-    """
-    # Using quaternion to create random rotation matrix shape [*, 3, 3]
-    R = random_rotations(multiplicity * batch_size, dtype=dtype,
-                         device=device).view(batch_size, multiplicity, 3, 3)
-
-    # Using randn to create random translation matrix shape [*, 1, 3]
-    random_trans = (torch.randn(
-        (batch_size, multiplicity, 1, 3), dtype=dtype, device=device) * s_trans)
-    return R, random_trans
-
 
 # the following is copied from Torch3D, BSD License, Copyright (c) Meta Platforms, Inc. and affiliates.
 
@@ -134,3 +97,24 @@ def random_rotations(n: int,
     """
     quaternions = random_quaternions(n, dtype=dtype, device=device)
     return quaternion_to_matrix(quaternions)
+
+
+def centre_random_augmentation(x: torch.Tensor,
+                               mask: Optional[torch.Tensor] = None,
+                               s_trans: float = 1.0) -> torch.Tensor:
+    """Center, rotate, and translate ``[..., N_atom, 3]`` coordinates."""
+    lead = x.shape[:-2]
+    n = math.prod(lead) if lead else 1
+    rots = random_rotations(n, dtype=x.dtype,
+                            device=x.device).reshape(*lead, 3, 3)
+    trans = s_trans * torch.randn((*lead, 3), dtype=x.dtype, device=x.device)
+    if mask is None:
+        centre = x.mean(dim=-2, keepdim=True)
+    else:
+        m = mask.unsqueeze(-1).to(x.dtype)
+        centre = (x * m).sum(dim=-2, keepdim=True) / m.sum(
+            dim=-2, keepdim=True).clamp(min=1e-7)
+    x = (x - centre) @ rots.transpose(-1, -2) + trans[..., None, :]
+    if mask is not None:
+        x = x * mask.unsqueeze(-1).to(x.dtype)
+    return x

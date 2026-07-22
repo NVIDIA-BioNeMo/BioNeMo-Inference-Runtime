@@ -25,9 +25,10 @@ from tensorrt_bionemo._torch.layers.attention import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import (PairwiseConditioning,
                                                          SingleConditioning)
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.noise_scheduler import (
+    SampleDiffusion, create_noise_schedule)
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
-from tensorrt_bionemo._torch.layers.random_augmentation import \
-    compute_random_augmentation
+from tensorrt_bionemo._torch.layers.random_augmentation import random_rotations
 from tensorrt_bionemo._torch.layers.transformers.atom import (
     AtomAttentionDecoder, AtomAttentionEncoder)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
@@ -728,7 +729,15 @@ class PotentialGuidance:
         return atom_coords, atom_coords_noisy, atom_mask, atom_coords_denoised, token_repr, token_a
 
 
-class AtomDiffusion(nn.Module):
+class AtomDiffusion(SampleDiffusion):
+    """Boltz atom diffusion — subclass of the shared :class:`SampleDiffusion`.
+
+    Inherits the EDM params (``gamma0`` / ``gamma_min`` / ``noise_scale`` /
+    ``step_scale``) and the sampler type, but **overrides** :meth:`sample` with
+    its steered predictor-corrector loop (potential guidance / particle
+    resampling / reverse-diffusion alignment / parallel-sample chunking). Reuses
+    the shared :func:`create_noise_schedule` for :meth:`sample_schedule`.
+    """
 
     def __init__(
         self,
@@ -740,8 +749,11 @@ class AtomDiffusion(nn.Module):
             config:
                 The configuration of the atom diffusion module.
         """
-        super().__init__()
         atom_diffusion_config = config.atom_diffusion
+        super().__init__(gamma0=atom_diffusion_config.gamma_0,
+                         gamma_min=atom_diffusion_config.gamma_min,
+                         noise_scale=atom_diffusion_config.noise_scale,
+                         step_scale=atom_diffusion_config.step_scale)
         score_model_config = config.score_model
         self.score_model = DiffusionModule(config=score_model_config)
 
@@ -753,10 +765,6 @@ class AtomDiffusion(nn.Module):
         self.P_mean = atom_diffusion_config.P_mean
         self.P_std = atom_diffusion_config.P_std
         self.num_sampling_steps = atom_diffusion_config.num_sampling_steps
-        self.gamma_0 = atom_diffusion_config.gamma_0
-        self.gamma_min = atom_diffusion_config.gamma_min
-        self.noise_scale = atom_diffusion_config.noise_scale
-        self.step_scale = atom_diffusion_config.step_scale
         self.coordinate_augmentation = atom_diffusion_config.coordinate_augmentation
         self.version = atom_diffusion_config.version
         self.alignment_reverse_diff = atom_diffusion_config.alignment_reverse_diff
@@ -850,20 +858,16 @@ class AtomDiffusion(nn.Module):
         return denoised_coords, token_a
 
     def sample_schedule(self, num_sampling_steps=None):
-        inv_rho = 1 / self.rho
-
-        steps = torch.arange(num_sampling_steps,
-                             device=self.device,
-                             dtype=torch.float32)
-        sigmas = (
-            self.sigma_max**inv_rho + steps / (num_sampling_steps - 1) *
-            (self.sigma_min**inv_rho - self.sigma_max**inv_rho))**self.rho
-
-        sigmas = sigmas * self.sigma_data
-
-        sigmas = F.pad(sigmas, (0, 1),
-                       value=0.0)  # last step is sigma value of 0.
-        return sigmas
+        # Shared AF3 schedule: Boltz uses ``num_sampling_steps`` points and
+        # appends a trailing 0 (``final="append_zero"``).
+        return create_noise_schedule(num_points=num_sampling_steps,
+                                     sigma_data=self.sigma_data,
+                                     s_max=self.sigma_max,
+                                     s_min=self.sigma_min,
+                                     rho=self.rho,
+                                     device=self.device,
+                                     dtype=torch.float32,
+                                     final="append_zero")
 
     def sample(
         self,
@@ -928,7 +932,7 @@ class AtomDiffusion(nn.Module):
         coords_shape = (*atom_mask.shape, 3)
 
         sigmas = self.sample_schedule(num_sampling_steps)
-        gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
+        gammas = torch.where(sigmas > self.gamma_min, self.gamma0, 0.0)
         sigmas_and_gammas = list(zip(sigmas[:-1], sigmas[1:], gammas[1:]))
 
         # atom position is noise at the beginning
@@ -955,11 +959,13 @@ class AtomDiffusion(nn.Module):
         for step_idx, (sigma_tm, sigma_t,
                        gamma) in enumerate(sigmas_and_gammas):
             potentials_guidance.set_diffusion_reverse_step(step_idx)
-            random_R, random_tr = compute_random_augmentation(
-                batch_size=B,
-                multiplicity=multiplicity,
-                device=atom_coords.device,
-                dtype=atom_coords.dtype)
+            random_R = random_rotations(B * multiplicity,
+                                        device=atom_coords.device,
+                                        dtype=atom_coords.dtype).view(
+                                            B, multiplicity, 3, 3)
+            random_tr = torch.randn((B, multiplicity, 1, 3),
+                                    device=atom_coords.device,
+                                    dtype=atom_coords.dtype)
             atom_coords = atom_coords - atom_coords.mean(dim=-2, keepdims=True)
             atom_coords = (
                 torch.einsum("bmnd,bmds->bmns", atom_coords, random_R) +

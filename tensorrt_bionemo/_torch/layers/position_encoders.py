@@ -69,7 +69,11 @@ class FourierEmbedding(nn.Module):
 
 
 class RelativePositionEncoder(nn.Module):
-    """Relative position encoder."""
+    """AF3 relative-position encoder.
+
+    Accepts raw token features or a precomputed ``relp``. The Protenix variant
+    uses ``fix_sym_check=True`` and ``cyclic_pos_enc=False``.
+    """
 
     def __init__(
             self,
@@ -120,30 +124,33 @@ class RelativePositionEncoder(nn.Module):
         self.period_broadcast = period_broadcast
         self.mapping = mapping or Mapping()
 
-    def forward(self, asym_id: torch.Tensor, residue_index: torch.Tensor,
-                entity_id: torch.Tensor, cyclic_period: torch.Tensor,
-                token_index: torch.Tensor, sym_id: torch.Tensor):
-        """
+    def _relp_buckets(
+        self,
+        asym_id: torch.Tensor,
+        residue_index: torch.Tensor,
+        entity_id: torch.Tensor,
+        token_index: torch.Tensor,
+        sym_id: torch.Tensor,
+        cyclic_period: Optional[torch.Tensor] = None,
+    ):
+        """Bucket pairwise residue, token, and symmetry-chain offsets.
+
         Args:
-            asym_id: torch.Tensor
-                The asym_id of the input features.
-            residue_index: torch.Tensor
-                The residue_index of the input features.
-            entity_id: torch.Tensor
-                The entity_id of the input features.
-            cyclic_period: torch.Tensor
-                The cyclic_period of the input features.
-            token_index: torch.Tensor
-                The token_index of the input features.
-            sym_id: torch.Tensor
-                The sym_id of the input features.
+            asym_id / residue_index / entity_id / token_index / sym_id:
+                integer token features, each ``[B, N_token]``.
+            cyclic_period: optional ``[B, N_token]`` cyclic period.
+
+        Returns:
+            ``(d_residue, d_token, d_chain, b_same_entity)``, each
+            ``[B, N, N]``.
         """
         b_same_chain = torch.eq(asym_id[:, :, None], asym_id[:, None, :])
         b_same_residue = torch.eq(residue_index[:, :, None],
                                   residue_index[:, None, :])
         b_same_entity = torch.eq(entity_id[:, :, None], entity_id[:, None, :])
         d_residue = (residue_index[:, :, None] - residue_index[:, None, :])
-        if self.cyclic_pos_enc and torch.any(cyclic_period > 0):
+        if (self.cyclic_pos_enc and cyclic_period is not None
+                and torch.any(cyclic_period > 0)):
             period = torch.where(
                 cyclic_period > 0,
                 cyclic_period,
@@ -185,13 +192,74 @@ class RelativePositionEncoder(nn.Module):
         d_chain = torch.where(b_same_chain,
                               torch.zeros_like(d_chain) + 2 * self.s_max + 1,
                               d_chain)
+        return d_residue, d_token, d_chain, b_same_entity
 
+    def generate_relp(
+            self,
+            asym_id: torch.Tensor,
+            residue_index: torch.Tensor,
+            entity_id: torch.Tensor,
+            token_index: torch.Tensor,
+            sym_id: torch.Tensor,
+            cyclic_period: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Materialize the relative-position one-hot feature.
+
+        Args:
+            asym_id / residue_index / entity_id / token_index / sym_id:
+                integer token features, each ``[B, N_token]``.
+            cyclic_period: optional ``[B, N_token]`` cyclic period.
+
+        Returns:
+            ``relp`` ``[B, N_token, N_token, 4 * r_max + 2 * s_max + 7]`` float.
+        """
+        d_residue, d_token, d_chain, b_same_entity = self._relp_buckets(
+            asym_id, residue_index, entity_id, token_index, sym_id,
+            cyclic_period)
         n_pos = 2 * self.r_max + 2
         n_chain = 2 * self.s_max + 2
-        # Single-GPU fast path: ``self.linear`` over the concatenated one-hots + b_same_entity IS an
-        # embedding-gather (one-hot @ W == a gather of W's rows). Gather + accumulate in place to
-        # avoid materializing the huge int64 one-hots and the fp32 [B,N,N, 2*n_pos+n_chain+1] concat
-        # (tens of GB at N~5k). Weight-row layout matches the concat order below:
+        a_rel_pos = F.one_hot(d_residue, n_pos)
+        a_rel_token = F.one_hot(d_token, n_pos)
+        a_rel_chain = F.one_hot(d_chain, n_chain)
+        return torch.cat(
+            [
+                a_rel_pos.float(),
+                a_rel_token.float(),
+                b_same_entity.unsqueeze(-1).float(),
+                a_rel_chain.float(),
+            ],
+            dim=-1,
+        )
+
+    def forward(self,
+                asym_id: Optional[torch.Tensor] = None,
+                residue_index: Optional[torch.Tensor] = None,
+                entity_id: Optional[torch.Tensor] = None,
+                cyclic_period: Optional[torch.Tensor] = None,
+                token_index: Optional[torch.Tensor] = None,
+                sym_id: Optional[torch.Tensor] = None,
+                relp: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Project raw or precomputed relative-position features.
+
+        Args:
+            asym_id / residue_index / entity_id / cyclic_period / token_index /
+                sym_id: raw token features used when ``relp`` is omitted.
+            relp: optional precomputed ``[B, N, N, 4 * r_max + 2 * s_max + 7]``
+                feature; when supplied, raw features are ignored.
+
+        Returns:
+            ``[B, N_token, N_token, token_z]`` pair contribution.
+        """
+        if relp is not None:
+            return self.linear(relp.to(self.linear.weight.dtype))
+
+        d_residue, d_token, d_chain, b_same_entity = self._relp_buckets(
+            asym_id, residue_index, entity_id, token_index, sym_id,
+            cyclic_period)
+        n_pos = 2 * self.r_max + 2
+        n_chain = 2 * self.s_max + 2
+
+        # one_hot(index) @ W is an embedding lookup; accumulate weight slices
+        # without materializing the one-hots or their concatenation:
         # [ d_residue (n_pos) | d_token (n_pos) | b_same_entity (1) | d_chain (n_chain) ].
         if self.mapping.tp_size == 1:
             wt = self.linear.weight.t()
@@ -202,7 +270,7 @@ class RelativePositionEncoder(nn.Module):
                              wt[2 * n_pos + 1:2 * n_pos + 1 + n_chain])
             return p
 
-        # Tensor-parallel fallback: the column-sharded Linear needs the full concatenated input.
+        # Column-sharded Linear requires the concatenated input.
         a_rel_pos = F.one_hot(d_residue, n_pos)
         a_rel_token = F.one_hot(d_token, n_pos)
         a_rel_chain = F.one_hot(d_chain, n_chain)

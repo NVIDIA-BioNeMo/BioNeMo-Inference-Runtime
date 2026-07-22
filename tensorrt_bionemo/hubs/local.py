@@ -17,6 +17,7 @@ import hashlib
 import io
 import logging
 import os
+import pickle
 from collections import OrderedDict, defaultdict, namedtuple
 from pathlib import Path
 from typing import Optional, Union
@@ -31,6 +32,9 @@ BOLTZ_MODEL_NAMES = frozenset({
     SupMat.Boltz1,
     SupMat.Boltz2,
     SupMat.Boltz2Affinity,
+})
+PROTENIX_MODEL_NAMES = frozenset({
+    SupMat.ProtenixV2,
 })
 
 # MD5 digests of official HuggingFace Boltz checkpoints.
@@ -181,6 +185,12 @@ LOCAL_CHECKPOINTS = {
         weights_only=True,
         state_dict_key=None,
     ),
+    SupMat.ProtenixV2:
+    LocalCheckpoint(
+        env="PROTENIX_V2_CKPT",
+        weights_only=True,
+        state_dict_key="model",
+    ),
 }
 
 
@@ -239,6 +249,22 @@ def _load_boltz_state_dict(local_checkpoint: str):
                           weights_only=True)
 
 
+def _load_protenix_state_dict(local_checkpoint: str):
+    try:
+        checkpoint = torch.load(local_checkpoint,
+                                map_location="cpu",
+                                weights_only=True)
+    except (RuntimeError, ValueError, pickle.UnpicklingError) as exc:
+        raise RuntimeError(
+            "Failed to load Protenix checkpoint safely "
+            "(unsafe or incompatible pickle contents).") from exc
+    state_dict = checkpoint["model"]
+    sample_key = next(iter(state_dict))
+    if sample_key.startswith("module."):
+        state_dict = {k[len("module."):]: v for k, v in state_dict.items()}
+    return state_dict
+
+
 def verify_boltz_checkpoint_md5(path: str | Path, filename: str) -> None:
     """Verify MD5 of a downloaded Boltz checkpoint against known digests."""
     expected = BOLTZ_CHECKPOINT_MD5.get(Path(filename).name)
@@ -252,8 +278,7 @@ def verify_boltz_checkpoint_md5(path: str | Path, filename: str) -> None:
     if actual != expected:
         raise ValueError(
             f"MD5 mismatch for {filename}: expected {expected}, got {actual}. "
-            "The checkpoint file may be corrupted or tampered with."
-        )
+            "The checkpoint file may be corrupted or tampered with.")
 
 
 def load_local_weights(
@@ -290,6 +315,8 @@ def load_local_weights(
         state_dict = _load_boltz_state_dict(filepath)
         if state_dict_key is not None:
             state_dict = state_dict[state_dict_key]
+    elif name in PROTENIX_MODEL_NAMES:
+        state_dict = _load_protenix_state_dict(filepath)
     else:
         try:
             state_dict = torch.load(filepath, weights_only=weights_only)

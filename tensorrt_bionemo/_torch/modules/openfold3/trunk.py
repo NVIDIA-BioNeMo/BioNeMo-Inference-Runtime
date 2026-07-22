@@ -24,6 +24,8 @@ from tensorrt_bionemo._torch.attention_backend.interface import \
     AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
+from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY, MSA_TRANSITION,
+                                                PAIR_TRANSITION)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
@@ -111,7 +113,8 @@ class MSAModuleBlock(EvoformerBlock):
                 mapping=mapping,
                 skip_create_weights=skip_create_weights,
             )
-            # SwiGLU Transition
+            # SwiGLU Transition — chunk along MSA rows (dim S of [B,S,N,C_m]),
+            # matching OSS MSAStack.msa_chunk_size=2048 so deep MSAs fit.
             self.msa_transition = Transition(
                 dim=c_m,
                 hidden=c_m * transition_n,
@@ -120,11 +123,16 @@ class MSAModuleBlock(EvoformerBlock):
                 dtype=dtype,
                 mapping=mapping,
                 skip_create_weights=skip_create_weights,
+                auto_chunk_policy=CHUNK_REGISTRY.get(MSA_TRANSITION),
             )
         else:
             self.msa_att_row = None
             self.msa_transition = None
 
+        # Row-chunk the [B, N, N, c_z * transition_n] SwiGLU hidden activation on
+        # the first pair axis (numerically identical, position-wise op). Uses the
+        # same registry policy as the trunk Pairformer's ``transition_z``; the dense
+        # fast path is kept below the memory-scaled auto-chunk threshold.
         self.pair_transition = Transition(
             dim=c_z,
             hidden=c_z * transition_n,
@@ -133,6 +141,7 @@ class MSAModuleBlock(EvoformerBlock):
             dtype=dtype,
             mapping=mapping,
             skip_create_weights=skip_create_weights,
+            auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION),
         )
 
         self.msa_att_row_chunk_size = msa_att_row_chunk_size
@@ -289,13 +298,14 @@ class MSAModuleStack(nn.Module):
                 f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
-            self,
-            m: torch.Tensor,
-            z: torch.Tensor,
-            msa_mask: torch.Tensor,
-            pair_mask: torch.Tensor,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
+        self,
+        m: torch.Tensor,
+        z: torch.Tensor,
+        msa_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        all_reduce_params: Optional[AllReduceParams] = None,
+        precomputed_masks: Optional[PrecomputedPairMasks] = None
     ) -> torch.Tensor:
         """
         Args:
@@ -311,6 +321,10 @@ class MSAModuleStack(nn.Module):
                 Attention metadata
             all_reduce_params:
                 AllReduce parameters
+            precomputed_masks:
+                Optional precomputed triangle-attention mask bias. When given
+                (e.g. precomputed once by a recycling trunk), it is reused
+                instead of recomputing from ``pair_mask`` on every call.
         """
         # Expand the batch dimensions if needed
         n_dims = m.ndim
@@ -325,12 +339,13 @@ class MSAModuleStack(nn.Module):
         msa_mask = msa_mask.to(dtype=self.config.torch_dtype)
         pair_mask = pair_mask.to(dtype=self.config.torch_dtype)
 
-        precomputed = precompute_pair_masks(
-            self.blocks[0].triangle_attn_backend,
-            pair_mask,
-            inf=self.blocks[0].inf,
-            dtype=self.blocks[0].dtype,
-        )
+        precomputed = precomputed_masks if precomputed_masks is not None else \
+            precompute_pair_masks(
+                self.blocks[0].triangle_attn_backend,
+                pair_mask,
+                inf=self.blocks[0].inf,
+                dtype=self.blocks[0].dtype,
+            )
 
         for block in self.blocks:
             m, z = block(m,

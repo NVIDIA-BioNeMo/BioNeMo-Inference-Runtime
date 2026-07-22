@@ -29,12 +29,71 @@ from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
+from tensorrt_bionemo._torch.layers.sequence_local_atom import (
+    create_gather_indices, query_to_keys_optimized, to_blocks)
 from tensorrt_bionemo._torch.layers.transition import \
     ConditionedTransitionBlock
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers, ensure_buffer
+
+
+def build_bias_mega_weight(layers: nn.ModuleList) -> torch.Tensor:
+    """Fold LayerNorm gamma into pair-bias weights and stack them.
+
+    Returns ``[num_layers * num_heads, c_z]`` for one shared normalization.
+    """
+    parts: list[torch.Tensor] = []
+    for layer in layers:
+        proj_z = layer.pair_bias_attn.proj_z
+        ln = proj_z[0] if len(proj_z) > 1 else None
+        proj = proj_z[-1]
+        w = proj.weight.data  # [H, D]
+        if ln is not None:
+            w = w * ln.weight.data.unsqueeze(0)  # [H, D] * [1, D]
+        parts.append(w)
+    return torch.cat(parts, dim=0).contiguous()  # [N*H, D]
+
+
+def precompute_pair_biases(
+    z: torch.Tensor,
+    w_mega: torch.Tensor,
+    num_layers: int,
+    num_heads: int,
+    norm_eps: float,
+    bias_pad_multiple: int = -1,
+) -> list[torch.Tensor]:
+    """Project every layer's pair bias with one normalization and GEMM.
+
+    Args:
+        z: pair representation ``[*, I, J, c_z]`` (contiguous).
+        w_mega: fused projection ``[num_layers * num_heads, c_z]`` from
+            :func:`build_bias_mega_weight`.
+        bias_pad_multiple: key padding multiple; ``<= 0`` disables padding.
+
+    Returns:
+        ``num_layers`` tensors, each ``[*, num_heads, I, J_pad]``.
+    """
+    *batch_dims, I, J, D = z.shape
+    b_flat = 1
+    for d in batch_dims:
+        b_flat *= d
+    J_pad = (((J + bias_pad_multiple - 1) // bias_pad_multiple) *
+             bias_pad_multiple if bias_pad_multiple > 0 else J)
+    if J_pad != J:
+        z = F.pad(z, (0, 0, 0, J_pad - J))
+    z_hat = fused_layer_norm_no_affine(z, eps=norm_eps)
+    out = torch.mm(w_mega, z_hat.reshape(-1, D).t().contiguous())
+    out = out.reshape(num_layers, num_heads, b_flat, I, J_pad)
+    biases: list[torch.Tensor] = []
+    for i in range(num_layers):
+        if b_flat == 1:
+            b = out[i].squeeze(1).unsqueeze(0)  # [1, H, I, J_pad] view
+        else:
+            b = out[i].permute(1, 0, 2, 3).contiguous()
+        biases.append(b.view(*batch_dims, num_heads, I, J_pad))
+    return biases
 
 
 class DiffusionTransformerLayer(nn.Module):
@@ -54,6 +113,7 @@ class DiffusionTransformerLayer(nn.Module):
                  post_layer_norm: bool = False,
                  use_ada_layer_norm: bool = True,
                  use_separate_layer_norm: bool = False,
+                 chain_kv_norm: bool = False,
                  mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  initial_norm: bool = True,
@@ -86,6 +146,7 @@ class DiffusionTransformerLayer(nn.Module):
             pair_norm=pair_norm,
             use_ada_layer_norm=use_ada_layer_norm,
             use_separate_layer_norm=use_separate_layer_norm,
+            chain_kv_norm=chain_kv_norm,
             gate_bias=attn_gate_bias,
             eps=eps,
             inf=inf,
@@ -132,8 +193,7 @@ class DiffusionTransformerLayer(nn.Module):
             **kwargs) -> torch.Tensor:
         """ First version of DiffusionTransformerLayer, does not support multiplicity > 1 and atom encoder, decoder"""
         if self.initial_norm:
-            b = self.adaln(a, s, buffers=buffers,
-                           buffer_key="dit_bsd_scratch")
+            b = self.adaln(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
         else:
             b = a
 
@@ -165,7 +225,8 @@ class DiffusionTransformerLayer(nn.Module):
             else:
                 b = F.sigmoid(self.output_projection(s)) * b
         a = a + b
-        a = a + self.transition(a, s,
+        a = a + self.transition(a,
+                                s,
                                 all_reduce_params=all_reduce_params,
                                 buffers=buffers,
                                 buffer_key="dit_bsd_scratch")
@@ -377,78 +438,16 @@ class OpenFold3DiffusionTransformer(nn.Module):
             self._W_mega: Optional[torch.Tensor] = None
 
     def _build_mega_weight(self) -> None:
-        """Fuse per-layer LN γ into projection weights → single ``[N*H, D]``.
-
-        ``W_fused[i, h, d] = W_proj[i, h, d] * γ_i[d]`` so that the
-        per-layer ``LayerNorm(z) @ W_proj.T`` collapses to a single
-        ``layer_norm_no_affine(z) @ W_mega.T``.
-        """
-        parts: list[torch.Tensor] = []
-        for layer in self.layers:
-            proj_z = layer.pair_bias_attn.proj_z
-            ln = proj_z[0] if len(proj_z) > 1 else None
-            proj = proj_z[-1]
-            w = proj.weight.data  # [H, D]
-            if ln is not None:
-                w = w * ln.weight.data.unsqueeze(0)  # [H, D] * [1, D]
-            parts.append(w)
-        self._W_mega = torch.cat(parts, dim=0).contiguous()  # [N*H, D]
+        """Fuse per-layer LN gamma into projection weights -> cached ``[N*H, D]``."""
+        self._W_mega = build_bias_mega_weight(self.layers)
 
     def _precompute_all_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
-        """Mega-GEMM transposed: one GEMM → zero-copy per-layer views.
-
-        1. Pad ``z`` in the J dimension to ``J_pad`` *before* the GEMM so the
-           output naturally has J_pad contiguous — avoids 24 separate
-           ``F.pad`` calls that would break the zero-copy views.
-           (Padding cost: ~1 extra column × B×I rows × D, negligible.)
-        2. Normalize ``z`` once (no affine — γ is absorbed into W_mega).
-        3. ``W_mega @ z_hat.T`` → ``[NH, B*I*J_pad]`` with J_pad contiguous.
-        4. Reshape to ``[N, H, B, I, J_pad]`` and slice per layer.
-           For B=1 each slice is a contiguous ``[1, H, I, J_pad]`` view.
-
-        Args:
-            z: pair representation ``[B, I, J, D]`` (contiguous, bf16).
-
-        Returns:
-            List of ``num_blocks`` tensors, each ``[B, H, I, J_pad]``.
-        """
+        """Project all pair biases with the cached mega weight."""
         if self._W_mega is None:
             self._build_mega_weight()
-
-        # z may have arbitrary leading batch dims: [*, I, J, D]
-        *batch_dims, I, J, D = z.shape
-        B = 1
-        for d in batch_dims:
-            B *= d
-        N = len(self.layers)
-        H = self._num_heads
-
-        pad = self._bias_pad_multiple
-        J_pad = ((J + pad - 1) // pad) * pad if pad > 0 else J
-
-        if J_pad != J:
-            # (0,0) on D, (0, delta) on J — F.pad works from last dim inward,
-            # so arbitrary leading batch_dims are handled automatically.
-            z = F.pad(z, (0, 0, 0, J_pad - J))  # [*batch_dims, I, J_pad, D]
-
-        z_hat = fused_layer_norm_no_affine(z, eps=self._norm_eps)
-
-        # [NH, D] @ [D, B*I*J_pad] → [NH, B*I*J_pad] with J_pad contiguous
-        out = torch.mm(self._W_mega,
-                       z_hat.reshape(-1,
-                                     D).t().contiguous())  # [NH, B*I*J_pad]
-        out = out.reshape(N, H, B, I, J_pad)
-
-        biases: list[torch.Tensor] = []
-        for i in range(N):
-            if B == 1:
-                b = out[i].squeeze(1).unsqueeze(0)  # [1,H,I,J_pad] view
-            else:
-                b = out[i].permute(1, 0, 2, 3).contiguous()
-            # Restore original batch dimensions: [*batch_dims, H, I, J_pad]
-            b = b.view(*batch_dims, H, I, J_pad)
-            biases.append(b)
-        return biases
+        return precompute_pair_biases(z, self._W_mega, len(self.layers),
+                                      self._num_heads, self._norm_eps,
+                                      self._bias_pad_multiple)
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -518,3 +517,159 @@ class OpenFold3DiffusionTransformer(nn.Module):
                           precomputed_single_masks=precomputed_single_masks,
                           buffers=buffers)
         return a
+
+
+class ProtenixDiffusionTransformer(nn.Module):
+    """Protenix transformer for local atom and global token diffusion.
+
+    Pass ``n_queries`` and ``n_keys`` for windowed atom attention; omit both for
+    global token attention. Construction flags must match the selected path.
+    The local path requires SDPA, while the global path also supports CuTeDSL.
+    ``precompute_bias`` projects every layer's pair bias in one GEMM.
+    """
+
+    def __init__(self, config: BaseConfig) -> None:
+        super().__init__()
+        dtype = config.torch_dtype
+        c_a = config.dim
+        # Dims-only configs default to the local atom variant.
+        bias_proj = True if config.bias_proj is None else config.bias_proj
+        cts = config.conditioned_transition_using_silu
+        cts = True if cts is None else cts
+        attn_backend = config.pairwise_attention_backend
+        self.layers = nn.ModuleList()
+        for i in range(config.num_blocks):
+            layer = DiffusionTransformerLayer(
+                layer_idx=i,
+                num_heads=config.num_heads,
+                dim=c_a,
+                dim_single_cond=config.dim_single_cond or c_a,
+                dim_pairwise=config.dim_pairwise,
+                bias_proj=bias_proj,
+                pair_norm=getattr(config, "pair_norm", True),
+                initial_norm=getattr(config, "initial_norm", False),
+                attention_initial_norm=bool(config.attention_initial_norm),
+                use_ada_layer_norm=getattr(config, "use_ada_layer_norm", True),
+                use_separate_layer_norm=getattr(config,
+                                                "use_separate_layer_norm",
+                                                True),
+                chain_kv_norm=getattr(config, "chain_kv_norm", True),
+                attn_output_gate=config.attn_output_gate,
+                conditioned_transition_using_silu=cts,
+                transition_expansion_factor=config.transition_expansion_factor,
+                dtype=dtype,
+                mapping=config.mapping,
+                skip_create_weights=config.skip_create_weights,
+                attn_backend=attn_backend)
+            # Protenix ``layernorm_z`` has no offset (create_offset=False).
+            proj_ln = layer.pair_bias_attn.proj_z[0]
+            layer.pair_bias_attn.proj_z[0] = nn.LayerNorm(
+                proj_ln.normalized_shape,
+                bias=False,
+                eps=proj_ln.eps,
+                dtype=dtype)
+            self.layers.append(layer)
+
+        self._num_heads = config.num_heads
+        self._norm_eps = config.norm_epsilon
+        self.pairwise_attention_backend = attn_backend
+        self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
+        self._precompute_bias = bool(getattr(config, "precompute_bias",
+                                             True)) and bias_proj
+
+    @staticmethod
+    def build_attn_metadata(num_blocks: int, n_queries: int, n_keys: int,
+                            device: torch.device) -> AttentionMetadata:
+        """Build metadata with local-window gather indices."""
+        gather_indices, _ = create_gather_indices(num_blocks, n_queries,
+                                                  n_keys, device)
+
+        def _query_to_keys(x: torch.Tensor) -> torch.Tensor:
+            return query_to_keys_optimized(x,
+                                           gather_indices,
+                                           W=n_queries,
+                                           H=n_keys)
+
+        return AttentionMetadata(query_to_keys=_query_to_keys, bias_cache={})
+
+    def _precompute_all_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
+        # Rebuild to observe direct weight mutations.
+        w_mega = build_bias_mega_weight(self.layers)
+        return precompute_pair_biases(z, w_mega, len(self.layers),
+                                      self._num_heads, self._norm_eps,
+                                      self._bias_pad_multiple)
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        n_queries: Optional[int] = None,
+        n_keys: Optional[int] = None,
+        attn_metadata: Optional[AttentionMetadata] = None,
+        buffers: Optional[PreallocatedBuffers] = None,
+    ) -> torch.Tensor:
+        """Apply local atom or global token diffusion attention.
+
+        Args:
+            a: ``[B, N, C]`` locally or ``[B, S, N, C]`` globally.
+            s: conditioning with the same leading dimensions as ``a``.
+            z: ``[B, K, Q, Kv, C_z]`` locally or ``[B, N, N, C_z]`` globally;
+                global ``z`` broadcasts over ``S``.
+            mask: validity mask ``[B, N]``.
+            n_queries / n_keys: window sizes; both enable the local path.
+            attn_metadata: optional local gather metadata.
+            buffers: optional shared layer-stack buffers.
+
+        Returns:
+            Updated representation with the same shape as ``a``.
+        """
+        local = n_queries is not None and n_keys is not None
+        if local:
+            B, N, _ = a.shape
+            W, K = n_queries, z.shape[1]
+            if attn_metadata is None:
+                attn_metadata = self.build_attn_metadata(
+                    K, n_queries, n_keys, a.device)
+            a_in = to_blocks(a, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
+            s_in = to_blocks(s, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
+            z_in = z.unsqueeze(1)  # [B, 1, K, W, H, c_z]
+            mask_in = to_blocks(mask.unsqueeze(-1).to(a.dtype), K,
+                                W).squeeze(-1).unsqueeze(1)  # [B, 1, K, W]
+        else:
+            # Global self-attention: no windowing, full pair bias, no gather.
+            a_in, s_in, z_in, mask_in = a, s, z, mask
+            attn_metadata = None
+
+        # CuTeDSL reuses shared output and LSE buffers across layers.
+        if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
+            buffers = {}
+
+        if self._precompute_bias:
+            all_biases = self._precompute_all_biases(z_in)
+            for layer in self.layers:
+                layer.pair_bias_attn.bias_proj = False
+            try:
+                for i, layer in enumerate(self.layers):
+                    a_in = layer(a_in,
+                                 s_in,
+                                 all_biases[i],
+                                 mask_in,
+                                 attn_metadata,
+                                 buffers=buffers)
+            finally:
+                for layer in self.layers:
+                    layer.pair_bias_attn.bias_proj = True
+        else:
+            for layer in self.layers:
+                a_in = layer(a_in,
+                             s_in,
+                             z_in,
+                             mask_in,
+                             attn_metadata,
+                             buffers=buffers)
+
+        if local:
+            return a_in.reshape(B, K * W, -1)[:, :N]
+        return a_in

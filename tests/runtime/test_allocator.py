@@ -428,6 +428,11 @@ def test_custom_stream():
     stream_2 = torch.cuda.Stream()
     logger.info(f"Created custom streams: {stream_0}, {stream_1}, {stream_2}")
 
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
     # Get initial memory usage
     start_host_memory, start_device_memory = get_memory_usage()
     logger.info(

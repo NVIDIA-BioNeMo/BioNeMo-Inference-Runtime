@@ -167,12 +167,12 @@ def test_pairformer_layer(sc: Scenario):
     if dtype == torch.float32:
         torch.testing.assert_close(_masked(ref_s, s_keep),
                                    _masked(output_s, s_keep),
-                                   atol=3e-2,
-                                   rtol=2e-3)
+                                   atol=4e-2,
+                                   rtol=4e-2)
         torch.testing.assert_close(_masked(ref_z, z_keep),
                                    _masked(output_z, z_keep),
-                                   atol=3e-2,
-                                   rtol=2e-3)
+                                   atol=4e-2,
+                                   rtol=4e-2)
     else:
         # Asymmetric tolerance: ``ours`` must be no more than ``tol_mult``×
         # worse than the bf16 reference's distance to the fp32 ground

@@ -62,6 +62,7 @@ class PairformerLayerV1(nn.Module):
                  trimul_high_precision: bool = True,
                  trimul_mean_normalization: bool = False,
                  pair_mask_left_aligned: bool = True,
+                 pair_transition_factor: int = 4,
                  **kwargs):
         """Pairformer layer.
 
@@ -171,7 +172,7 @@ class PairformerLayerV1(nn.Module):
             )
         self.transition_z = Transition(
             token_z,
-            token_z * 4,
+            token_z * pair_transition_factor,
             layer_idx=layer_idx,
             eps=eps,
             dtype=dtype,

@@ -18,6 +18,7 @@ class FoldingSupportMatrix:
     Boltz1 = "boltz-1"
     Boltz2 = "boltz-2"
     Boltz2Affinity = "boltz-2-affinity"
+    ProtenixV2 = "protenix-v2"
     OpenFold2_FT2 = "openfold2_finetuning_2"
     OpenFold2_FT3 = "openfold2_finetuning_3"
     OpenFold2_FT4 = "openfold2_finetuning_4"
@@ -42,8 +43,12 @@ class FoldingSupportMatrix:
 
     @staticmethod
     def is_supported(model_name: str) -> bool:
-        return model_name in [item.value for item in FoldingSupportMatrix]
+        return model_name in FoldingSupportMatrix.get_all_supported_model_names(
+        )
 
     @staticmethod
     def get_all_supported_model_names() -> list[str]:
-        return [item.value for item in FoldingSupportMatrix]
+        return [
+            value for key, value in FoldingSupportMatrix.__dict__.items()
+            if not key.startswith("_") and isinstance(value, str)
+        ]

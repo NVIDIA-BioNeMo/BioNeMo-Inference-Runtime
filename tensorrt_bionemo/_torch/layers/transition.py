@@ -49,13 +49,6 @@ class Transition(nn.Module):
         if out_dim is None:
             out_dim = dim
 
-        # Opt-in row-chunking policy. Only the trunk Pairformer's ``transition_z`` sets it, whose
-        # input is always the [B, N, N, C] pair tensor (dim=1 == N, the row axis chunk_apply slices),
-        # so the [.., N, .., 2*hidden] intermediate never materializes at full N (numerically
-        # identical, position-wise). ``None`` (default) keeps the plain dense path everywhere else --
-        # notably the diffusion-module transitions, which are latency-sensitive and whose input shape
-        # differs (dim=1 may be a sample/multiplicity axis, not a chunkable row dim), so they MUST
-        # stay dense. See tensorrt_bionemo/_torch/auto_chunk.py.
         self.auto_chunk_policy = auto_chunk_policy
 
         mapping = mapping or Mapping()
@@ -95,10 +88,7 @@ class Transition(nn.Module):
         mask: Optional[torch.Tensor] = None,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
-        # Row-chunk the FFN (position-wise, numerically identical) through ``chunk_apply`` when an
-        # ``auto_chunk_policy`` is set (e.g. the trunk Pairformer's transition_z or the MSA
-        # transition). Below the policy threshold ``chunk_apply`` falls back to a single dense call,
-        # so small problems are unaffected.
+        # Chunk position-wise FFNs when configured; small inputs stay dense.
         if self.auto_chunk_policy is not None:
             return chunk_apply(self._forward_impl,
                                x,

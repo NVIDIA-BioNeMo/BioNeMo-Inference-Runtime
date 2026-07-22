@@ -18,6 +18,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
+                                                DIFFUSION_PAIR_TRANSITION)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
@@ -322,18 +324,16 @@ class DiffusionConditioning(nn.Module):
                                gather_output=True,
                                skip_create_weights=skip_create_weights)
 
-        # Diffusion-conditioning transitions intentionally stay dense (no ``auto_chunk_policy``):
-        # auto row-chunking is opt-in for the trunk Pairformer's transition_z only. The diffusion
-        # path is latency-sensitive and its transition inputs can differ from the [B, N, N, C] pair
-        # tensor the pair policy assumes.
+        # Only transition_z is row-chunkable; transition_s uses dim 1 for samples.
         self.transition_z = nn.ModuleList([
             Transition(dim=self.c_z,
                        hidden=self.c_z * 2,
                        eps=eps,
                        dtype=dtype,
                        mapping=mapping,
-                       skip_create_weights=skip_create_weights)
-            for _ in range(2)
+                       skip_create_weights=skip_create_weights,
+                       auto_chunk_policy=CHUNK_REGISTRY.get(
+                           DIFFUSION_PAIR_TRANSITION)) for _ in range(2)
         ])
 
         self.layer_norm_s = nn.LayerNorm(self.c_s + self.c_s_input,

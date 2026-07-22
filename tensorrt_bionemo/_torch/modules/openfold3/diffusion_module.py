@@ -19,16 +19,16 @@ Diffusion module. Implements the algorithms in section 3.7 of the
 Supplementary Information.
 """
 
-import math
-
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import DiffusionConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
-from tensorrt_bionemo._torch.layers.random_augmentation import (
-    quaternion_to_matrix, random_quaternions)
+from tensorrt_bionemo._torch.layers.noise_scheduler import \
+    SampleDiffusion as _SampleDiffusion
+from tensorrt_bionemo._torch.layers.noise_scheduler import \
+    create_noise_schedule as _create_noise_schedule
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     OpenFold3DiffusionTransformer as DiffusionTransformer
 from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import (
@@ -37,53 +37,6 @@ from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 
 
-def sample_rotations(shape, dtype: torch.dtype,
-                     device: torch.device) -> torch.Tensor:
-    """Sample random rotation matrices via random unit quaternions."""
-
-    n = math.prod(shape)
-    q = random_quaternions(n, dtype=dtype, device=device)
-    return quaternion_to_matrix(q).reshape(*shape, 3, 3)
-
-
-def centre_random_augmentation(xl: torch.Tensor,
-                               atom_mask: torch.Tensor,
-                               scale_trans: float = 1.0) -> torch.Tensor:
-    """
-    Implements AF3 Algorithm 19.
-
-    Args:
-        xl:
-            [*, N_atom, 3] Atom positions
-        atom_mask:
-            [*, N_atom] Atom mask
-        scale_trans:
-            Translation scaling factor
-    Returns:
-        Updated atom position with random global rotation and translation
-    """
-    rots = sample_rotations(shape=xl.shape[:-2],
-                            dtype=xl.dtype,
-                            device=xl.device)
-
-    trans = scale_trans * torch.randn(
-        (*xl.shape[:-2], 3), dtype=xl.dtype, device=xl.device)
-
-    mean_xl = torch.sum(
-        xl * atom_mask[..., None],
-        dim=-2,
-        keepdim=True,
-    ) / torch.sum(atom_mask[..., None], dim=-2, keepdim=True).clamp(min=1e-7)
-
-    # center coordinates
-    pos_centered = xl - mean_xl
-    pos_out = pos_centered @ rots.transpose(-1, -2) + trans[..., None, :]
-    pos_out = pos_out * atom_mask[..., None]
-
-    return pos_out
-
-
-# Move this somewhere else?
 def create_noise_schedule(
     no_rollout_steps: float,
     sigma_data: float,
@@ -93,32 +46,26 @@ def create_noise_schedule(
     dtype: torch.dtype,
     device: torch.device,
 ):
-    """
-    Implements AF3 noise schedule (Page 24).
+    """AF3 noise schedule (Page 24) — thin wrapper over the shared
+    :func:`create_noise_schedule`. OpenFold3 uses ``no_rollout_steps + 1``
+    points and keeps the final (``s_min``) level (``final="keep"``).
 
-     Args:
-        no_rollout_steps:
-            Number of diffusion rollout steps
-        sigma_data:
-            Constant determined by data variance
-        s_max:
-            Maximum standard deviation of noise
-        s_min:
-            Minimum standard deviation of noise
-        p:
-            Constant controlling the extent steps near s_min are shortened
-            at the cost of longer steps near s_max
-        dtype:
-            Dtype of noise schedule
-        device:
-            Device of noise schedule
+    Args:
+        no_rollout_steps: number of diffusion rollout steps.
+        sigma_data / s_max / s_min / p: schedule parameters.
+        dtype / device: output dtype / device.
+
     Returns:
-        Noise schedule
+        Noise schedule ``[no_rollout_steps + 1]``.
     """
-    t = (torch.arange(0, 1 + no_rollout_steps, dtype=dtype, device=device) /
-         no_rollout_steps)
-    return (sigma_data * (s_max**(1 / p) + t *
-                          (s_min**(1 / p) - s_max**(1 / p)))**p)
+    return _create_noise_schedule(num_points=int(no_rollout_steps) + 1,
+                                  sigma_data=sigma_data,
+                                  s_max=s_max,
+                                  s_min=s_min,
+                                  rho=p,
+                                  device=device,
+                                  dtype=dtype,
+                                  final="keep")
 
 
 class DiffusionModule(nn.Module):
@@ -306,9 +253,12 @@ class DiffusionModule(nn.Module):
         return xl_out
 
 
-class SampleDiffusion(nn.Module):
-    """
-    Implements AF3 Algorithm 18.
+class OpenFold3SampleDiffusion(_SampleDiffusion):
+    """OpenFold3 EDM sampler (AF3 Algorithm 18).
+
+    Thin subclass of the shared :class:`SampleDiffusion`: reuses the base
+    :meth:`sample` loop and implements only the :meth:`denoise` hook (the OF3
+    diffusion-module call, which takes a scalar noise level ``t``).
     """
 
     def __init__(
@@ -326,13 +276,27 @@ class SampleDiffusion(nn.Module):
                 Instantiated denoising diffusion module used at each sampling
                 step.
         """
-        super().__init__()
-        self.gamma_0 = config.gamma_0
-        self.gamma_min = config.gamma_min
-        self.noise_scale = config.noise_scale
-        self.step_scale = config.step_scale
+        super().__init__(gamma0=config.gamma_0,
+                         gamma_min=config.gamma_min,
+                         noise_scale=config.noise_scale,
+                         step_scale=config.step_scale)
         self.diffusion_module = diffusion_module
         self.use_conditioning = config.use_conditioning
+
+    def denoise(self, x_noisy: torch.Tensor, sigma_hat: torch.Tensor,
+                ctx: dict) -> torch.Tensor:
+        return self.diffusion_module(
+            batch=ctx["batch"],
+            xl_noisy=x_noisy,
+            token_mask=ctx["batch"]["token_mask"],
+            atom_mask=ctx["atom_mask"],
+            t=sigma_hat.to(x_noisy.device),
+            si_input=ctx["si_input"],
+            si_trunk=ctx["si_trunk"],
+            zij_trunk=ctx["zij_trunk"],
+            attn_metadata=ctx["attn_metadata"],
+            use_conditioning=ctx["use_conditioning"],
+        )
 
     def forward(
         self,
@@ -368,41 +332,14 @@ class SampleDiffusion(nn.Module):
         """
         atom_mask = batch["atom_mask"]
         batch_dim, num_atoms = atom_mask.shape[0], atom_mask.shape[-1]
-
-        xl = noise_schedule[0] * torch.randn(
-            (batch_dim, no_rollout_samples, num_atoms, 3),
-            device=atom_mask.device,
-            dtype=atom_mask.dtype,
-        )
-
-        for tau, c_tau in enumerate(noise_schedule[1:]):
-            xl = centre_random_augmentation(xl=xl, atom_mask=atom_mask)
-
-            gamma = self.gamma_0 if c_tau > self.gamma_min else 0
-
-            t = noise_schedule[tau] * (gamma + 1)
-
-            noise = (self.noise_scale *
-                     torch.sqrt(t**2 - noise_schedule[tau]**2) *
-                     torch.randn_like(xl))
-
-            xl_noisy = xl + noise
-
-            xl_denoised = self.diffusion_module(
-                batch=batch,
-                xl_noisy=xl_noisy,
-                token_mask=batch["token_mask"],
-                atom_mask=atom_mask,
-                t=t.to(xl_noisy.device),
-                si_input=si_input,
-                si_trunk=si_trunk,
-                zij_trunk=zij_trunk,
-                attn_metadata=attn_metadata,
-                use_conditioning=use_conditioning,
-            )
-
-            delta = (xl_noisy - xl_denoised) / t
-            dt = c_tau - t
-            xl = xl_noisy + self.step_scale * dt * delta
-
-        return xl
+        return self.sample(noise_schedule,
+                           (batch_dim, no_rollout_samples, num_atoms, 3),
+                           atom_mask.device,
+                           atom_mask.dtype,
+                           atom_mask=atom_mask,
+                           batch=batch,
+                           si_input=si_input,
+                           si_trunk=si_trunk,
+                           zij_trunk=zij_trunk,
+                           attn_metadata=attn_metadata,
+                           use_conditioning=use_conditioning)

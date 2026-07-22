@@ -92,3 +92,39 @@ job.log
 **/cmake_install.cmake
 **/CMakeCache.txt
 **/Makefile.cmake
+
+# ---------------------------------------------------------------------------
+# Large artifacts that `COPY .` (docker/Dockerfile.with-source) would otherwise
+# pull into the dev/test image but which nothing there builds or runs. These are
+# the biggest build-context contributors (~3.1 GB uncompressed). Scoped to the
+# repo-root context only: the TRT-LLM *base* image builds from the submodule's
+# own context (its own .dockerignore), and no repo-root build compiles TRT-LLM
+# (docker/Dockerfile installs the prebuilt tensorrt_llm wheel), so excluding the
+# TRT-LLM sources here is safe.
+# ---------------------------------------------------------------------------
+
+# Release-bundle model checkpoints (~0.7 GB git-LFS). The pytest job NGC-downloads
+# its own checkpoints and no Dockerfile COPYs docs/ (the release-bundle assembly
+# runs on the CI checkout, not in the image), so none of this is needed here.
+docs/
+
+# TensorRT-LLM submodule: the C++/CUDA extension uses only cpp/cmake
+# (CMAKE_MODULE_PATH) and compiles from nv_deps/TensorRT-LLM — never the submodule
+# sources. Drop the ~2.4 GB of git-LFS FMHA kernel cubins and other unused trees.
+3rdparty/TensorRT-LLM/cpp/tensorrt_llm/kernels/
+3rdparty/TensorRT-LLM/docs/
+3rdparty/TensorRT-LLM/tests/
+3rdparty/TensorRT-LLM/examples/
+3rdparty/TensorRT-LLM/benchmarks/
+3rdparty/TensorRT-LLM/triton_backend/
+
+# cutlass is header-only here (cpp/cmake/deps/cutlass.cmake uses include/ + tools/util/include).
+3rdparty/cutlass/docs/
+3rdparty/cutlass/media/
+3rdparty/cutlass/test/
+3rdparty/cutlass/examples/
+3rdparty/cutlass/python/
+
+# openfold-3: only the openfold3/ python package is imported by tests.
+3rdparty/openfold-3/assets/
+3rdparty/openfold-3/docs/

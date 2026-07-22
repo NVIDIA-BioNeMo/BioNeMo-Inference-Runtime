@@ -31,6 +31,16 @@ TAG ?= $(TRTBNM_BRANCH)_trtbnm$(COMMIT_SHORT_SHA)_from_$(TRTBNM_BASE_TAG)
 endif
 REGISTRY_IMAGE_AND_TAG := ${REGISTRY_IMAGE}:${TAG}
 
+# Docker layer caching (CI build:docker-image follow-up).
+#   Default: reuse the local BuildKit layer cache. The CI runner talks to a
+#   persistent host docker daemon, so unchanged layers — notably the uv dependency
+#   install in requirements_stage (before COPY .) — survive between builds.
+#   CI also passes DOCKER_CACHE_FROM=<image:tag> to seed from a registry cache
+#   image; BUILDKIT_INLINE_CACHE embeds cache metadata into the built image so a
+#   cold/rotated runner can warm up from that registry image.
+DOCKER_CACHE_FROM ?=
+_DOCKER_CACHE_ARGS := --build-arg BUILDKIT_INLINE_CACHE=1 $(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM),)
+
 CPU_ARCH := $(shell uname -m)
 ifeq ($(CPU_ARCH),x86_64)
 	BUILD_PLATFORM := linux/amd64
@@ -50,7 +60,7 @@ trtbnm_dev:
 		&& printenv \
 		&& echo "Build ${REGISTRY_IMAGE_AND_TAG} with source for commit $(COMMIT_SHORT_SHA), begin" \
 		&& docker build \
-			--no-cache \
+			$(_DOCKER_CACHE_ARGS) \
 			--platform $(BUILD_PLATFORM) \
 			--target dev_stage \
 			--file $(PROJECT_DIR)/docker/Dockerfile.with-source \

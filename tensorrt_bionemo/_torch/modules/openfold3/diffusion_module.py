@@ -18,7 +18,7 @@
 Diffusion module. Implements the algorithms in section 3.7 of the
 Supplementary Information.
 """
-
+import math
 import torch
 import torch.nn as nn
 
@@ -29,14 +29,80 @@ from tensorrt_bionemo._torch.layers.noise_scheduler import \
     SampleDiffusion as _SampleDiffusion
 from tensorrt_bionemo._torch.layers.noise_scheduler import \
     create_noise_schedule as _create_noise_schedule
+from tensorrt_bionemo._torch.layers.random_augmentation import (
+    quaternion_to_matrix, random_quaternions)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     OpenFold3DiffusionTransformer as DiffusionTransformer
 from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import (
     AtomAttentionDecoder, AtomAttentionEncoder)
-from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
+from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import \
+    compute_atom_broadcast_index
+from tensorrt_bionemo._torch.utils import (recursive_calling_load_weights,
+                                           safe_generator)
 from tensorrt_bionemo.configs import BaseConfig
 
 
+def sample_rotations(
+        shape,
+        dtype: torch.dtype,
+        device: torch.device,
+        generator: torch.Generator = None) -> torch.Tensor:
+    """Sample random rotation matrices via random unit quaternions."""
+
+    n = math.prod(shape)
+    q = random_quaternions(n, dtype=dtype, device=device, generator=generator)
+    return quaternion_to_matrix(q).reshape(*shape, 3, 3)
+
+
+def centre_random_augmentation(xl: torch.Tensor,
+                               atom_mask: torch.Tensor,
+                               scale_trans: float = 1.0,
+                               generator: torch.Generator = None
+                               ) -> torch.Tensor:
+    """
+    Implements AF3 Algorithm 19.
+
+    Args:
+        xl:
+            [*, N_atom, 3] Atom positions
+        atom_mask:
+            [*, N_atom] Atom mask
+        scale_trans:
+            Translation scaling factor
+        generator:
+            Optional private RNG (see ``make_graph_safe_generator``). Supplied
+            by ``SampleDiffusion.forward`` so the diffusion rollout's RNG stays
+            off the default CUDA generator that ``torch.cuda.graph`` capture
+            registers — otherwise these eager draws raise "Offset increment
+            outside graph capture" once the diffusion module is graph-wrapped.
+    Returns:
+        Updated atom position with random global rotation and translation
+    """
+    rots = sample_rotations(shape=xl.shape[:-2],
+                            dtype=xl.dtype,
+                            device=xl.device,
+                            generator=generator)
+
+    trans = scale_trans * torch.randn((*xl.shape[:-2], 3),
+                                      dtype=xl.dtype,
+                                      device=xl.device,
+                                      generator=generator)
+
+    mean_xl = torch.sum(
+        xl * atom_mask[..., None],
+        dim=-2,
+        keepdim=True,
+    ) / torch.sum(atom_mask[..., None], dim=-2, keepdim=True).clamp(min=1e-7)
+
+    # center coordinates
+    pos_centered = xl - mean_xl
+    pos_out = pos_centered @ rots.transpose(-1, -2) + trans[..., None, :]
+    pos_out = pos_out * atom_mask[..., None]
+
+    return pos_out
+
+
+# Move this somewhere else?
 def create_noise_schedule(
     no_rollout_steps: float,
     sigma_data: float,
@@ -332,14 +398,65 @@ class OpenFold3SampleDiffusion(_SampleDiffusion):
         """
         atom_mask = batch["atom_mask"]
         batch_dim, num_atoms = atom_mask.shape[0], atom_mask.shape[-1]
-        return self.sample(noise_schedule,
-                           (batch_dim, no_rollout_samples, num_atoms, 3),
-                           atom_mask.device,
-                           atom_mask.dtype,
-                           atom_mask=atom_mask,
-                           batch=batch,
-                           si_input=si_input,
-                           si_trunk=si_trunk,
-                           zij_trunk=zij_trunk,
-                           attn_metadata=attn_metadata,
-                           use_conditioning=use_conditioning)
+        device = atom_mask.device
+
+        # Precompute the token->atom expansion index ONCE here — eagerly and
+        # outside the CUDA-graph-captured ``self.diffusion_module`` — so the
+        # atom-attention broadcasts inside it run as a static index_select
+        # instead of a data-dependent torch.repeat_interleave (which forces a
+        # device->host sync and is not graph-capturable). It is constant across
+        # all rollout steps, so it also removes a per-step sync in eager mode.
+        batch["atom_broadcast_index"] = compute_atom_broadcast_index(
+            token_mask=batch["token_mask"],
+            num_atoms_per_token=batch["num_atoms_per_token"],
+        )
+
+        # Draw the rollout's stochasticity from a private generator so these
+        # eager torch.randn calls stay off the default CUDA generator that
+        # torch.cuda.graph capture of ``self.diffusion_module`` registers (see
+        # safe_generator). Cloning the default state keeps numerics identical to
+        # the un-wrapped run; the default generator is advanced to match on exit.
+        with safe_generator(device) as generator:
+            xl = noise_schedule[0] * torch.randn(
+                (batch_dim, no_rollout_samples, num_atoms, 3),
+                device=device,
+                dtype=atom_mask.dtype,
+                generator=generator,
+            )
+
+            for tau, c_tau in enumerate(noise_schedule[1:]):
+                xl = centre_random_augmentation(xl=xl,
+                                                atom_mask=atom_mask,
+                                                generator=generator)
+
+                gamma = self.gamma0 if c_tau > self.gamma_min else 0
+
+                t = noise_schedule[tau] * (gamma + 1)
+
+                noise = (self.noise_scale *
+                         torch.sqrt(t**2 - noise_schedule[tau]**2) *
+                         torch.randn(xl.shape,
+                                     dtype=xl.dtype,
+                                     device=xl.device,
+                                     generator=generator))
+
+                xl_noisy = xl + noise
+
+                xl_denoised = self.diffusion_module(
+                    batch=batch,
+                    xl_noisy=xl_noisy,
+                    token_mask=batch["token_mask"],
+                    atom_mask=atom_mask,
+                    t=t.to(xl_noisy.device),
+                    si_input=si_input,
+                    si_trunk=si_trunk,
+                    zij_trunk=zij_trunk,
+                    attn_metadata=attn_metadata,
+                    use_conditioning=use_conditioning,
+                )
+
+                delta = (xl_noisy - xl_denoised) / t
+                dt = c_tau - t
+                xl = xl_noisy + self.step_scale * dt * delta
+
+        return xl

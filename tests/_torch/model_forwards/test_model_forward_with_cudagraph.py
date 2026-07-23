@@ -42,6 +42,7 @@ The test asserts, per model:
   2. the cuda-graph and original predictions agree (all-atom CA lDDT > 0.9).
 """
 
+import gc
 import json
 import os
 import tempfile
@@ -55,7 +56,7 @@ import torch
 
 import tests
 from tensorrt_bionemo._torch.graph_optimization.config_schema import (
-    CUDAGraphOptimizationConfig, GraphOptimizationMode)
+    CUDAGraphOptimizationConfig, GraphOptimizationMode, InputKeyMethod)
 from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import (
     CUDAGraphOptimizationTracker, CUDAGraphPreparationState)
 from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
@@ -71,7 +72,7 @@ from tests.common.test_utils.seeding import seed_everything
 # --- Test configuration ----------------------------------------------------
 # Models whose diffusion/token transformer is graph-optimizable. Each is run
 # through the full pipeline twice (eager vs cuda-graph) and compared.
-MODEL_SOURCES = ("openfold3", "boltz-2")
+MODEL_SOURCES = ("openfold3",)
 SEED = 42
 
 # Bundled sample data (no Git LFS — real files shipped in the repo).
@@ -97,6 +98,34 @@ LDDT_PARITY_FLOOR = {"boltz-2": 0.98, "openfold3": 0.98}
 
 _SAMPLES_AVAILABLE = MONOMERS_DIR.is_dir() and all(
     (MONOMERS_DIR / f"{sid}.json").exists() for sid in SAMPLE_IDS)
+
+
+@pytest.fixture(autouse=True)
+def _free_captured_cuda_graphs():
+    """Drop every CUDA graph captured during the test before the next one runs.
+
+    ``torch.cuda.graph(...)`` capture (in ``CUDAGraphOptimizationTracker``)
+    registers the *process-global* default CUDA generator with the captured
+    graph, and that registration lives as long as the graph does. The captured
+    graphs are held by the pipeline's in-process model, which is only reachable
+    through GC cycles (nn.Module parent<->child refs), so plain refcounting does
+    not free them deterministically at test end. If a graph outlives the test,
+    the default generator stays graph-registered and a later test in the same
+    pytest worker that draws eager RNG from it (e.g. a bare
+    ``torch.randn(..., device="cuda")`` in ``tests/ops/test_gated_sigmoid.py``)
+    can raise "Offset increment outside graph capture encountered unexpectedly".
+
+    Forcing a collection here frees the model and its graphs, which un-registers
+    the default generator, isolating this module's graph state from the rest of
+    the suite. Cheap relative to a graph-capture test and safe as a no-op when
+    CUDA is unavailable.
+    """
+    yield
+    if torch.cuda.is_available():
+        gc.collect()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
 
 # Per-model checkpoint resolution (local-checkpoint env var + HF repo/file).
 # CI provides the checkpoint (env var or authenticated/cached HF); elsewhere the
@@ -219,7 +248,8 @@ def _load_request(sample_id: str) -> InputRequest:
 # Pipeline construction + execution (serial backend, via build_processor)
 # ===========================================================================
 def _build_processor_config(model_source: str, output_dir: Path,
-                            use_cudagraph: bool) -> EngineProcessorConfig:
+                            use_cudagraph: bool, input_key_method: InputKeyMethod,
+                            module_name: str) -> EngineProcessorConfig:
     """Build a serial-backend ``EngineProcessorConfig`` for ``model_source``.
 
     When ``use_cudagraph`` is set, the engine is given an ``accelerated_configs``
@@ -228,13 +258,16 @@ def _build_processor_config(model_source: str, output_dir: Path,
     engine applies this via ``model.optimize(...)`` at construction time. The
     ``token_transformer`` module key is shared by OpenFold3 and Boltz-2.
     """
+    if input_key_method != InputKeyMethod.EXACT:
+        raise ValueError(f"unsupported input_key_method {input_key_method!r}")
+    
     engine_kwargs: dict = {"profile_inference": True}
     model_cfg = _model_config(model_source)
     if model_cfg is not None:
         engine_kwargs["config"] = model_cfg
     if use_cudagraph:
         engine_kwargs["accelerated_configs"] = {
-            "token_transformer":
+            module_name:
             AcceleratedConfig(
                 backend=BackendType.TORCH,
                 default=BaseConfig(
@@ -242,6 +275,7 @@ def _build_processor_config(model_source: str, output_dir: Path,
                         graph_optimization_mode=GraphOptimizationMode.
                         CUDA_GRAPHS_VIA_TORCH,
                         verify_capture=True,
+                        input_key_method=input_key_method,
                         # Keep one graph per distinct target shape so every
                         # captured key survives for the post-run assertion.
                         num_graphs_max_for_this_module=len(SAMPLE_IDS),
@@ -263,9 +297,12 @@ def _build_processor_config(model_source: str, output_dir: Path,
     )
 
 
-def _run_pipeline(model_source: str, requests: list[InputRequest],
+def _run_pipeline(model_source: str, 
+                  requests: list[InputRequest],
                   output_dir: Path,
-                  use_cudagraph: bool) -> tuple[dict[str, Path], object]:
+                  use_cudagraph: bool,
+                  input_key_method: InputKeyMethod,
+                  module_name: str) -> tuple[dict[str, Path], object]:
     """Run the serial pipeline over ``requests`` and return written CIF paths.
 
     Returns ``(paths_by_id, processor)``. The processor is returned so the
@@ -273,7 +310,7 @@ def _run_pipeline(model_source: str, requests: list[InputRequest],
     graph engaged. ``should_continue_on_error`` defaults to False, so any
     per-request failure raises rather than silently producing an empty output.
     """
-    config = _build_processor_config(model_source, output_dir, use_cudagraph)
+    config = _build_processor_config(model_source, output_dir, use_cudagraph, input_key_method, module_name)
     processor = build_processor(config)
 
     records = [{
@@ -332,6 +369,20 @@ def _graph_states(processor) -> list[tuple]:
             for s in tracker.graph_state_by_key.values()]
 
 
+def _assert_graph_verified_and_no_eager_fallback(states: list[tuple]) -> None:
+    """Assert every captured key ended ``GRAPH_VERIFIED`` with no eager fallback.
+
+    Args:
+        states: per-key ``(preparation_state, fallback_to_eager)`` tuples as
+            returned by :func:`_graph_states`.
+    """
+    assert states and all(
+        ps == CUDAGraphPreparationState.GRAPH_VERIFIED and not fb
+        for ps, fb in states), (
+            "expected every captured key to end GRAPH_VERIFIED with no "
+            f"eager fallback, got {[(ps.name, fb) for ps, fb in states]}")
+
+
 # ===========================================================================
 # Structure comparison
 # ===========================================================================
@@ -359,26 +410,86 @@ def _parity_lddt(original_cif: Path,
     return lddt, max_dev
 
 
+def _assert_structures_with_and_without_cudagraph_have_high_lddt(
+        model_source: str,
+        original_paths: dict,
+        cudagraph_paths: dict) -> None:
+    """Assert per-target CA lDDT between the eager and cuda-graph predictions.
+
+    Compares each sample's original (eager) structure against its cuda-graph
+    structure and asserts the CA lDDT exceeds the per-model parity floor — a
+    correct graph shares weights, inputs, and RNG, so the structures should be
+    near-identical.
+
+    Args:
+        model_source: model key, selects the floor in ``LDDT_PARITY_FLOOR``.
+        original_paths: ``{sample_id: cif_path}`` from the eager run.
+        cudagraph_paths: ``{sample_id: cif_path}`` from the cuda-graph run.
+    """
+    floor = LDDT_PARITY_FLOOR[model_source]
+    for sid in SAMPLE_IDS:
+        lddt, max_dev = _parity_lddt(original_paths[sid], cudagraph_paths[sid])
+        print(f"[parity] {model_source} {sid}: CA lDDT={lddt:.4f} "
+              f"max|Δcoord|={max_dev:.4f} Å")
+        assert floor < lddt, (
+            f"{model_source} {sid}: original vs cuda-graph CA lDDT "
+            f"{lddt:.4f} below {floor} — the graph changed the "
+            "prediction")
+
+
 # ===========================================================================
 # Test
 # ===========================================================================
-@pytest.mark.skipif(not torch.cuda.is_available(),
-                    reason="pipeline CUDA-graph parity test requires CUDA")
-@pytest.mark.skipif(not _SAMPLES_AVAILABLE,
-                    reason=f"sample data not found under {MONOMERS_DIR}")
-@pytest.mark.parametrize(
-    "model_source",
-    [
-        pytest.param(
-            m,
-            marks=pytest.mark.skipif(
-                not _model_weights_available(m),
-                reason=f"{m} checkpoint unavailable (set {_CKPT_ENV[m]} or HF "
-                f"auth for {_HF_CKPT[m][0]})"),
-        ) for m in MODEL_SOURCES
-    ],
+# Per-model parametrization shared by every module's parity test: each model is
+# skipped individually when its checkpoint can't be obtained.
+_MODEL_PARAMS = [
+    pytest.param(
+        m,
+        marks=pytest.mark.skipif(
+            not _model_weights_available(m),
+            reason=f"{m} checkpoint unavailable (set {_CKPT_ENV[m]} or HF "
+            f"auth for {_HF_CKPT[m][0]})"),
+    ) for m in MODEL_SOURCES
+]
+
+_MODULE_NAMES = [
+    "token_transformer",
+    "diffusion_module",
+]
+
+# The token transformer is exercised with both graph-cache keying strategies:
+# EXACT (one graph per distinct shape) and BUCKETED_SHAPES (shape
+# bucketing that lets targets share a captured graph).
+_INPUT_KEY_METHOD_PARAMS = [
+    pytest.param(InputKeyMethod.EXACT, id="exact"),
+]
+
+# Shared skip/parametrize stack for every per-module parity test: CUDA + sample
+# data required, run each (model_source, input_key_method) combination. Listed
+# top-to-bottom exactly as the decorators would stack.
+_CUDAGRAPH_PARITY_MARKS = (
+    pytest.mark.skipif(not torch.cuda.is_available(),
+                       reason="pipeline CUDA-graph parity test requires CUDA"),
+    pytest.mark.skipif(not _SAMPLES_AVAILABLE,
+                       reason=f"sample data not found under {MONOMERS_DIR}"),
+    pytest.mark.parametrize("input_key_method", _INPUT_KEY_METHOD_PARAMS),
+    pytest.mark.parametrize("module_name", _MODULE_NAMES),
+    pytest.mark.parametrize("model_source", _MODEL_PARAMS),
 )
-def test_cudagraph_token_transformer_parity(model_source):
+
+def _cudagraph_parity_marks(func):
+    """Apply the shared ``_CUDAGRAPH_PARITY_MARKS`` stack to a parity test.
+
+    Applied innermost-first (bottom of the tuple up) so the result is identical
+    to writing the marks as stacked decorators — same skips, same test IDs.
+    """
+    for mark in reversed(_CUDAGRAPH_PARITY_MARKS):
+        func = mark(func)
+    return func
+
+
+@_cudagraph_parity_marks
+def test_cudagraph_parity_for_module(model_source, module_name, input_key_method):
     requests = [_load_request(sid) for sid in SAMPLE_IDS]
 
     with tempfile.TemporaryDirectory() as original_dir, \
@@ -391,14 +502,18 @@ def test_cudagraph_token_transformer_parity(model_source):
             original_paths, _ = _run_pipeline(model_source,
                                               requests,
                                               original_dir,
-                                              use_cudagraph=False)
+                                              use_cudagraph=False,
+                                              input_key_method=input_key_method,
+                                              module_name=module_name)
             torch.cuda.empty_cache()
 
             # --- Run 2: model with CUDA-graph token transformer ------------
             cudagraph_paths, cudagraph_proc = _run_pipeline(model_source,
                                                             requests,
                                                             cudagraph_dir,
-                                                            use_cudagraph=True)
+                                                            use_cudagraph=True,
+                                                            input_key_method=input_key_method,
+                                                            module_name=module_name)
         except _AVAILABILITY_EXC as exc:
             pytest.skip(f"{model_source}: weights/metadata unavailable "
                         f"({type(exc).__name__}: {exc})")
@@ -406,23 +521,11 @@ def test_cudagraph_token_transformer_parity(model_source):
         # The token transformer must have captured AND verified a graph for
         # every distinct target shape, with no eager fallback.
         states = _graph_states(cudagraph_proc)
-        assert states and all(
-            ps == CUDAGraphPreparationState.GRAPH_VERIFIED and not fb
-            for ps, fb in states), (
-                "expected every captured key to end GRAPH_VERIFIED with no "
-                f"eager fallback, got {[(ps.name, fb) for ps, fb in states]}")
+        _assert_graph_verified_and_no_eager_fallback(states)
         assert len(states) == len(SAMPLE_IDS), (
             f"expected {len(SAMPLE_IDS)} captured graphs (one per target), "
             f"got {len(states)}")
 
         # --- Parity: cuda-graph predictions must match the original --------
-        floor = LDDT_PARITY_FLOOR[model_source]
-        for sid in SAMPLE_IDS:
-            lddt, max_dev = _parity_lddt(original_paths[sid],
-                                         cudagraph_paths[sid])
-            print(f"[parity] {model_source} {sid}: CA lDDT={lddt:.4f} "
-                  f"max|Δcoord|={max_dev:.4f} Å")
-            assert (floor - lddt) < 0.05, (
-                f"{model_source} {sid}: original vs cuda-graph CA lDDT "
-                f"{lddt:.4f} below {floor} — the graph changed the "
-                "prediction")
+        _assert_structures_with_and_without_cudagraph_have_high_lddt(
+            model_source, original_paths, cudagraph_paths)

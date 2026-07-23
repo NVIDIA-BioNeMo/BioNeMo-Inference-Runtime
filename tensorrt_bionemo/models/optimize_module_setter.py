@@ -53,15 +53,68 @@ class ModuleRegistry(ABC):
         Args:
             configs: A dictionary of AcceleratedConfig for the accelerated modules.
         """
-        self._configs = {}
         all_known: dict[str, ModuleSpec] = self.get_accelerated_modules()
+        self._configs = self._select_module_configs(all_known, configs)
+
+    def _select_module_configs(
+        self, all_known: dict[str, ModuleSpec],
+        configs: dict[str, AcceleratedConfig | dict]
+    ) -> dict[str, AcceleratedConfig]:
+        """Validate requested module configs against the known registry.
+
+        Unknown modules are warned about and skipped. A child module and its
+        parent can't both be accelerated (the child lives inside the parent),
+        so a requested child is skipped when its parent is *also* requested;
+        requesting the child on its own stays valid.
+
+        +--------------------------------------+----------------------------+
+        | Requested                            | Result                     |
+        +--------------------------------------+----------------------------+
+        | token_transformer alone              | kept (was broken)          |
+        | diffusion_module + token_transformer | child dropped, parent wins |
+        | token_transformer + pairformer       | both kept                  |
+        +--------------------------------------+----------------------------+
+        """
+        requested = {k: all_known[k] for k in configs if k in all_known}
+        to_drop = self._child_module_names(requested)
+        selected: dict[str, AcceleratedConfig] = {}
         for k, v in configs.items():
             if k not in all_known:
                 logger.warning(f"Unknown module: {k}")
+            elif k in to_drop:
+                logger.warning(
+                    f"Module '{k}' is nested inside another requested module; "
+                    f"skipping it in favour of its parent.")
             else:
                 if isinstance(v, dict):
                     v = AcceleratedConfig(**v)
-                self._configs[k] = v
+                selected[k] = v
+        return selected
+
+    @staticmethod
+    def _child_module_names(specs: dict[str, ModuleSpec]) -> set[str]:
+        """Names in ``specs`` whose module is nested inside another spec's.
+
+        Each spec's :attr:`ModuleSpec.getter` resolves to a module path (e.g.
+        ``sample_diffusion.diffusion_module``). A name is a *child* of another
+        when the other's path is a strict prefix of its own — accelerating both
+        a module and its submodule is contradictory. Specs whose getter isn't a
+        plain attribute chain (path ``None``) are never a child nor a parent.
+        """
+        paths = {name: _module_path(spec) for name, spec in specs.items()}
+        children: set[str] = set()
+        for name, path in paths.items():
+            if path is None:
+                continue
+            for other_name, other_path in paths.items():
+                if other_name == name or not other_path:
+                    continue
+                is_child = (len(other_path) < len(path)
+                            and path[:len(other_path)] == other_path)
+                if is_child:
+                    children.add(name)
+                    break
+        return children
 
     def get_module_config(self,
                           module_name: str) -> Optional[AcceleratedConfig]:
@@ -91,6 +144,36 @@ class ModuleRegistry(ABC):
         per-backend wrapper classes (``trt_cls`` and/or ``compiled_cls``).
         """
         raise NotImplementedError("Subclass must implement this method")
+
+
+class _ModulePathTracer:
+    """Records the attribute chain a :attr:`ModuleSpec.getter` walks.
+
+    Passed as the fake ``model`` to a getter: every attribute access returns a
+    child tracer carrying the accumulated path, so ``lambda mod: mod.a.b.c``
+    yields the path ``("a", "b", "c")``. Used to detect when one module spec
+    resolves to a submodule of another (a strict prefix relationship).
+    """
+
+    def __init__(self, path: tuple[str, ...] = ()):
+        # Stored in __dict__ directly so it doesn't route through __getattr__.
+        self.__dict__["_path"] = path
+
+    def __getattr__(self, name: str) -> "_ModulePathTracer":
+        return _ModulePathTracer(self._path + (name, ))
+
+
+def _module_path(spec: ModuleSpec) -> Optional[tuple[str, ...]]:
+    """Return the attribute path ``spec.getter`` walks, or ``None``.
+
+    ``None`` means the getter is not a plain attribute chain (it indexes,
+    calls, etc.), so its nesting relative to other specs can't be determined.
+    """
+    try:
+        traced = spec.getter(_ModulePathTracer())
+    except Exception:
+        return None
+    return getattr(traced, "_path", None) or None
 
 
 class OptimizedModuleSetterMixin(ABC):

@@ -346,40 +346,51 @@ def test_ondemand_context_memory_manager():
     # Load engines (should NOT allocate memory)
     allocator.load()
 
-    # Track peak memory usage during forward passes
-    peak_memory_usage = 0
+    # Track peak memory usage during forward passes.
+    #
+    # Measure the *per-process* peak via PyTorch's allocator stats rather than a
+    # delta of global device-used memory against a start-of-test baseline. The
+    # OnDemand allocator obtains its context memory through
+    # ``torch.cuda.caching_allocator_alloc`` (which IS tracked by these stats)
+    # and frees it after each forward, so that allocation only exists *during*
+    # the forward. The previous global-baseline delta was sampled after
+    # ``empty_cache()`` and could read <= 0 when run after other tests: the
+    # session high-water mark inflated ``start_device_memory`` and
+    # ``empty_cache()`` then freed those cached blocks, so ``memory_after`` fell
+    # below the baseline -> flaky "got: 0 MB" (passes in isolation only).
+    peak_memory_usage = 0.0
     input_tensor = torch.randn(1, 512).cuda()
 
     # Test forward pass through each engine and measure peak memory
     for i, backend in enumerate(backends):
         logger.info(f"Running forward pass for engine {i}")
 
-        # Measure memory before forward pass
-        memory_before_bytes = device_memory_info()[0]
-        memory_before = memory_before_bytes / (1024 * 1024)  # Convert to MB
+        # Global device-used memory before the forward (informational only).
+        memory_before = device_memory_info()[0] / (1024 * 1024)  # MB
+
+        # Per-process peak allocation caused by this forward (on-demand context
+        # memory + activations), independent of global/session memory state.
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        alloc_before = torch.cuda.memory_allocated()
 
         # Run forward pass (this should allocate → use → deallocate)
         outputs = allocator.forward(backend, {"input": input_tensor})
 
-        # Synchronize CUDA to ensure deallocation completes
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        # Synchronize so the peak reflects the full forward before we read it.
+        torch.cuda.synchronize()
+        forward_peak = (torch.cuda.max_memory_allocated() -
+                        alloc_before) / (1024 * 1024)  # MB
+        peak_memory_usage = max(peak_memory_usage, forward_peak)
 
-        # Clear PyTorch cache to see actual memory usage
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        # Measure memory after forward pass
-        memory_after_bytes = device_memory_info()[0]
-        memory_after = memory_after_bytes / (1024 * 1024)  # Convert to MB
-
-        # Calculate memory used during this forward pass (all values are in MB)
-        memory_used = memory_after - start_device_memory
-        peak_memory_usage = max(peak_memory_usage, memory_used)
+        # Clear PyTorch cache (informational global measurement below).
+        torch.cuda.empty_cache()
+        memory_after = device_memory_info()[0] / (1024 * 1024)  # MB
 
         logger.info(
-            f"Engine {i} - Memory before: {memory_before} MB, Memory after: {memory_after} MB, Memory used: {memory_used} MB"
-        )
+            f"Engine {i} - Memory before: {memory_before} MB, "
+            f"Memory after: {memory_after} MB, "
+            f"forward peak (process): {forward_peak} MB")
 
         # Verify outputs
         assert outputs is not None, f"Engine {i} forward pass returned None"

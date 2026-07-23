@@ -17,6 +17,7 @@
 
 from typing import Literal
 
+import contextlib
 import math
 import torch
 
@@ -28,12 +29,45 @@ from tensorrt_bionemo._torch.modules.openfold3.utils.token_atom_constants import
 )
 
 
+def compute_atom_broadcast_index(
+    token_mask: torch.Tensor,
+    num_atoms_per_token: torch.Tensor,
+) -> torch.Tensor:
+    """Precompute the token->atom expansion index used by
+    :func:`broadcast_token_feat_to_atoms` (its ``max_num_atoms_per_token=None``
+    path, with ``feat_batch_dims == batch_dims``).
+
+    The broadcast packs ragged per-token atoms via
+    ``torch.repeat_interleave(repeats=<tensor>)``, whose output length is
+    data-dependent and so forces a device->host sync — illegal during CUDA-graph
+    capture. This returns the equivalent flat gather index so the broadcast can
+    instead run a static ``index_select`` inside a captured graph. Because it
+    uses ``repeat_interleave``/``max`` itself, it must be called **eagerly**
+    (outside capture); the result is constant for a request, so a captured graph
+    that consumes it replays correctly.
+
+    Returns a 1-D int index of length ``prod(batch_dims) * max_num_atoms`` whose
+    values point into the flattened ``[*, n_token + 1, ...]`` padded token
+    features (the final row per batch element is the zero padding row).
+    """
+    n_token = token_mask.shape[-1]
+    counts = num_atoms_per_token * token_mask.int()
+    max_num_atoms = torch.max(torch.sum(counts, dim=-1)).int()
+    padded_counts = torch.concat(
+        [counts, max_num_atoms - torch.sum(counts, dim=-1, keepdim=True)],
+        dim=-1,
+    ).reshape(-1).int()
+    row_ids = torch.arange(padded_counts.numel(), device=token_mask.device)
+    return torch.repeat_interleave(row_ids, padded_counts)
+
+
 def broadcast_token_feat_to_atoms(
     token_mask: torch.Tensor,
     num_atoms_per_token: torch.Tensor,
     token_feat: torch.Tensor,
     token_dim: int | None = -1,
     max_num_atoms_per_token: int | None = None,
+    expand_index: torch.Tensor | None = None,
 ):
     """
     Broadcast token-level features to atom-level features.
@@ -78,9 +112,8 @@ def broadcast_token_feat_to_atoms(
             (*batch_dims, 2 * n_token, *feat_dims)
         )
 
-    # Pad token features
-    # Flatten batch and token dimensions
-    max_num_atoms = torch.max(torch.sum(num_atoms_per_token, dim=-1)).int()
+    # Pad token features with a trailing zero row (absorbs leftover atom slots),
+    # then flatten batch and token dimensions.
     padded_token_feat = torch.concat(
         [
             token_feat,
@@ -93,8 +126,44 @@ def broadcast_token_feat_to_atoms(
         dim=token_dim,
     ).reshape(-1, *feat_dims)
 
-    # Pad number of atoms per token
-    # Flatten batch and token dimensions
+    # CUDA-graph-capturable fast path: a precomputed expansion index
+    # (compute_atom_broadcast_index) replaces the data-dependent
+    # repeat_interleave with a static index_select.
+    #
+    # ``expand_index`` is the *base* index for ``batch_dims`` (length
+    # prod(batch_dims) * max_num_atoms), indexing the flattened
+    # [prod(batch_dims) * (n_token + 1), ...] padded token rows. When the
+    # features carry extra repeat groups (e.g. the diffusion multiplicity, where
+    # feat_batch_dims == batch_dims with the last dim scaled), tile the base
+    # index across those groups, offsetting each group's rows by (n_token + 1).
+    # Tiling uses only arange/add/reshape, so it stays graph-capturable. The
+    # tile ordering is exact only when prod(batch_dims) == 1 (always true for
+    # the diffusion atom-attention broadcasts); otherwise fall through.
+    n_batch = 1
+    for d in batch_dims:
+        n_batch *= int(d)
+    n_feat_batch = 1
+    for d in feat_batch_dims:
+        n_feat_batch *= int(d)
+    can_tile = feat_batch_dims == batch_dims or (n_batch == 1
+                                                 and n_feat_batch % n_batch == 0)
+    if expand_index is not None and can_tile:
+        max_num_atoms = expand_index.numel() // n_batch
+        if n_feat_batch != n_batch:
+            n_groups = n_feat_batch // n_batch
+            offsets = (torch.arange(n_groups, device=expand_index.device) *
+                       (n_token + 1)).unsqueeze(1)
+            full_index = (expand_index.unsqueeze(0) + offsets).reshape(-1)
+        else:
+            full_index = expand_index
+        atom_feat = padded_token_feat.index_select(0, full_index)
+        return atom_feat.reshape((*feat_batch_dims, max_num_atoms, *feat_dims))
+
+    # Dynamic path (eager only): the output length depends on the summed atom
+    # counts, which forces a device->host sync -> not graph-capturable.
+    max_num_atoms = torch.max(torch.sum(num_atoms_per_token, dim=-1)).int()
+
+    # Pad number of atoms per token; flatten batch and token dimensions.
     padded_num_atoms_per_token = torch.concat(
         [
             num_atoms_per_token,

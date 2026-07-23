@@ -16,6 +16,7 @@
 # limitations under the License.
 
 import math
+from functools import partial
 from typing import Optional
 
 import torch
@@ -31,7 +32,9 @@ from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention imp
     AtomAttentionEncoder
 from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import \
     relpos_complex
-from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
+from tensorrt_bionemo._torch.utils import (commit_graph_safe_generator,
+                                           make_graph_safe_generator,
+                                           recursive_calling_load_weights)
 from tensorrt_bionemo.configs.base import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 
@@ -254,6 +257,7 @@ class MSAModuleEmbedder(nn.Module):
         msa_mask: torch.Tensor,
         num_paired_seqs: torch.Tensor,
         asym_id: torch.Tensor,
+        generator: Optional[torch.Generator] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Subsample main MSA (unpaired MSA) features for a single sample in the batch.
         The subsampling is independent per each chain.
@@ -329,13 +333,16 @@ class MSAModuleEmbedder(nn.Module):
             high=int(max_msa_seqs_across_chains + 1),
             size=(1, ),
             device=msa_feat.device,
+            generator=generator,
         )
 
         # Get a random permutation of the sequence indexes for each chain
         # Pad it with padding row indexes until max_msa_seqs_across_chains
         chain_index_permutations = [
             torch.cat([
-                torch.randperm(num_seqs, device=msa_feat.device),
+                torch.randperm(num_seqs,
+                               device=msa_feat.device,
+                               generator=generator),
                 torch.arange(num_seqs,
                              max_msa_seqs_across_chains,
                              device=msa_feat.device),
@@ -368,8 +375,11 @@ class MSAModuleEmbedder(nn.Module):
 
     @staticmethod
     def _subsample_all_msa(
-            msa_feat: torch.Tensor, msa_mask: torch.Tensor,
-            no_subsampled_all_msa: int) -> tuple[torch.Tensor, torch.Tensor]:
+            msa_feat: torch.Tensor,
+            msa_mask: torch.Tensor,
+            no_subsampled_all_msa: int,
+            generator: Optional[torch.Generator] = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Subsample all MSA sequences (paired + main) to a fixed number of sequences,
         prioritizing those with at least one non-masked token.
@@ -419,14 +429,16 @@ class MSAModuleEmbedder(nn.Module):
         # Pick msa from the valid ones at random
         if valid_idx.numel() >= no_subsampled_all_msa:
             permuted_idx = valid_idx[torch.randperm(valid_idx.numel(),
-                                                    device=device)]
+                                                    device=device,
+                                                    generator=generator)]
             selected = permuted_idx[:no_subsampled_all_msa]
         else:
             # Take all valid, then fill with random invalid
             take_invalid = no_subsampled_all_msa - valid_idx.numel()
             if invalid_idx.numel() > 0:
                 permuted_idx = invalid_idx[torch.randperm(invalid_idx.numel(),
-                                                          device=device)]
+                                                          device=device,
+                                                          generator=generator)]
                 selected = torch.cat([valid_idx, permuted_idx[:take_invalid]],
                                      dim=0)
             else:
@@ -547,10 +559,20 @@ class MSAModuleEmbedder(nn.Module):
         )
         msa_mask = batch["msa_mask"]
 
+        # Draw MSA-subsampling randomness from a private generator so these
+        # eager torch.randint / torch.randperm calls stay off the default CUDA
+        # generator, which torch.cuda.graph capture of the diffusion module can
+        # leave in a graph-registered state (raising "Offset increment outside
+        # graph capture"). See make_graph_safe_generator; the default generator
+        # is advanced to match afterward so numerics are unchanged.
+        subsample = self.subsample_main_msa or self.subsample_all_msa
+        generator = (make_graph_safe_generator(msa_feat.device)
+                     if subsample else None)
+
         if self.subsample_main_msa:
             if math.prod(batch_dims) > 1:
                 msa_feat, msa_mask = self._apply_subsample_fn_batch(
-                    fn=self._subsample_main_msa,
+                    fn=partial(self._subsample_main_msa, generator=generator),
                     msa_feat=msa_feat,
                     msa_mask=msa_mask,
                     num_paired_seqs=batch["num_paired_seqs"],
@@ -562,6 +584,7 @@ class MSAModuleEmbedder(nn.Module):
                     msa_mask=msa_mask,
                     num_paired_seqs=batch["num_paired_seqs"],
                     asym_id=batch["asym_id"],
+                    generator=generator,
                 )
         elif self.subsample_all_msa:
             no_subsampled_all_msa = torch.randint(
@@ -569,11 +592,12 @@ class MSAModuleEmbedder(nn.Module):
                 high=int(self.max_subsampled_all_msa + 1),
                 size=(1, ),
                 device=msa_feat.device,
+                generator=generator,
             ).item()
 
             if math.prod(batch_dims) > 1:
                 msa_feat, msa_mask = self._apply_subsample_fn_batch(
-                    fn=self._subsample_all_msa,
+                    fn=partial(self._subsample_all_msa, generator=generator),
                     msa_feat=msa_feat,
                     msa_mask=msa_mask,
                     no_subsampled_all_msa=torch.full(
@@ -587,7 +611,13 @@ class MSAModuleEmbedder(nn.Module):
                     msa_feat=msa_feat,
                     msa_mask=msa_mask,
                     no_subsampled_all_msa=no_subsampled_all_msa,
+                    generator=generator,
                 )
+
+        if subsample:
+            # Mirror the draws above onto the default generator (numerics
+            # unchanged for any downstream RNG consumer).
+            commit_graph_safe_generator(generator, msa_feat.device)
 
         # [*, N_seq, N_token, C_m]
         m = self.linear_m(msa_feat)

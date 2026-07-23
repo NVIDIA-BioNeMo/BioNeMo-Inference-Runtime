@@ -48,7 +48,7 @@ from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
     num_pocket_contact_info, num_tokens)
 
-from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
+from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (convert_hf_confidence_torch,
@@ -86,6 +86,14 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                     mod.structure_module.score_model, "token_transformer", opt
                 ),
                 trt_cls=TokenTransformerTRT,
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
+            ),
+            "diffusion_module":
+            ModuleSpec(
+                getter=lambda mod: mod.structure_module.score_model,
+                setter=lambda mod, opt: setattr(
+                    mod.structure_module, "score_model", opt),
+                trt_cls=None,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "structure_msa":

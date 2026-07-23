@@ -42,13 +42,15 @@ from tensorrt_bionemo._torch.modules.boltz.physical.potentials import \
     get_potentials
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
-from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
+from tensorrt_bionemo._torch.utils import (commit_graph_safe_generator,
+                                           make_graph_safe_generator,
+                                           recursive_calling_load_weights)
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
     num_pocket_contact_info, num_tokens)
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
-
+from tensorrt_bionemo._torch.layers.random_augmentation import compute_random_augmentation
 
 class DiffusionConditioning(nn.Module):
 
@@ -935,10 +937,20 @@ class AtomDiffusion(SampleDiffusion):
         gammas = torch.where(sigmas > self.gamma_min, self.gamma0, 0.0)
         sigmas_and_gammas = list(zip(sigmas[:-1], sigmas[1:], gammas[1:]))
 
+        # Draw the diffusion rollout's RNG from a private generator (seeded from
+        # the default generator's state) so these eager torch.randn calls stay
+        # off the default CUDA generator that torch.cuda.graph capture of the
+        # wrapped score model registers — otherwise the next request's eager
+        # draw raises "Offset increment outside graph capture". The default
+        # generator is advanced to match before returning, so numerics (and
+        # eager-vs-graph parity) are unchanged. See make_graph_safe_generator.
+        generator = make_graph_safe_generator(self.device)
+
         # atom position is noise at the beginning
         init_sigma = sigmas[0]
         atom_coords = init_sigma * torch.randn(coords_shape,
-                                               device=self.device)
+                                               device=self.device,
+                                               generator=generator)
         token_repr = None
         token_a = None
         atom_coords_denoised = None
@@ -959,13 +971,12 @@ class AtomDiffusion(SampleDiffusion):
         for step_idx, (sigma_tm, sigma_t,
                        gamma) in enumerate(sigmas_and_gammas):
             potentials_guidance.set_diffusion_reverse_step(step_idx)
-            random_R = random_rotations(B * multiplicity,
-                                        device=atom_coords.device,
-                                        dtype=atom_coords.dtype).view(
-                                            B, multiplicity, 3, 3)
-            random_tr = torch.randn((B, multiplicity, 1, 3),
-                                    device=atom_coords.device,
-                                    dtype=atom_coords.dtype)
+            random_R, random_tr = compute_random_augmentation(
+                batch_size=B,
+                multiplicity=multiplicity,
+                device=atom_coords.device,
+                dtype=atom_coords.dtype,
+                generator=generator)
             atom_coords = atom_coords - atom_coords.mean(dim=-2, keepdims=True)
             atom_coords = (
                 torch.einsum("bmnd,bmds->bmns", atom_coords, random_R) +
@@ -986,7 +997,8 @@ class AtomDiffusion(SampleDiffusion):
             steering_t = 1.0 - (step_idx / num_sampling_steps)
             noise_var = self.noise_scale**2 * (t_hat**2 - sigma_tm**2)
             eps = sqrt(noise_var) * torch.randn(coords_shape,
-                                                device=self.device)
+                                                device=self.device,
+                                                generator=generator)
             atom_coords_noisy = atom_coords + eps
 
             with torch.no_grad():
@@ -1081,4 +1093,10 @@ class AtomDiffusion(SampleDiffusion):
                                 (sigma_t - t_hat) * denoised_over_sigma)
 
             atom_coords = atom_coords_next
+
+        # Advance the default generator to mirror the private generator's draws,
+        # so any downstream RNG consumer sees the same state progression as the
+        # un-wrapped model (numerics unchanged).
+        commit_graph_safe_generator(generator, self.device)
+
         return dict(sample_atom_coords=atom_coords, diff_token_repr=token_repr)

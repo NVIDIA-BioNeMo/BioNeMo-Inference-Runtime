@@ -8,7 +8,7 @@ The converting process is quite similar to the Boltz1-converting process, please
 
 ```python
     from tensorrt_bionemo.models.openfold3 import OpenFold3 as OpenFold3Opt, OpenFold3Config, OpenFold3AcceleratedModules
-    from tensorrt_bionemo.models.helper import AcceleratedConfig
+    from tensorrt_bionemo.models.optimize_module_setter import AcceleratedConfig
     from tensorrt_bionemo.runtime import BackendType, OnDemandContextMemoryManager
     config = OpenFold3Config.from_pretrained()
     manager = OnDemandContextMemoryManager()

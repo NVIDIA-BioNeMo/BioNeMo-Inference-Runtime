@@ -33,7 +33,7 @@ from openfold.utils.script_utils import (parse_fasta, prep_output,
 from openfold.utils.tensor_utils import tensor_tree_map
 from scripts.utils import add_data_args
 
-from tensorrt_bionemo.models.helper import AcceleratedConfig
+from tensorrt_bionemo.models.optimize_module_setter import AcceleratedConfig
 from tensorrt_bionemo.models.openfold2 import OpenFold2
 from tensorrt_bionemo.runtime import OnDemandContextMemoryManager
 

@@ -455,6 +455,7 @@ class NoisyPositionEmbedder(nn.Module):
             num_atoms_per_token=batch["num_atoms_per_token"],
             token_feat=si_trunk,
             token_dim=-2,
+            expand_index=batch.get("atom_broadcast_index"),
         )
         cl = cl + si_trunk
 
@@ -923,6 +924,7 @@ class AtomAttentionDecoder(nn.Module):
             num_atoms_per_token=batch["num_atoms_per_token"],
             token_feat=self.linear_q_in(ai),
             token_dim=-2,
+            expand_index=batch.get("atom_broadcast_index"),
         )
 
         # Atom transformer

@@ -46,7 +46,7 @@ from tensorrt_bionemo.models.openfold3.convert import \
     convert_hf_openfold3_torch
 from tensorrt_bionemo.registry import SupMat
 
-from ..helper import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
+from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
 
 
@@ -69,6 +69,14 @@ class OpenFold3ModuleRegistry(ModuleRegistry):
                     mod.sample_diffusion.diffusion_module,
                     "diffusion_transformer", opt),
                 trt_cls=TokenTransformerTRT,
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
+            ),
+            "diffusion_module":
+            ModuleSpec(
+                getter=lambda mod: mod.sample_diffusion.diffusion_module,
+                setter=lambda mod, opt: setattr(
+                    mod.sample_diffusion, "diffusion_module", opt),
+                trt_cls=None,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
         }

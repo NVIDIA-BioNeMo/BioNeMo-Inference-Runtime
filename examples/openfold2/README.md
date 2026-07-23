@@ -99,7 +99,7 @@ See all checkpoint environment variables in `hubs/local.py`.
 Normal cases:
 
 ```python
-    from tensorrt_bionemo.models.helper import AcceleratedConfig
+    from tensorrt_bionemo.models.optimize_module_setter import AcceleratedConfig
     from tensorrt_bionemo.models.openfold2.modeling import OpenFold2, OpenFold2AcceleratedModules
     from tensorrt_bionemo.runtime import BackendType, OnDemandContextMemoryManager
     manager = OnDemandContextMemoryManager()

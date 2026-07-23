@@ -1,7 +1,52 @@
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
+
+from tensorrt_bionemo.mapping import Mapping
+
+
+def compute_random_augmentation(
+        batch_size: int = 1,
+        multiplicity: int = 1,
+        s_trans: float = 1.0,
+        device: Optional[torch.device] = None,
+        dtype: torch.dtype = torch.float32,
+        mapping: Optional[Mapping] = None,
+        generator: Optional[torch.Generator] = None
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute random augmentation for the coordinates.
+    Args:
+        multiplicity (int):
+            The number of diffusion samples. Default: 1
+        s_trans (float):
+            The translation scale. Default: 1.0
+        device (Optional[torch.device]):
+            The device to compute the random augmentation. Default: None
+        dtype (torch.dtype):
+            The dtype to compute the random augmentation. Default: torch.float32
+        mapping (Optional[Mapping]):
+            The device mesh mapping to compute the random augmentation. Unused for now
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: The random rotation matrix and the random translation.
+
+    TODO: For the multiple gpus, need a distributed version of this function.
+    """
+    # Using quaternion to create random rotation matrix shape [*, 3, 3]
+    R = random_rotations(multiplicity * batch_size,
+                         dtype=dtype,
+                         device=device,
+                         generator=generator).view(batch_size, multiplicity, 3,
+                                                    3)
+
+    # Using randn to create random translation matrix shape [*, 1, 3]
+    random_trans = (torch.randn((batch_size, multiplicity, 1, 3),
+                                dtype=dtype,
+                                device=device,
+                                generator=generator) * s_trans)
+    return R, random_trans
+
 
 # the following is copied from Torch3D, BSD License, Copyright (c) Meta Platforms, Inc. and affiliates.
 
@@ -56,9 +101,11 @@ def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
     return o.reshape(quaternions.shape[:-1] + (3, 3))
 
 
-def random_quaternions(n: int,
-                       dtype: Optional[torch.dtype] = None,
-                       device: Optional[torch.device] = None) -> torch.Tensor:
+def random_quaternions(
+        n: int,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+        generator: Optional[torch.Generator] = None) -> torch.Tensor:
     """
     Generate random quaternions representing rotations,
     i.e. versors with nonnegative real part.
@@ -68,21 +115,27 @@ def random_quaternions(n: int,
         dtype: Type to return.
         device: Desired device of returned tensor. Default:
             uses the current device for the default tensor type.
+        generator: Optional RNG to draw from. When supplied, randomness is
+            taken from this generator instead of the default one — used to keep
+            sampling off the default CUDA generator that ``torch.cuda.graph``
+            capture registers (see ``SampleDiffusion.forward``).
 
     Returns:
         Quaternions as tensor of shape (N, 4).
     """
     if isinstance(device, str):
         device = torch.device(device)
-    o = torch.randn((n, 4), dtype=dtype, device=device)
+    o = torch.randn((n, 4), dtype=dtype, device=device, generator=generator)
     s = (o * o).sum(1)
     o = o / _copysign(torch.sqrt(s), o[:, 0])[:, None]
     return o
 
 
-def random_rotations(n: int,
-                     dtype: Optional[torch.dtype] = None,
-                     device: Optional[torch.device] = None) -> torch.Tensor:
+def random_rotations(
+        n: int,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+        generator: Optional[torch.Generator] = None) -> torch.Tensor:
     """
     Generate random rotations as 3x3 rotation matrices.
 
@@ -91,11 +144,15 @@ def random_rotations(n: int,
         dtype: Type to return.
         device: Device of returned tensor. Default: if None,
             uses the current device for the default tensor type.
+        generator: Optional RNG to draw from (see ``random_quaternions``).
 
     Returns:
         Rotation matrices as tensor of shape (n, 3, 3).
     """
-    quaternions = random_quaternions(n, dtype=dtype, device=device)
+    quaternions = random_quaternions(n,
+                                     dtype=dtype,
+                                     device=device,
+                                     generator=generator)
     return quaternion_to_matrix(quaternions)
 
 

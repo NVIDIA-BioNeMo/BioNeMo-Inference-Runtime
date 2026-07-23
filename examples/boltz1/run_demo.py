@@ -26,7 +26,7 @@ from tensorrt_llm_lite.logger import logger
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
     BoltzSteeringParams
 from tensorrt_bionemo.models.boltz1 import Boltz1
-from tensorrt_bionemo.models.helper import AcceleratedConfig
+from tensorrt_bionemo.models.optimize_module_setter import AcceleratedConfig
 from tensorrt_bionemo.runtime import BackendType, OnDemandContextMemoryManager
 
 

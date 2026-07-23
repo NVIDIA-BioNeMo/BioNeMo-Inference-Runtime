@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import pickle
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -89,6 +90,78 @@ def sequence_to_onehot(sequence: str,
 
     indices = torch.tensor(indices, dtype=torch.long)
     return F.one_hot(indices, num_classes=len(restype_to_idx))
+
+
+# ---------------------------------------------------------------------------
+# CCD-component mol loading — model-agnostic (Boltz2, OF3, Protenix).
+# ---------------------------------------------------------------------------
+def load_component_mol(mol_dir: Union[str, Path], name: str) -> Optional[Any]:
+    """Load one CCD-component RDKit ``Mol`` from ``<mol_dir>/<name>.pkl``.
+
+    ``name`` is a residue/component id that may originate from an untrusted
+    input CIF and is used to build a path that is ``pickle.load``-ed, so it is
+    validated as a bare CCD-style identifier (ASCII alphanumeric, <=5 chars —
+    CCD ids are at most 5 chars) and the resolved path is confirmed to stay
+    under ``mol_dir``. Either check failing, or the pickle being absent, returns
+    ``None`` (callers fall back to their unknown-component path).
+    """
+    if not (name.isascii() and name.isalnum() and len(name) <= 5):
+        return None
+    from rdkit import Chem
+    Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
+    base = Path(mol_dir).resolve()
+    p = (base / f"{name}.pkl").resolve()
+    if base not in p.parents:  # defense-in-depth: stay under mol_dir
+        return None
+    if not p.exists():
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
+# ---------------------------------------------------------------------------
+# gemmi structure read + normalize — model-agnostic template helpers.
+# ---------------------------------------------------------------------------
+def read_gemmi_structure(source: str, fmt: str, from_content: bool):
+    """Read an mmCIF/PDB path or raw content string into a gemmi ``Structure``.
+
+    ``fmt`` is ``"cif"``/``"mmcif"`` or ``"pdb"``; ``from_content`` selects raw
+    text vs a filesystem path.
+    """
+    import gemmi
+
+    fmt = fmt.lower()
+    if fmt in ("mmcif", "cif"):
+        doc = (gemmi.cif.read_string(source)
+               if from_content else gemmi.cif.read(str(source)))
+        return gemmi.make_structure_from_block(doc[0])
+    if fmt == "pdb":
+        return (gemmi.read_pdb_string(source)
+                if from_content else gemmi.read_pdb(str(source)))
+    raise ValueError(f"Unsupported template format: {fmt!r}")
+
+
+def normalize_gemmi_structure(st) -> None:
+    """Clean + entity-normalize a gemmi structure in place (mirrors OSS parse_mmcif).
+
+    Removes waters/hydrogens/altconfs/empty chains, then synthesizes an entity
+    sequence from observed residues ONLY when gemmi has none — keeping any
+    existing SEQRES, since overwriting it renumbers res_idx and shifts the
+    alignment offset (off-by-N).
+    """
+    st.merge_chain_parts()
+    st.remove_waters()
+    st.remove_hydrogens()
+    st.remove_alternative_conformations()
+    st.remove_empty_chains()
+    st.setup_entities()
+    for chain in st[0]:
+        poly = chain.get_polymer()
+        if len(poly) == 0:
+            continue
+        ent = st.get_entity_of(poly)
+        if not ent.full_sequence:
+            ent.full_sequence = [res.name for res in poly]
 
 
 # ---------------------------------------------------------------------------

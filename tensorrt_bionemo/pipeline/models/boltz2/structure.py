@@ -434,6 +434,56 @@ def _parse_ccd_ligand_residue(
     return atoms, bonds, constraints
 
 
+def _parse_modified_residue(name: str, ref_mol, gemmi_res, res_idx: int) -> dict:
+    """Parse a modified/non-standard polymer residue, mirroring OSS
+    ``parse_ccd_residue`` (``mmcif.py:371``, ``is_covalent=True``).
+
+    Sibling of :func:`_parse_ccd_ligand_residue` / :func:`_parse_polymer_residue`,
+    but overlays real coordinates from a template gemmi residue (by atom name)
+    instead of the CCD conformer, and emits a plain residue dict with token type
+    ``UNK`` and no center/distogram atom — exactly OSS's modified-residue
+    behaviour (e.g. CSO -> atoms N,CA,CB,SG,C,O,OD, center=N). Consumed by the
+    template featurizer in ``template_logic``.
+    """
+    from rdkit import Chem
+    ref_mol = Chem.RemoveHs(ref_mol, sanitize=False)
+    is_present = gemmi_res is not None
+    pdb_pos: dict[str, tuple[float, float, float]] = {}
+    if is_present:
+        for a in gemmi_res:
+            pdb_pos[a.name] = (float(a.pos.x), float(a.pos.y), float(a.pos.z))
+
+    atoms: list[tuple] = []
+    ref_atom_list = list(ref_mol.GetAtoms())
+    if len(ref_atom_list) == 1:
+        nm = ref_atom_list[0].GetProp("name")
+        coords = pdb_pos.get(nm)
+        atoms.append((nm, coords or (0.0, 0.0, 0.0),
+                      bool(coords is not None and is_present)))
+    else:
+        for a in ref_atom_list:
+            nm = a.GetProp("name")
+            # Skip covalent leaving atoms not present in the PDB (OSS rule).
+            if (a.HasProp("leaving_atom")
+                    and int(a.GetProp("leaving_atom")) == 1
+                    and nm not in pdb_pos):
+                continue
+            coords = pdb_pos.get(nm)
+            atoms.append((nm, coords or (0.0, 0.0, 0.0),
+                          bool(coords is not None and is_present)))
+
+    return {
+        "name": name,                       # keep CCD name (token metadata)
+        "res_type": token_ids["UNK"],       # OSS types modified residues as UNK
+        "res_idx": res_idx,
+        "atoms": atoms,
+        "atom_center": 0,                   # OSS parse_ccd_residue: no center
+        "atom_disto": 0,
+        "is_present": is_present,
+        "is_standard": False,               # OSS: modified residue -> no frame
+    }
+
+
 def _build_smiles_mol(smiles: str, name: str):
     """Build an RDKit Mol from SMILES with canonical atom names + 3D conformer.
 
@@ -527,6 +577,11 @@ def build_structure_from_input(
             entity_keys.append(key)
         p["_entity_id"] = seen[key]
 
+    # Emit chains in ENTITY-GROUPED order (stable sort by entity id), matching
+    # OSS ``parse_boltz_schema`` asym_id assignment. No-op for entity-contiguous
+    # inputs; only reorders interleaved homo-oligomers (e.g. 1a3n A,C,B,D).
+    ordered_polymers = sorted(polymers, key=lambda p: p["_entity_id"])
+
     all_atoms: list[Atom] = []
     all_residues: list[Residue] = []
     all_chains: list[Chain] = []
@@ -544,7 +599,7 @@ def build_structure_from_input(
     planar_ring_5_global: list[dict] = []
     planar_ring_6_global: list[dict] = []
 
-    for poly in polymers:
+    for poly in ordered_polymers:
         polymer_type = (poly.get("polymer_type") or "protein").lower()
         sequence = poly.get("sequence") or ""
         chain_ids = poly.get("chain_id")

@@ -13,13 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorrt_bionemo._torch.graph_optimization.config_schema import \
-    CUDAGraphOptimizationConfig
+from typing import Optional
+
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       MSAModuleConfig, PairformerConfig)
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.pipeline.models.boltz2.const import num_tokens
-
+from tensorrt_bionemo._torch.graph_optimization.config_schema import \
+    CUDAGraphOptimizationConfig
 
 class _Default:
     token_s: int = 384
@@ -156,6 +157,7 @@ class ScoreModelConfig(BaseConfig):
     atoms_per_window_queries: int = _Default.atoms_per_window_queries
     atoms_per_window_keys: int = _Default.atoms_per_window_keys
     conditioning_transition_layers: int = 2
+
     # Precision for the PairwiseConditioning FFN (its [N, N, 2*hidden] intermediate dominates
     # memory). bf16 halves it vs fp32; the output is cast back to the structure-module dtype so
     # downstream conditioning is unchanged.
@@ -185,7 +187,8 @@ class ScoreModelConfig(BaseConfig):
         expansion_factor=2,
         version="v2",
         graph_optimization_config=CUDAGraphOptimizationConfig(
-            graph_optimization_mode="cuda_graphs_via_torch"))
+                graph_optimization_mode="cuda_graphs_via_torch")
+    )
     atom_decoder: DiffusionTransformerConfig = DiffusionTransformerConfig(
         num_blocks=3,
         num_heads=4,
@@ -248,6 +251,10 @@ class ConfidenceModuleConfig(BaseConfig):
 
 
 class Boltz2Config(BaseConfig):
+    # Optional cap on stacked templates (T dim). None (default) = no cap =
+    # OSS-faithful. Set an int to bound the template module's T*N^2 pair memory
+    # (memory-management deviation from OSS, which stacks all templates).
+    max_templates: Optional[int] = None
     token_s: int = _Default.token_s
     token_z: int = _Default.token_z
     atom_s: int = _Default.atom_s
@@ -272,7 +279,10 @@ class Boltz2Config(BaseConfig):
 
     input_embedder: InputEmbedderConfig = InputEmbedderConfig()
 
-    trunk: TrunkConfig = TrunkConfig()
+    # v2 template module OFF by default (most folding runs supply no template);
+    # enable via TrunkConfig(use_templates_v2=True) when templates are provided.
+    # The pipeline always emits dummy template_* features (tmask=0) either way.
+    trunk: TrunkConfig = TrunkConfig(use_templates_v2=False)
 
     structure_module: StructureModuleConfig = StructureModuleConfig()
 
@@ -297,6 +307,9 @@ class AffinityEnsembleConfig(AffinityModuleConfig):
 
 
 class Boltz2AffinityConfig(Boltz2Config):
+    # The affinity checkpoint (boltz2_aff.ckpt) has no template_module weights,
+    # so keep the template module off for affinity (avoid random-init weights).
+    trunk: TrunkConfig = TrunkConfig(use_templates_v2=False)
     affinity: AffinityEnsembleConfig = AffinityEnsembleConfig()
 
 

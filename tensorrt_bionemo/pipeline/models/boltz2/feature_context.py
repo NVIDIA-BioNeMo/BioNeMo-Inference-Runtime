@@ -24,6 +24,7 @@ import torch
 from rdkit import Chem
 
 from tensorrt_bionemo.data.schemas.basic import InputParsed
+from tensorrt_bionemo.data.utils import load_component_mol
 from tensorrt_bionemo.pipeline.base import ContextGeneratorBase
 
 # isort: off
@@ -39,13 +40,11 @@ def _load_ccd(ccd_path: str | Path) -> dict[str, Any]:
 
 
 def _load_molecules(mol_dir: str | Path, names: list[str]) -> dict[str, Any]:
-    mol_dir = Path(mol_dir)
     out = {}
     for name in names:
-        p = mol_dir / f"{name}.pkl"
-        if p.exists():
-            with open(p, "rb") as f:
-                out[name] = pickle.load(f)
+        mol = load_component_mol(mol_dir, name)
+        if mol is not None:
+            out[name] = mol
     return out
 
 
@@ -136,7 +135,13 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
 
         msa_per_chain = []
         paired_msa_per_chain = []
-        for poly in parsed.get("polymers") or []:
+        # Iterate in the SAME entity-grouped order build_structure_from_input uses
+        # (it set ``_entity_id`` on each polymer above), so these per-chain MSA
+        # lists line up positionally with the reordered chains that
+        # process_msa_features indexes — otherwise interleaved homo-oligomers
+        # (e.g. 1a3n A,C,B,D) would pick up the wrong MSA rows.
+        for poly in sorted(parsed.get("polymers") or [],
+                           key=lambda p: p.get("_entity_id", 0)):
             chain_ids = poly.get("chain_id") or ["_"]
             n_chains_in_poly = (len(chain_ids)
                                 if isinstance(chain_ids, list) else 1)
@@ -156,7 +161,32 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
             msa_per_chain = [None]
             paired_msa_per_chain = [None]
 
-        return {
+        # Thread structural templates into the row for the template feature
+        # generator. One entry per PROTEIN polymer that carries templates
+        # (templates are protein-only), giving the query chain names, the query
+        # sequence, and the polymer's list of TemplateParsed (content/format/
+        # chain_id). If no polymer has templates, the key is omitted so the
+        # generator falls through to the byte-identical dummy path.
+        templates_row = []
+        for poly in parsed.get("polymers") or []:
+            ptype = (poly.get("polymer_type") or "protein").lower()
+            if ptype != "protein":
+                continue
+            tmpls = poly.get("templates")
+            if not tmpls:
+                continue
+            chain_ids = poly.get("chain_id")
+            if chain_ids is None:
+                chain_ids = ["A"]  # matches build_structure_from_input default
+            if isinstance(chain_ids, str):
+                chain_ids = [chain_ids]
+            templates_row.append({
+                "chain_ids": list(chain_ids),
+                "sequence": poly.get("sequence") or "",
+                "templates": list(tmpls),
+            })
+
+        row = {
             "structure": structure.to_dict(),
             "tokens": [t.to_dict() for t in tokens],
             "token_bonds": [tb.to_dict() for tb in token_bonds],
@@ -165,6 +195,13 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
             "paired_msa_per_chain": paired_msa_per_chain,
             "residue_constraints": constraints,
         }
+        if templates_row:
+            row["templates"] = templates_row
+            # mol_dir lets the template generator load CCD components for
+            # modified template residues (mirrors OSS parse_ccd_residue).
+            if self._mol_dir is not None:
+                row["mol_dir"] = str(self._mol_dir)
+        return row
 
     @staticmethod
     def _load_msa_entry(msas: list | None):

@@ -29,6 +29,7 @@ from rdkit import Chem
 from tensorrt_bionemo.pipeline.base import FeatureGeneratorBase
 
 from .const import Structure, Token, TokenBond, max_msa_seqs, max_paired_seqs
+from .template_logic import build_template_features_from_row
 from .featurizer import (load_dummy_templates_features, process_atom_features,
                          process_chain_feature_constraints,
                          process_contact_feature_constraints,
@@ -143,7 +144,15 @@ class Boltz2MsaFeatureGenerator(FeatureGeneratorBase):
 
 
 class Boltz2TemplateFeatureGenerator(FeatureGeneratorBase):
-    """Generates dummy template features; num_tokens from batch (e.g. token_index shape)."""
+    """Generates template features from threaded templates, else dummy.
+
+    When the row carries structural templates (``row["templates"]``, threaded by
+    :class:`Boltz2ContextGenerator`), the real featurization runs: parse each
+    template CIF/PDB, tokenize with real coordinates, align query<->template
+    chains, and emit the T-stacked ``template_*`` tensors (matching OSS
+    ``process_template_features``). With no templates, the no-template path is
+    byte-identical to ``load_dummy_templates_features(1, num_tok)``.
+    """
 
     def __call__(
         self,
@@ -151,7 +160,28 @@ class Boltz2TemplateFeatureGenerator(FeatureGeneratorBase):
         context: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         num_tok = batch["token_index"].shape[0]
-        return load_dummy_templates_features(1, num_tok)
+        row = _row(context)
+        templates_row = row.get("templates")
+        if not templates_row:
+            return load_dummy_templates_features(1, num_tok)
+
+        structure = row["structure"]
+        tokens = row["tokens"]
+        query_chain_asym_ids = [c.asym_id for c in structure.chains]
+        query_name_to_asym = {c.name: c.asym_id for c in structure.chains}
+
+        feats = build_template_features_from_row(
+            query_tokens=tokens,
+            query_chain_asym_ids=query_chain_asym_ids,
+            query_name_to_asym=query_name_to_asym,
+            templates_row=templates_row,
+            num_tokens=num_tok,
+            mol_dir=row.get("mol_dir"),
+            max_templates=getattr(self.config, "max_templates", None),
+        )
+        if feats is None:
+            return load_dummy_templates_features(1, num_tok)
+        return feats
 
 
 class Boltz2ResidueConstraintFeatureGenerator(FeatureGeneratorBase):

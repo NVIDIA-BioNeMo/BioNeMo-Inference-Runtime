@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 from dataclasses import dataclass
 
 import pytest
@@ -304,7 +305,112 @@ class TestRandomCropToSize:
                                     subsample_templates=False)
         result = collator(sample_features, context)
 
-        assert result["template_aatype"].shape[0] <= mock_config.max_templates
+        assert result["template_aatype"].shape[0] == min(
+            n_templ, mock_config.max_templates)
+
+    def test_subsample_templates_is_seeded_and_deterministic(
+            self, mock_config, context):
+        n_templ = 8
+        n_res = 64
+        features = {
+            "seq_length": torch.tensor(n_res),
+            "template_aatype": torch.randint(0, 21, (n_templ, n_res)),
+            "template_all_atom_mask": torch.ones(n_templ, n_res, 37),
+            "template_all_atom_positions": torch.randn(n_templ, n_res, 37, 3),
+            "template_mask": torch.ones(n_templ),
+        }
+
+        collator = RandomCropToSize(config=mock_config,
+                                    subsample_templates=True)
+        first = collator({
+            k: v.clone()
+            for k, v in features.items()
+        }, dict(context))
+        second = collator({
+            k: v.clone()
+            for k, v in features.items()
+        }, dict(context))
+
+        # The subsample branch crops within the template limit and is
+        # deterministic for a fixed ensemble_seed.
+        assert first["template_aatype"].shape[0] <= mock_config.max_templates
+        assert torch.equal(first["template_aatype"], second["template_aatype"])
+        assert torch.equal(first["template_all_atom_mask"],
+                           second["template_all_atom_mask"])
+
+    def test_crops_multimer_templates_without_standalone_mask(
+            self, mock_config, sample_features, context):
+        mock_config.max_templates = 1
+        sample_features.pop("template_mask")
+        expected_atom_mask = sample_features["template_all_atom_mask"][
+            0].clone()
+
+        result = RandomCropToSize(config=mock_config)(sample_features, context)
+
+        assert result["template_aatype"].shape[0] == 1
+        assert torch.equal(result["template_all_atom_mask"][0],
+                           expected_atom_mask)
+
+    @pytest.mark.parametrize("with_template_mask", [True, False],
+                             ids=["monomer", "multimer"])
+    def test_handles_zero_template_rows(self, with_template_mask, context):
+        n_res = 2
+        features = {
+            "seq_length": torch.tensor(n_res),
+            "template_aatype": torch.empty((0, n_res), dtype=torch.int64),
+            "template_all_atom_mask": torch.empty((0, n_res, 37)),
+            "template_all_atom_positions": torch.empty((0, n_res, 37, 3)),
+        }
+        if with_template_mask:
+            features["template_mask"] = torch.empty((0, ))
+
+        result = RandomCropToSize(config=MockConfig(max_templates=0))(features,
+                                                                      context)
+
+        assert all(value.shape[0] == 0 for key, value in result.items()
+                   if "template" in key)
+
+    def test_warns_when_populated_multimer_rows_not_a_prefix(
+            self, context, caplog):
+        n_res = 2
+        atom_mask = torch.zeros((4, n_res, 37))
+        atom_mask[0, 0, 0] = 1
+        atom_mask[2, 0, 0] = 1
+        features = {
+            "seq_length": torch.tensor(n_res),
+            "template_aatype": torch.zeros((4, n_res), dtype=torch.int64),
+            "template_all_atom_mask": atom_mask,
+            "template_all_atom_positions": torch.zeros((4, n_res, 37, 3)),
+        }
+
+        with caplog.at_level(logging.WARNING):
+            result = RandomCropToSize(config=MockConfig())(features, context)
+
+        # A non-prefix layout warns and falls back to the populated count
+        # instead of crashing inference.
+        assert "contiguous prefix" in caplog.text
+        assert result["template_aatype"].shape[0] == 2
+
+    def test_crops_multimer_to_populated_prefix_length(self, context):
+        # A padded multimer tensor whose populated rows form a length-2 prefix
+        # must crop to 2 (derived from the populated rows), not the padded row
+        # count of 4.
+        n_res = 2
+        atom_mask = torch.zeros((4, n_res, 37))
+        atom_mask[0] = 1.0
+        atom_mask[1] = 1.0
+        features = {
+            "seq_length": torch.tensor(n_res),
+            "template_aatype": torch.zeros((4, n_res), dtype=torch.int64),
+            "template_all_atom_mask": atom_mask,
+            "template_all_atom_positions": torch.zeros((4, n_res, 37, 3)),
+        }
+
+        result = RandomCropToSize(config=MockConfig(max_templates=4))(features,
+                                                                      context)
+
+        assert result["template_aatype"].shape[0] == 2
+        assert result["template_all_atom_mask"].shape[0] == 2
 
 
 class TestMakeFixedSize:

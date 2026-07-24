@@ -86,6 +86,7 @@ venv/
 
 # Project-specific build artifacts
 job.log
+workdir/
 
 # C++ build artifacts
 **/CMakeFiles/

@@ -33,6 +33,8 @@ from typing import Optional
 import numpy as np
 
 from tensorrt_bionemo.data.tools.kalign import run_kalign
+from tensorrt_bionemo.data.tools.template_alignment import (
+    calculate_ids_hit, seq_identity_and_coverage)
 
 from .const import _PROTEIN_1TO3, TEMPLATE_CIF_DIRECT_MIN_SCORE
 
@@ -40,8 +42,6 @@ logger = logging.getLogger(__name__)
 
 # 3-letter -> 1-letter protein map; non-standard/modified residues -> "X".
 _PROTEIN_3TO1: dict[str, str] = {v: k for k, v in _PROTEIN_1TO3.items()}
-
-_GAP_CHARS = ("-", ".")
 
 # Backbone + pseudo-beta atom names read from the template structure.
 _FRAME_ATOMS = ("N", "CA", "C")
@@ -83,46 +83,6 @@ class SelectedTemplate:
 # ---------------------------------------------------------------------------
 
 
-def _calculate_ids_hit(
-    q: np.ndarray,
-    t: np.ndarray,
-    query_start: int = 1,
-    template_start: int = 1,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Residue correspondences between full query and template sequences.
-
-    Fresh reimplementation of OSS ``calculate_ids_hit``: 1-based indices, gaps
-    represented by -1, columns where both are gaps dropped.
-    """
-    q_is_res = ~np.isin(q, _GAP_CHARS)
-    t_is_res = ~np.isin(t, _GAP_CHARS)
-    columns_to_keep = q_is_res | t_is_res
-    q_cumsum = np.cumsum(q_is_res)
-    t_cumsum = np.cumsum(t_is_res)
-    query_map = np.where(q_is_res, q_cumsum + query_start - 1, -1)
-    template_map = np.where(t_is_res, t_cumsum + template_start - 1, -1)
-    return query_map[columns_to_keep], template_map[columns_to_keep]
-
-
-def _seq_identity_and_coverage(
-    query_aln: np.ndarray,
-    template_aln: np.ndarray,
-    query_seq: str,
-) -> tuple[float, float]:
-    """Mirror OSS ``compute_sequence_identity_and_coverage``."""
-    query_gap_mask = ~np.isin(query_aln, _GAP_CHARS)
-    num_matches = int(query_gap_mask.sum())
-    if num_matches > 0:
-        seq_id = float(
-            (template_aln == query_aln)[query_gap_mask].sum()) / num_matches
-    else:
-        seq_id = 0.0
-    q_cov = float(
-        (query_gap_mask
-         & (~np.isin(template_aln, _GAP_CHARS))).sum()) / max(len(query_seq), 1)
-    return seq_id, q_cov
-
-
 def align_query_to_template_chain(
     query_seq: str,
     chain_data: ChainTemplateData,
@@ -143,8 +103,8 @@ def align_query_to_template_chain(
 
     q_arr = np.fromiter(aln[0], dtype="<U1", count=len(aln[0]))
     t_arr = np.fromiter(aln[1], dtype="<U1", count=len(aln[1]))
-    seq_id, q_cov = _seq_identity_and_coverage(q_arr, t_arr, query_seq)
-    q_hit, t_hit = _calculate_ids_hit(q_arr, t_arr, 1, 1)
+    seq_id, q_cov = seq_identity_and_coverage(q_arr, t_arr, query_seq)
+    q_hit, t_hit = calculate_ids_hit(q_arr, t_arr)
 
     idx_map = np.concatenate([q_hit[:, None], t_hit[:, None]], axis=1)
     # Keep only positions aligned on BOTH sides (drop -1 gaps).

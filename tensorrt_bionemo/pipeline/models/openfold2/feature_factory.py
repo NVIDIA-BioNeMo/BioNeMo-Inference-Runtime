@@ -156,10 +156,11 @@ def pre_init(context: dict[str, Any]) -> dict[str, Any]:
     """ Setup environment for the feature factory."""
     random_seed = context.get("random_seed", 0)
     if random_seed is None:
-        random_seed = random.randrange(2**32)
+        random_seed = random.SystemRandom().randrange(2**32)
     np.random.seed(random_seed)
     torch.manual_seed(random_seed + 1)
-    context["ensemble_seed"] = random.randint(0, torch.iinfo(torch.int32).max)
+    rng = random.Random(random_seed)
+    context["ensemble_seed"] = rng.randint(0, torch.iinfo(torch.int32).max)
     return context
 
 

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import itertools
+import logging
 from functools import reduce
 from operator import add
 from typing import Any, Optional
@@ -26,6 +27,8 @@ from tensorrt_bionemo.pipeline.base import FeatureCollatorBase
 
 from .common import (gumbel_argsort_sample_idx, gumbel_max_sample,
                      make_one_hot, shaped_categorical, unsorted_segment_sum)
+
+logger = logging.getLogger(__name__)
 
 MSA_FEATURE_NAMES = [
     "msa",
@@ -374,6 +377,27 @@ class RandomCropToSize(FeatureCollatorBase):
 
         if "template_mask" in features:
             num_templates = features["template_mask"].shape[-1]
+        elif "template_all_atom_mask" in features:
+            # Multimer tensors are already padded to ``max_templates`` and the
+            # model derives its own template mask from atom presence. Count only
+            # populated rows so a no-template request still takes the
+            # zero-template crop path. ``stable_top_k`` + trailing zero-pad make
+            # the populated rows a contiguous prefix; if that invariant ever
+            # breaks, warn and fall back to the populated count rather than
+            # crashing inference.
+            populated = features["template_all_atom_mask"].flatten(
+                start_dim=1).any(dim=-1)
+            num_templates = int(torch.count_nonzero(populated).item())
+            expected = torch.arange(populated.shape[0],
+                                    device=populated.device) < num_templates
+            if not torch.equal(populated, expected):
+                logger.warning(
+                    "Populated template rows are not a contiguous prefix; "
+                    "cropping to the populated count %d", num_templates)
+        elif "template_aatype" in features:
+            # Retain compatibility with callers that carry only template
+            # residue types and no explicit template mask.
+            num_templates = features["template_aatype"].shape[0]
         else:
             num_templates = 0
 

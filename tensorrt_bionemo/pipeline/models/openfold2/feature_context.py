@@ -26,6 +26,8 @@ from tensorrt_bionemo.data.parsers import (InputParsed, MSAParsed,
 from tensorrt_bionemo.data.utils import sequence_to_onehot
 from tensorrt_bionemo.pipeline.base import ContextGeneratorBase
 
+from .template_logic import _empty_template_feats, build_template_feats
+
 
 class MultimerFeaturePairAndMerge:
     REQUIRED_FEATURES = frozenset({
@@ -110,6 +112,7 @@ class MultimerFeaturePairAndMerge:
         else:
             msa_crop_size = np.minimum(msa_size, msa_crop_size)
 
+        templates_crop_size = 0
         include_templates = 'template_aatype' in chain and max_templates
         if include_templates:
             num_templates = chain['template_aatype'].shape[0]
@@ -256,6 +259,9 @@ class FeatureContextGenerator(ContextGeneratorBase):
             config: The configuration for the model.
         """
         super().__init__(config)
+        if getattr(self.config, "max_templates", 0) < 0:
+            raise ValueError(
+                "OpenFold2 requires max_templates to be non-negative")
         self.unsupervised_features = [
             "aatype",
             "residue_index",
@@ -319,20 +325,10 @@ class FeatureContextGenerator(ContextGeneratorBase):
         return features
 
     def empty_template_feats(self, n_res: int) -> dict[str, np.ndarray]:
-        return {
-            "template_aatype":
-            np.zeros((0, n_res, len(rc.restypes_with_x_and_gap)), np.float32),
-            "template_all_atom_mask":
-            np.zeros((0, n_res, rc.atom_type_num), np.float32),
-            "template_all_atom_positions":
-            np.zeros((0, n_res, rc.atom_type_num, 3), np.float32),
-            "template_domain_names":
-            np.array([''.encode()], dtype=object),
-            "template_sequence":
-            np.array([''.encode()], dtype=object),
-            "template_sum_probs":
-            np.zeros((0, 1), dtype=np.float32),
-        }
+        # Single source of truth for the OF2 no-template contract lives in
+        # ``template_logic`` (also used by ``build_template_feats`` when
+        # ``max_templates == 0``); delegate so the two never drift.
+        return _empty_template_feats(n_res)
 
     def make_sequence_features(self, sequence: str,
                                description: str) -> dict[str, np.ndarray]:
@@ -388,7 +384,8 @@ class FeatureContextGenerator(ContextGeneratorBase):
             sequence: str,
             chain_id: str,
             description: Optional[str] = None,
-            parsed_msa: Optional[MSAParsed] = None) -> dict[str, np.ndarray]:
+            parsed_msa: Optional[MSAParsed] = None,
+            templates: Optional[list] = None) -> dict[str, np.ndarray]:
         if isinstance(chain_id, list):
             chain_id = chain_id[0]
         if parsed_msa is None:
@@ -400,8 +397,19 @@ class FeatureContextGenerator(ContextGeneratorBase):
         context = self.make_sequence_features(sequence, description)
         context.update(self.make_msa_features(parsed_msa))
 
-        # TODO: Add template features, using dummy template features for now
-        context.update(self.empty_template_feats(len(sequence)))
+        if templates and self.config.enable_template:
+            context.update(
+                build_template_feats(
+                    sequence,
+                    templates,
+                    chain_id=chain_id,
+                    max_templates=getattr(self.config, "max_templates", 4),
+                ))
+        else:
+            # Keep the established no-template contract exactly. In
+            # particular, OF2 uses a zero-length template dimension rather than
+            # the fixed GAP slots used by OF3.
+            context.update(self.empty_template_feats(len(sequence)))
         return context
 
     @staticmethod
@@ -512,22 +520,28 @@ class FeatureContextGenerator(ContextGeneratorBase):
     def build_multimer_context(self,
                                parsed: InputParsed) -> dict[str, np.ndarray]:
         polymers = parsed['polymers']
+        chain_ids_by_polymer = [[polymer['chain_id']] if isinstance(
+            polymer['chain_id'], str) else polymer['chain_id']
+                                for polymer in polymers]
         multimer_feature_pair_and_merge = None
         paired_msas = {}
         unpaired_msas = {}
         sequences = []
         descriptions = []
         all_chain_ids = []
+        templates_list = []
         chain_feats = {}
 
         if len(polymers) == 1:
             # It's homooligomers, only one unique sequence for all chain_ids
             multimer_feature_pair_and_merge = MultimerFeaturePairAndMerge(
+                max_templates=self.config.max_templates,
                 is_homomer_or_monomer=True)
             polymer = polymers[0]
-            chain_ids = polymer['chain_id']
+            chain_ids = chain_ids_by_polymer[0]
             sequences = [polymer['sequence']]
             all_chain_ids = [chain_ids]
+            templates_list = [polymer.get('templates')]
             descriptions = ["_".join(chain_ids)]
 
             # Make unpaired MSA for the homooligomer, same as the monomer case.
@@ -552,19 +566,22 @@ class FeatureContextGenerator(ContextGeneratorBase):
                            for polymer in polymers)
             if all_none:
                 # 1. All polymers should have the paired_msas is None
-                for i in range(len(polymers)):
-                    polymers[i]['paired_msas'] = [
-                        MSAParsed(
-                            sequences=[polymers[i]['sequence']],
-                            raw=[polymers[i]['sequence']],
-                            descriptions=["_".join(polymers[i]['chain_id'])],
-                        )
-                    ]
+                paired_msas_by_polymer = [[
+                    MSAParsed(
+                        sequences=[polymer['sequence']],
+                        raw=[polymer['sequence']],
+                        descriptions=["_".join(chain_ids)],
+                    )
+                ] for polymer, chain_ids in zip(polymers, chain_ids_by_polymer)
+                                          ]
             else:
                 # 2. Or, all polymers should have the same number of sequences in paired_msas
+                paired_msas_by_polymer = [
+                    polymer['paired_msas'] for polymer in polymers
+                ]
                 nseqs = set()
-                for polymer in polymers:
-                    msas = MSAParsed.concat(polymer['paired_msas'])
+                for polymer_paired_msas in paired_msas_by_polymer:
+                    msas = MSAParsed.concat(polymer_paired_msas)
                     if msas is None:
                         nseqs.add(-1)
                         continue
@@ -574,17 +591,19 @@ class FeatureContextGenerator(ContextGeneratorBase):
                         "All polymers should have the same number of sequences in paired_msas"
                     )
             multimer_feature_pair_and_merge = MultimerFeaturePairAndMerge(
+                max_templates=self.config.max_templates,
                 is_homomer_or_monomer=False)
             # It's heterooligomers
             for i in range(len(polymers)):
                 polymer = polymers[i]
-                chain_ids = polymer['chain_id']
+                chain_ids = chain_ids_by_polymer[i]
                 sequences.append(polymer['sequence'])
                 all_chain_ids.append(chain_ids)
+                templates_list.append(polymer.get('templates'))
                 descriptions.append("_".join(chain_ids))
 
                 # Make paired MSA for each unique sequence
-                paired_msas[i] = MSAParsed.concat(polymer['paired_msas'])
+                paired_msas[i] = MSAParsed.concat(paired_msas_by_polymer[i])
 
                 # Make unpaired MSA for each unique sequence, same as the monomer case.
                 if polymer['msas'] is not None:
@@ -599,7 +618,8 @@ class FeatureContextGenerator(ContextGeneratorBase):
             feature_dict = self.build_monomer_context(sequences[seq_idx],
                                                       all_chain_ids[seq_idx],
                                                       descriptions[seq_idx],
-                                                      unpaired_msas[seq_idx])
+                                                      unpaired_msas[seq_idx],
+                                                      templates_list[seq_idx])
             if seq_idx in paired_msas:
                 # for homooligomers, we use the dummy paired MSA
                 # for heterooligomers, we need to add the paired MSA features
@@ -642,7 +662,8 @@ class FeatureContextGenerator(ContextGeneratorBase):
                 description = "_".join(chain_ids)
                 context = self.build_monomer_context(
                     polymers[0]['sequence'], chain_ids[0], description,
-                    MSAParsed.concat(polymers[0]['msas']))
+                    MSAParsed.concat(polymers[0]['msas']),
+                    polymers[0].get('templates'))
             else:
                 # Homooligomer
                 context = self.build_multimer_context(parsed)
@@ -653,7 +674,8 @@ class FeatureContextGenerator(ContextGeneratorBase):
         if "deletion_matrix_int" in context:
             context["deletion_matrix"] = context.pop(
                 "deletion_matrix_int").astype(np.float32)
-        features_name = self.unsupervised_features
+        # Do not mutate the instance-level list on repeated calls.
+        features_name = list(self.unsupervised_features)
         if self.config.enable_template:
             # Multimer pads ``template_aatype`` to ``max_templates`` with zeros
             # (``msa_pairing._pad_templates``), so ``shape[0] > 0`` is misleading.

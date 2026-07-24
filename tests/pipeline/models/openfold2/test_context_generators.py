@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import numpy as np
 import pytest
 import torch
 
@@ -15,6 +16,7 @@ class MockConfig(BaseConfig):
     """Mock config for testing"""
     enable_template: bool = True
     is_multimer: bool = False
+    max_templates: int = 4
 
 
 @pytest.fixture
@@ -51,6 +53,35 @@ def sample_input_parsed_with_msa(sample_sequence):
         templates=None,
     )
     return InputParsed(input_id="test_input", polymers=[polymer])
+
+
+@pytest.fixture
+def sample_multimer_input_parsed(sample_sequence):
+    polymer = PolymerParsed(
+        polymer_type="protein",
+        chain_id=["A", "B"],
+        sequence=sample_sequence,
+        msas=None,
+        paired_msas=None,
+        templates=None,
+    )
+    return InputParsed(input_id="test_multimer", polymers=[polymer])
+
+
+def assert_numpy_array_exact(actual, expected):
+    assert actual.shape == expected.shape
+    assert actual.dtype == expected.dtype
+    assert np.array_equal(actual, expected)
+    if not actual.dtype.hasobject:
+        assert actual.tobytes() == expected.tobytes()
+
+
+def assert_tensor_dict_exact(actual, expected):
+    assert actual.keys() == expected.keys()
+    for key in actual:
+        assert actual[key].shape == expected[key].shape, key
+        assert actual[key].dtype == expected[key].dtype, key
+        assert torch.equal(actual[key], expected[key]), key
 
 
 class TestFeatureContextGeneratorPrimary:
@@ -205,6 +236,45 @@ class TestFeatureContextGeneratorTemplate:
         assert result["template_all_atom_positions"].dtype == torch.float32
         assert result["template_sum_probs"].dtype == torch.float32
 
+    def test_monomer_no_template_exactly_uses_empty_template_features(
+            self, sample_sequence):
+        generator = FeatureContextGenerator(MockConfig(enable_template=True))
+
+        context = generator.build_monomer_context(
+            sample_sequence,
+            chain_id="A",
+            description="no_template",
+            templates=None,
+        )
+        expected = generator.empty_template_feats(len(sample_sequence))
+
+        assert {key
+                for key in context
+                if key.startswith("template_")} == set(expected)
+        for key, expected_value in expected.items():
+            assert_numpy_array_exact(context[key], expected_value)
+
+    def test_multimer_no_template_retains_fixed_empty_padding(
+            self, sample_multimer_input_parsed, sample_sequence):
+        config = MockConfig(enable_template=True, is_multimer=True)
+        result = FeatureContextGenerator(config)(sample_multimer_input_parsed)
+        n_res = 2 * len(sample_sequence)
+
+        assert result["template_aatype"].shape == (config.max_templates, n_res)
+        assert result["template_aatype"].dtype == torch.int64
+        assert torch.count_nonzero(result["template_aatype"]) == 0
+        assert result["template_all_atom_mask"].shape == (config.max_templates,
+                                                          n_res, 37)
+        assert result["template_all_atom_mask"].dtype == torch.float32
+        assert torch.count_nonzero(result["template_all_atom_mask"]) == 0
+        assert result["template_all_atom_positions"].shape == (
+            config.max_templates, n_res, 37, 3)
+        assert result["template_all_atom_positions"].dtype == torch.float32
+        assert torch.count_nonzero(result["template_all_atom_positions"]) == 0
+        assert result["is_template_present"].shape == ()
+        assert result["is_template_present"].dtype == torch.bool
+        assert result["is_template_present"].item() is False
+
     def test_no_templates_when_disabled(self, sample_input_parsed):
         config = MockConfig(enable_template=False)
         generator = FeatureContextGenerator(config)
@@ -293,3 +363,39 @@ class TestFeatureContextGeneratorIntegration:
         for key, value in result.items():
             assert isinstance(value,
                               torch.Tensor), f"Feature {key} is not a tensor"
+
+    def test_repeated_calls_do_not_mutate_feature_names_or_outputs(
+            self, sample_input_parsed_with_msa):
+        generator = FeatureContextGenerator(MockConfig(enable_template=True))
+        feature_names = tuple(generator.unsupervised_features)
+
+        first = generator(sample_input_parsed_with_msa)
+        second = generator(sample_input_parsed_with_msa)
+
+        assert tuple(generator.unsupervised_features) == feature_names
+        assert_tensor_dict_exact(first, second)
+
+    def test_multimer_scalar_chain_ids_do_not_mutate_parsed_input(self):
+        parsed = InputParsed(
+            input_id="scalar_multimer_chain_ids",
+            polymers=[
+                PolymerParsed(chain_id="A1",
+                              sequence="MR",
+                              msas=None,
+                              paired_msas=None),
+                PolymerParsed(chain_id="B1",
+                              sequence="AA",
+                              msas=None,
+                              paired_msas=None),
+            ],
+        )
+        generator = FeatureContextGenerator(MockConfig(is_multimer=True))
+
+        first = generator(parsed)
+        second = generator(parsed)
+
+        assert [polymer['paired_msas']
+                for polymer in parsed['polymers']] == [None, None]
+        assert first['aatype'].shape == (4, )
+        assert torch.equal(first['asym_id'], torch.tensor([1, 1, 2, 2]))
+        assert_tensor_dict_exact(first, second)

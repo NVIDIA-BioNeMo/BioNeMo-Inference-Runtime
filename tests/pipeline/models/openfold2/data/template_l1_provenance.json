@@ -1,0 +1,271 @@
+{
+  "artifact_format": "numpy_npz_no_object_arrays",
+  "artifact_path": "tests/pipeline/models/openfold2/data/template_l1_golden.npz",
+  "artifact_sha256": "0f1416894d6a6228f41868a7d57e2b3fdb0bb25d0be8caf1fa5a50d39d941638",
+  "checkpoint_identifier": "not_applicable_feature_only",
+  "checkpoint_sha256": null,
+  "environment": {
+    "biopython": "1.87",
+    "numpy": "2.1.0",
+    "openfold_import_mode": "pinned_source_data_namespace",
+    "python": "3.12.3 (main, Nov  6 2025, 13:44:16) [GCC 13.3.0]"
+  },
+  "feature_inventory": {
+    "template_aatype": {
+      "dtype": "int64",
+      "max": 1.0,
+      "min": 0.0,
+      "shape": [
+        1,
+        84,
+        22
+      ]
+    },
+    "template_all_atom_mask": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 0.0,
+      "shape": [
+        1,
+        84,
+        37
+      ]
+    },
+    "template_all_atom_positions": {
+      "dtype": "float32",
+      "max": 26.35698699951172,
+      "min": -31.27601432800293,
+      "shape": [
+        1,
+        84,
+        37,
+        3
+      ]
+    },
+    "template_alt_torsion_angles_sin_cos": {
+      "dtype": "float32",
+      "max": 0.9992712736129761,
+      "min": -1.0,
+      "shape": [
+        1,
+        84,
+        7,
+        2
+      ]
+    },
+    "template_domain_names": {
+      "dtype": "|S6",
+      "shape": [
+        1
+      ]
+    },
+    "template_pseudo_beta": {
+      "dtype": "float32",
+      "max": 24.82198715209961,
+      "min": -28.39701271057129,
+      "shape": [
+        1,
+        84,
+        3
+      ]
+    },
+    "template_pseudo_beta_mask": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 1.0,
+      "shape": [
+        1,
+        84
+      ]
+    },
+    "template_sequence": {
+      "dtype": "|S84",
+      "shape": [
+        1
+      ]
+    },
+    "template_sum_probs": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 1.0,
+      "shape": [
+        1,
+        1
+      ]
+    },
+    "template_torsion_angles_mask": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 0.0,
+      "shape": [
+        1,
+        84,
+        7
+      ]
+    },
+    "template_torsion_angles_sin_cos": {
+      "dtype": "float32",
+      "max": 0.9992712736129761,
+      "min": -1.0,
+      "shape": [
+        1,
+        84,
+        7,
+        2
+      ]
+    }
+  },
+  "generation_command": "/usr/bin/python tests/pipeline/models/openfold2/generate_template_l1.py --oss-root /tmp/openfold-ref",
+  "generator_path": "tests/pipeline/models/openfold2/generate_template_l1.py",
+  "generator_sha256": "f4369807c43d5b47941c693d670a911262251caa9740b0e2009792f5bd6beba6",
+  "input_path": "examples/data/samples/monomers/templates/4zey.cif",
+  "input_sha256": "c412665889d225f21c39e31609e44e1582bd51b9feac2e592bad996347ee4606",
+  "input_source_path": "tests/test_data/mmcifs/4zey.cif",
+  "input_source_url": "https://github.com/aqlaboratory/openfold/blob/be2ec1841f16c966c65ae0e7599ebbadc725757d/tests/test_data/mmcifs/4zey.cif",
+  "oracle_mode": "openfold_identity_extract",
+  "oss_git_commit": "be2ec1841f16c966c65ae0e7599ebbadc725757d",
+  "oss_input_format": "mmCIF",
+  "oss_parser": "openfold.data.mmcif_parsing.parse",
+  "oss_source_files": {
+    "openfold/data/data_transforms.py": "000cc73fcd68603173af05dcbbcbd2663c97c467759d073783d20f38febf8311",
+    "openfold/data/mmcif_parsing.py": "3728888533a46c689bd55b7002936a7b1b09f4c61fcc2274e7376c2b822ded14",
+    "openfold/data/templates.py": "6c1f1534548543df6a26a3060ae25b9947d75cdf839e464f3415bb123f43f95e",
+    "openfold/np/residue_constants.py": "19c94d0c104cf45ab303efb5b21fed36e746402163b742da0726bd2a8484a52b"
+  },
+  "oss_source_path": "openfold/data/templates.py",
+  "oss_source_url": "https://github.com/aqlaboratory/openfold/blob/be2ec1841f16c966c65ae0e7599ebbadc725757d/openfold/data/templates.py",
+  "reference_kind": "oss_featurization_primitives",
+  "resolved_config": {
+    "chain_id": "A",
+    "critical_oss_source_hashes": {
+      "openfold/data/data_transforms.py": "000cc73fcd68603173af05dcbbcbd2663c97c467759d073783d20f38febf8311",
+      "openfold/data/mmcif_parsing.py": "3728888533a46c689bd55b7002936a7b1b09f4c61fcc2274e7376c2b822ded14",
+      "openfold/data/templates.py": "6c1f1534548543df6a26a3060ae25b9947d75cdf839e464f3415bb123f43f95e",
+      "openfold/np/residue_constants.py": "19c94d0c104cf45ab303efb5b21fed36e746402163b742da0726bd2a8484a52b"
+    },
+    "input_sha256": "c412665889d225f21c39e31609e44e1582bd51b9feac2e592bad996347ee4606",
+    "oracle_mode": "openfold_identity_extract",
+    "oss_git_commit": "be2ec1841f16c966c65ae0e7599ebbadc725757d",
+    "query_sequence": "GMEGPLNLAHQQSRRADRLLAAGKYEEAISCHKKAAAYLSEAMKLTQSEQAHLSLELQRDSHMKQLLLIQERWKRAQREERLKA",
+    "sample_id": "4zey_A_self_template",
+    "serialization": "numpy_npz_no_object_arrays",
+    "template_sum_probs": 1.0,
+    "zero_center_positions": true
+  },
+  "resolved_config_hash": "30d0cb92246053f6fc5cadefdbc1015aca3097a25d303427583d46a30ed57712",
+  "sample_id": "4zey_A_self_template",
+  "schema_version": 1,
+  "sha256": "0f1416894d6a6228f41868a7d57e2b3fdb0bb25d0be8caf1fa5a50d39d941638",
+  "source": "oss",
+  "source_feature_inventory": {
+    "template_aatype": {
+      "dtype": "int64",
+      "max": 1.0,
+      "min": 0.0,
+      "shape": [
+        1,
+        84,
+        22
+      ]
+    },
+    "template_all_atom_mask": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 0.0,
+      "shape": [
+        1,
+        84,
+        37
+      ]
+    },
+    "template_all_atom_positions": {
+      "dtype": "float32",
+      "max": 26.35698699951172,
+      "min": -31.27601432800293,
+      "shape": [
+        1,
+        84,
+        37,
+        3
+      ]
+    },
+    "template_alt_torsion_angles_sin_cos": {
+      "dtype": "float32",
+      "max": 0.9992712736129761,
+      "min": -1.0,
+      "shape": [
+        1,
+        84,
+        7,
+        2
+      ]
+    },
+    "template_domain_names": {
+      "dtype": "object",
+      "shape": [
+        1
+      ]
+    },
+    "template_pseudo_beta": {
+      "dtype": "float32",
+      "max": 24.82198715209961,
+      "min": -28.39701271057129,
+      "shape": [
+        1,
+        84,
+        3
+      ]
+    },
+    "template_pseudo_beta_mask": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 1.0,
+      "shape": [
+        1,
+        84
+      ]
+    },
+    "template_sequence": {
+      "dtype": "object",
+      "shape": [
+        1
+      ]
+    },
+    "template_sum_probs": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 1.0,
+      "shape": [
+        1,
+        1
+      ]
+    },
+    "template_torsion_angles_mask": {
+      "dtype": "float32",
+      "max": 1.0,
+      "min": 0.0,
+      "shape": [
+        1,
+        84,
+        7
+      ]
+    },
+    "template_torsion_angles_sin_cos": {
+      "dtype": "float32",
+      "max": 0.9992712736129761,
+      "min": -1.0,
+      "shape": [
+        1,
+        84,
+        7,
+        2
+      ]
+    }
+  },
+  "string_serialization": {
+    "template_domain_names": "object bytes -> fixed-width bytes",
+    "template_sequence": "object bytes -> fixed-width bytes"
+  },
+  "timestamp": "2026-07-21T06:28:41.889786+00:00",
+  "warnings": []
+}

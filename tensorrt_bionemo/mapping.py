@@ -26,8 +26,7 @@ class Mapping(object):
                  tp_size: int = 1,
                  pp_size: int = 1):
         """
-        This class is similar to the `Mapping` class in `tensorrt_llm.mapping`.
-        But it is designed for Bionemo structure prediction models.
+        Process-group mapping for BioNeMo structure prediction models.
         Args:
             world_size (int): total number of GPUs
             rank (int): global rank of the current GPU
@@ -45,7 +44,7 @@ class Mapping(object):
         self.tp_size = tp_size
         self.pp_size = pp_size
         self.dcp_size = dcp_size
-        self.cp_size = dcp_size  # this work-around it to avoid the error for ipc_memory in tensorrt_llm
+        self.cp_size = dcp_size
         self.world_size = world_size
         self.rank = rank
         self.gpus_per_node = gpus_per_node
@@ -109,7 +108,7 @@ class Mapping(object):
 
     @property
     def cp_rank(self):
-        return self.dcp_rank  # this work-around it to avoid the error for ipc_memory in tensorrt_llm
+        return self.dcp_rank
 
     @property
     def pp_rank(self):

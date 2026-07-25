@@ -19,11 +19,11 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     ProtenixDiffusionTransformer
 from tensorrt_bionemo.configs import DiffusionTransformerConfig
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.create_and_load_weights_from_protenixoss import \
     convert_atom_transformer
 from tests.common.test_utils.protenix.ref_layers_from_oss import \

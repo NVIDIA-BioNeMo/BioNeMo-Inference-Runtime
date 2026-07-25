@@ -17,7 +17,6 @@ from typing import Optional, Union
 
 import torch
 import torch.nn as nn
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
@@ -34,6 +33,7 @@ from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 class PairformerLayerV1(nn.Module):

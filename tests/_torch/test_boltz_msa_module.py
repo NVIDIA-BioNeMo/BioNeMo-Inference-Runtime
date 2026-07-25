@@ -17,7 +17,6 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_msa_layer_weights, create_msa_module_weights,
     load_msa_layer_weights_torch, load_msa_module_weights_torch)
@@ -29,6 +28,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
     precompute_pair_masks
 from tensorrt_bionemo._torch.modules.boltz.trunk import MSALayer, MSAModule
 from tensorrt_bionemo.configs import MSAModuleConfig
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 

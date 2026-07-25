@@ -21,7 +21,6 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
@@ -34,6 +33,7 @@ from tensorrt_bionemo._torch.modules.openfold3.trunk import MSAModuleStack
 from tensorrt_bionemo._torch.modules.protenix.template import \
     ProtenixTemplateEmbedder
 from tensorrt_bionemo.configs import BaseConfig
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 class ProtenixMSAModule(nn.Module):

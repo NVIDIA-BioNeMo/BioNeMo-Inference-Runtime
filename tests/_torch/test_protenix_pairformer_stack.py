@@ -18,13 +18,13 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerModule
 from tensorrt_bionemo.configs import PairformerConfig
 from tensorrt_bionemo.models.protenix.convert import \
     convert_pairformer_stack_torch
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import skip_if_cutedsl
 from tests.common.test_utils.protenix.ref_layers_from_oss import \
     RefProtenixPairformerStackFromOSS

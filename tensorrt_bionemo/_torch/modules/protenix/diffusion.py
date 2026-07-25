@@ -20,7 +20,6 @@ from typing import Any, Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
@@ -38,6 +37,7 @@ from tensorrt_bionemo._torch.modules.protenix._common import (
 from tensorrt_bionemo._torch.modules.protenix.atom_attention import (
     ProtenixAtomAttentionDecoder, ProtenixAtomAttentionEncoder)
 from tensorrt_bionemo.configs import BaseConfig
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 class ProtenixDiffusionConditioning(nn.Module):

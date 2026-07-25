@@ -49,8 +49,8 @@ class MockModel(nn.Module):
     def forward(self, batch):
         return {"output": torch.randn(2, 3, 10)}
 
-    def optimize(self, accelerated_configs, context_memory_allocator=None):
-        return self, None
+    def optimize(self, accelerated_configs, **kwargs):
+        return self
 
 
 class MockPostProcessor:
@@ -124,18 +124,7 @@ class TestFoldingEngine:
         config = MockEngineConfig()
         config.accelerated = Mock()  # Enable acceleration
 
-        with patch(
-                'tensorrt_bionemo.pipeline.engine.OnDemandContextMemoryManager'
-        ) as mock_allocator:
-            mock_allocator_instance = Mock()
-            mock_allocator.return_value = mock_allocator_instance
+        engine = FoldingEngine(config, MockModel)
 
-            engine = FoldingEngine(config, MockModel)
-
-            # Verify model is created and on correct device
-            assert engine.model is not None
-            assert next(engine.model.parameters()).device.type == TEST_DEVICE
-
-            # Verify memory allocator was created
-            mock_allocator.assert_called_once()
-            assert engine.context_memory_allocator == mock_allocator_instance
+        assert engine.model is not None
+        assert next(engine.model.parameters()).device.type == TEST_DEVICE

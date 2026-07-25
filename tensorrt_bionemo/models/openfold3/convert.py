@@ -16,17 +16,17 @@
 from collections import OrderedDict
 
 import torch
-from tensorrt_llm_lite import str_dtype_to_torch
-from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       PairformerConfig)
 from tensorrt_bionemo.hubs import load_weights
+from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import (
     get_adaln_weights, get_output_projection_weights,
     get_pairwise_attn_weights, get_post_norm_weights, get_transition_weights,
     get_tri_attn_node_weights, get_tri_mul_node_weights)
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 def split(*args, **kwargs):

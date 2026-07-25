@@ -18,7 +18,6 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
@@ -26,6 +25,7 @@ from tensorrt_bionemo.models.protenix.config import \
     RelativePositionEncodingConfig
 from tensorrt_bionemo.models.protenix.convert import \
     convert_relative_position_encoding_torch
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.ref_layers_from_oss import \
     RefProtenixRelativePositionEncodingFromOSS
 

@@ -7,7 +7,7 @@
 #                      └► prod_stage  (FROM copy_source_stage)
 #                      ├► dev_stage   (FROM copy_source_stage)
 #
-# The source-independent work (apt CUDA deps, ccache, pip upgrade) lives in the
+# The source-independent work (base image, ccache, pip upgrade) lives in the
 # first stage so it stays cached across source edits; COPY . happens later so a
 # code change only re-runs the copy + the package install below it.
 #
@@ -15,9 +15,20 @@
 # requirements stage
 #   - requirements change infrequently, slow download
 # -------------------------------------------------------------------------
-ARG BASE_IMAGE=trtbnm_base
-ARG BASE_TAG=trtllm1.2.0_80649a8_with_cuda_deps
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch
+ARG BASE_TAG=25.12-py3
 FROM ${BASE_IMAGE}:${BASE_TAG} AS requirements_stage
+
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="${CUDA_HOME}/bin:${PATH}"
+
+# The C++/CUDA build uses ccache as its compiler launcher. The NGC PyTorch
+# development image already provides PyTorch and a complete CUDA toolkit.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ccache \
+    && rm -rf /var/lib/apt/lists/* \
+    && test -x "${CUDA_HOME}/bin/nvcc" \
+    && test -f "${CUDA_HOME}/include/cuda_runtime.h"
 
 # collect arg variables
 ARG CMAKE_BUILD_TYPE='Release'
@@ -33,26 +44,6 @@ ENV RECOMPILE_CPP=${RECOMPILE_CPP}
 ENV CCACHE_DIR="/root/.ccache"
 RUN mkdir -p "${CCACHE_DIR}"
 ENV _PIP_CACHE_DIR="/root/.cache/pip"
-
-# Decided Strategy 1, refer Dockerfile.trtbnm_base
-# # cuda-13.0 and cuda-13.1 toolkits are each incomplete.
-# #   Strategy 2 is described below to address:
-# #
-# #     The CUDA toolkit /usr/local/cuda (13.1) provides nvcc but
-# #     ships no cublas and lacks the unversioned libnvrtc.so symlink, while cuda-13.0
-# #     provides the complete cublas + nvrtc headers and libs. These vars bridge the
-# #     two so the C++/CUDA extension can build: CUDA_HOME/PATH point nvcc at 13.1;
-# #     CUDAFLAGS/CXXFLAGS add 13.0's headers (e.g. cublasLt.h) to the compile include
-# #     path; CMAKE_LIBRARY_PATH lets find_library resolve nvrtc/cublas from 13.0; and
-# #     LIBRARY_PATH/LD_LIBRARY_PATH make 13.0's libs available at link and run time.
-# ENV CUDA13=/usr/local/cuda-13.0/targets/x86_64-linux
-# ENV CUDA_HOME=/usr/local/cuda
-# ENV CMAKE_LIBRARY_PATH="$CUDA13/lib"
-# ENV CUDAFLAGS="-I$CUDA13/include" 
-# ENV CXXFLAGS="-I$CUDA13/include"
-# ENV LIBRARY_PATH="$CUDA13/lib:$LIBRARY_PATH"
-# ENV LD_LIBRARY_PATH="$CUDA13/lib:$LD_LIBRARY_PATH"
-# ENV PATH="${CUDA_HOME}/bin:${PATH}"
 
 RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install --upgrade pip

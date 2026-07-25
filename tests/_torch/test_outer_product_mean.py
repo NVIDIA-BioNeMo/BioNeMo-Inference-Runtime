@@ -18,7 +18,6 @@ from typing import Optional
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_outer_product_mean_weights, load_outer_product_mean_weights_torch)
 from test_utils.boltz.ref_layers import RefOuterProductMean
@@ -27,6 +26,7 @@ from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
 from tensorrt_bionemo._torch.custom_ops.outer_product_mean import (
     OuterProductMeanCuTe, get_outer_product_mean_op)
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 86, 89, 90)

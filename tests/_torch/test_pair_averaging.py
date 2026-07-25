@@ -18,7 +18,6 @@ from typing import Optional
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_pair_weighted_averaging_weights,
     load_pair_weighted_averaging_weights_torch)
@@ -28,6 +27,7 @@ from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
 from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import (
     PairWeightedAveragingCuTe, get_pair_weighted_averaging_op)
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 86, 89, 90)

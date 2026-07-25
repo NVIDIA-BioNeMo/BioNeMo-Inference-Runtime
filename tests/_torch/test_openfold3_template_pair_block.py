@@ -18,15 +18,15 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-# TODO: fix this after finish full openfold3 model
-# pytestmark = pytest.mark.skip(reason="openfold3")
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.openfold3.ref_layers_from_oss import \
     RefTemplatePairBlockFromOF3OSS
 
 from tensorrt_bionemo._torch.modules.openfold2.template import \
     TemplatePairBlock
 from tensorrt_bionemo.mapping import Mapping
+# TODO: fix this after finish full openfold3 model
+# pytestmark = pytest.mark.skip(reason="openfold3")
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 from tests.common.test_utils.openfold3.create_and_load_weights_from_of3oss import (

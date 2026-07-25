@@ -37,8 +37,6 @@ from tensorrt_bionemo._torch.modules.openfold3.embedders import (
     InputEmbedderAllAtom, MSAModuleEmbedder, TemplateEmbedderAllAtom)
 from tensorrt_bionemo._torch.modules.openfold3.trunk import MSAModuleStack
 from tensorrt_bionemo._torch.tensor_utils import tensor_tree_map
-from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
-                                                   TokenTransformerTRT)
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.models.openfold3.config import PRETRAINED_CONFIG_REGISTRY
@@ -58,7 +56,6 @@ class OpenFold3ModuleRegistry(ModuleRegistry):
             ModuleSpec(
                 getter=lambda mod: mod.pairformer_stack,
                 setter=lambda mod, opt: setattr(mod, "pairformer_stack", opt),
-                trt_cls=PairformerTRT,
                 compiled_cls=None,
             ),
             "token_transformer":
@@ -68,7 +65,6 @@ class OpenFold3ModuleRegistry(ModuleRegistry):
                 setter=lambda mod, opt: setattr(
                     mod.sample_diffusion.diffusion_module,
                     "diffusion_transformer", opt),
-                trt_cls=TokenTransformerTRT,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "diffusion_module":
@@ -76,7 +72,6 @@ class OpenFold3ModuleRegistry(ModuleRegistry):
                 getter=lambda mod: mod.sample_diffusion.diffusion_module,
                 setter=lambda mod, opt: setattr(
                     mod.sample_diffusion, "diffusion_module", opt),
-                trt_cls=None,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
         }

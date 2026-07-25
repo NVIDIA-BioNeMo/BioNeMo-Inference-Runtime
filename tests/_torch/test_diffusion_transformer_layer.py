@@ -17,7 +17,6 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_diffusion_transformer_layer_weights,
     load_diffusion_transformer_layer_weights_torch)
@@ -30,6 +29,7 @@ from tensorrt_bionemo._torch.attention_backend import (AttentionType,
                                                        get_attention_backend)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     DiffusionTransformerLayer
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 

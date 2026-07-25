@@ -13,32 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-from collections import OrderedDict
 from typing import Any, Callable, Literal, Optional, Union
 
 import torch
 from pydantic import (BaseModel, Field, SkipValidation, field_serializer,
                       field_validator, model_validator)
-from tensorrt_llm_lite._utils import str_dtype_to_torch, torch_dtype_to_str
-from tensorrt_llm_lite.plugin import PluginConfig
 
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.utils import str_dtype_to_torch, torch_dtype_to_str
 from tensorrt_bionemo.version import __version__
 
 
 class BackendType:
-    TRT = "trt"
     TORCH = "torch"
 
     @classmethod
     def is_supported(cls, backend: str) -> bool:
-        return backend in [cls.TRT, cls.TORCH]
+        return backend in [cls.TORCH]
+
     @staticmethod
     def from_str(backend: str) -> "BackendType":
-        if backend == "trt":
-            return BackendType.TRT
-        elif backend == "torch":
+        if backend == "torch":
             return BackendType.TORCH
         else:
             raise ValueError(f"Invalid backend: {backend}")
@@ -208,106 +203,9 @@ class BaseConfig(BaseModel):
         self._recursive_set(setter)
 
     def to_dict(self):
-        # Support this function for compatibility with the TensorRT-LLM build() function
+        # Keep this method compatible with the legacy build() API.
         output = self.model_dump()
         return output
-
-
-class DimSpec(BaseModel):
-    size: int = -1
-    name: str = ""
-    dynamic: bool = False
-    min: int = -1
-    max: int = -1
-
-
-class BuildConfig(BaseModel):
-    """ TensorRT engines building configurations """
-
-    strongly_typed: bool = False
-    weakly_dtype: Optional[str] = None
-    force_num_profiles: Optional[int] = None
-    profiling_verbosity: Optional[str] = 'layer_names_only'
-    plugin_config: PluginConfig = Field(default_factory=PluginConfig)
-    module_config: Optional[BaseConfig] = None
-    input_timing_cache: Optional[str] = None
-    output_timing_cache: Optional[str] = 'model.cache'
-    dry_run: Optional[bool] = False
-    monitor_memory: Optional[bool] = False
-    enable_debug_output: Optional[bool] = False
-
-    def get_optimization_profiles(self) -> list[Any]:
-        raise NotImplementedError("Subclasses must implement this method")
-
-    def get_input_shapes(self) -> OrderedDict[str, DimSpec]:
-        raise NotImplementedError("Subclasses must implement this method")
-
-    def get_output_shapes(self) -> OrderedDict[str, DimSpec]:
-        raise NotImplementedError("Subclasses must implement this method")
-
-    @classmethod
-    def from_json_file(cls, config_file):
-        # Support this function for compatibility with the TensorRT-LLM build() function
-        with open(config_file) as f:
-            config = json.load(f)
-        return BuildConfig(**config)
-
-    def to_dict(self):
-        # Support this function for compatibility with the TensorRT-LLM build() function
-        output = self.model_dump()
-        del output['module_config']
-        return output
-
-
-def create_optimization_profiles(build_config: BuildConfig,
-                                 seqlen_key_names: list[str] = ["seqlen"],
-                                 align: int = 16) -> list[Any]:
-    """ Create optimization profiles for the build config """
-    input_shapes = build_config.get_input_shapes()
-
-    if build_config.force_num_profiles == 0:
-        return []
-
-    mc = build_config.module_config
-    min_seqlen = mc.min_seq_len - mc.min_seq_len % align
-    max_seqlen = (mc.max_seq_len + align - 1) // align * align
-    assert (max_seqlen - min_seqlen) % build_config.force_num_profiles == 0
-    step = (max_seqlen - min_seqlen) // build_config.force_num_profiles
-
-    min_max_seqlens = []
-
-    for i in range(build_config.force_num_profiles):
-        min_max_seqlens.append(
-            (min_seqlen + i * step, min_seqlen + (i + 1) * step))
-
-    profiles = []
-    for rmin, rmax in min_max_seqlens:
-        profile = {}
-        for k, v in input_shapes.items():
-            min_shape = []
-            opt_shape = []
-            max_shape = []
-
-            for spec in v:
-                if spec.name in seqlen_key_names:
-                    min_shape.append(rmin)
-                    opt_shape.append(rmax)
-                    max_shape.append(rmax)
-                elif spec.name == "multiplicity":
-                    min_shape.append(1)
-                    opt_shape.append(mc.multiplicity)
-                    max_shape.append(mc.multiplicity)
-                elif spec.name == "batch_size":
-                    min_shape.append(1)
-                    opt_shape.append(mc.max_batch_size)
-                    max_shape.append(mc.max_batch_size)
-                else:
-                    min_shape.append(spec.size)
-                    opt_shape.append(spec.size)
-                    max_shape.append(spec.size)
-            profile[k] = (min_shape, opt_shape, max_shape)
-        profiles.append(profile)
-    return profiles
 
 
 def print_model_tree(model: BaseModel, indent: int = 0):

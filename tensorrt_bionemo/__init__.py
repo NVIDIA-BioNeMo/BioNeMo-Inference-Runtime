@@ -28,8 +28,7 @@ CACHE_DIR = Path(
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
-from ._torch import _load_cuequivariance_lib, _load_kernels_lib
-from ._trt.plugin import _load_plugin_lib
+from ._torch import _load_cuequivariance_lib
 from .registry import register_all_factories
 from .version import __version__
 
@@ -41,17 +40,10 @@ def _init() -> None:
     if _inited:
         return
     _inited = True
-    # load CuEquivariance Ops library
     _load_cuequivariance_lib()
-    # load TensorRT-BioNemo Kernels library
-    _load_kernels_lib()
-    # load Tensorrt plugins library
-    _load_plugin_lib()
     register_all_factories()
 
 
 _init()
 
-import tensorrt_bionemo._trt.layers as layers
-
-__all__ = ["layers", "__version__", "CACHE_DIR", "EXAMPLES_DIR"]
+__all__ = ["__version__", "CACHE_DIR", "EXAMPLES_DIR"]

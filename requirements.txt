@@ -7,7 +7,6 @@ cuequivariance-ops-torch-cu13==0.10.0
 cuequivariance-torch==0.10.0
 nvtx
 matplotlib # FIXME: this is added to make nvtx happy
-tensorrt>=10.13.2
 triton==3.6.0
 biopython>=1.84
 boto3==1.42.17

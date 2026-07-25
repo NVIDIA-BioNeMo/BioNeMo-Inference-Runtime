@@ -18,12 +18,11 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import torch.nn as nn
-from tensorrt_llm_lite.logger import logger
 
-from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
-from tensorrt_bionemo.runtime import BackendType, BaseContextMemoryManager
 from tensorrt_bionemo._torch.graph_optimization.config_schema import \
     GraphOptimizationMode
+from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
+from tensorrt_bionemo.logger import logger
 
 
 @dataclass
@@ -33,14 +32,11 @@ class ModuleSpec:
     Attributes:
         getter: ``(model) -> nn.Module`` — retrieves the original module.
         setter: ``(model, optimized) -> None`` — installs the replacement.
-        trt_cls: TRT wrapper class (has ``load_weights``).  ``None`` if TRT
-            is not supported for this module.
         compiled_cls: ``CompilableModule`` subclass.  ``None`` if
             torch.compile is not supported for this module.
     """
     getter: Callable
     setter: Callable
-    trt_cls: Optional[type] = None
     compiled_cls: Optional[type] = None
     graph_optimization_cls: Optional[type] = None
 
@@ -141,7 +137,7 @@ class ModuleRegistry(ABC):
         """Return ``{name: ModuleSpec(...)}`` for every optimizable module.
 
         Each :class:`ModuleSpec` carries getter/setter lambdas plus the
-        per-backend wrapper classes (``trt_cls`` and/or ``compiled_cls``).
+        per-backend wrapper classes (``compiled_cls`` and/or ``graph_optimization_cls``).
         """
         raise NotImplementedError("Subclass must implement this method")
 
@@ -187,22 +183,18 @@ class OptimizedModuleSetterMixin(ABC):
 
     def optimize(self,
                  accelerated_configs: dict[str, AcceleratedConfig],
-                 context_memory_allocator: Optional[
-                     BaseContextMemoryManager] = None,
                  **kwargs) -> nn.Module:
         """Build the optimized version of the model from the original.
 
-        Supports TRT engine backends and torch backends (optionally with
-        ``torch.compile`` when ``compile=True``).
+        Supports torch backends (optionally with ``torch.compile`` when
+        ``compile=True``).
 
         Args:
             accelerated_configs: A dictionary of modules to be accelerated.
                 Each key is a module name (e.g. ``"evoformer"``) and the value
                 is an :class:`AcceleratedConfig` whose ``backend`` field
-                selects ``"trt"`` or ``"torch"``.  Set ``compile=True`` on
-                torch-backend configs to enable ``torch.compile``.
-            context_memory_allocator: The context memory allocator to be
-                used for TRT modules.
+                selects ``"torch"``.  Set ``compile=True`` on torch-backend
+                configs to enable ``torch.compile``.
         Returns:
             The optimized model (self, modified in-place).
         """
@@ -218,25 +210,10 @@ class OptimizedModuleSetterMixin(ABC):
                 continue
             backend = acc_config.backend
 
-            # ── TRT engine path ─────────────────────────────────────────
-            if backend == BackendType.TRT and spec.trt_cls is not None:
-                org = spec.getter(self)
-                checkpoint_dir = optimized_modules.get_module_checkpoint(
-                    module_name)
-                opt_m = spec.trt_cls.load_weights(
-                    checkpoint_dir=checkpoint_dir,
-                    context_memory_allocator=context_memory_allocator,
-                    **kwargs)
-                spec.setter(self, opt_m)
-                opt_m.set_fallback_module(org)
-                opt_m.config.need_fallback = (
-                    optimized_modules.get_module_need_fallback(module_name))
-
             # ── torch + CUDA-graph path ─────────────────────────────────
-            # Mirrors the TRT path (req 4.1): the eager module is replaced by a
-            # graph-compilation tracker that keeps the original as its eager
-            # ``inner_module`` / fallback.
-            elif backend == BackendType.TORCH and spec.graph_optimization_cls is not None:
+            # The eager module is replaced by a graph-compilation tracker that
+            # keeps the original as its eager ``inner_module`` / fallback.
+            if backend == BackendType.TORCH and spec.graph_optimization_cls is not None:
                 org = spec.getter(self)
                 graph_config = getattr(acc_config.default, 
                                         "graph_optimization_config",

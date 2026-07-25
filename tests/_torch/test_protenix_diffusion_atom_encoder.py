@@ -20,7 +20,6 @@ import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.layers.linear import WeightMode
 from tensorrt_bionemo._torch.modules.protenix import \
@@ -30,6 +29,7 @@ from tensorrt_bionemo.models.protenix.config import \
     DiffusionAtomAttentionEncoderConfig
 from tensorrt_bionemo.models.protenix.convert import \
     convert_diffusion_atom_encoder_torch
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.ref_layers_from_oss import (
     RefProtenixAtomAttentionEncoderFromOSS, update_input_feature_dict)
 

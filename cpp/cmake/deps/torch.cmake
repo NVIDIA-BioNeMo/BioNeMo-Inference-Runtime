@@ -41,10 +41,3 @@ string(REPLACE "-gencode arch=compute_75,code=sm_75 " "" CMAKE_CUDA_FLAGS_NEW
                "${CMAKE_CUDA_FLAGS}")
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS_NEW}")
 include_directories(SYSTEM ${TORCH_INCLUDE_DIRS} ${Python3_INCLUDE_DIRS})
-
-set(TORCH_LIBRARIES
-    "${TORCH_LIBRARIES}"
-    PARENT_SCOPE)
-set(TORCH_INCLUDE_DIRS
-    "${TORCH_INCLUDE_DIRS}"
-    PARENT_SCOPE)

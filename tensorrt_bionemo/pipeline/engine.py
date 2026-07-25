@@ -18,12 +18,11 @@ from typing import Any, Callable, Optional, Type
 import numpy as np
 import torch
 import torch.nn as nn
-from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs.base import EngineConfig
 from tensorrt_bionemo.data.schemas import FoldingOutput
+from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.pipeline.base import PostProcessorBase
-from tensorrt_bionemo.runtime import OnDemandContextMemoryManager
 
 
 class FoldingEngine:
@@ -58,13 +57,8 @@ class FoldingEngine:
         self.model.to(self.device_config.device)
         self.model.eval()
 
-        self.context_memory_allocator = None
         if self.accelerated_configs is not None:
-            self.context_memory_allocator = OnDemandContextMemoryManager()
-            optimized = self.model.optimize(
-                self.accelerated_configs,
-                context_memory_allocator=self.context_memory_allocator,
-            )
+            optimized = self.model.optimize(self.accelerated_configs)
             if isinstance(optimized, tuple):
                 self.model, _ = optimized
             else:

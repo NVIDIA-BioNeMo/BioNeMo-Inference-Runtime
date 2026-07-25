@@ -27,30 +27,25 @@ for every subsequent call with that key. Per-key bookkeeping lives in
 Any of memory-gate refusal, capture failure, capture-verification failure, or
 replay failure reverts that key permanently to eager.
 """
-import enum
 import abc
+import enum
 from typing import Any
 
 import torch
+import torch.nn as nn
+from lru import LRU
 from torch import Tensor
 from torch.cuda.streams import Stream
-import torch.nn as nn
 
-from lru import LRU
-
-from tensorrt_llm_lite.logger import logger
-
-from tensorrt_bionemo.runtime.backend import BackendBase
-from tensorrt_bionemo.runtime.allocator import BaseContextMemoryManager
 from tensorrt_bionemo._torch.graph_optimization.config_schema import (
-    CUDAGraphOptimizationConfig, BaseGraphOptimizationConfig, InputKeyMethod)
+    BaseGraphOptimizationConfig, CUDAGraphOptimizationConfig, InputKeyMethod)
 from tensorrt_bionemo._torch.graph_optimization.memory import (
     check_capacity_for_capture, tensor_bytes)
 from tensorrt_bionemo._torch.graph_optimization.tensor_copy_utils import (
-    _assert_equal_but_distinct, 
-    _clone_tensors, 
-    _copy_tensors_into, 
+    _assert_equal_but_distinct, _clone_tensors, _copy_tensors_into,
     _delete_tensors_in_container)
+from tensorrt_bionemo.logger import logger
+from tensorrt_bionemo.runtime.backend import BackendBase
 
 
 class CUDAGraphPreparationState(enum.Enum):
@@ -189,8 +184,7 @@ class GraphOptimizationTracker(BackendBase):
 
     def __init__(self,
                  graph_optimization_config: BaseGraphOptimizationConfig,
-                 inner_module: nn.Module | None = None,
-                 context_memory_allocator: BaseContextMemoryManager | None = None) -> None:
+                 inner_module: nn.Module | None = None) -> None:
         """Store the optimization config and the wrapped (inner) module.
 
         Args:
@@ -199,9 +193,8 @@ class GraphOptimizationTracker(BackendBase):
                 wrapper exposes ``config.backend`` etc.
             inner_module: The eager module being graph-optimized. This is the
                 module the tracker warms up, captures, and falls back to.
-            context_memory_allocator: Forwarded to :class:`BackendBase`.
         """
-        super().__init__(graph_optimization_config, context_memory_allocator=context_memory_allocator)
+        super().__init__(graph_optimization_config)
         self.inner_module = inner_module
 
     @property
@@ -297,20 +290,17 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
     """
     def __init__(self,
                  config: CUDAGraphOptimizationConfig,
-                 inner_module: nn.Module | None = None,
-                 context_memory_allocator: BaseContextMemoryManager | None = None) -> None:
+                 inner_module: nn.Module | None = None) -> None:
         """Validate the config and create the LRU cache of per-key graph state.
 
         Args:
             config: Must be a :class:`CUDAGraphOptimizationConfig`.
             inner_module: The eager module to graph-optimize / fall back to.
-            context_memory_allocator: Forwarded to :class:`BackendBase`.
 
         Raises:
             ValueError: If ``config`` is not a ``CUDAGraphOptimizationConfig``.
         """
-        super().__init__(config, inner_module=inner_module,
-                         context_memory_allocator=context_memory_allocator)
+        super().__init__(config, inner_module=inner_module)
         if not isinstance(self.graph_optimization_config, CUDAGraphOptimizationConfig):
             raise ValueError(f"Expected CUDAGraphOptimizationConfig, got {type(self.graph_optimization_config)}")
 

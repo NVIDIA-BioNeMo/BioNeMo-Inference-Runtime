@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from enum import IntEnum
 from typing import Optional
 
 import torch
@@ -28,8 +29,6 @@ from tensorrt_bionemo._torch.distributed import (
 from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
                                                    WeightMode,
                                                    WeightsLoadingConfig)
-from tensorrt_bionemo._trt.layers.triangle_nodes import (
-    TriangleAttentionNodeType, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
@@ -40,6 +39,16 @@ from ..auto_chunk import (CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy,
 from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
 from ..custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 from .attention import TriangleAttention
+
+
+class TriangleAttentionNodeType(IntEnum):
+    STARTING = 0
+    ENDING = 1
+
+
+class TriangleMultiplicationNodeType(IntEnum):
+    INCOMING = 0
+    OUTGOING = 1
 
 
 class TriangleAttentionNode(nn.Module):

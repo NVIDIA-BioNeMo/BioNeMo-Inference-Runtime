@@ -19,7 +19,6 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.openfold.create_and_load_weights import (
     create_evoformer_block_weights, load_evoformer_block_weights_torch)
 from test_utils.openfold.ref_layers import RefEvoformerBlock
@@ -29,6 +28,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerBlock
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 

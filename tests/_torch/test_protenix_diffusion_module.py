@@ -23,7 +23,6 @@ from dataclasses import dataclass
 import pytest
 import torch
 import torch.nn.functional as F
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.graph_optimization.config_schema import (
     CUDAGraphOptimizationConfig, GraphOptimizationMode)
@@ -42,6 +41,7 @@ from tensorrt_bionemo.models.protenix.config import (
     RelativePositionEncodingConfig)
 from tensorrt_bionemo.models.protenix.convert import \
     convert_diffusion_module_torch
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import skip_if_cutedsl
 from tests.common.test_utils.protenix.ref_layers_from_oss import (
     RefProtenixDiffusionModuleFromOSS, update_input_feature_dict)
@@ -473,14 +473,31 @@ def test_sample_diffusion_smoke():
     # Keep the random-weight smoke in full fp32.
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
+    # Seed CPU + CUDA: sample()/randn are on GPU. Default Linear init is too
+    # large for multi-step EDM (/sigma_hat) under xdist's varying CUDA RNG;
+    # use the same small-init recipe as
+    # test_token_transformer_broadcasts_sample_independent_pair. Real-checkpoint
+    # tests cover numerical fidelity.
     torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
     device = torch.device("cuda")
     sc = Scenario(dtype="float32", z_pair_dtype="float32")
     B, S, n_atom = 1, sc.n_sample, sc.n_atom
 
     module = ProtenixDiffusionModule(_build_config(sc)).to(device).eval()
+    with torch.no_grad():
+        for name, param in module.named_parameters():
+            if name.endswith("weight") and "norm" in name:
+                param.fill_(1)
+            elif param.ndim > 1:
+                param.normal_(mean=0.0, std=0.02)
+            else:
+                param.zero_()
     sampler = ProtenixSampleDiffusion(module).to(device).eval()
     batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
+    s_inputs = s_inputs * 0.1
+    s_trunk = s_trunk * 0.1
+    z_trunk = z_trunk * 0.1
 
     with torch.inference_mode():
         x = sampler.sample_coords(batch,

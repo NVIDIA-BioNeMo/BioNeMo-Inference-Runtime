@@ -22,8 +22,8 @@ dependencies = {file = ["requirements.txt"]}
 dev = {file = ["requirements-dev.txt"]}
 
 [tool.setuptools.packages.find]
-where = [".", "nv_deps/TensorRT-LLM"]
-include = ["tensorrt_bionemo*", "tensorrt_llm_lite*"]
+where = ["."]
+include = ["tensorrt_bionemo*"]
 exclude = ["cpp*"]
 
 [tool.setuptools.package-data]
@@ -41,9 +41,6 @@ authors = [{ name = "NVIDIA-BioNeMo team" }]
 readme = "README.md"
 dynamic = ["dependencies", "version", "optional-dependencies"]
 license = "Apache-2.0"
-
-[project.scripts]
-trtbnm-build = "tensorrt_bionemo.commands.build:main"
 
 ####################################################################################################
 ###############################  LINTING, FORMATTING AND TESTING CONFIGURATION  ####################

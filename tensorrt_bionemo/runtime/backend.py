@@ -12,19 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import inspect
-import json
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
-import torch
 import torch.nn as nn
-from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import BackendType, BaseConfig
-
-from .allocator import BaseContextMemoryManager, SimpleContextMemoryManager
+from tensorrt_bionemo.logger import logger
 
 
 class FallbackStrategy:
@@ -43,107 +37,6 @@ class FallbackStrategy:
         return False
 
 
-class TRTFallbackStrategy(FallbackStrategy):
-    """Fallback when inputs exceed TRT engine optimization profile limits.
-
-    Inspects the TRT engine's optimization profiles at runtime and checks
-    whether each input tensor's shape fits within at least one profile.
-    If any tensor falls outside every profile, the call is routed to the
-    PyTorch fallback module instead.
-
-    Handles batch-dimension mismatches transparently: when the tensor's
-    ``ndim`` differs from the profile's expected ``ndim`` by exactly one, a
-    leading dimension of size 1 is added or removed before matching.
-    """
-
-    def __init__(self):
-        self._backend = None
-        self._param_names: list[str] | None = None
-        self._allocator: BaseContextMemoryManager | None = None
-        self._opt_profile_map: dict | None = None
-
-    def bind(self, backend: 'BackendBase') -> 'TRTFallbackStrategy':
-        if self._backend is backend:
-            return self
-        self._backend = backend
-        self._allocator = backend._context_memory_allocator
-
-        sig = inspect.signature(backend.forward_udf)
-        self._param_names = [
-            name for name, param in sig.parameters.items()
-            if param.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                              inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        ]
-
-        self._opt_profile_map = None
-        return self
-
-    def _ensure_profiles(self) -> dict | None:
-        """Lazily resolve and cache the optimization profile map."""
-        if self._opt_profile_map is not None:
-            return self._opt_profile_map
-
-        handle = self._allocator.get_deserialized_handles().get(self._backend)
-        if handle is None:
-            return None
-
-        if not getattr(handle, '_opt_profile_map', None):
-            self._allocator.build_opt_profile_map(handle)
-
-        self._opt_profile_map = handle._opt_profile_map or {}
-        return self._opt_profile_map
-
-    def _shape_fits_profiles(self, tensor_name: str,
-                             tensor_shape: tuple) -> bool:
-        profiles = self._opt_profile_map.get(tensor_name)
-        if not profiles:
-            return True
-
-        for p in profiles:
-            if self._allocator._shape_matches_profile(tensor_shape,
-                                                      p['min_shape'],
-                                                      p['max_shape']):
-                return True
-
-        expected_ndim = len(profiles[0]['min_shape'])
-        if len(tensor_shape) == expected_ndim - 1:
-            adjusted = (1, ) + tensor_shape
-            for p in profiles:
-                if self._allocator._shape_matches_profile(
-                        adjusted, p['min_shape'], p['max_shape']):
-                    return True
-        elif len(tensor_shape) == expected_ndim + 1:
-            adjusted = tensor_shape[1:]
-            for p in profiles:
-                if self._allocator._shape_matches_profile(
-                        adjusted, p['min_shape'], p['max_shape']):
-                    return True
-
-        return False
-
-    def should_fallback(self, *args, **kwargs) -> bool:
-        if self._backend is None:
-            return False
-
-        profiles = self._ensure_profiles()
-        if not profiles:
-            return False
-
-        tensor_inputs: dict[str, torch.Tensor] = {}
-        for name, arg in zip(self._param_names, args):
-            if isinstance(arg, torch.Tensor):
-                tensor_inputs[name] = arg
-        for name, val in kwargs.items():
-            if isinstance(val, torch.Tensor):
-                tensor_inputs[name] = val
-
-        for tensor_name, tensor in tensor_inputs.items():
-            if not self._shape_fits_profiles(tensor_name, tuple(tensor.shape)):
-                return True
-
-        return False
-
-
 class TorchFallbackStrategy(FallbackStrategy):
     """Fallback strategy for torch eager / torch.compile backends.
 
@@ -154,7 +47,6 @@ class TorchFallbackStrategy(FallbackStrategy):
 
 
 FALLBACK_STRATEGIES: dict[str, type[FallbackStrategy]] = {
-    BackendType.TRT: TRTFallbackStrategy,
     BackendType.TORCH: TorchFallbackStrategy,
 }
 
@@ -163,18 +55,10 @@ class AutoFallback:
     """Backend-aware fallback dispatcher.
 
     Selects the right :class:`FallbackStrategy` from
-    :data:`FALLBACK_STRATEGIES` based on the backend type
-    (``"trt"``, ``"torch"``, etc.).
+    :data:`FALLBACK_STRATEGIES` based on the backend type (``"torch"``, etc.).
 
     ``AutoFallback`` is the **default** fallback used by
     :meth:`BackendBase.forward` when ``config.need_fallback`` is ``None``.
-    This means every backend automatically gets the appropriate fallback
-    behaviour without any explicit configuration:
-
-    * **TRT backends** — falls back to torch eager when input shapes exceed
-      engine optimization profiles (:class:`TRTFallbackStrategy`).
-    * **Torch backends** — never triggers fallback since torch eager is
-      already the fallback target (:class:`TorchFallbackStrategy`).
 
     To override per-module, pass a custom callable or strategy via
     ``AcceleratedConfig.need_fallback``.  To register a strategy for a
@@ -211,21 +95,14 @@ class AutoFallback:
 class BackendBase(nn.Module, ABC):
     CONFIG_CLASS = None
 
-    def __init__(self,
-                 config: BaseConfig,
-                 context_memory_allocator: BaseContextMemoryManager = None):
+    def __init__(self, config: BaseConfig):
         """ BackendBase is the base class for all backends.
         It provides the basic functionality for all backends.
         Args:
             config(BaseConfig): The configuration for the backend.
-            context_memory_allocator(BaseContextMemoryManager): The context memory allocator to use. If None, the default allocator will be used.
         """
         super().__init__()
         self._config = config
-        self._context_memory_allocator = context_memory_allocator
-        if self._context_memory_allocator is None:
-            self._context_memory_allocator = SimpleContextMemoryManager()
-        self._loaded_by_manager = False
         self._world_size = 1
         self._runtime_rank = 0
         self._checkpoint_dir = None
@@ -275,50 +152,6 @@ class BackendBase(nn.Module, ABC):
         """
         This method is used to warmup the backend implementation (i.e. torch.compile).
         """
-
-    @classmethod
-    def load_weights(cls,
-                     checkpoint_dir: Union[str, Path] = None,
-                     context_memory_allocator: BaseContextMemoryManager = None,
-                     **kwargs):
-        """
-        Load weights into the backend.
-        Args:
-            checkpoint_dir(str): The directory to load the checkpoint from.
-            world_size(int): Reversed for parallelism
-            rank(int): Reversed for parallelism
-            **kwargs: Additional arguments to pass to the load_weights_fn.
-        """
-        assert cls.CONFIG_CLASS is not None, "CONFIG_CLASS must be set for the backend: {cls.__name__}"
-        if isinstance(checkpoint_dir, str):
-            checkpoint_dir = Path(checkpoint_dir)
-        backend_dir = checkpoint_dir / str(BackendType.TRT)
-        if backend_dir.exists():
-            # Build from trtbnm-build
-            config_path = backend_dir / "config.json"
-            with open(config_path, "r") as f:
-                config_dict = json.load(f)["pretrained_config"]
-        else:
-            # Build for testing purposes
-            backend_dir = checkpoint_dir
-            config_path = checkpoint_dir / "config.json"
-            with open(config_path, "r") as f:
-                config_dict = json.load(f)
-
-        _config = cls.CONFIG_CLASS.model_validate(config_dict)
-
-        if "stream" in kwargs:
-            _stream = kwargs["stream"]
-        else:
-            _stream = None
-
-        module = cls(config=_config,
-                     context_memory_allocator=context_memory_allocator)
-        module.checkpoint_dir = backend_dir
-        assert context_memory_allocator is not None, "Context memory allocator is not set"
-        context_memory_allocator.add_handle(module, stream=_stream)
-
-        return module
 
     @abstractmethod
     def forward_udf(self, *args, **kwargs) -> Any:

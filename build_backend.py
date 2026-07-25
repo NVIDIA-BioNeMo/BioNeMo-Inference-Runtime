@@ -5,15 +5,12 @@ import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.resolve()
-TRT_ROOT_DIR = os.environ.get("TRT_ROOT_DIR", "/usr/local/tensorrt")
 CMAKE_BUILD_TYPE = os.environ.get("CMAKE_BUILD_TYPE", "Release")
 RECOMPILE_CPP = int(os.environ.get("RECOMPILE_CPP", "0"))
 CUEQ_VERSION = os.environ.get("CUEQ_VERSION", "0.10.0")
 
 LIBS_DIR = ROOT_DIR / "tensorrt_bionemo" / "libs"
-KERNELS_LIBRARY_NAME = "kernels_tensorrt_bionemo"
-KERNELS_LIBRARY_PATH = LIBS_DIR / f"lib{KERNELS_LIBRARY_NAME}.so"
-TRT_PLUGIN_LIBRARY_PATH = LIBS_DIR / "libnvinfer_plugin_tensorrt_bionemo.so"
+EXTENSION_LIBRARY_PATH = LIBS_DIR / "lib_C.so"
 
 
 def get_platform_tag():
@@ -98,65 +95,6 @@ def _check_and_install_packaging():
 
 _check_and_install_packaging()
 
-EXAMPLES_CONVERSION_SCRIPTS = [
-    "examples/boltz1/convert_pairformer_checkpoint.py",
-    "examples/boltz1/convert_token_transformer_checkpoint.py",
-    "examples/boltz2/convert_pairformer_checkpoint.py",
-    "examples/boltz2/convert_token_transformer_checkpoint.py",
-    "examples/openfold2/convert_evoformer_checkpoint.py",
-    "examples/openfold2/jax_to_pt.py",
-    "examples/openfold3/convert_pairformer_checkpoint.py",
-    "examples/openfold3/convert_token_transformer_checkpoint.py",
-]
-
-
-def _inject_examples_into_wheel(wheel_path: Path):
-    """Add conversion example scripts into the built wheel."""
-    import base64
-    import hashlib
-    import tempfile
-    import zipfile
-
-    with tempfile.NamedTemporaryFile(dir=wheel_path.parent,
-                                     suffix='.whl',
-                                     delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-
-    record_path = None
-    record_lines = []
-
-    with zipfile.ZipFile(wheel_path, 'r') as zin:
-        with zipfile.ZipFile(tmp_path, 'w',
-                             compression=zipfile.ZIP_DEFLATED) as zout:
-            for item in zin.infolist():
-                data = zin.read(item.filename)
-                if item.filename.endswith('.dist-info/RECORD'):
-                    record_path = item.filename
-                    record_lines = data.decode().strip().splitlines()
-                    continue
-                zout.writestr(item, data)
-
-            for script_rel in EXAMPLES_CONVERSION_SCRIPTS:
-                src = ROOT_DIR / script_rel
-                if not src.exists():
-                    print(f"WARNING: {src} not found, skipping")
-                    continue
-                file_data = src.read_bytes()
-                zout.writestr(script_rel, file_data)
-                digest = base64.urlsafe_b64encode(
-                    hashlib.sha256(file_data).digest()).rstrip(b'=').decode()
-                record_lines.append(
-                    f"{script_rel},sha256={digest},{len(file_data)}")
-                print(f"==> Injected {script_rel} into wheel")
-
-            record_lines = [
-                l for l in record_lines if not l.startswith(record_path)
-            ]
-            record_lines.append(f"{record_path},,")
-            zout.writestr(record_path, '\n'.join(record_lines) + '\n')
-
-    tmp_path.replace(wheel_path)
-
 
 def _check_and_install_cuequivariance():
     """Check if cuequivariance_ops is available and install if needed."""
@@ -189,10 +127,7 @@ def _run_cmake(need_build: bool = True):
     if not need_build:
         return
 
-    output_libs = [
-        KERNELS_LIBRARY_PATH,
-        TRT_PLUGIN_LIBRARY_PATH,
-    ]
+    output_libs = [EXTENSION_LIBRARY_PATH]
     all_exist = True
     for output_lib in output_libs:
         all_exist = all_exist and output_lib.exists()
@@ -205,7 +140,6 @@ def _run_cmake(need_build: bool = True):
 
     cmake_args = [
         f"-DCMAKE_BUILD_TYPE={CMAKE_BUILD_TYPE}",
-        f"-DTRT_ROOT_DIR={TRT_ROOT_DIR}",
         f"-DFAST_BUILD=ON",
         f"-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
         f"-DCMAKE_CUDA_COMPILER_LAUNCHER=ccache",
@@ -277,12 +211,12 @@ def build_wheel(wheel_directory,
                 metadata_directory=None):
     _run_cmake(need_build=True)
     # Verify .so files exist before packaging
-    for lib in [KERNELS_LIBRARY_PATH, TRT_PLUGIN_LIBRARY_PATH]:
+    for lib in [EXTENSION_LIBRARY_PATH]:
         if not lib.exists():
-            raise RuntimeError(
-                f"Build failed: {lib} not found after cmake. "
-                f"Wheel would be incomplete.")
-        print(f"==> Verified: {lib} ({lib.stat().st_size / 1024 / 1024:.1f} MB)")
+            raise RuntimeError(f"Build failed: {lib} not found after cmake. "
+                               f"Wheel would be incomplete.")
+        print(
+            f"==> Verified: {lib} ({lib.stat().st_size / 1024 / 1024:.1f} MB)")
 
     import setuptools.build_meta as stbm
     wheel_name = stbm.build_wheel(wheel_directory, config_settings,
@@ -294,14 +228,14 @@ def build_wheel(wheel_directory,
     with zipfile.ZipFile(wheel_path, 'r') as zf:
         so_files = [n for n in zf.namelist() if n.endswith('.so')]
         if not so_files:
-            raise RuntimeError(
-                f"Wheel {wheel_path} contains no .so files. "
-                f"Build packaging failed.")
+            raise RuntimeError(f"Wheel {wheel_path} contains no .so files. "
+                               f"Build packaging failed.")
         for sf in so_files:
             info = zf.getinfo(sf)
-            print(f"==> Wheel contains: {sf} ({info.file_size / 1024 / 1024:.1f} MB)")
+            print(
+                f"==> Wheel contains: {sf} ({info.file_size / 1024 / 1024:.1f} MB)"
+            )
 
-    _inject_examples_into_wheel(wheel_path)
     print(f"==> Built wheel: {wheel_path}")
     # Parse original name
     # Format: {name}-{version}-{python}-{abi}-{platform}.whl

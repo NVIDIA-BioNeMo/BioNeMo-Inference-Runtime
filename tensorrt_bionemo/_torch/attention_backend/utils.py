@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Type
 
 import torch
-from tensorrt_llm_lite._utils import get_sm_version
+
+from tensorrt_bionemo.utils import get_sm_version
 
 from .cuequiv import CuEquivAttention
 from .interface import AttentionBackend, AttentionType

@@ -17,7 +17,6 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_affinity_module_weights, load_affinity_module_weights_torch)
 from test_utils.boltz.ref_layers import RefAffinityModule
@@ -27,6 +26,7 @@ from tensorrt_bionemo._torch.attention_backend.utils import \
 from tensorrt_bionemo._torch.modules.boltz.affinity import AffinityModule
 from tensorrt_bionemo.configs import AffinityModuleConfig
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

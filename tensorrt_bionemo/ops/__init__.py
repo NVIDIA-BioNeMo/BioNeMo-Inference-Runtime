@@ -15,8 +15,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 
 from tensorrt_bionemo.ops._loader import load_extension
@@ -53,53 +51,6 @@ def generate_deletion_matrix(buff: torch.Tensor, offsets: torch.Tensor,
     _C.generate_deletion_matrix(buff, offsets, lengths, N)
 
 
-def x_x_dual_gemm(X: torch.Tensor,
-                  W0: torch.Tensor,
-                  W1: torch.Tensor,
-                  bias0: Optional[torch.Tensor] = None,
-                  bias1: Optional[torch.Tensor] = None,
-                  mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """
-  Dual GEMM operation.
-
-  Args:
-    X: Input tensor (CUDA, contiguous)
-    W0: Weight tensor 0 (CUDA, contiguous)
-    W1: Weight tensor 1 (CUDA, contiguous)
-    bias0: Bias tensor 0 (CUDA, contiguous)
-    bias1: Bias tensor 1 (CUDA, contiguous)
-    mask: Mask tensor (CUDA, contiguous)
-
-  Returns:
-    Output tensor (CUDA, contiguous): X@W0 * sigmoid(X@W1) * mask
-  """
-    return _C.x_x_dual_gemm(X, W0, W1, bias0, bias1, mask)
-
-
-def x0_x1_dual_gemm(X0: torch.Tensor,
-                    X1: torch.Tensor,
-                    W0: torch.Tensor,
-                    W1: torch.Tensor,
-                    bias0: Optional[torch.Tensor] = None,
-                    bias1: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """
-    Dual GEMM operation.
-    Args:
-      X0: Input tensor 0 (CUDA, contiguous)
-      X1: Input tensor 1 (CUDA, contiguous)
-      W0: Weight tensor 0 (CUDA, contiguous)
-      W1: Weight tensor 1 (CUDA, contiguous)
-      bias0: Bias tensor 0 (CUDA, contiguous)
-      bias1: Bias tensor 1 (CUDA, contiguous)
-
-    Returns:
-      Output tensor (CUDA, contiguous): sigmoid(X0@W0) * (X1@W1)
-    """
-    return _C.x0_x1_dual_gemm(X0, X1, W0, W1, bias0, bias1)
-
-
 __all__ = [
     "generate_deletion_matrix",
-    "x_x_dual_gemm",
-    "x0_x1_dual_gemm",
 ]

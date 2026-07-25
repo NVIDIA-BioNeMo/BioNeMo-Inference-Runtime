@@ -163,7 +163,7 @@ class CuteKernelCache(KernelCacheBase):
                         function_name=EXPORT_FUNC_NAME,
                     )
         except Exception as e:
-            from tensorrt_llm_lite.logger import logger
+            from tensorrt_bionemo.logger import logger
             logger.warning(f"bionemo kernel cache: export failed for key "
                            f"{sha}: {e}")
 

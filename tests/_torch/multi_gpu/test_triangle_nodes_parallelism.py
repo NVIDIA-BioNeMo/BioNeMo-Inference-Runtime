@@ -22,7 +22,6 @@ import pytest
 import torch
 import torch.distributed as dist
 from mpi4py.futures import MPIPoolExecutor
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.boltz.create_and_load_weights import (
     create_triangle_attention_node_weights,
     create_triangle_multiplication_node_weights,
@@ -38,6 +37,7 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests.common.test_utils.mpi import set_mpi_env
 
 

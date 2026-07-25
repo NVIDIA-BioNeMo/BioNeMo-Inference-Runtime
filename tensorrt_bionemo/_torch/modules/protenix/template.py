@@ -21,12 +21,12 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerNoSeqModule
 from tensorrt_bionemo.configs import BaseConfig
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 class ProtenixTemplateEmbedder(nn.Module):

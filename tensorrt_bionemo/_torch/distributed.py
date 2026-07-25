@@ -12,8 +12,8 @@ from typing import Callable, List, Optional
 
 import torch
 import torch.distributed as dist
-from tensorrt_llm_lite import logger
 
+from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.mapping import Mapping
 
 

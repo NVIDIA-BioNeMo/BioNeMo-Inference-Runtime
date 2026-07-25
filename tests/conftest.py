@@ -23,8 +23,7 @@ running any test, i.e. before the first GPU op creates a cuBLAS handle):
 
 1. ``NVIDIA_TF32_OVERRIDE=0`` -- the global CUDA kill switch, read by cuBLAS /
    cuDNN at handle creation. This is the reliable, torch-version-independent
-   switch and, crucially, also disables TF32 inside the TensorRT engines built by
-   the ``_trt`` tests, which torch's backend flags do not cover. Must be set
+   switch at cuBLAS/cuDNN handle creation time. Must be set
    *before* ``import torch`` / first CUDA use.
 2. The torch backend flags -- explicit belt-and-suspenders for torch's own ops.
 

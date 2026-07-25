@@ -51,11 +51,6 @@ class ModelComponentsFactory(ABC):
         pass
 
     @classmethod
-    @abstractmethod
-    def get_trt_building_modules(cls) -> Dict[str, Any]:
-        pass
-
-    @classmethod
     def get_default_runtime_args(cls) -> Dict[str, Any]:
         return {}
 
@@ -117,20 +112,6 @@ class ModelRegistry:
         from tensorrt_bionemo.hubs.metadata import load_metadata
         return load_metadata(model_name, cache_dir)
 
-    @classmethod
-    def get_trt_building_modules(cls, model_name: str) -> Dict[str, Any]:
-        return cls.get_factory(model_name).get_trt_building_modules()
-
-    @classmethod
-    def get_building_module_class(cls, model_name: str,
-                                  module_name: str) -> Any:
-        modules = cls.get_trt_building_modules(model_name)
-        if module_name not in modules:
-            raise ValueError(
-                f"Module {module_name} not found for model {model_name}. "
-                f"Available modules: {list(modules.keys())}")
-        return modules[module_name]
-
 
 class OpenFold2Factory(ModelComponentsFactory):
 
@@ -156,11 +137,6 @@ class OpenFold2Factory(ModelComponentsFactory):
         from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import \
             PostProcessor
         return PostProcessor
-
-    @classmethod
-    def get_trt_building_modules(cls) -> Dict[str, Any]:
-        from tensorrt_bionemo._trt.layers.transformers import EvoformerStack
-        return {"evoformer": EvoformerStack}
 
     @classmethod
     def get_supported_model_names(cls) -> list[str]:
@@ -208,11 +184,6 @@ class OpenFold2MultimerFactory(ModelComponentsFactory):
         return PostProcessor
 
     @classmethod
-    def get_trt_building_modules(cls) -> Dict[str, Any]:
-        from tensorrt_bionemo._trt.layers.transformers import EvoformerStack
-        return {"evoformer": EvoformerStack}
-
-    @classmethod
     def get_supported_model_names(cls) -> list[str]:
         return [
             SupMat.AlphaFold2_Multimer_1,
@@ -256,16 +227,6 @@ class Boltz1Factory(ModelComponentsFactory):
         return PostProcessor
 
     @classmethod
-    def get_trt_building_modules(cls) -> Dict[str, Any]:
-        from tensorrt_bionemo._trt.layers.transformers import (
-            PairformerModule, TokenTransformer)
-        return {
-            "structure_pairformer": PairformerModule,
-            "confidence_pairformer": PairformerModule,
-            "token_transformer": TokenTransformer,
-        }
-
-    @classmethod
     def get_supported_model_names(cls) -> list[str]:
         return [SupMat.Boltz1]
 
@@ -303,16 +264,6 @@ class Boltz2Factory(ModelComponentsFactory):
         return PostProcessor
 
     @classmethod
-    def get_trt_building_modules(cls) -> Dict[str, Any]:
-        from tensorrt_bionemo._trt.layers.transformers import (
-            PairformerModule, TokenTransformer)
-        return {
-            "structure_pairformer": PairformerModule,
-            "confidence_pairformer": PairformerModule,
-            "token_transformer": TokenTransformer,
-        }
-
-    @classmethod
     def get_supported_model_names(cls) -> list[str]:
         return [SupMat.Boltz2]
 
@@ -346,16 +297,6 @@ class Boltz2AffinityFactory(ModelComponentsFactory):
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
         raise NotImplementedError(
             "Boltz2Affinity postprocessor not implemented in pipeline")
-
-    @classmethod
-    def get_trt_building_modules(cls) -> Dict[str, Any]:
-        from tensorrt_bionemo._trt.layers.transformers import (
-            PairformerModule, TokenTransformer)
-        return {
-            "structure_pairformer": PairformerModule,
-            "confidence_pairformer": PairformerModule,
-            "token_transformer": TokenTransformer,
-        }
 
     @classmethod
     def get_supported_model_names(cls) -> list[str]:
@@ -402,15 +343,6 @@ class OpenFold3Factory(ModelComponentsFactory):
         return PostProcessor
 
     @classmethod
-    def get_trt_building_modules(cls) -> Dict[str, Any]:
-        from tensorrt_bionemo._trt.layers.transformers import (
-            OpenFold3DiffusionTransformer, PairformerModule)
-        return {
-            "pairformer": PairformerModule,
-            "token_transformer": OpenFold3DiffusionTransformer,
-        }
-
-    @classmethod
     def get_supported_model_names(cls) -> list[str]:
         return [SupMat.OpenFold3]
 
@@ -455,7 +387,3 @@ def load_metadata(
     cache_dir: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     return ModelRegistry.load_metadata(model_name, cache_dir)
-
-
-def get_building_module_class(model_name: str, module_name: str) -> Any:
-    return ModelRegistry.get_building_module_class(model_name, module_name)

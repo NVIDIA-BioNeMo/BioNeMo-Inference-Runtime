@@ -18,12 +18,12 @@ import os
 import pytest
 import torch
 import torch.nn as nn
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.modules.protenix import ProtenixConstraintEmbedder
 from tensorrt_bionemo.models.protenix.config import ConstraintEmbedderConfig
 from tensorrt_bionemo.models.protenix.convert import \
     convert_constraint_embedder_torch
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.ref_layers_from_oss import \
     RefProtenixConstraintEmbedderFromOSS
 

@@ -12,11 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from tensorrt_llm_lite._utils import str_dtype_to_torch
-from tensorrt_llm_lite.logger import logger
-
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
+from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import \
     convert_hf_diffusion_transformer as boltz1_convert_hf_diffusion_transformer
@@ -29,6 +27,7 @@ from tensorrt_bionemo.models.boltz1.convert import (get_pairwise_attn_weights,
                                                     get_transition_weights,
                                                     get_tri_attn_node_weights,
                                                     get_tri_mul_node_weights)
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 def get_post_pre_norm_weights(state_dict: dict,

@@ -26,13 +26,13 @@ from __future__ import annotations
 from typing import Optional
 
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import (get_transition_weights,
                                                     get_tri_attn_node_weights,
                                                     get_tri_mul_node_weights)
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 _FUSED_ATOM_LINEARS = {
     "linear_no_bias_ref": ("ref_pos", "ref_charge", "f"),

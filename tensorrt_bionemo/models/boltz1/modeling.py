@@ -17,8 +17,6 @@ from typing import Any, Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm_lite import logger
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
@@ -40,16 +38,16 @@ from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
 from tensorrt_bionemo._torch.modules.boltz.structure import (
     AtomDiffusion, DiffusionConditioning)
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
-from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
-                                                   TokenTransformerTRT)
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
+from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
     num_pocket_contact_info, num_tokens)
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
-from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
-                      OptimizedModuleSetterMixin)
+from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry,
+                                      ModuleSpec, OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (convert_hf_confidence_torch,
                       convert_hf_diffusion_conditioning_torch,
@@ -67,7 +65,6 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                 getter=lambda mod: mod.trunk.pairformer_module,
                 setter=lambda mod, opt: setattr(mod.trunk, "pairformer_module",
                                                 opt),
-                trt_cls=PairformerTRT,
                 compiled_cls=None,
             ),
             "confidence_pairformer":
@@ -75,7 +72,6 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                 getter=lambda mod: mod.confidence_module.pairformer_module,
                 setter=lambda mod, opt: setattr(mod.confidence_module,
                                                 "pairformer_module", opt),
-                trt_cls=PairformerTRT,
                 compiled_cls=None,
             ),
             "token_transformer":
@@ -85,7 +81,6 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                 setter=lambda mod, opt: setattr(
                     mod.structure_module.score_model, "token_transformer", opt
                 ),
-                trt_cls=TokenTransformerTRT,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "diffusion_module":
@@ -93,7 +88,6 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                 getter=lambda mod: mod.structure_module.score_model,
                 setter=lambda mod, opt: setattr(
                     mod.structure_module, "score_model", opt),
-                trt_cls=None,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "structure_msa":

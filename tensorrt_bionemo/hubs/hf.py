@@ -20,7 +20,6 @@ from typing import Optional, Union
 
 import torch
 from huggingface_hub import hf_hub_download
-from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.hubs.local import (BOLTZ_MODEL_NAMES,
                                          PROTENIX_MODEL_NAMES,
@@ -29,6 +28,7 @@ from tensorrt_bionemo.hubs.local import (BOLTZ_MODEL_NAMES,
                                          _load_protenix_state_dict,
                                          verify_boltz_checkpoint_md5)
 from tensorrt_bionemo.hubs.support_matrix import FoldingSupportMatrix as SupMat
+from tensorrt_bionemo.logger import logger
 
 HFCheckpoint = namedtuple(
     "HFCheckpoint", ["repo_id", "filename", "weights_only", "state_dict_key"])

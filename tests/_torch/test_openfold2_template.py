@@ -18,7 +18,6 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 from test_utils.openfold.create_and_load_weights import (
     create_template_pair_stack_block_weights,
     create_template_pointwise_attention_weights,
@@ -30,6 +29,7 @@ from test_utils.openfold.ref_layers import (RefTemplatePairStackBlock,
 from tensorrt_bionemo._torch.modules.openfold2.template import (
     TemplatePairBlock, TemplatePointwiseAttention)
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

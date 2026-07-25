@@ -16,7 +16,8 @@ from typing import Any, Optional
 
 import torch
 import torch.nn as nn
-from tensorrt_llm_lite.logger import logger
+
+from tensorrt_bionemo.logger import logger
 
 # isort: off
 import tensorrt_bionemo.pipeline.models.openfold2.const as residue_constants
@@ -34,7 +35,6 @@ from tensorrt_bionemo._torch.modules.openfold2.utils.feats import (
     atom14_to_atom37, build_extra_msa_feat, build_extra_msa_feat_multimer,
     pseudo_beta_fn)
 from tensorrt_bionemo._torch.tensor_utils import masked_mean, tensor_tree_map
-from tensorrt_bionemo._trt.module_wrappers import EvoformerStackTRT
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
@@ -59,7 +59,6 @@ class OpenFold2ModuleRegistry(ModuleRegistry):
             ModuleSpec(
                 getter=lambda mod: mod.evoformer,
                 setter=lambda mod, opt: setattr(mod, "evoformer", opt),
-                trt_cls=EvoformerStackTRT,
                 compiled_cls=None,
             ),
         }

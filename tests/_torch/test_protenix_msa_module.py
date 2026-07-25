@@ -19,11 +19,11 @@ from dataclasses import dataclass
 import pytest
 import torch
 import torch.nn.functional as F
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.modules.protenix import ProtenixMSAModule
 from tensorrt_bionemo.models.protenix.config import ProtenixMSAModuleConfig
 from tensorrt_bionemo.models.protenix.convert import convert_msa_module_torch
+from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import skip_if_cutedsl
 from tests.common.test_utils.protenix.ref_layers_from_oss import \
     RefProtenixMSAModuleFromOSS

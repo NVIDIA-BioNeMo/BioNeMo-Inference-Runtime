@@ -48,7 +48,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from tensorrt_llm_lite.logger import logger
+from tensorrt_bionemo.logger import logger
 
 _TUNED_CONFIG_ENV = "TRTBNM_TUNED_CONFIG_FOLDER"
 

@@ -18,8 +18,9 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorrt_llm_lite._utils import str_dtype_to_torch
-from tensorrt_llm_lite.logger import logger
+
+from tensorrt_bionemo.logger import logger
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 # isort: off
 from tensorrt_bionemo._torch.attention_backend import (
@@ -43,8 +44,6 @@ from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
 from tensorrt_bionemo._torch.modules.boltz.structure import (
     AtomDiffusion, DiffusionConditioning)
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
-from tensorrt_bionemo._trt.module_wrappers import (PairformerTRT,
-                                                   TokenTransformerTRT)
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
@@ -74,7 +73,6 @@ class Boltz2ModuleRegistry(ModuleRegistry):
                 getter=lambda mod: mod.trunk.pairformer_module,
                 setter=lambda mod, opt: setattr(mod.trunk, "pairformer_module",
                                                 opt),
-                trt_cls=PairformerTRT,
                 compiled_cls=None,
             ),
             "confidence_pairformer":
@@ -82,7 +80,6 @@ class Boltz2ModuleRegistry(ModuleRegistry):
                 getter=lambda mod: mod.confidence_module.pairformer_stack,
                 setter=lambda mod, opt: setattr(mod.confidence_module,
                                                 "pairformer_stack", opt),
-                trt_cls=PairformerTRT,
                 compiled_cls=None,
             ),
             "token_transformer":
@@ -92,7 +89,6 @@ class Boltz2ModuleRegistry(ModuleRegistry):
                 setter=lambda mod, opt: setattr(
                     mod.structure_module.score_model, "token_transformer", opt
                 ),
-                trt_cls=TokenTransformerTRT,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "diffusion_module":
@@ -100,7 +96,6 @@ class Boltz2ModuleRegistry(ModuleRegistry):
                 getter=lambda mod: mod.structure_module.score_model,
                 setter=lambda mod, opt: setattr(
                     mod.structure_module, "score_model", opt),
-                trt_cls=None,
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "structure_msa":

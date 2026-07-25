@@ -17,11 +17,11 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
 
 from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import \
     get_adaln_layernorm_sigmoid_op
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

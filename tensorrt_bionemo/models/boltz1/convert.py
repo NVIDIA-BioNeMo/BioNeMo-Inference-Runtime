@@ -14,12 +14,12 @@
 # limitations under the License.
 
 import torch
-from tensorrt_llm_lite._utils import str_dtype_to_torch
-from tensorrt_llm_lite.logger import logger
 
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
+from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 def get_pairwise_attn_weights(mapping: Mapping,

@@ -24,13 +24,16 @@ from test_utils.boltz.create_and_load_weights import (
 from test_utils.boltz.ref_layers import RefPairWeightedAveraging
 
 from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
+from tensorrt_bionemo._torch.custom_ops import \
+    pair_weighted_averaging as pwa_ops
 from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import (
-    PairWeightedAveragingCuTe, get_pair_weighted_averaging_op)
+    PairWeightedAveragingCuTe, _select_pwa_config_bucket,
+    get_pair_weighted_averaging_op, select_pwa_config)
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, skip_if_no_cutedsl
 
-_CUTEDSL_SM = (80, 86, 89, 90)
+_CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -52,7 +55,7 @@ class Scenario:
         # on the eager path.
         Scenario(torch_dtype="bfloat16"),
         Scenario(torch_dtype="float16"),
-        # Larger N exercises the kernel's pseudo-seqlen config selection.
+        # Larger N exercises the kernel's hierarchical N-then-S config selection.
         Scenario(torch_dtype="bfloat16", n_res=128),
         # fp32 cannot use the fused kernel, so these exercise the auto-chunk fallback.
         Scenario(chunk=1),
@@ -238,3 +241,77 @@ def test_pair_weighted_averaging_op_selector():
     if SM_VERSION in _CUTEDSL_SM:
         assert isinstance(op_bf16, PairWeightedAveragingCuTe)
     assert not isinstance(op_fp32, PairWeightedAveragingCuTe)
+
+
+@pytest.mark.parametrize("sm", [100, 103])
+def test_pair_weighted_averaging_supports_blackwell(monkeypatch, sm):
+    sentinel = object()
+    monkeypatch.setattr(pwa_ops, "get_sm_version", lambda: sm)
+    monkeypatch.setattr(pwa_ops, "_pwa_cute_instance", sentinel)
+    assert pwa_ops.get_pair_weighted_averaging_op(torch.bfloat16) is sentinel
+
+
+def test_pair_weighted_averaging_config_selects_n_bucket_before_s():
+    """Changing S must not make a fixed N jump to another tuned N bucket."""
+    # For N=1024, S=1600 is closer to the N=1024/S=2048 variant than S=1024.
+    # The old sqrt(N*S) selector instead jumped to the N=1536/S=1024 anchor.
+    config = select_pwa_config(sm_version=80,
+                               I=1024,
+                               J=1024,
+                               S=1600,
+                               dtype_str="bf16")
+
+    assert config.KO_TILE == 32
+    assert config.num_stages_w == 4
+
+    selected, variants = _select_pwa_config_bucket(sm_version=80,
+                                                   I=1024,
+                                                   J=1024,
+                                                   S=1600,
+                                                   dtype_str="bf16")
+    assert selected.config_key() == config.config_key()
+    # N=1024 has three S anchors but two unique kernel configs; duplicates do
+    # not need a second compilation.
+    assert len({variant.config_key() for variant in variants}) == 2
+
+
+def test_pair_weighted_averaging_reuses_executable_across_s():
+    """B/S are symbolic, so one token-shape executable serves multiple S."""
+    skip_if_no_cutedsl()
+    torch.manual_seed(0)
+    op = get_pair_weighted_averaging_op(torch.bfloat16)
+    assert isinstance(op, PairWeightedAveragingCuTe)
+
+    B, H, N, Jp, D, c_m = 1, 8, 33, 40, 32, 64
+    w = torch.randn(B, H, N, Jp, dtype=torch.bfloat16, device="cuda")
+    w[..., N:] = 0
+    Wo = torch.randn(c_m, H * D, dtype=torch.bfloat16, device="cuda")
+    executable_ids = []
+
+    for S in (7, 11):
+        vg = torch.randn(B,
+                         S,
+                         N,
+                         2 * H * D,
+                         dtype=torch.bfloat16,
+                         device="cuda")
+        v, g = vg.chunk(2, dim=-1)
+        out = op(w, v, g, Wo)
+
+        v5 = v.reshape(B, S, N, H, D)
+        o = torch.einsum("bhij,bsjhd->bhsid", w[..., :N].float(), v5.float())
+        o = o.permute(0, 2, 3, 1, 4).reshape(B, S, N, H * D)
+        ref = ((torch.sigmoid(g.float()) * o) @ Wo.float().t()).to(w.dtype)
+        rel_l2 = ((out.float() - ref.float()).norm() /
+                  ref.float().norm().clamp_min(1e-6)).item()
+        assert rel_l2 < 2e-2
+
+        config = select_pwa_config(sm_version=op._sm_version,
+                                   I=N,
+                                   J=N,
+                                   S=S,
+                                   dtype_str="bf16")
+        key = (config.config_key(), N, Jp, N)
+        executable_ids.append(id(op._compiled_cache[key]))
+
+    assert executable_ids[0] == executable_ids[1]

@@ -23,13 +23,15 @@ from test_utils.boltz.create_and_load_weights import (
 from test_utils.boltz.ref_layers import RefOuterProductMean
 
 from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
+from tensorrt_bionemo._torch.custom_ops import outer_product_mean as opm_ops
 from tensorrt_bionemo._torch.custom_ops.outer_product_mean import (
-    OuterProductMeanCuTe, get_outer_product_mean_op)
+    OuterProductMeanCuTe, _select_opm_config_bucket, get_outer_product_mean_op,
+    select_opm_config)
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, skip_if_no_cutedsl
 
-_CUTEDSL_SM = (80, 86, 89, 90)
+_CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -51,7 +53,7 @@ class Scenario:
         # SM80 fused CuTe custom op; fp32 / chunked stay on the eager path.
         Scenario(torch_dtype="bfloat16"),
         Scenario(torch_dtype="float16"),
-        # Larger N exercises the kernel's pseudo-seqlen config selection.
+        # Larger N exercises the kernel's hierarchical N-then-S config selection.
         Scenario(torch_dtype="bfloat16", n_res=128),
         # norm-after-output epilogue (the kernel divides the proj-o accumulator).
         Scenario(torch_dtype="bfloat16", norm_before_output=False),
@@ -230,3 +232,39 @@ def test_outer_product_mean_op_selector():
     if SM_VERSION in _CUTEDSL_SM:
         assert isinstance(op_bf16, OuterProductMeanCuTe)
     assert not isinstance(op_fp32, OuterProductMeanCuTe)
+
+
+@pytest.mark.parametrize("sm", [100, 103])
+def test_outer_product_mean_supports_blackwell(monkeypatch, sm):
+    sentinel = object()
+    monkeypatch.setattr(opm_ops, "get_sm_version", lambda: sm)
+    monkeypatch.setattr(opm_ops, "_opm_cute_instance", sentinel)
+    assert opm_ops.get_outer_product_mean_op(torch.bfloat16) is sentinel
+
+
+def test_outer_product_mean_config_selects_n_bucket_before_s():
+    """Changing S must not make a fixed N jump to another tuned N bucket."""
+    # For N=1024, S=1600 is closer to the N=1024/S=2048 variant than S=1024.
+    # The old sqrt(N*S) selector instead jumped to the N=1536/S=1024 anchor.
+    config = select_opm_config(sm_version=80,
+                               I=1024,
+                               J=1024,
+                               S=1600,
+                               norm_before=True,
+                               has_bias=True,
+                               dtype_str="bf16")
+
+    assert (config.TILE_I, config.TILE_J) == (8, 4)
+    assert config.atom_layout_s == (4, 2, 1)
+    assert config.atom_layout_o == (1, 8, 1)
+
+    selected, variants = _select_opm_config_bucket(sm_version=80,
+                                                   I=1024,
+                                                   J=1024,
+                                                   S=1600,
+                                                   norm_before=True,
+                                                   has_bias=True,
+                                                   dtype_str="bf16")
+    assert selected.config_key() == config.config_key()
+    # N=1024 has three distinct tuned S variants; the backend precompiles all.
+    assert len({variant.config_key() for variant in variants}) == 3

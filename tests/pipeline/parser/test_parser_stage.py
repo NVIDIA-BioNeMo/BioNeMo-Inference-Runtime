@@ -36,7 +36,7 @@ def _unpack_columnar(output):
 
 
 SAMPLES_DIR = Path(
-    __file__).parent.parent.parent.parent / "examples" / "data" / "samples"
+    __file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 
 
 class TestParserStageConfiguration:

@@ -28,7 +28,6 @@ class FoldingSupportMatrix:
     OpenFold2_NoTempl1 = "openfold2_no_templ_1"
     OpenFold2_NoTempl2 = "openfold2_no_templ_2"
     OpenFold2_NoTempl_PTM1 = "openfold2_no_templ_ptm_1"
-    OpenFold2_NoTempl_PTM2 = "openfold2_no_templ_ptm_2"
     AlphaFold2_1 = "alphafold2_1"
     AlphaFold2_2 = "alphafold2_2"
     AlphaFold2_3 = "alphafold2_3"

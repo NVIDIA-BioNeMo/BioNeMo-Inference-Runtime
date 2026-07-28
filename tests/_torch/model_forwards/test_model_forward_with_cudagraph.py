@@ -166,25 +166,7 @@ def _model_config(model_source: str):
     """Pretrained model config with any checkpoint-compatibility overrides.
 
     Returns ``None`` to use the engine's default pretrained config.
-
-    OpenFold3: the shipped ``of3-p2-155k`` checkpoint stores **per-block**
-    atom-transformer pair LayerNorms, but the config default
-    (``shared_pair_norm=True``) makes the weight converter look for a single
-    shared ``atom_transformer.layer_norm_z`` that the checkpoint does not
-    contain (``KeyError`` at load). Setting ``shared_pair_norm=False`` on the
-    three atom transformers matches the checkpoint (mirrors the original
-    OpenFold3 parity test's config).
     """
-    if model_source == "openfold3":
-        from tensorrt_bionemo.registry import get_model_class
-        cfg = get_model_class(model_source).get_pretrained_config(model_source)
-        cfg.input_embedder_config.atom_transformer_config.shared_pair_norm = \
-            False
-        cfg.diffusion_module_config.atom_transformer_encoder_config.\
-            shared_pair_norm = False
-        cfg.diffusion_module_config.atom_transformer_decoder_config.\
-            shared_pair_norm = False
-        return cfg
     return None
 
 

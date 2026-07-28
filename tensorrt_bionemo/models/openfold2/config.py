@@ -376,10 +376,6 @@ class OpenFold2_NoTempl_PTM1_Config(OpenFold2Config):
         return self
 
 
-class OpenFold2_NoTempl_PTM2_Config(OpenFold2_NoTempl_PTM1_Config):
-    pass
-
-
 class AlphaFold2_1_Config(OpenFold2Config):
 
     @model_validator(mode="after")
@@ -466,7 +462,6 @@ PRETRAINED_CONFIG_REGISTRY = {
     SupMat.OpenFold2_NoTempl1: OpenFold2_NoTempl1_Config,
     SupMat.OpenFold2_NoTempl2: OpenFold2_NoTempl2_Config,
     SupMat.OpenFold2_NoTempl_PTM1: OpenFold2_NoTempl_PTM1_Config,
-    SupMat.OpenFold2_NoTempl_PTM2: OpenFold2_NoTempl_PTM2_Config,
     SupMat.AlphaFold2_1: AlphaFold2_1_Config,
     SupMat.AlphaFold2_2: AlphaFold2_2_Config,
     SupMat.AlphaFold2_3: AlphaFold2_3_Config,

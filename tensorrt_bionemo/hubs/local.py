@@ -193,6 +193,31 @@ LOCAL_CHECKPOINTS = {
     ),
 }
 
+# File extensions scanned when probing the local checkpoint cache.
+_CHECKPOINT_EXTENSIONS = (".pt", ".ckpt")
+
+
+def local_checkpoint_dir() -> Path:
+    """Root scanned for staged checkpoints: ``TENSORRT_BIONEMO_CHECKPOINTS`` or
+    ``<CACHE_DIR>/checkpoints`` (where ``run_tests.sh --download`` stages them)."""
+    override = os.getenv("TENSORRT_BIONEMO_CHECKPOINTS")
+    if override:
+        return Path(override)
+    import tensorrt_bionemo
+    return tensorrt_bionemo.CACHE_DIR / "checkpoints"
+
+
+def resolve_cached_checkpoint(name: str) -> Optional[str]:
+    """Path of a ``*.pt``/``*.ckpt`` staged under ``<dir>/<name>/``, else None."""
+    model_dir = local_checkpoint_dir() / name
+    if not model_dir.is_dir():
+        return None
+    for ext in _CHECKPOINT_EXTENSIONS:
+        matches = sorted(p for p in model_dir.glob(f"*{ext}") if p.is_file())
+        if matches:
+            return str(matches[0])
+    return None
+
 
 class Dummy:
 
@@ -299,7 +324,19 @@ def load_local_weights(
         if repo_id is not None:
             default_repo_id = repo_id
         filepath = os.getenv(default_repo_id)
-    if filepath is None:
+        if filepath and not Path(filepath).is_file():
+            logger.warning(
+                f"Ignoring invalid local checkpoint path from {default_repo_id}: {filepath}"
+            )
+            filepath = None
+        if not filepath:  # unset, empty, or invalid path
+            # Fall back to a checkpoint staged in the local cache (e.g. by
+            # run_tests.sh --download) before giving up to the HuggingFace hub.
+            filepath = resolve_cached_checkpoint(name)
+            if filepath is not None:
+                logger.info(
+                    f"Using staged local checkpoint for {name}: {filepath}")
+    if not filepath:
         logger.info(
             f"Not found local checkpoint for {name}, using default repo id {default_repo_id}"
         )

@@ -31,11 +31,28 @@ mode.
 $ pytest -s $(pwd)/tests
 ```
 
+#### Model weights
+
+Model checkpoints for the test suite and benchmarks are centralized in the NGC org
+`<ngc-org>/<ngc-team>` (the single source of truth for CI, local runs, and
+benchmarking). Stage them — and run the full suite the way CI does — with:
+
+```bash
+export NGC_API_KEY=<NGC_API_KEY>          # read access to <ngc-org>/<ngc-team>
+.gitlab/ci/scripts/run_tests.sh       # download + stage weights, then run tests
+.gitlab/ci/scripts/run_tests.sh --download   # just stage weights and exit
+```
+
+See [docs/model-weights.md](docs/model-weights.md) for the design and for how to
+**upload a new model's weights** to `bioair` so CI/benchmarks pick them up.
+
 ### Release Docker
+
 Use the same development docker to build the wheel package:
+
 ```bash
 # clean building caches.
-$ rm -rf cpp/build 
+$ rm -rf cpp/build
 $ pip install build
 # Set RECOMPILE_CPP=1 to avoid caches
 $ RECOMPILE_CPP=1 python -m build --wheel --no-isolation --outdir packages/

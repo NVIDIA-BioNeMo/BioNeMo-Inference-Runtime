@@ -10,7 +10,7 @@ import pytest
 from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer, Template
 from tensorrt_bionemo.pipeline.stages.parser_stage import ParserUDF
 
-SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples"
+SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 
 
 class TestParserUDFBasicParsing:

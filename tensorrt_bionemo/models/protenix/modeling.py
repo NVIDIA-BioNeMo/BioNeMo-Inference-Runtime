@@ -29,8 +29,6 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
-from tensorrt_bionemo._torch.graph_optimization.config_schema import (
-    CUDAGraphOptimizationConfig, GraphOptimizationMode)
 from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
     CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.linear import Linear
@@ -42,12 +40,12 @@ from tensorrt_bionemo._torch.modules.protenix import (
     ProtenixConfidenceHead, ProtenixConfidenceSummary,
     ProtenixConstraintEmbedder, ProtenixDiffusionModule, ProtenixDistogramHead,
     ProtenixInputFeatureEmbedder, ProtenixSampleDiffusion, ProtenixTrunk)
-from tensorrt_bionemo.configs import BackendType, BaseConfig
+from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
-from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
-                      OptimizedModuleSetterMixin)
+from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry,
+                                      ModuleSpec, OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_confidence_head_torch, convert_constraint_embedder_torch,
@@ -63,13 +61,7 @@ def _unbatch(x: torch.Tensor, ndim: int) -> torch.Tensor:
 
 
 def _configure_inference_precision(config: BaseConfig) -> BaseConfig:
-    """Set trunk / diffusion / confidence backends and dtypes for inference.
-
-    Atom decoder stays fp32 — bf16 collapses e2e accuracy (T1047s1 lDDT
-    0.80 -> ~0.55). Token transformer + atom encoder tolerate bf16 (encoder
-    costs ~0.02 lDDT); bf16 preserves the token-transformer CUDA-graph win.
-    Conditioning + EDM math are already fp32.
-    """
+    """Set trunk / diffusion / confidence backends and dtypes for inference."""
     tri_backend = auto_select_triangle_attention_backend(torch.bfloat16)
     pair_backend = auto_select_pairwise_attention_backend(torch.bfloat16)
     config.trunk_config.set_triangle_attention_backend(tri_backend)
@@ -94,7 +86,8 @@ def _configure_inference_precision(config: BaseConfig) -> BaseConfig:
 class ProtenixModuleRegistry(ModuleRegistry):
     """Optimizable modules for :class:`Protenix`.
 
-    Token transformer only: capture-once / replay-many CUDA-graph target.
+    The diffusion module and its token transformer are capture-once /
+    replay-many CUDA-graph targets.
     Recycling-trunk pairformer is excluded (replay produces NaN; compute-bound
     over few cycles so a graph would remove negligible launch overhead).
     """
@@ -110,26 +103,14 @@ class ProtenixModuleRegistry(ModuleRegistry):
                     "diffusion_transformer", opt),
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
+            "diffusion_module":
+            ModuleSpec(
+                getter=lambda mod: mod.diffusion_sampler.diffusion_module,
+                setter=lambda mod, opt: setattr(mod.diffusion_sampler,
+                                                "diffusion_module", opt),
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
+            ),
         }
-
-
-def enable_token_transformer_cudagraph(
-        model: "Protenix",
-        *,
-        num_graphs_max: int = 8,
-        verify_capture: bool = False) -> "Protenix":
-    """Wrap the diffusion token transformer in a CUDA-graph optimizer."""
-    return model.optimize({
-        "token_transformer":
-        AcceleratedConfig(
-            backend=BackendType.TORCH,
-            default=BaseConfig(
-                graph_optimization_config=CUDAGraphOptimizationConfig(
-                    graph_optimization_mode=GraphOptimizationMode.
-                    CUDA_GRAPHS_VIA_TORCH,
-                    verify_capture=verify_capture,
-                    num_graphs_max_for_this_module=num_graphs_max)))
-    })
 
 
 class Protenix(nn.Module, OptimizedModuleSetterMixin):

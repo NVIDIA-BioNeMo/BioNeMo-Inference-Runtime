@@ -370,7 +370,10 @@ def _assert_graph_verified_and_no_eager_fallback(states: list[tuple]) -> None:
 # ===========================================================================
 def _read_ca(cif_path: Path) -> struc.AtomArray:
     """Load the first model from a CIF and keep CA atoms of amino acids."""
-    structure = pdbx.get_structure(pdbx.CIFFile.read(str(cif_path)), model=1)
+    # ModelCIF has no auth_* fields; read label_* directly.
+    structure = pdbx.get_structure(pdbx.CIFFile.read(str(cif_path)),
+                                   model=1,
+                                   use_author_fields=False)
     return structure[struc.filter_amino_acids(structure)
                      & (structure.atom_name == "CA")]
 

@@ -110,8 +110,10 @@ def _assert_output(row: dict, expected_residues: int,
     assert output_path.is_file(), f"Pipeline did not write {output_path}"
     assert output_path.stat().st_size > 0
 
+    # ModelCIF has no auth_* fields; read label_* directly.
     model_structure = pdbx.get_structure(pdbx.CIFFile.read(str(output_path)),
-                                         model=1)
+                                         model=1,
+                                         use_author_fields=False)
     ca_atoms = model_structure[
         bio_structure.filter_amino_acids(model_structure)
         & (model_structure.atom_name == "CA")]

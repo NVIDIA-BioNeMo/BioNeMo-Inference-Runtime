@@ -121,7 +121,9 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
         struc_from_pdb: AtomArrayStack = pdb.get_structure(pdb_file)
         cif_file = pdbx.CIFFile.read(
             os.path.join(output_path, f"{input_id}.cif"))
-        struc_from_cif: AtomArrayStack = pdbx.get_structure(cif_file)
+        # ModelCIF has no auth_* fields; read label_* directly.
+        struc_from_cif: AtomArrayStack = pdbx.get_structure(
+            cif_file, use_author_fields=False)
 
         atom_coord_from_pdb: np.array = struc_from_pdb.coord
         atom_coord_from_cif: np.array = struc_from_cif.coord
@@ -169,7 +171,9 @@ def test_serial_processor_pdb_cif_match(tmp_path: Path):
         struc_from_pdb: AtomArrayStack = pdb.get_structure(pdb_file)
         cif_file = pdbx.CIFFile.read(
             os.path.join(output_path, f"{input_id}.cif"))
-        struc_from_cif: AtomArrayStack = pdbx.get_structure(cif_file)
+        # ModelCIF has no auth_* fields; read label_* directly.
+        struc_from_cif: AtomArrayStack = pdbx.get_structure(
+            cif_file, use_author_fields=False)
 
         atom_coord_from_pdb: np.array = struc_from_pdb.coord
         atom_coord_from_cif: np.array = struc_from_cif.coord

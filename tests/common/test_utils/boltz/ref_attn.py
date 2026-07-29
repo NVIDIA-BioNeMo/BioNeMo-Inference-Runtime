@@ -251,44 +251,46 @@ class RefPairwiseSelfAttention(nn.Module):
             state_dict: Optional[dict] = None) -> 'RefPairwiseSelfAttention':
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
-        weights_biases_path = [
-            (f"{layer_path}.norm_s.weight", f"{layer_path}.norm_s.bias"),
-            (f"{layer_path}.proj_q.weight", f"{layer_path}.proj_q.bias"),
-            (f"{layer_path}.proj_k.weight", None),
-            (f"{layer_path}.proj_v.weight", None),
-            (f"{layer_path}.proj_g.weight", None),
-            (f"{layer_path}.proj_z.0.weight", f"{layer_path}.proj_z.0.bias"),
-            (f"{layer_path}.proj_z.1.weight", None),
-            (f"{layer_path}.proj_o.weight", None),
-        ]
-        compute_pair_bias = True
         c_s = state_dict[f"{layer_path}.proj_q.weight"].shape[0]
         if f"{layer_path}.proj_z.1.weight" in state_dict:
+            compute_pair_bias = True
             c_z = state_dict[f"{layer_path}.proj_z.1.weight"].shape[1]
             num_heads = state_dict[f"{layer_path}.proj_z.1.weight"].shape[0]
         else:
+            # No proj_z: pair bias is precomputed upstream. The flag must
+            # reach the constructor, else it builds nn.Linear(0, num_heads).
+            compute_pair_bias = False
             c_z = 0
             num_heads = 4
-            compute_pair_bias = False
 
-        if f"{layer_path}.norm_s.weight" in state_dict:
-            attn = cls(c_s, c_z, num_heads, initial_norm=True)
-            layers = [
-                attn.norm_s, attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,
-                attn.proj_z[0], attn.proj_z[1], attn.proj_o
+        has_norm_s = f"{layer_path}.norm_s.weight" in state_dict
+        attn = cls(c_s,
+                   c_z,
+                   num_heads,
+                   compute_pair_bias=compute_pair_bias,
+                   initial_norm=has_norm_s)
+
+        # One list, so paths and target modules cannot drift apart.
+        to_load = []
+        if has_norm_s:
+            to_load.append((f"{layer_path}.norm_s.weight",
+                            f"{layer_path}.norm_s.bias", attn.norm_s))
+        to_load += [
+            (f"{layer_path}.proj_q.weight", f"{layer_path}.proj_q.bias",
+             attn.proj_q),
+            (f"{layer_path}.proj_k.weight", None, attn.proj_k),
+            (f"{layer_path}.proj_v.weight", None, attn.proj_v),
+            (f"{layer_path}.proj_g.weight", None, attn.proj_g),
+        ]
+        if compute_pair_bias:
+            to_load += [
+                (f"{layer_path}.proj_z.0.weight",
+                 f"{layer_path}.proj_z.0.bias", attn.proj_z[0]),
+                (f"{layer_path}.proj_z.1.weight", None, attn.proj_z[1]),
             ]
-        else:
-            attn = cls(c_s, c_z, num_heads, initial_norm=False)
-            layers = [
-                attn.proj_q, attn.proj_k, attn.proj_v, attn.proj_g,
-                attn.proj_z[0], attn.proj_z[1], attn.proj_o
-            ]
-            weights_biases_path = weights_biases_path[1:]
+        to_load.append((f"{layer_path}.proj_o.weight", None, attn.proj_o))
 
-        attn.compute_pair_bias = compute_pair_bias
-
-        for (weights_path, bias_path), layer in zip(weights_biases_path,
-                                                    layers):
+        for weights_path, bias_path, layer in to_load:
             if bias_path is not None and bias_path in state_dict:
                 layer.bias.data.copy_(state_dict[bias_path])
             if weights_path in state_dict:

@@ -581,10 +581,13 @@ class RefDiffusionTransformerLayer(nn.Module):
 
         self.adaln = RefAdaLN(dim, dim_single_cond)
 
-        self.pair_bias_attn = RefPairwiseSelfAttention(c_s=dim,
-                                                       c_z=dim_pairwise,
-                                                       num_heads=heads,
-                                                       initial_norm=False)
+        # dim_pairwise == 0 → precomputed pair bias, no projection to build.
+        self.pair_bias_attn = RefPairwiseSelfAttention(
+            c_s=dim,
+            c_z=dim_pairwise,
+            num_heads=heads,
+            compute_pair_bias=dim_pairwise > 0,
+            initial_norm=False)
 
         self.output_projection = nn.Sequential(nn.Linear(dim_single_cond, dim),
                                                nn.Sigmoid())
@@ -1819,6 +1822,8 @@ class RefAtomTransformer(nn.Module):
             state_dict: Optional[dict] = None):
         """ TODO: Implement for the structure prediction path """
 
+        # Redundant instantiation is load-bearing: these tests seed once and
+        # then draw inputs, so skipping this init shifts every later draw.
         diffusion_transformer = BoltzRefDiffusionTransformer().load_weights(
             model=model, layer_path=layer_path + ".diffusion_transformer")
         atom_transformer = cls(attn_window_queries=attn_window_queries,

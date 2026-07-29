@@ -70,7 +70,6 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
 
     # (0) settings
     model_source = "alphafold2_1"
-    os.environ["RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION"] = "0.5"
 
     # (1) Create a scratch-space directory
     run_label = datetime.now().strftime('%Y%m%dT%H%M%S')

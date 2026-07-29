@@ -166,6 +166,13 @@ def test_protenix_msa_module_precomputed_masks():
     device = torch.device("cuda")
     sc = Scenario(dtype="float32")
     model = ProtenixMSAModule(_config(sc)).to(device).eval()
+    # Linear.create_weights() allocates with torch.empty (uninitialized) and no
+    # checkpoint is loaded here, so seed every parameter with finite values.
+    # Otherwise stray NaNs in uninitialized memory poison both outputs and the
+    # bit-identity check compares nan==nan (flaky across CI hosts).
+    with torch.no_grad():
+        for p in model.parameters():
+            p.normal_(mean=0.0, std=0.02)
 
     bs, n, s_msa = sc.batch_size, sc.n_token, sc.n_msa
     feat = {

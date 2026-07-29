@@ -420,7 +420,7 @@ class Trunk(nn.Module):
         run_template = (self.template_module is not None
                         and template_feats is not None)
 
-        for _ in range(recycling_steps):
+        for _ in range(1 + recycling_steps):
             s = s_init + self.s_recycle(self.s_norm(s))
             z = z_init + self.z_recycle(self.z_norm(z))
 

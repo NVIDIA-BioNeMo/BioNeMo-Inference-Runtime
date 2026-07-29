@@ -26,10 +26,13 @@ import torch
 import torch.nn as nn
 
 # isort: off
+from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+from tensorrt_bionemo._torch.graph_optimization.config import (
+    CUDAGraphOptimizationConfig, GraphOptimizationMode)
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.position_encoders import \
@@ -111,6 +114,25 @@ class ProtenixModuleRegistry(ModuleRegistry):
                 graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
         }
+
+
+def enable_token_transformer_cudagraph(
+        model: "Protenix",
+        *,
+        num_graphs_max: int = 8,
+        verify_capture: bool = False) -> "Protenix":
+    """Wrap the diffusion token transformer in a CUDA-graph optimizer."""
+    return model.optimize({
+        "token_transformer":
+        AcceleratedConfig(
+            backend=BackendType.TORCH,
+            default=BaseConfig(
+                graph_optimization_config=CUDAGraphOptimizationConfig(
+                    graph_optimization_mode=GraphOptimizationMode.
+                    CUDA_GRAPH_VIA_TORCH,
+                    verify_capture=verify_capture,
+                    num_graphs_max_for_this_module=num_graphs_max)))
+    })
 
 
 class Protenix(nn.Module, OptimizedModuleSetterMixin):

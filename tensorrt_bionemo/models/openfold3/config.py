@@ -13,12 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorrt_bionemo._torch.graph_optimization.config_schema import \
-    CUDAGraphOptimizationConfig
 from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       EvoformerStackConfig, PairformerConfig)
 from tensorrt_bionemo.registry import SupMat
-
+from tensorrt_bionemo._torch.graph_optimization.config import \
+    GraphOptimizationConfig, CUDAGraphOptimizationConfig, InputKeyMethod, GraphOptimizationMode
+    
+from tensorrt_bionemo._torch.graph_optimization.config import \
+    InputRoutingConfigFactory
 
 class _Default:
     c_z: int = 128
@@ -112,6 +114,38 @@ class MSAModuleEmbedderConfig(BaseConfig):
     min_subsampled_all_msa: int = 1024
     max_subsampled_all_msa: int = 1024
 
+def of3_dit_input_routing_config():
+    input_routing = InputRoutingConfigFactory()
+    input_routing.set_input_acceptance_dim(
+        dim_name="num_tokens",
+        dim_len_max=1024,
+    )
+    # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
+    input_routing.input_dim_is_acceptance("a", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("s", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("z", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("z", -3, "num_tokens")
+    input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
+
+    return input_routing.export_config()
+
+def of3_diff_mod_input_routing_config():
+    
+    input_routing = InputRoutingConfigFactory()
+    input_routing.set_input_acceptance_dim(
+        dim_name="num_tokens",
+        dim_len_max=1024,
+    )
+    # DiffusionModule.forward args (kwargs by name): the token axis rides
+    # token_mask (-1), si_input/si_trunk (-2), and zij_trunk (-2 and -3).
+    # xl_noisy/atom_mask carry the atom axis, so they are left untied.
+    input_routing.input_dim_is_acceptance("si_input", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("si_trunk", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("zij_trunk", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("zij_trunk", -3, "num_tokens")
+    input_routing.input_dim_is_acceptance("token_mask", -1, "num_tokens")
+
+    return input_routing.export_config()
 
 class DiffusionModuleConfig(BaseConfig):
     c_s_input: int = _Default.c_s_input
@@ -165,8 +199,12 @@ class DiffusionModuleConfig(BaseConfig):
             version="v1",
             dtype="float32",
             graph_optimization_config=CUDAGraphOptimizationConfig(
-                graph_optimization_mode="cuda_graphs_via_torch")), )
-
+                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+                input_key_method=InputKeyMethod.EXACT,
+                input_routing_config=of3_dit_input_routing_config()
+            )
+        ) 
+    )
     atom_transformer_decoder_config: BaseConfig = BaseConfig(
         num_blocks=3,
         num_heads=4,
@@ -186,6 +224,10 @@ class DiffusionModuleConfig(BaseConfig):
         version="v1",
         shared_pair_norm=True,
     )
+    graph_optimization_config: GraphOptimizationConfig =  CUDAGraphOptimizationConfig(
+        graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+        input_key_method=InputKeyMethod.EXACT,
+        input_routing_config=of3_diff_mod_input_routing_config())
 
 
 class SampleDiffusionConfig(BaseConfig):
@@ -248,6 +290,44 @@ class NoiseScheduleConfig(BaseConfig):
     p: int = 7
 
 
+def of3_pairformer_input_routing_config():
+    input_routing = InputRoutingConfigFactory()
+    
+    # input acceptance
+    input_routing.set_input_acceptance_dim(
+        dim_name="num_tokens",
+        dim_len_max=1024,
+    )
+    # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
+    input_routing.input_dim_is_acceptance("s", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("z", -2, "num_tokens")
+    input_routing.input_dim_is_acceptance("z", -3, "num_tokens")
+    input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
+    input_routing.input_dim_is_acceptance("pair_mask", -1, "num_tokens")
+    input_routing.input_dim_is_acceptance("pair_mask", -2, "num_tokens")
+    
+    # bucketing
+    input_routing.set_padded_dim(
+        dim_name="num_tokens",
+        dim_len_min=4,
+        dim_len_max=2048,
+        num_intervals=8,
+        spacing_method="linear",
+    )
+    # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
+    input_routing.input_dim_is_padded("s", -2, "num_tokens")
+    input_routing.input_dim_is_padded("z", -2, "num_tokens")
+    input_routing.input_dim_is_padded("z", -3, "num_tokens")
+    input_routing.input_dim_is_padded("mask", -1, "num_tokens")
+    input_routing.input_dim_is_padded("pair_mask", -1, "num_tokens")
+    input_routing.input_dim_is_padded("pair_mask", -2, "num_tokens")
+    # Output tensor 0 (the updated token representation) token axis.
+    input_routing.output_dim_is_padded(0, -2, "num_tokens")
+    input_routing.output_dim_is_padded(1, -2, "num_tokens")
+    input_routing.output_dim_is_padded(1, -3, "num_tokens")
+
+    return input_routing.export_config()
+
 class OpenFold3Config(BaseConfig):
     c_z: int = _Default.c_z
     c_s: int = _Default.c_s
@@ -266,7 +346,8 @@ class OpenFold3Config(BaseConfig):
     sample_diffusion_config: BaseConfig = SampleDiffusionConfig()
     noise_schedule_config: BaseConfig = NoiseScheduleConfig()
 
-    trunk: BaseConfig = BaseConfig(pairformer=PairformerConfig(
+    trunk: BaseConfig = BaseConfig(
+        pairformer=PairformerConfig(
         token_s=c_s,
         token_z=c_z,
         pairwise_head_width=32,
@@ -275,7 +356,14 @@ class OpenFold3Config(BaseConfig):
         num_heads=16,
         trimul_high_precision=False,
         version="v1",
-        dtype="float32"), )
+        dtype="float32",
+        graph_optimization_config=CUDAGraphOptimizationConfig(
+            graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+            input_key_method=InputKeyMethod.BUCKETED_SHAPES,
+            input_routing_config=of3_pairformer_input_routing_config()
+            )
+        )
+    )
 
     structure_module: BaseConfig = BaseConfig(
         score_model=BaseConfig(token_transformer=DiffusionTransformerConfig(

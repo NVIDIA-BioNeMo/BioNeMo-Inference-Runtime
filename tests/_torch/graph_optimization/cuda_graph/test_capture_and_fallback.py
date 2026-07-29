@@ -22,11 +22,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization import memory as gc_mem
-import tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker as trk
-from tensorrt_bionemo._torch.graph_optimization.config_schema import (
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_mem
+import tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime as trk
+from tensorrt_bionemo._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig)
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import (
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker, CUDAGraphPreparationState)
 
 pytestmark = pytest.mark.skipif(
@@ -63,7 +63,7 @@ def test_capture_then_replay_matches_eager():
     # resting state GRAPH_VERIFIED (GRAPH_CAPTURED is only a transient value set
     # mid-capture, before the verify step).
     assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED
-    assert not state.fallback_to_eager
+    assert _key(m, x) not in m.fallback_to_eager_by_key
     assert state.working_set_bytes > 0
     assert torch.allclose(out, ref, atol=1e-5)
 
@@ -86,11 +86,17 @@ def test_memory_gate_refusal_reverts_to_eager(monkeypatch):
         lambda *a, **k: gc_mem.MemoryCheck(False, "forced-low-mem", 1 << 40, 1 << 20))
     with torch.no_grad():
         ref = raw(x)
-        for _ in range(6):
+        # The NUM_CALLS_TO_CAPTURE-th call reaches the capture step, where the
+        # memory gate refuses; the extra calls verify permanence (the key stays
+        # eager and never re-warms).
+        for _ in range(NUM_CALLS_TO_CAPTURE + 3):
             out = m(x)
-    state = m.graph_state_by_key[_key(m, x)]
-    assert state.fallback_to_eager
-    assert state.graph is None
+    # On refusal the key is permanently reverted to eager: recorded on the
+    # tracker's ``fallback_to_eager_by_key`` and its would-be graph state evicted
+    # (buffers freed), so the key is flagged eager and absent from the state
+    # cache; the call still returns the correct eager result.
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
+    assert _key(m, x) not in m.graph_state_by_key
     assert torch.allclose(out, ref, atol=1e-5)
 
 
@@ -111,11 +117,15 @@ def test_capture_failure_reverts_to_eager(monkeypatch):
     monkeypatch.setattr(torch.cuda, "graph", lambda *a, **k: _BoomGraph())
     with torch.no_grad():
         ref = raw(x)
-        for _ in range(6):
+        # The NUM_CALLS_TO_CAPTURE-th call reaches the capture step (which
+        # raises); the extra calls verify permanence (no re-warm).
+        for _ in range(NUM_CALLS_TO_CAPTURE + 3):
             out = m(x)
-    state = m.graph_state_by_key[_key(m, x)]
-    assert state.fallback_to_eager
-    assert state.graph is None
+    # Capture raises, so the key is permanently reverted to eager: recorded on
+    # the tracker's ``fallback_to_eager_by_key`` and its graph state evicted
+    # (graph + buffers freed); the call falls back to the correct eager result.
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
+    assert _key(m, x) not in m.graph_state_by_key
     assert torch.allclose(out, ref, atol=1e-5)
 
 
@@ -135,7 +145,13 @@ def test_replay_failure_reverts_to_eager():
     state.graph.replay = _boom
     with torch.no_grad():
         out = m(x)
-    assert state.fallback_to_eager
+        # A further call must stay eager (the key does not re-warm).
+        out = m(x)
+    # The failing replay permanently reverts the key to eager: recorded on the
+    # tracker's ``fallback_to_eager_by_key`` and its state evicted (captured
+    # graph freed); calls fall back to the correct eager result.
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
+    assert _key(m, x) not in m.graph_state_by_key
     assert torch.allclose(out, ref, atol=1e-5)
 
 
@@ -183,5 +199,5 @@ def test_shared_scratch_buffers_capture_then_replay_matches_eager():
             out = m(x, buffers={"pw": torch.zeros(2, 128, device="cuda")})
     state = m.graph_state_by_key[_key(m, x)]
     assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED
-    assert not state.fallback_to_eager
+    assert _key(m, x) not in m.fallback_to_eager_by_key
     assert torch.allclose(out, ref, atol=1e-5)

@@ -235,10 +235,9 @@ def aggregate_atom_feat_to_tokens(
     # Accumulate the atom->token scatter under deterministic algorithms
     # (see ``_deterministic_algorithms``): CUDA ``scatter_add_`` is otherwise
     # non-deterministic run-to-run, and that per-call noise amplifies over the
-    # diffusion rollout into divergent structures. The result is cast back to
-    # ``orig_dtype`` before returning.
+    # diffusion rollout into divergent structures.
     atom_feat = atom_feat * atom_mask.reshape(atom_mask.shape + (1,) * len(feat_dims))
-
+    
     # Mask out atoms that are not part of the structure
     # Padding value must be greater than the largest index so that it
     # is properly excluded from the aggregation

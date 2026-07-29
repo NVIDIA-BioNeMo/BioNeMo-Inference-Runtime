@@ -42,6 +42,28 @@ from tensorrt_bionemo._torch.utils import (recursive_calling_load_weights,
 from tensorrt_bionemo.configs import BaseConfig
 
 
+def broadcast_atom_mask(positions: torch.Tensor,
+                        atom_mask: torch.Tensor) -> torch.Tensor:
+    """Reshape ``atom_mask`` to broadcast against an atom-position tensor.
+
+    ``positions`` is ``[*, ..., N_atom, 3]`` and ``atom_mask`` is
+    ``[*, N_atom]``, where ``positions`` may carry extra batch dims (e.g. a
+    diffusion-samples axis ``S``) between the mask's batch dims and the atom
+    axis — as in ``[B, S, N_atom, 3]`` vs ``[B, N_atom]``. Returns the mask
+    reshaped to ``[*mask_batch, 1, ..., 1, N_atom, 1]`` (cast to ``positions``'s
+    dtype) so it broadcasts over those extra dims and the coordinate axis. A bare
+    ``atom_mask[..., None]`` would instead right-align the mask's batch dim with
+    ``positions``'s samples dim and fail / misbroadcast.
+    """
+    extra_batch_dims = positions.ndim - atom_mask.ndim - 1
+    return atom_mask.reshape(
+        *atom_mask.shape[:-1],
+        *((1,) * extra_batch_dims),
+        atom_mask.shape[-1],
+        1,
+    ).to(positions.dtype)
+
+
 def sample_rotations(
         shape,
         dtype: torch.dtype,
@@ -88,16 +110,17 @@ def centre_random_augmentation(xl: torch.Tensor,
                                       device=xl.device,
                                       generator=generator)
 
+    atom_mask_broadcast = broadcast_atom_mask(xl, atom_mask)
     mean_xl = torch.sum(
-        xl * atom_mask[..., None],
+        xl * atom_mask_broadcast,
         dim=-2,
         keepdim=True,
-    ) / torch.sum(atom_mask[..., None], dim=-2, keepdim=True).clamp(min=1e-7)
+    ) / torch.sum(atom_mask_broadcast, dim=-2, keepdim=True).clamp(min=1e-7)
 
     # center coordinates
     pos_centered = xl - mean_xl
     pos_out = pos_centered @ rots.transpose(-1, -2) + trans[..., None, :]
-    pos_out = pos_out * atom_mask[..., None]
+    pos_out = pos_out * atom_mask_broadcast
 
     return pos_out
 
@@ -244,6 +267,19 @@ class DiffusionModule(nn.Module):
         use_conditioning: bool = True,
     ) -> torch.Tensor:
         """
+        Note:
+            Only a single leading batch dim is supported end-to-end, i.e. the
+            documented ``*`` is a single ``[batch]`` axis (batch size 1 in
+            practice). ``SampleDiffusion.forward`` calls this with an extra
+            diffusion-samples axis ``S`` on the atom positions only —
+            ``xl_noisy=[B, S, N_atom, 3]`` while masks/token features stay
+            ``[B, ...]`` — which broadcasts correctly *only when ``B == 1``*. For
+            ``B > 1`` the token-level conditioning outputs (``si``/``zij``, no
+            ``S`` axis) collide with the ``S``-carrying atom features at
+            ``ai = ai + linear_s(layer_norm_s(si))`` below and the call fails;
+            supporting ``B > 1`` would require threading ``S`` through the
+            conditioning and transformer inputs, not just the mask broadcasts.
+
         Args:
             batch:
                 Feature dictionary
@@ -274,7 +310,7 @@ class DiffusionModule(nn.Module):
             zij_trunk=zij_trunk,
             use_conditioning=use_conditioning)
 
-        xl_noisy = xl_noisy * atom_mask[..., None]
+        xl_noisy = xl_noisy * broadcast_atom_mask(xl_noisy, atom_mask)
 
         rl_noisy = xl_noisy / torch.sqrt(t[..., None, None]**2 +
                                          self.sigma_data**2)
@@ -314,7 +350,7 @@ class DiffusionModule(nn.Module):
                   self.sigma_data * t[..., None, None] /
                   torch.sqrt(self.sq_sigma_data + sq_t) * rl_update)
 
-        xl_out = xl_out * atom_mask[..., None]
+        xl_out = xl_out * broadcast_atom_mask(xl_out, atom_mask)
 
         return xl_out
 
@@ -420,7 +456,7 @@ class OpenFold3SampleDiffusion(_SampleDiffusion):
             xl = noise_schedule[0] * torch.randn(
                 (batch_dim, no_rollout_samples, num_atoms, 3),
                 device=device,
-                dtype=atom_mask.dtype,
+                dtype=self.diffusion_module.dtype,
                 generator=generator,
             )
 

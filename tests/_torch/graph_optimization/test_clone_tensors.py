@@ -28,12 +28,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.graph_optimization.tensor_copy_utils import (
     _clone_tensors, _copy_tensors_into, _delete_tensors_in_container,
     _tensor_containers_are_byte_equal)
-from tensorrt_bionemo._torch.graph_optimization.config_schema import \
+from tensorrt_bionemo._torch.graph_optimization.config import \
     CUDAGraphOptimizationConfig
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])

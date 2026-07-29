@@ -67,11 +67,12 @@ COPY . ${PROJECT_WORKDIR}/
 # -----------------------------------------------------
 FROM copy_source_stage AS prod_stage
 
+# no-deps because we already installed requirements.txt in the requirements_stage
 RUN --mount=type=cache,target=${CCACHE_DIR} \
     --mount=type=cache,target=${_PIP_CACHE_DIR} \
     CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
     RECOMPILE_CPP=${RECOMPILE_CPP} \
-    pip install --no-build-isolation --no-deps -v .
+    pip install --no-build-isolation --no-deps -v .  
 
 # ------------------------------------------------------------------------
 # install tensorrt-bionemo for development and testing
@@ -84,4 +85,5 @@ RUN --mount=type=cache,target=${CCACHE_DIR} \
     CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
     RECOMPILE_CPP=${RECOMPILE_CPP} \
     pip install --no-build-isolation -v -e .[dev]
+
 

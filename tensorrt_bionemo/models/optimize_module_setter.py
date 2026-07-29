@@ -19,7 +19,9 @@ from typing import Callable, Optional
 
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization.config_schema import \
+from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
+from tensorrt_bionemo.runtime import BackendType
+from tensorrt_bionemo._torch.graph_optimization.config import \
     GraphOptimizationMode
 from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
 from tensorrt_bionemo.logger import logger
@@ -84,6 +86,12 @@ class ModuleRegistry(ABC):
             else:
                 if isinstance(v, dict):
                     v = AcceleratedConfig(**v)
+                elif not isinstance(v, AcceleratedConfig):
+                    raise TypeError(
+                        f"Config for module '{k}' must be AcceleratedConfig or dict, "
+                        f"got {type(v).__name__}"
+                    )
+
                 selected[k] = v
         return selected
 
@@ -224,7 +232,6 @@ class OptimizedModuleSetterMixin(ABC):
                     if graph_mode != GraphOptimizationMode.NO_OPTIMIZATION:
                         opt_m = spec.graph_optimization_cls(config=graph_config,
                                                         inner_module=org)
-                        opt_m.set_fallback_module(org)
                         spec.setter(self, opt_m)
 
         return self

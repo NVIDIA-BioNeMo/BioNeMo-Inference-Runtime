@@ -19,7 +19,7 @@ test asks "does the CUDA-graph replay match eager?", this one asks the
 prerequisite question: "is
 the *eager* model itself reproducible run-to-run?" — because the CUDA-graph
 parity premise (graph trajectory == eager trajectory over a 200-step diffusion
-rollout) only holds when the underlying kernels are deterministic.
+rollout) only holds when the underlying kernels are deterministic..
 
 Each model is run through the public ``build_processor`` API on the in-process
 **serial** backend **twice**, eager (no acceleration), with the *same* seed and
@@ -58,6 +58,8 @@ from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
 from tensorrt_bionemo.pipeline.stages.engine_stage import FoldingPredictionError
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.seeding import seed_everything
+from tests._torch.model_forwards.test_model_forward_with_cuda_graph import (
+    _default_model_config)
 
 # --- Test configuration ----------------------------------------------------
 # Each model is run eager twice and its two runs compared. Whether the two runs
@@ -117,14 +119,6 @@ def _model_weights_available(model_source: str) -> bool:
         return True
     except Exception:
         return False
-
-
-def _model_config(model_source: str):
-    """Pretrained model config with any checkpoint-compatibility overrides.
-
-    Returns ``None`` to use the engine's default pretrained config.
-    """
-    return None
 
 
 def _availability_exceptions() -> tuple:
@@ -191,7 +185,7 @@ def _build_processor_config(model_source: str,
     No ``accelerated_configs`` — the diffusion (token) transformer runs eager.
     """
     engine_kwargs: dict = {"profile_inference": True}
-    model_cfg = _model_config(model_source)
+    model_cfg = _default_model_config(model_source)
     if model_cfg is not None:
         engine_kwargs["config"] = model_cfg
 

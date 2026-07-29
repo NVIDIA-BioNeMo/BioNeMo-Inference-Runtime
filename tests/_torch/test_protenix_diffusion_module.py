@@ -24,9 +24,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.graph_optimization.config_schema import (
+from tensorrt_bionemo._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig, GraphOptimizationMode)
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import (
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker, CUDAGraphPreparationState)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     ProtenixDiffusionTransformer
@@ -639,7 +639,7 @@ def test_token_transformer_cudagraph_parity(real_case):
 
     eager_tt = model.diffusion_transformer
     tracker = CUDAGraphOptimizationTracker(config=CUDAGraphOptimizationConfig(
-        graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPHS_VIA_TORCH,
+        graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
         verify_capture=True,
         num_graphs_max_for_this_module=2),
                                            inner_module=eager_tt)
@@ -649,8 +649,9 @@ def test_token_transformer_cudagraph_parity(real_case):
     x_cg = _roll(model)
 
     # The fixed per-step shape must capture without eager fallback.
-    states = [(s.preparation_state, s.fallback_to_eager)
-              for s in tracker.graph_state_by_key.values()]
+    states = [(s.preparation_state,
+               tracker.fallback_to_eager_by_key.get(k, False))
+              for k, s in tracker.graph_state_by_key.items()]
     assert states and all(
         ps == CUDAGraphPreparationState.GRAPH_VERIFIED and not fb
         for ps, fb in states), (

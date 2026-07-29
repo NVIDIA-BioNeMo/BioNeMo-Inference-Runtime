@@ -24,6 +24,7 @@ tests exercise both layers directly with lightweight specs — no model weights.
 
 import pytest
 
+from tensorrt_bionemo.configs import AcceleratedConfig
 from tensorrt_bionemo.models.optimize_module_setter import (ModuleRegistry,
                                                             ModuleSpec,
                                                             _module_path)
@@ -129,8 +130,13 @@ class _FakeRegistry(ModuleRegistry):
 
 
 def _cfg():
-    """Minimal placeholder config value (kept as-is by the registry)."""
-    return object()
+    """Minimal placeholder config value (kept as-is by the registry).
+
+    An empty :class:`AcceleratedConfig` (all fields defaulted) — the registry
+    only validates that each config is an ``AcceleratedConfig`` or dict; these
+    tests care solely about which module names survive pruning.
+    """
+    return AcceleratedConfig()
 
 
 def test_child_alone_is_kept():

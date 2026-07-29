@@ -22,7 +22,7 @@ from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
 from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
@@ -66,6 +66,7 @@ class Boltz1ModuleRegistry(ModuleRegistry):
                 setter=lambda mod, opt: setattr(mod.trunk, "pairformer_module",
                                                 opt),
                 compiled_cls=None,
+                # graph_optimization_cls=CUDAGraphOptimizationTracker, wait to align on OF3 result
             ),
             "confidence_pairformer":
             ModuleSpec(

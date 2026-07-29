@@ -22,8 +22,6 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
-    CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_gather_indices, create_indexing_matrix, query_to_keys_optimized)
@@ -47,16 +45,20 @@ from tensorrt_bionemo.registry import SupMat
 from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
                       OptimizedModuleSetterMixin)
 
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
+    CUDAGraphOptimizationTracker
+
 
 class OpenFold3ModuleRegistry(ModuleRegistry):
 
     def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
         return {
-            "pairformer":
+            "structure_pairformer":
             ModuleSpec(
                 getter=lambda mod: mod.pairformer_stack,
                 setter=lambda mod, opt: setattr(mod, "pairformer_stack", opt),
                 compiled_cls=None,
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "token_transformer":
             ModuleSpec(

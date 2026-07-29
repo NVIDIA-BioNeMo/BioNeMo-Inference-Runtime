@@ -60,7 +60,7 @@ from .convert import (
     convert_hf_structure_module_torch, convert_hf_template_module_torch)
 # isort: on
 
-from tensorrt_bionemo._torch.graph_optimization.graph_optimization_tracker import \
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 
 
@@ -74,6 +74,7 @@ class Boltz2ModuleRegistry(ModuleRegistry):
                 setter=lambda mod, opt: setattr(mod.trunk, "pairformer_module",
                                                 opt),
                 compiled_cls=None,
+                graph_optimization_cls=CUDAGraphOptimizationTracker,
             ),
             "confidence_pairformer":
             ModuleSpec(

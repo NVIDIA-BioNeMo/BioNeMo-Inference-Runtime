@@ -56,7 +56,7 @@ class BaseConfig(BaseModel):
     support_batch: bool = True
     backend: Union[str, BackendType] = BackendType.TORCH
     # Opt-in CUDA-graph compilation for this module. Holds a
-    # ``None | BaseGraphOptimizationConfig`` (typed ``Any`` to avoid a config <->
+    # ``None | GraphOptimizationConfig`` (typed ``Any`` to avoid a config <->
     # graph_optimization import cycle). ``None`` means "leave eager"; a config
     # marks this module for wrapping by ``trtbnm_apply_graph_optimization`` /
     # ``OptimizedModuleSetterMixin.optimize`` when ``backend == TORCH``.

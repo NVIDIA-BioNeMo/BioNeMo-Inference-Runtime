@@ -90,6 +90,9 @@ def _compute_source_fingerprint() -> str:
     h.update(f"py{sys.version_info.major}.{sys.version_info.minor}".encode())
     h.update(f"cutlass={cutlass.__version__}".encode(
     ) if hasattr(cutlass, "__version__") else b"cutlass=unknown")
+    # Separate SKUs that share a compute capability but differ in SM count
+    # (H20's 78 vs H100/H200's 114-144) — see _device_sm_count.
+    h.update(f"sm_count={_device_sm_count()}".encode())
 
     dsl_kernels_dir = Path(__file__).resolve().parent
     _hash_source_dir(h, dsl_kernels_dir)
@@ -98,6 +101,24 @@ def _compute_source_fingerprint() -> str:
         _hash_source_dir(h, Path(extra_dir).resolve())
 
     return h.hexdigest()
+
+
+def _device_sm_count() -> int:
+    """SM count of the active CUDA device (0 if unavailable).
+
+    Folded into the cache fingerprint so a kernel compiled for one SKU isn't
+    reused on another with a different SM count: CuTe persistent kernels bake
+    launch geometry (grid / cluster sizing) from the runtime SM count at compile
+    time, so an H20 (78 SMs) replaying an H100/H200 (114-144) kernel breaks bf16
+    parity. Compute capability (sm90) can't separate them; SM count can. Assumes
+    one device per process (the fingerprint is lru_cached on first use).
+    """
+    try:
+        import torch
+        return torch.cuda.get_device_properties(
+            torch.cuda.current_device()).multi_processor_count
+    except Exception:
+        return 0
 
 
 def _key_to_hash(key: tuple) -> str:

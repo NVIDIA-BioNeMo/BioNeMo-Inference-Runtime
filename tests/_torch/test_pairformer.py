@@ -28,7 +28,6 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks, precompute_single_masks)
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerLayerV1
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl_single
@@ -117,8 +116,8 @@ def test_pairformer_layer(sc: Scenario):
     pair_mask = mask[..., None] * mask[..., None, :]
 
     attn_metadatas = {
-        "triangle_attn": triangle_metadata_cls(mapping=Mapping()),
-        "pairwise_attn": pairwise_metadata_cls(mapping=Mapping()),
+        "triangle_attn": triangle_metadata_cls(),
+        "pairwise_attn": pairwise_metadata_cls(),
     }
 
     with torch.inference_mode():
@@ -385,8 +384,8 @@ def test_pairformer_layer_precomputed_masks(sc: Scenario):
     pair_mask = (mask[..., None] * mask[..., None, :]).to(dtype)
 
     attn_metadatas = {
-        "triangle_attn": triangle_metadata_cls(mapping=Mapping()),
-        "pairwise_attn": pairwise_metadata_cls(mapping=Mapping()),
+        "triangle_attn": triangle_metadata_cls(),
+        "pairwise_attn": pairwise_metadata_cls(),
     }
 
     precomputed = precompute_pair_masks(sc.triangle_attn_backend,

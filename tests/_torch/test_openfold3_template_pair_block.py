@@ -23,7 +23,6 @@ from test_utils.openfold3.ref_layers_from_oss import \
 
 from tensorrt_bionemo._torch.modules.openfold2.template import \
     TemplatePairBlock
-from tensorrt_bionemo.mapping import Mapping
 # TODO: fix this after finish full openfold3 model
 # pytestmark = pytest.mark.skip(reason="openfold3")
 from tensorrt_bionemo.utils import str_dtype_to_torch
@@ -137,8 +136,7 @@ def test_template_pair_stack_block(sc: Scenario):
         tri_mul_in_bias=tri_mul_in_bias,
         tri_attn_start_bias=tri_attn_start_bias,
         tri_attn_end_bias=tri_attn_end_bias,
-        dtype=test_dtype,
-        mapping=Mapping())
+        dtype=test_dtype)
 
     weights_and_biases = create_template_pair_block_weights_from_of3oss_torch(
         from_ref=ref_module)

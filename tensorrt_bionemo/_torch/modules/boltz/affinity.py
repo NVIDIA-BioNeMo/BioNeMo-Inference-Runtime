@@ -20,17 +20,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.distributed import (
-    AllReduceParams, get_default_tp_group_coordinator)
 from tensorrt_bionemo._torch.layers.conditioning import PairwiseConditioning
-from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
-                                                   WeightMode,
+from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerNoSeqModule
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 
 
 def get_best_coords(coords: torch.Tensor, iptm: torch.Tensor) -> torch.Tensor:
@@ -108,27 +104,18 @@ class AffinityHeadsTransformer(nn.Module):
                  token_s: int,
                  dtype: torch.dtype = None,
                  eps: float = 1e-5,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         super().__init__()
-        mapping = mapping or Mapping()
         self.token_z = token_z
         self.token_s = token_s
         self.dtype = dtype
         self.eps = eps
-        self.mapping = mapping
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
 
         self.affinity_out_mlp_linear_0 = Linear(
             token_z,
             token_z,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=skip_create_weights)
 
         self.affinity_out_mlp_linear_1 = Linear(
@@ -136,9 +123,6 @@ class AffinityHeadsTransformer(nn.Module):
             token_s,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            reduce_output=True,
             skip_create_weights=skip_create_weights)
 
         self.to_affinity_pred_value_0 = Linear(
@@ -146,9 +130,6 @@ class AffinityHeadsTransformer(nn.Module):
             token_s,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=skip_create_weights)
 
         self.to_affinity_pred_value_1 = Linear(
@@ -156,9 +137,6 @@ class AffinityHeadsTransformer(nn.Module):
             token_s,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            reduce_output=True,
             skip_create_weights=skip_create_weights)
         self.to_affinity_pred_value_2 = nn.Linear(token_s,
                                                   1,
@@ -170,9 +148,6 @@ class AffinityHeadsTransformer(nn.Module):
             token_s,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=skip_create_weights)
 
         self.to_affinity_pred_score_1 = Linear(
@@ -180,9 +155,6 @@ class AffinityHeadsTransformer(nn.Module):
             token_s,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            reduce_output=True,
             skip_create_weights=skip_create_weights)
         self.to_affinity_pred_score_2 = nn.Linear(token_s,
                                                   1,
@@ -242,10 +214,6 @@ class AffinityModule(nn.Module):
         """
         super().__init__()
         self.config = config
-        self.mapping = config.mapping
-        self.tp_size = self.mapping.tp_size
-        self.tp_rank = self.mapping.tp_rank
-        self.tp_group = self.mapping.tp_group
 
         skip_create_weights = False
         self.dist_bin_pairwise_embed = nn.Embedding(
@@ -253,17 +221,13 @@ class AffinityModule(nn.Module):
             embedding_dim=config.token_z,
             dtype=config.torch_dtype)
 
-        self.fused_s_to_z = Linear(
-            config.token_s,
-            config.token_z * 2,
-            bias=False,
-            dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
-            skip_create_weights=skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_KV_LINEAR))
+        self.fused_s_to_z = Linear(config.token_s,
+                                   config.token_z * 2,
+                                   bias=False,
+                                   dtype=config.torch_dtype,
+                                   skip_create_weights=skip_create_weights,
+                                   weights_loading_config=WeightsLoadingConfig(
+                                       weight_mode=WeightMode.FUSED_KV_LINEAR))
         self.z_norm = nn.LayerNorm(config.token_z,
                                    eps=config.norm_epsilon,
                                    dtype=config.torch_dtype)
@@ -271,9 +235,6 @@ class AffinityModule(nn.Module):
                                config.token_z,
                                bias=False,
                                dtype=config.torch_dtype,
-                               mapping=config.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=False,
                                skip_create_weights=skip_create_weights)
 
         self.pairwise_conditioner = PairwiseConditioning(
@@ -281,8 +242,7 @@ class AffinityModule(nn.Module):
             dim_token_rel_pos_feats=config.token_z,
             num_transitions=2,
             eps=config.norm_epsilon,
-            dtype=config.torch_dtype,
-            mapping=config.mapping)
+            dtype=config.torch_dtype)
 
         # Affinity ``cross_pair_mask`` is bipartite (receptor rows have
         # interior 1's in the ligand-column range, not a left-aligned
@@ -299,7 +259,6 @@ class AffinityModule(nn.Module):
             dtype=config.torch_dtype,
             eps=config.norm_epsilon,
             inf=config.mask_inf,
-            mapping=config.mapping,
             triangle_attn_backend=config.triangle_attention_backend,
             pair_mask_left_aligned=False)
 
@@ -308,15 +267,9 @@ class AffinityModule(nn.Module):
             token_s=config.token_s,
             dtype=config.torch_dtype,
             eps=config.norm_epsilon,
-            mapping=config.mapping,
             skip_create_weights=skip_create_weights)
 
-        self.token_z = config.token_z // self.tp_size
-
-        self.tp_group_comm = None
-        if self.tp_size > 1:
-            self.tp_group_comm = get_default_tp_group_coordinator()
-            assert self.tp_group_comm is not None, "Failed to get the default TP group coordinator"
+        self.token_z = config.token_z
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -333,8 +286,7 @@ class AffinityModule(nn.Module):
         distogram: torch.Tensor,
         cross_pair_mask_0: torch.Tensor,
         cross_pair_mask_1: torch.Tensor,
-        attn_metadatas: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        attn_metadatas: Optional[AttentionMetadata] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -360,14 +312,11 @@ class AffinityModule(nn.Module):
 
         embed_distogram = self.dist_bin_pairwise_embed(distogram)
 
-        if self.tp_size > 1:
-            z = self.tp_group_comm.all_gather(z, dim=-1)
         z = z + self.pairwise_conditioner(z_trunk=z,
                                           token_rel_pos_feats=embed_distogram)
         z = self.pairformer_stack(z,
                                   pair_mask=cross_pair_mask_0,
-                                  attn_metadatas=attn_metadatas,
-                                  all_reduce_params=all_reduce_params)
+                                  attn_metadatas=attn_metadatas)
         pred_value, logits_binary, affinity_embedding = self.affinity_heads(
             z, cross_pair_mask_1)
 

@@ -18,10 +18,8 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
@@ -67,7 +65,6 @@ class AtomTransformer(nn.Module):
         bias: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """
@@ -131,7 +128,6 @@ class AtomTransformer(nn.Module):
             z=bias,
             mask=mask,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
             buffers=buffers,
         )
         a = a.view((B, multiplicity, N, -1))
@@ -150,7 +146,6 @@ class AtomAttentionEncoder(nn.Module):
                  structure_prediction=True,
                  version: str = "v1",
                  dtype: Optional[torch.dtype] = None,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -168,7 +163,6 @@ class AtomAttentionEncoder(nn.Module):
         super().__init__()
         self.structure_prediction = structure_prediction
         self.dtype = dtype
-        self.mapping = mapping
         self.version = version
         atom_s = atom_s or diffusion_transformer_config.dim
 
@@ -178,9 +172,6 @@ class AtomAttentionEncoder(nn.Module):
                 atom_s,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
 
         self.atom_encoder_dtype = diffusion_transformer_config.torch_dtype
@@ -199,9 +190,6 @@ class AtomAttentionEncoder(nn.Module):
                 bias=False,
                 # dtype=dtype,
                 dtype=torch.float32,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights,
             ),
             nn.ReLU(),
@@ -223,7 +211,6 @@ class AtomAttentionEncoder(nn.Module):
         bias: torch.Tensor,
         r: torch.Tensor = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -278,7 +265,6 @@ class AtomAttentionEncoder(nn.Module):
                               bias=bias.to(self.atom_encoder_dtype),
                               mask=atom_mask.to(self.atom_encoder_dtype),
                               attn_metadata=attn_metadata,
-                              all_reduce_params=all_reduce_params,
                               buffers=buffers)
         q = q.to(self.dtype)
         with torch.autocast("cuda", enabled=False):
@@ -309,7 +295,6 @@ class AtomAttentionDecoder(nn.Module):
                  diffusion_transformer_cls: Any = None,
                  structure_prediction=True,
                  dtype: Optional[torch.dtype] = None,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -327,7 +312,6 @@ class AtomAttentionDecoder(nn.Module):
         super().__init__()
 
         self.dtype = dtype
-        self.mapping = mapping
         skip_create_weights = skip_create_weights or diffusion_transformer_config.skip_create_weights
 
         self.token_s = token_s
@@ -338,9 +322,6 @@ class AtomAttentionDecoder(nn.Module):
             bias=False,
             # dtype=dtype,
             dtype=torch.float32,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights)
 
         self.atom_decoder_dtype = diffusion_transformer_config.torch_dtype
@@ -359,9 +340,6 @@ class AtomAttentionDecoder(nn.Module):
                    3,
                    bias=False,
                    dtype=dtype,
-                   mapping=mapping,
-                   tensor_parallel_mode=TensorParallelMode.COLUMN,
-                   gather_output=True,
                    skip_create_weights=skip_create_weights))
 
     def load_weights(self, weights: dict):
@@ -385,7 +363,6 @@ class AtomAttentionDecoder(nn.Module):
         c: torch.Tensor,
         bias: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """
@@ -435,7 +412,6 @@ class AtomAttentionDecoder(nn.Module):
                               bias=bias.to(self.atom_decoder_dtype),
                               mask=atom_mask.to(self.atom_decoder_dtype),
                               attn_metadata=attn_metadata,
-                              all_reduce_params=all_reduce_params,
                               buffers=buffers)
         q = q.to(self.dtype)
         # [B, multiplicity, N_atoms, 3]

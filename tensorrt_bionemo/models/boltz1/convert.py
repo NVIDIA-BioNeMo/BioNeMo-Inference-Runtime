@@ -18,15 +18,12 @@ import torch
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.logger import logger
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
-def get_pairwise_attn_weights(mapping: Mapping,
-                              state_dict: dict,
+def get_pairwise_attn_weights(state_dict: dict,
                               prefix: str,
                               tbm_prefix: str,
-                              max_attention_pairwise_tp_size: bool = True,
                               num_heads: int = 16,
                               attention_initial_norm: bool = True,
                               compute_pair_bias: bool = True,
@@ -74,8 +71,7 @@ def get_pairwise_attn_weights(mapping: Mapping,
     return ret
 
 
-def get_tri_attn_node_weights(mapping: Mapping,
-                              state_dict: dict,
+def get_tri_attn_node_weights(state_dict: dict,
                               prefix: str,
                               tbm_prefix: str,
                               dtype: str = "float32"):
@@ -104,11 +100,9 @@ def get_tri_attn_node_weights(mapping: Mapping,
     return ret
 
 
-def get_tri_mul_node_weights(mapping: Mapping,
-                             state_dict: dict,
+def get_tri_mul_node_weights(state_dict: dict,
                              prefix: str,
                              tbm_prefix: str,
-                             max_tri_mul_tp_size: bool = True,
                              dtype: str = "float32"):
     torch_dtype = str_dtype_to_torch(dtype)
     norm_in_weight = state_dict[f"{prefix}.norm_in.weight"]
@@ -133,11 +127,9 @@ def get_tri_mul_node_weights(mapping: Mapping,
     return ret
 
 
-def get_transition_weights(mapping: Mapping,
-                           state_dict: dict,
+def get_transition_weights(state_dict: dict,
                            prefix: str,
                            tbm_prefix: str,
-                           max_transition_tp_size: bool = True,
                            dim: int = 128,
                            dtype: str = "float32"):
     torch_dtype = str_dtype_to_torch(dtype)
@@ -160,7 +152,6 @@ def get_transition_weights(mapping: Mapping,
 
 
 def convert_hf_pairformer(config: BaseConfig,
-                          mapping: Mapping,
                           pairformer_type: str = "structure",
                           local_checkpoint: str = None,
                           model_name: str = "boltz-1"):
@@ -168,10 +159,8 @@ def convert_hf_pairformer(config: BaseConfig,
     Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
 
     Args:
-        mapping: A mapping object that defines the mapping of the model.
         pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
     """
-    mapping = mapping if mapping is not None else Mapping()
     prefix = "pairformer_module.layers"
     if pairformer_type == "confidence":
         prefix = f"confidence_module.{prefix}"
@@ -187,62 +176,48 @@ def convert_hf_pairformer(config: BaseConfig,
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
         if not config.no_update_s:
             weights.update(
-                get_pairwise_attn_weights(
-                    mapping,
-                    state_dict,
-                    f"{layer_prefix}.attention",
-                    f"{layer_tbm_prefix}.attention",
-                    config.max_attention_pairwise_tp_size,
-                    config.num_heads,
-                    dtype=config.dtype))
+                get_pairwise_attn_weights(state_dict,
+                                          f"{layer_prefix}.attention",
+                                          f"{layer_tbm_prefix}.attention",
+                                          config.num_heads,
+                                          dtype=config.dtype))
         weights.update(
-            get_tri_attn_node_weights(mapping,
-                                      state_dict,
+            get_tri_attn_node_weights(state_dict,
                                       f"{layer_prefix}.tri_att_start",
                                       f"{layer_tbm_prefix}.tri_attn_start",
                                       dtype=config.dtype))
         weights.update(
-            get_tri_attn_node_weights(mapping,
-                                      state_dict,
+            get_tri_attn_node_weights(state_dict,
                                       f"{layer_prefix}.tri_att_end",
                                       f"{layer_tbm_prefix}.tri_attn_end",
                                       dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping,
-                                     state_dict,
+            get_tri_mul_node_weights(state_dict,
                                      f"{layer_prefix}.tri_mul_out",
                                      f"{layer_tbm_prefix}.tri_mul_out",
-                                     config.max_tri_mul_tp_size,
                                      dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping,
-                                     state_dict,
+            get_tri_mul_node_weights(state_dict,
                                      f"{layer_prefix}.tri_mul_in",
                                      f"{layer_tbm_prefix}.tri_mul_in",
-                                     config.max_tri_mul_tp_size,
                                      dtype=config.dtype))
         if not config.no_update_s:
             weights.update(
-                get_transition_weights(mapping,
-                                       state_dict,
+                get_transition_weights(state_dict,
                                        f"{layer_prefix}.transition_s",
                                        f"{layer_tbm_prefix}.transition_s",
-                                       config.max_transition_tp_size,
                                        config.token_s * 4,
                                        dtype=config.dtype))
         weights.update(
-            get_transition_weights(mapping,
-                                   state_dict,
+            get_transition_weights(state_dict,
                                    f"{layer_prefix}.transition_z",
                                    f"{layer_tbm_prefix}.transition_z",
-                                   config.max_transition_tp_size,
                                    config.token_z * 4,
                                    dtype=config.dtype))
     return weights
 
 
 def convert_hf_pairformer_torch(config: BaseConfig = None,
-                                mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-1",
                                 weights: dict = None,
@@ -253,10 +228,7 @@ def convert_hf_pairformer_torch(config: BaseConfig = None,
     This function is used to convert PyTorch weights to dict for pairformer v1 torch backend.
     Args:
         config: The configuration for the pairformer module.
-        mapping: The mapping for the pairformer.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
-        world_size: The number of processes to use.
-        rank: The rank of the process.
         weights: The model weights to load into the module. If weights is None, the function will load the weights from the local_checkpoint.
         pairformer_type: The type of pairformer v1 to convert. 'structure' or 'confidence'
         num_layers: The number of layers to convert. If num_layers is None, the function will automatically calculate the number of layers.
@@ -421,8 +393,7 @@ def convert_hf_pairformer_torch(config: BaseConfig = None,
     return tbnm_state_dict
 
 
-def get_adaln_weights(mapping: Mapping,
-                      state_dict: dict,
+def get_adaln_weights(state_dict: dict,
                       prefix: str,
                       tbm_prefix: str,
                       dim: int,
@@ -458,8 +429,7 @@ def get_adaln_weights(mapping: Mapping,
     return ret
 
 
-def get_conditioned_transition_block_weights(mapping: Mapping,
-                                             state_dict: dict,
+def get_conditioned_transition_block_weights(state_dict: dict,
                                              prefix: str,
                                              tbm_prefix: str,
                                              dim: int,
@@ -469,8 +439,7 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
     ret.update(
-        get_adaln_weights(mapping,
-                          state_dict,
+        get_adaln_weights(state_dict,
                           f"{prefix}.adaln",
                           f"{tbm_prefix}.adaln",
                           dim,
@@ -499,8 +468,7 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
     return ret
 
 
-def get_output_projection_weights(mapping: Mapping,
-                                  state_dict: dict,
+def get_output_projection_weights(state_dict: dict,
                                   prefix: str,
                                   tbm_prefix: str,
                                   dtype: str = "float32"):
@@ -515,8 +483,7 @@ def get_output_projection_weights(mapping: Mapping,
     return ret
 
 
-def get_post_norm_weights(mapping: Mapping,
-                          state_dict: dict,
+def get_post_norm_weights(state_dict: dict,
                           prefix: str,
                           tbm_prefix: str,
                           dtype: str = "float32"):
@@ -533,18 +500,15 @@ def get_post_norm_weights(mapping: Mapping,
 
 
 def convert_hf_diffusion_transformer(config: BaseConfig = None,
-                                     mapping: Mapping = None,
                                      local_checkpoint: str = None,
                                      model_name: str = "boltz-1"):
     """
     Convert a token transformer model from a Hugging Face checkpoint to a TensorRT model weights.
     Args:
         config: The configuration for the diffusion transformer module.
-        mapping: The mapping for the diffusion transformer.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         model_name: The name of the model to load.
     """
-    mapping = mapping if mapping is not None else Mapping()
     prefix = "structure_module.score_model.token_transformer.layers"
     tbm_prefix = "layers"
     weights = {}
@@ -555,8 +519,7 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
         layer_prefix = f"{prefix}.{i}"
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
         weights.update(
-            get_adaln_weights(mapping,
-                              state_dict,
+            get_adaln_weights(state_dict,
                               f"{layer_prefix}.adaln",
                               f"{layer_tbm_prefix}.adaln",
                               config.dim,
@@ -564,11 +527,9 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
                               dtype=config.dtype))
         weights.update(
             get_pairwise_attn_weights(
-                mapping,
                 state_dict,
                 f"{layer_prefix}.pair_bias_attn",
                 f"{layer_tbm_prefix}.pair_bias_attn",
-                max_attention_pairwise_tp_size=True,
                 num_heads=config.num_heads,
                 attention_initial_norm=config.attention_initial_norm,
                 # compute_pair_bias=config.version == "v1",
@@ -576,7 +537,6 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
                 dtype=config.dtype))
         weights.update(
             get_conditioned_transition_block_weights(
-                mapping,
                 state_dict,
                 f"{layer_prefix}.transition",
                 f"{layer_tbm_prefix}.transition",
@@ -586,14 +546,12 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
                 dtype=config.dtype))
         weights.update(
             get_output_projection_weights(
-                mapping,
                 state_dict,
                 f"{layer_prefix}.output_projection",
                 f"{layer_tbm_prefix}.output_projection",
                 dtype=config.dtype))
         weights.update(
-            get_post_norm_weights(mapping,
-                                  state_dict,
+            get_post_norm_weights(state_dict,
                                   f"{layer_prefix}.post_lnorm",
                                   f"{layer_tbm_prefix}.post_lnorm",
                                   dtype=config.dtype))
@@ -602,7 +560,6 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
 
 
 def convert_hf_diffusion_transformer_torch(config: BaseConfig,
-                                           mapping: Mapping = None,
                                            local_checkpoint: str = None,
                                            model_name: str = "boltz-1",
                                            weights: dict = None,
@@ -611,7 +568,6 @@ def convert_hf_diffusion_transformer_torch(config: BaseConfig,
     Convert a token transformer model from a Hugging Face checkpoint to a PyTorch model weights.
     Args:
         config: The configuration for the diffusion transformer module.
-        mapping: The mapping for the diffusion transformer.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         model_name: The name of the model to load.
         weights: The weights to load. If weights is None, the function will load from HuggingFace
@@ -755,7 +711,6 @@ def convert_hf_diffusion_transformer_torch(config: BaseConfig,
 
 
 def convert_hf_msa_module_torch(config: BaseConfig,
-                                mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-1",
                                 weights: dict = None,
@@ -764,7 +719,6 @@ def convert_hf_msa_module_torch(config: BaseConfig,
     Convert a msa module model from a Hugging Face checkpoint to a PyTorch model weights.
     Args:
         config: The configuration for the msa module.
-        mapping: The mapping for the msa module.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         model_name: The name of the model to load.
         weights: The weights to load. If weights is None, the function will load from HuggingFace
@@ -987,7 +941,6 @@ def convert_hf_msa_module_torch(config: BaseConfig,
 
 
 def convert_hf_input_embedder_torch(config: BaseConfig,
-                                    mapping: Mapping = None,
                                     local_checkpoint: str = None,
                                     model_name: str = "boltz-1",
                                     weights: dict = None,
@@ -996,7 +949,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
     Convert a Boltz1x input embedder model from a Hugging Face checkpoint to a PyTorch model weights.
     Args:
         config: The configuration for the input embedder module. Boltz1Config.input_embedder
-        mapping: The mapping for the input embedder.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         model_name: The name of the model to load.
         weights: The weights to load. If weights is None, the function will load from HuggingFace
@@ -1015,7 +967,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
     layer_path = f"{prefix}atom_attention_encoder"
     atom_transformer_weights = convert_hf_diffusion_transformer_torch(
         config.diffusion_transformer,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1074,7 +1025,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
 
 
 def convert_hf_structure_module_torch(config: BaseConfig,
-                                      mapping: Mapping = None,
                                       local_checkpoint: str = None,
                                       model_name: str = "boltz-1",
                                       weights: dict = None,
@@ -1083,7 +1033,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     Convert a atom diffusion model from a Hugging Face checkpoint to a PyTorch model weights.
     Args:
         config: The configuration for the atom diffusion module. Boltz1Config.structure_module.atom_diffusion
-        mapping: The mapping for the atom diffusion.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         model_name: The name of the model to load.
         weights: The weights to load. If weights is None, the function will load from HuggingFace
@@ -1263,7 +1212,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     # Load for atom attention encoder
     DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.atom_encoder,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1289,7 +1237,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     # Load for atom attention decoder
     DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.atom_decoder,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1325,7 +1272,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     # Load for token transformer
     DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.token_transformer,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1337,7 +1283,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
 
 
 def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
-                                            mapping: Mapping = None,
                                             local_checkpoint: str = None,
                                             model_name: str = "boltz-1",
                                             weights: dict = None,
@@ -1346,7 +1291,6 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
     Convert a diffusion conditioning model from a Hugging Face checkpoint to a PyTorch model weights.
     Args:
         config: The configuration for the diffusion conditioning module. Boltz1Config.structure_module.score_model
-        mapping: The mapping for the diffusion conditioning.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
         model_name: The name of the model to load.
         weights: The weights to load. If weights is None, the function will load from HuggingFace
@@ -1496,7 +1440,6 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
 
 
 def convert_hf_confidence_torch(config: BaseConfig,
-                                mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-1",
                                 weights: dict = None,
@@ -1505,7 +1448,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
     Convert a confidence model from a Hugging Face checkpoint to a PyTorch model weights.
     Args:
         config: The configuration for the confidence module.
-        mapping: The mapping for the confidence module.
         local_checkpoint: The directory to load the checkpoint from.
         model_name: The name of the model to load.
         weights: The weights to load. If weights is None, the function will load from HuggingFace
@@ -1593,7 +1535,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
     }]
     input_embedder_weights = convert_hf_input_embedder_torch(
         config=config.input_embedder,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1641,7 +1582,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
 
     pairformer_weights = convert_hf_pairformer_torch(
         config=config.pairformer,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1652,7 +1592,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
         tbnm_state_dict[f"pairformer_module.{k}"] = v
     msa_module_weights = convert_hf_msa_module_torch(
         config=config.msa_module,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,

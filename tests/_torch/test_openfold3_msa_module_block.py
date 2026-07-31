@@ -22,7 +22,6 @@ import torch
 from tensorrt_bionemo._torch.attention_backend.utils import \
     precompute_pair_masks
 from tensorrt_bionemo._torch.modules.openfold3.trunk import MSAModuleBlock
-from tensorrt_bionemo.mapping import Mapping
 # TODO: fix this after finish full openfold3 model
 # pytestmark = pytest.mark.skip(reason="openfold3")
 from tensorrt_bionemo.utils import str_dtype_to_torch
@@ -102,7 +101,6 @@ def _create_msa_module_block(ref_module, sc, torch_dtype, last_block=False):
             "z": False,
             "o": False
         },
-        mapping=Mapping(),
         last_block=last_block,
     )
 

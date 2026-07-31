@@ -23,7 +23,6 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, PrecomputedSingleMasks, precompute_pair_masks,
     precompute_single_masks)
 from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_TRANSITION
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.graph_optimization.config import (
     GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod,
     PaddedDimSpec, SpacingMethod)
@@ -36,7 +35,6 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
@@ -55,10 +53,6 @@ class PairformerLayerV1(nn.Module):
                  dtype: torch.dtype = None,
                  eps: float = 1e-5,
                  inf: float = 1e9,
-                 max_transition_tp_size: bool = False,
-                 max_attention_pairwise_tp_size: bool = False,
-                 max_tri_mul_tp_size: bool = False,
-                 mapping: Optional[Mapping] = None,
                  triangle_attn_backend: str = "VANILLA",
                  pairwise_attn_backend: str = "VANILLA",
                  skip_create_weights: bool = False,
@@ -92,8 +86,6 @@ class PairformerLayerV1(nn.Module):
         self.triangle_attn_backend = triangle_attn_backend
         self.pairwise_attn_backend = pairwise_attn_backend
         self.pair_mask_left_aligned = pair_mask_left_aligned
-        self.mapping = mapping or Mapping()
-
         if isinstance(s_path_dtype, str):
             s_path_dtype = str_dtype_to_torch(s_path_dtype)
         if s_path_dtype is None:
@@ -110,8 +102,6 @@ class PairformerLayerV1(nn.Module):
                 bias_proj=True,
                 eps=eps,
                 inf=inf,
-                max_attention_pairwise_tp_size=max_attention_pairwise_tp_size,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights,
                 attn_backend=pairwise_attn_backend,
                 initial_norm=attention_initial_norm,
@@ -122,9 +112,7 @@ class PairformerLayerV1(nn.Module):
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            max_tri_mul_tp_size=max_tri_mul_tp_size,
             high_precision=trimul_high_precision,
             mean_normalization=trimul_mean_normalization,
             pair_mask_left_aligned=pair_mask_left_aligned,
@@ -135,9 +123,7 @@ class PairformerLayerV1(nn.Module):
             eps=eps,
             multiplication_type=TriangleMultiplicationNodeType.INCOMING,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            max_tri_mul_tp_size=max_tri_mul_tp_size,
             high_precision=trimul_high_precision,
             mean_normalization=trimul_mean_normalization,
             pair_mask_left_aligned=pair_mask_left_aligned,
@@ -149,7 +135,6 @@ class PairformerLayerV1(nn.Module):
             inf=inf,
             layer_idx=layer_idx,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
             attn_backend=triangle_attn_backend,
         )
@@ -160,7 +145,6 @@ class PairformerLayerV1(nn.Module):
             inf=inf,
             layer_idx=layer_idx,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
             attn_backend=triangle_attn_backend,
         )
@@ -171,8 +155,6 @@ class PairformerLayerV1(nn.Module):
                 layer_idx=layer_idx,
                 eps=eps,
                 dtype=s_path_dtype,
-                max_transition_tp_size=max_transition_tp_size,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights,
             )
         self.transition_z = Transition(
@@ -181,8 +163,6 @@ class PairformerLayerV1(nn.Module):
             layer_idx=layer_idx,
             eps=eps,
             dtype=dtype,
-            max_transition_tp_size=max_transition_tp_size,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
             # Row-chunk the pair FFN at large N so its [N, N, 2*hidden] intermediate never
             # materializes at full N (~26 GB -> a few GB). Position-wise => numerically identical,
@@ -196,7 +176,6 @@ class PairformerLayerV1(nn.Module):
         z: torch.Tensor,
         pair_mask: torch.Tensor,
         attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
@@ -235,13 +214,11 @@ class PairformerLayerV1(nn.Module):
                                     mask=pair_mask,
                                     mask_bias=mb_start,
                                     attn_metadata=tri_attn_metadata,
-                                    all_reduce_params=all_reduce_params,
                                     buffers=buffers)
         z = z + self.tri_attn_end(z,
                                   mask=pair_mask,
                                   mask_bias=mb_end,
                                   attn_metadata=tri_attn_metadata,
-                                  all_reduce_params=all_reduce_params,
                                   buffers=buffers)
 
         z = z + self.transition_z(z)
@@ -254,7 +231,6 @@ class PairformerLayerV1(nn.Module):
             mask: torch.Tensor,
             pair_mask: torch.Tensor,
             attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-            all_reduce_params: Optional[AllReduceParams] = None,
             precomputed_masks: Optional[PrecomputedPairMasks] = None,
             precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
             buffers: Optional[PreallocatedBuffers] = None,
@@ -262,7 +238,6 @@ class PairformerLayerV1(nn.Module):
         z = self._transform_z(z,
                               pair_mask,
                               attn_metadatas,
-                              all_reduce_params,
                               precomputed_masks=precomputed_masks,
                               buffers=buffers)
         if not self.no_update_s:
@@ -272,7 +247,6 @@ class PairformerLayerV1(nn.Module):
                                    mask,
                                    attn_metadata=(attn_metadatas
                                                   or {}).get("pairwise_attn"),
-                                   all_reduce_params=all_reduce_params,
                                    mask_bias=mask_bias,
                                    buffers=buffers)
             s = s + self.transition_s(s)
@@ -300,7 +274,6 @@ class PairformerNoSeqLayer(PairformerLayerV1):
             z: torch.Tensor,
             pair_mask: torch.Tensor,
             attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-            all_reduce_params: Optional[AllReduceParams] = None,
             precomputed_masks: Optional[PrecomputedPairMasks] = None,
             precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
             buffers: Optional[PreallocatedBuffers] = None,
@@ -311,7 +284,6 @@ class PairformerNoSeqLayer(PairformerLayerV1):
             mask=None,
             pair_mask=pair_mask,
             attn_metadatas=attn_metadatas,
-            all_reduce_params=all_reduce_params,
             precomputed_masks=precomputed_masks,
             precomputed_single_masks=precomputed_single_masks,
             buffers=buffers)
@@ -339,7 +311,6 @@ class PairformerNoSeqModule(nn.Module):
                 z: torch.Tensor,
                 pair_mask: torch.Tensor,
                 attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-                all_reduce_params: Optional[AllReduceParams] = None,
                 buffers: Optional[PreallocatedBuffers] = None,
                 **kwargs) -> torch.Tensor:
         first_layer = self.layers[0]
@@ -355,7 +326,6 @@ class PairformerNoSeqModule(nn.Module):
             z = layer(z,
                       pair_mask,
                       attn_metadatas,
-                      all_reduce_params,
                       precomputed_masks=precomputed,
                       buffers=buffers)
         return z
@@ -379,7 +349,6 @@ class PairformerLayerV2(PairformerLayerV1):
         mask: torch.Tensor,
         pair_mask: torch.Tensor,
         attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
         precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
         buffers: Optional[PreallocatedBuffers] = None,
@@ -387,7 +356,6 @@ class PairformerLayerV2(PairformerLayerV1):
         z = self._transform_z(z,
                               pair_mask,
                               attn_metadatas,
-                              all_reduce_params,
                               precomputed_masks=precomputed_masks,
                               buffers=buffers)
         original_s_dtype = s.dtype
@@ -403,7 +371,6 @@ class PairformerLayerV2(PairformerLayerV1):
                                mask,
                                attn_metadata=(attn_metadatas
                                               or {}).get("pairwise_attn"),
-                               all_reduce_params=all_reduce_params,
                                mask_bias=mask_bias,
                                buffers=buffers)
         s = s + self.transition_s(s)
@@ -477,11 +444,6 @@ class PairformerModule(nn.Module):
                     dtype=config.torch_dtype,
                     eps=config.norm_epsilon,
                     inf=config.mask_inf,
-                    max_transition_tp_size=config.max_transition_tp_size,
-                    max_attention_pairwise_tp_size=config.
-                    max_attention_pairwise_tp_size,
-                    max_tri_mul_tp_size=config.max_tri_mul_tp_size,
-                    mapping=config.mapping,
                     skip_create_weights=config.skip_create_weights,
                     triangle_attn_backend=config.triangle_attention_backend,
                     pairwise_attn_backend=config.pairwise_attention_backend,
@@ -508,7 +470,6 @@ class PairformerModule(nn.Module):
                 pair_mask: torch.Tensor,
                 attn_metadatas: Optional[dict[str,
                                               AttentionMetadata]] = dict(),
-                all_reduce_params: Optional[AllReduceParams] = None,
                 buffers: Optional[PreallocatedBuffers] = None,
                 **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         precomputed = precompute_pair_masks(
@@ -532,7 +493,6 @@ class PairformerModule(nn.Module):
                          mask,
                          pair_mask,
                          attn_metadatas,
-                         all_reduce_params,
                          precomputed_masks=precomputed,
                          precomputed_single_masks=precomputed_single,
                          buffers=buffers)

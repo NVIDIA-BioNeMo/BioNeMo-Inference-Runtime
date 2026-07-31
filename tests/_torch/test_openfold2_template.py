@@ -28,7 +28,6 @@ from test_utils.openfold.ref_layers import (RefTemplatePairStackBlock,
 
 from tensorrt_bionemo._torch.modules.openfold2.template import (
     TemplatePairBlock, TemplatePointwiseAttention)
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
@@ -79,8 +78,7 @@ def test_template_pair_stack_block(sc: Scenario):
                                no_heads=ref_module.no_heads,
                                pair_transition_n=ref_module.pair_transition_n,
                                tri_mul_first=ref_module.tri_mul_first,
-                               dtype=torch_dtype,
-                               mapping=Mapping())
+                               dtype=torch_dtype)
 
     load_template_pair_stack_block_weights_torch(module, weights_and_biases)
     module = module.to(device)
@@ -142,8 +140,7 @@ def test_template_pointwise_attention(sc: Scenario):
                                         c_hidden=ref_module.c_hidden,
                                         no_heads=ref_module.no_heads,
                                         inf=ref_module.inf,
-                                        dtype=torch_dtype,
-                                        mapping=Mapping())
+                                        dtype=torch_dtype)
 
     load_template_pointwise_attention_weights_torch(module, weights_and_biases)
     module = module.to(device)

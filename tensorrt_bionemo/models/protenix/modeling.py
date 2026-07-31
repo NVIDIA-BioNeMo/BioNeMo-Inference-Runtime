@@ -118,7 +118,6 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         self.model_name = model_name or SupMat.ProtenixV2
         self.config = config or self.get_pretrained_config(self.model_name)
         self.dtype = self.config.torch_dtype
-        self.mapping = self.config.mapping
         self.n_queries = self.config.n_queries
         self.n_keys = self.config.n_keys
 
@@ -132,7 +131,6 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             fix_sym_check=rpe_config.fix_sym_check,
             cyclic_pos_enc=rpe_config.cyclic_pos_enc,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.config.skip_create_weights)
         self.constraint_embedder = ProtenixConstraintEmbedder(
             self.config.constraint_embedder_config)
@@ -166,7 +164,6 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             c_z=dh.c_z,
             no_bins=dh.no_bins,
             dtype=dh.torch_dtype,
-            mapping=self.mapping,
             skip_create_weights=self.config.skip_create_weights)
 
         self.confidence_head = ProtenixConfidenceHead(

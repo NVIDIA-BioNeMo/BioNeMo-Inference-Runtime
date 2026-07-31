@@ -22,7 +22,7 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_gather_indices, create_indexing_matrix, query_to_keys_optimized)
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
@@ -78,7 +78,6 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         self.model_name = model_name or SupMat.OpenFold3
         self.config = config or self.get_pretrained_config(self.model_name)
         self.dtype = self.config.torch_dtype
-        self.mapping = self.config.mapping
         self.skip_create_weights = self.config.skip_create_weights
         self.num_recycles = self.config.num_recycles
         self.num_cycles = self.num_recycles + 1
@@ -99,9 +98,6 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             self.config.c_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
 
         self.template_embedder = TemplateEmbedderAllAtom(
@@ -118,9 +114,6 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             self.config.c_s,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
 
         self.pairformer_stack = PairformerModule(

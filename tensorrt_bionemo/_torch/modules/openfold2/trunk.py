@@ -20,7 +20,6 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import MSAColumnGlobalAttention
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerBlock
@@ -28,7 +27,6 @@ from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerStack as _EvoformerStack
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 
 
 class EvoformerStack(_EvoformerStack):
@@ -40,8 +38,7 @@ class EvoformerStack(_EvoformerStack):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        attn_metadata: Optional[AttentionMetadata] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # cast the tensors to the correct dtype
         m = m.to(dtype=self.config.torch_dtype)
@@ -56,8 +53,7 @@ class EvoformerStack(_EvoformerStack):
             msa_mask = msa_mask.unsqueeze(0)
             pair_mask = pair_mask.unsqueeze(0)
 
-        m, z, s = super().forward(m, z, msa_mask, pair_mask, attn_metadata,
-                                  all_reduce_params)
+        m, z, s = super().forward(m, z, msa_mask, pair_mask, attn_metadata)
         if n_dims == 3:
             m = m.squeeze(0)
             z = z.squeeze(0)
@@ -86,7 +82,6 @@ class ExtraMSABlock(EvoformerBlock):
                  eps: float = 1e-5,
                  inf: float = 1e9,
                  skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None,
                  trimul_high_precision: bool = False,
                  **kwargs):
         super().__init__(
@@ -108,7 +103,6 @@ class ExtraMSABlock(EvoformerBlock):
             eps=eps,
             inf=inf,
             skip_create_weights=skip_create_weights,
-            mapping=mapping,
             trimul_high_precision=trimul_high_precision,
         )
         self.msa_att_col = MSAColumnGlobalAttention(
@@ -126,19 +120,12 @@ class ExtraMSABlock(EvoformerBlock):
             eps=eps,
             inf=inf,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
     def _compute_opm(
-        self,
-        m: torch.Tensor,
-        z: torch.Tensor,
-        msa_mask: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        opm = self.outer_product_mean(m,
-                                      mask=msa_mask,
-                                      all_reduce_params=all_reduce_params)
+            self, m: torch.Tensor, z: torch.Tensor,
+            msa_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        opm = self.outer_product_mean(m, mask=msa_mask)
         z = z + opm
         return m, z
 
@@ -149,7 +136,6 @@ class ExtraMSABlock(EvoformerBlock):
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
     ) -> torch.Tensor:
         """
@@ -166,41 +152,31 @@ class ExtraMSABlock(EvoformerBlock):
                 Optional precomputed mask biases for triangle attention.
         """
         if self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
-        m = m + self.msa_att_row(m,
-                                 z,
-                                 mask=msa_mask,
-                                 attn_metadata=attn_metadata,
-                                 all_reduce_params=all_reduce_params)
-        m = m + self.msa_att_col(
-            m, mask=msa_mask, all_reduce_params=all_reduce_params)
+            m, z = self._compute_opm(m, z, msa_mask)
+        m = m + self.msa_att_row(
+            m, z, mask=msa_mask, attn_metadata=attn_metadata)
+        m = m + self.msa_att_col(m, mask=msa_mask)
         msa_trans_mask = msa_mask
         m = m + self.msa_transition(m, mask=msa_trans_mask)
 
         if not self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
+            m, z = self._compute_opm(m, z, msa_mask)
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
 
         if precomputed_masks is not None:
             z = z + self.tri_attn_start(z,
                                         mask_bias=precomputed_masks.mask_bias,
-                                        attn_metadata=attn_metadata,
-                                        all_reduce_params=all_reduce_params)
+                                        attn_metadata=attn_metadata)
             z = z + self.tri_attn_end(
                 z,
                 mask_bias=precomputed_masks.mask_bias_transposed,
-                attn_metadata=attn_metadata,
-                all_reduce_params=all_reduce_params)
+                attn_metadata=attn_metadata)
         else:
-            z = z + self.tri_attn_start(z,
-                                        mask=pair_mask,
-                                        attn_metadata=attn_metadata,
-                                        all_reduce_params=all_reduce_params)
-            z = z + self.tri_attn_end(z,
-                                      mask=pair_mask,
-                                      attn_metadata=attn_metadata,
-                                      all_reduce_params=all_reduce_params)
+            z = z + self.tri_attn_start(
+                z, mask=pair_mask, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_end(
+                z, mask=pair_mask, attn_metadata=attn_metadata)
 
         pair_trans_mask = pair_mask
         z = z + self.pair_transition(z, mask=pair_trans_mask)
@@ -242,7 +218,6 @@ class ExtraMSAStack(nn.Module):
                     eps=config.norm_epsilon,
                     inf=config.mask_inf,
                     skip_create_weights=config.skip_create_weights,
-                    mapping=config.mapping,
                     trimul_high_precision=config.trimul_high_precision,
                 ))
 
@@ -260,8 +235,7 @@ class ExtraMSAStack(nn.Module):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        attn_metadata: Optional[AttentionMetadata] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -275,8 +249,6 @@ class ExtraMSAStack(nn.Module):
                 [*, N_res, N_res] pair mask
             attn_metadata:
                 Attention metadata
-            all_reduce_params:
-                AllReduce parameters
         """
         # Expand the batch dimensions if needed
         n_dims = m.ndim
@@ -304,7 +276,6 @@ class ExtraMSAStack(nn.Module):
                          msa_mask,
                          pair_mask,
                          attn_metadata,
-                         all_reduce_params,
                          precomputed_masks=precomputed)
         if n_dims == 3:
             m = m.squeeze(0)

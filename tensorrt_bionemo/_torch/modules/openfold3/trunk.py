@@ -26,14 +26,12 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
 from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY, MSA_TRANSITION,
                                                 PAIR_TRANSITION)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerBlock
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 
 
 class MSAModuleBlock(EvoformerBlock):
@@ -59,7 +57,6 @@ class MSAModuleBlock(EvoformerBlock):
                  eps: float = 1e-5,
                  inf: float = 1e9,
                  skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None,
                  outer_product_mean_bias: Optional[dict] = None,
                  tri_mul_out_bias: Optional[dict] = None,
                  tri_mul_in_bias: Optional[dict] = None,
@@ -87,7 +84,6 @@ class MSAModuleBlock(EvoformerBlock):
             eps=eps,
             inf=inf,
             skip_create_weights=skip_create_weights,
-            mapping=mapping,
             outer_product_mean_bias=outer_product_mean_bias,
             tri_mul_out_bias=tri_mul_out_bias,
             tri_mul_in_bias=tri_mul_in_bias,
@@ -110,7 +106,6 @@ class MSAModuleBlock(EvoformerBlock):
                 inf=inf,
                 eps=eps,
                 dtype=dtype,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights,
             )
             # SwiGLU Transition — chunk along MSA rows (dim S of [B,S,N,C_m]),
@@ -121,7 +116,6 @@ class MSAModuleBlock(EvoformerBlock):
                 layer_idx=local_layer_idx,
                 eps=eps,
                 dtype=dtype,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights,
                 auto_chunk_policy=CHUNK_REGISTRY.get(MSA_TRANSITION),
             )
@@ -139,7 +133,6 @@ class MSAModuleBlock(EvoformerBlock):
             layer_idx=local_layer_idx,
             eps=eps,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
             auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION),
         )
@@ -147,15 +140,9 @@ class MSAModuleBlock(EvoformerBlock):
         self.msa_att_row_chunk_size = msa_att_row_chunk_size
 
     def _compute_opm(
-        self,
-        m: torch.Tensor,
-        z: torch.Tensor,
-        msa_mask: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        opm = self.outer_product_mean(m,
-                                      mask=msa_mask,
-                                      all_reduce_params=all_reduce_params)
+            self, m: torch.Tensor, z: torch.Tensor,
+            msa_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        opm = self.outer_product_mean(m, mask=msa_mask)
         z = z + opm
         return m, z
 
@@ -166,7 +153,6 @@ class MSAModuleBlock(EvoformerBlock):
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -183,7 +169,7 @@ class MSAModuleBlock(EvoformerBlock):
                 Optional precomputed mask biases for triangle attention.
         """
         if self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
+            m, z = self._compute_opm(m, z, msa_mask)
 
         if self.msa_att_row is not None:
             m = m + self.msa_att_row(m, z, pair_mask)
@@ -194,29 +180,23 @@ class MSAModuleBlock(EvoformerBlock):
             m = m + self.msa_transition(m, mask=msa_trans_mask.unsqueeze(-1))
 
         if not self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
+            m, z = self._compute_opm(m, z, msa_mask)
         z = z + self.tri_mul_out(z, mask=pair_mask)
         z = z + self.tri_mul_in(z, mask=pair_mask)
 
         if precomputed_masks is not None:
             z = z + self.tri_attn_start(z,
                                         mask_bias=precomputed_masks.mask_bias,
-                                        attn_metadata=attn_metadata,
-                                        all_reduce_params=all_reduce_params)
+                                        attn_metadata=attn_metadata)
             z = z + self.tri_attn_end(
                 z,
                 mask_bias=precomputed_masks.mask_bias_transposed,
-                attn_metadata=attn_metadata,
-                all_reduce_params=all_reduce_params)
+                attn_metadata=attn_metadata)
         else:
-            z = z + self.tri_attn_start(z,
-                                        mask=pair_mask,
-                                        attn_metadata=attn_metadata,
-                                        all_reduce_params=all_reduce_params)
-            z = z + self.tri_attn_end(z,
-                                      mask=pair_mask,
-                                      attn_metadata=attn_metadata,
-                                      all_reduce_params=all_reduce_params)
+            z = z + self.tri_attn_start(
+                z, mask=pair_mask, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_end(
+                z, mask=pair_mask, attn_metadata=attn_metadata)
 
         pair_trans_mask = pair_mask
         z = z + self.pair_transition(z, mask=pair_trans_mask.unsqueeze(-1))
@@ -252,7 +232,6 @@ class MSAModuleStack(nn.Module):
                     eps=config.norm_epsilon,
                     inf=config.mask_inf,
                     skip_create_weights=config.skip_create_weights,
-                    mapping=config.mapping,
                     msa_att_row_chunk_size=config.msa_att_row_chunk_size,
                     outer_product_mean_bias={
                         "proj_a": False,
@@ -304,7 +283,6 @@ class MSAModuleStack(nn.Module):
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None
     ) -> torch.Tensor:
         """
@@ -319,8 +297,6 @@ class MSAModuleStack(nn.Module):
                 [*, N_res, N_res] pair mask
             attn_metadata:
                 Attention metadata
-            all_reduce_params:
-                AllReduce parameters
             precomputed_masks:
                 Optional precomputed triangle-attention mask bias. When given
                 (e.g. precomputed once by a recycling trunk), it is reused
@@ -353,7 +329,6 @@ class MSAModuleStack(nn.Module):
                          msa_mask,
                          pair_mask,
                          attn_metadata,
-                         all_reduce_params,
                          precomputed_masks=precomputed)
         if n_dims == 3:
             m = m.squeeze(0)

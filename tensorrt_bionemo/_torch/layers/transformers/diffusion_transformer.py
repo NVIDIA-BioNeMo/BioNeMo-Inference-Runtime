@@ -25,13 +25,12 @@ from tensorrt_bionemo._torch.custom_ops.fused_layer_norm_no_affine import \
     fused_layer_norm_no_affine
 from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
     get_gated_sigmoid_op
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.graph_optimization.config import (
     GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
 from tensorrt_bionemo._torch.graph_optimization.decorator import (
     NamedDimTies, support_graph_optimization)
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_gather_indices, query_to_keys_optimized, to_blocks)
@@ -39,7 +38,6 @@ from tensorrt_bionemo._torch.layers.transition import \
     ConditionedTransitionBlock
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 
@@ -118,7 +116,6 @@ class DiffusionTransformerLayer(nn.Module):
                  use_ada_layer_norm: bool = True,
                  use_separate_layer_norm: bool = False,
                  chain_kv_norm: bool = False,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  initial_norm: bool = True,
                  conditioned_transition_using_silu: bool = False,
@@ -137,7 +134,6 @@ class DiffusionTransformerLayer(nn.Module):
                                dim_single_cond,
                                eps=eps,
                                dtype=dtype,
-                               mapping=mapping,
                                skip_create_weights=skip_create_weights)
 
         self.pair_bias_attn = AttentionPairBias(
@@ -155,7 +151,6 @@ class DiffusionTransformerLayer(nn.Module):
             eps=eps,
             inf=inf,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
             attn_backend=attn_backend)
 
@@ -166,18 +161,13 @@ class DiffusionTransformerLayer(nn.Module):
                 dim_single_cond,
                 dim,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
-            self._can_fuse_output_gate = (mapping is None
-                                          or mapping.tp_size == 1)
+            self._can_fuse_output_gate = True
         self.transition = ConditionedTransitionBlock(
             dim_single=dim,
             dim_single_cond=dim_single_cond,
             expansion_factor=transition_expansion_factor,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
             using_silu=conditioned_transition_using_silu)
         self.post_lnorm = None
@@ -191,7 +181,6 @@ class DiffusionTransformerLayer(nn.Module):
             bias: torch.Tensor,
             mask: Optional[torch.Tensor] = None,
             attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None,
             precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
             buffers: Optional[PreallocatedBuffers] = None,
             **kwargs) -> torch.Tensor:
@@ -209,7 +198,6 @@ class DiffusionTransformerLayer(nn.Module):
             single_embedding=s if self.use_separate_layer_norm else None,
             mask=mask,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
             mask_bias=mask_bias,
             mask_bias_local=mask_bias_local,
             buffers=buffers)
@@ -229,11 +217,8 @@ class DiffusionTransformerLayer(nn.Module):
             else:
                 b = F.sigmoid(self.output_projection(s)) * b
         a = a + b
-        a = a + self.transition(a,
-                                s,
-                                all_reduce_params=all_reduce_params,
-                                buffers=buffers,
-                                buffer_key="dit_bsd_scratch")
+        a = a + self.transition(
+            a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
         if self.post_lnorm is not None:
             a = self.post_lnorm(a)
         return a
@@ -295,7 +280,6 @@ class BoltzDiffusionTransformer(nn.Module):
                     eps=config.norm_epsilon,
                     inf=config.mask_inf,
                     attention_initial_norm=config.attention_initial_norm,
-                    mapping=config.mapping,
                     skip_create_weights=config.skip_create_weights,
                     attn_output_gate=getattr(config, 'attn_output_gate', True),
                     attn_gate_bias=getattr(config, 'attn_gate_bias', False),
@@ -341,7 +325,6 @@ class BoltzDiffusionTransformer(nn.Module):
             z: Optional[torch.Tensor] = None,
             mask: Optional[torch.Tensor] = None,
             attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None,
             precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
             buffers: Optional[PreallocatedBuffers] = None,
             **kwargs) -> torch.Tensor:
@@ -375,7 +358,6 @@ class BoltzDiffusionTransformer(nn.Module):
                       bias,
                       mask,
                       attn_metadata,
-                      all_reduce_params,
                       precomputed_single_masks=precomputed_single_masks,
                       buffers=buffers)
         return a
@@ -435,7 +417,6 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 eps=config.norm_epsilon,
                 inf=config.mask_inf,
                 attention_initial_norm=config.attention_initial_norm,
-                mapping=config.mapping,
                 skip_create_weights=config.skip_create_weights,
                 conditioned_transition_using_silu=config.
                 conditioned_transition_using_silu,
@@ -506,7 +487,6 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 z: Optional[torch.Tensor] = None,
                 mask: Optional[torch.Tensor] = None,
                 attn_metadata: Optional[AttentionMetadata] = None,
-                all_reduce_params: Optional[AllReduceParams] = None,
                 buffers: Optional[PreallocatedBuffers] = None,
                 **kwargs) -> torch.Tensor:
 
@@ -541,7 +521,6 @@ class OpenFold3DiffusionTransformer(nn.Module):
                         all_biases[i],
                         mask,
                         attn_metadata,
-                        all_reduce_params,
                         precomputed_single_masks=precomputed_single_masks,
                         buffers=buffers)
             finally:
@@ -554,7 +533,6 @@ class OpenFold3DiffusionTransformer(nn.Module):
                           z,
                           mask,
                           attn_metadata,
-                          all_reduce_params,
                           precomputed_single_masks=precomputed_single_masks,
                           buffers=buffers)
         return a
@@ -609,7 +587,6 @@ class ProtenixDiffusionTransformer(nn.Module):
                 conditioned_transition_using_silu=cts,
                 transition_expansion_factor=config.transition_expansion_factor,
                 dtype=dtype,
-                mapping=config.mapping,
                 skip_create_weights=config.skip_create_weights,
                 attn_backend=attn_backend)
             # Protenix ``layernorm_z`` has no offset (create_offset=False).

@@ -23,8 +23,7 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
-                                                   WeightMode,
+from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo._torch.modules.openfold2.template import \
     TemplatePairStack
@@ -36,7 +35,6 @@ from tensorrt_bionemo._torch.utils import (commit_graph_safe_generator,
                                            make_graph_safe_generator,
                                            recursive_calling_load_weights)
 from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 
 
 class InputEmbedderAllAtom(nn.Module):
@@ -52,7 +50,6 @@ class InputEmbedderAllAtom(nn.Module):
         self.max_relative_idx = config.max_relative_idx
         self.max_relative_chain = config.max_relative_chain
         self.dtype = config.torch_dtype
-        self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
 
         self.atom_attn_enc = AtomAttentionEncoder(
@@ -70,29 +67,21 @@ class InputEmbedderAllAtom(nn.Module):
             eps=config.norm_epsilon,
             add_noisy_pos=config.add_noisy_pos,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights)
 
         self.linear_s = Linear(config.c_s_input,
                                config.c_s,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=self.skip_create_weights)
 
-        self.linear_z_ij = Linear(
-            config.c_s_input,
-            2 * config.c_z,
-            bias=False,
-            dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=self.skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_KV_LINEAR))
+        self.linear_z_ij = Linear(config.c_s_input,
+                                  2 * config.c_z,
+                                  bias=False,
+                                  dtype=self.dtype,
+                                  skip_create_weights=self.skip_create_weights,
+                                  weights_loading_config=WeightsLoadingConfig(
+                                      weight_mode=WeightMode.FUSED_KV_LINEAR))
 
         num_rel_pos_bins = 2 * self.max_relative_idx + 2
         num_rel_token_bins = 2 * self.max_relative_idx + 2
@@ -106,9 +95,6 @@ class InputEmbedderAllAtom(nn.Module):
             config.c_z,
             bias=False,
             dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.skip_create_weights)
 
         # Expecting binary feature "token_bonds" of shape [*, N_token, N_token, 1]
@@ -117,9 +103,6 @@ class InputEmbedderAllAtom(nn.Module):
             config.c_z,
             bias=False,
             dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.skip_create_weights)
 
     def load_weights(self, weights: dict):
@@ -228,7 +211,6 @@ class MSAModuleEmbedder(nn.Module):
         self.min_subsampled_all_msa = config.min_subsampled_all_msa
         self.max_subsampled_all_msa = config.max_subsampled_all_msa
         self.dtype = config.torch_dtype
-        self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
         self.config = config
 
@@ -236,9 +218,6 @@ class MSAModuleEmbedder(nn.Module):
                                config.c_m,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=self.skip_create_weights)
 
         self.linear_s_input = Linear(
@@ -246,9 +225,6 @@ class MSAModuleEmbedder(nn.Module):
             config.c_m,
             bias=False,
             dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.skip_create_weights)
 
     @staticmethod
@@ -375,10 +351,10 @@ class MSAModuleEmbedder(nn.Module):
 
     @staticmethod
     def _subsample_all_msa(
-            msa_feat: torch.Tensor,
-            msa_mask: torch.Tensor,
-            no_subsampled_all_msa: int,
-            generator: Optional[torch.Generator] = None
+        msa_feat: torch.Tensor,
+        msa_mask: torch.Tensor,
+        no_subsampled_all_msa: int,
+        generator: Optional[torch.Generator] = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Subsample all MSA sequences (paired + main) to a fixed number of sequences,
@@ -638,7 +614,6 @@ class TemplatePairEmbedderAllAtom(nn.Module):
                  c_aatype: int,
                  c_out: int,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  eps: float = 1e-5):
         """
@@ -660,7 +635,6 @@ class TemplatePairEmbedderAllAtom(nn.Module):
         self.c_aatype = c_aatype
         self.c_out = c_out
         self.dtype = dtype
-        self.mapping = mapping
         self.skip_create_weights = skip_create_weights
         self.eps = eps
         self.dtype = dtype
@@ -672,9 +646,6 @@ class TemplatePairEmbedderAllAtom(nn.Module):
             self.c_out,
             bias=False,
             dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_ALL_LINEAR_LAST_DIM))
@@ -686,9 +657,6 @@ class TemplatePairEmbedderAllAtom(nn.Module):
                                self.c_out,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=self.skip_create_weights)
 
     def _embed_feats(self, batch: dict):
@@ -765,7 +733,6 @@ class TemplateEmbedderAllAtom(nn.Module):
         super().__init__()
 
         self.dtype = config.torch_dtype
-        self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
         self.eps = config.norm_epsilon
         self.inf = config.mask_inf
@@ -777,7 +744,6 @@ class TemplateEmbedderAllAtom(nn.Module):
             c_aatype=config.template_pair_embedder.c_aatype,
             c_out=config.template_pair_embedder.c_out,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
             eps=self.eps,
         )
@@ -808,7 +774,6 @@ class TemplateEmbedderAllAtom(nn.Module):
             tri_attn_end_bias=tri_attn_end_bias,
             inf=self.inf,
             dtype=config.template_pair_stack.torch_dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights,
             eps=self.eps,
         )
@@ -817,9 +782,6 @@ class TemplateEmbedderAllAtom(nn.Module):
                                config.c_z,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=self.skip_create_weights)
 
     def load_weights(self, weights: dict):

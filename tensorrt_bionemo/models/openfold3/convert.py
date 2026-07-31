@@ -21,7 +21,6 @@ from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       PairformerConfig)
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.logger import logger
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import (
     get_adaln_weights, get_output_projection_weights,
     get_pairwise_attn_weights, get_post_norm_weights, get_transition_weights,
@@ -29,13 +28,7 @@ from tensorrt_bionemo.models.boltz1.convert import (
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
-def split(*args, **kwargs):
-    # Do nothing: TRT for multiple gpus is deprecated
-    pass
-
-
 def convert_hf_pairformer(config: PairformerConfig,
-                          mapping: Mapping,
                           local_checkpoint: str = None,
                           model_name: str = "openfold3"):
     state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -121,7 +114,6 @@ def convert_hf_pairformer(config: PairformerConfig,
                     continue
                 logger.warning(f"Miss converting the weight: {oringal_name}")
 
-    mapping = mapping if mapping is not None else Mapping()
     prefix = "pairformer_module.layers"
     tbm_prefix = "layers"
     weights = {}
@@ -130,62 +122,48 @@ def convert_hf_pairformer(config: PairformerConfig,
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
         if not config.no_update_s:
             weights.update(
-                get_pairwise_attn_weights(
-                    mapping,
-                    pairformer_state_dict,
-                    f"{layer_prefix}.attention",
-                    f"{layer_tbm_prefix}.attention",
-                    config.max_attention_pairwise_tp_size,
-                    config.num_heads,
-                    dtype=config.dtype))
+                get_pairwise_attn_weights(pairformer_state_dict,
+                                          f"{layer_prefix}.attention",
+                                          f"{layer_tbm_prefix}.attention",
+                                          config.num_heads,
+                                          dtype=config.dtype))
         weights.update(
-            get_tri_attn_node_weights(mapping,
-                                      pairformer_state_dict,
+            get_tri_attn_node_weights(pairformer_state_dict,
                                       f"{layer_prefix}.tri_att_start",
                                       f"{layer_tbm_prefix}.tri_attn_start",
                                       dtype=config.dtype))
         weights.update(
-            get_tri_attn_node_weights(mapping,
-                                      pairformer_state_dict,
+            get_tri_attn_node_weights(pairformer_state_dict,
                                       f"{layer_prefix}.tri_att_end",
                                       f"{layer_tbm_prefix}.tri_attn_end",
                                       dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping,
-                                     pairformer_state_dict,
+            get_tri_mul_node_weights(pairformer_state_dict,
                                      f"{layer_prefix}.tri_mul_out",
                                      f"{layer_tbm_prefix}.tri_mul_out",
-                                     config.max_tri_mul_tp_size,
                                      dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping,
-                                     pairformer_state_dict,
+            get_tri_mul_node_weights(pairformer_state_dict,
                                      f"{layer_prefix}.tri_mul_in",
                                      f"{layer_tbm_prefix}.tri_mul_in",
-                                     config.max_tri_mul_tp_size,
                                      dtype=config.dtype))
         if not config.no_update_s:
             weights.update(
-                get_transition_weights(mapping,
-                                       pairformer_state_dict,
+                get_transition_weights(pairformer_state_dict,
                                        f"{layer_prefix}.transition_s",
                                        f"{layer_tbm_prefix}.transition_s",
-                                       config.max_transition_tp_size,
                                        config.token_s * 4,
                                        dtype=config.dtype))
         weights.update(
-            get_transition_weights(mapping,
-                                   pairformer_state_dict,
+            get_transition_weights(pairformer_state_dict,
                                    f"{layer_prefix}.transition_z",
                                    f"{layer_tbm_prefix}.transition_z",
-                                   config.max_transition_tp_size,
                                    config.token_z * 4,
                                    dtype=config.dtype))
     return weights
 
 
 def convert_hf_pairformer_torch(config: PairformerConfig,
-                                mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "openfold3",
                                 weights: dict = None):
@@ -422,8 +400,7 @@ def convert_hf_pairformer_torch(config: PairformerConfig,
     return tbnm_state_dict
 
 
-def get_conditioned_transition_block_weights(mapping: Mapping,
-                                             state_dict: dict,
+def get_conditioned_transition_block_weights(state_dict: dict,
                                              prefix: str,
                                              tbm_prefix: str,
                                              dim: int,
@@ -433,8 +410,7 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
     ret.update(
-        get_adaln_weights(mapping,
-                          state_dict,
+        get_adaln_weights(state_dict,
                           f"{prefix}.adaln",
                           f"{tbm_prefix}.adaln",
                           dim,
@@ -446,18 +422,6 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
     output_projection_weight = state_dict[
         f"{prefix}.output_projection.0.weight"]
     output_projection_bias = state_dict[f"{prefix}.output_projection.0.bias"]
-
-    # dim_inner = int(dim * expansion_factor)
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
-    if tp_size > 1:
-        swish_gate_weight = split(swish_gate_weight, tp_size, tp_rank, 0)
-        a_to_b_weight = split(a_to_b_weight, tp_size, tp_rank, 0)
-        b_to_a_weight = split(b_to_a_weight, tp_size, tp_rank, 1)
-        output_projection_weight = split(output_projection_weight, tp_size,
-                                         tp_rank, 0)
-        output_projection_bias = split(output_projection_bias, tp_size,
-                                       tp_rank, 0)
 
     fused_swl_a_to_b_weight = torch.cat([swish_gate_weight, a_to_b_weight],
                                         dim=0)
@@ -475,7 +439,6 @@ def get_conditioned_transition_block_weights(mapping: Mapping,
 
 
 def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
-                                     mapping: Mapping,
                                      local_checkpoint: str = None,
                                      model_name: str = "openfold3"):
     state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -550,7 +513,6 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
                     continue
                 logger.warning(f"Miss converting the weight: {name}")
 
-    mapping = mapping if mapping is not None else Mapping()
     prefix = "token_transformer.layers"
     tbm_prefix = "layers"
     weights = {}
@@ -561,8 +523,7 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
         layer_prefix = f"{prefix}.{i}"
         layer_tbm_prefix = f"{tbm_prefix}.{i}"
         weights.update(
-            get_adaln_weights(mapping,
-                              tktn_state_dict,
+            get_adaln_weights(tktn_state_dict,
                               f"{layer_prefix}.adaln",
                               f"{layer_tbm_prefix}.adaln",
                               config.dim,
@@ -570,18 +531,15 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
                               dtype=config.dtype))
         weights.update(
             get_pairwise_attn_weights(
-                mapping,
                 tktn_state_dict,
                 f"{layer_prefix}.pair_bias_attn",
                 f"{layer_tbm_prefix}.pair_bias_attn",
-                max_attention_pairwise_tp_size=True,
                 num_heads=config.num_heads,
                 attention_initial_norm=config.attention_initial_norm,
                 compute_pair_bias=config.version == "v1",
                 dtype=config.dtype))
         weights.update(
             get_conditioned_transition_block_weights(
-                mapping,
                 tktn_state_dict,
                 f"{layer_prefix}.transition",
                 f"{layer_tbm_prefix}.transition",
@@ -591,14 +549,12 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
                 dtype=config.dtype))
         weights.update(
             get_output_projection_weights(
-                mapping,
                 tktn_state_dict,
                 f"{layer_prefix}.output_projection",
                 f"{layer_tbm_prefix}.output_projection",
                 dtype=config.dtype))
         weights.update(
-            get_post_norm_weights(mapping,
-                                  tktn_state_dict,
+            get_post_norm_weights(tktn_state_dict,
                                   f"{layer_prefix}.post_lnorm",
                                   f"{layer_tbm_prefix}.post_lnorm",
                                   dtype=config.dtype))
@@ -616,7 +572,6 @@ def _template_module_weight(tbnm_state_dict, module_state_dict, name):
 
 
 def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
-                                           mapping: Mapping = None,
                                            local_checkpoint: str = None,
                                            model_name: str = "openfold3",
                                            weights: dict = None,
@@ -915,7 +870,6 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
 
 
 def convert_hf_input_embedder_torch(config: BaseConfig,
-                                    mapping: Mapping = None,
                                     local_checkpoint: str = None,
                                     model_name: str = "openfold3",
                                     weights: dict = None,
@@ -928,8 +882,8 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
 
     module_state_dict = {}
     ref_atom_attn_enc_weight_list = [
-        "linear_l", "linear_m",
-        "pair_mlp.1", "pair_mlp.3", "pair_mlp.5", "linear_q.0"
+        "linear_l", "linear_m", "pair_mlp.1", "pair_mlp.3", "pair_mlp.5",
+        "linear_q.0"
     ]
 
     for layer_name in ref_atom_attn_enc_weight_list:
@@ -941,11 +895,30 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
                            None),
         }]
 
-    module_state_dict["atom_attn_enc.ref_atom_feature_embedder.linear_ref_pair_features"] = [
-        {"weight": state_dict["input_embedder.atom_attn_enc.ref_atom_feature_embedder.linear_ref_offset.weight"], "bias": None},
-        {"weight": state_dict["input_embedder.atom_attn_enc.ref_atom_feature_embedder.linear_inv_sq_dists.weight"], "bias": None},
-        {"weight": state_dict["input_embedder.atom_attn_enc.ref_atom_feature_embedder.linear_valid_mask.weight"], "bias": None},
-    ]
+    module_state_dict[
+        "atom_attn_enc.ref_atom_feature_embedder.linear_ref_pair_features"] = [
+            {
+                "weight":
+                state_dict[
+                    "input_embedder.atom_attn_enc.ref_atom_feature_embedder.linear_ref_offset.weight"],
+                "bias":
+                None
+            },
+            {
+                "weight":
+                state_dict[
+                    "input_embedder.atom_attn_enc.ref_atom_feature_embedder.linear_inv_sq_dists.weight"],
+                "bias":
+                None
+            },
+            {
+                "weight":
+                state_dict[
+                    "input_embedder.atom_attn_enc.ref_atom_feature_embedder.linear_valid_mask.weight"],
+                "bias":
+                None
+            },
+        ]
 
     ref_atom_attn_enc_weight_list = [
         "ref_atom_feature_embedder.linear_ref_pos",
@@ -968,7 +941,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
 
     atom_attn_enc_coder = convert_hf_diffusion_transformer_torch(
         config=config.atom_transformer_config,
-        mapping=mapping,
         model_name=model_name,
         weights=weights,
         prefix="input_embedder.atom_attn_enc.atom_transformer.blocks")
@@ -983,7 +955,7 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
             "input_embedder.atom_attn_enc.atom_transformer.layer_norm_z.weight"]
         module_state_dict["atom_attn_enc.atom_transformer.layer_norm_z"] = \
             [{"weight": layer_norm_z_w}]
-        
+
     input_embedder_weight_list = [
         "linear_s", "linear_relpos", "linear_token_bonds"
     ]
@@ -1009,7 +981,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
 
 
 def convert_hf_template_embedder_torch(config: BaseConfig,
-                                       mapping: Mapping = None,
                                        local_checkpoint: str = None,
                                        model_name: str = "openfold3",
                                        weights: dict = None,
@@ -1125,7 +1096,6 @@ def convert_hf_template_embedder_torch(config: BaseConfig,
 
 
 def convert_hf_msa_stack_torch(config: BaseConfig,
-                               mapping: Mapping = None,
                                local_checkpoint: str = None,
                                model_name: str = "openfold3",
                                weights: dict = None,
@@ -1248,8 +1218,8 @@ def convert_hf_msa_stack_torch(config: BaseConfig,
 
     return module_state_dict
 
+
 def convert_hf_msa_module_embedder_torch(config: BaseConfig,
-                                         mapping: Mapping = None,
                                          local_checkpoint: str = None,
                                          model_name: str = "openfold3",
                                          weights: dict = None,
@@ -1272,8 +1242,8 @@ def convert_hf_msa_module_embedder_torch(config: BaseConfig,
             }]
     return module_state_dict
 
+
 def convert_hf_auxiliary_heads_torch(config: BaseConfig,
-                                     mapping: Mapping = None,
                                      local_checkpoint: str = None,
                                      model_name: str = "openfold3",
                                      weights: dict = None,
@@ -1301,20 +1271,22 @@ def convert_hf_auxiliary_heads_torch(config: BaseConfig,
     pair_embed_filtered_state_dict = {}
     for key, value in state_dict.items():
         if "pairformer_stack" in key and "aux_heads" in key:
-            pair_embed_filtered_state_dict[key.replace("aux_heads.pairformer_embedding.", "")] = value
-    pair_former_weights = convert_hf_pairformer_torch(config=config.pairformer,
-                                                      mapping=mapping,
-                                                      local_checkpoint=local_checkpoint,
-                                                      model_name=model_name,
-                                                      weights=pair_embed_filtered_state_dict)
+            pair_embed_filtered_state_dict[key.replace(
+                "aux_heads.pairformer_embedding.", "")] = value
+    pair_former_weights = convert_hf_pairformer_torch(
+        config=config.pairformer,
+        local_checkpoint=local_checkpoint,
+        model_name=model_name,
+        weights=pair_embed_filtered_state_dict)
     pair_embed_state_dict = {}
     for key, value in pair_former_weights.items():
-        pair_embed_state_dict[f"pairformer_embedding.pairformer_stack.{key}"] = value
+        pair_embed_state_dict[
+            f"pairformer_embedding.pairformer_stack.{key}"] = value
     module_state_dict.update(pair_embed_state_dict)
     return module_state_dict
 
+
 def convert_hf_diffusion_module_torch(config: BaseConfig,
-                                      mapping: Mapping = None,
                                       local_checkpoint: str = None,
                                       model_name: str = "openfold3",
                                       weights: dict = None,
@@ -1415,7 +1387,7 @@ def convert_hf_diffusion_module_torch(config: BaseConfig,
     module_state_dict.update(merge_layer_dict)
     for name in clean_layer_list:
         module_state_dict.pop(name)
-    
+
     ref_atom_attn_enc_weight_list = [
         "ref_atom_feature_embedder.linear_ref_pos",
         "ref_atom_feature_embedder.linear_ref_charge",
@@ -1425,10 +1397,12 @@ def convert_hf_diffusion_module_torch(config: BaseConfig,
     ]
     merge_weight = []
     for layer_name in ref_atom_attn_enc_weight_list:
-        merge_weight.append(module_state_dict[f"atom_attn_enc.{layer_name}"][0])
+        merge_weight.append(
+            module_state_dict[f"atom_attn_enc.{layer_name}"][0])
         module_state_dict.pop(f"atom_attn_enc.{layer_name}")
 
-    module_state_dict[f"atom_attn_enc.ref_atom_feature_embedder.linear_merge_ref_features"] = merge_weight
+    module_state_dict[
+        f"atom_attn_enc.ref_atom_feature_embedder.linear_merge_ref_features"] = merge_weight
 
     ref_pair_keys = [
         "atom_attn_enc.ref_atom_feature_embedder.linear_ref_offset",
@@ -1438,7 +1412,8 @@ def convert_hf_diffusion_module_torch(config: BaseConfig,
     ref_pair_weights = []
     for key in ref_pair_keys:
         ref_pair_weights.append(module_state_dict.pop(key)[0])
-    module_state_dict["atom_attn_enc.ref_atom_feature_embedder.linear_ref_pair_features"] = ref_pair_weights
+    module_state_dict[
+        "atom_attn_enc.ref_atom_feature_embedder.linear_ref_pair_features"] = ref_pair_weights
 
     atom_attn_enc_coder = convert_hf_diffusion_transformer_torch(
         config=config.atom_transformer_encoder_config,
@@ -1449,9 +1424,14 @@ def convert_hf_diffusion_module_torch(config: BaseConfig,
     for key, value in atom_attn_enc_coder.items():
         atom_attn_enc_coder_weights[
             f"atom_attn_enc.atom_transformer.{key}"] = value
-    if getattr(config.atom_transformer_encoder_config, 'shared_pair_norm', False):
-        lnz_w = state_dict["diffusion_module.atom_attn_enc.atom_transformer.layer_norm_z.weight"]
-        atom_attn_enc_coder_weights["atom_attn_enc.atom_transformer.layer_norm_z"] = [{"weight": lnz_w}]
+    if getattr(config.atom_transformer_encoder_config, 'shared_pair_norm',
+               False):
+        lnz_w = state_dict[
+            "diffusion_module.atom_attn_enc.atom_transformer.layer_norm_z.weight"]
+        atom_attn_enc_coder_weights[
+            "atom_attn_enc.atom_transformer.layer_norm_z"] = [{
+                "weight": lnz_w
+            }]
     module_state_dict.update(atom_attn_enc_coder_weights)
 
     diffusion_transformer_coder = convert_hf_diffusion_transformer_torch(
@@ -1474,15 +1454,20 @@ def convert_hf_diffusion_module_torch(config: BaseConfig,
     for key, value in atom_attn_dec_coder.items():
         atom_attn_dec_coder_weights[
             f"atom_attn_dec.atom_transformer.{key}"] = value
-    if getattr(config.atom_transformer_decoder_config, 'shared_pair_norm', False):
-        lnz_w = state_dict["diffusion_module.atom_attn_dec.atom_transformer.layer_norm_z.weight"]
-        atom_attn_dec_coder_weights["atom_attn_dec.atom_transformer.layer_norm_z"] = [{"weight": lnz_w}]
+    if getattr(config.atom_transformer_decoder_config, 'shared_pair_norm',
+               False):
+        lnz_w = state_dict[
+            "diffusion_module.atom_attn_dec.atom_transformer.layer_norm_z.weight"]
+        atom_attn_dec_coder_weights[
+            "atom_attn_dec.atom_transformer.layer_norm_z"] = [{
+                "weight": lnz_w
+            }]
     module_state_dict.update(atom_attn_dec_coder_weights)
 
     return module_state_dict
 
+
 def convert_hf_openfold3_torch(config: BaseConfig,
-                               mapping: Mapping = None,
                                local_checkpoint: str = None,
                                model_name: str = "openfold3",
                                weights: dict = None,
@@ -1492,35 +1477,35 @@ def convert_hf_openfold3_torch(config: BaseConfig,
     else:
         state_dict = weights
     assert state_dict is not None
-    
-    input_embedder_weights = convert_hf_input_embedder_torch(config=config.input_embedder_config,
-                                                              mapping=mapping,
-                                                              model_name=model_name,
-                                                              weights=state_dict)
-    msa_stack_weights = convert_hf_msa_stack_torch(config=config.msa_stack_module_config,
-                                                  mapping=mapping,
-                                                  model_name=model_name,
-                                                  weights=state_dict)
-    msa_module_embedder_weights = convert_hf_msa_module_embedder_torch(config=config.msa_module_embedder_config,
-                                                                       mapping=mapping,
-                                                                       model_name=model_name,
-                                                                       weights=state_dict)
-    diffusion_module_weights = convert_hf_diffusion_module_torch(config=config.diffusion_module_config,
-                                                                 mapping=mapping,
-                                                                 model_name=model_name,
-                                                                 weights=state_dict)
-    template_embedder_weights = convert_hf_template_embedder_torch(config=config.template_embedder_config,
-                                                                   mapping=mapping,
-                                                                   model_name=model_name,
-                                                                   weights=state_dict)
-    pairformer_stack_weights = convert_hf_pairformer_torch(config=config.trunk.pairformer,
-                                                          mapping=mapping,
-                                                          model_name=model_name,
-                                                          weights=state_dict)
-    auxiliary_heads_weights = convert_hf_auxiliary_heads_torch(config=config.auxiliary_heads_config,
-                                                                 mapping=mapping,
-                                                                 model_name=model_name,
-                                                                 weights=state_dict)
+
+    input_embedder_weights = convert_hf_input_embedder_torch(
+        config=config.input_embedder_config,
+        model_name=model_name,
+        weights=state_dict)
+    msa_stack_weights = convert_hf_msa_stack_torch(
+        config=config.msa_stack_module_config,
+        model_name=model_name,
+        weights=state_dict)
+    msa_module_embedder_weights = convert_hf_msa_module_embedder_torch(
+        config=config.msa_module_embedder_config,
+        model_name=model_name,
+        weights=state_dict)
+    diffusion_module_weights = convert_hf_diffusion_module_torch(
+        config=config.diffusion_module_config,
+        model_name=model_name,
+        weights=state_dict)
+    template_embedder_weights = convert_hf_template_embedder_torch(
+        config=config.template_embedder_config,
+        model_name=model_name,
+        weights=state_dict)
+    pairformer_stack_weights = convert_hf_pairformer_torch(
+        config=config.trunk.pairformer,
+        model_name=model_name,
+        weights=state_dict)
+    auxiliary_heads_weights = convert_hf_auxiliary_heads_torch(
+        config=config.auxiliary_heads_config,
+        model_name=model_name,
+        weights=state_dict)
     layer_norm_z_weights = {
         "weight": state_dict["layer_norm_z.weight"],
         "bias": state_dict["layer_norm_z.bias"]

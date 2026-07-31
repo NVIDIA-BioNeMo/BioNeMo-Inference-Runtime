@@ -56,7 +56,6 @@ class ProtenixDiffusionConditioning(nn.Module):
         super().__init__()
         dtype = config.torch_dtype
         skip = config.skip_create_weights
-        mapping = config.mapping
         eps = config.norm_epsilon
         c_s = config.c_s
         c_z = config.c_z
@@ -74,7 +73,6 @@ class ProtenixDiffusionConditioning(nn.Module):
                                              fix_sym_check=rc.fix_sym_check,
                                              cyclic_pos_enc=rc.cyclic_pos_enc,
                                              dtype=dtype,
-                                             mapping=mapping,
                                              skip_create_weights=skip)
         self.layernorm_z = nn.LayerNorm(2 * c_z,
                                         bias=False,
@@ -90,7 +88,6 @@ class ProtenixDiffusionConditioning(nn.Module):
                        hidden=2 * c_z,
                        eps=eps,
                        dtype=self.z_pair_dtype,
-                       mapping=mapping,
                        skip_create_weights=skip,
                        auto_chunk_policy=CHUNK_REGISTRY.get(
                            DIFFUSION_PAIR_TRANSITION)) for _ in range(2)
@@ -106,9 +103,7 @@ class ProtenixDiffusionConditioning(nn.Module):
                                        bias=False,
                                        dtype=dtype,
                                        skip_create_weights=skip)
-        self.fourier_embedding = FourierEmbedding(c_noise,
-                                                  dtype=dtype,
-                                                  mapping=mapping)
+        self.fourier_embedding = FourierEmbedding(c_noise, dtype=dtype)
         self.layernorm_n = nn.LayerNorm(c_noise,
                                         bias=False,
                                         eps=eps,
@@ -123,7 +118,6 @@ class ProtenixDiffusionConditioning(nn.Module):
                        hidden=2 * c_s,
                        eps=eps,
                        dtype=dtype,
-                       mapping=mapping,
                        skip_create_weights=skip) for _ in range(2)
         ])
 
@@ -271,12 +265,9 @@ class ProtenixDiffusionModule(nn.Module):
                                        dtype=dtype,
                                        skip_create_weights=skip)
         # Token transformer keeps its own dtype (bf16 + auto pairwise backend
-        # while the rest stays fp32); only mapping / skip are propagated.
+        # while the rest stays fp32); only skip is propagated.
         ttc = config.token_transformer_config.model_copy(
-            update={
-                "mapping": config.mapping,
-                "skip_create_weights": skip
-            })
+            update={"skip_create_weights": skip})
         self.diffusion_transformer = ProtenixDiffusionTransformer(ttc)
         self._token_dtype = ttc.torch_dtype
         self.layernorm_a = nn.LayerNorm(c_token,

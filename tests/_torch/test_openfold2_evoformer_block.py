@@ -27,7 +27,6 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
 from tensorrt_bionemo._torch.layers.transformers.evoformer import \
     EvoformerBlock
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
@@ -42,10 +41,8 @@ class Scenario:
     triangle_attn_backend: str = "VANILLA"
 
 
-def _create_evoformer_block(ref_module, sc, torch_dtype, mapping=None):
+def _create_evoformer_block(ref_module, sc, torch_dtype):
     """Helper to build an EvoformerBlock from a reference module + scenario."""
-    if mapping is None:
-        mapping = Mapping()
     return EvoformerBlock(
         local_layer_idx=0,
         c_m=ref_module.c_m,
@@ -65,7 +62,6 @@ def _create_evoformer_block(ref_module, sc, torch_dtype, mapping=None):
         triangle_attn_node_chunk_size=0,
         eps=ref_module.eps,
         inf=ref_module.inf,
-        mapping=mapping,
     )
 
 

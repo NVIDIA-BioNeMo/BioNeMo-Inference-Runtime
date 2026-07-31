@@ -49,7 +49,6 @@ class ProtenixConfidenceHead(nn.Module):
         self.b_plddt = config.b_plddt
         self.b_resolved = config.b_resolved
         self.max_atoms_per_token = config.max_atoms_per_token
-        self.mapping = config.mapping
         skip = config.skip_create_weights
 
         # Distance bins (AF3 Alg. 31): [start, end) at `step`, deterministic ->

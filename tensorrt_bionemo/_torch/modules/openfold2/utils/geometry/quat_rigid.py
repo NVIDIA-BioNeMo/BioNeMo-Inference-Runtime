@@ -11,19 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rigid_matrix_vector import \
     Rigid3Array
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rotation_matrix import \
     Rot3Array
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.vector import \
     Vec3Array
-from tensorrt_bionemo.mapping import Mapping
 
 
 class QuatRigid(nn.Module):
@@ -31,7 +29,6 @@ class QuatRigid(nn.Module):
     def __init__(self,
                  c_hidden: int,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
 
         super(QuatRigid, self).__init__()
@@ -40,9 +37,6 @@ class QuatRigid(nn.Module):
                              6,
                              bias=True,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, activations: torch.Tensor) -> Rigid3Array:

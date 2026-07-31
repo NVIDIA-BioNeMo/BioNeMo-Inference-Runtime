@@ -20,9 +20,8 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.attention import MSAAttention
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo._torch.layers.transition import (MSATransition,
                                                        PairTransition)
@@ -31,7 +30,6 @@ from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
@@ -58,7 +56,6 @@ class EvoformerBlock(nn.Module):
                  eps: float = 1e-5,
                  inf: float = 1e9,
                  skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None,
                  **kwargs):
         super().__init__()
         self.c_m = c_m
@@ -77,8 +74,6 @@ class EvoformerBlock(nn.Module):
         self.dtype = dtype
         self.eps = eps
         self.inf = inf
-        self.mapping = mapping
-
         outer_product_mean_bias = kwargs.get("outer_product_mean_bias", None)
         tri_mul_out_bias = kwargs.get("tri_mul_out_bias", None)
         tri_mul_in_bias = kwargs.get("tri_mul_in_bias", None)
@@ -96,7 +91,6 @@ class EvoformerBlock(nn.Module):
             eps=eps,
             inf=inf,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
         self.msa_transition = MSATransition(
@@ -104,7 +98,6 @@ class EvoformerBlock(nn.Module):
             n=transition_n,
             eps=eps,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
         self.outer_product_mean = OuterProductMean(
@@ -122,7 +115,6 @@ class EvoformerBlock(nn.Module):
                 "proj_o": True
             } if outer_product_mean_bias is None else outer_product_mean_bias,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
         self.tri_mul_out = TriangleMultiplicationNode(
@@ -137,9 +129,7 @@ class EvoformerBlock(nn.Module):
                 "g_out": True
             } if tri_mul_out_bias is None else tri_mul_out_bias,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            max_tri_mul_tp_size=True,
             high_precision=trimul_high_precision,
         )
 
@@ -155,9 +145,7 @@ class EvoformerBlock(nn.Module):
                 "g_out": True
             } if tri_mul_in_bias is None else tri_mul_in_bias,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            max_tri_mul_tp_size=True,
             high_precision=trimul_high_precision,
         )
 
@@ -177,7 +165,6 @@ class EvoformerBlock(nn.Module):
             } if tri_attn_start_bias is None else tri_attn_start_bias,
             attn_backend=triangle_attn_backend,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
         self.tri_attn_end = TriangleAttentionEndingNode(
             c_z,
@@ -195,14 +182,12 @@ class EvoformerBlock(nn.Module):
             } if tri_attn_end_bias is None else tri_attn_end_bias,
             attn_backend=triangle_attn_backend,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
         )
 
         self.pair_transition = PairTransition(c_z=c_z,
                                               n=transition_n,
                                               dtype=dtype,
-                                              mapping=mapping,
                                               eps=eps)
         if not self.no_column_attention:
             self.msa_att_col = MSAAttention(
@@ -217,19 +202,12 @@ class EvoformerBlock(nn.Module):
                 eps=eps,
                 inf=inf,
                 dtype=dtype,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights)
 
     def _compute_opm(
-        self,
-        m: torch.Tensor,
-        z: torch.Tensor,
-        msa_mask: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        opm = self.outer_product_mean(m,
-                                      mask=msa_mask,
-                                      all_reduce_params=all_reduce_params)
+            self, m: torch.Tensor, z: torch.Tensor,
+            msa_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        opm = self.outer_product_mean(m, mask=msa_mask)
         z = z + opm
         return m, z
 
@@ -240,7 +218,6 @@ class EvoformerBlock(nn.Module):
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
@@ -260,22 +237,16 @@ class EvoformerBlock(nn.Module):
             buffers: Shared pre-allocated buffer dict for CuTeDSL kernels.
         """
         if self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
-        m = m + self.msa_att_row(m,
-                                 z,
-                                 mask=msa_mask,
-                                 attn_metadata=attn_metadata,
-                                 all_reduce_params=all_reduce_params)
+            m, z = self._compute_opm(m, z, msa_mask)
+        m = m + self.msa_att_row(
+            m, z, mask=msa_mask, attn_metadata=attn_metadata)
         if not self.no_column_attention:
-            m = m + self.msa_att_col(m,
-                                     z=None,
-                                     mask=msa_mask,
-                                     attn_metadata=attn_metadata,
-                                     all_reduce_params=all_reduce_params)
+            m = m + self.msa_att_col(
+                m, z=None, mask=msa_mask, attn_metadata=attn_metadata)
         m = m + self.msa_transition(m, mask=msa_mask)
 
         if not self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask, all_reduce_params)
+            m, z = self._compute_opm(m, z, msa_mask)
         # For the CuTeDSL triangle-attention backend, ``mask_bias`` /
         # ``mask_bias_transposed`` ARE the per-row int32 valid-count
         # tensors (``actual_s_kv`` / ``actual_s_kv_t``) the dual_gemm_x_x
@@ -303,13 +274,11 @@ class EvoformerBlock(nn.Module):
                                     mask=pair_mask,
                                     mask_bias=mb_start,
                                     attn_metadata=attn_metadata,
-                                    all_reduce_params=all_reduce_params,
                                     buffers=buffers)
         z = z + self.tri_attn_end(z,
                                   mask=pair_mask,
                                   mask_bias=mb_end,
                                   attn_metadata=attn_metadata,
-                                  all_reduce_params=all_reduce_params,
                                   buffers=buffers)
 
         z = z + self.pair_transition(z, mask=pair_mask)
@@ -350,16 +319,12 @@ class EvoformerStack(nn.Module):
                     eps=config.norm_epsilon,
                     inf=config.mask_inf,
                     skip_create_weights=config.skip_create_weights,
-                    mapping=config.mapping,
                     trimul_high_precision=config.trimul_high_precision,
                 ))
         self.linear = Linear(config.c_m,
                              config.c_s,
                              bias=True,
                              dtype=config.torch_dtype,
-                             mapping=config.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=config.skip_create_weights)
 
     def load_weights(self, weights: dict):
@@ -376,8 +341,7 @@ class EvoformerStack(nn.Module):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        attn_metadata: Optional[AttentionMetadata] = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         backend = self.blocks[0].triangle_attn_backend
         precomputed = precompute_pair_masks(
@@ -394,7 +358,6 @@ class EvoformerStack(nn.Module):
                          msa_mask,
                          pair_mask,
                          attn_metadata,
-                         all_reduce_params,
                          precomputed_masks=precomputed,
                          buffers=buffers)
         s = self.linear(m[..., 0, :, :])

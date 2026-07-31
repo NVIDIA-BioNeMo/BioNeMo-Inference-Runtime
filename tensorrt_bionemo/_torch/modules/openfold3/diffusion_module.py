@@ -19,6 +19,7 @@ Diffusion module. Implements the algorithms in section 3.7 of the
 Supplementary Information.
 """
 import math
+
 import torch
 import torch.nn as nn
 
@@ -28,7 +29,7 @@ from tensorrt_bionemo._torch.graph_optimization.config import (
 from tensorrt_bionemo._torch.graph_optimization.decorator import (
     NamedDimTies, support_graph_optimization)
 from tensorrt_bionemo._torch.layers.conditioning import DiffusionConditioning
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.noise_scheduler import \
     SampleDiffusion as _SampleDiffusion
 from tensorrt_bionemo._torch.layers.noise_scheduler import \
@@ -62,17 +63,16 @@ def broadcast_atom_mask(positions: torch.Tensor,
     extra_batch_dims = positions.ndim - atom_mask.ndim - 1
     return atom_mask.reshape(
         *atom_mask.shape[:-1],
-        *((1,) * extra_batch_dims),
+        *((1, ) * extra_batch_dims),
         atom_mask.shape[-1],
         1,
     ).to(positions.dtype)
 
 
-def sample_rotations(
-        shape,
-        dtype: torch.dtype,
-        device: torch.device,
-        generator: torch.Generator = None) -> torch.Tensor:
+def sample_rotations(shape,
+                     dtype: torch.dtype,
+                     device: torch.device,
+                     generator: torch.Generator = None) -> torch.Tensor:
     """Sample random rotation matrices via random unit quaternions."""
 
     n = math.prod(shape)
@@ -80,11 +80,11 @@ def sample_rotations(
     return quaternion_to_matrix(q).reshape(*shape, 3, 3)
 
 
-def centre_random_augmentation(xl: torch.Tensor,
-                               atom_mask: torch.Tensor,
-                               scale_trans: float = 1.0,
-                               generator: torch.Generator = None
-                               ) -> torch.Tensor:
+def centre_random_augmentation(
+        xl: torch.Tensor,
+        atom_mask: torch.Tensor,
+        scale_trans: float = 1.0,
+        generator: torch.Generator = None) -> torch.Tensor:
     """
     Implements AF3 Algorithm 19.
 
@@ -199,7 +199,6 @@ class DiffusionModule(nn.Module):
         self.c_token = config.c_token
         self.sigma_data = config.sigma_data
         self.dtype = config.torch_dtype
-        self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
         self.sq_sigma_data = config.sigma_data**2
 
@@ -215,7 +214,6 @@ class DiffusionModule(nn.Module):
             sigma_data=config.sigma_data,
             eps=config.eps,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights)
 
         self.atom_attn_enc = AtomAttentionEncoder(
@@ -233,7 +231,6 @@ class DiffusionModule(nn.Module):
             eps=config.eps,
             add_noisy_pos=config.add_noisy_pos,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights)
 
         self.layer_norm_s = nn.LayerNorm(self.c_s,
@@ -244,9 +241,6 @@ class DiffusionModule(nn.Module):
                                self.c_token,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=self.skip_create_weights)
 
         self.diffusion_transformer = DiffusionTransformer(
@@ -268,7 +262,6 @@ class DiffusionModule(nn.Module):
             inf=config.inf,
             eps=config.eps,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights)
 
     def load_weights(self, weights: dict):

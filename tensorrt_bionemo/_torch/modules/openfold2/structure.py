@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.modules.openfold2.point_attention import \
     InvariantPointAttention
 from tensorrt_bionemo._torch.modules.openfold2.utils.feats import (
@@ -32,7 +32,6 @@ from tensorrt_bionemo._torch.modules.openfold2.utils.rigid_utils import (
 from tensorrt_bionemo._torch.tensor_utils import dict_multimap
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.models.openfold2.const import (
     restype_atom14_mask, restype_atom14_rigid_group_positions,
     restype_atom14_to_rigid_group, restype_rigid_group_default_frame)
@@ -46,7 +45,6 @@ class BackboneUpdate(nn.Module):
     def __init__(self,
                  c_s: int,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -61,7 +59,6 @@ class BackboneUpdate(nn.Module):
                              6,
                              bias=True,
                              dtype=dtype,
-                             mapping=mapping,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, s: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -81,7 +78,6 @@ class AngleResnetBlock(nn.Module):
     def __init__(self,
                  c_hidden,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -96,17 +92,11 @@ class AngleResnetBlock(nn.Module):
                                self.c_hidden,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
         self.linear_2 = Linear(self.c_hidden,
                                self.c_hidden,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.relu = nn.ReLU()
@@ -135,7 +125,6 @@ class AngleResnet(nn.Module):
                  no_angles,
                  epsilon,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -162,38 +151,26 @@ class AngleResnet(nn.Module):
                                 self.c_hidden,
                                 bias=True,
                                 dtype=dtype,
-                                mapping=mapping,
-                                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gather_output=True,
                                 skip_create_weights=skip_create_weights)
 
-        self.linear_initial = Linear(
-            self.c_in,
-            self.c_hidden,
-            bias=True,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
+        self.linear_initial = Linear(self.c_in,
+                                     self.c_hidden,
+                                     bias=True,
+                                     dtype=dtype,
+                                     skip_create_weights=skip_create_weights)
 
         self.layers = nn.ModuleList()
         for _ in range(self.no_blocks):
             layer = AngleResnetBlock(c_hidden=self.c_hidden,
                                      dtype=dtype,
-                                     mapping=mapping,
                                      skip_create_weights=skip_create_weights)
             self.layers.append(layer)
 
-        self.linear_out = Linear(
-            self.c_hidden,
-            self.no_angles * 2,
-            bias=True,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
+        self.linear_out = Linear(self.c_hidden,
+                                 self.no_angles * 2,
+                                 bias=True,
+                                 dtype=dtype,
+                                 skip_create_weights=skip_create_weights)
 
         self.relu = nn.ReLU()
 
@@ -240,7 +217,6 @@ class StructureModuleTransitionLayer(nn.Module):
     def __init__(self,
                  c,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         super(StructureModuleTransitionLayer, self).__init__()
 
@@ -250,27 +226,18 @@ class StructureModuleTransitionLayer(nn.Module):
                                self.c,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.linear_2 = Linear(self.c,
                                self.c,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.linear_3 = Linear(self.c,
                                self.c,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.relu = nn.ReLU()
@@ -294,7 +261,6 @@ class StructureModuleTransition(nn.Module):
                  c: int,
                  num_layers: int,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  eps: float = 1e-5):
         super(StructureModuleTransition, self).__init__()
@@ -305,10 +271,7 @@ class StructureModuleTransition(nn.Module):
         self.layers = nn.ModuleList()
         for _ in range(self.num_layers):
             l = StructureModuleTransitionLayer(
-                self.c,
-                dtype=dtype,
-                mapping=mapping,
-                skip_create_weights=skip_create_weights)
+                self.c, dtype=dtype, skip_create_weights=skip_create_weights)
             self.layers.append(l)
 
         self.layer_norm = nn.LayerNorm(self.c, dtype=dtype, eps=eps)
@@ -388,9 +351,6 @@ class StructureModule(nn.Module):
                                 self.c_s,
                                 bias=True,
                                 dtype=config.torch_dtype,
-                                mapping=config.mapping,
-                                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gather_output=True,
                                 skip_create_weights=config.skip_create_weights)
 
         self.ipa = InvariantPointAttention(
@@ -404,7 +364,6 @@ class StructureModule(nn.Module):
             eps=self.epsilon,
             is_multimer=self.is_multimer,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
 
@@ -416,7 +375,6 @@ class StructureModule(nn.Module):
             c=self.c_s,
             num_layers=self.no_transition_layers,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
 
@@ -424,13 +382,11 @@ class StructureModule(nn.Module):
             self.bb_update = QuatRigid(
                 c_hidden=self.c_s,
                 dtype=config.torch_dtype,
-                mapping=config.mapping,
                 skip_create_weights=config.skip_create_weights)
         else:
             self.bb_update = BackboneUpdate(
                 c_s=self.c_s,
                 dtype=config.torch_dtype,
-                mapping=config.mapping,
                 skip_create_weights=config.skip_create_weights)
 
         self.angle_resnet = AngleResnet(
@@ -440,7 +396,6 @@ class StructureModule(nn.Module):
             no_angles=self.no_angles,
             epsilon=self.epsilon,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
 

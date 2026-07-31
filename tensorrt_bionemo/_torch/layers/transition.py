@@ -17,18 +17,14 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy, chunk_apply
 from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
     get_gated_sigmoid_op
-from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
-                                                   WeightMode,
+from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
-from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
@@ -41,8 +37,6 @@ class Transition(nn.Module):
                  layer_idx: int = 0,
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
-                 max_transition_tp_size: bool = True,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  auto_chunk_policy: Optional[ChunkPolicy] = None):
         super().__init__()
@@ -51,11 +45,8 @@ class Transition(nn.Module):
 
         self.auto_chunk_policy = auto_chunk_policy
 
-        mapping = mapping or Mapping()
-        if max_transition_tp_size:
-            mapping = create_max_tp_mapping(mapping, hidden)
         self.dtype = dtype
-        self.hidden = hidden // mapping.tp_size
+        self.hidden = hidden
         self.norm = nn.LayerNorm(dim, eps=eps, dtype=dtype)
 
         self.fused_fc2_fc1 = Linear(
@@ -63,9 +54,6 @@ class Transition(nn.Module):
             2 * hidden,
             dtype=dtype,
             bias=False,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
@@ -77,36 +65,30 @@ class Transition(nn.Module):
                           out_dim,
                           dtype=dtype,
                           bias=False,
-                          mapping=mapping,
-                          tensor_parallel_mode=TensorParallelMode.ROW,
-                          reduce_output=True,
                           skip_create_weights=skip_create_weights)
 
     def forward(
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         # Chunk position-wise FFNs when configured; small inputs stay dense.
         if self.auto_chunk_policy is not None:
             return chunk_apply(self._forward_impl,
                                x,
                                mask,
-                               policy=self.auto_chunk_policy,
-                               all_reduce_params=all_reduce_params)
-        return self._forward_impl(x, mask, all_reduce_params=all_reduce_params)
+                               policy=self.auto_chunk_policy)
+        return self._forward_impl(x, mask)
 
     def _forward_impl(
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         x = self.norm(x)
         z = self.fused_fc2_fc1(x)
         x = self._swiglu(z)
-        x = self.fc3(x, all_reduce_params=all_reduce_params)
+        x = self.fc3(x)
 
         if mask is not None:
             if mask.ndim == x.ndim - 1:
@@ -123,27 +105,17 @@ class ConditionedTransitionBlock(nn.Module):
                  expansion_factor: int = 2,
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False,
                  using_silu: bool = False):
         super().__init__()
-        mapping = mapping or Mapping()
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
-        self.mapping = mapping
         self.dtype = dtype
 
         self.dim_single = dim_single
         self.dim_single_cond = dim_single_cond
         self.expansion_factor = expansion_factor
 
-        self.adaln = AdaLN(dim_single,
-                           dim_single_cond,
-                           eps=eps,
-                           dtype=dtype,
-                           mapping=mapping)
-        self.dim_inner = int(dim_single * expansion_factor) // mapping.tp_size
+        self.adaln = AdaLN(dim_single, dim_single_cond, eps=eps, dtype=dtype)
+        self.dim_inner = int(dim_single * expansion_factor)
         # Fused swiglu_gate linear and a_to_b
         self.using_silu = using_silu
         self._swiglu = FusedSwiGLU(d=self.dim_inner,
@@ -152,35 +124,26 @@ class ConditionedTransitionBlock(nn.Module):
         if not using_silu:
             self.fused_swl_a_to_b = Linear(
                 self.dim_single,
-                3 * self.dim_inner * mapping.tp_size,
+                3 * self.dim_inner,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=False,
                 skip_create_weights=skip_create_weights,
                 weights_loading_config=WeightsLoadingConfig(
                     weight_mode=WeightMode.FUSED_QKV_LINEAR))
         else:
             self.fused_swl_a_to_b = Linear(
                 self.dim_single,
-                2 * self.dim_inner * mapping.tp_size,
+                2 * self.dim_inner,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=False,
                 skip_create_weights=skip_create_weights,
                 weights_loading_config=WeightsLoadingConfig(
                     weight_mode=WeightMode.FUSED_KV_LINEAR))
 
-        self.b_to_a = Linear(self.dim_inner * mapping.tp_size,
+        self.b_to_a = Linear(self.dim_inner,
                              self.dim_single,
                              bias=False,
                              dtype=dtype,
-                             reduce_output=True,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.ROW,
                              skip_create_weights=skip_create_weights)
 
         self.output_projection = Linear(
@@ -188,18 +151,12 @@ class ConditionedTransitionBlock(nn.Module):
             self.dim_single,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights)
-
-        self._can_fuse_output_gate = (mapping.tp_size == 1)
 
     def forward(
         self,
         a: torch.Tensor,
         s: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None,
         buffers: Optional[PreallocatedBuffers] = None,
         buffer_key: str = "cond_trans_adaln",
     ) -> torch.Tensor:
@@ -216,23 +173,19 @@ class ConditionedTransitionBlock(nn.Module):
         a = self.adaln(a, s, buffers=buffers, buffer_key=buffer_key)
         z = self.fused_swl_a_to_b(a)
         b = self._swiglu(z)
-        a = self.b_to_a(b, all_reduce_params=all_reduce_params)
+        a = self.b_to_a(b)
 
-        if self._can_fuse_output_gate:
-            # The gated-sigmoid op broadcasts `s` (gate) across the
-            # multiplicity dim of `a` when their leading shapes differ,
-            # falling back to torch internally for unsupported patterns.
-            # Reuse the AdaLN output buffer — fused_swl_a_to_b consumed it
-            # above, same shape as the gated_sigmoid output.
-            a = get_gated_sigmoid_op(s.dtype)(s,
-                                              self.output_projection.weight,
-                                              a,
-                                              self.output_projection.bias,
-                                              output=buffers.get(buffer_key)
-                                              if buffers is not None else None)
-        else:
-            a = F.sigmoid(self.output_projection(s)) * a
-        return a
+        # The gated-sigmoid op broadcasts `s` (gate) across the multiplicity
+        # dim of `a` when their leading shapes differ, falling back to torch
+        # internally for unsupported patterns. Reuse the AdaLN output buffer —
+        # fused_swl_a_to_b consumed it above, same shape as the gated_sigmoid
+        # output.
+        return get_gated_sigmoid_op(s.dtype)(
+            s,
+            self.output_projection.weight,
+            a,
+            self.output_projection.bias,
+            output=buffers.get(buffer_key) if buffers is not None else None)
 
 
 class PairTransition(nn.Module):
@@ -242,38 +195,18 @@ class PairTransition(nn.Module):
                  n: int,
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         super().__init__()
         self.dtype = dtype
-        self.mapping = mapping
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
         self.c_z = c_z
         self.n = n
 
         self.layer_norm = nn.LayerNorm(c_z, eps=eps, dtype=dtype)
-        self.linear_1 = Linear(c_z,
-                               n * c_z,
-                               bias=True,
-                               dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=False)
-        self.linear_2 = Linear(n * c_z,
-                               c_z,
-                               bias=True,
-                               dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.ROW,
-                               reduce_output=True)
+        self.linear_1 = Linear(c_z, n * c_z, bias=True, dtype=dtype)
+        self.linear_2 = Linear(n * c_z, c_z, bias=True, dtype=dtype)
         self.relu = nn.ReLU()
 
-    def forward(self,
-                z: torch.Tensor,
-                mask: torch.Tensor,
-                all_reduce_params: Optional[AllReduceParams] = None):
+    def forward(self, z: torch.Tensor, mask: torch.Tensor):
         mask = mask.unsqueeze(-1)
         # [*, N_res, N_res, C_z]
         z = self.layer_norm(z)
@@ -296,38 +229,18 @@ class MSATransition(nn.Module):
                  n: int,
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         super().__init__()
         self.dtype = dtype
-        self.mapping = mapping
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
         self.c_m = c_m
         self.n = n
 
         self.layer_norm = nn.LayerNorm(c_m, eps=eps, dtype=dtype)
-        self.linear_1 = Linear(c_m,
-                               n * c_m,
-                               bias=True,
-                               dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=False)
-        self.linear_2 = Linear(n * c_m,
-                               c_m,
-                               bias=True,
-                               dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.ROW,
-                               reduce_output=True)
+        self.linear_1 = Linear(c_m, n * c_m, bias=True, dtype=dtype)
+        self.linear_2 = Linear(n * c_m, c_m, bias=True, dtype=dtype)
         self.relu = nn.ReLU()
 
-    def forward(self,
-                m: torch.Tensor,
-                mask: torch.Tensor,
-                all_reduce_params: Optional[AllReduceParams] = None):
+    def forward(self, m: torch.Tensor, mask: torch.Tensor):
         # Similar to PairTransition, but with different names
         mask = mask.unsqueeze(-1)
         m = self.layer_norm(m)

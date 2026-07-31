@@ -20,13 +20,11 @@ import torch.nn as nn
 
 from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
                                                 DIFFUSION_PAIR_TRANSITION)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import \
     relpos_complex
-from tensorrt_bionemo.mapping import Mapping
 
 
 class ContactConditioning(nn.Module):
@@ -38,19 +36,13 @@ class ContactConditioning(nn.Module):
                  cutoff_max: float,
                  contact_conditioning_info: dict[str, int],
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         super().__init__()
 
-        self.fourier_embedding = FourierEmbedding(token_z,
-                                                  dtype=dtype,
-                                                  mapping=mapping)
+        self.fourier_embedding = FourierEmbedding(token_z, dtype=dtype)
         self.encoder = Linear(token_z + len(contact_conditioning_info) - 1,
                               token_z,
                               dtype=dtype,
-                              mapping=mapping,
-                              tensor_parallel_mode=TensorParallelMode.COLUMN,
-                              gather_output=True,
                               skip_create_weights=skip_create_weights)
         self.encoding_unspecified = nn.Parameter(torch.zeros(token_z))
         self.encoding_unselected = nn.Parameter(torch.zeros(token_z))
@@ -101,13 +93,8 @@ class PairwiseConditioning(nn.Module):
                  transition_expansion_factor: int = 2,
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         super().__init__()
-        mapping = mapping or Mapping()
-        self.tp_size = mapping.tp_size
-        self.tp_rank = mapping.tp_rank
-        self.tp_group = mapping.tp_group
         self.dtype = dtype
         self.token_z = token_z
         self.dim_token_rel_pos_feats = dim_token_rel_pos_feats
@@ -117,15 +104,11 @@ class PairwiseConditioning(nn.Module):
                                            eps=eps,
                                            dtype=dtype)
 
-        self.init_proj_linear = Linear(
-            token_z + dim_token_rel_pos_feats,
-            token_z,
-            bias=False,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
+        self.init_proj_linear = Linear(token_z + dim_token_rel_pos_feats,
+                                       token_z,
+                                       bias=False,
+                                       dtype=dtype,
+                                       skip_create_weights=skip_create_weights)
 
         transitions = []
         for i in range(num_transitions):
@@ -135,17 +118,12 @@ class PairwiseConditioning(nn.Module):
                            out_dim=token_z,
                            eps=eps,
                            dtype=dtype,
-                           mapping=mapping,
                            layer_idx=i,
                            skip_create_weights=skip_create_weights))
         self.transitions = nn.ModuleList(transitions)
 
-    def forward(
-            self,
-            z_trunk: torch.Tensor,
-            token_rel_pos_feats: torch.Tensor,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def forward(self, z_trunk: torch.Tensor,
+                token_rel_pos_feats: torch.Tensor) -> torch.Tensor:
         # Cast inputs to the conditioner dtype so the [N, N, *] init-proj + FFN run at that
         # precision even when the trunk feeds a higher-precision (e.g. fp32) pair rep.
         if self.dtype is not None:
@@ -155,7 +133,7 @@ class PairwiseConditioning(nn.Module):
         z = self.init_proj_norm(z)
         z = self.init_proj_linear(z)
         for transition in self.transitions:
-            z = transition(z, all_reduce_params=all_reduce_params) + z
+            z = transition(z) + z
         return z
 
 
@@ -171,7 +149,6 @@ class SingleConditioning(nn.Module):
                  eps: float = 1e-20,
                  disable_times: bool = False,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False) -> None:
         super().__init__()
         self.eps = eps
@@ -179,18 +156,13 @@ class SingleConditioning(nn.Module):
         input_dim = 2 * token_s + additional_input_dim
 
         self.norm_single = nn.LayerNorm(input_dim, dtype=dtype, eps=eps)
-        self.single_embed = Linear(
-            input_dim,
-            2 * token_s,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
+        self.single_embed = Linear(input_dim,
+                                   2 * token_s,
+                                   dtype=dtype,
+                                   skip_create_weights=skip_create_weights)
         if not self.disable_times:
             self.fourier_embed = FourierEmbedding(dim_fourier,
-                                                  dtype=torch.float32,
-                                                  mapping=mapping)
+                                                  dtype=torch.float32)
             self.norm_fourier = nn.LayerNorm(dim_fourier,
                                              dtype=torch.float32,
                                              eps=eps)
@@ -199,9 +171,6 @@ class SingleConditioning(nn.Module):
                 2 * token_s,
                 bias=False,
                 dtype=torch.float32,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
 
         transitions = nn.ModuleList([])
@@ -210,7 +179,6 @@ class SingleConditioning(nn.Module):
                                     hidden=transition_expansion_factor * 2 *
                                     token_s,
                                     dtype=dtype,
-                                    mapping=mapping,
                                     skip_create_weights=skip_create_weights)
             transitions.append(transition)
 
@@ -274,7 +242,6 @@ class DiffusionConditioning(nn.Module):
                  sigma_data: float,
                  eps: float = 1e-5,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -319,9 +286,6 @@ class DiffusionConditioning(nn.Module):
                                self.c_z,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         # Only transition_z is row-chunkable; transition_s uses dim 1 for samples.
@@ -330,7 +294,6 @@ class DiffusionConditioning(nn.Module):
                        hidden=self.c_z * 2,
                        eps=eps,
                        dtype=dtype,
-                       mapping=mapping,
                        skip_create_weights=skip_create_weights,
                        auto_chunk_policy=CHUNK_REGISTRY.get(
                            DIFFUSION_PAIR_TRANSITION)) for _ in range(2)
@@ -344,14 +307,9 @@ class DiffusionConditioning(nn.Module):
                                self.c_s,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
-        self.fourier_emb = FourierEmbedding(c_fourier_emb,
-                                            dtype=dtype,
-                                            mapping=mapping)
+        self.fourier_emb = FourierEmbedding(c_fourier_emb, dtype=dtype)
 
         self.layer_norm_n = nn.LayerNorm(self.c_fourier_emb,
                                          bias=False,
@@ -361,9 +319,6 @@ class DiffusionConditioning(nn.Module):
                                self.c_s,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.transition_s = nn.ModuleList([
@@ -371,7 +326,6 @@ class DiffusionConditioning(nn.Module):
                        hidden=self.c_s * 2,
                        eps=eps,
                        dtype=dtype,
-                       mapping=mapping,
                        skip_create_weights=skip_create_weights)
             for _ in range(2)
         ])

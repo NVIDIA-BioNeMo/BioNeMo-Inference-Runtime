@@ -13,12 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Mapping, Optional
-
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.modules.openfold2.confidence_utils import (
     compute_plddt, compute_predicted_aligned_error, compute_tm)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
@@ -32,7 +30,6 @@ class AuxiliaryHeads(nn.Module):
 
         self.config = config
         self.dtype = config.torch_dtype
-        self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
         self.epsilon = config.epsilon
 
@@ -41,7 +38,6 @@ class AuxiliaryHeads(nn.Module):
             c_in=config.per_residue_lddt.c_in,
             c_hidden=config.per_residue_lddt.c_hidden,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights,
             epsilon=self.epsilon,
         )
@@ -50,7 +46,6 @@ class AuxiliaryHeads(nn.Module):
             c_z=config.distogram.c_z,
             no_bins=config.distogram.no_bins,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights,
         )
 
@@ -58,7 +53,6 @@ class AuxiliaryHeads(nn.Module):
             c_m=config.masked_msa.c_m,
             c_out=config.masked_msa.c_out,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights,
         )
 
@@ -66,7 +60,6 @@ class AuxiliaryHeads(nn.Module):
             c_s=config.experimentally_resolved.c_s,
             c_out=config.experimentally_resolved.c_out,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights,
         )
 
@@ -75,7 +68,6 @@ class AuxiliaryHeads(nn.Module):
                 c_z=config.tm.c_z,
                 no_bins=config.tm.no_bins,
                 dtype=self.dtype,
-                mapping=self.mapping,
                 skip_create_weights=self.skip_create_weights,
             )
 
@@ -143,7 +135,6 @@ class PerResidueLDDTCaPredictor(nn.Module):
         c_in: int,
         c_hidden: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
         epsilon: float = 1e-5,
     ):
@@ -159,26 +150,17 @@ class PerResidueLDDTCaPredictor(nn.Module):
                                self.c_hidden,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.linear_2 = Linear(self.c_hidden,
                                self.c_hidden,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
         self.linear_3 = Linear(self.c_hidden,
                                self.no_bins,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.relu = nn.ReLU()
@@ -206,7 +188,6 @@ class DistogramHead(nn.Module):
         c_z: int,
         no_bins: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -225,9 +206,6 @@ class DistogramHead(nn.Module):
                              self.no_bins,
                              bias=True,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, z):
@@ -253,7 +231,6 @@ class TMScoreHead(nn.Module):
         c_z: int,
         no_bins: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -272,9 +249,6 @@ class TMScoreHead(nn.Module):
                              self.no_bins,
                              bias=True,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, z):
@@ -299,7 +273,6 @@ class MaskedMSAHead(nn.Module):
         c_m: int,
         c_out: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -318,9 +291,6 @@ class MaskedMSAHead(nn.Module):
                              self.c_out,
                              bias=True,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, m):
@@ -346,7 +316,6 @@ class ExperimentallyResolvedHead(nn.Module):
         c_s: int,
         c_out: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -365,9 +334,6 @@ class ExperimentallyResolvedHead(nn.Module):
                              self.c_out,
                              bias=True,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, s):

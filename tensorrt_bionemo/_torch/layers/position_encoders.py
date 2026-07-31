@@ -20,17 +20,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
-from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo._torch.layers.linear import Linear
 
 
 class FourierEmbedding(nn.Module):
     """Fourier embedding layer."""
 
-    def __init__(self,
-                 dim,
-                 dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None):
+    def __init__(self, dim, dtype: torch.dtype = torch.float32):
         """Initialize the Fourier Embeddings.
 
         Args:
@@ -38,17 +34,12 @@ class FourierEmbedding(nn.Module):
                 The dimension of the embeddings.
             dtype: torch.dtype
                 The data type of the input features.
-            mapping: Optional[Mapping]
-                The mapping of the input features.
         """
         super().__init__()
         self.proj = Linear(1,
                            dim,
                            bias=True,
                            dtype=dtype,
-                           mapping=mapping,
-                           tensor_parallel_mode=TensorParallelMode.COLUMN,
-                           gather_output=True,
                            skip_create_weights=False)
 
     def forward(
@@ -84,7 +75,6 @@ class RelativePositionEncoder(nn.Module):
             cyclic_pos_enc: bool = True,
             period_broadcast: bool = True,  # Set False for Boltz2
             dtype: torch.dtype = torch.float32,
-            mapping: Optional[Mapping] = None,
             skip_create_weights: bool = False):
         """Initialize the relative position encoder.
 
@@ -103,8 +93,6 @@ class RelativePositionEncoder(nn.Module):
                 Whether to broadcast the period.
             dtype: torch.dtype
                 The data type of the input features.
-            mapping: Optional[Mapping]
-                The mapping of the input features.
             skip_create_weights: bool
                 Whether to skip creating weights.
         """
@@ -115,14 +103,10 @@ class RelativePositionEncoder(nn.Module):
                              token_z,
                              bias=False,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
         self.fix_sym_check = fix_sym_check
         self.cyclic_pos_enc = cyclic_pos_enc
         self.period_broadcast = period_broadcast
-        self.mapping = mapping or Mapping()
 
     def _relp_buckets(
         self,
@@ -261,26 +245,9 @@ class RelativePositionEncoder(nn.Module):
         # one_hot(index) @ W is an embedding lookup; accumulate weight slices
         # without materializing the one-hots or their concatenation:
         # [ d_residue (n_pos) | d_token (n_pos) | b_same_entity (1) | d_chain (n_chain) ].
-        if self.mapping.tp_size == 1:
-            wt = self.linear.weight.t()
-            p = F.embedding(d_residue, wt[0:n_pos])
-            p += F.embedding(d_token, wt[n_pos:2 * n_pos])
-            p += b_same_entity[..., None].to(p.dtype) * wt[2 * n_pos]
-            p += F.embedding(d_chain,
-                             wt[2 * n_pos + 1:2 * n_pos + 1 + n_chain])
-            return p
-
-        # Column-sharded Linear requires the concatenated input.
-        a_rel_pos = F.one_hot(d_residue, n_pos)
-        a_rel_token = F.one_hot(d_token, n_pos)
-        a_rel_chain = F.one_hot(d_chain, n_chain)
-        return self.linear(
-            torch.cat(
-                [
-                    a_rel_pos.float(),
-                    a_rel_token.float(),
-                    b_same_entity.unsqueeze(-1).float(),
-                    a_rel_chain.float(),
-                ],
-                dim=-1,
-            ))
+        wt = self.linear.weight.t()
+        p = F.embedding(d_residue, wt[0:n_pos])
+        p += F.embedding(d_token, wt[n_pos:2 * n_pos])
+        p += b_same_entity[..., None].to(p.dtype) * wt[2 * n_pos]
+        p += F.embedding(d_chain, wt[2 * n_pos + 1:2 * n_pos + 1 + n_chain])
+        return p

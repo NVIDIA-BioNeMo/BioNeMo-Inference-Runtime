@@ -243,15 +243,6 @@ def _build_folding_engine_stage(
                                             EngineStageConfig,
                                             processor_defaults)
 
-    if engine_stage_cfg.parallelism_mode == ParallelismMode.DISTRIBUTED:
-        # Extension point: implement multi-GPU per engine (Tensor Parallel / Context Parallel).
-        # E.g. set up process groups, pass Mapping into engine_kwargs, use placement groups or
-        # multi-process runner per logical replica.
-        raise NotImplementedError(
-            "DISTRIBUTED mode (Tensor Parallel / Context Parallel) is not implemented yet. "
-            "Extend _build_folding_engine_stage and the engine stage for multi-GPU per replica."
-        )
-
     fn_constructor_kwargs = {
         "model": config.model_source,
         "engine_kwargs": config.engine_kwargs,

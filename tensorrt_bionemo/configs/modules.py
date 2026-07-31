@@ -30,9 +30,6 @@ class PairformerConfig(BaseConfig):
     pairwise_num_heads: int = None
     num_blocks: int = None
     num_heads: int = None
-    max_transition_tp_size: bool = True
-    max_attention_pairwise_tp_size: bool = True
-    max_tri_mul_tp_size: bool = True
     no_update_s: bool = False
     no_update_z: bool = False
     s_path_dtype: Optional[Union[str, torch.dtype]] = None

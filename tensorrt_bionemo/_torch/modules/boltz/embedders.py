@@ -19,15 +19,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.transformers.atom import \
     AtomAttentionEncoder
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
     BoltzDiffusionTransformer
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.models.boltz2.const import (num_chain_types,
                                                            num_method_types,
                                                            num_tokens)
@@ -52,7 +50,6 @@ class AtomEmbedding(nn.Module):
         version: str = "v1",
         eps: float = 1e-5,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -85,8 +82,6 @@ class AtomEmbedding(nn.Module):
                 The epsilon. Defaults to 1e-5.
             dtype: torch.dtype
                 The data type. Defaults to torch.float32.
-            mapping: Optional[Mapping]
-                The mapping. Defaults to None.
             skip_create_weights: bool
                 Whether to skip creating weights. Defaults to False.
         TODO: Implement for the structure prediction.
@@ -104,18 +99,12 @@ class AtomEmbedding(nn.Module):
             atom_s,
             bias=version != "v1",
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights)
         self.embed_atompair_ref_pos = Linear(
             3,
             atom_z,
             bias=False,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights,
         )
         self.embed_atompair_ref_dist = Linear(
@@ -123,9 +112,6 @@ class AtomEmbedding(nn.Module):
             atom_z,
             bias=False,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights,
         )
         self.embed_atompair_mask = Linear(
@@ -133,9 +119,6 @@ class AtomEmbedding(nn.Module):
             atom_z,
             bias=False,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights,
         )
 
@@ -146,9 +129,6 @@ class AtomEmbedding(nn.Module):
                 atom_z,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights,
             ),
         )
@@ -160,9 +140,6 @@ class AtomEmbedding(nn.Module):
                 atom_z,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights,
             ),
         )
@@ -174,9 +151,6 @@ class AtomEmbedding(nn.Module):
                 atom_z,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights,
             ),
             nn.ReLU(),
@@ -185,9 +159,6 @@ class AtomEmbedding(nn.Module):
                 atom_z,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights,
             ),
             nn.ReLU(),
@@ -196,9 +167,6 @@ class AtomEmbedding(nn.Module):
                 atom_z,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights,
             ),
         )
@@ -212,9 +180,6 @@ class AtomEmbedding(nn.Module):
                     atom_s,
                     bias=False,
                     dtype=dtype,
-                    mapping=mapping,
-                    tensor_parallel_mode=TensorParallelMode.COLUMN,
-                    gather_output=True,
                     skip_create_weights=skip_create_weights,
                 ),
             )
@@ -226,9 +191,6 @@ class AtomEmbedding(nn.Module):
                     atom_z,
                     bias=False,
                     dtype=dtype,
-                    mapping=mapping,
-                    tensor_parallel_mode=TensorParallelMode.COLUMN,
-                    gather_output=True,
                     skip_create_weights=skip_create_weights,
                 ),
             )
@@ -455,7 +417,6 @@ class Boltz1InputEmbedder(nn.Module):
             use_residue_feats_atoms=False,
             version="v1",
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
 
@@ -472,9 +433,6 @@ class Boltz1InputEmbedder(nn.Module):
                            diffusion_transformer_config.num_heads,
                            bias=False,
                            dtype=config.torch_dtype,
-                           mapping=config.mapping,
-                           tensor_parallel_mode=TensorParallelMode.COLUMN,
-                           gather_output=True,
                            skip_create_weights=config.skip_create_weights),
                 ))
 
@@ -487,7 +445,6 @@ class Boltz1InputEmbedder(nn.Module):
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             structure_prediction=False,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
 
@@ -512,9 +469,7 @@ class Boltz1InputEmbedder(nn.Module):
             profile: Optional[torch.Tensor] = None,
             deletion_mean: Optional[torch.Tensor] = None,
             pocket_feature: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
         """
         Args:
             atom_to_token: torch.Tensor
@@ -565,7 +520,6 @@ class Boltz1InputEmbedder(nn.Module):
             c=c,
             bias=atom_enc_bias,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
         )
 
         # multiplicity is 1 for InputEmbedder, we do squeeze here:
@@ -604,7 +558,6 @@ class Boltz2InputEmbedder(nn.Module):
             use_residue_feats_atoms=config.use_residue_feats_atoms,
             version="v2",
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
 
@@ -615,9 +568,6 @@ class Boltz2InputEmbedder(nn.Module):
                    config.diffusion_transformer.num_heads,
                    bias=False,
                    dtype=config.torch_dtype,
-                   mapping=config.mapping,
-                   tensor_parallel_mode=TensorParallelMode.COLUMN,
-                   gather_output=True,
                    skip_create_weights=config.skip_create_weights),
         )
 
@@ -630,7 +580,6 @@ class Boltz2InputEmbedder(nn.Module):
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             structure_prediction=False,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
         )
 
@@ -639,18 +588,12 @@ class Boltz2InputEmbedder(nn.Module):
             config.token_s,
             bias=False,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=config.skip_create_weights)
         self.msa_profile_encoding = Linear(
             num_tokens + 1,
             config.token_s,
             bias=False,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=config.skip_create_weights)
 
         self.add_method_conditioning = config.add_method_conditioning
@@ -670,9 +613,6 @@ class Boltz2InputEmbedder(nn.Module):
                 config.token_s,
                 bias=False,
                 dtype=config.torch_dtype,
-                mapping=config.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=config.skip_create_weights)
         if self.add_mol_type_feat:
             self.mol_type_conditioning_init = nn.Embedding(
@@ -704,9 +644,7 @@ class Boltz2InputEmbedder(nn.Module):
             modified: Optional[torch.Tensor] = None,
             cyclic_period: Optional[torch.Tensor] = None,
             mol_type: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
         """
         Args:
             atom_to_token: torch.Tensor
@@ -761,7 +699,6 @@ class Boltz2InputEmbedder(nn.Module):
             c=c,
             bias=atom_enc_bias,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
         )
 
         # multiplicity is 1 for InputEmbedder, we do squeeze here:

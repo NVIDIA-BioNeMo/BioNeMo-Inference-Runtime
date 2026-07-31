@@ -15,14 +15,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
-                                                   WeightMode,
+from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo._torch.layers.sequence_local_atom import \
     pad_to_multiple_and_divide
@@ -31,7 +28,6 @@ from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
 from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import (
     aggregate_atom_feat_to_tokens, broadcast_token_feat_to_atoms)
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 
 TensorDict = dict[str, torch.Tensor]
 
@@ -213,7 +209,6 @@ class RefAtomFeatureEmbedder(nn.Module):
         c_atom: int,
         c_atom_pair: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -230,16 +225,11 @@ class RefAtomFeatureEmbedder(nn.Module):
         super().__init__()
         # Ref conformer feats
         self.dtype = dtype
-        self.mapping = mapping
-
         self.linear_merge_ref_features = Linear(
             3 + 1 + 1 + c_atom_ref_element + c_atom_ref_name_chars,
             c_atom,
             bias=False,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_ALL_LINEAR_LAST_DIM))
@@ -249,9 +239,6 @@ class RefAtomFeatureEmbedder(nn.Module):
             c_atom_pair,
             bias=False,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_ALL_LINEAR_LAST_DIM))
@@ -357,7 +344,6 @@ class NoisyPositionEmbedder(nn.Module):
         c_atom: int,
         c_atom_pair: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
         eps: float = 1e-5,
     ):
@@ -379,26 +365,17 @@ class NoisyPositionEmbedder(nn.Module):
                                c_atom,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
         self.layer_norm_z = nn.LayerNorm(c_z, bias=False, dtype=dtype, eps=eps)
         self.linear_z = Linear(c_z,
                                c_atom_pair,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
         self.linear_r = Linear(3,
                                c_atom,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
     def forward(
@@ -496,7 +473,6 @@ class AtomAttentionEncoder(nn.Module):
                  eps: float = 1e-5,
                  add_noisy_pos: bool = False,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -532,7 +508,6 @@ class AtomAttentionEncoder(nn.Module):
         self.n_key = n_key
         self.inf = inf
         self.dtype = dtype
-        self.mapping = mapping
         self.add_noisy_pos = add_noisy_pos
         self.ref_atom_feature_embedder = RefAtomFeatureEmbedder(
             dtype=dtype,
@@ -548,7 +523,6 @@ class AtomAttentionEncoder(nn.Module):
                 c_atom=c_atom,
                 c_atom_pair=c_atom_pair,
                 dtype=dtype,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights,
                 eps=eps)
 
@@ -557,17 +531,11 @@ class AtomAttentionEncoder(nn.Module):
                                c_atom_pair,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
         self.linear_m = Linear(c_atom,
                                c_atom_pair,
                                bias=False,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.pair_mlp = nn.Sequential(
@@ -576,27 +544,18 @@ class AtomAttentionEncoder(nn.Module):
                    c_atom_pair,
                    bias=False,
                    dtype=dtype,
-                   mapping=mapping,
-                   tensor_parallel_mode=TensorParallelMode.COLUMN,
-                   gather_output=True,
                    skip_create_weights=skip_create_weights),
             nn.ReLU(),
             Linear(c_atom_pair,
                    c_atom_pair,
                    bias=False,
                    dtype=dtype,
-                   mapping=mapping,
-                   tensor_parallel_mode=TensorParallelMode.COLUMN,
-                   gather_output=True,
                    skip_create_weights=skip_create_weights),
             nn.ReLU(),
             Linear(c_atom_pair,
                    c_atom_pair,
                    bias=False,
                    dtype=dtype,
-                   mapping=mapping,
-                   tensor_parallel_mode=TensorParallelMode.COLUMN,
-                   gather_output=True,
                    skip_create_weights=skip_create_weights),
         )
 
@@ -615,9 +574,6 @@ class AtomAttentionEncoder(nn.Module):
                    c_token,
                    bias=False,
                    dtype=dtype,
-                   mapping=mapping,
-                   tensor_parallel_mode=TensorParallelMode.COLUMN,
-                   gather_output=True,
                    skip_create_weights=skip_create_weights), nn.ReLU())
 
     def get_atom_reps(
@@ -825,7 +781,6 @@ class AtomAttentionDecoder(nn.Module):
                  inf: float = 1e9,
                  eps: float = 1e-5,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -852,20 +807,15 @@ class AtomAttentionDecoder(nn.Module):
 
         self.inf = inf
         self.dtype = dtype
-        self.mapping = mapping
         self.skip_create_weights = skip_create_weights
         self.n_query = n_query
         self.n_key = n_key
 
-        self.linear_q_in = Linear(
-            c_token,
-            c_atom,
-            bias=False,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
+        self.linear_q_in = Linear(c_token,
+                                  c_atom,
+                                  bias=False,
+                                  dtype=dtype,
+                                  skip_create_weights=skip_create_weights)
         if getattr(atom_attn_decoder_config, 'pairwise_attention_backend',
                    '') == "CuTeDSL":
             atom_attn_decoder_config.pairwise_attention_backend = "SDPA"
@@ -876,15 +826,11 @@ class AtomAttentionDecoder(nn.Module):
                                        bias=False,
                                        dtype=self.dtype,
                                        eps=eps)
-        self.linear_q_out = Linear(
-            c_atom,
-            3,
-            bias=False,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
+        self.linear_q_out = Linear(c_atom,
+                                   3,
+                                   bias=False,
+                                   dtype=dtype,
+                                   skip_create_weights=skip_create_weights)
 
     def forward(
         self,

@@ -18,7 +18,6 @@ import torch
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.logger import logger
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
@@ -38,9 +37,7 @@ def get_linear_weights(state_dict: dict,
 def get_outer_product_mean_weights(state_dict: dict,
                                    prefix: str,
                                    tbm_prefix: str,
-                                   dtype: str = "float32",
-                                   mapping: Mapping = None):
-    mapping if mapping else Mapping()
+                                   dtype: str = "float32"):
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -80,9 +77,7 @@ def get_msa_attention_weights(state_dict: dict,
                               prefix: str,
                               tbm_prefix: str,
                               dtype: str = "float32",
-                              pair_bias: bool = True,
-                              mapping: Mapping = None):
-    mapping if mapping else Mapping()
+                              pair_bias: bool = True):
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -134,9 +129,7 @@ def get_msa_attention_weights(state_dict: dict,
 def get_msa_transition_weights(state_dict: dict,
                                prefix: str,
                                tbm_prefix: str,
-                               dtype: str = "float32",
-                               mapping: Mapping = None):
-    mapping if mapping else Mapping()
+                               dtype: str = "float32"):
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -166,10 +159,7 @@ def get_msa_transition_weights(state_dict: dict,
 def get_tri_mul_node_weights(state_dict: dict,
                              prefix: str,
                              tbm_prefix: str,
-                             dtype: str = "float32",
-                             mapping: Mapping = None):
-    # TODO: add support for max_tri_mul_tp_size
-    mapping if mapping else Mapping()
+                             dtype: str = "float32"):
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -228,9 +218,7 @@ def get_tri_mul_node_weights(state_dict: dict,
 def get_tri_attn_node_weights(state_dict: dict,
                               prefix: str,
                               tbm_prefix: str,
-                              mapping: Mapping = None,
                               dtype: str = "float32"):
-    mapping if mapping else Mapping()
     torch_dtype = str_dtype_to_torch(dtype)
     layer_norm_weight = state_dict[f"{prefix}.layer_norm.weight"]
     layer_norm_bias = state_dict[f"{prefix}.layer_norm.bias"]
@@ -263,9 +251,7 @@ def get_tri_attn_node_weights(state_dict: dict,
 def get_pair_transition_weights(state_dict: dict,
                                 prefix: str,
                                 tbm_prefix: str,
-                                dtype: str = "float32",
-                                mapping: Mapping = None):
-    mapping if mapping else Mapping()
+                                dtype: str = "float32"):
     torch_dtype = str_dtype_to_torch(dtype)
     ret = {}
 
@@ -293,13 +279,11 @@ def get_pair_transition_weights(state_dict: dict,
 
 
 def convert_hf_evoformer(config: BaseConfig,
-                         mapping: Mapping = None,
                          local_checkpoint: str = None,
                          model_name: str = "openfold2_ptm_1"):
     """
     Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
     """
-    mapping = mapping if mapping is not None else Mapping()
     prefix = "evoformer"
 
     state_dict = load_weights(name=model_name, cache_path=local_checkpoint)
@@ -324,58 +308,49 @@ def convert_hf_evoformer(config: BaseConfig,
                 state_dict,
                 f"{prefix}.blocks.{i}.outer_product_mean",
                 f"blocks.{i}.outer_product_mean",
-                dtype=config.dtype,
-                mapping=mapping))
+                dtype=config.dtype))
         weights.update(
             get_msa_attention_weights(state_dict,
                                       f"{prefix}.blocks.{i}.msa_att_row",
                                       f"blocks.{i}.msa_att_row",
-                                      dtype=config.dtype,
-                                      mapping=mapping))
+                                      dtype=config.dtype))
         weights.update(
             get_msa_attention_weights(
                 state_dict,
                 f"{prefix}.blocks.{i}.msa_att_col._msa_att",
                 f"blocks.{i}.msa_att_col",
                 dtype=config.dtype,
-                pair_bias=False,
-                mapping=mapping))
+                pair_bias=False))
         weights.update(
             get_msa_transition_weights(state_dict,
                                        f"{prefix}.blocks.{i}.msa_transition",
                                        f"blocks.{i}.msa_transition",
-                                       dtype=config.dtype,
-                                       mapping=mapping))
+                                       dtype=config.dtype))
         weights.update(
             get_pair_transition_weights(state_dict,
                                         f"{prefix}.blocks.{i}.pair_transition",
                                         f"blocks.{i}.pair_transition",
-                                        dtype=config.dtype,
-                                        mapping=mapping))
+                                        dtype=config.dtype))
         weights.update(
             get_tri_mul_node_weights(state_dict,
                                      f"{prefix}.blocks.{i}.tri_mul_in",
                                      f"blocks.{i}.tri_mul_in",
-                                     dtype=config.dtype,
-                                     mapping=mapping))
+                                     dtype=config.dtype))
         weights.update(
             get_tri_mul_node_weights(state_dict,
                                      f"{prefix}.blocks.{i}.tri_mul_out",
                                      f"blocks.{i}.tri_mul_out",
-                                     dtype=config.dtype,
-                                     mapping=mapping))
+                                     dtype=config.dtype))
         weights.update(
             get_tri_attn_node_weights(state_dict,
                                       f"{prefix}.blocks.{i}.tri_att_start",
                                       f"blocks.{i}.tri_attn_start",
-                                      dtype=config.dtype,
-                                      mapping=mapping))
+                                      dtype=config.dtype))
         weights.update(
             get_tri_attn_node_weights(state_dict,
                                       f"{prefix}.blocks.{i}.tri_att_end",
                                       f"blocks.{i}.tri_attn_end",
-                                      dtype=config.dtype,
-                                      mapping=mapping))
+                                      dtype=config.dtype))
 
     return weights
 
@@ -383,9 +358,7 @@ def convert_hf_evoformer(config: BaseConfig,
 def get_trimul_torch_weights(state_dict: dict,
                              prefix: str,
                              tbm_prefix: str,
-                             dtype: str = "float32",
-                             mapping: Mapping = None):
-    mapping if mapping else Mapping()
+                             dtype: str = "float32"):
     str_dtype_to_torch(dtype)
 
     is_fused = f"{prefix}.linear_ab_p.weight" in state_dict
@@ -458,9 +431,7 @@ def get_trimul_torch_weights(state_dict: dict,
 def get_triattn_torch_weights(state_dict: dict,
                               prefix: str,
                               tbm_prefix: str,
-                              dtype: str = "float32",
-                              mapping: Mapping = None):
-    mapping if mapping else Mapping()
+                              dtype: str = "float32"):
     str_dtype_to_torch(dtype)
     ret = {}
     ret[f"{tbm_prefix}.layer_norm"] = [{
@@ -507,7 +478,6 @@ def get_triattn_torch_weights(state_dict: dict,
 
 
 def convert_hf_evoformer_torch(config: BaseConfig,
-                               mapping: Mapping = None,
                                local_checkpoint: str = None,
                                model_name: str = "openfold2_ptm_1",
                                weights: dict = None):
@@ -516,8 +486,6 @@ def convert_hf_evoformer_torch(config: BaseConfig,
     Args:
         module: The module to load the weights into.
         checkpoint_dir: The directory to load the checkpoint from.
-        world_size: The number of processes to use.
-        rank: The rank of the process.
         weights: The weights to load into the module.
         model_name: The name of the model to load the weights from.
     """
@@ -694,8 +662,7 @@ def convert_hf_evoformer_torch(config: BaseConfig,
                 get_trimul_torch_weights(module_state_dict,
                                          original_prefix,
                                          tbm_prefix,
-                                         dtype=config.dtype,
-                                         mapping=mapping))
+                                         dtype=config.dtype))
 
         # weight for tri_attn_start and tri_attn_end
         for name in ["start", "end"]:
@@ -705,8 +672,7 @@ def convert_hf_evoformer_torch(config: BaseConfig,
                 get_triattn_torch_weights(module_state_dict,
                                           original_prefix,
                                           tbm_prefix,
-                                          dtype=config.dtype,
-                                          mapping=mapping))
+                                          dtype=config.dtype))
 
         # weight for pair_transition
         tbnm_state_dict[f"blocks.{i}.pair_transition.layer_norm"] = [{
@@ -731,7 +697,6 @@ def convert_hf_evoformer_torch(config: BaseConfig,
 
 
 def convert_hf_extra_msa_stack_torch(config: BaseConfig,
-                                     mapping: Mapping = None,
                                      local_checkpoint: str = None,
                                      model_name: str = "openfold2_ptm_1",
                                      weights: dict = None):
@@ -906,8 +871,7 @@ def convert_hf_extra_msa_stack_torch(config: BaseConfig,
                 get_trimul_torch_weights(module_state_dict,
                                          original_prefix,
                                          tbm_prefix,
-                                         dtype=config.dtype,
-                                         mapping=mapping))
+                                         dtype=config.dtype))
 
         # weight for tri_attn_start and tri_attn_end
         for name in ["start", "end"]:
@@ -917,8 +881,7 @@ def convert_hf_extra_msa_stack_torch(config: BaseConfig,
                 get_triattn_torch_weights(module_state_dict,
                                           original_prefix,
                                           tbm_prefix,
-                                          dtype=config.dtype,
-                                          mapping=mapping))
+                                          dtype=config.dtype))
 
         # weight for pair_transition
         tbnm_state_dict[f"blocks.{i}.pair_transition.layer_norm"] = [{
@@ -943,7 +906,6 @@ def convert_hf_extra_msa_stack_torch(config: BaseConfig,
 
 
 def convert_hf_input_embedder_torch(config: BaseConfig,
-                                    mapping: Mapping = None,
                                     local_checkpoint: str = None,
                                     model_name: str = "openfold2_ptm_1",
                                     weights: dict = None):
@@ -997,7 +959,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
 
 
 def convert_hf_recycling_embedder_torch(config: BaseConfig,
-                                        mapping: Mapping = None,
                                         local_checkpoint: str = None,
                                         model_name: str = "openfold2_ptm_1",
                                         weights: dict = None):
@@ -1036,7 +997,6 @@ def convert_hf_recycling_embedder_torch(config: BaseConfig,
 
 
 def convert_hf_extra_msa_embedder_torch(config: BaseConfig,
-                                        mapping: Mapping = None,
                                         local_checkpoint: str = None,
                                         model_name: str = "openfold2_ptm_1",
                                         weights: dict = None):
@@ -1063,7 +1023,6 @@ def convert_hf_extra_msa_embedder_torch(config: BaseConfig,
 
 
 def convert_hf_template_embedder_torch(config: BaseConfig,
-                                       mapping: Mapping = None,
                                        local_checkpoint: str = None,
                                        model_name: str = "openfold2_ptm_1",
                                        weights: dict = None):
@@ -1119,8 +1078,7 @@ def convert_hf_template_embedder_torch(config: BaseConfig,
                 get_trimul_torch_weights(module_state_dict,
                                          original_prefix,
                                          tbm_prefix,
-                                         dtype=config.dtype,
-                                         mapping=mapping))
+                                         dtype=config.dtype))
 
         # weight for tri_attn_start and tri_attn_end
         for name in ["start", "end"]:
@@ -1130,8 +1088,7 @@ def convert_hf_template_embedder_torch(config: BaseConfig,
                 get_triattn_torch_weights(module_state_dict,
                                           original_prefix,
                                           tbm_prefix,
-                                          dtype=config.dtype,
-                                          mapping=mapping))
+                                          dtype=config.dtype))
 
         # weight for pair_transition
         tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.layer_norm"] = [{
@@ -1196,7 +1153,6 @@ def convert_hf_template_embedder_torch(config: BaseConfig,
 
 def convert_hf_template_embedder_multimer_torch(
         config: BaseConfig,
-        mapping: Mapping = None,
         local_checkpoint: str = None,
         model_name: str = "alphafold2_multimer_1",
         weights: dict = None):
@@ -1260,8 +1216,7 @@ def convert_hf_template_embedder_multimer_torch(
                 get_trimul_torch_weights(module_state_dict,
                                          original_prefix,
                                          tbm_prefix,
-                                         dtype=config.dtype,
-                                         mapping=mapping))
+                                         dtype=config.dtype))
 
         # weight for tri_attn_start and tri_attn_end
         for name in ["start", "end"]:
@@ -1271,8 +1226,7 @@ def convert_hf_template_embedder_multimer_torch(
                 get_triattn_torch_weights(module_state_dict,
                                           original_prefix,
                                           tbm_prefix,
-                                          dtype=config.dtype,
-                                          mapping=mapping))
+                                          dtype=config.dtype))
         # weight for pair_transition
         tbnm_state_dict[f"{prefix}.blocks.{i}.pair_transition.layer_norm"] = [{
             "weight":
@@ -1316,7 +1270,6 @@ def convert_hf_template_embedder_multimer_torch(
 
 
 def convert_hf_confidence_module_torch(config: BaseConfig,
-                                       mapping: Mapping = None,
                                        local_checkpoint: str = None,
                                        model_name: str = "openfold2_ptm_1",
                                        weights: dict = None):
@@ -1384,7 +1337,6 @@ def convert_hf_confidence_module_torch(config: BaseConfig,
 
 
 def convert_hf_structure_module_torch(config: BaseConfig,
-                                      mapping: Mapping = None,
                                       local_checkpoint: str = None,
                                       model_name: str = "openfold2_ptm_1",
                                       weights: dict = None):

@@ -115,11 +115,6 @@ class FoldingEngineUDF(StatefulStageUDF):
         self.should_continue_on_error = should_continue_on_error
         max_pending_requests = max_pending_requests or 1
 
-        if parallelism_mode == ParallelismMode.DISTRIBUTED:
-            raise NotImplementedError(
-                "DISTRIBUTED mode is not implemented yet. Extend FoldingEngineUDF here for TP/CP."
-            )
-
         self.folding = FoldingEngineWrapper(
             model=model,
             engine_kwargs=engine_kwargs,
@@ -142,7 +137,8 @@ class FoldingEngineUDF(StatefulStageUDF):
         # This stage uses update_row=False (replaces the row), so explicitly carry
         # the upstream per-stage timing forward and tag the engine's own time (always on).
         _timing = dict(row.get("stage_timing_s") or {})
-        _timing["FoldingEngine"] = output.get("model_inference_time", time_taken)
+        _timing["FoldingEngine"] = output.get("model_inference_time",
+                                              time_taken)
         resp["stage_timing_s"] = _timing
         return resp
 

@@ -19,16 +19,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.distributed import \
-    get_default_tp_group_coordinator
-from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
-                                                   WeightMode,
-                                                   WeightsLoadingConfig)
-
 from tensorrt_bionemo._torch.custom_ops import get_adaln_layernorm_sigmoid_op
-from tensorrt_bionemo.mapping import Mapping
-from tensorrt_bionemo.runtime.buffers import (PreallocatedBuffers,
-                                              ensure_buffer)
+from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
+                                                   WeightsLoadingConfig)
+from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 
 class AdaLN(nn.Module):
@@ -38,25 +32,19 @@ class AdaLN(nn.Module):
                  dim_single_cond: int,
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None):
+                 skip_create_weights: bool = False):
         """Adaptive LayerNorm with a sigmoid-gated affine.
 
-        Uses the fused CuTe DSL kernel when ``tp_size == 1``; under TP
-        falls back to the inline torch path (kernel doesn't handle the
-        TP slice between LN and the gate). Kernel init / forward
+        Uses the fused CuTe DSL kernel, falling back to the inline torch
+        path when the kernel is unavailable. Kernel init / forward
         failures propagate to the caller — no silent fallback.
         """
         super().__init__()
-        if mapping is None:
-            mapping = Mapping()
-        self.dim = dim // mapping.tp_size
+        self.dim = dim
         self.dim_single_cond = dim_single_cond
-        self.mapping = mapping
-        self.tp_group = mapping.tp_group
         self.eps = eps
 
-        self.a_norm = nn.LayerNorm(self.dim * mapping.tp_size,
+        self.a_norm = nn.LayerNorm(self.dim,
                                    dtype=dtype,
                                    eps=eps,
                                    elementwise_affine=False,
@@ -69,29 +57,15 @@ class AdaLN(nn.Module):
         # remember to set it to zero correctly
         self.fused_s_scale_s_bias = Linear(
             self.dim_single_cond,
-            2 * mapping.tp_size * self.dim,
+            2 * self.dim,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR))
 
-        self.group_comm = None
-        if mapping.tp_size > 1:
-            self.group_comm = get_default_tp_group_coordinator()
-            assert self.group_comm(
-            ) is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
-
-        # Fused kernel only handles the tp_size == 1 case because under TP the
-        # LayerNorm operates on the full dim while the sigmoid gate operates on
-        # the sliced dim — those two steps run on different tensors.
-        self._fused_op = None
-        if mapping.tp_size == 1:
-            self._fused_op = get_adaln_layernorm_sigmoid_op(
-                dtype if dtype is not None else torch.float32)
+        self._fused_op = get_adaln_layernorm_sigmoid_op(
+            dtype if dtype is not None else torch.float32)
 
     def forward(
         self,
@@ -122,21 +96,11 @@ class AdaLN(nn.Module):
             a = a.contiguous()
             # Write to a separate buffer so callers that use ``a`` as a
             # residual after this op see the original values.
-            out = ensure_buffer(buffers, buffer_key,
-                                a.shape, a.dtype, a.device)
+            out = ensure_buffer(buffers, buffer_key, a.shape, a.dtype,
+                                a.device)
             if out is None:
                 out = torch.empty_like(a)
-            return self._fused_op(a, s_scale, s_bias,
-                                  out=out, eps=self.eps)
+            return self._fused_op(a, s_scale, s_bias, out=out, eps=self.eps)
 
         a = self.a_norm(a)
-        if self.mapping.tp_size > 1:
-            start = self.mapping.tp_rank * self.dim
-            end = (self.mapping.tp_rank + 1) * self.dim
-            a = a[:, :, start:end]
-
-        a = F.sigmoid(s_scale) * a + s_bias
-
-        if self.mapping.tp_size > 1:
-            a = self.group_comm().all_gather(a, dim=-1)
-        return a
+        return F.sigmoid(s_scale) * a + s_bias

@@ -171,7 +171,6 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         atc = config.atom_transformer_config.model_copy(
             update={
                 "dtype": config.dtype,
-                "mapping": config.mapping,
                 "skip_create_weights": skip
             })
         self.atom_transformer = ProtenixDiffusionTransformer(atc)
@@ -497,7 +496,6 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         atc = config.atom_transformer_config.model_copy(
             update={
                 "dtype": config.dtype,
-                "mapping": config.mapping,
                 "skip_create_weights": skip
             })
         self.atom_transformer = ProtenixDiffusionTransformer(atc)

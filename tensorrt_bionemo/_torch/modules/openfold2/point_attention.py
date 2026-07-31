@@ -14,19 +14,18 @@
 # limitations under the License.
 
 import math
-from typing import Optional, Tuple, Union
+from typing import Tuple, Union
 
 import torch
 import torch.nn as nn
 from torch.nn import Linear
 
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rigid_matrix_vector import \
     Rigid3Array
 from tensorrt_bionemo._torch.modules.openfold2.utils.rigid_utils import Rigid
 from tensorrt_bionemo._torch.tensor_utils import (flatten_final_dims,
                                                   permute_final_dims)
-from tensorrt_bionemo.mapping import Mapping
 
 
 class PointProjection(nn.Module):
@@ -38,7 +37,6 @@ class PointProjection(nn.Module):
                  is_multimer: bool,
                  return_local_points: bool = False,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         super().__init__()
         self.return_local_points = return_local_points
@@ -51,9 +49,6 @@ class PointProjection(nn.Module):
             no_heads * 3 * num_points,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights,
         )
 
@@ -100,7 +95,6 @@ class InvariantPointAttention(nn.Module):
                  eps: float = 1e-8,
                  is_multimer: bool = False,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -138,9 +132,6 @@ class InvariantPointAttention(nn.Module):
                                hc,
                                bias=(not is_multimer),
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.linear_q_points = PointProjection(
@@ -149,29 +140,20 @@ class InvariantPointAttention(nn.Module):
             self.no_heads,
             self.is_multimer,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
         if (is_multimer):
-            self.linear_k = Linear(
-                self.c_s,
-                hc,
-                bias=False,
-                dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
-                skip_create_weights=skip_create_weights)
+            self.linear_k = Linear(self.c_s,
+                                   hc,
+                                   bias=False,
+                                   dtype=dtype,
+                                   skip_create_weights=skip_create_weights)
 
-            self.linear_v = Linear(
-                self.c_s,
-                hc,
-                bias=False,
-                dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
-                skip_create_weights=skip_create_weights)
+            self.linear_v = Linear(self.c_s,
+                                   hc,
+                                   bias=False,
+                                   dtype=dtype,
+                                   skip_create_weights=skip_create_weights)
 
             self.linear_k_points = PointProjection(
                 self.c_s,
@@ -179,7 +161,6 @@ class InvariantPointAttention(nn.Module):
                 self.no_heads,
                 self.is_multimer,
                 dtype=dtype,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights)
 
             self.linear_v_points = PointProjection(
@@ -188,49 +169,36 @@ class InvariantPointAttention(nn.Module):
                 self.no_heads,
                 self.is_multimer,
                 dtype=dtype,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights)
         else:
-            self.linear_kv = Linear(
-                self.c_s,
-                2 * hc,
-                bias=True,
-                dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
-                skip_create_weights=skip_create_weights)
+            self.linear_kv = Linear(self.c_s,
+                                    2 * hc,
+                                    bias=True,
+                                    dtype=dtype,
+                                    skip_create_weights=skip_create_weights)
             self.linear_kv_points = PointProjection(
                 self.c_s,
                 self.no_qk_points + self.no_v_points,
                 self.no_heads,
                 self.is_multimer,
                 dtype=dtype,
-                mapping=mapping,
                 skip_create_weights=skip_create_weights)
 
         self.linear_b = Linear(self.c_z,
                                self.no_heads,
                                bias=True,
                                dtype=dtype,
-                               mapping=mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=skip_create_weights)
 
         self.head_weights = nn.Parameter(torch.zeros((no_heads)))
 
         concat_out_dim = self.no_heads * (self.c_z + self.c_hidden +
                                           self.no_v_points * 4)
-        self.linear_out = Linear(
-            concat_out_dim,
-            self.c_s,
-            bias=True,
-            dtype=dtype,
-            mapping=mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=skip_create_weights)
+        self.linear_out = Linear(concat_out_dim,
+                                 self.c_s,
+                                 bias=True,
+                                 dtype=dtype,
+                                 skip_create_weights=skip_create_weights)
 
         self.softmax = nn.Softmax(dim=-1)
         self.softplus = nn.Softplus()

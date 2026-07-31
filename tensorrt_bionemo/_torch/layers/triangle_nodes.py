@@ -23,13 +23,8 @@ from cuequivariance_ops_torch.fused_layer_norm_torch import \
 
 from tensorrt_bionemo._torch.custom_ops.fused_ln_proj_moveaxis_pad import \
     LNProjMoveaxisPad
-from tensorrt_bionemo._torch.distributed import (
-    AllReduceParams, get_default_dcp_group_coordinator,
-    get_default_tp_group_coordinator)
-from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
-                                                   WeightMode,
+from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
                                                    WeightsLoadingConfig)
-from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 from ..attention_backend import AttentionMetadata
@@ -64,7 +59,6 @@ class TriangleAttentionNode(nn.Module):
         layer_idx: int = 0,
         dtype: torch.dtype = None,
         chunk_policy: Optional[ChunkPolicy] = None,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
         mha_bias_flags: dict[str, bool] = {
@@ -84,7 +78,6 @@ class TriangleAttentionNode(nn.Module):
             dtype (torch.dtype): data type
             chunk_policy (Optional[ChunkPolicy]): query-row chunking policy; ``None`` uses the
                 shared ``triangle_attention`` policy from ``CHUNK_REGISTRY``.
-            mapping (Mapping): mapping
             skip_create_weights (bool): whether to skip creating weights
             attn_backend (str): attention backend
         """
@@ -94,17 +87,8 @@ class TriangleAttentionNode(nn.Module):
         self.num_heads = num_heads
         self.node_type = node_type
         self.inf = inf
-        self.mapping = mapping or Mapping()
-        self.dcp_size = self.mapping.dcp_size
-        self.dcp_rank = self.mapping.dcp_rank
-        self.tp_size = self.mapping.tp_size
-        self.tp_rank = self.mapping.tp_rank
-        self.gpus_per_node = self.mapping.gpus_per_node
         self.dtype = dtype
         self.attn_backend = attn_backend
-
-        assert self.num_heads % self.tp_size == 0
-        self.num_heads = self.num_heads // self.tp_size
         # Query-row chunking policy (registry default unless overridden). Attention within each row
         # is independent, so row-chunking is numerically identical; bounds the [chunk, J, H, ...]
         # attention temporaries at large N.
@@ -113,12 +97,9 @@ class TriangleAttentionNode(nn.Module):
         self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype)
         self.linear = Linear(
             self.c_in,
-            self.tp_size * self.num_heads,
+            self.num_heads,
             bias=False,
             dtype=dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=skip_create_weights,
         )
 
@@ -126,12 +107,11 @@ class TriangleAttentionNode(nn.Module):
             layer_idx=layer_idx,
             hidden_size=self.c_in,
             head_dim=c_hidden,
-            num_attention_heads=self.num_heads * self.tp_size,
-            num_key_value_heads=self.num_heads * self.tp_size,
+            num_attention_heads=self.num_heads,
+            num_key_value_heads=self.num_heads,
             gating=True,
             bias_flags=mha_bias_flags,
             dtype=dtype,
-            mapping=self.mapping,
             skip_create_weights=skip_create_weights,
             attn_backend=attn_backend,
         )
@@ -139,38 +119,21 @@ class TriangleAttentionNode(nn.Module):
         self.J_padded_multiple = -1
         if self.attn_backend == "CuTeDSL":
             self.J_padded_multiple = 8
-        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(
-            D=self.c_in,
-            H=self.tp_size * self.num_heads,
-            dtype=dtype or torch.bfloat16)
-        self.dcp_group_comm = None
-        if self.dcp_size > 1:
-            self.dcp_group_comm = get_default_dcp_group_coordinator()
-            assert self.dcp_group_comm(
-            ) is not None, "DP group coordinator is not initialized"
+        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(D=self.c_in,
+                                                       H=self.num_heads,
+                                                       dtype=dtype
+                                                       or torch.bfloat16)
 
-    def _dcp_slice(
-            self, x: torch.Tensor,
+    @staticmethod
+    def _ensure_contiguous(
+            x: torch.Tensor,
             mask_bias: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """ Deal with the dcp size > 1 """
-        seq_len = x.shape[1]
-        if self.dcp_size > 1:
-            seq_len = seq_len // self.dcp_size
-            start = self.dcp_rank * seq_len
-            end = (self.dcp_rank + 1) * seq_len
-            x = x[:, start:end, ...]
-            mask_bias = mask_bias[:, start:end, ...]
+        """ The attention kernels require contiguous inputs """
         if not x.is_contiguous():
             x = x.contiguous()
         if not mask_bias.is_contiguous():
             mask_bias = mask_bias.contiguous()
         return x, mask_bias
-
-    def _dcp_gather(self, output: torch.Tensor) -> torch.Tensor:
-        """ Gather the input by dcp size """
-        if self.dcp_size > 1:
-            output = self.dcp_group_comm().all_gather(output, dim=1)
-        return output
 
     def _ensure_dtype(self, x: torch.Tensor,
                       mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -212,14 +175,12 @@ class TriangleAttentionNode(nn.Module):
         mask_bias: torch.Tensor,
         triangle_bias: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """Run MHA for a (possibly row-chunked) slice of ``x``; ``triangle_bias`` is shared."""
         return self.mha(x,
                         biases=[mask_bias, triangle_bias],
                         attn_metadata=attn_metadata,
-                        all_reduce_params=all_reduce_params,
                         buffers=buffers)
 
     def forward(
@@ -228,13 +189,11 @@ class TriangleAttentionNode(nn.Module):
         mask: Optional[torch.Tensor] = None,
         mask_bias: Optional[torch.Tensor] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         buffers: Optional[PreallocatedBuffers] = None,
     ) -> torch.Tensor:
         """
-        Forward pass for the triangle attention node. If dcp_size > 1 and chunk_size,
-        make sure the sequence length is a multiple of chunk_size*dcp_size. Currently,
-        supports only batch_size = 1
+        Forward pass for the triangle attention node. Currently supports only
+        batch_size = 1.
 
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
@@ -264,7 +223,7 @@ class TriangleAttentionNode(nn.Module):
 
         x, triangle_bias = self._prep_bias(x)
 
-        x, mask_bias = self._dcp_slice(x, mask_bias)
+        x, mask_bias = self._ensure_contiguous(x, mask_bias)
         # Row-chunk the query dim (mask_bias slices in lockstep; triangle_bias is shared across
         # rows so it passes through). ``chunk_apply`` falls back to a single dense call below the
         # policy threshold, so small N is unaffected.
@@ -276,16 +235,13 @@ class TriangleAttentionNode(nn.Module):
                                  cat_dim=1,
                                  triangle_bias=triangle_bias,
                                  attn_metadata=attn_metadata,
-                                 all_reduce_params=all_reduce_params,
                                  buffers=buffers)
         else:
             output = self._mha_slice(x,
                                      mask_bias,
                                      triangle_bias,
                                      attn_metadata=attn_metadata,
-                                     all_reduce_params=all_reduce_params,
                                      buffers=buffers)
-        output = self._dcp_gather(output)
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)
         return output
@@ -323,9 +279,7 @@ class TriangleMultiplicationNode(nn.Module):
                 "g_out": False
             },
             dtype: torch.dtype = None,
-            mapping: Optional[Mapping] = None,
             skip_create_weights: bool = False,
-            max_tri_mul_tp_size: bool = False,
             high_precision: bool = True,
             mean_normalization: bool = False,
             pair_mask_left_aligned: bool = True):
@@ -348,43 +302,27 @@ class TriangleMultiplicationNode(nn.Module):
         super().__init__()
         if hidden_dim is None:
             hidden_dim = dim
-        self.mapping = mapping or Mapping()
-        if max_tri_mul_tp_size:
-            self.mapping = create_max_tp_mapping(self.mapping, dim)
-        self.dcp_size = self.mapping.dcp_size
-        self.dcp_rank = self.mapping.dcp_rank
-        self.tp_size = self.mapping.tp_size
-        self.tp_rank = self.mapping.tp_rank
-        self.gpus_per_node = self.mapping.gpus_per_node
         self.dtype = dtype
         self.high_precision = high_precision
         self.mean_normalization = mean_normalization
         self.pair_mask_left_aligned = pair_mask_left_aligned
         self.eps = eps
 
-        self.dim = dim // self.tp_size
-        self.hidden_dim = hidden_dim // self.tp_size
+        self.dim = dim
+        self.hidden_dim = hidden_dim
         self.multiplication_type = multiplication_type
-        self.norm_in = nn.LayerNorm(self.dim * self.tp_size,
-                                    dtype=dtype,
-                                    eps=eps)
-        self.p_in = Linear(self.dim * self.tp_size,
-                           2 * self.hidden_dim * self.tp_size,
+        self.norm_in = nn.LayerNorm(self.dim, dtype=dtype, eps=eps)
+        self.p_in = Linear(self.dim,
+                           2 * self.hidden_dim,
                            bias=bias_flags["p_in"],
                            dtype=dtype,
-                           mapping=self.mapping,
-                           tensor_parallel_mode=TensorParallelMode.COLUMN,
-                           gather_output=False,
                            weights_loading_config=WeightsLoadingConfig(
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
                            skip_create_weights=skip_create_weights)
-        self.g_in = Linear(self.dim * self.tp_size,
-                           2 * self.hidden_dim * self.tp_size,
+        self.g_in = Linear(self.dim,
+                           2 * self.hidden_dim,
                            bias=bias_flags["g_in"],
                            dtype=dtype,
-                           mapping=self.mapping,
-                           tensor_parallel_mode=TensorParallelMode.COLUMN,
-                           gather_output=False,
                            weights_loading_config=WeightsLoadingConfig(
                                weight_mode=WeightMode.FUSED_KV_LINEAR),
                            skip_create_weights=skip_create_weights)
@@ -393,36 +331,19 @@ class TriangleMultiplicationNode(nn.Module):
             self.high_precision_dtype = torch.float32
         else:
             self.high_precision_dtype = dtype
-        self.norm_out = nn.LayerNorm(self.hidden_dim * self.tp_size,
+        self.norm_out = nn.LayerNorm(self.hidden_dim,
                                      dtype=self.high_precision_dtype,
                                      eps=eps)
-        self.p_out = Linear(self.hidden_dim * self.tp_size,
-                            self.dim * self.tp_size,
+        self.p_out = Linear(self.hidden_dim,
+                            self.dim,
                             bias=bias_flags["p_out"],
                             dtype=self.high_precision_dtype,
-                            mapping=self.mapping,
-                            tensor_parallel_mode=TensorParallelMode.COLUMN,
-                            gather_output=True,
                             skip_create_weights=skip_create_weights)
-        self.g_out = Linear(self.dim * self.tp_size,
-                            self.dim * self.tp_size,
+        self.g_out = Linear(self.dim,
+                            self.dim,
                             bias=bias_flags["g_out"],
                             dtype=self.high_precision_dtype,
-                            mapping=self.mapping,
-                            tensor_parallel_mode=TensorParallelMode.COLUMN,
-                            gather_output=True,
                             skip_create_weights=skip_create_weights)
-
-        self.tp_group_comm = None
-        self.dcp_group_comm = None
-        if self.tp_size > 1:
-            self.tp_group_comm = get_default_tp_group_coordinator()
-            assert self.tp_group_comm(
-            ) is not None, "TP group coordinator is not initialized"
-        if self.dcp_size > 1:
-            self.dcp_group_comm = get_default_dcp_group_coordinator()
-            assert self.dcp_group_comm(
-            ) is not None, "DP group coordinator is not initialized"
 
         # TODO: Make this threshold configurable
         self._forward_impl_v2_threshold = 384
@@ -453,88 +374,11 @@ class TriangleMultiplicationNode(nn.Module):
             K=self.dim,
             pair_mask_left_aligned=self.pair_mask_left_aligned)
 
-    def _dcp_slice(self, x: torch.Tensor,
-                   mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """ Slice the input by dcp size """
-        seq_len = x.shape[1]
-        if self.dcp_size > 1:
-            seq_len = seq_len // self.dcp_size
-            st = self.dcp_rank * seq_len
-            et = (self.dcp_rank + 1) * seq_len
-            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                x = x[:, st:et, ...]
-                mask = mask[:, st:et, ...]
-            elif self.multiplication_type == TriangleMultiplicationNodeType.INCOMING:
-                x = x[:, :, st:et, ...]
-                mask = mask[:, :, st:et]
-            x = x.contiguous()
-            mask = mask.contiguous()
-        return x, mask
-
-    def _dcp_gather(self, x: torch.Tensor) -> torch.Tensor:
-        """ Gather the input by dcp size """
-        if self.dcp_size > 1:
-            gather_dim = 1 if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else 2
-            self.dcp_group_comm().barrier()
-            x = self.dcp_group_comm().all_gather(x, dim=gather_dim)
-        return x
-
-    def _tp_gather(self, x: torch.Tensor) -> torch.Tensor:
-        """ Gather the input by tp size """
-        if self.tp_size > 1:
-            self.tp_group_comm().barrier()
-            x = self.tp_group_comm().all_gather(x)
-        return x
-
-    def _ring_einsum_compute(self, a: torch.Tensor,
-                             b: torch.Tensor) -> torch.Tensor:
-        """ Compute the enisum operation in a ring manner """
-
-        def _einsum_compute(a_, b_):
-            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                return torch.einsum("bikd,bjkd->bijd", a_, b_)
-            else:
-                return torch.einsum("bkid,bkjd->bijd", a_, b_)
-
-        # Ring communication
-        if self.dcp_size > 1:
-            a = a.contiguous()
-            b = b.contiguous()
-            enisum_results = [
-                None,
-            ] * self.dcp_size
-            enisum_results[self.dcp_rank] = _einsum_compute(a, b)
-            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                b_recv = torch.zeros_like(b)
-                buffers = [b, b_recv]  # double buffers
-                send_idx = 0
-                recv_idx = 1
-                for i in range(1, self.dcp_size):
-                    self.dcp_group_comm().batch_isend_irecv(
-                        buffers[send_idx], buffers[recv_idx])
-                    enisum_results[(self.dcp_rank - i) %
-                                   self.dcp_size] = _einsum_compute(
-                                       a, buffers[recv_idx])
-                    recv_idx = send_idx
-                    send_idx = (send_idx + 1) % 2
-                x = torch.cat(enisum_results, dim=2)
-            else:
-                a_recv = torch.zeros_like(a)
-                buffers = [a, a_recv]  # double buffers
-                send_idx = 0
-                recv_idx = 1
-                for i in range(1, self.dcp_size):
-                    self.dcp_group_comm().batch_isend_irecv(
-                        buffers[send_idx], buffers[recv_idx])
-                    enisum_results[(self.dcp_rank - i) %
-                                   self.dcp_size] = _einsum_compute(
-                                       buffers[recv_idx], b)
-                    recv_idx = send_idx
-                    send_idx = (send_idx + 1) % 2
-                x = torch.cat(enisum_results, dim=1)
-        else:
-            x = _einsum_compute(a, b)
-        return x
+    def _einsum_compute(self, a: torch.Tensor,
+                        b: torch.Tensor) -> torch.Tensor:
+        if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+            return torch.einsum("bikd,bjkd->bijd", a, b)
+        return torch.einsum("bkid,bkjd->bijd", a, b)
 
     def _ensure_dtype(self, x: torch.Tensor) -> torch.Tensor:
         """ Ensure the dtype of the input """
@@ -554,31 +398,11 @@ class TriangleMultiplicationNode(nn.Module):
             actual_seqlen (Optional[torch.Tensor]): precomputed ``int32[B, I]``
                 per-row valid-J count for the CuTe dual_gemm_x_x backend
                 (same as ``actual_s_kv`` from CuTeDSL precompute).
-                Under DCP: OUTGOING slices it on I to match the sliced
-                rows; INCOMING (slices on J) drops it and lets the wrapper
-                recompute from the sliced ``mask``.
         """
         x = self._ensure_dtype(x)
         x = self.norm_in(x)
 
-        x, mask = self._dcp_slice(x, mask)
-        # ``actual_seqlen[b, i] = mask[b, i, :].sum()``; align it with the
-        # DCP-sliced mask:
-        #   * OUTGOING slices on I -> slice ``actual_seqlen`` on dim 1
-        #     (per-row counts on the kept I rows are unchanged).
-        #   * INCOMING slices on J -> per-(b, i) J counts shrink, so the
-        #     precomputed value no longer matches; let the dual_gemm
-        #     wrapper recompute from the sliced ``mask``.
         dg_actual_seqlen = actual_seqlen
-        if dg_actual_seqlen is not None and self.dcp_size > 1:
-            if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-                seq_len_full = dg_actual_seqlen.shape[1]
-                shard = seq_len_full // self.dcp_size
-                st = self.dcp_rank * shard
-                et = (self.dcp_rank + 1) * shard
-                dg_actual_seqlen = dg_actual_seqlen[:, st:et].contiguous()
-            else:
-                dg_actual_seqlen = None
         x_in = x
         x = self._dual_gemm_x_x_op(x,
                                    self.g_in.weight,
@@ -595,17 +419,13 @@ class TriangleMultiplicationNode(nn.Module):
             # mask is [B, I, J] where 1.0=valid; any row gives the valid count.
             n_valid = mask[:, 0, :].sum(dim=-1)  # [B]
             b = b / (n_valid[:, None, None, None] + 1e-3)
-        x = self._ring_einsum_compute(a, b)
-        # need to gather here for LayerNorm
-
-        x = self._tp_gather(x)
+        x = self._einsum_compute(a, b)
         x_0_out = self.norm_out(x)
         x_1_out = x_in.to(self.high_precision_dtype)
 
         x = self._dual_gemm_x0_x1_op(x_1_out, x_0_out, self.g_out.weight,
                                      self.p_out.weight, self.g_out.bias,
                                      self.p_out.bias)
-        x = self._dcp_gather(x)
         x = self._ensure_dtype(x)
         return x
 
@@ -614,16 +434,13 @@ class TriangleMultiplicationNode(nn.Module):
             x: torch.Tensor,
             mask: torch.Tensor,
             actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """ This version is used for long sequences and int the compile mode.
-        Distributed is not supported yet.
+        """ This version is used for long sequences and in the compile mode.
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
             actual_seqlen (Optional[torch.Tensor]): precomputed ``int32[B, I]``
                 per-row valid-J count for the CuTe dual_gemm_x_x backend
-                (same as ``actual_s_kv`` from CuTeDSL precompute). v2 does
-                not slice for DCP (distributed unsupported), so the value
-                is always safe to forward when supplied.
+                (same as ``actual_s_kv`` from CuTeDSL precompute).
         """
         x = self._ensure_dtype(x)
         x = layer_norm_transpose(x,
@@ -678,8 +495,7 @@ class TriangleMultiplicationNode(nn.Module):
             mask: torch.Tensor,
             actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
         seq_len = x.shape[-2]
-        is_distributed = self.dcp_size > 1 or self.tp_size > 1
-        if seq_len < self._forward_impl_v2_threshold or is_distributed:
+        if seq_len < self._forward_impl_v2_threshold:
             return self._forward_impl_v1(x, mask, actual_seqlen=actual_seqlen)
         return self._forward_impl_v2(x, mask, actual_seqlen=actual_seqlen)
 

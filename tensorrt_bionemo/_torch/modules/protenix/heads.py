@@ -14,13 +14,10 @@
 # limitations under the License.
 """Protenix prediction heads."""
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo.mapping import Mapping
 
 
 class ProtenixDistogramHead(nn.Module):
@@ -35,7 +32,6 @@ class ProtenixDistogramHead(nn.Module):
                  c_z: int,
                  no_bins: int = 64,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False) -> None:
         super().__init__()
         self.c_z = c_z

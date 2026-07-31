@@ -25,7 +25,6 @@ from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
 from tensorrt_bionemo._torch.layers.transition import (
     ConditionedTransitionBlock, Transition)
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
@@ -165,10 +164,7 @@ def test_transition_auto_chunk(torch_dtype: str, chunk_rows: int):
     dim, hidden, n = 128, 512, 64
 
     policy = ChunkPolicy(chunk_size=chunk_rows, min_size=1, dim=1, min_rank=4)
-    transition = Transition(dim,
-                            hidden,
-                            dtype=dtype,
-                            mapping=Mapping(),
+    transition = Transition(dim, hidden, dtype=dtype,
                             auto_chunk_policy=policy).to(device)
     transition.eval()
     # Constructed weights are zero-initialized (production loads them); give them real values so

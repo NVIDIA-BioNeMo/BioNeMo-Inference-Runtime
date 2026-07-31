@@ -38,7 +38,6 @@ from test_utils.openfold.ref_layers import (
     RefRecyclingEmbedder, RefTemplatePairStackBlock,
     RefTemplatePointwiseAttention)
 # isort: on
-from tensorrt_bionemo.mapping import Mapping
 
 
 def create_msa_attention_weights(c_in=None,
@@ -138,14 +137,11 @@ def load_msa_attention_weights_torch(module, weights_and_biases):
 
 def load_msa_attention_weights_trt(module,
                                    weights_and_biases,
-                                   using_tri_attn: bool = True,
-                                   mapping: Mapping = None):
-    mapping = mapping or Mapping()
+                                   using_tri_attn: bool = True):
     layer_norm_m_weight, layer_norm_m_bias, layer_norm_z_weight, layer_norm_z_bias, linear_z_weight, mha_weights = weights_and_biases
 
     assert using_tri_attn, "Using tri attn is not supported yet for trt"
-    load_triangle_attention_weights_trt(module.mha, mha_weights,
-                                        mapping.tp_size, mapping.tp_rank)
+    load_triangle_attention_weights_trt(module.mha, mha_weights)
     module.layer_norm_m.weight.value = np.ascontiguousarray(
         layer_norm_m_weight.cpu().numpy())
     module.layer_norm_m.bias.value = np.ascontiguousarray(
@@ -198,10 +194,7 @@ def load_msa_transition_weights_torch(module, weights_and_biases):
     }])
 
 
-def load_msa_transition_weights_trt(module,
-                                    weights_and_biases,
-                                    mapping: Mapping = None):
-    mapping = mapping or Mapping()
+def load_msa_transition_weights_trt(module, weights_and_biases):
     layer_norm_weight, layer_norm_bias, linear_1_weight, linear_1_bias, linear_2_weight, linear_2_bias = weights_and_biases
     module.layer_norm.weight.value = np.ascontiguousarray(
         layer_norm_weight.cpu().numpy())
@@ -255,10 +248,7 @@ def load_pair_transition_weights_torch(module, weights_and_biases):
     }])
 
 
-def load_pair_transition_weights_trt(module,
-                                     weights_and_biases,
-                                     mapping: Mapping = None):
-    mapping = mapping or Mapping()
+def load_pair_transition_weights_trt(module, weights_and_biases):
     layer_norm_weight, layer_norm_bias, linear_1_weight, linear_1_bias, linear_2_weight, linear_2_bias = weights_and_biases
     module.layer_norm.weight.value = np.ascontiguousarray(
         layer_norm_weight.cpu().numpy())
@@ -342,31 +332,26 @@ def load_evoformer_block_weights_torch(module, weights_and_biases):
                                        pair_transition_weights)
 
 
-def load_evoformer_block_weights_trt(module,
-                                     weights_and_biases,
-                                     mapping: Mapping = None):
-    mapping = mapping or Mapping()
+def load_evoformer_block_weights_trt(module, weights_and_biases):
     msa_att_row_weights, msa_att_col_weights, msa_transition_weights, outer_product_mean_weights, \
             tri_mul_out_weights, tri_mul_in_weights, tri_attn_start_weights, tri_attn_end_weights, pair_transition_weights = weights_and_biases
 
-    load_msa_attention_weights_trt(module.msa_att_row, msa_att_row_weights,
-                                   mapping)
-    load_msa_attention_weights_trt(module.msa_att_col, msa_att_col_weights,
-                                   mapping)
+    load_msa_attention_weights_trt(module.msa_att_row, msa_att_row_weights)
+    load_msa_attention_weights_trt(module.msa_att_col, msa_att_col_weights)
     load_msa_transition_weights_trt(module.msa_transition,
-                                    msa_transition_weights, mapping)
+                                    msa_transition_weights)
     load_outer_product_mean_weights_trt(module.outer_product_mean,
-                                        outer_product_mean_weights, mapping)
+                                        outer_product_mean_weights)
     load_triangle_multiplication_node_weights_trt(module.tri_mul_out,
-                                                  tri_mul_out_weights, mapping)
+                                                  tri_mul_out_weights)
     load_triangle_multiplication_node_weights_trt(module.tri_mul_in,
-                                                  tri_mul_in_weights, mapping)
+                                                  tri_mul_in_weights)
     load_triangle_attention_node_weights_trt(module.tri_attn_start,
-                                             tri_attn_start_weights, mapping)
+                                             tri_attn_start_weights)
     load_triangle_attention_node_weights_trt(module.tri_attn_end,
-                                             tri_attn_end_weights, mapping)
+                                             tri_attn_end_weights)
     load_pair_transition_weights_trt(module.pair_transition,
-                                     pair_transition_weights, mapping)
+                                     pair_transition_weights)
 
 
 def create_msa_global_attention_weights(

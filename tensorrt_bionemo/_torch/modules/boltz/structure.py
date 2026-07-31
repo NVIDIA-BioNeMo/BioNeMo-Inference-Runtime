@@ -20,7 +20,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.graph_optimization.config import (
     GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
 from tensorrt_bionemo._torch.graph_optimization.decorator import (
@@ -28,11 +27,12 @@ from tensorrt_bionemo._torch.graph_optimization.decorator import (
 from tensorrt_bionemo._torch.layers.attention import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import (PairwiseConditioning,
                                                          SingleConditioning)
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.noise_scheduler import (
     SampleDiffusion, create_noise_schedule)
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
-from tensorrt_bionemo._torch.layers.random_augmentation import random_rotations
+from tensorrt_bionemo._torch.layers.random_augmentation import \
+    compute_random_augmentation
 from tensorrt_bionemo._torch.layers.transformers.atom import (
     AtomAttentionDecoder, AtomAttentionEncoder)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
@@ -50,11 +50,10 @@ from tensorrt_bionemo._torch.utils import (commit_graph_safe_generator,
                                            make_graph_safe_generator,
                                            recursive_calling_load_weights)
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
     num_pocket_contact_info, num_tokens)
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
-from tensorrt_bionemo._torch.layers.random_augmentation import compute_random_augmentation
+
 
 class DiffusionConditioning(nn.Module):
 
@@ -82,7 +81,6 @@ class DiffusionConditioning(nn.Module):
         dtype: torch.dtype = torch.float32,
         pairwise_conditioner_dtype: Optional[torch.dtype] = None,
         token_trans_bias_dtype: Optional[torch.dtype] = None,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ) -> None:
         super().__init__()
@@ -102,7 +100,6 @@ class DiffusionConditioning(nn.Module):
             num_transitions=conditioning_transition_layers,
             eps=eps,
             dtype=pairwise_conditioner_dtype or dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
         )
 
@@ -120,7 +117,6 @@ class DiffusionConditioning(nn.Module):
             use_residue_feats_atoms=use_residue_feats_atoms,
             version=version,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
         )
 
@@ -270,7 +266,7 @@ class DiffusionModule(nn.Module):
         config: BaseConfig = None,
     ) -> None:
         super().__init__()
-        # Set the dtype and mapping for the token transformer
+        # Set the dtype for the token transformer
         self.dtype = config.torch_dtype
 
         # Ensure the dtype is consistent for all the modules
@@ -278,7 +274,6 @@ class DiffusionModule(nn.Module):
         assert self.dtype == config.atom_decoder.torch_dtype, f"DiffusionModule dtype: {self.dtype}, atom_decoder dtype: {config.atom_decoder.torch_dtype}"
         assert self.dtype == config.token_transformer.torch_dtype, f"DiffusionModule dtype: {self.dtype}, token_transformer dtype: {config.token_transformer.torch_dtype}"
 
-        mapping = config.mapping
         skip_create_weights = config.skip_create_weights
         eps = config.norm_epsilon
 
@@ -297,7 +292,6 @@ class DiffusionModule(nn.Module):
             additional_input_dim=additional_input_dim,
             eps=eps,
             dtype=self.dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
         self.atom_attention_encoder = AtomAttentionEncoder(
             atom_s=config.atom_s,
@@ -309,7 +303,6 @@ class DiffusionModule(nn.Module):
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             version=config.version,
             dtype=config.atom_encoder.torch_dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
         self.s_to_a_linear = nn.Sequential(
@@ -318,9 +311,6 @@ class DiffusionModule(nn.Module):
                    2 * config.token_s,
                    bias=False,
                    dtype=self.dtype,
-                   mapping=mapping,
-                   tensor_parallel_mode=TensorParallelMode.COLUMN,
-                   gather_output=True,
                    skip_create_weights=config.skip_create_weights))
 
         self.token_transformer = BoltzDiffusionTransformer(
@@ -338,7 +328,6 @@ class DiffusionModule(nn.Module):
             diffusion_transformer_config=config.atom_decoder,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             dtype=config.atom_decoder.torch_dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
     def forward(
@@ -352,7 +341,6 @@ class DiffusionModule(nn.Module):
         times: torch.Tensor,
         diffusion_conditioning_kwargs: dict[str, torch.Tensor],
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ):
         """
         Note:
@@ -385,8 +373,6 @@ class DiffusionModule(nn.Module):
                 - atom_dec_bias: (B, N, atom_decoder_heads)
             attn_metadata: Optional[AttentionMetadata]
                 The attention metadata.
-            all_reduce_params: Optional[AllReduceParams]
-                The all reduce parameters.
         Returns:
             r_update: (B, multiplicity, N_atoms, 3)
                 The updated atom coordinates.
@@ -424,7 +410,6 @@ class DiffusionModule(nn.Module):
             bias=atom_enc_bias,
             r=r_noisy.to(self.dtype),
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
             buffers=buffers,
         )
         # a: [B, multiplicity, N_res, 2 * token_s]
@@ -444,22 +429,19 @@ class DiffusionModule(nn.Module):
             z=token_trans_bias,
             mask=mask,
             attn_metadata=token_transformer_attn_metadata,
-            all_reduce_params=all_reduce_params,
             buffers=buffers,
         )
         a = self.a_norm(a)
 
         # Broadcast token activations to atoms and run Sequence-local Atom Attention
-        r_update = self.atom_attention_decoder(
-            atom_to_token=atom_to_token,
-            atom_pad_mask=atom_pad_mask,
-            a=a,
-            q=q_skip,
-            c=c_skip,
-            bias=atom_dec_bias,
-            attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
-            buffers=buffers)
+        r_update = self.atom_attention_decoder(atom_to_token=atom_to_token,
+                                               atom_pad_mask=atom_pad_mask,
+                                               a=a,
+                                               q=q_skip,
+                                               c=c_skip,
+                                               bias=atom_dec_bias,
+                                               attn_metadata=attn_metadata,
+                                               buffers=buffers)
 
         return r_update, a
 
@@ -473,7 +455,6 @@ class OutTokenFeatUpdate(nn.Module):
         token_s=384,
         dim_fourier=256,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """Initialize the Output token feature update for confidence model.
@@ -493,15 +474,12 @@ class OutTokenFeatUpdate(nn.Module):
         self.sigma_data = sigma_data
         self.dtype = dtype
         self.norm_next = nn.LayerNorm(2 * token_s, dtype=dtype)
-        self.fourier_embed = FourierEmbedding(dim_fourier,
-                                              dtype=dtype,
-                                              mapping=mapping)
+        self.fourier_embed = FourierEmbedding(dim_fourier, dtype=dtype)
         self.norm_fourier = nn.LayerNorm(dim_fourier, dtype=dtype)
         self.transition_block = ConditionedTransitionBlock(
             2 * token_s,
             2 * token_s + dim_fourier,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights)
 
     def forward(
@@ -509,7 +487,6 @@ class OutTokenFeatUpdate(nn.Module):
         times: torch.Tensor,
         acc_a: torch.Tensor,
         next_a: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ):
         """
         Args:
@@ -530,8 +507,7 @@ class OutTokenFeatUpdate(nn.Module):
             -1, -1, next_a.shape[2], -1))
         cond_a = torch.cat((acc_a, normed_fourier), dim=-1)
 
-        acc_a = acc_a + self.transition_block(
-            next_a, cond_a, all_reduce_params=all_reduce_params)
+        acc_a = acc_a + self.transition_block(next_a, cond_a)
 
         return acc_a
 
@@ -809,7 +785,6 @@ class AtomDiffusion(SampleDiffusion):
                 token_s=self.token_s,
                 dim_fourier=self.dim_fourier,
                 dtype=config.torch_dtype,
-                mapping=config.mapping,
                 skip_create_weights=config.skip_create_weights,
             )
 
@@ -852,7 +827,6 @@ class AtomDiffusion(SampleDiffusion):
         network_condition_kwargs: dict[str, torch.Tensor],
         multiplicity: int = 1,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         batch, device = noised_atom_coords.shape[0], noised_atom_coords.device
 
@@ -873,7 +847,6 @@ class AtomDiffusion(SampleDiffusion):
             token_pad_mask=feature_dict["token_pad_mask"],
             diffusion_conditioning_kwargs=network_condition_kwargs,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
         )
         # token_a: [B, mult, N_tokens, dim]
         if self.version == "v2":
@@ -907,7 +880,6 @@ class AtomDiffusion(SampleDiffusion):
         network_condition_kwargs: dict[str, torch.Tensor] = None,
         feature_dict: dict[str, torch.Tensor] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> dict[str, torch.Tensor]:
         """
         Sample the structure from the diffusion model.
@@ -973,9 +945,8 @@ class AtomDiffusion(SampleDiffusion):
 
         # atom position is noise at the beginning
         init_sigma = sigmas[0]
-        atom_coords = init_sigma * torch.randn(coords_shape,
-                                               device=self.device,
-                                               generator=generator)
+        atom_coords = init_sigma * torch.randn(
+            coords_shape, device=self.device, generator=generator)
         token_repr = None
         token_a = None
         atom_coords_denoised = None
@@ -1021,9 +992,8 @@ class AtomDiffusion(SampleDiffusion):
             t_hat = sigma_tm * (1 + gamma)
             steering_t = 1.0 - (step_idx / num_sampling_steps)
             noise_var = self.noise_scale**2 * (t_hat**2 - sigma_tm**2)
-            eps = sqrt(noise_var) * torch.randn(coords_shape,
-                                                device=self.device,
-                                                generator=generator)
+            eps = sqrt(noise_var) * torch.randn(
+                coords_shape, device=self.device, generator=generator)
             atom_coords_noisy = atom_coords + eps
 
             with torch.no_grad():
@@ -1045,7 +1015,6 @@ class AtomDiffusion(SampleDiffusion):
                         network_condition_kwargs=network_condition_kwargs,
                         multiplicity=sample_ids_chunk.numel(),
                         attn_metadata=attn_metadata,
-                        all_reduce_params=all_reduce_params,
                     )
                     atom_coords_denoised[:,
                                          sample_ids_chunk] = atom_coords_denoised_chunk

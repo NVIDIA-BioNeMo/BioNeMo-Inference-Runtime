@@ -20,13 +20,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerNoSeqModule
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 
 
 class TemplateV2Module(nn.Module):
@@ -44,7 +42,6 @@ class TemplateV2Module(nn.Module):
     def __init__(self, config: BaseConfig) -> None:
         super().__init__()
         self.config = config
-        self.mapping = config.mapping or Mapping()
         self.dtype = config.torch_dtype
 
         self.token_z = config.token_z
@@ -70,26 +67,17 @@ class TemplateV2Module(nn.Module):
                              self.template_dim,
                              bias=False,
                              dtype=self.dtype,
-                             mapping=self.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
         a_in = self.num_tokens * 2 + self.num_bins + 5
         self.a_proj = Linear(a_in,
                              self.template_dim,
                              bias=False,
                              dtype=self.dtype,
-                             mapping=self.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
         self.u_proj = Linear(self.template_dim,
                              self.token_z,
                              bias=False,
                              dtype=self.dtype,
-                             mapping=self.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
         self.pairformer = PairformerNoSeqModule(
@@ -100,7 +88,6 @@ class TemplateV2Module(nn.Module):
             dtype=config.pairformer.torch_dtype,
             eps=config.norm_epsilon,
             inf=config.mask_inf,
-            mapping=self.mapping,
             triangle_attn_backend=config.pairformer.triangle_attention_backend,
             skip_create_weights=skip_create_weights,
             attention_initial_norm=config.pairformer.attention_initial_norm,
@@ -131,7 +118,6 @@ class TemplateV2Module(nn.Module):
         feats: dict[str, torch.Tensor],
         pair_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         """Compute the template update for the pair representation.
 
@@ -144,7 +130,6 @@ class TemplateV2Module(nn.Module):
             pair_mask: Pair mask of shape ``(B, N, N)``.
             attn_metadata: Optional attention metadata forwarded to the
                 inner pairformer's triangle attention.
-            all_reduce_params: Optional all-reduce parameters for TP.
 
         Returns:
             Pair update tensor of shape ``(B, N, N, token_z)``.
@@ -225,8 +210,7 @@ class TemplateV2Module(nn.Module):
         v = v + self.pairformer(
             v,
             pair_mask_t.to(inner_dtype),
-            attn_metadatas={"triangle_attn": attn_metadata},
-            all_reduce_params=all_reduce_params)
+            attn_metadatas={"triangle_attn": attn_metadata})
         v = self.v_norm(v)
         v = v.view(B, T, N, N, self.template_dim)
 

@@ -19,14 +19,12 @@ import torch
 from torch import nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.conditioning import ContactConditioning
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
     bond_types, chain_type_ids, contact_conditioning_info,
     num_pocket_contact_info, num_tokens)
@@ -44,7 +42,6 @@ class Boltz2ConfidenceHeads(nn.Module):
         self,
         config: BaseConfig = None,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
         **kwargs,
     ):
@@ -73,18 +70,12 @@ class Boltz2ConfidenceHeads(nn.Module):
                 config.num_pae_bins,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
             self.to_pae_inter_logits = Linear(
                 config.token_z,
                 config.num_pae_bins,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
         else:
             self.to_pae_logits = Linear(
@@ -92,9 +83,6 @@ class Boltz2ConfidenceHeads(nn.Module):
                 config.num_pae_bins,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
 
         if self.use_separate_heads:
@@ -103,18 +91,12 @@ class Boltz2ConfidenceHeads(nn.Module):
                 config.num_pde_bins,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
             self.to_pde_inter_logits = Linear(
                 config.token_z,
                 config.num_pde_bins,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
         else:
             self.to_pde_logits = Linear(
@@ -122,9 +104,6 @@ class Boltz2ConfidenceHeads(nn.Module):
                 config.num_pde_bins,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
 
         if self.token_level_confidence:
@@ -133,18 +112,12 @@ class Boltz2ConfidenceHeads(nn.Module):
                 config.num_plddt_bins,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
             self.to_resolved_logits = Linear(
                 config.token_s,
                 2,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
         else:
             self.to_plddt_logits = Linear(
@@ -152,18 +125,12 @@ class Boltz2ConfidenceHeads(nn.Module):
                 config.num_plddt_bins * self.max_num_atoms_per_token,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
             self.to_resolved_logits = Linear(
                 config.token_s,
                 2 * self.max_num_atoms_per_token,
                 bias=False,
                 dtype=dtype,
-                mapping=mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=skip_create_weights)
 
     def load_weights(self, weights: dict):
@@ -377,7 +344,6 @@ class Boltz2ConfidenceModule(nn.Module):
         self,
         config: BaseConfig = None,
         dtype: Optional[torch.dtype] = None,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
         **kwargs,
     ):
@@ -392,7 +358,6 @@ class Boltz2ConfidenceModule(nn.Module):
                                                     config.token_z)
 
         self.dtype = dtype
-        self.mapping = mapping
         self.skip_create_weights = skip_create_weights
 
         self.token_level_confidence = config.token_level_confidence
@@ -403,9 +368,6 @@ class Boltz2ConfidenceModule(nn.Module):
                              self.token_z,
                              bias=False,
                              dtype=self.dtype,
-                             mapping=self.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=self.skip_create_weights)
 
         self.s_to_z_transpose = Linear(
@@ -413,9 +375,6 @@ class Boltz2ConfidenceModule(nn.Module):
             self.token_z,
             bias=False,
             dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.skip_create_weights)
 
         self.add_s_to_z_prod = config.add_s_to_z_prod
@@ -425,27 +384,18 @@ class Boltz2ConfidenceModule(nn.Module):
                 self.token_z,
                 bias=False,
                 dtype=self.dtype,
-                mapping=self.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.skip_create_weights)
             self.s_to_z_prod_in2 = Linear(
                 self.token_s,
                 self.token_z,
                 bias=False,
                 dtype=self.dtype,
-                mapping=self.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.skip_create_weights)
             self.s_to_z_prod_out = Linear(
                 self.token_z,
                 self.token_z,
                 bias=False,
                 dtype=self.dtype,
-                mapping=self.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.skip_create_weights)
 
         self.s_inputs_norm = nn.LayerNorm(self.token_s,
@@ -466,9 +416,6 @@ class Boltz2ConfidenceModule(nn.Module):
                 self.token_s,
                 bias=False,
                 dtype=self.dtype,
-                mapping=self.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.skip_create_weights)
 
         self.add_z_input_to_z = config.add_z_input_to_z
@@ -480,7 +427,6 @@ class Boltz2ConfidenceModule(nn.Module):
                 period_broadcast=config.relative_position_encoder.
                 period_broadcast,
                 dtype=self.dtype,
-                mapping=self.mapping,
                 skip_create_weights=self.skip_create_weights)
             self.token_bonds = Linear(
                 1 if config.maximum_bond_distance == 0 else
@@ -488,9 +434,6 @@ class Boltz2ConfidenceModule(nn.Module):
                 self.token_z,
                 bias=False,
                 dtype=self.dtype,
-                mapping=self.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.skip_create_weights)
 
             self.bond_type_feature = config.bond_type_feature
@@ -504,7 +447,6 @@ class Boltz2ConfidenceModule(nn.Module):
                 cutoff_max=config.conditioning_cutoff_max,
                 contact_conditioning_info=contact_conditioning_info,
                 dtype=self.dtype,
-                mapping=self.mapping,
                 skip_create_weights=self.skip_create_weights)
 
         self.pairformer_stack = PairformerModule(config=config.pairformer)
@@ -514,7 +456,6 @@ class Boltz2ConfidenceModule(nn.Module):
         self.confidence_heads = Boltz2ConfidenceHeads(
             config=config.confidence_heads,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights)
 
     def load_weights(self, weights: dict = None):
@@ -567,8 +508,7 @@ class Boltz2ConfidenceModule(nn.Module):
                 multiplicity=1,
                 max_parallel_samples: int = 1,
                 run_sequentially=True,
-                attn_metadata: Optional[AttentionMetadata] = None,
-                all_reduce_params: Optional[AllReduceParams] = None):
+                attn_metadata: Optional[AttentionMetadata] = None):
         """
         Inputs:
         s_inputs: (Batch_size, N_atoms, token_s)
@@ -688,13 +628,11 @@ class Boltz2ConfidenceModule(nn.Module):
                 x_pred_chunk, s, z, feats, token_to_rep_atom,
                 current_multiplicity)
 
-            s_t, z_t = self.pairformer_stack(
-                s_t,
-                z_t,
-                mask=mask,
-                pair_mask=pair_mask,
-                attn_metadata=attn_metadata,
-                all_reduce_params=all_reduce_params)
+            s_t, z_t = self.pairformer_stack(s_t,
+                                             z_t,
+                                             mask=mask,
+                                             pair_mask=pair_mask,
+                                             attn_metadata=attn_metadata)
             s_t = s_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             z_t = z_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             out_dict = {}
@@ -744,27 +682,18 @@ class Boltz1ConfidenceHeads(nn.Module):
             self.num_pde_bins,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
         self.to_plddt_logits = Linear(
             self.token_s,
             self.num_plddt_bins,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
         self.to_resolved_logits = Linear(
             self.token_s,
             2,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
         if self.config.compute_pae:
             self.to_pae_logits = Linear(
@@ -772,9 +701,6 @@ class Boltz1ConfidenceHeads(nn.Module):
                 self.num_pae_bins,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                mapping=self.config.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.config.skip_create_weights)
 
     def _compute_pde(self, z):
@@ -933,9 +859,6 @@ class Boltz1ConfidenceModule(nn.Module):
             self.token_s,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
 
         self.s_to_z = Linear(
@@ -943,18 +866,12 @@ class Boltz1ConfidenceModule(nn.Module):
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
         self.s_to_z_transpose = Linear(
             self.s_input_dim,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
 
         self.add_s_to_z_prod = self.config.add_s_to_z_prod
@@ -964,27 +881,18 @@ class Boltz1ConfidenceModule(nn.Module):
                 self.token_z,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                mapping=self.config.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.config.skip_create_weights)
             self.s_to_z_prod_in2 = Linear(
                 self.s_input_dim,
                 self.token_z,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                mapping=self.config.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.config.skip_create_weights)
             self.s_to_z_prod_out = Linear(
                 self.token_z,
                 self.token_z,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                mapping=self.config.mapping,
-                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                gather_output=True,
                 skip_create_weights=self.config.skip_create_weights)
 
         self.s_init = Linear(
@@ -992,27 +900,18 @@ class Boltz1ConfidenceModule(nn.Module):
             self.token_s,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
         self.z_init_1 = Linear(
             self.s_input_dim,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
         self.z_init_2 = Linear(
             self.s_input_dim,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
 
         self.input_embedder = Boltz1InputEmbedder(self.input_embedder_config)
@@ -1022,16 +921,12 @@ class Boltz1ConfidenceModule(nn.Module):
             cyclic_pos_enc=True,
             period_broadcast=True,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
             skip_create_weights=self.config.skip_create_weights)
         self.token_bonds = Linear(
             1,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
 
         # Normalization layers
@@ -1048,18 +943,12 @@ class Boltz1ConfidenceModule(nn.Module):
             self.token_s,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
         self.z_recycle = Linear(
             self.token_z,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            mapping=self.config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.config.skip_create_weights)
 
         self.msa_module = MSAModule(self.msa_module_config)
@@ -1128,8 +1017,7 @@ class Boltz1ConfidenceModule(nn.Module):
         multiplicity: int = 1,
         s_diffusion: Optional[torch.Tensor] = None,
         max_parallel_samples: Optional[int] = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+        attn_metadata: Optional[AttentionMetadata] = None
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass for the confidence module with imitate_trunk=True.
@@ -1180,8 +1068,7 @@ class Boltz1ConfidenceModule(nn.Module):
 
         s_inputs = self.input_embedder(**self.get_module_feed_dict(
             feature_dict, "input_embedder"),
-                                       attn_metadata=attn_metadata,
-                                       all_reduce_params=all_reduce_params)
+                                       attn_metadata=attn_metadata)
         s_init = self.s_init(s_inputs)
         z_init = (self.z_init_1(s_inputs)[:, :, None] +
                   self.z_init_2(s_inputs)[:, None, :])
@@ -1256,15 +1143,12 @@ class Boltz1ConfidenceModule(nn.Module):
                 z=z_chunk,
                 emb=s_inputs_chunk,
                 token_pad_mask=pair_mask,
-                **self.get_module_feed_dict(feature_dict, "msa_module"),
-                all_reduce_params=all_reduce_params)
+                **self.get_module_feed_dict(feature_dict, "msa_module"))
 
-            s_chunk, z_chunk = self.pairformer_module(
-                s=s_chunk,
-                z=z_chunk,
-                mask=mask,
-                pair_mask=pair_mask,
-                all_reduce_params=all_reduce_params)
+            s_chunk, z_chunk = self.pairformer_module(s=s_chunk,
+                                                      z=z_chunk,
+                                                      mask=mask,
+                                                      pair_mask=pair_mask)
 
             # Recover dtype for the final output
             s_chunk = s_chunk.to(self.config.torch_dtype)

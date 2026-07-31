@@ -15,12 +15,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Mapping, Optional
-
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerModule
 from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import (
@@ -44,7 +42,6 @@ class PairformerEmbedding(nn.Module):
                  no_bin: int,
                  inf: float,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -69,25 +66,18 @@ class PairformerEmbedding(nn.Module):
         self.no_bin = no_bin
         self.inf = inf
         self.dtype = dtype
-        self.mapping = mapping
         self.skip_create_weights = skip_create_weights
 
         self.linear_i = Linear(c_s_input,
                                c_z,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=self.skip_create_weights)
 
         self.linear_j = Linear(c_s_input,
                                c_z,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=self.skip_create_weights)
 
         self.linear_distance = Linear(
@@ -95,9 +85,6 @@ class PairformerEmbedding(nn.Module):
             c_z,
             bias=False,
             dtype=self.dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
             skip_create_weights=self.skip_create_weights)
 
         bins = torch.linspace(min_bin, max_bin, no_bin)
@@ -293,7 +280,6 @@ class PredictedAlignedErrorHead(nn.Module):
                  c_out: int,
                  dtype: torch.dtype = torch.float32,
                  eps: float = 1e-5,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -312,9 +298,6 @@ class PredictedAlignedErrorHead(nn.Module):
                              self.c_out,
                              bias=False,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def _compute_logits(self, zij: torch.Tensor):
@@ -347,7 +330,6 @@ class PredictedDistanceErrorHead(nn.Module):
                  c_out: int,
                  eps: float = 1e-5,
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -366,9 +348,6 @@ class PredictedDistanceErrorHead(nn.Module):
                              self.c_out,
                              bias=False,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def _compute_logits(self, zij: torch.Tensor):
@@ -402,7 +381,6 @@ class PerResidueLDDTAllAtom(nn.Module):
                  max_atoms_per_token: int,
                  dtype: torch.dtype = torch.float32,
                  eps: float = 1e-5,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -424,9 +402,6 @@ class PerResidueLDDTAllAtom(nn.Module):
                              self.max_atoms_per_token * self.c_out,
                              bias=False,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, s: torch.Tensor, max_atom_per_token_mask: torch.Tensor):
@@ -475,7 +450,6 @@ class ExperimentallyResolvedHeadAllAtom(nn.Module):
                  max_atoms_per_token: int,
                  dtype: torch.dtype = torch.float32,
                  eps: float = 1e-5,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -497,9 +471,6 @@ class ExperimentallyResolvedHeadAllAtom(nn.Module):
                              self.max_atoms_per_token * self.c_out,
                              bias=False,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, s: torch.Tensor, max_atom_per_token_mask: torch.Tensor):
@@ -550,7 +521,6 @@ class DistogramHead(nn.Module):
         c_z: int,
         c_out: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -569,9 +539,6 @@ class DistogramHead(nn.Module):
                              self.c_out,
                              bias=False,
                              dtype=dtype,
-                             mapping=mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=skip_create_weights)
 
     def forward(self, z):
@@ -615,7 +582,6 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         self.config = config
         self.max_atoms_per_token = config.max_atoms_per_token
         self.dtype = config.torch_dtype
-        self.mapping = config.mapping
         self.skip_create_weights = config.skip_create_weights
         # memory_efficient_mode default to True. This mean we will run pairformer_embedding with sequential mode (for each diffusion sample)
         self.apply_per_sample = config.memory_efficient_mode
@@ -629,14 +595,12 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             no_bin=config.no_bin,
             inf=config.inf,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights)
 
         self.pde = PredictedDistanceErrorHead(
             c_z=config.pde.c_z,
             c_out=config.pde.c_out,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights)
 
         self.plddt = PerResidueLDDTAllAtom(
@@ -644,14 +608,12 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             c_out=config.lddt.c_out,
             max_atoms_per_token=config.lddt.max_atoms_per_token,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights)
 
         self.distogram = DistogramHead(
             c_z=config.distogram.c_z,
             c_out=config.distogram.c_out,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights)
 
         self.experimentally_resolved = ExperimentallyResolvedHeadAllAtom(
@@ -660,7 +622,6 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             max_atoms_per_token=config.experimentally_resolved.
             max_atoms_per_token,
             dtype=self.dtype,
-            mapping=self.mapping,
             skip_create_weights=self.skip_create_weights)
 
         if config.pae.enabled:
@@ -668,7 +629,6 @@ class AuxiliaryHeadsAllAtom(nn.Module):
                 c_z=config.pae.c_z,
                 c_out=config.pae.c_out,
                 dtype=self.dtype,
-                mapping=self.mapping,
                 skip_create_weights=self.skip_create_weights)
 
     def load_weights(self, weights: dict):

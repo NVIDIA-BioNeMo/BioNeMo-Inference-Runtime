@@ -103,8 +103,6 @@ class BackendBase(nn.Module, ABC):
         """
         super().__init__()
         self._config = config
-        self._world_size = 1
-        self._runtime_rank = 0
         self._checkpoint_dir = None
         self._fallback_module = None
 
@@ -126,22 +124,6 @@ class BackendBase(nn.Module, ABC):
     @checkpoint_dir.setter
     def checkpoint_dir(self, checkpoint_dir: str):
         self._checkpoint_dir = checkpoint_dir
-
-    @property
-    def world_size(self):
-        return self._world_size
-
-    @world_size.setter
-    def world_size(self, world_size: int):
-        self._world_size = world_size
-
-    @property
-    def runtime_rank(self):
-        return self._runtime_rank
-
-    @runtime_rank.setter
-    def runtime_rank(self, runtime_rank: int):
-        self._runtime_rank = runtime_rank
 
     def reset(self):
         """

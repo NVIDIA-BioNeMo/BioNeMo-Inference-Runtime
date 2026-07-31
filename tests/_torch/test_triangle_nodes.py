@@ -30,7 +30,6 @@ from tensorrt_bionemo._torch.attention_backend import (AttentionType,
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
     TriangleAttentionNode, TriangleAttentionNodeType,
     TriangleMultiplicationNode, TriangleMultiplicationNodeType)
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_pair_mask
 
@@ -94,7 +93,7 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     )
     node.to(device)
     load_triangle_attention_node_weights_torch(node, weights_and_biases, dtype)
-    attn_metadata = metadata_cls(mapping=Mapping())
+    attn_metadata = metadata_cls()
     x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in,
                     dtype=torch.float32).cuda()
     mask = make_left_aligned_pair_mask(bs,

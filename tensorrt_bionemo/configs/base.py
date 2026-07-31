@@ -16,10 +16,8 @@
 from typing import Any, Callable, Literal, Optional, Union
 
 import torch
-from pydantic import (BaseModel, Field, SkipValidation, field_serializer,
-                      field_validator, model_validator)
+from pydantic import BaseModel, Field, SkipValidation, model_validator
 
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch, torch_dtype_to_str
 from tensorrt_bionemo.version import __version__
 
@@ -42,15 +40,13 @@ class BackendType:
 class BaseConfig(BaseModel):
     """
     Base configuration for all modules and use for both Torch and TensorRT backends, contains recursively settable fields for all sub-modules.
-    It can propagate some common configurations to all sub-modules, such as dtype, mapping, etc.
+    It can propagate some common configurations to all sub-modules, such as dtype, etc.
     TODO: Support for reference fields
     """
     dtype: str = "float32"
     norm_epsilon: float = 1e-5
     mask_inf: float = 1e9
     skip_create_weights: bool = False
-    mapping: Mapping = Mapping()
-    disable_custom_all_reduce: bool = False
     triangle_attention_backend: str = "VANILLA"
     pairwise_attention_backend: str = "SDPA"
     support_batch: bool = True
@@ -76,19 +72,6 @@ class BaseConfig(BaseModel):
         data = self.model_dump()
         data.update(update)
         return type(self).model_validate(data)
-
-    @field_serializer("mapping")
-    def serialize_mapping(self, mapping: Union[Mapping, dict]):
-        # Convert the custom object to something serializable
-        if isinstance(mapping, Mapping):
-            return mapping.to_dict()
-        return mapping
-
-    @field_validator("mapping", mode="before")
-    def parse_mapping(cls, v):
-        if isinstance(v, dict):
-            return Mapping.from_dict(v)
-        return v
 
     @property
     def torch_dtype(self) -> torch.dtype:
@@ -118,13 +101,6 @@ class BaseConfig(BaseModel):
 
         self._recursive_set(setter)
 
-    def set_mapping(self, value: Mapping):
-
-        def setter(x):
-            x.mapping = value
-
-        self._recursive_set(setter)
-
     def set_norm_epsilon(self, value: float):
 
         def setter(x):
@@ -143,13 +119,6 @@ class BaseConfig(BaseModel):
 
         def setter(x):
             x.skip_create_weights = value
-
-        self._recursive_set(setter)
-
-    def set_disable_custom_all_reduce(self, value: bool):
-
-        def setter(x):
-            x.disable_custom_all_reduce = value
 
         self._recursive_set(setter)
 
@@ -192,13 +161,6 @@ class BaseConfig(BaseModel):
 
         def setter(x):
             x.min_seq_len = value
-
-        self._recursive_set(setter)
-
-    def set_rank(self, value: int):
-
-        def setter(x):
-            x.mapping.rank = value
 
         self._recursive_set(setter)
 

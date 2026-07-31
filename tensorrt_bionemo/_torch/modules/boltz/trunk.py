@@ -22,8 +22,7 @@ from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
 from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_TRANSITION
-from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 from tensorrt_bionemo._torch.layers.transformers.pairformer import (
@@ -32,7 +31,6 @@ from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.modules.boltz.template import TemplateV2Module
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.pipeline.models.boltz2.const import pocket_contact_info
 
 
@@ -49,8 +47,7 @@ class MSALayer(nn.Module):
                  dtype: torch.dtype = None,
                  skip_create_weights: bool = False,
                  triangle_attn_backend: str = "VANILLA",
-                 trimul_high_precision: bool = False,
-                 mapping: Optional[Mapping] = None) -> None:
+                 trimul_high_precision: bool = False) -> None:
         super().__init__()
         self.msa_s = msa_s
         self.token_z = token_z
@@ -60,8 +57,6 @@ class MSALayer(nn.Module):
         self.inf = inf
         self.dtype = dtype
 
-        self.mapping = mapping or Mapping()
-
         self.msa_transition = Transition(
             dim=msa_s,
             hidden=msa_s * 4,
@@ -69,7 +64,6 @@ class MSALayer(nn.Module):
             eps=eps,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            mapping=mapping,
             # Row-chunk the MSA-transition FFN over the sequence dim S at large S (position-wise,
             # numerically identical) -- replaces the old chunk_heads_pwa-coupled chunk_size, now that
             # PWA auto-chunks via its own registry policy.
@@ -83,8 +77,7 @@ class MSALayer(nn.Module):
             eps=eps,
             inf=inf,
             dtype=dtype,
-            skip_create_weights=skip_create_weights,
-            mapping=mapping)
+            skip_create_weights=skip_create_weights)
 
         self.pairformer_layer = PairformerNoSeqLayer(
             layer_idx=layer_idx,
@@ -96,16 +89,14 @@ class MSALayer(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             triangle_attn_backend=triangle_attn_backend,
-            trimul_high_precision=trimul_high_precision,
-            mapping=mapping)
+            trimul_high_precision=trimul_high_precision)
         self.outer_product_mean = OuterProductMean(
             c_in=msa_s,
             c_hidden=32,
             c_out=token_z,
             eps=eps,
             dtype=dtype,
-            skip_create_weights=skip_create_weights,
-            mapping=mapping)
+            skip_create_weights=skip_create_weights)
 
     def forward(
         self,
@@ -114,7 +105,6 @@ class MSALayer(nn.Module):
         token_mask: torch.Tensor,
         msa_mask: torch.Tensor,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -128,18 +118,14 @@ class MSALayer(nn.Module):
             Tuple[Tensor, Tensor]: The output tensor of shape (B, N, N, token_z), (B, S, N, msa_s).
         """
         # PWA and msa_transition auto-chunk internally via their registry policies at large N/S.
-        m += self.pair_weighted_averaging(m,
-                                          z,
-                                          token_mask,
-                                          all_reduce_params=all_reduce_params)
-        m += self.msa_transition(m, all_reduce_params=all_reduce_params)
-        z += self.outer_product_mean(m, msa_mask, all_reduce_params)
+        m += self.pair_weighted_averaging(m, z, token_mask)
+        m += self.msa_transition(m)
+        z += self.outer_product_mean(m, msa_mask)
 
         z = self.pairformer_layer(
             z,
             token_mask,
             attn_metadatas={"triangle_attn": attn_metadata},
-            all_reduce_params=all_reduce_params,
             precomputed_masks=precomputed_masks)
         return z, m
 
@@ -153,7 +139,6 @@ class MSAModule(nn.Module):
         """
         super().__init__()
 
-        self.mapping = config.mapping or Mapping()
         self.msa_s = config.msa_s
         self.token_z = config.token_z
         self.token_s = config.token_s
@@ -179,18 +164,12 @@ class MSAModule(nn.Module):
                              self.msa_s,
                              bias=False,
                              dtype=self.dtype,
-                             mapping=self.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=config.skip_create_weights)
         self.msa_proj = Linear(self.num_tokens + 2 +
                                int(self.use_paired_feature),
                                self.msa_s,
                                bias=False,
                                dtype=self.dtype,
-                               mapping=self.mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=config.skip_create_weights)
 
         self.layers = nn.ModuleList()
@@ -207,8 +186,7 @@ class MSAModule(nn.Module):
                     dtype=self.dtype,
                     skip_create_weights=config.skip_create_weights,
                     triangle_attn_backend=config.triangle_attention_backend,
-                    trimul_high_precision=self.trimul_high_precision,
-                    mapping=self.mapping))
+                    trimul_high_precision=self.trimul_high_precision))
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -228,9 +206,7 @@ class MSAModule(nn.Module):
             msa_paired: torch.Tensor,
             msa_mask: torch.Tensor,
             token_pad_mask: torch.Tensor,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
         """
         Args:
             z(Tensor): The input tensor of shape (B, N, N, token_z).
@@ -242,7 +218,6 @@ class MSAModule(nn.Module):
             msa_mask(Tensor): The input tensor of shape (B, N_msa, N).
             token_pad_mask(Tensor): The input tensor of shape (B, N).
             attn_metadata(Optional[AttentionMetadata]): The attention metadata.
-            all_reduce_params(Optional[AllReduceParams]): The all reduce parameters.
         Returns:
             Tensor: The output tensor of shape (B, N, N, token_z).
         """
@@ -280,7 +255,6 @@ class MSAModule(nn.Module):
                                   token_pad_mask,
                                   msa_mask,
                                   attn_metadata,
-                                  all_reduce_params,
                                   precomputed_masks=precomputed)
         return z
 
@@ -301,9 +275,6 @@ class Trunk(nn.Module):
         assert self.dtype == config.msa_module.torch_dtype, f"Trunk dtype: {self.dtype}, msa_module dtype: {config.msa_module.torch_dtype}"
         assert self.dtype == config.pairformer.torch_dtype, f"Trunk dtype: {self.dtype}, pairformer dtype: {config.pairformer.torch_dtype}"
 
-        self.mapping = config.mapping or Mapping()
-
-        # Optional Boltz-2 v2 template module. Off by default; enabled via
         # ``TrunkConfig.use_templates_v2`` (e.g. when loading a checkpoint
         # trained with ``use_templates_v2=True``).
         self.use_templates_v2 = getattr(config, "use_templates_v2", False)
@@ -323,17 +294,11 @@ class Trunk(nn.Module):
                                 token_s,
                                 bias=False,
                                 dtype=self.dtype,
-                                mapping=self.mapping,
-                                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gather_output=True,
                                 skip_create_weights=self.skip_create_weights)
         self.z_recycle = Linear(token_z,
                                 token_z,
                                 bias=False,
                                 dtype=self.dtype,
-                                mapping=self.mapping,
-                                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gather_output=True,
                                 skip_create_weights=self.skip_create_weights)
 
     def load_weights(self, weights: dict):
@@ -382,7 +347,6 @@ class Trunk(nn.Module):
         msa_mask: torch.Tensor,
         token_pad_mask: torch.Tensor,
         recycling_steps: int = 3,
-        all_reduce_params: Optional[AllReduceParams] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
         template_feats: Optional[dict[str, torch.Tensor]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -398,7 +362,6 @@ class Trunk(nn.Module):
             msa_mask(Tensor): The MSA mask of shape (B, N_msa, N).
             token_pad_mask(Tensor): The token pad mask of shape (B, N).
             recycling_steps(int): The number of recycling steps.
-            all_reduce_params(Optional[AllReduceParams]): The all reduce parameters.
             attn_metadata(Optional[AttentionMetadata]): The attention metadata.
             template_feats(Optional[dict]): Per-template features required by
                 :class:`TemplateV2Module` when ``use_templates_v2`` is enabled.
@@ -426,11 +389,8 @@ class Trunk(nn.Module):
 
             if run_template:
                 z = z + self.template_module(
-                    z,
-                    template_feats,
-                    pair_mask,
-                    attn_metadata=attn_metadata,
-                    all_reduce_params=all_reduce_params).to(self.dtype)
+                    z, template_feats, pair_mask,
+                    attn_metadata=attn_metadata).to(self.dtype)
 
             z = z + self.msa_module(z,
                                     s_inputs,
@@ -440,13 +400,11 @@ class Trunk(nn.Module):
                                     msa_paired,
                                     msa_mask=msa_mask,
                                     token_pad_mask=pair_mask,
-                                    attn_metadata=attn_metadata,
-                                    all_reduce_params=all_reduce_params)
+                                    attn_metadata=attn_metadata)
 
             s, z = self.pairformer_module(s,
                                           z,
                                           mask=mask,
                                           pair_mask=pair_mask,
-                                          attn_metadata=attn_metadata,
-                                          all_reduce_params=all_reduce_params)
+                                          attn_metadata=attn_metadata)
         return s, z

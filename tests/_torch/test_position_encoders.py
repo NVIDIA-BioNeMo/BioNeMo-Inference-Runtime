@@ -13,14 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import types
-
 import pytest
 import torch
 
 from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
-from tensorrt_bionemo.mapping import Mapping
 
 # Boltz2's real RelativePositionEncoder configuration
 # (models/boltz2/modeling.py builds it; models/boltz2/config.py supplies the flags).
@@ -30,7 +27,7 @@ _BOLTZ2_S_MAX = 2
 
 
 def _boltz2_rpe(seed: int = 0) -> RelativePositionEncoder:
-    """A Boltz2-configured RPE (tp_size == 1 -> gather path) with non-zero ("real") weights."""
+    """A Boltz2-configured RPE (embedding-gather path) with non-zero ("real") weights."""
     torch.manual_seed(seed)
     rpe = RelativePositionEncoder(
         token_z=_BOLTZ2_TOKEN_Z,
@@ -40,7 +37,6 @@ def _boltz2_rpe(seed: int = 0) -> RelativePositionEncoder:
         cyclic_pos_enc=True,  # Boltz2 config default
         period_broadcast=False,  # hardcoded False for Boltz2
         dtype=torch.float32,
-        mapping=Mapping(),  # tp_size == 1 -> embedding-gather path
         skip_create_weights=False,
     ).to("cpu").eval(
     )  # CPU: the gather vs one-hot GEMM are bit-identical there
@@ -97,23 +93,21 @@ def _random_inputs(seed: int, n: int = 64) -> dict:
     )
 
 
-def _gather_vs_onehot(rpe: RelativePositionEncoder, inputs: dict, monkeypatch):
-    """Run the gather path and the forced one-hot fallback on identical weights/inputs."""
+def _gather_vs_onehot(rpe: RelativePositionEncoder, inputs: dict):
+    """Run the gather path and the one-hot reference on identical weights/inputs."""
     with torch.no_grad():
-        out_gather = rpe(**inputs)  # tp_size == 1 -> embedding-gather
-        # Force the tensor-parallel one-hot + cat + Linear fallback by making the branch see
-        # tp_size != 1. ``self.linear`` (built at tp_size=1) still does a full matmul, so this is
-        # the exact one-hot reference over the same weights/inputs.
-        monkeypatch.setattr(rpe, "mapping", types.SimpleNamespace(tp_size=2))
-        out_onehot = rpe(**inputs)
+        out_gather = rpe(**inputs)  # forward() -> embedding-gather
+        # Explicit one-hot + cat + Linear reference over the same weights/inputs:
+        # ``generate_relp`` materializes the concatenated feature and ``forward(relp=...)``
+        # projects it with a full matmul.
+        out_onehot = rpe(relp=rpe.generate_relp(**inputs))
     return out_gather, out_onehot
 
 
 @pytest.mark.parametrize("cyclic", [False, True], ids=["acyclic", "cyclic"])
-def test_rpe_embedding_gather_bit_identical_to_onehot(cyclic, monkeypatch):
+def test_rpe_embedding_gather_bit_identical_to_onehot(cyclic):
     rpe = _boltz2_rpe()
-    out_gather, out_onehot = _gather_vs_onehot(rpe, _boltz2_inputs(cyclic),
-                                               monkeypatch)
+    out_gather, out_onehot = _gather_vs_onehot(rpe, _boltz2_inputs(cyclic))
 
     assert out_gather.shape == (1, 40, 40, _BOLTZ2_TOKEN_Z)
     # Non-vacuous: non-zero weights -> non-trivial encoding (guards against a 0 == 0 pass).
@@ -123,10 +117,9 @@ def test_rpe_embedding_gather_bit_identical_to_onehot(cyclic, monkeypatch):
 
 
 @pytest.mark.parametrize("seed", [0, 1, 7, 123])
-def test_rpe_embedding_gather_bit_identical_fuzz(seed, monkeypatch):
+def test_rpe_embedding_gather_bit_identical_fuzz(seed):
     rpe = _boltz2_rpe(seed=seed)
-    out_gather, out_onehot = _gather_vs_onehot(rpe, _random_inputs(seed),
-                                               monkeypatch)
+    out_gather, out_onehot = _gather_vs_onehot(rpe, _random_inputs(seed))
     assert out_gather.abs().max() > 0
     torch.testing.assert_close(out_gather, out_onehot, rtol=0, atol=0)
 

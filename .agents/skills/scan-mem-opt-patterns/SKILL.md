@@ -311,9 +311,9 @@ lineage — adapt to your model's names.
   (`dgram + restype_i/j + …` → wide `[B,N,N,C_feat]`).
 - **Detect:** `F.one_hot`, the rel-pos encoder, `relpos` / `relp`, MSA embedder, template embedder,
   `torch.cat` into a `Linear` whose first dim matches a one-hot width.
-- **Fix (tp_size==1):** `one_hot(idx) @ W ≡ gather of W's rows` → `F.embedding(idx, W.t()[slice])`
+- **Fix:** `one_hot(idx) @ W ≡ gather of W's rows` → `F.embedding(idx, W.t()[slice])`
   (or `weight[:, :K].T`), accumulate geometric / continuous columns by multiplying their weight
-  columns in place; keep the one-hot path as the tensor-parallel fallback. Weight-row / column
+  columns in place. Weight-row / column
   slices must match the **original concat column order** and leave checkpoint keys unchanged
   (slice at runtime). Prefer this over retaining compact bucket indices when recomputing pairwise
   integer differences is cheap.
@@ -489,7 +489,7 @@ profiling so the per-stage peak reflects live tensors, not fragmentation.
 
 ## Reduce-then-verify (when applying a found fix)
 
-1. **Gate** dtype/chunk/in-place/destructive/compact changes so the aligned / `tp_size>1` /
+1. **Gate** dtype/chunk/in-place/destructive/compact changes so the aligned /
    small-N / default-API path stays byte-identical (compile-time constant, `if`-gate, size
    threshold, or opt-in flag with safe default).
 1. **Verify numerically** on a small shape *before* profiling: a hermetic equivalence test

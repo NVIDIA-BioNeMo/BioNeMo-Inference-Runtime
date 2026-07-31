@@ -21,11 +21,10 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
+from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.position_encoders import \
     RelativePositionEncoder
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
@@ -83,11 +82,9 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
 
         # Setup for input embedder
         self.input_embedder_dtype = self.config.input_embedder.torch_dtype
-        self.input_embedder_mapping = self.config.input_embedder.mapping
         self.input_embedder_config = self.config.input_embedder
 
         # Setup for trunk
-        self.trunk_mapping = self.config.trunk.mapping
         self.trunk_dtype = self.config.trunk.torch_dtype
         self.trunk_config = self.config.trunk
         self.recompute_rel_pos = getattr(self.config, "recompute_rel_pos",
@@ -98,13 +95,11 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
 
         # Setup for atom diffusion
         self.structure_module_dtype = self.config.structure_module.torch_dtype
-        self.structure_module_mapping = self.config.structure_module.mapping
         self.structure_module_config = self.config.structure_module
 
         # Setup for confidence module
         self.confidence_module_config = self.config.confidence_module
         self.confidence_module_dtype = self.config.confidence_module.torch_dtype
-        self.confidence_module_mapping = self.config.confidence_module.mapping
         self.confidence_module_config = self.config.confidence_module
 
         #### Build up modules ####
@@ -119,43 +114,28 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
                              self.config.token_s,
                              bias=False,
                              dtype=self.input_embedder_dtype,
-                             mapping=self.input_embedder_mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=False)
         self.z_init_1 = Linear(s_input_dim,
                                self.config.token_z,
                                bias=False,
                                dtype=self.input_embedder_dtype,
-                               mapping=self.input_embedder_mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=False)
         self.z_init_2 = Linear(s_input_dim,
                                self.config.token_z,
                                bias=False,
                                dtype=self.input_embedder_dtype,
-                               mapping=self.input_embedder_mapping,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=True,
                                skip_create_weights=False)
-        self.rel_pos = RelativePositionEncoder(
-            token_z=self.config.token_z,
-            fix_sym_check=False,
-            cyclic_pos_enc=True,
-            period_broadcast=True,
-            dtype=self.input_embedder_dtype,
-            mapping=self.input_embedder_mapping,
-            skip_create_weights=False)
-        self.token_bonds = Linear(
-            1,
-            self.config.token_z,
-            bias=False,
-            dtype=self.input_embedder_dtype,
-            mapping=self.input_embedder_mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
-            skip_create_weights=False)
+        self.rel_pos = RelativePositionEncoder(token_z=self.config.token_z,
+                                               fix_sym_check=False,
+                                               cyclic_pos_enc=True,
+                                               period_broadcast=True,
+                                               dtype=self.input_embedder_dtype,
+                                               skip_create_weights=False)
+        self.token_bonds = Linear(1,
+                                  self.config.token_z,
+                                  bias=False,
+                                  dtype=self.input_embedder_dtype,
+                                  skip_create_weights=False)
 
         ### Trunk ###
         self.trunk = Trunk(config=self.trunk_config)
@@ -166,7 +146,6 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             num_bins=self.config.num_bins,
             version="v1",
             dtype=self.structure_module_config.torch_dtype,
-            mapping=self.structure_module_config.mapping,
             skip_create_weights=False)
 
         ### Atom diffusion ###
@@ -200,7 +179,6 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
                 score_model_config.pairwise_conditioning_dtype),
             token_trans_bias_dtype=str_dtype_to_torch(
                 score_model_config.token_trans_bias_dtype),
-            mapping=self.structure_module_mapping,
             skip_create_weights=False,
         )
         self.structure_module = AtomDiffusion(self.structure_module_config)
@@ -377,14 +355,13 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
                                  bias_cache=None)
 
     def forward(
-        self,
-        feed_dict: dict[str, torch.Tensor],
-        recycling_steps: int = 3,
-        num_sampling_steps: Optional[int] = 200,
-        diffusion_samples: int = 1,
-        max_parallel_samples: Optional[int] = None,
-        steering_args: BoltzSteeringParams = None,
-        all_reduce_params: Optional[AllReduceParams] = None
+            self,
+            feed_dict: dict[str, torch.Tensor],
+            recycling_steps: int = 3,
+            num_sampling_steps: Optional[int] = 200,
+            diffusion_samples: int = 1,
+            max_parallel_samples: Optional[int] = None,
+            steering_args: BoltzSteeringParams = None
     ) -> dict[str, torch.Tensor]:
 
         # Training-only feats: never read in inference (forward + postprocessor). Drop them up front
@@ -405,7 +382,6 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
         s_inputs = self.input_embedder(
             **self.get_module_feed_dict(feed_dict, "input_embedder"),
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
         )
         # Initialize the sequence and pairwise embeddings
         s_init = self.s_init(s_inputs)
@@ -430,8 +406,7 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
                           s_init=s_init,
                           z_init=z_init,
                           s_inputs=s_inputs,
-                          recycling_steps=recycling_steps,
-                          all_reduce_params=all_reduce_params)
+                          recycling_steps=recycling_steps)
         # Run distogram module
         pair_distogram = self.distogram_module(z)
 
@@ -464,7 +439,6 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             max_parallel_samples=max_parallel_samples,
             network_condition_kwargs=network_condition_kwargs,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
             steering_args=steering_args,
         )
 
@@ -489,7 +463,6 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             pred_distogram_logits=pair_distogram.float(),
             multiplicity=diffusion_samples,
             attn_metadata=attn_metadata,
-            all_reduce_params=all_reduce_params,
         )
 
         iptm_score = confidence_module_output["iptm"]

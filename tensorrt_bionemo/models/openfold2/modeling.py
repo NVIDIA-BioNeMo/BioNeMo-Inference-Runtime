@@ -23,7 +23,6 @@ from tensorrt_bionemo.logger import logger
 import tensorrt_bionemo.pipeline.models.openfold2.const as residue_constants
 from tensorrt_bionemo._torch.attention_backend import (
     auto_select_triangle_attention_backend, get_attention_backend)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.modules.openfold2.confidence import AuxiliaryHeads
 from tensorrt_bionemo._torch.modules.openfold2.embedders import (
     ExtraMSAEmbedder, InputEmbedder, InputEmbedderMultimer, RecyclingEmbedder,
@@ -234,14 +233,9 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         else:
             raise ValueError(f"Module name {module_name} not supported")
 
-    def embed_templates(
-        self,
-        feats: dict[str, torch.Tensor],
-        z: torch.Tensor,
-        pair_mask: torch.Tensor,
-        templ_dim: int,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> dict[str, torch.Tensor]:
+    def embed_templates(self, feats: dict[str, torch.Tensor], z: torch.Tensor,
+                        pair_mask: torch.Tensor,
+                        templ_dim: int) -> dict[str, torch.Tensor]:
 
         is_template_present = True
         skip_template_pair_stack = self.config.skip_template_pair_stack
@@ -276,7 +270,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 templ_dim,
                 multichain_mask_2d=multichain_mask_2d,
                 skip_template_pair_stack=skip_template_pair_stack,
-                all_reduce_params=all_reduce_params,
             )
             feats["template_torsion_angles_mask"] = (
                 template_embeds["template_mask"])
@@ -287,7 +280,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 pair_mask,
                 templ_dim,
                 skip_template_pair_stack=skip_template_pair_stack,
-                all_reduce_params=all_reduce_params,
             )
         return template_embeds
 
@@ -323,16 +315,12 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         return diff <= self.config.recycle_early_stop_tolerance
 
     def iteration(
-        self,
-        feats: dict[str, torch.Tensor],
-        prevs: list[torch.Tensor],
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+            self, feats: dict[str, torch.Tensor],
+            prevs: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             batch: dict[str, torch.Tensor]
             prevs: list[torch.Tensor]
-            all_reduce_params: Optional[AllReduceParams] = None
         Returns:
             tuple[torch.Tensor, torch.Tensor]
         """
@@ -344,9 +332,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         msa_mask = feats["msa_mask"]
 
         m_1_prev, z_prev, x_prev = reversed([prevs.pop() for _ in range(3)])
-        m, z = self.input_embedder(**self.get_module_feed_dict(
-            feats, "input_embedder"),
-                                   all_reduce_params=all_reduce_params)
+        m, z = self.input_embedder(
+            **self.get_module_feed_dict(feats, "input_embedder"))
 
         pseudo_beta_x_prev = pseudo_beta_fn(feats["aatype"], x_prev,
                                             None).to(z)
@@ -366,7 +353,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 z,
                 pair_mask.to(z),
                 no_batch_dims,
-                all_reduce_params=all_reduce_params,
             )
             z = z + template_embeds.pop("template_pair_embedding")
 
@@ -401,7 +387,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 z,
                 msa_mask=feats["extra_msa_mask"].to(m),
                 pair_mask=pair_mask.to(m),
-                all_reduce_params=all_reduce_params,
                 attn_metadata=triangle_metadata_cls(),
             )
 
@@ -413,7 +398,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             z=z,
             msa_mask=msa_mask.to(m),
             pair_mask=pair_mask.to(m),
-            all_reduce_params=all_reduce_params,
             attn_metadata=triangle_metadata_cls(),
         )
 
@@ -443,12 +427,9 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
 
         return structure_output, m_1_prev, z_prev, x_prev, early_stop
 
-    def forward(
-        self,
-        feed_dict: dict[str, torch.Tensor],
-        recycling_steps: int = None,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> dict[str, torch.Tensor]:
+    def forward(self,
+                feed_dict: dict[str, torch.Tensor],
+                recycling_steps: int = None) -> dict[str, torch.Tensor]:
         """ Forward pass for the OpenFold2 model """
         device = next(self.parameters()).device
         batch_dims = feed_dict["target_feat"].shape[:-3]
@@ -482,7 +463,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         for cycle_no in range(num_iters):
             batch = self.get_current_batch(feed_dict, cycle_no)
             structure_output, m_1_prev, z_prev, x_prev, early_stop = self.iteration(
-                batch, prevs, all_reduce_params)
+                batch, prevs)
             prevs = [m_1_prev, z_prev, x_prev]
             num_recycles += 1
             if early_stop:

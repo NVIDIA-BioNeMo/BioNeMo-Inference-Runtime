@@ -15,21 +15,17 @@
 # limitations under the License.
 
 from functools import partial
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.distributed import (
-    AllReduceParams, get_default_tp_group_coordinator)
-from tensorrt_bionemo._torch.layers.linear import (Linear, TensorParallelMode,
-                                                   WeightMode,
+from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
                                                    WeightsLoadingConfig)
 from tensorrt_bionemo._torch.tensor_utils import (dict_multimap, dist_one_hot,
                                                   tensor_tree_map)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 
 from .template import TemplatePairStack, TemplatePointwiseAttention
 from .utils import all_atom_multimer, geometry
@@ -61,18 +57,12 @@ class InputEmbedder(nn.Module):
     def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
-        self.mapping = config.mapping
-
-        assert config.c_z % self.mapping.tp_size == 0, "c_z must be divisible by tp_size"
-        self.c_z = config.c_z // self.mapping.tp_size
+        self.c_z = config.c_z
         self.fused_linear_tf_z = Linear(
             config.tf_dim,
             config.c_z * 2,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=config.skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR))
@@ -81,9 +71,6 @@ class InputEmbedder(nn.Module):
             config.c_m,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            reduce_output=True,
             skip_create_weights=config.skip_create_weights)
 
         self.linear_msa_m = Linear(
@@ -91,9 +78,6 @@ class InputEmbedder(nn.Module):
             config.c_m,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            gather_output=True,
             skip_create_weights=config.skip_create_weights)
 
         # RPE stuff
@@ -106,17 +90,7 @@ class InputEmbedder(nn.Module):
             config.c_z,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=config.skip_create_weights)
-
-        self.tp_size = config.mapping.tp_size
-        self.tp_group_comm = None
-        if self.tp_size > 1:
-            self.tp_group_comm = get_default_tp_group_coordinator()
-            assert self.tp_group_comm(
-            ) is not None, "Failed to get the default TP group coordinator"
 
     def load_weights(self, weights: dict) -> None:
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -126,13 +100,8 @@ class InputEmbedder(nn.Module):
             raise ValueError(
                 f"The following weights are not loaded: {not_loaded_weight}")
 
-    def forward(
-        self,
-        target_feat: torch.Tensor,
-        residue_index: torch.Tensor,
-        msa_feat: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, target_feat: torch.Tensor, residue_index: torch.Tensor,
+                msa_feat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             target_feat:
@@ -163,8 +132,6 @@ class InputEmbedder(nn.Module):
         tf_m = (self.linear_tf_m(target_feat).unsqueeze(-3).expand(
             ((-1, ) * len(target_feat.shape[:-2]) + (n_clust, -1, -1))))
         msa_emb = self.linear_msa_m(msa_feat) + tf_m
-        if self.tp_size > 1:
-            pair_emb = self.tp_group_comm().all_gather(pair_emb, dim=-1)
         return msa_emb, pair_emb
 
 
@@ -173,18 +140,12 @@ class InputEmbedderMultimer(nn.Module):
     def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
-        self.mapping = config.mapping
-
-        assert config.c_z % self.mapping.tp_size == 0, "c_z must be divisible by tp_size"
-        self.c_z = config.c_z // self.mapping.tp_size
+        self.c_z = config.c_z
         self.fused_linear_tf_z = Linear(
             config.tf_dim,
             config.c_z * 2,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=config.skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR))
@@ -193,9 +154,6 @@ class InputEmbedderMultimer(nn.Module):
             config.c_m,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            reduce_output=True,
             skip_create_weights=config.skip_create_weights)
 
         self.linear_msa_m = Linear(
@@ -203,9 +161,6 @@ class InputEmbedderMultimer(nn.Module):
             config.c_m,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            gather_output=True,
             skip_create_weights=config.skip_create_weights)
 
         # RPE stuff
@@ -234,17 +189,7 @@ class InputEmbedderMultimer(nn.Module):
             config.c_z,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=config.skip_create_weights)
-
-        self.tp_size = config.mapping.tp_size
-        self.tp_group_comm = None
-        if self.tp_size > 1:
-            self.tp_group_comm = get_default_tp_group_coordinator()
-            assert self.tp_group_comm(
-            ) is not None, "Failed to get the default TP group coordinator"
 
     def load_weights(self, weights: dict) -> None:
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -318,16 +263,10 @@ class InputEmbedderMultimer(nn.Module):
         rel_feat = torch.cat(rel_feats, dim=-1).to(self.config.torch_dtype)
         return self.linear_relpos(rel_feat)
 
-    def forward(
-        self,
-        target_feat: torch.Tensor,
-        residue_index: torch.Tensor,
-        msa_feat: torch.Tensor,
-        asym_id: torch.Tensor,
-        entity_id: torch.Tensor,
-        sym_id: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, target_feat: torch.Tensor, residue_index: torch.Tensor,
+                msa_feat: torch.Tensor, asym_id: torch.Tensor,
+                entity_id: torch.Tensor,
+                sym_id: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             target_feat:
@@ -364,9 +303,6 @@ class InputEmbedderMultimer(nn.Module):
             ((-1, ) * len(target_feat.shape[:-2]) + (n_clust, -1, -1))))
         msa_emb = self.linear_msa_m(msa_feat) + tf_m
 
-        if self.tp_size > 1:
-            pair_emb = self.tp_group_comm().all_gather(pair_emb, dim=-1)
-
         return msa_emb, pair_emb
 
 
@@ -375,8 +311,6 @@ class RecyclingEmbedder(nn.Module):
     def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
-        self.mapping = config.mapping
-
         self.c_m = config.c_m
         self.c_z = config.c_z
         self.min_bin = config.min_bin
@@ -388,9 +322,6 @@ class RecyclingEmbedder(nn.Module):
                              self.c_z,
                              bias=True,
                              dtype=config.torch_dtype,
-                             mapping=config.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=config.skip_create_weights)
         self.layer_norm_m = nn.LayerNorm(self.c_m,
                                          dtype=config.torch_dtype,
@@ -461,15 +392,10 @@ class ExtraMSAEmbedder(nn.Module):
     def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
-        self.mapping = config.mapping
-
         self.linear = Linear(config.c_in,
                              config.c_out,
                              bias=True,
                              dtype=config.torch_dtype,
-                             mapping=config.mapping,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True,
                              skip_create_weights=config.skip_create_weights)
 
     def load_weights(self, weights: dict) -> None:
@@ -497,7 +423,6 @@ class TemplateSingleEmbedder(nn.Module):
                  c_in: int,
                  c_out: int,
                  dtype: torch.dtype,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False):
         """
         Args:
@@ -507,8 +432,6 @@ class TemplateSingleEmbedder(nn.Module):
                 Output channel dimension
             dtype:
                 Data type of the weights
-            mapping:
-                Mapping of the weights
             skip_create_weights:
                 Whether to skip creating weights
         """
@@ -520,24 +443,14 @@ class TemplateSingleEmbedder(nn.Module):
         self.linear_1 = Linear(self.c_in,
                                self.c_out,
                                dtype=dtype,
-                               mapping=mapping,
-                               skip_create_weights=skip_create_weights,
-                               tensor_parallel_mode=TensorParallelMode.COLUMN,
-                               gather_output=False)
+                               skip_create_weights=skip_create_weights)
         self.relu = nn.ReLU()
         self.linear_2 = Linear(self.c_out,
                                self.c_out,
                                dtype=dtype,
-                               mapping=mapping,
-                               skip_create_weights=skip_create_weights,
-                               tensor_parallel_mode=TensorParallelMode.ROW,
-                               reduce_output=True)
+                               skip_create_weights=skip_create_weights)
 
-    def forward(
-            self,
-            x: torch.Tensor,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: [*, N_templ, N_res, c_in] "template_angle_feat" features
@@ -546,7 +459,7 @@ class TemplateSingleEmbedder(nn.Module):
         """
         x = self.linear_1(x)
         x = self.relu(x)
-        x = self.linear_2(x, all_reduce_params=all_reduce_params)
+        x = self.linear_2(x)
 
         return x
 
@@ -558,7 +471,6 @@ class TemplatePairEmbedder(nn.Module):
         c_in: int,
         c_out: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         """
@@ -577,10 +489,7 @@ class TemplatePairEmbedder(nn.Module):
         self.linear = Linear(self.c_in,
                              self.c_out,
                              dtype=dtype,
-                             mapping=mapping,
-                             skip_create_weights=skip_create_weights,
-                             tensor_parallel_mode=TensorParallelMode.COLUMN,
-                             gather_output=True)
+                             skip_create_weights=skip_create_weights)
 
     def forward(
         self,
@@ -610,7 +519,6 @@ class TemplateEmbedder(nn.Module):
             c_in=mc.c_in,
             c_out=mc.c_out,
             dtype=mc.torch_dtype,
-            mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
         )
 
@@ -619,7 +527,6 @@ class TemplateEmbedder(nn.Module):
             c_in=mc.c_in,
             c_out=mc.c_out,
             dtype=mc.torch_dtype,
-            mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
         )
 
@@ -636,7 +543,6 @@ class TemplateEmbedder(nn.Module):
             eps=mc.norm_epsilon,
             triangle_attn_backend=mc.triangle_attention_backend,
             dtype=mc.torch_dtype,
-            mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
         )
 
@@ -649,7 +555,6 @@ class TemplateEmbedder(nn.Module):
             inf=mc.mask_inf,
             eps=mc.norm_epsilon,
             dtype=mc.torch_dtype,
-            mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
             chunk_size=mc.chunk_size)
         # Sub-modules may carry independent dtypes; ``forward`` inserts
@@ -663,15 +568,12 @@ class TemplateEmbedder(nn.Module):
             raise ValueError(
                 f"The following weights are not loaded: {not_loaded_weight}")
 
-    def forward(
-            self,
-            batch: dict[str, torch.Tensor],
-            z: torch.Tensor,
-            pair_mask: torch.Tensor,
-            templ_dim: int,
-            skip_template_pair_stack: bool = False,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def forward(self,
+                batch: dict[str, torch.Tensor],
+                z: torch.Tensor,
+                pair_mask: torch.Tensor,
+                templ_dim: int,
+                skip_template_pair_stack: bool = False) -> torch.Tensor:
         # Embed the templates one at a time (with a poor man's vmap)
         pair_embeds = []
         z.shape[-2]
@@ -711,7 +613,6 @@ class TemplateEmbedder(nn.Module):
             t_pair,
             pair_mask.unsqueeze(-3).to(t_pair),
             skip_template_pair_stack=skip_template_pair_stack,
-            all_reduce_params=all_reduce_params,
         )
 
         # [*, N, N, C_z]
@@ -720,7 +621,6 @@ class TemplateEmbedder(nn.Module):
             t.to(dtype=desired_dtype),
             z.to(dtype=desired_dtype),
             template_mask=batch["template_mask"].to(dtype=desired_dtype),
-            all_reduce_params=all_reduce_params,
         )
 
         t_mask = torch.sum(batch["template_mask"], dim=-1) > 0
@@ -755,7 +655,6 @@ class TemplatePairEmbedderMultimer(nn.Module):
         c_aatype: int,
         eps: float = 1e-5,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         super().__init__()
@@ -765,30 +664,21 @@ class TemplatePairEmbedderMultimer(nn.Module):
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.aatype_linear_1 = Linear(
             c_aatype,
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.aatype_linear_2 = Linear(
             c_aatype,
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.query_embedding_layer_norm = nn.LayerNorm(c_in,
                                                        dtype=dtype,
@@ -798,10 +688,7 @@ class TemplatePairEmbedderMultimer(nn.Module):
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
 
         self.pseudo_beta_mask_linear = Linear(
@@ -809,50 +696,35 @@ class TemplatePairEmbedderMultimer(nn.Module):
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.x_linear = Linear(
             1,
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.y_linear = Linear(
             1,
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.z_linear = Linear(
             1,
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.backbone_mask_linear = Linear(
             1,
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
 
     def forward(
@@ -903,7 +775,6 @@ class TemplateSingleEmbedderMultimer(nn.Module):
         c_in: int,
         c_out: int,
         dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
         skip_create_weights: bool = False,
     ):
         super().__init__()
@@ -912,20 +783,14 @@ class TemplateSingleEmbedderMultimer(nn.Module):
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
         self.template_projector = Linear(
             c_out,
             c_out,
             bias=True,
             dtype=dtype,
-            mapping=mapping,
             skip_create_weights=skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            reduce_output=True,
         )
 
     def forward(
@@ -979,7 +844,6 @@ class TemplateEmbedderMultimer(nn.Module):
             c_in=mc.c_in,
             c_out=mc.c_out,
             dtype=mc.torch_dtype,
-            mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
         )
 
@@ -991,7 +855,6 @@ class TemplateEmbedderMultimer(nn.Module):
             c_aatype=mc.c_aatype,
             eps=mc.norm_epsilon,
             dtype=mc.torch_dtype,
-            mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
         )
 
@@ -1008,7 +871,6 @@ class TemplateEmbedderMultimer(nn.Module):
             eps=mc.norm_epsilon,
             triangle_attn_backend=mc.triangle_attention_backend,
             dtype=mc.torch_dtype,
-            mapping=mc.mapping,
             skip_create_weights=mc.skip_create_weights,
         )
 
@@ -1017,10 +879,7 @@ class TemplateEmbedderMultimer(nn.Module):
             config.c_z,
             bias=True,
             dtype=config.torch_dtype,
-            mapping=config.mapping,
             skip_create_weights=config.skip_create_weights,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=True,
         )
 
     def load_weights(self, weights: dict) -> None:
@@ -1032,15 +891,13 @@ class TemplateEmbedderMultimer(nn.Module):
                 f"The following weights are not loaded: {not_loaded_weight}")
 
     def forward(
-        self,
-        batch: dict[str, torch.Tensor],
-        z: torch.Tensor,
-        padding_mask_2d: torch.Tensor,
-        templ_dim: int,
-        multichain_mask_2d: torch.Tensor,
-        skip_template_pair_stack: bool = False,
-        all_reduce_params: Optional[AllReduceParams] = None
-    ) -> dict[str, torch.Tensor]:
+            self,
+            batch: dict[str, torch.Tensor],
+            z: torch.Tensor,
+            padding_mask_2d: torch.Tensor,
+            templ_dim: int,
+            multichain_mask_2d: torch.Tensor,
+            skip_template_pair_stack: bool = False) -> dict[str, torch.Tensor]:
         template_embeds = []
         n_templ = batch["template_aatype"].shape[templ_dim]
         for i in range(n_templ):
@@ -1120,7 +977,6 @@ class TemplateEmbedderMultimer(nn.Module):
             pair_embed,
             padding_mask_2d.unsqueeze(-3).to(z),
             skip_template_pair_stack=skip_template_pair_stack,
-            all_reduce_params=all_reduce_params,
         )
 
         # [*, N, N, C_z]

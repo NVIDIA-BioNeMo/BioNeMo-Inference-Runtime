@@ -22,12 +22,8 @@ from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
                                                 ChunkPolicy, chunk_apply)
 from tensorrt_bionemo._torch.custom_ops.outer_product_mean import (
     OuterProductMeanCuTe, get_outer_product_mean_op)
-from tensorrt_bionemo._torch.distributed import (
-    AllReduceParams, get_default_tp_group_coordinator)
-from tensorrt_bionemo.mapping import Mapping
 
-from .linear import (Linear, TensorParallelMode, WeightMode,
-                     WeightsLoadingConfig)
+from .linear import Linear, WeightMode, WeightsLoadingConfig
 
 
 class OuterProductMean(nn.Module):
@@ -49,7 +45,6 @@ class OuterProductMean(nn.Module):
                  },
                  dtype: Optional[torch.dtype] = None,
                  skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None,
                  chunk_policy: Optional[ChunkPolicy] = None) -> None:
         """Initialize the outer product mean layer.
 
@@ -69,7 +64,6 @@ class OuterProductMean(nn.Module):
         self.norm_mask_by_eps = norm_mask_by_eps
         self.cast_to_float_before_einsum = cast_to_float_before_einsum
         self.dtype = dtype
-        self.mapping = mapping or Mapping()
         self.norm_before_output = norm_before_output
         # Output token-row chunking policy: chunk when the token dim N exceeds the (memory-scaled)
         # threshold. ``None`` uses the registry default.
@@ -78,41 +72,25 @@ class OuterProductMean(nn.Module):
         # The fused custom op handles the full OPM without materializing the
         # [B, N, N, c_hidden**2] intermediate. If it is unavailable, forward
         # falls through to the registry-driven eager row-chunking path.
-        self._opm_eligible = (self.mapping.tp_size == 1 and self.c_hidden == 32
-                              and self.c_out == 128)
-        assert self.c_hidden % self.mapping.tp_size == 0, \
-            "c_hidden must be divisible by tp_size"
-        self.c_hidden = self.c_hidden // self.mapping.tp_size
+        self._opm_eligible = (self.c_hidden == 32 and self.c_out == 128)
         self.norm = nn.LayerNorm(c_in, eps=eps, dtype=dtype)
         self.fused_proj_a_b = Linear(
             c_in,
-            2 * self.c_hidden * self.mapping.tp_size,
+            2 * self.c_hidden,
             bias=bias_flags["proj_a"] or bias_flags["proj_b"],
             dtype=dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
             skip_create_weights=skip_create_weights)
-        self.proj_o = Linear(self.c_hidden * self.c_hidden *
-                             self.mapping.tp_size * self.mapping.tp_size,
+        self.proj_o = Linear(self.c_hidden * self.c_hidden,
                              c_out,
                              bias=bias_flags["proj_o"],
                              dtype=dtype,
-                             mapping=self.mapping,
-                             tensor_parallel_mode=TensorParallelMode.ROW,
-                             reduce_output=True,
                              skip_create_weights=skip_create_weights)
-        self.group_comm = None
-        if self.mapping.tp_size > 1:
-            self.group_comm = get_default_tp_group_coordinator()
-            assert self.group_comm is not None, "TP group coordinator is not initialized, please call register_tp_group_coordinator first"
 
-    def _compute_num_mask(
-            self,
-            mask: torch.Tensor,
-            dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+    def _compute_num_mask(self,
+                          mask: torch.Tensor,
+                          dtype: Optional[torch.dtype] = None) -> torch.Tensor:
         """Pair-occupancy normalizer ``num_mask[b, i, j] = sum_s mask[b, s, i] * mask[b, s, j]``.
 
         This is exactly ``mask.T @ mask`` over the sequence dim, so ``torch.bmm`` contracts ``S``
@@ -139,7 +117,6 @@ class OuterProductMean(nn.Module):
         num_mask: torch.Tensor,
         b: torch.Tensor,
         out_dtype: torch.dtype,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         """Outer-product-mean for a slice of output token-rows ``i`` (position-wise over ``i``).
 
@@ -156,17 +133,12 @@ class OuterProductMean(nn.Module):
         if self.norm_before_output:
             z.div_(num_mask.unsqueeze(-1))
         z = z.reshape(*z.shape[:3], -1)  # [B, i, N, c_hidden**2]
-        z = self.proj_o(z.to(out_dtype), all_reduce_params=all_reduce_params)
+        z = self.proj_o(z.to(out_dtype))
         if not self.norm_before_output:
             z.div_(num_mask)
         return z
 
-    def forward(
-            self,
-            m: torch.Tensor,
-            mask: torch.Tensor,
-            all_reduce_params: Optional[AllReduceParams] = None
-    ) -> torch.Tensor:
+    def forward(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         Args:
             m(torch.Tensor): Input tensor of shape (B, S, N, c_in).
@@ -207,14 +179,11 @@ class OuterProductMean(nn.Module):
                           self.proj_o.bias,
                           norm_before=self.norm_before_output)
 
-        # The fused kernel is unavailable (unsupported dtype/hardware/dims or
-        # tensor parallelism), so use the memory-bounded eager fallback below.
+        # The fused kernel is unavailable (unsupported dtype/hardware/dims),
+        # so use the memory-bounded eager fallback below.
         if self.cast_to_float_before_einsum:
             a = a.float()
             b = b.float()
-        if self.mapping.tp_size > 1:
-            b = self.group_comm.all_gather(b, dim=-1)
-
         policy = self.chunk_policy
         if policy is not None:
             return chunk_apply(self._forward_impl,
@@ -223,11 +192,9 @@ class OuterProductMean(nn.Module):
                                policy=policy,
                                cat_dim=1,
                                b=b,
-                               out_dtype=m.dtype,
-                               all_reduce_params=all_reduce_params)
+                               out_dtype=m.dtype)
         # Policy explicitly disabled -> single dense full-row call.
         return self._forward_impl(a.transpose(1, 2),
                                   num_mask,
                                   b=b,
-                                  out_dtype=m.dtype,
-                                  all_reduce_params=all_reduce_params)
+                                  out_dtype=m.dtype)

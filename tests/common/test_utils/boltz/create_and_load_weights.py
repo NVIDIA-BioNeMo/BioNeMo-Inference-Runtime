@@ -16,8 +16,6 @@
 import numpy as np
 import torch
 
-from tensorrt_bionemo.mapping import Mapping, create_max_tp_mapping
-
 from .ref_attn import *
 from .ref_layers import *
 
@@ -196,10 +194,7 @@ def load_triangle_attention_weights_ref_torch(module, weights_and_biases):
         module.linear_g.bias.data.copy_(gating_bias)
 
 
-def load_triangle_attention_weights_trt(module,
-                                        weights_and_biases,
-                                        tp_size=1,
-                                        tp_rank=0):
+def load_triangle_attention_weights_trt(module, weights_and_biases):
     q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = weights_and_biases
 
     qkv_weights = torch.cat([q_weight, k_weight, v_weight], dim=0)
@@ -333,10 +328,7 @@ def create_self_pairwise_attention_weights(
             o_weight, o_bias, g_weight, g_bias, z_weight, z_bias, norm_z_weight, norm_z_bias
 
 
-def load_self_pairwise_attention_weights_trt(module,
-                                             weights_and_biases,
-                                             tp_size=1,
-                                             tp_rank=0):
+def load_self_pairwise_attention_weights_trt(module, weights_and_biases):
     init_norm_weight, init_norm_bias, q_weight, q_bias, \
         k_weight, k_bias, v_weight, v_bias, o_weight, o_bias, \
         g_weight, g_bias, z_weight, z_bias, norm_z_weight, norm_z_bias = weights_and_biases
@@ -535,17 +527,11 @@ def create_triangle_attention_node_weights(
     return ret
 
 
-def load_triangle_attention_node_weights_trt(module,
-                                             weights_and_biases,
-                                             mapping: Mapping = None):
-    mapping = mapping or Mapping()
-    tp_size = mapping.tp_size
-    tp_rank = mapping.tp_rank
+def load_triangle_attention_node_weights_trt(module, weights_and_biases):
     layer_norm_weight, layer_norm_bias = weights_and_biases["layer_norm"]
     linear_weight = weights_and_biases["linear"]
     mha_weights_and_biases = weights_and_biases["mha"]
-    load_triangle_attention_weights_trt(module.mha, mha_weights_and_biases,
-                                        tp_size, tp_rank)
+    load_triangle_attention_weights_trt(module.mha, mha_weights_and_biases)
     module.layer_norm.weight.value = np.ascontiguousarray(
         layer_norm_weight.cpu().numpy())
     module.layer_norm.bias.value = np.ascontiguousarray(
@@ -654,12 +640,7 @@ def create_triangle_multiplication_node_weights(
             norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias
 
 
-def load_triangle_multiplication_node_weights_trt(module,
-                                                  weights_and_biases,
-                                                  mapping: Mapping = None):
-    mapping = mapping or Mapping()
-    mapping.tp_size
-    mapping.tp_rank
+def load_triangle_multiplication_node_weights_trt(module, weights_and_biases):
     norm_in_weight, norm_in_bias, p_in_weight, p_in_bias, g_in_weight, g_in_bias, \
         norm_out_weight, norm_out_bias, p_out_weight, p_out_bias, g_out_weight, g_out_bias = weights_and_biases
     p_in_weight.shape[0] // 2
@@ -825,10 +806,7 @@ def create_transition_weights(dim=None,
     return norm_weight, norm_bias, fc1_weight, fc2_weight, fc3_weight
 
 
-def load_transition_weights_trt(module,
-                                weights_and_biases,
-                                tp_size=1,
-                                tp_rank=0):
+def load_transition_weights_trt(module, weights_and_biases):
     norm_weight, norm_bias, fc1_weight, fc2_weight, fc3_weight = weights_and_biases
     fused_fc2_fc1_weight = torch.cat([fc2_weight, fc1_weight], dim=0)
 
@@ -938,51 +916,30 @@ def create_pairformer_layer_weights(token_s=None,
     return ret
 
 
-def load_pairformer_layer_weights_trt(
-        module,
-        weights_and_biases,
-        mapping: Mapping = None,
-        num_heads=None,
-        token_s=None,
-        token_z=None,
-        max_attention_pairwise_tp_size: bool = False,
-        max_transition_tp_size: bool = False,
-        max_tri_mul_tp_size: bool = False,
-        include_s_path: bool = True):
-    m = mapping if mapping else Mapping()  # dynamic mapping
+def load_pairformer_layer_weights_trt(module,
+                                      weights_and_biases,
+                                      num_heads=None,
+                                      token_s=None,
+                                      token_z=None,
+                                      include_s_path: bool = True):
     if include_s_path:
-        if max_attention_pairwise_tp_size:
-            m = create_max_tp_mapping(mapping, num_heads)
         load_self_pairwise_attention_weights_trt(
-            module.attention, weights_and_biases["attention"], m.tp_size,
-            m.tp_rank)
+            module.attention, weights_and_biases["attention"])
 
-    m = mapping if mapping else Mapping()  # dynamic mapping
-    if max_tri_mul_tp_size:
-        m = create_max_tp_mapping(mapping, token_z)
     load_triangle_multiplication_node_weights_trt(
-        module.tri_mul_out, weights_and_biases["tri_mul_out"], m)
+        module.tri_mul_out, weights_and_biases["tri_mul_out"])
     load_triangle_multiplication_node_weights_trt(
-        module.tri_mul_in, weights_and_biases["tri_mul_in"], m)
+        module.tri_mul_in, weights_and_biases["tri_mul_in"])
 
-    m = mapping if mapping else Mapping()  # dynamic mapping
     load_triangle_attention_node_weights_trt(
-        module.tri_attn_start, weights_and_biases["tri_attn_start"], m)
+        module.tri_attn_start, weights_and_biases["tri_attn_start"])
     load_triangle_attention_node_weights_trt(
-        module.tri_attn_end, weights_and_biases["tri_attn_end"], m)
-    m = mapping if mapping else Mapping()  # dynamic mapping
+        module.tri_attn_end, weights_and_biases["tri_attn_end"])
     if include_s_path:
-        if max_transition_tp_size:
-            m = create_max_tp_mapping(mapping, token_s * 4)
         load_transition_weights_trt(module.transition_s,
-                                    weights_and_biases["transition_s"],
-                                    m.tp_size, m.tp_rank)
-    m = mapping if mapping else Mapping()  # dynamic mapping
-    if max_transition_tp_size:
-        m = create_max_tp_mapping(mapping, token_z * 4)
+                                    weights_and_biases["transition_s"])
     load_transition_weights_trt(module.transition_z,
-                                weights_and_biases["transition_z"], m.tp_size,
-                                m.tp_rank)
+                                weights_and_biases["transition_z"])
 
 
 def load_pairformer_layer_weights_ref_torch(module, weights_and_biases):
@@ -1085,9 +1042,7 @@ def load_adaln_weights_torch(module, weights_and_biases, dtype=torch.float32):
     ])
 
 
-def load_adaln_weights_trt(module,
-                           weights_and_biases,
-                           mapping: Mapping = None):
+def load_adaln_weights_trt(module, weights_and_biases):
     a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight = weights_and_biases
     s_bias_bias = torch.zeros(s_bias_weight.shape[0],
                               dtype=s_bias_weight.dtype,
@@ -1214,13 +1169,11 @@ def load_conditioned_transition_block_weights_torch(module,
     }])
 
 
-def load_conditioned_transition_block_weights_trt(module,
-                                                  weights_and_biases,
-                                                  mapping: Mapping = None):
+def load_conditioned_transition_block_weights_trt(module, weights_and_biases):
     adaln_weights, swish_gate_weight, a_to_b_weight, b_to_a_weight, \
         output_projection_weight, output_projection_bias = weights_and_biases
 
-    load_adaln_weights_trt(module.adaln, adaln_weights, mapping)
+    load_adaln_weights_trt(module.adaln, adaln_weights)
 
     swish_gate_weight_0, swish_gate_weight_1 = torch.chunk(swish_gate_weight,
                                                            2,
@@ -1317,16 +1270,12 @@ def load_diffusion_transformer_layer_weights_torch(module,
     }])
 
 
-def load_diffusion_transformer_layer_weights_trt(module,
-                                                 weights_and_biases,
-                                                 mapping: Mapping = None):
-    m = mapping if mapping else Mapping()  # dynamic mapping
-    load_adaln_weights_trt(module.adaln, weights_and_biases["adaln"], m)
+def load_diffusion_transformer_layer_weights_trt(module, weights_and_biases):
+    load_adaln_weights_trt(module.adaln, weights_and_biases["adaln"])
     load_self_pairwise_attention_weights_trt(
-        module.pair_bias_attn, weights_and_biases["pair_bias_attn"], m.tp_size,
-        m.tp_rank)
+        module.pair_bias_attn, weights_and_biases["pair_bias_attn"])
     load_conditioned_transition_block_weights_trt(
-        module.transition, weights_and_biases["transition"], m)
+        module.transition, weights_and_biases["transition"])
 
     output_projection_weight = weights_and_biases["output_projection"][0]
     output_projection_bias = weights_and_biases["output_projection"][1]
@@ -1411,9 +1360,7 @@ def load_pairwise_conditioning_weights_torch(module,
         load_transition_weights_torch(module.transitions[i], transition, dtype)
 
 
-def load_pairwise_conditioning_weights_trt(module,
-                                           weights_and_biases,
-                                           mapping: Mapping = None):
+def load_pairwise_conditioning_weights_trt(module, weights_and_biases):
     init_proj_norm_weight, init_proj_norm_bias = weights_and_biases[
         "init_proj_norm"]
     init_proj_linear_weight = weights_and_biases["init_proj_linear"]
@@ -1428,8 +1375,7 @@ def load_pairwise_conditioning_weights_trt(module,
         init_proj_linear_weight.cpu().numpy())
 
     for i, transition in enumerate(transitions):
-        load_transition_weights_trt(module.transitions[i], transition,
-                                    m.tp_size, m.tp_rank)
+        load_transition_weights_trt(module.transitions[i], transition)
 
 
 def create_affinity_heads_transformer_weights(
@@ -1672,9 +1618,7 @@ def load_affinity_heads_transformer_weights_torch(module,
         to_affinity_logits_binary_bias)
 
 
-def load_affinity_heads_transformer_weights_trt(module,
-                                                weights_and_biases,
-                                                mapping: Mapping = None):
+def load_affinity_heads_transformer_weights_trt(module, weights_and_biases):
     affinity_out_mlp_linear_0_weight, affinity_out_mlp_linear_0_bias = weights_and_biases[
         "affinity_out_mlp_linear_0"]
     affinity_out_mlp_linear_1_weight, affinity_out_mlp_linear_1_bias = weights_and_biases[
@@ -1838,9 +1782,7 @@ def load_affinity_module_weights_ref_torch(module, weights_and_biases):
 
 def load_affinity_module_weights_torch(module,
                                        weights_and_biases,
-                                       dtype=torch.float32,
-                                       mapping: Mapping = None):
-    m = mapping if mapping else Mapping()  # dynamic mapping
+                                       dtype=torch.float32):
     dist_bin_pairwise_embed_weight = weights_and_biases[
         "dist_bin_pairwise_embed"]
 
@@ -1889,9 +1831,7 @@ def load_affinity_module_weights_torch(module,
                                                   dtype)
 
 
-def load_affinity_module_weights_trt(module,
-                                     weights_and_biases,
-                                     mapping: Mapping = None):
+def load_affinity_module_weights_trt(module, weights_and_biases):
     dist_bin_pairwise_embed_weight = weights_and_biases[
         "dist_bin_pairwise_embed"]
 
@@ -1919,22 +1859,19 @@ def load_affinity_module_weights_trt(module,
 
     pairwise_conditioner_weights = weights_and_biases["pairwise_conditioner"]
     load_pairwise_conditioning_weights_trt(module.pairwise_conditioner,
-                                           pairwise_conditioner_weights,
-                                           mapping)
+                                           pairwise_conditioner_weights)
 
     pairformer_stack_weights = weights_and_biases["pairformer_stack"]
     for i in range(len(pairformer_stack_weights)):
         load_pairformer_layer_weights_trt(
             module.pairformer_stack.layers[i],
             pairformer_stack_weights[i],
-            mapping=mapping,
             include_s_path=False,
         )
 
     affinity_heads_weights = weights_and_biases["affinity_heads"]
     load_affinity_heads_transformer_weights_trt(module.affinity_heads,
-                                                affinity_heads_weights,
-                                                mapping)
+                                                affinity_heads_weights)
 
 
 def create_pair_weighted_averaging_weights(
@@ -2117,10 +2054,7 @@ def load_outer_product_mean_weights_torch(module,
     }])
 
 
-def load_outer_product_mean_weights_trt(module,
-                                        weights_and_biases,
-                                        mapping: Mapping = None):
-    m = mapping if mapping else Mapping()  # dynamic mapping
+def load_outer_product_mean_weights_trt(module, weights_and_biases):
     norm_weight, norm_bias, proj_a_weight, proj_a_bias, \
     proj_b_weight, proj_b_bias, proj_o_weight, proj_o_bias = weights_and_biases
     module.norm.weight.value = np.ascontiguousarray(norm_weight.cpu().numpy())

@@ -25,15 +25,6 @@ class ParallelismMode(str, Enum):
     REPLICA = "replica"
     """Data-parallel: one engine per GPU; multiple independent replicas."""
 
-    DISTRIBUTED = "distributed"
-    """Multi-GPU per engine (e.g. Data Parallel / Tensor Parallel / Context Parallel).
-
-    DISTRIBUTED can do all the work that REPLICA mode does (data-parallel inference
-    across multiple GPUs), but uses Ray for convenience: Ray manages placement,
-    process groups, and scaling. When implemented, use this mode for Data Parallel, Tensor Parallel
-    or Context Parallel (one logical engine spanning multiple GPUs). Not implemented
-    yet; extend when adding DP/TP/CP."""
-
 
 class _StageConfigBase(BaseModel):
     enabled: bool = Field(default=True,
@@ -99,8 +90,7 @@ class WriterStageConfig(_StageConfigBase):
 class EngineStageConfig(_StageConfigBase):
     parallelism_mode: ParallelismMode = Field(
         default=ParallelismMode.REPLICA,
-        description=
-        "Parallelism mode: REPLICA (one engine per GPU) or DISTRIBUTED (multi-GPU per engine, reserved for future TP/CP).",
+        description="Parallelism mode: REPLICA (one engine per GPU).",
     )
     num_gpus: float = Field(
         default=1.0,

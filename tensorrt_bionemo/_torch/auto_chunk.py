@@ -285,7 +285,7 @@ def chunk_apply(
             unsliced -- e.g. an already-reduced bias, a broadcast scalar, or ``mask=None``.
         policy: chunking policy (defaults to the ``pair_transition`` registry policy).
         cat_dim: dimension to concatenate outputs along (defaults to ``policy.dim``).
-        **passthrough: forwarded unchanged to every ``fn`` call (e.g. ``all_reduce_params``).
+        **passthrough: forwarded unchanged to every ``fn`` call (e.g. ``attn_metadata``).
 
     Returns:
         The same result as a single dense ``fn`` call, assembled from the per-slice outputs.

@@ -5,7 +5,6 @@
 import logging
 import os
 import sys
-from typing import Optional
 
 _LEVELS = {
     "internal_error": logging.CRITICAL,
@@ -35,7 +34,6 @@ class Logger:
                                          "error").lower()
         self._level = (requested_level
                        if requested_level in _LEVELS else "error")
-        self.rank: Optional[int] = None
         self._appeared_keys: set[object] = set()
         self._logger = logging.getLogger("TensorRT-BioNeMo")
         self._logger.propagate = False
@@ -60,13 +58,8 @@ class Logger:
         self._level = level
         self._logger.setLevel(_LEVELS[level])
 
-    def set_rank(self, rank: int) -> None:
-        self.rank = rank
-
     def log(self, level: str, *message: object) -> None:
         parts = ["[TensorRT-BioNeMo]"]
-        if self.rank is not None:
-            parts.append(f"[RANK {self.rank}]")
         parts.append(_PREFIXES[level])
         parts.extend(map(str, message))
         self._logger.log(_LEVELS[level], " ".join(parts))

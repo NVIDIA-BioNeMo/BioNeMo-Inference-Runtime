@@ -143,6 +143,33 @@ class TestWriterUDFCreateWriter:
         writer = udf._create_writer("pdb")
         assert isinstance(writer, PDBWriter)
 
+    def test_pdb_writer_uses_canonical_protein_residue_names(self):
+        from tensorrt_bionemo.data.schemas import FoldingOutput
+        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
+        from tensorrt_bionemo.data.writers import PDBWriter
+
+        output = PDBWriter(
+            res_type_mapping={
+                0: ResTypes.A
+            },
+            atom_type_mapping={
+                0: AtomTypes.CA
+            },
+            output_path=None,
+        ).write(
+            FoldingOutput(
+                atom_positions=np.zeros((1, 1, 3), dtype=np.float32),
+                residue_types=np.array([0], dtype=np.int64),
+                atom_mask=np.ones((1, 1), dtype=np.float32),
+                residue_indices=np.array([1], dtype=np.int64),
+                b_factors=np.zeros((1, 1), dtype=np.float32),
+                chain_indices=np.array([0], dtype=np.int64),
+            ))
+
+        atom_line = next(line for line in output.splitlines()
+                         if line.startswith("ATOM"))
+        assert atom_line[17:20] == "ALA"
+
     def test_create_writer_cif_format(self):
         from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
         from tensorrt_bionemo.data.writers import CIFWriter

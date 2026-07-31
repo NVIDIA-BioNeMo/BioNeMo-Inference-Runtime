@@ -13,13 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
-from tensorrt_bionemo.mapping import Mapping
+from tensorrt_bionemo._torch.layers.linear import Linear
 
 
 class DistogramModule(nn.Module):
@@ -31,7 +28,6 @@ class DistogramModule(nn.Module):
                  num_distograms: int = 1,
                  version: str = "v1",
                  dtype: torch.dtype = torch.float32,
-                 mapping: Optional[Mapping] = None,
                  skip_create_weights: bool = False) -> None:
         """Initialize the distogram module.
 
@@ -49,9 +45,6 @@ class DistogramModule(nn.Module):
         self.distogram = Linear(token_z,
                                 num_distograms * num_bins,
                                 dtype=dtype,
-                                mapping=mapping,
-                                tensor_parallel_mode=TensorParallelMode.COLUMN,
-                                gather_output=True,
                                 skip_create_weights=skip_create_weights)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:

@@ -23,11 +23,8 @@ from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
                                                 ChunkPolicy, chunk_apply)
 from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import (
     PairWeightedAveragingCuTe, get_pair_weighted_averaging_op)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
-from tensorrt_bionemo.mapping import Mapping
 
-from .linear import (Linear, TensorParallelMode, WeightMode,
-                     WeightsLoadingConfig)
+from .linear import Linear, WeightMode, WeightsLoadingConfig
 
 
 class PairWeightedAveraging(nn.Module):
@@ -42,7 +39,6 @@ class PairWeightedAveraging(nn.Module):
                  eps: float = 1e-5,
                  dtype: torch.dtype = None,
                  skip_create_weights: bool = False,
-                 mapping: Optional[Mapping] = None,
                  chunk_policy: Optional[ChunkPolicy] = None) -> None:
         """
         Args:
@@ -54,7 +50,6 @@ class PairWeightedAveraging(nn.Module):
             eps(float): The epsilon value.
             dtype(torch.dtype): The data type of the input tensor.
             skip_create_weights(bool): Whether to skip creating weights.
-            mapping(Optional[Mapping]): The mapping of the input tensor.
             chunk_policy(Optional[ChunkPolicy]): Sequence-row chunking policy; ``None`` uses the shared
                 ``pair_weighted_averaging`` policy from ``CHUNK_REGISTRY``.
         """
@@ -69,52 +64,38 @@ class PairWeightedAveraging(nn.Module):
         self.chunk_policy = (chunk_policy if chunk_policy is not None else
                              CHUNK_REGISTRY.get(PAIR_WEIGHTED_AVERAGING))
 
-        self.mapping = mapping
-        if mapping is None:
-            self.mapping = Mapping()
-        assert num_heads % self.mapping.tp_size == 0, "num_heads must be divisible by tp_size"
-        self.num_heads = num_heads // self.mapping.tp_size
+        self.num_heads = num_heads
         self.norm_m = nn.LayerNorm(self.c_m, dtype=dtype, eps=eps)
         self.norm_z = nn.LayerNorm(self.c_z, dtype=dtype, eps=eps)
 
         self.fused_proj_m_g = Linear(
             self.c_m,
-            2 * self.c_h * self.num_heads * self.mapping.tp_size,
+            2 * self.c_h * self.num_heads,
             bias=False,
             dtype=dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             weights_loading_config=WeightsLoadingConfig(
                 weight_mode=WeightMode.FUSED_KV_LINEAR),
             skip_create_weights=skip_create_weights,
         )
         self.proj_z = Linear(
             self.c_z,
-            self.num_heads * self.mapping.tp_size,
+            self.num_heads,
             bias=False,
             dtype=dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.COLUMN,
-            gather_output=False,
             skip_create_weights=skip_create_weights,
         )
         self.proj_o = Linear(
-            self.c_h * self.num_heads * self.mapping.tp_size,
+            self.c_h * self.num_heads,
             c_m,
             bias=False,
             dtype=dtype,
-            mapping=self.mapping,
-            tensor_parallel_mode=TensorParallelMode.ROW,
-            reduce_output=True,
             skip_create_weights=skip_create_weights,
         )
 
-        # Eligibility for the fused PWA CuTe op (the einsum -> sigmoid(gate) -> proj_o chain):
-        # single-GPU (so proj_o is unsharded and no all-reduce is needed) and the kernel's fixed
-        # dims (H=8, D=c_h=32, c_m=64). The op itself further gates on SM/dtype/j-pad and falls back.
-        self._pwa_op_eligible = (self.mapping.tp_size == 1
-                                 and self.num_heads == 8 and self.c_h == 32
+        # Eligibility for the fused PWA CuTe op (the einsum -> sigmoid(gate) -> proj_o
+        # chain): the kernel has fixed dims (H=8, D=c_h=32, c_m=64). The op itself further
+        # gates on SM/dtype/j-pad and falls back.
+        self._pwa_op_eligible = (self.num_heads == 8 and self.c_h == 32
                                  and c_m == 64)
 
     def forward(
@@ -122,7 +103,6 @@ class PairWeightedAveraging(nn.Module):
         m: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -150,19 +130,14 @@ class PairWeightedAveraging(nn.Module):
                                policy=self.chunk_policy,
                                cat_dim=1,
                                z=z,
-                               mask=mask,
-                               all_reduce_params=all_reduce_params)
-        return self._forward_impl(m,
-                                  z,
-                                  mask,
-                                  all_reduce_params=all_reduce_params)
+                               mask=mask)
+        return self._forward_impl(m, z, mask)
 
     def _forward_impl(
         self,
         m: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
         vg = self.fused_proj_m_g(m)
         v, g = vg.split([self.c_h * self.num_heads, self.c_h * self.num_heads],
@@ -179,7 +154,7 @@ class PairWeightedAveraging(nn.Module):
         o = torch.einsum("bhij,bhsjd->bhsid", w, v)
         o = o.permute(0, 2, 3, 1, 4)  # [B, S, N, H, D]
         o = o.reshape(*o.shape[:3], self.num_heads * self.c_h)
-        o = self.proj_o(g * o, all_reduce_params=all_reduce_params)
+        o = self.proj_o(g * o)
         return o
 
     def _forward_fused(
@@ -214,5 +189,4 @@ class PairWeightedAveraging(nn.Module):
                        N))  # [B, H, N, Jp]   (pad value 0 -- required; w only)
 
         # g is the RAW gate [B, S, N, H*D] (kernel applies sigmoid); proj_o.weight is [c_m, H*D].
-        # tp_size==1 (eligibility) -> proj_o is unsharded, so no all-reduce is needed.
         return op(w, v, g, self.proj_o.weight)

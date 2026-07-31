@@ -3,17 +3,14 @@ from typing import Optional, Tuple
 
 import torch
 
-from tensorrt_bionemo.mapping import Mapping
-
 
 def compute_random_augmentation(
-        batch_size: int = 1,
-        multiplicity: int = 1,
-        s_trans: float = 1.0,
-        device: Optional[torch.device] = None,
-        dtype: torch.dtype = torch.float32,
-        mapping: Optional[Mapping] = None,
-        generator: Optional[torch.Generator] = None
+    batch_size: int = 1,
+    multiplicity: int = 1,
+    s_trans: float = 1.0,
+    device: Optional[torch.device] = None,
+    dtype: torch.dtype = torch.float32,
+    generator: Optional[torch.Generator] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute random augmentation for the coordinates.
@@ -26,8 +23,6 @@ def compute_random_augmentation(
             The device to compute the random augmentation. Default: None
         dtype (torch.dtype):
             The dtype to compute the random augmentation. Default: torch.float32
-        mapping (Optional[Mapping]):
-            The device mesh mapping to compute the random augmentation. Unused for now
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: The random rotation matrix and the random translation.
 
@@ -38,7 +33,7 @@ def compute_random_augmentation(
                          dtype=dtype,
                          device=device,
                          generator=generator).view(batch_size, multiplicity, 3,
-                                                    3)
+                                                   3)
 
     # Using randn to create random translation matrix shape [*, 1, 3]
     random_trans = (torch.randn((batch_size, multiplicity, 1, 3),

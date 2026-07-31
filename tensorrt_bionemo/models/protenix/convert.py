@@ -28,7 +28,6 @@ from typing import Optional
 import torch
 
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import (get_transition_weights,
                                                     get_tri_attn_node_weights,
                                                     get_tri_mul_node_weights)
@@ -337,7 +336,6 @@ def _convert_pair_path(weights: dict,
                        src_pair: str,
                        tgt_layer: str,
                        out: dict,
-                       mapping,
                        dtype_str: str,
                        transition_dim: int,
                        transition_name: str = "transition_z") -> None:
@@ -349,32 +347,27 @@ def _convert_pair_path(weights: dict,
     pf_sd: dict[str, torch.Tensor] = {}
     _openfold_pairformer_block_intermediate(weights, src_pair, "b", pf_sd)
     out.update(
-        get_tri_mul_node_weights(mapping,
-                                 pf_sd,
+        get_tri_mul_node_weights(pf_sd,
                                  "b.tri_mul_out",
                                  f"{tgt_layer}.tri_mul_out",
                                  dtype=dtype_str))
     out.update(
-        get_tri_mul_node_weights(mapping,
-                                 pf_sd,
+        get_tri_mul_node_weights(pf_sd,
                                  "b.tri_mul_in",
                                  f"{tgt_layer}.tri_mul_in",
                                  dtype=dtype_str))
     out.update(
-        get_tri_attn_node_weights(mapping,
-                                  pf_sd,
+        get_tri_attn_node_weights(pf_sd,
                                   "b.tri_att_start",
                                   f"{tgt_layer}.tri_attn_start",
                                   dtype=dtype_str))
     out.update(
-        get_tri_attn_node_weights(mapping,
-                                  pf_sd,
+        get_tri_attn_node_weights(pf_sd,
                                   "b.tri_att_end",
                                   f"{tgt_layer}.tri_attn_end",
                                   dtype=dtype_str))
     out.update(
-        get_transition_weights(mapping,
-                               pf_sd,
+        get_transition_weights(pf_sd,
                                "b.transition_z",
                                f"{tgt_layer}.{transition_name}",
                                dim=transition_dim,
@@ -392,7 +385,6 @@ def convert_template_embedder_torch(config: BaseConfig,
     dtype = config.torch_dtype
     # Inner pair stack weights match pairformer_dtype (bf16) for plain load.
     pf_dtype_str = config.pairformer_dtype
-    mapping = config.mapping or Mapping()
     out: dict[str, torch.Tensor] = {}
 
     for ln in ("layernorm_z", "layernorm_v"):
@@ -409,7 +401,6 @@ def convert_template_embedder_torch(config: BaseConfig,
                            _join(prefix, f"pairformer_stack.blocks.{i}"),
                            f"pairformer_stack.layers.{i}",
                            out,
-                           mapping,
                            pf_dtype_str,
                            transition_dim=config.c *
                            config.num_intermediate_factor)
@@ -473,12 +464,11 @@ def convert_pairformer_stack_torch(config: BaseConfig,
     """
     dtype = config.torch_dtype
     dtype_str = config.dtype
-    mapping = config.mapping or Mapping()
     out: dict[str, torch.Tensor] = {}
     for i in range(config.num_blocks):
         src_blk = _join(prefix, f"blocks.{i}")
         layer = f"layers.{i}"
-        _convert_pair_path(weights, src_blk, layer, out, mapping, dtype_str,
+        _convert_pair_path(weights, src_blk, layer, out, dtype_str,
                            config.token_z * 4)
         _convert_pairformer_single_path(weights, src_blk, layer, out, dtype)
     return out
@@ -552,7 +542,6 @@ def convert_msa_module_torch(config: BaseConfig,
     """
     dtype = config.torch_dtype
     dtype_str = config.dtype
-    mapping = config.mapping or Mapping()
     out: dict[str, torch.Tensor] = {}
 
     # Feature-embedding wrapper (identical names).
@@ -576,7 +565,6 @@ def convert_msa_module_torch(config: BaseConfig,
                            f"{src_blk}.pair_stack",
                            tgt,
                            out,
-                           mapping,
                            dtype_str,
                            config.c_z * config.transition_n,
                            transition_name="pair_transition")

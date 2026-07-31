@@ -98,7 +98,6 @@ class ProtenixTemplateEmbedder(nn.Module):
             dtype=self.pairformer_dtype,
             eps=config.norm_epsilon,
             inf=config.mask_inf,
-            mapping=config.mapping,
             triangle_attn_backend=config.triangle_attention_backend,
             trimul_high_precision=config.trimul_high_precision,
             skip_create_weights=config.skip_create_weights,

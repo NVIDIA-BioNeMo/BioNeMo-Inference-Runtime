@@ -303,7 +303,7 @@ The Torch backend provides optimized `nn.Module` implementations that run in PyT
    - `attention.py` — `AttentionPairBias`, `TriangleAttention`
    - `transition.py` — `Transition`, `ConditionedTransitionBlock`
    - `normalization.py` — `AdaLN`
-   - `linear.py` — `Linear` (with tensor parallelism support)
+   - `linear.py` — `Linear`
 
 1. **Attention backends** — Search `tensorrt_bionemo/_torch/attention_backend/` for available attention implementations:
 
@@ -408,7 +408,7 @@ After completing Steps 1–2, produce a **feasibility report** as a markdown fil
 | Aspect | Customer | TRT-BNM | Adapter Needed? |
 |---|---|---|---|
 | Mask format | `<e.g., bool padding mask>` | `<e.g., float valid mask>` | YES / NO |
-| Extra TRT-BNM args | — | `<e.g., attn_metadatas, all_reduce_params>` | YES |
+| Extra TRT-BNM args | — | `<e.g., attn_metadatas, precomputed_masks>` | YES |
 | Return type | `<e.g., Tensor>` | `<e.g., Tensor>` | YES / NO |
 | ... | ... | ... | ... |
 
@@ -448,7 +448,7 @@ Compare the customer module against the closest TRT-BNM equivalent(s). Document:
 1. **Sub-module mapping table** — For each customer sub-module: customer class, Torch-backend class (or gap), file paths.
 1. **Forward signature differences** — Compare input/output signatures. Common differences:
    - Mask format (bool padding mask vs float valid mask vs precomputed bias)
-   - Extra TRT-BNM args (`attn_metadatas`, `all_reduce_params`, `precomputed_masks`, `buffers`)
+   - Extra TRT-BNM args (`attn_metadatas`, `precomputed_masks`, `buffers`)
    - Return type (tuple ordering, extra outputs)
 1. **Hyperparameter mapping** — Map constructor args: hidden dims, head counts, expansion factors, epsilon values, etc. Note any without a direct equivalent.
 1. **Inference-irrelevant features** — List customer features to strip: dropout, activation checkpointing, training-mode branches, auxiliary losses.
@@ -522,7 +522,7 @@ All integration code goes under `$WORKDIR/integration/`. Import `tensorrt_bionem
 Create `$WORKDIR/integration/adapter.py` — a thin `nn.Module` that bridges the customer's `forward()` signature to the TRT-BNM module's `forward()`. The adapter handles:
 
 - **Mask conversion** — Transform the customer's mask format to TRT-BNM's expected format.
-- **Argument bridging** — Supply TRT-BNM-specific args with sensible defaults (e.g., `attn_metadatas=None`, `all_reduce_params=None`).
+- **Argument bridging** — Supply TRT-BNM-specific args with sensible defaults (e.g., `attn_metadatas=None`, `precomputed_masks=None`).
 - **Output reshaping** — Match the customer's expected return type.
 - **Inference-mode stripping** — Do not replicate dropout or training-only logic.
 
@@ -548,7 +548,6 @@ Key config fields to set:
 - Head configuration (`num_heads`, `pairwise_head_width`, `pairwise_num_heads`)
 - `dtype` (usually `"bfloat16"` for inference)
 - Attention backend — use `triangle_attention_backend="CUEQUIV"` and `pairwise_attention_backend="SDPA"` (these are the defaults).
-- Tensor parallelism (`mapping`) — start with single-GPU (`Mapping()`)
 
 ## Phase 4 — Hierarchical Equivalence Tests
 

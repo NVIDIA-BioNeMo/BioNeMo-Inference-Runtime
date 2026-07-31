@@ -15,7 +15,6 @@
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import load_weights
 from tensorrt_bionemo.logger import logger
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.models.boltz1.convert import \
     convert_hf_diffusion_transformer as boltz1_convert_hf_diffusion_transformer
 from tensorrt_bionemo.models.boltz1.convert import \
@@ -53,14 +52,12 @@ def get_post_pre_norm_weights(state_dict: dict,
 
 
 def convert_hf_pairformer(config: BaseConfig,
-                          mapping: Mapping,
                           pairformer_type: str = "structure",
                           local_checkpoint: str = None,
                           model_name: str = "boltz-2"):
     """
     Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
     """
-    mapping = mapping if mapping is not None else Mapping()
     prefix = "pairformer_module.layers"
     if pairformer_type == "confidence":
         prefix = "pairformer_stack.layers"
@@ -84,61 +81,48 @@ def convert_hf_pairformer(config: BaseConfig,
                                       dtype="float32"))
         weights.update(
             get_pairwise_attn_weights(
-                mapping,
                 state_dict,
                 f"{layer_prefix}.attention",
                 f"{layer_tbm_prefix}.attention",
-                config.max_attention_pairwise_tp_size,
                 config.num_heads,
                 attention_initial_norm=config.attention_initial_norm,
                 dtype="float32"))
         weights.update(
-            get_tri_attn_node_weights(mapping,
-                                      state_dict,
+            get_tri_attn_node_weights(state_dict,
                                       f"{layer_prefix}.tri_att_start",
                                       f"{layer_tbm_prefix}.tri_attn_start",
                                       dtype=config.dtype))
         weights.update(
-            get_tri_attn_node_weights(mapping,
-                                      state_dict,
+            get_tri_attn_node_weights(state_dict,
                                       f"{layer_prefix}.tri_att_end",
                                       f"{layer_tbm_prefix}.tri_attn_end",
                                       dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping,
-                                     state_dict,
+            get_tri_mul_node_weights(state_dict,
                                      f"{layer_prefix}.tri_mul_out",
                                      f"{layer_tbm_prefix}.tri_mul_out",
-                                     config.max_tri_mul_tp_size,
                                      dtype=config.dtype))
         weights.update(
-            get_tri_mul_node_weights(mapping,
-                                     state_dict,
+            get_tri_mul_node_weights(state_dict,
                                      f"{layer_prefix}.tri_mul_in",
                                      f"{layer_tbm_prefix}.tri_mul_in",
-                                     config.max_tri_mul_tp_size,
                                      dtype=config.dtype))
         weights.update(
-            get_transition_weights(mapping,
-                                   state_dict,
+            get_transition_weights(state_dict,
                                    f"{layer_prefix}.transition_s",
                                    f"{layer_tbm_prefix}.transition_s",
-                                   config.max_transition_tp_size,
                                    config.token_s * 4,
                                    dtype="float32"))
         weights.update(
-            get_transition_weights(mapping,
-                                   state_dict,
+            get_transition_weights(state_dict,
                                    f"{layer_prefix}.transition_z",
                                    f"{layer_tbm_prefix}.transition_z",
-                                   config.max_transition_tp_size,
                                    config.token_z * 4,
                                    dtype=config.dtype))
     return weights
 
 
 def convert_hf_pairformer_torch(config: BaseConfig = None,
-                                mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-2",
                                 weights: dict = None,
@@ -150,7 +134,6 @@ def convert_hf_pairformer_torch(config: BaseConfig = None,
     Args:
         module: The module to load the weights into.
         checkpoint_dir: The directory to load the checkpoint from.
-        mapping: The mapping to use.
         weights: The weights to load into the module.
         pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
     """
@@ -167,7 +150,6 @@ def convert_hf_pairformer_torch(config: BaseConfig = None,
     tbnm_state_dict = boltz1_convert_hf_pairformer_torch(
         config=config,
         local_checkpoint=None,
-        mapping=mapping,
         weights=state_dict,
         pairformer_type=pairformer_type,
         prefix=prefix)
@@ -186,7 +168,6 @@ def convert_hf_pairformer_torch(config: BaseConfig = None,
 
 
 def convert_hf_diffusion_transformer_torch(config: BaseConfig = None,
-                                           mapping: Mapping = None,
                                            local_checkpoint: str = None,
                                            model_name: str = "boltz-2",
                                            weights: dict = None,
@@ -196,11 +177,7 @@ def convert_hf_diffusion_transformer_torch(config: BaseConfig = None,
     else:
         state_dict = weights
     tbnm_state_dict = boltz1_convert_hf_diffusion_transformer_torch(
-        config=config,
-        local_checkpoint=None,
-        mapping=mapping,
-        weights=state_dict,
-        **kwargs)
+        config=config, local_checkpoint=None, weights=state_dict, **kwargs)
     return tbnm_state_dict
 
 
@@ -210,8 +187,7 @@ def convert_hf_diffusion_transformer(*args, **kwargs):
     return boltz1_convert_hf_diffusion_transformer(*args, **kwargs)
 
 
-def get_pairwise_conditioner_weights(mapping: Mapping,
-                                     state_dict: dict,
+def get_pairwise_conditioner_weights(state_dict: dict,
                                      prefix: str,
                                      tbm_prefix: str,
                                      num_transitions: int,
@@ -236,8 +212,7 @@ def get_pairwise_conditioner_weights(mapping: Mapping,
         transition_layer_prefix = f"{prefix}.transitions.{i}"
         transition_layer_tbm_prefix = f"{tbm_prefix}.transitions.{i}"
         ret.update(
-            get_transition_weights(mapping,
-                                   state_dict,
+            get_transition_weights(state_dict,
                                    transition_layer_prefix,
                                    transition_layer_tbm_prefix,
                                    True,
@@ -246,49 +221,38 @@ def get_pairwise_conditioner_weights(mapping: Mapping,
     return ret
 
 
-def get_pairformer_no_seq_weights(mapping: Mapping,
-                                  state_dict: dict,
+def get_pairformer_no_seq_weights(state_dict: dict,
                                   prefix: str,
                                   tbm_prefix: str,
-                                  max_tri_mul_tp_size: bool = True,
-                                  max_transition_tp_size: bool = True,
                                   token_z: int = 128,
                                   dtype: str = "float32"):
     str_dtype_to_torch(dtype)
     weights = {}
     weights.update(
-        get_tri_attn_node_weights(mapping,
-                                  state_dict,
+        get_tri_attn_node_weights(state_dict,
                                   f"{prefix}.tri_att_start",
                                   f"{tbm_prefix}.tri_attn_start",
                                   dtype=dtype))
     weights.update(
-        get_tri_attn_node_weights(mapping,
-                                  state_dict,
+        get_tri_attn_node_weights(state_dict,
                                   f"{prefix}.tri_att_end",
                                   f"{tbm_prefix}.tri_attn_end",
                                   dtype=dtype))
     weights.update(
-        get_tri_mul_node_weights(mapping,
-                                 state_dict,
+        get_tri_mul_node_weights(state_dict,
                                  f"{prefix}.tri_mul_out",
                                  f"{tbm_prefix}.tri_mul_out",
-                                 max_tri_mul_tp_size,
                                  dtype=dtype))
     weights.update(
-        get_tri_mul_node_weights(mapping,
-                                 state_dict,
+        get_tri_mul_node_weights(state_dict,
                                  f"{prefix}.tri_mul_in",
                                  f"{tbm_prefix}.tri_mul_in",
-                                 max_tri_mul_tp_size,
                                  dtype=dtype))
 
     weights.update(
-        get_transition_weights(mapping,
-                               state_dict,
+        get_transition_weights(state_dict,
                                f"{prefix}.transition_z",
                                f"{tbm_prefix}.transition_z",
-                               max_transition_tp_size,
                                token_z * 4,
                                dtype=dtype))
     return weights
@@ -296,7 +260,6 @@ def get_pairformer_no_seq_weights(mapping: Mapping,
 
 def convert_hf_affinity_module_torch(
         config: BaseConfig = None,
-        mapping: Mapping = None,
         local_checkpoint: str = None,
         model_name: str = "boltz-2-affinity",
         weights: dict = None,
@@ -579,7 +542,6 @@ def convert_hf_affinity_module_torch(
 
 
 def convert_hf_msa_module_torch(config: BaseConfig = None,
-                                mapping: Mapping = None,
                                 local_checkpoint: str = None,
                                 model_name: str = "boltz-2",
                                 weights: dict = None,
@@ -933,7 +895,6 @@ def _convert_pairformer_no_seq_block_torch(module_state_dict: dict,
 
 
 def convert_hf_template_module_torch(config: BaseConfig = None,
-                                     mapping: Mapping = None,
                                      local_checkpoint: str = None,
                                      model_name: str = "boltz-2",
                                      weights: dict = None,
@@ -984,7 +945,6 @@ def convert_hf_template_module_torch(config: BaseConfig = None,
 
 
 def convert_hf_input_embedder_torch(config: BaseConfig,
-                                    mapping: Mapping = None,
                                     local_checkpoint: str = None,
                                     model_name: str = "boltz-2",
                                     weights: dict = None,
@@ -1003,7 +963,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
 
     atom_transformer_weights = convert_hf_diffusion_transformer_torch(
         config.diffusion_transformer,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1106,7 +1065,6 @@ def convert_hf_input_embedder_torch(config: BaseConfig,
 
 
 def convert_hf_structure_module_torch(config: BaseConfig,
-                                      mapping: Mapping = None,
                                       local_checkpoint: str = None,
                                       model_name: str = "boltz-2",
                                       weights: dict = None,
@@ -1216,7 +1174,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     # ws["atom_attention_encoder"] = {}
     DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.atom_encoder,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1243,7 +1200,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     # Load for atom attention decoder
     DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.atom_decoder,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1278,7 +1234,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     # Load for token transformer
     DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.token_transformer,
-        mapping=mapping,
         local_checkpoint=local_checkpoint,
         model_name=model_name,
         weights=state_dict,
@@ -1291,7 +1246,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
 
 
 def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
-                                            mapping: Mapping = None,
                                             local_checkpoint: str = None,
                                             model_name: str = "boltz-2",
                                             weights: dict = None,
@@ -1433,7 +1387,6 @@ def convert_hf_diffusion_conditioning_torch(config: BaseConfig,
 
 
 def convert_hf_confidence_module_torch(config: BaseConfig,
-                                       mapping: Mapping = None,
                                        local_checkpoint: str = None,
                                        model_name: str = "boltz-2",
                                        weights: dict = None,

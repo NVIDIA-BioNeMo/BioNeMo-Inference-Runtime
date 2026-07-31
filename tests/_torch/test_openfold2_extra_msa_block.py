@@ -25,7 +25,6 @@ from test_utils.openfold.ref_layers import RefExtraMSABlock
 from tensorrt_bionemo._torch.attention_backend.utils import \
     precompute_pair_masks
 from tensorrt_bionemo._torch.modules.openfold2.trunk import ExtraMSABlock
-from tensorrt_bionemo.mapping import Mapping
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
@@ -59,7 +58,6 @@ def _create_extra_msa_block(ref_module, sc, torch_dtype):
         dtype=torch_dtype,
         eps=ref_module.eps,
         inf=ref_module.inf,
-        mapping=Mapping(),
     )
 
 

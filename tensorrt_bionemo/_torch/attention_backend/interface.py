@@ -19,16 +19,12 @@ from typing import Callable, Generic, Optional, Type, TypeVar
 
 import torch
 
-from tensorrt_bionemo.mapping import Mapping
-
 
 @dataclass(kw_only=True)
 class AttentionMetadata:
     """
     Metadata for multi-head attention layer.
     """
-    mapping: Optional[Mapping] = None
-
     # Bias caching for diffusion transformer layers
     bias_cache: Optional[dict[str, torch.Tensor]] = None
 

@@ -25,7 +25,6 @@ import torch.nn.functional as F
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
     PrecomputedPairMasks, precompute_pair_masks)
-from tensorrt_bionemo._torch.distributed import AllReduceParams
 from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.transformers.pairformer import \
     PairformerModule
@@ -111,7 +110,6 @@ class ProtenixMSAModule(nn.Module):
         pair_mask: Optional[torch.Tensor] = None,
         msa_mask: Optional[torch.Tensor] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         precomputed_masks: Optional[PrecomputedPairMasks] = None
     ) -> torch.Tensor:
         """Update pair ``z`` via MSA feature embed + :class:`MSAModuleStack`.
@@ -138,7 +136,6 @@ class ProtenixMSAModule(nn.Module):
                              msa_mask,
                              pair_mask,
                              attn_metadata,
-                             all_reduce_params=all_reduce_params,
                              precomputed_masks=precomputed_masks)
         return out.to(z.dtype)
 
@@ -196,7 +193,6 @@ class ProtenixTrunk(nn.Module):
         pair_mask: Optional[torch.Tensor] = None,
         token_mask: Optional[torch.Tensor] = None,
         attn_metadata: Optional[AttentionMetadata] = None,
-        all_reduce_params: Optional[AllReduceParams] = None,
         num_cycles: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run ``n_cycle`` recycling iterations; return trunk ``(s, z)``.
@@ -236,16 +232,12 @@ class ProtenixTrunk(nn.Module):
                                 s_inputs,
                                 pair_mask=pair_mask,
                                 attn_metadata=attn_metadata,
-                                all_reduce_params=all_reduce_params,
                                 precomputed_masks=msa_precomputed)
             s = self.linear_no_bias_s(self.layernorm_s(s))
             s.add_(s_init)
-            s_pf, z_pf = self.pairformer_stack(
-                s.to(self.pairformer_dtype),
-                z.to(self.pairformer_dtype),
-                token_mask,
-                pair_mask,
-                all_reduce_params=all_reduce_params)
+            s_pf, z_pf = self.pairformer_stack(s.to(self.pairformer_dtype),
+                                               z.to(self.pairformer_dtype),
+                                               token_mask, pair_mask)
             s = s_pf.to(self.dtype)
             z = z_pf.to(self.pair_state_dtype)
         return s, z

@@ -7,9 +7,9 @@
 #                      └► prod_stage  (FROM copy_source_stage)
 #                      ├► dev_stage   (FROM copy_source_stage)
 #
-# The source-independent work (base image, ccache, pip upgrade) lives in the
-# first stage so it stays cached across source edits; COPY . happens later so a
-# code change only re-runs the copy + the package install below it.
+# The source-independent work (base image, pip upgrade) lives in the first stage
+# so it stays cached across source edits; COPY . happens later so a code change
+# only re-runs the copy + the package install below it.
 #
 # ------------------------------------------------------------------------
 # requirements stage
@@ -22,27 +22,10 @@ FROM ${BASE_IMAGE}:${BASE_TAG} AS requirements_stage
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="${CUDA_HOME}/bin:${PATH}"
 
-# The C++/CUDA build uses ccache as its compiler launcher. The NGC PyTorch
-# development image already provides PyTorch and a complete CUDA toolkit.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ccache \
-    && rm -rf /var/lib/apt/lists/* \
-    && test -x "${CUDA_HOME}/bin/nvcc" \
-    && test -f "${CUDA_HOME}/include/cuda_runtime.h"
+# The NGC PyTorch development image already provides PyTorch and a complete CUDA
+# toolkit. nvcc is used by setup.py to stamp the CUDA local version (+cuXYZ).
+RUN test -x "${CUDA_HOME}/bin/nvcc"
 
-# collect arg variables
-ARG CMAKE_BUILD_TYPE='Release'
-ENV CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-
-ARG RECOMPILE_CPP='1'
-ENV RECOMPILE_CPP=${RECOMPILE_CPP}
-
-# Persist the ccache directory across builds via a BuildKit cache mount (see
-# the install RUNs below). build_backend.py wires ccache as the CXX/CUDA
-# compiler launcher, so this makes the forced RECOMPILE_CPP=1 rebuilds
-# incremental instead of compiling the whole C++/CUDA extension from scratch.
-ENV CCACHE_DIR="/root/.ccache"
-RUN mkdir -p "${CCACHE_DIR}"
 ENV _PIP_CACHE_DIR="/root/.cache/pip"
 
 RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
@@ -63,27 +46,19 @@ COPY . ${PROJECT_WORKDIR}/
 
 # ------------------------------------------------------
 # install tensorrt-bionemo for prod
-#   - including cpp object files
 # -----------------------------------------------------
 FROM copy_source_stage AS prod_stage
 
 # no-deps because we already installed requirements.txt in the requirements_stage
-RUN --mount=type=cache,target=${CCACHE_DIR} \
-    --mount=type=cache,target=${_PIP_CACHE_DIR} \
-    CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
-    RECOMPILE_CPP=${RECOMPILE_CPP} \
-    pip install --no-build-isolation --no-deps -v .  
+RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
+    pip install --no-build-isolation --no-deps -v .
 
 # ------------------------------------------------------------------------
 # install tensorrt-bionemo for development and testing
-#   - including cpp object files
 # -------------------------------------------------------------------------
 FROM copy_source_stage AS dev_stage
 
-RUN --mount=type=cache,target=${CCACHE_DIR} \
-    --mount=type=cache,target=${_PIP_CACHE_DIR} \
-    CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
-    RECOMPILE_CPP=${RECOMPILE_CPP} \
+RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install --no-build-isolation -v -e .[dev]
 
 

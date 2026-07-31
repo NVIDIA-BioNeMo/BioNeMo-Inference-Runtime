@@ -4,18 +4,17 @@
 [build-system]
 requires = [
   "setuptools>=77",
-  "packaging>=24",
 ]
-build-backend = "build_backend"
-backend-path = ["."]
+build-backend = "setuptools.build_meta"
 
 
 [tool.setuptools]
 include-package-data = true
 package-dir = { "" = "." }
 
+# version is supplied by setup.py so the CUDA local segment (e.g. 0.4.0+cu131)
+# lands in the wheel METADATA — see setup.py. It stays in [project].dynamic below.
 [tool.setuptools.dynamic]
-version = {attr = "tensorrt_bionemo.version.__version__"}
 dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.dynamic.optional-dependencies]
@@ -24,11 +23,9 @@ dev = {file = ["requirements-dev.txt"]}
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tensorrt_bionemo*"]
-exclude = ["cpp*"]
 
 [tool.setuptools.package-data]
 "tensorrt_bionemo" = [
-    "libs/*.so",
     "_torch/custom_ops/configs/**/*.json",
     "_torch/attention_backend/configs/**/*.json",
 ]

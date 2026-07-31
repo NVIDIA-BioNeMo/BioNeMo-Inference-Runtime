@@ -23,7 +23,6 @@ Concrete implementations:
 from __future__ import annotations
 
 import abc
-import atexit
 import ctypes
 import fcntl
 import hashlib
@@ -51,7 +50,6 @@ except ImportError:
     _HAS_CUDA_BINDINGS = False
 
 _cuda_initialized = False
-_loaded_cu_modules: set = set()
 
 
 def _ensure_cuda_init():
@@ -63,17 +61,14 @@ def _ensure_cuda_init():
         _cuda_initialized = True
 
 
-def _unload_all_cu_modules():
-    """Unload every CUmodule tracked by :func:`make_driver_launcher`."""
-    for mod in list(_loaded_cu_modules):
-        try:
-            _drv.cuModuleUnload(mod)
-        except Exception:
-            pass
-    _loaded_cu_modules.clear()
-
-
-atexit.register(_unload_all_cu_modules)
+# CUmodules loaded by make_driver_launcher are deliberately NOT unloaded at
+# interpreter exit. Calling cuModuleUnload from an atexit handler runs CUDA
+# driver code during interpreter shutdown, when the driver and other native
+# libraries (cutlass, TVM-FFI, Ray) may already be tearing down — a documented
+# SIGSEGV hazard (a "Segmentation fault: invalid permissions for mapped object"
+# on a JIT code page, which surfaces as a core dump on an otherwise-green run).
+# Modules live for the process lifetime and the OS reclaims them on exit, so an
+# explicit teardown unload buys nothing and only adds a shutdown crash surface.
 
 
 def has_cuda_bindings() -> bool:
@@ -423,8 +418,6 @@ def make_driver_launcher(
             logger.debug("Cannot auto-discover param types for %s", name)
             _drv.cuModuleUnload(cu_module)
             return None
-
-    _loaded_cu_modules.add(cu_module)
 
     logger.debug("DriverLauncher for %s: %d params %s", name, len(param_types),
                  param_types)

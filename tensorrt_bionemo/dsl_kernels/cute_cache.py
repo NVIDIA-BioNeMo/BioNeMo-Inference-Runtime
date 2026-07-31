@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import os
 import pickle
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -163,6 +165,17 @@ class CuteKernelCache(KernelCacheBase):
     def save_to_cache(self, key: tuple, artifact: Any) -> None:
         """Export compiled kernel as ``.o`` to disk cache.
 
+        The object file is exported to a unique temp file in the cache dir and
+        then atomically renamed into place (``os.replace``). Exporting straight
+        to the canonical ``{sha}.o`` is not crash-safe: phase-1 xdist workers
+        are sized to teeter on VRAM OOM (see ``run_tests.sh``), so a worker
+        killed mid-``export_to_c`` would leave a *truncated* ``.o`` at the path
+        every other worker probes. A later worker — or the serial phase 2 —
+        then loads that partial object and executes it, dying with SIGILL
+        ("Fatal Python error: Illegal instruction"). The atomic rename means the
+        canonical path only ever names a fully-exported object; a killed writer
+        leaves at most a stray temp file, never a poisoned cache entry.
+
         Args:
             key: Hashable tuple identifying the kernel variant.
             artifact: Object returned by ``cute.compile`` (has ``export_to_c``).
@@ -178,11 +191,25 @@ class CuteKernelCache(KernelCacheBase):
 
         try:
             with FileLock(lock_path, exclusive=True, timeout=LOCK_TIMEOUT):
-                if not o_path.exists():
+                if o_path.exists():
+                    return
+                # Same directory as o_path so os.replace() is a same-filesystem
+                # atomic rename (a cross-fs rename would fall back to a
+                # non-atomic copy, reopening the torn-write window).
+                fd, tmp_name = tempfile.mkstemp(dir=str(cache_path),
+                                                prefix=f"{sha}.",
+                                                suffix=".o.tmp")
+                os.close(fd)
+                try:
                     artifact.export_to_c(
-                        object_file_path=str(o_path),
+                        object_file_path=tmp_name,
                         function_name=EXPORT_FUNC_NAME,
                     )
+                    os.replace(tmp_name, o_path)
+                finally:
+                    # Removes the temp on export failure; a no-op once the
+                    # rename has consumed it.
+                    Path(tmp_name).unlink(missing_ok=True)
         except Exception as e:
             from tensorrt_bionemo.logger import logger
             logger.warning(f"bionemo kernel cache: export failed for key "
@@ -207,10 +234,27 @@ class CuteKernelCache(KernelCacheBase):
 
         try:
             with FileLock(lock_path, exclusive=False, timeout=LOCK_TIMEOUT):
-                if o_path.exists():
+                if not o_path.exists():
+                    return None
+                try:
                     m = cute.runtime.load_module(str(o_path),
                                                  enable_tvm_ffi=True)
-                    return m[EXPORT_FUNC_NAME]
-        except (RuntimeError, Exception):
+                except Exception:
+                    # A .o that fails to load is corrupt (e.g. a truncated
+                    # artifact left by an older build predating the atomic-write
+                    # save path). Purge it so the caller recompiles instead of
+                    # every worker re-tripping over the same bad file; missing_ok
+                    # tolerates a peer racing the unlink. Scoped to load_module
+                    # so lock-acquisition or transient FS errors don't delete a
+                    # healthy artifact.
+                    try:
+                        o_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    return None
+                return m[EXPORT_FUNC_NAME]
+        except Exception:
+            # Lock timeout or other transient failure: leave the artifact in
+            # place and let the caller recompile for this attempt.
             pass
         return None

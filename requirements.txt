@@ -1,6 +1,6 @@
 cuda-python>=13
 omegaconf==2.3.0
-transformers>=4.55.0,<=4.57.1
+transformers>=4.57.6,<4.58
 cuequivariance==0.10.0
 cuequivariance-ops-cu13==0.10.0
 cuequivariance-ops-torch-cu13==0.10.0
@@ -8,9 +8,9 @@ cuequivariance-torch==0.10.0
 nvtx
 matplotlib # FIXME: this is added to make nvtx happy
 triton==3.6.0
-biopython>=1.84
+biopython>=1.87
 boto3==1.42.17
-ray[serve,data]==2.54.0  # installs pandas, pyarrow
+ray[serve,data]==2.56.1  # installs pandas, pyarrow
 uvloop==0.21.0
 modelcif==1.6  # needed for CIFWriter
 rdkit==2025.9.6 # needed for Boltz2 Data pipeline

@@ -133,27 +133,35 @@ def broadcast_token_feat_to_atoms(
     # ``expand_index`` is the *base* index for ``batch_dims`` (length
     # prod(batch_dims) * max_num_atoms), indexing the flattened
     # [prod(batch_dims) * (n_token + 1), ...] padded token rows. When the
-    # features carry extra repeat groups (e.g. the diffusion multiplicity, where
-    # feat_batch_dims == batch_dims with the last dim scaled), tile the base
-    # index across those groups, offsetting each group's rows by (n_token + 1).
-    # Tiling uses only arange/add/reshape, so it stays graph-capturable. The
-    # tile ordering is exact only when prod(batch_dims) == 1 (always true for
-    # the diffusion atom-attention broadcasts); otherwise fall through.
+    # features carry extra repeat groups per batch element (e.g. the diffusion
+    # multiplicity S, where feat_batch_dims is batch_dims with an added trailing
+    # group axis so ``n_feat_batch == n_batch * n_groups``), tile the base index
+    # across those groups: rebase each batch element's rows from the
+    # [n_batch, n_token + 1] stride onto the [n_batch, n_groups, n_token + 1]
+    # stride (group 0), then offset each group by (n_token + 1). Uses only
+    # arange/add/reshape, so it stays graph-capturable, and reduces exactly to
+    # the single-batch tiling when n_batch == 1 (any batch size is supported).
     n_batch = 1
     for d in batch_dims:
         n_batch *= int(d)
     n_feat_batch = 1
     for d in feat_batch_dims:
         n_feat_batch *= int(d)
-    can_tile = feat_batch_dims == batch_dims or (n_batch == 1
-                                                 and n_feat_batch % n_batch == 0)
+    can_tile = feat_batch_dims == batch_dims or n_feat_batch % n_batch == 0
     if expand_index is not None and can_tile:
         max_num_atoms = expand_index.numel() // n_batch
         if n_feat_batch != n_batch:
             n_groups = n_feat_batch // n_batch
-            offsets = (torch.arange(n_groups, device=expand_index.device) *
-                       (n_token + 1)).unsqueeze(1)
-            full_index = (expand_index.unsqueeze(0) + offsets).reshape(-1)
+            # Batch id of each ``expand_index`` entry (batch-major layout).
+            batch_of = (torch.arange(expand_index.numel(),
+                                     device=expand_index.device) //
+                        max_num_atoms)
+            base = (expand_index +
+                    batch_of * (n_groups - 1) * (n_token + 1)).reshape(
+                        n_batch, max_num_atoms)
+            group_off = (torch.arange(n_groups, device=expand_index.device) *
+                         (n_token + 1)).reshape(1, n_groups, 1)
+            full_index = (base.unsqueeze(1) + group_off).reshape(-1)
         else:
             full_index = expand_index
         atom_feat = padded_token_feat.index_select(0, full_index)

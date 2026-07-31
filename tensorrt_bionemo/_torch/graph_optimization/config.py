@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import enum
-from typing import Dict, List, Tuple, Union
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -34,49 +35,79 @@ class SpacingMethod(str, enum.Enum):
     EXPONENTIAL = "exponential"
 
 
-# padded_dims value:
-#   (dim_len_min, dim_len_max, num_intervals, spacing_method, dim_len_values)
-PaddedDimSpec = Tuple[int, int, int, SpacingMethod, Tuple[int, ...]]
-# (input_tensor_name, input_dim_idx, dim_name)
-InputDimAssignment = Tuple[str, int, str]
-# (output_tensor_index, output_dim_idx, dim_name)
-OutputDimAssignment = Tuple[int, int, str]
+@dataclass(frozen=True)
+class NamedDimTies:
+    """Signature-derived tie points for one named dimension of a module.
+
+    Records which ``forward`` input/output tensor axes carry ``name`` (e.g.
+    ``num_tokens``). These are properties of the module's ``forward`` signature,
+    not of any particular deployment, so they belong on the class.
+
+    Attributes:
+        name: The named dimension (the ``dim_name`` passed to the factory).
+        input_dims: Ordered ``(tensor_name, axes)`` pairs. ``tensor_name`` is the
+            ``forward`` parameter name (or ``"arg{i}"`` for a positional-only
+            call before ``Signature.bind`` normalization); ``axes`` are the dim
+            indices on that tensor that carry ``name``. Order is preserved so the
+            exported config is stable and deterministic.
+        output_dims: Ordered ``(output_tensor_index, axes)`` pairs tying output
+            tensor axes to ``name`` (used only when bucketing/padding is active).
+    """
+    name: str
+    input_dims: Tuple[Tuple[str, Tuple[int, ...]], ...]
+    output_dims: Tuple[Tuple[int, Tuple[int, ...]], ...] = ()
+
+
+@dataclass(frozen=True)
+class PaddedDimSpec:
+    name: str
+    dim_len_min: int
+    dim_len_max: int
+    num_intervals: int
+    multiple_of: int = 128
+    spacing_method: str = "linear"
+
+
+@dataclass(frozen=True)
+class InputAcceptanceDimSpec:
+    name: str
+    dim_len_max: int
 
 
 class InputRoutingConfig(BaseModel):
     """Serializable snapshot of the bucketing rules collected by a :class:`InputRoutingConfigFactory`.
 
     Attributes:
-        padded_dims: Maps a named padded dimension to its bucketing spec
-            ``(dim_len_min, dim_len_max, num_intervals, spacing_method,
-            dim_len_values)``, where ``dim_len_values`` are the precomputed
-            integer bucket-boundary lengths.
-        input_dims_with_assigned_padded_dim: ``(input_tensor_name,
-            input_dim_idx, dim_name)`` records tying an input tensor axis to a
-            named padded dimension.
-        output_dims_with_assigned_padded_dim: ``(output_tensor_index,
-            output_dim_idx, dim_name)`` records tying an output tensor axis to a
-            named padded dimension.
-        input_acceptance_dims: Maps a named dimension to the inclusive
-            upper-bound length accepted for it (an input axis tied to that
-            dimension is in range when it does not exceed this length, and out
-            of range only when strictly greater). Carried as plain data so the
-            acceptance predicate can be rebuilt from a deserialized snapshot —
-            no un-picklable closure ever crosses a boundary.
-        input_dims_with_assigned_input_acceptance_dim: ``(input_tensor_name,
-            input_dim_idx, dim_name)`` records tying an input tensor axis to a
-            named acceptance dimension; the tracker reads these to enforce the
-            ``input_acceptance_dims`` limit on each call.
+        named_dim_ties: One :class:`NamedDimTies` per named dimension, recording
+            which ``forward`` input/output tensor axes carry that dimension. The
+            ``config`` module expands these (together with ``padded_dims`` /
+            ``input_acceptance_dims``) into the per-axis assignments the tracker
+            consumes.
+        padded_dims: One :class:`PaddedDimSpec` per named padded dimension,
+            giving its bucketing spec (length range, interval count, alignment,
+            spacing).
+        input_acceptance_dims: One :class:`InputAcceptanceDimSpec` per named
+            dimension, giving the inclusive upper-bound length accepted for it (an
+            input axis tied to that dimension is in range when it does not exceed
+            this length, out of range only when strictly greater). Carried as
+            plain data so the acceptance predicate can be rebuilt from a
+            deserialized snapshot — no un-picklable closure ever crosses a
+            boundary.
+        static_args: Names of ``forward`` arguments the user has declared do not
+            change from one call to the next for a given input key (so they need
+            not participate in that key).
+        internal_workspace_kwargs: Names of ``forward`` keyword arguments that
+            carry graph-internal scratch (e.g. preallocated ``buffers``) rather
+            than stable inputs; excluded from input-key derivation and from the
+            per-replay static-buffer copy.
     """
 
-    padded_dims: Dict[str, PaddedDimSpec] = Field(default_factory=dict)
-    input_dims_with_assigned_padded_dim: List[InputDimAssignment] = Field(
+    named_dim_ties: List[NamedDimTies] = Field(default_factory=list)
+    padded_dims: List[PaddedDimSpec] = Field(default_factory=list)
+    input_acceptance_dims: List[InputAcceptanceDimSpec] = Field(
         default_factory=list)
-    output_dims_with_assigned_padded_dim: List[OutputDimAssignment] = Field(
-        default_factory=list)
-    input_acceptance_dims: Dict[str, int] = Field(default_factory=dict)
-    input_dims_with_assigned_input_acceptance_dim: List[InputDimAssignment] = Field(
-        default_factory=list)
+    static_args: List[str] = Field(default_factory=list)
+    internal_workspace_kwargs: List[str] = Field(default_factory=list)
 
     class Config:
         extra = "allow"
@@ -85,40 +116,79 @@ class InputRoutingConfig(BaseModel):
 class InputRoutingConfigFactory:
     """Collects shape-bucketing rules for a module's ``forward`` inputs/outputs.
 
-    Bucketing is organized around **named** padded dimensions (5.3.0): a padded
-    dimension is declared once with :meth:`set_padded_dim` (giving it a
-    name and a set of bucket-boundary lengths), then attached to any number of
-    input/output tensor axes with :meth:`input_dim_is_padded` /
-    :meth:`output_dim_is_padded`. Axes sharing a name are padded to
-    the same bucket length in lockstep.
+    Routing is organized around **named** dimensions: the tie points (which
+    ``forward`` input/output axes carry each named dim) are declared as
+    :class:`NamedDimTies` via :meth:`set_named_dim_ties`, and what to do with a
+    dim is declared separately — a bucket (padding) spec via
+    :meth:`set_padded_dim` and/or an acceptance limit via
+    :meth:`set_input_acceptance_dim`. Axes sharing a name are padded to the same
+    bucket length in lockstep.
 
     Call :meth:`export_config` to snapshot the collected rules into an
     immutable, serializable :class:`InputRoutingConfig`.
     """
 
     def __init__(self) -> None:
-        # dim_name -> dim_len_max (inclusive upper bound accepted for this dim)
-        self.input_acceptance_dims: Dict[str, int] = {}
-        # (input_tensor_name, input_dim_idx) -> dim_name (acceptance-bounded axis)
-        self.input_dims_with_assigned_input_acceptance_dim: Dict[Tuple[str, int], str] = {}
+        # Tie points: which forward input/output axes carry each named dim.
+        self.named_dim_ties: List[NamedDimTies] = []
+        # Per-dim declarative bucket (padding) specs, keyed by ``.name``.
+        self.padded_dims: List[PaddedDimSpec] = []
+        # Per-dim acceptance-limit specs, keyed by ``.name``.
+        self.input_acceptance_dims: List[InputAcceptanceDimSpec] = []
+        # Names of forward args declared static (order-preserving, deduped).
+        self.static_args: List[str] = []
+        # Names of forward kwargs carrying graph-internal workspaces.
+        self.internal_workspace_kwargs: List[str] = []
 
-        # dim_name -> (min, max, num_intervals, spacing_method, dim_len_values)
-        self.padded_dims: Dict[str, PaddedDimSpec] = {}
+    @staticmethod
+    def _upsert_by_name(items: list, item) -> None:
+        """Replace an existing entry with the same ``.name``, else append.
 
-        # (input_tensor_name, input_dim_idx) -> dim_name
-        self.input_dims_with_assigned_padded_dim: Dict[Tuple[str, int], str] = {}
+        Preserves first-seen order while letting a later declaration for a dim
+        override the earlier one (matching the old dict-keyed behavior)."""
+        for i, existing in enumerate(items):
+            if existing.name == item.name:
+                items[i] = item
+                return
+        items.append(item)
 
-        # (output_tensor_index, output_dim_idx) -> dim_name
-        self.output_dims_with_assigned_padded_dim: Dict[Tuple[int, int], str] = {}
+    def set_named_dim_ties(self, named_dim_ties: Sequence[NamedDimTies]) -> None:
+        """Declare the signature-derived tie points for one or more named dims.
 
+        Each :class:`NamedDimTies` records which ``forward`` input/output axes
+        carry its dimension. A tie for a name already present replaces it.
+        """
+        for tie in named_dim_ties:
+            self._upsert_by_name(self.named_dim_ties, tie)
+
+
+    def set_static_args(self, arg_names: Sequence[str]) -> None:
+        """Declare ``forward`` arguments that are static for a given input key.
+
+        Appends each name in order, skipping duplicates, into ``static_args``.
+        """
+        for name in arg_names:
+            if name not in self.static_args:
+                self.static_args.append(name)
+
+    def set_internal_workspace_kwargs(self, kwarg_names: Sequence[str]) -> None:
+        """Declare ``forward`` keyword args that carry graph-internal scratch.
+
+        Appends each name in order, skipping duplicates, into
+        ``internal_workspace_kwargs``.
+        """
+        for name in kwarg_names:
+            if name not in self.internal_workspace_kwargs:
+                self.internal_workspace_kwargs.append(name)
 
     def set_input_acceptance_dim(self, dim_name: str, dim_len_max: int) -> None:
         """Declare the largest input length accepted for a named dimension.
 
-        Records into ``input_acceptance_dims`` that inputs whose ``dim_name``
+        Records an :class:`InputAcceptanceDimSpec` that inputs whose ``dim_name``
         axis is strictly longer than ``dim_len_max`` fall outside this module's
         captured-graph coverage. Keyed by ``dim_name``, so a later call for the
-        same name overrides the earlier limit.
+        same name overrides the earlier limit. The axes the limit applies to are
+        those the dim's :class:`NamedDimTies` ties it to.
 
         Args:
             dim_name: Name of the dimension the rule applies to.
@@ -126,42 +196,9 @@ class InputRoutingConfigFactory:
                 accepted when it does not exceed this, rejected only when
                 strictly greater.
         """
-        self.input_acceptance_dims[dim_name] = dim_len_max
-
-    def input_dim_is_acceptance(
-        self,
-        input_tensor_name: str,
-        input_dim_idx: int,
-        input_acceptance_dim: str,
-    ) -> None:
-        """Attach a named input-acceptance dimension to an input tensor axis.
-
-        Records into ``input_dims_with_assigned_input_acceptance_dim`` that the
-        ``input_dim_idx`` axis of the ``input_tensor_name`` input is bounded by
-        the ``input_acceptance_dim`` acceptance rule: at call time that axis must
-        not exceed ``input_acceptance_dims[input_acceptance_dim]`` for the call to
-        be accepted.
-
-        Args:
-            input_tensor_name: Walk path of the input tensor: ``"arg{i}"`` for
-                positional arg ``i`` (e.g. ``"arg0"``) or the keyword parameter
-                name for a keyword arg.
-            input_dim_idx: Axis of the input tensor. May be negative, counting
-                from the end (``-1`` is the last dimension).
-            input_acceptance_dim: Name of a dimension previously declared with
-                :meth:`set_input_acceptance_dim`.
-
-        Raises:
-            ValueError: If ``input_acceptance_dim`` has no configured acceptance
-                rule.
-        """
-        if input_acceptance_dim not in self.input_acceptance_dims:
-            raise ValueError(
-                f"input-acceptance dim {input_acceptance_dim!r} is not "
-                "configured; call set_input_acceptance_dim before assigning it "
-                f"(known: {sorted(self.input_acceptance_dims)})")
-        self.input_dims_with_assigned_input_acceptance_dim[
-            (input_tensor_name, input_dim_idx)] = input_acceptance_dim
+        self._upsert_by_name(
+            self.input_acceptance_dims,
+            InputAcceptanceDimSpec(name=dim_name, dim_len_max=dim_len_max))
 
     def set_padded_dim(
         self,
@@ -213,13 +250,16 @@ class InputRoutingConfigFactory:
                 "exponential spacing requires dim_len_min >= 1, got "
                 f"{dim_len_min}")
 
-        dim_len_values = InputRoutingConfigFactory.compute_dim_len_values(
-            dim_len_min, dim_len_max, num_intervals, spacing_method)
-        dim_len_values = InputRoutingConfigFactory.snap_to(
-            dim_len_values, multiple_of)
-        self.padded_dims[dim_name] = (
-            dim_len_min, dim_len_max, num_intervals, spacing_method,
-            dim_len_values)
+        self._upsert_by_name(
+            self.padded_dims,
+            PaddedDimSpec(
+                name=dim_name,
+                dim_len_min=dim_len_min,
+                dim_len_max=dim_len_max,
+                num_intervals=num_intervals,
+                multiple_of=multiple_of,
+                spacing_method=spacing_method.value,
+            ))
 
     @staticmethod
     def snap_to(
@@ -242,12 +282,23 @@ class InputRoutingConfigFactory:
             The aligned lengths, in the same order as ``dim_len_values``.
 
         Raises:
-            ValueError: If ``multiple_of`` is not positive.
+            ValueError: If ``multiple_of`` is not positive, or if any entry of
+                ``dim_len_values`` is negative (a length can't be negative, and
+                the ceil-to-multiple arithmetic is only meaningful for
+                non-negative values).
         """
         if multiple_of < 1:
             raise ValueError(f"multiple_of must be >= 1, got {multiple_of}")
+        if any(v < 0 for v in dim_len_values):
+            raise ValueError(
+                "dim_len_values must be non-negative, got "
+                f"{tuple(dim_len_values)}")
         return tuple(
-            -(-int(v) // multiple_of) * multiple_of for v in dim_len_values)
+            InputRoutingConfigFactory.ceil_div(v, multiple_of) * multiple_of for v in dim_len_values)
+
+    @staticmethod
+    def ceil_div(k: int, divisor: int)-> int:
+        return (k + divisor - 1) // divisor
 
     @staticmethod
     def compute_dim_len_values(
@@ -274,96 +325,129 @@ class InputRoutingConfigFactory:
                 f"got {spacing_method!r}")
         return tuple(int(round(v)) for v in values)
 
-    def input_dim_is_padded(
-        self,
-        input_tensor_name: str,
-        input_dim_idx: int,
-        padded_dim_name: str,
-    ) -> None:
-        """Attach a named padded dimension to an input tensor axis.
-
-        Records into ``input_dims_with_assigned_padded_dim`` that the
-        ``input_dim_idx`` axis of the ``input_tensor_name`` input is padded/
-        bucketed according to the ``padded_dim_name`` padded dimension.
-
-        Args:
-            input_tensor_name: Walk path of the input tensor: ``"arg{i}"`` for
-                positional arg ``i`` (e.g. ``"arg0"``) or the keyword parameter
-                name for a keyword arg.
-            input_dim_idx: Axis of the input tensor. May be negative, counting
-                from the end (``-1`` is the last dimension).
-            padded_dim_name: Name of a dimension previously declared with
-                :meth:`set_padded_dim`.
-
-        Raises:
-            ValueError: If ``padded_dim_name`` was not configured.
-        """
-        self._check_dim_name(padded_dim_name)
-        self.input_dims_with_assigned_padded_dim[
-            (input_tensor_name, input_dim_idx)] = padded_dim_name
-
-    def output_dim_is_padded(
-        self,
-        output_tensor_index: int,
-        output_dim_idx: int,
-        padded_dim_name: str,
-    ) -> None:
-        """Attach a named padded dimension to an output tensor axis.
-
-        Records into ``output_dims_with_assigned_padded_dim`` that the
-        ``output_dim_idx`` axis of output tensor ``output_tensor_index`` is
-        padded/bucketed according to the ``padded_dim_name`` padded dimension.
-
-        Args:
-            output_tensor_index: Position of the tensor in the ``forward``
-                output.
-            output_dim_idx: Axis of the output tensor. May be negative, counting
-                from the end (``-1`` is the last dimension).
-            padded_dim_name: Name of a dimension previously declared with
-                :meth:`set_padded_dim`.
-
-        Raises:
-            ValueError: If ``padded_dim_name`` was not configured or
-                ``output_tensor_index`` is negative.
-        """
-        self._check_dim_name(padded_dim_name)
-        if output_tensor_index < 0:
-            raise ValueError(
-                f"output_tensor_index must be >= 0, got {output_tensor_index}")
-        self.output_dims_with_assigned_padded_dim[
-            (output_tensor_index, output_dim_idx)] = padded_dim_name
-
-    def _check_dim_name(self, dim_name: str) -> None:
-        if dim_name not in self.padded_dims:
-            raise ValueError(
-                f"padded dim {dim_name!r} is not configured; call "
-                "set_padded_dim before assigning it "
-                f"(known: {sorted(self.padded_dims)})")
-
     def export_config(self) -> InputRoutingConfig:
-        """Snapshot the collected rules into a :class:`InputRoutingConfig`."""
-        input_assignments: List[InputDimAssignment] = [
-            (input_tensor_name, input_dim_idx, dim_name)
-            for (input_tensor_name, input_dim_idx), dim_name
-            in self.input_dims_with_assigned_padded_dim.items()
-        ]
-        output_assignments: List[OutputDimAssignment] = [
-            (output_tensor_index, output_dim_idx, dim_name)
-            for (output_tensor_index, output_dim_idx), dim_name
-            in self.output_dims_with_assigned_padded_dim.items()
-        ]
-        acceptance_input_assignments: List[InputDimAssignment] = [
-            (input_tensor_name, input_dim_idx, dim_name)
-            for (input_tensor_name, input_dim_idx), dim_name
-            in self.input_dims_with_assigned_input_acceptance_dim.items()
-        ]
+        """Snapshot the collected rules into a :class:`InputRoutingConfig`.
+
+        Raises:
+            ValueError: (1.1.10) if a named dimension's acceptance maximum
+                exceeds its largest capture bucket — an accepted input could
+                then not be padded to any bucket.
+        """
+        padded_by_name = {spec.name: spec for spec in self.padded_dims}
+        for acc in self.input_acceptance_dims:
+            spec = padded_by_name.get(acc.name)
+            if spec is None:
+                continue
+            largest_bucket = max(_bucket_lengths(spec))
+            if acc.dim_len_max > largest_bucket:
+                raise ValueError(
+                    f"acceptance maximum {acc.dim_len_max} for dim "
+                    f"{acc.name!r} exceeds its largest capture bucket "
+                    f"{largest_bucket}; an accepted input could not be padded "
+                    "to a bucket")
         return InputRoutingConfig(
-            padded_dims=dict(self.padded_dims),
-            input_dims_with_assigned_padded_dim=input_assignments,
-            output_dims_with_assigned_padded_dim=output_assignments,
-            input_acceptance_dims=dict(self.input_acceptance_dims),
-            input_dims_with_assigned_input_acceptance_dim=acceptance_input_assignments,
+            named_dim_ties=list(self.named_dim_ties),
+            padded_dims=list(self.padded_dims),
+            input_acceptance_dims=list(self.input_acceptance_dims),
+            static_args=list(self.static_args),
+            internal_workspace_kwargs=list(self.internal_workspace_kwargs),
         )
+
+
+def effective_ranges(config: InputRoutingConfig) -> Dict[str, dict]:
+    """Report the effective live range and capture bucket per named dim (1.1.10).
+
+    For each named dimension the config references (via acceptance and/or
+    padding), returns ``{dim_name: {"live_max", "covering_bucket",
+    "largest_bucket"}}`` where:
+
+    * ``live_max`` is the largest live length the module handles — the
+      acceptance maximum if one is set, else the largest capture bucket.
+    * ``covering_bucket`` is the smallest capture bucket that covers
+      ``live_max`` (``None`` when the dim has no buckets).
+    * ``largest_bucket`` is the largest capture bucket (``None`` when unbucketed).
+
+    Purely informational; :meth:`InputRoutingConfigFactory.export_config` is what
+    rejects an acceptance maximum above the largest bucket.
+    """
+    acceptance_by_name = {
+        spec.name: spec.dim_len_max for spec in config.input_acceptance_dims}
+    padded_by_name = {spec.name: spec for spec in config.padded_dims}
+
+    ranges: Dict[str, dict] = {}
+    for dim_name in sorted(set(acceptance_by_name) | set(padded_by_name)):
+        acceptance_max = acceptance_by_name.get(dim_name)
+        spec = padded_by_name.get(dim_name)
+        bucket_lengths = _bucket_lengths(spec) if spec is not None else None
+        largest_bucket = max(bucket_lengths) if bucket_lengths else None
+        live_max = acceptance_max if acceptance_max is not None else largest_bucket
+        covering_bucket = None
+        if bucket_lengths is not None and live_max is not None:
+            covering_bucket = min(
+                (b for b in bucket_lengths if b >= live_max), default=None)
+        ranges[dim_name] = {
+            "live_max": live_max,
+            "covering_bucket": covering_bucket,
+            "largest_bucket": largest_bucket,
+        }
+    return ranges
+
+
+def _bucket_lengths(spec: PaddedDimSpec) -> Tuple[int, ...]:
+    """Recompute the aligned bucket-boundary lengths for a declarative
+    :class:`PaddedDimSpec` (which stores the spec, not the derived lengths)."""
+    values = InputRoutingConfigFactory.compute_dim_len_values(
+        spec.dim_len_min, spec.dim_len_max, spec.num_intervals,
+        SpacingMethod(spec.spacing_method))
+    return InputRoutingConfigFactory.snap_to(values, spec.multiple_of)
+
+
+# ---------------------------------------------------------------------------
+# Consumer-facing views: expand the named-dim tie points + per-dim specs into
+# the flat ``(tensor_name, dim_idx, dim_name)`` assignment tuples the tracker
+# iterates. A dim's tie axes serve both acceptance and padding; whether a dim is
+# accepted and/or padded is decided by its presence in ``input_acceptance_dims``
+# / ``padded_dims``.
+# ---------------------------------------------------------------------------
+def input_acceptance_assignments(
+        config: InputRoutingConfig) -> List[Tuple[str, int, str]]:
+    """``[(tensor_name, dim_idx, dim_name)]`` for every input axis tied to a dim
+    that carries an acceptance limit."""
+    accepted = {spec.name for spec in config.input_acceptance_dims}
+    return [(tensor_name, axis, tie.name)
+            for tie in config.named_dim_ties if tie.name in accepted
+            for tensor_name, axes in tie.input_dims for axis in axes]
+
+
+def input_padded_assignments(
+        config: InputRoutingConfig) -> List[Tuple[str, int, str]]:
+    """``[(tensor_name, dim_idx, dim_name)]`` for every input axis tied to a dim
+    that carries a bucket (padding) spec."""
+    padded = {spec.name for spec in config.padded_dims}
+    return [(tensor_name, axis, tie.name)
+            for tie in config.named_dim_ties if tie.name in padded
+            for tensor_name, axes in tie.input_dims for axis in axes]
+
+
+def output_padded_assignments(
+        config: InputRoutingConfig) -> List[Tuple[int, int, str]]:
+    """``[(output_tensor_index, dim_idx, dim_name)]`` for every output axis tied
+    to a dim that carries a bucket (padding) spec."""
+    padded = {spec.name for spec in config.padded_dims}
+    return [(out_idx, axis, tie.name)
+            for tie in config.named_dim_ties if tie.name in padded
+            for out_idx, axes in tie.output_dims for axis in axes]
+
+
+def acceptance_max_by_name(config: InputRoutingConfig) -> Dict[str, int]:
+    """``{dim_name: dim_len_max}`` acceptance limits keyed by name."""
+    return {spec.name: spec.dim_len_max for spec in config.input_acceptance_dims}
+
+
+def bucket_lengths_by_name(
+        config: InputRoutingConfig) -> Dict[str, Tuple[int, ...]]:
+    """``{dim_name: (aligned bucket-boundary lengths)}`` for each padded dim."""
+    return {spec.name: _bucket_lengths(spec) for spec in config.padded_dims}
 
 
 class GraphOptimizationMode(enum.Enum):
@@ -419,7 +503,7 @@ class GraphOptimizationConfig(BaseConfig):
     """
     graph_optimization_mode: GraphOptimizationMode = GraphOptimizationMode.NO_OPTIMIZATION
     input_key_method: InputKeyMethod = InputKeyMethod.EXACT
-    input_routing_config: InputRoutingConfig = None
+    input_routing_config: Optional[InputRoutingConfig] = None
     num_graphs_max_for_this_module: int = 1
 
 
@@ -445,3 +529,5 @@ class CUDAGraphOptimizationConfig(GraphOptimizationConfig):
     num_calls_for_kernel_compilation: int = 1
     num_calls_for_memory_allocator: int = 3
     verify_capture: bool = False
+
+

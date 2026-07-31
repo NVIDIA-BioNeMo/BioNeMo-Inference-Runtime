@@ -23,6 +23,10 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.graph_optimization.config import (
+    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
+from tensorrt_bionemo._torch.graph_optimization.decorator import (
+    NamedDimTies, support_graph_optimization)
 from tensorrt_bionemo._torch.layers.conditioning import DiffusionConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.noise_scheduler import \
@@ -92,7 +96,7 @@ def centre_random_augmentation(xl: torch.Tensor,
         scale_trans:
             Translation scaling factor
         generator:
-            Optional private RNG (see ``make_graph_safe_generator``). Supplied
+            Optional private RNG (see ``safe_generator``). Supplied
             by ``SampleDiffusion.forward`` so the diffusion rollout's RNG stays
             off the default CUDA generator that ``torch.cuda.graph`` capture
             registers — otherwise these eager draws raise "Offset increment
@@ -157,6 +161,28 @@ def create_noise_schedule(
                                   final="keep")
 
 
+@support_graph_optimization(
+    # si_input/si_trunk (-2), zij_trunk (-2 and -3), and token_mask (-1) carry
+    # ``num_tokens``. The output is denoised atom coordinates ([*, N_atom, 3]),
+    # whose axes are atoms/coords (no token axis), so there is no output tie.
+    named_dims=(
+        NamedDimTies(
+            name="num_tokens",
+            input_dims=(
+                ("si_input", (-2,)),
+                ("si_trunk", (-2,)),
+                ("zij_trunk", (-2, -3)),
+                ("token_mask", (-1,)),
+            )
+        ),
+    ),
+    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+    verify_capture=False,
+    input_key_method=InputKeyMethod.EXACT,
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(
+        name="num_tokens", dim_len_max=1024,
+    ),
+)
 class DiffusionModule(nn.Module):
     """
     Implements AF3 Algorithm 20.
@@ -268,17 +294,15 @@ class DiffusionModule(nn.Module):
     ) -> torch.Tensor:
         """
         Note:
-            Only a single leading batch dim is supported end-to-end, i.e. the
-            documented ``*`` is a single ``[batch]`` axis (batch size 1 in
-            practice). ``SampleDiffusion.forward`` calls this with an extra
-            diffusion-samples axis ``S`` on the atom positions only —
-            ``xl_noisy=[B, S, N_atom, 3]`` while masks/token features stay
-            ``[B, ...]`` — which broadcasts correctly *only when ``B == 1``*. For
-            ``B > 1`` the token-level conditioning outputs (``si``/``zij``, no
-            ``S`` axis) collide with the ``S``-carrying atom features at
-            ``ai = ai + linear_s(layer_norm_s(si))`` below and the call fails;
-            supporting ``B > 1`` would require threading ``S`` through the
-            conditioning and transformer inputs, not just the mask broadcasts.
+            ``SampleDiffusion.forward`` calls this with a diffusion-samples axis
+            ``S`` at dim 1 — ``xl_noisy=[B, S, N_atom, 3]`` — which the atom
+            encoder carries onto ``ai=[B, S, N_token, c]``. The token-level
+            conditioning (``si``/``zij``/``token_mask``) carries a *size-1* sample
+            axis at dim 1 (``[B, 1, ...]``) and so broadcasts over ``S`` for any
+            batch size ``B``. Batch sizes > 1 are supported end-to-end and stay
+            CUDA-graph-capturable: the ``atom_broadcast_index`` fast path in
+            ``broadcast_token_feat_to_atoms`` (a static ``index_select`` in place
+            of a data-dependent ``repeat_interleave``) handles any batch size.
 
         Args:
             batch:
@@ -312,12 +336,24 @@ class DiffusionModule(nn.Module):
 
         xl_noisy = xl_noisy * broadcast_atom_mask(xl_noisy, atom_mask)
 
-        rl_noisy = xl_noisy / torch.sqrt(t[..., None, None]**2 +
+        rl_noisy = xl_noisy / torch.sqrt(t[..., None, None] ** 2 +
                                          self.sigma_data**2)
 
         # Note: These modules are not memory-intensive compared to other parts of the
         # model (i.e. TemplateStack) so chunking is unnecessary for now.
-
+        
+        # Input (dim 0 = batch B, dim 1 = the diffusion-samples axis S; the
+        # token-level tensors carry a size-1 S placeholder that broadcasts):
+        #   atom_mask: [B, 1, N_atom]
+        #   rl_noisy:  [B, S, N_atom, 3]
+        #   si_trunk:  [B, 1, N_token, c_s=384]
+        #   zij:       [B, 1, N_token, N_token, c_z]
+        #
+        # Output
+        #   ai:  [B, S, N_token, c_atom=768]
+        #   ql:  [B, 1, N_atom, c_atom]
+        #   cl:  [B, 1, N_atom, c_atom]
+        #   plm: [B, S, N_blocks, N_query, N_key, c_atom_pair]
         ai, ql, cl, plm = self.atom_attn_enc(
             batch=batch,
             atom_mask=atom_mask,
@@ -327,6 +363,12 @@ class DiffusionModule(nn.Module):
             attn_metadata=attn_metadata,
         )
 
+        # Input
+        #   si: [B, 1, N_token, c_token=384]
+        #   ai: [B, S, N_token, c_atom=768]
+        #   
+        # The output of the linear_s has shape [B, 1, N_token, c_atom],
+        # so broadcasts with ai for multiplicity S>1
         ai = ai + self.linear_s(self.layer_norm_s(si))
 
         token_dtype = self.diffusion_transformer.dtype

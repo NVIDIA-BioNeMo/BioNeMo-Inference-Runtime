@@ -26,6 +26,10 @@ from tensorrt_bionemo._torch.custom_ops.fused_layer_norm_no_affine import \
 from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
     get_gated_sigmoid_op
 from tensorrt_bionemo._torch.distributed import AllReduceParams
+from tensorrt_bionemo._torch.graph_optimization.config import (
+    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
+from tensorrt_bionemo._torch.graph_optimization.decorator import (
+    NamedDimTies, support_graph_optimization)
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.linear import Linear, TensorParallelMode
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
@@ -235,6 +239,33 @@ class DiffusionTransformerLayer(nn.Module):
         return a
 
 
+# a/s (-2), z (-2 and -3), and mask (-1) carry ``num_tokens`` on the inputs; the
+# single returned atom representation carries it at -2. Shared by both diffusion
+# (token) transformers, which have the same forward signature and token ties.
+_TOKEN_TRANSFORMER_DIMS = (
+    NamedDimTies(
+        name="num_tokens",
+        input_dims=(
+            ("a", (-2,)),
+            ("s", (-2,)),
+            ("z", (-2, -3)),
+            ("mask", (-1,)),
+        ),
+        output_dims=((0, (-2,)), ),
+    ),
+)
+
+
+@support_graph_optimization(
+    named_dims=_TOKEN_TRANSFORMER_DIMS,
+    workspace_kwargs=("buffers", ),
+    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+    input_key_method=InputKeyMethod.EXACT,
+    # Default input management: accept up to 1024 tokens before falling back to
+    # eager.
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(
+        name="num_tokens", dim_len_max=1024),
+)
 class BoltzDiffusionTransformer(nn.Module):
 
     def __init__(self, config: BaseConfig):
@@ -350,6 +381,16 @@ class BoltzDiffusionTransformer(nn.Module):
         return a
 
 
+@support_graph_optimization(
+    named_dims=_TOKEN_TRANSFORMER_DIMS,
+    workspace_kwargs=("buffers", ),
+    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+    input_key_method=InputKeyMethod.EXACT,
+    # Default input management: accept up to 1024 tokens before falling back to
+    # eager.
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(
+        name="num_tokens", dim_len_max=1024),
+)
 class OpenFold3DiffusionTransformer(nn.Module):
 
     def __init__(self, config: BaseConfig):
@@ -519,6 +560,16 @@ class OpenFold3DiffusionTransformer(nn.Module):
         return a
 
 
+@support_graph_optimization(
+    named_dims=_TOKEN_TRANSFORMER_DIMS,
+    workspace_kwargs=("buffers", ),
+    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+    input_key_method=InputKeyMethod.EXACT,
+    # Default input management: accept up to 1024 tokens before falling back to
+    # eager.
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(
+        name="num_tokens", dim_len_max=1024),
+)
 class ProtenixDiffusionTransformer(nn.Module):
     """Protenix transformer for local atom and global token diffusion.
 

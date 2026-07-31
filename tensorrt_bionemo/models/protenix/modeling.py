@@ -26,12 +26,9 @@ import torch
 import torch.nn as nn
 
 # isort: off
-from tensorrt_bionemo.configs import BackendType
 from tensorrt_bionemo._torch.attention_backend import (
     AttentionMetadata, auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend)
-from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, GraphOptimizationMode)
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.linear import Linear
@@ -47,8 +44,9 @@ from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
-from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry,
-                                      ModuleSpec, OptimizedModuleSetterMixin)
+from ..optimize_module_setter import (AcceleratedConfig,
+                                      DiscoveredModuleRegistry,
+                                      OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_confidence_head_torch, convert_constraint_embedder_torch,
@@ -86,62 +84,31 @@ def _configure_inference_precision(config: BaseConfig) -> BaseConfig:
     return config
 
 
-class ProtenixModuleRegistry(ModuleRegistry):
-    """Optimizable modules for :class:`Protenix`.
-
-    The diffusion module and its token transformer are capture-once /
-    replay-many CUDA-graph targets.
-    Recycling-trunk pairformer is excluded (replay produces NaN; compute-bound
-    over few cycles so a graph would remove negligible launch overhead).
-    """
-
-    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
-        return {
-            "token_transformer":
-            ModuleSpec(
-                getter=lambda mod:
-                (mod.diffusion_sampler.diffusion_module.diffusion_transformer),
-                setter=lambda mod, opt: setattr(
-                    mod.diffusion_sampler.diffusion_module,
-                    "diffusion_transformer", opt),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "diffusion_module":
-            ModuleSpec(
-                getter=lambda mod: mod.diffusion_sampler.diffusion_module,
-                setter=lambda mod, opt: setattr(mod.diffusion_sampler,
-                                                "diffusion_module", opt),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-        }
-
-
-def enable_token_transformer_cudagraph(
-        model: "Protenix",
-        *,
-        num_graphs_max: int = 8,
-        verify_capture: bool = False) -> "Protenix":
-    """Wrap the diffusion token transformer in a CUDA-graph optimizer."""
-    return model.optimize({
-        "token_transformer":
-        AcceleratedConfig(
-            backend=BackendType.TORCH,
-            default=BaseConfig(
-                graph_optimization_config=CUDAGraphOptimizationConfig(
-                    graph_optimization_mode=GraphOptimizationMode.
-                    CUDA_GRAPH_VIA_TORCH,
-                    verify_capture=verify_capture,
-                    num_graphs_max_for_this_module=num_graphs_max)))
-    })
-
-
 class Protenix(nn.Module, OptimizedModuleSetterMixin):
     """ProtenixV2 model — input embedder + trunk + diffusion + heads."""
 
+    # Whitelist gating modules discover with ``@support_graph_optimization``
+    #
+    # WARNING: do NOT graph-optimize the recycling-trunk pairformer
+    # (``trunk.pairformer_stack``) — its CUDA-graph replay produces NaN. It is a
+    # ``PairformerModule``, so ``@support_graph_optimization`` marks it and
+    # generic discovery *sees* it as a candidate by qualified path; it is left
+    # out of the aliases below on purpose and must never be given an
+    # ``accelerated_configs`` entry (by role or by the ``trunk.pairformer_stack``
+    # path). The same applies to ``confidence_head.pairformer_stack``.
+    GRAPH_OPT_ENABLED_MODULES = {
+        "token_transformer":
+        "diffusion_sampler.diffusion_module.diffusion_transformer",
+        "diffusion_module": "diffusion_sampler.diffusion_module",
+    }
+
     def get_optimized_modules(
         self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> ProtenixModuleRegistry:
-        return ProtenixModuleRegistry(accelerated_configs)
+    ) -> DiscoveredModuleRegistry:
+        return DiscoveredModuleRegistry(
+            self, accelerated_configs,
+            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
+            graph_optimization_cls=CUDAGraphOptimizationTracker)
 
     def __init__(self,
                  config: BaseConfig = None,

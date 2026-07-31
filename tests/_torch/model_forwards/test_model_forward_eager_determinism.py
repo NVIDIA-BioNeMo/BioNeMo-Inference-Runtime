@@ -59,7 +59,7 @@ from tensorrt_bionemo.pipeline.stages.engine_stage import FoldingPredictionError
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.seeding import seed_everything
 from tests._torch.model_forwards.test_model_forward_with_cuda_graph import (
-    _default_model_config)
+    _default_of3_model_config)
 
 # --- Test configuration ----------------------------------------------------
 # Each model is run eager twice and its two runs compared. Whether the two runs
@@ -185,7 +185,7 @@ def _build_processor_config(model_source: str,
     No ``accelerated_configs`` — the diffusion (token) transformer runs eager.
     """
     engine_kwargs: dict = {"profile_inference": True}
-    model_cfg = _default_model_config(model_source)
+    model_cfg = _default_of3_model_config(model_source)
     if model_cfg is not None:
         engine_kwargs["config"] = model_cfg
 

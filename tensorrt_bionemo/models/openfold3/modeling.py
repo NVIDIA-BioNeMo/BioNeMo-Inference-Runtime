@@ -42,49 +42,32 @@ from tensorrt_bionemo.models.openfold3.convert import \
     convert_hf_openfold3_torch
 from tensorrt_bionemo.registry import SupMat
 
-from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
-                      OptimizedModuleSetterMixin)
+from ..optimize_module_setter import (AcceleratedConfig,
+                                      DiscoveredModuleRegistry,
+                                      OptimizedModuleSetterMixin)
 
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 
 
-class OpenFold3ModuleRegistry(ModuleRegistry):
-
-    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
-        return {
-            "structure_pairformer":
-            ModuleSpec(
-                getter=lambda mod: mod.pairformer_stack,
-                setter=lambda mod, opt: setattr(mod, "pairformer_stack", opt),
-                compiled_cls=None,
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "token_transformer":
-            ModuleSpec(
-                getter=lambda mod:
-                (mod.sample_diffusion.diffusion_module.diffusion_transformer),
-                setter=lambda mod, opt: setattr(
-                    mod.sample_diffusion.diffusion_module,
-                    "diffusion_transformer", opt),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "diffusion_module":
-            ModuleSpec(
-                getter=lambda mod: mod.sample_diffusion.diffusion_module,
-                setter=lambda mod, opt: setattr(
-                    mod.sample_diffusion, "diffusion_module", opt),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-        }
-
-
 class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
+
+    # Whitelist gating modules discovered generically via 
+    # ``@support_graph_optimization``.
+    GRAPH_OPT_ENABLED_MODULES = {
+        "structure_pairformer": "pairformer_stack",
+        "token_transformer":
+        "sample_diffusion.diffusion_module.diffusion_transformer",
+        "diffusion_module": "sample_diffusion.diffusion_module",
+    }
 
     def get_optimized_modules(
         self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> OpenFold3ModuleRegistry:
-        return OpenFold3ModuleRegistry(accelerated_configs)
+    ) -> DiscoveredModuleRegistry:
+        return DiscoveredModuleRegistry(
+            self, accelerated_configs,
+            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
+            graph_optimization_cls=CUDAGraphOptimizationTracker)
 
     def __init__(self,
                  config: BaseConfig = None,

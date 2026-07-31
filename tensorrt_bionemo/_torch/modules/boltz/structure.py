@@ -21,6 +21,10 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from tensorrt_bionemo._torch.distributed import AllReduceParams
+from tensorrt_bionemo._torch.graph_optimization.config import (
+    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
+from tensorrt_bionemo._torch.graph_optimization.decorator import (
+    NamedDimTies, support_graph_optimization)
 from tensorrt_bionemo._torch.layers.attention import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import (PairwiseConditioning,
                                                          SingleConditioning)
@@ -237,6 +241,27 @@ class DiffusionConditioning(nn.Module):
         return q, c, atom_enc_bias, atom_dec_bias, token_trans_bias
 
 
+@support_graph_optimization(
+    # s_inputs/s_trunk (-2) and token_pad_mask (-1) carry ``num_tokens``. The
+    # pair rep is nested inside diffusion_conditioning_kwargs (not tied) and the
+    # output is atom coordinates (no token axis, so no output tie).
+    named_dims=(
+        NamedDimTies(
+            name="num_tokens",
+            input_dims=(
+                ("s_inputs", (-2,)),
+                ("s_trunk", (-2,)),
+                ("token_pad_mask", (-1,)),
+            ),
+        ),
+    ),
+    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+    input_key_method=InputKeyMethod.EXACT,
+    # Default input management: accept up to 1024 tokens before falling back to
+    # eager.
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(
+        name="num_tokens", dim_len_max=1024),
+)
 class DiffusionModule(nn.Module):
     """Diffusion module"""
 

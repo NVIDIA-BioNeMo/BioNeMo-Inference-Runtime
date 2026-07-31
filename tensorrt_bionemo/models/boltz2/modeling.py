@@ -50,8 +50,9 @@ from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
     contact_conditioning_info, num_bond_types)
 
-from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry, ModuleSpec,
-                      OptimizedModuleSetterMixin)
+from ..optimize_module_setter import (AcceleratedConfig,
+                                      DiscoveredModuleRegistry,
+                                      OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY, Boltz2AffinityConfig
 from .convert import (
     convert_hf_affinity_module_torch, convert_hf_confidence_module_torch,
@@ -64,55 +65,13 @@ from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
     CUDAGraphOptimizationTracker
 
 
-class Boltz2ModuleRegistry(ModuleRegistry):
-
-    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
-        return {
-            "structure_pairformer":
-            ModuleSpec(
-                getter=lambda mod: mod.trunk.pairformer_module,
-                setter=lambda mod, opt: setattr(mod.trunk, "pairformer_module",
-                                                opt),
-                compiled_cls=None,
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "confidence_pairformer":
-            ModuleSpec(
-                getter=lambda mod: mod.confidence_module.pairformer_stack,
-                setter=lambda mod, opt: setattr(mod.confidence_module,
-                                                "pairformer_stack", opt),
-                compiled_cls=None,
-            ),
-            "token_transformer":
-            ModuleSpec(
-                getter=lambda mod:
-                (mod.structure_module.score_model.token_transformer),
-                setter=lambda mod, opt: setattr(
-                    mod.structure_module.score_model, "token_transformer", opt
-                ),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "diffusion_module":
-            ModuleSpec(
-                getter=lambda mod: mod.structure_module.score_model,
-                setter=lambda mod, opt: setattr(
-                    mod.structure_module, "score_model", opt),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "structure_msa":
-            ModuleSpec(
-                getter=lambda mod: mod.trunk.msa_module,
-                setter=lambda mod, opt: setattr(mod.trunk, "msa_module", opt),
-                compiled_cls=None,
-            ),
-        }
-
-
-class Boltz2AffinityModuleRegistry(Boltz2ModuleRegistry):
-    pass
-
-
 class Boltz2(nn.Module, OptimizedModuleSetterMixin):
+
+    # Whitelist gating modules discovered via ``@support_graph_optimization``.
+    GRAPH_OPT_ENABLED_MODULES = {
+        "token_transformer": "structure_module.score_model.token_transformer",
+        "diffusion_module": "structure_module.score_model",
+    }
 
     def __init__(self,
                  config: BaseConfig = None,
@@ -267,10 +226,12 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         self.eval()
 
     def get_optimized_modules(
-        self,
-        accelerated_configs: dict[str,
-                                  AcceleratedConfig]) -> Boltz2ModuleRegistry:
-        return Boltz2ModuleRegistry(accelerated_configs)
+        self, accelerated_configs: dict[str, AcceleratedConfig]
+    ) -> DiscoveredModuleRegistry:
+        return DiscoveredModuleRegistry(
+            self, accelerated_configs,
+            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
+            graph_optimization_cls=CUDAGraphOptimizationTracker)
 
     @staticmethod
     def get_pretrained_config(model_name: str = SupMat.Boltz2) -> BaseConfig:

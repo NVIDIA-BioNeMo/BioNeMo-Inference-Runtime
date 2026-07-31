@@ -22,6 +22,10 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
+from tensorrt_bionemo._torch.graph_optimization.config import (
+    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
+from tensorrt_bionemo._torch.graph_optimization.decorator import (
+    NamedDimTies, support_graph_optimization)
 from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
                                                 DIFFUSION_PAIR_TRANSITION)
 from tensorrt_bionemo._torch.layers.linear import Linear
@@ -216,6 +220,27 @@ class ProtenixDiffusionConditioning(nn.Module):
         return single_s
 
 
+@support_graph_optimization(
+    # s_inputs/s_trunk (-2) and z_trunk (-2 and -3) carry ``num_tokens``.
+    # x_noisy is atoms and the mask lives inside input_feature_dict (not tied);
+    # the output is atom coordinates, so there is no output tie.
+    named_dims=(
+        NamedDimTies(
+            name="num_tokens",
+            input_dims=(
+                ("s_inputs", (-2,)),
+                ("s_trunk", (-2,)),
+                ("z_trunk", (-2, -3)),
+            ),
+        ),
+    ),
+    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+    input_key_method=InputKeyMethod.EXACT,
+    # Default input management: accept up to 1024 tokens before falling back to
+    # eager.
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(
+        name="num_tokens", dim_len_max=1024),
+)
 class ProtenixDiffusionModule(nn.Module):
     """AF3 Algorithm 20 diffusion module (Protenix): one EDM denoise step.
 

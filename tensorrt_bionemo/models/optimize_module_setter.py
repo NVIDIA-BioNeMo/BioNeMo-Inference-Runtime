@@ -19,11 +19,11 @@ from typing import Callable, Optional
 
 import torch.nn as nn
 
-from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
-from tensorrt_bionemo.runtime import BackendType
+from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
 from tensorrt_bionemo._torch.graph_optimization.config import \
     GraphOptimizationMode
-from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
+from tensorrt_bionemo._torch.graph_optimization.decorator import \
+    GRAPH_OPT_DEFAULT_ATTR
 from tensorrt_bionemo.logger import logger
 
 
@@ -180,6 +180,148 @@ def _module_path(spec: ModuleSpec) -> Optional[tuple[str, ...]]:
     return getattr(traced, "_path", None) or None
 
 
+class DiscoveredModuleRegistry(ModuleRegistry):
+    """A :class:`ModuleRegistry` built by discovery instead of hand-written specs.
+
+    Replaces the per-model registry subclasses (item 1.2.1): every module in the
+    model decorated with ``@support_graph_optimization`` becomes a candidate,
+    keyed by its **qualified module path** (item 1.2.3, the canonical identity).
+    Generic ``get_submodule`` / ``set_submodule`` replace the handwritten
+    getter/setter lambdas. Config keys may be a qualified path directly, or one
+    of the optional ``role_aliases`` (e.g. ``"structure_pairformer"``) mapping a
+    friendly name to a path.
+
+    Args:
+        model: The model to discover decorated submodules on.
+        configs: ``{key: AcceleratedConfig}`` requested for acceleration.
+        role_aliases: ``{role_name: qualified_path}`` friendly-name aliases.
+        graph_optimization_cls: Tracker class installed for a graph-optimized
+            module (passed in so this module need not import it).
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        configs: dict[str, "AcceleratedConfig | dict"] = {},
+        role_aliases: Optional[dict[str, str]] = None,
+        graph_optimization_cls: Optional[type] = None,
+    ):
+        self._model = model
+        self._role_aliases = dict(role_aliases or {})
+        self._graph_optimization_cls = graph_optimization_cls
+        # name (path or alias) -> qualified path, filled by get_accelerated_modules.
+        self._name_to_path: dict[str, str] = {}
+        super().__init__(configs)
+
+    @staticmethod
+    def _is_decorated(module: nn.Module) -> bool:
+        return getattr(module, GRAPH_OPT_DEFAULT_ATTR, None) is not None
+
+    def _make_spec(self, path: str) -> ModuleSpec:
+        return ModuleSpec(
+            getter=lambda m, _p=path: m.get_submodule(_p),
+            setter=lambda m, opt, _p=path: m.set_submodule(_p, opt),
+            graph_optimization_cls=self._graph_optimization_cls,
+        )
+
+    def _select_module_configs(self, all_known, configs):
+        """Reject a configured key that resolves to no decorated module (1.2.5).
+
+        A requested key must be either a discovered qualified path or a known
+        role alias. Anything else is a configuration error (e.g. a typo or a
+        module that isn't decorated / present in this model) and is raised rather
+        than silently skipped — a missing target must never be treated as
+        "nothing to accelerate here".
+
+        When the model declares ``role_aliases``, that map additionally acts as
+        a **whitelist**: a module may be graph-optimized only if its qualified
+        path is one of the alias *values* (the approved paths). A key is accepted
+        either as an alias name or as its resolved path — both land on an
+        approved value-path — while any other decorated-but-discoverable path
+        (e.g. Protenix's known-NaN ``trunk.pairformer_stack``) is refused. Models
+        with no aliases (e.g. OpenFold2) keep the unrestricted, path-based
+        behaviour.
+        """
+        unknown = [k for k in configs if k not in all_known]
+        if unknown:
+            raise ValueError(
+                "graph optimization requested for module(s) with no decorated, "
+                f"discoverable target: {sorted(unknown)}. Known roles/paths: "
+                f"{sorted(all_known)}")
+        if self._role_aliases:
+            approved = set(self._role_aliases.values())
+            blocked = [
+                k for k in configs
+                if self._name_to_path.get(k) not in approved
+            ]
+            if blocked:
+                raise ValueError(
+                    "graph optimization requested for non-whitelisted "
+                    f"module(s): {sorted(blocked)}. A module may be cuda-graphed "
+                    "only if its path is a value in GRAPH_OPT_ENABLED_MODULES. "
+                    f"Approved paths: {sorted(approved)}")
+        return super()._select_module_configs(all_known, configs)
+
+    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
+        """Discover decorated submodules, keyed by qualified path (plus aliases).
+
+        Uses ``remove_duplicate=False`` so a module reachable at several paths
+        (e.g. OpenFold3's ``diffusion_module`` also lives at
+        ``sample_diffusion.diffusion_module``) is discovered at *every* path —
+        the wrapper must be installed on the exact path the forward calls, which
+        is the one the role alias names.
+        """
+        specs: dict[str, ModuleSpec] = {}
+        self._name_to_path = {}
+        for path, module in self._model.named_modules(remove_duplicate=False):
+            if path and self._is_decorated(module):
+                specs[path] = self._make_spec(path)
+                self._name_to_path[path] = path
+        # Friendly role aliases resolve to their target path (authoritative:
+        # it is the forward-reachable path from the model's own alias map).
+        for role, path in self._role_aliases.items():
+            try:
+                target = self._model.get_submodule(path)
+            except AttributeError:
+                continue
+            if self._is_decorated(target):
+                specs[role] = self._make_spec(path)
+                self._name_to_path[role] = path
+        return specs
+
+    def _child_module_names(self, specs: dict[str, ModuleSpec]) -> set[str]:
+        """Detect conflicts directly from qualified paths (item 1.2.2), using the
+        discovered ``name -> path`` map. A name is dropped when it is a strict
+        *descendant* of another configured path, or when it resolves to the
+        *same* path as an already-kept name (e.g. a role alias and its canonical
+        path both configured) — so the same submodule is never wrapped twice."""
+        paths = {name: self._name_to_path.get(name) for name in specs}
+        children: set[str] = set()
+        seen_paths: set[str] = set()
+        for name, path in paths.items():
+            if not path:
+                continue
+            # Same-path duplicate: an already-kept name targets this exact path.
+            if path in seen_paths:
+                children.add(name)
+                continue
+            parts = path.split(".")
+            is_child = False
+            for other_name, other_path in paths.items():
+                if other_name == name or not other_path:
+                    continue
+                other_parts = other_path.split(".")
+                if (len(other_parts) < len(parts)
+                        and parts[:len(other_parts)] == other_parts):
+                    is_child = True
+                    break
+            if is_child:
+                children.add(name)
+            else:
+                seen_paths.add(path)
+        return children
+
+
 class OptimizedModuleSetterMixin(ABC):
 
     @abstractmethod
@@ -195,7 +337,10 @@ class OptimizedModuleSetterMixin(ABC):
         """Build the optimized version of the model from the original.
 
         Supports torch backends (optionally with ``torch.compile`` when
-        ``compile=True``).
+        ``compile=True``). For the CUDA-graph path, each matched module's tracker
+        is configured from ``acc_config.default.graph_optimization_config`` when
+        the model provides one, else from the module's decorator-declared
+        ``graph_opt_default`` (set by ``@support_graph_optimization``).
 
         Args:
             accelerated_configs: A dictionary of modules to be accelerated.
@@ -223,10 +368,17 @@ class OptimizedModuleSetterMixin(ABC):
             # keeps the original as its eager ``inner_module`` / fallback.
             if backend == BackendType.TORCH and spec.graph_optimization_cls is not None:
                 org = spec.getter(self)
-                graph_config = getattr(acc_config.default, 
+                graph_config = getattr(acc_config.default,
                                         "graph_optimization_config",
                                         None) if acc_config.default else None
-                
+                # Fall back to the module's decorator-declared default
+                # (``graph_opt_default``, set by @support_graph_optimization) when
+                # the model config supplies no explicit graph-optimization config,
+                # so the decorator's declared defaults (mode / input-key method /
+                # verify / routing) are what the tracker actually runs with.
+                if graph_config is None:
+                    graph_config = getattr(org, GRAPH_OPT_DEFAULT_ATTR, None)
+
                 if graph_config is not None:
                     graph_mode = getattr(graph_config, "graph_optimization_mode", None)
                     if graph_mode != GraphOptimizationMode.NO_OPTIMIZATION:

@@ -58,22 +58,29 @@ from tensorrt_bionemo._torch.graph_optimization.config import (
     InputRoutingConfigFactory)
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker, CUDAGraphPreparationState)
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import (
+    BoltzDiffusionTransformer, OpenFold3DiffusionTransformer,
+    ProtenixDiffusionTransformer)
+from tensorrt_bionemo._torch.layers.transformers.pairformer import \
+    PairformerModule
+from tensorrt_bionemo._torch.modules.boltz.structure import \
+    DiffusionModule as BoltzDiffusionModule
+from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import \
+    DiffusionModule as OF3DiffusionModule
+from tensorrt_bionemo._torch.modules.protenix.diffusion import \
+    ProtenixDiffusionModule
 from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
-from tensorrt_bionemo.data.schemas import InputRequest
 from tensorrt_bionemo.pipeline.processor.engine_proc import (
-    EngineProcessorConfig, build_processor)
+    EngineProcessorConfig)
 from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
-from tensorrt_bionemo.pipeline.stages.engine_stage import \
-    FoldingPredictionError
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.model_forwards import (
-    _AVAILABILITY_EXC, _CKPT_ENV, _HF_CKPT, _lddt_to_reference, _load_request,
-    _model_weights_available)
-from tests.common.test_utils.seeding import seed_everything
+    _AVAILABILITY_EXC, _CKPT_ENV, _find_sample_json, _HF_CKPT,
+    _lddt_to_reference, _load_request, _model_weights_available, _run_pipeline)
 
 # --- Test configuration ----------------------------------------------------
 # Models whose diffusion/token transformer is graph-optimizable. Each is run
-# through the full pipeline twice (eager vs cuda-graph) and compared..
+# through the full pipeline twice (eager vs cuda-graph) and compared.
 MODEL_SOURCES = ("openfold3", )
 SEED = 42
 
@@ -89,18 +96,19 @@ GT_DIR = SAMPLES_DIR / "gt"
 #       T1038   199             (129, 256)
 #       T1047s1 232             (129, 256)
 #SAMPLE_ID_TUPLE_B = ("T1047s1", )
-SAMPLE_ID_TUPLE_C = ("T1038", )
-SAMPLE_ID_TUPLE_D = ("T1038", "T1047s1")
-SAMPLE_ID_TUPLE_E = ("T1047s1", "T1038")
+#SAMPLE_ID_TUPLE_C = ("T1038", )
+SAMPLE_ID_TUPLE_D = (("T1038",), ("T1047s1",)) # tuple of batches each of size 1
+SAMPLE_ID_TUPLE_E = (("T1047s1",), ("T1038",))
+#BATCHED_SAMPLE_ID_TUPLE_D = (("T1038", "T1047s1"),) # tuple with single batch of size 1
 
 # Every distinct sample id referenced by any tuple above; used only for the
 # module-level data-availability check below. Each test receives its own
 # ``sample_ids`` tuple via the ``sample_id_tuple`` parametrization.
 _ALL_SAMPLE_IDS = tuple(sorted({
     sid
-    for tup in (SAMPLE_ID_TUPLE_C,
-                SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
-    for sid in tup
+    for tup in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
+    for batch in tup
+    for sid in batch
 }))
 
 # Diffusion runtime args. num_sampling_steps need only exceed the warmup
@@ -114,25 +122,19 @@ DIFFUSION_SAMPLES = 5
 # non-associativity), so the two need only agree in accuracy, not bit-for-bit.
 LDDT_GT_PARITY_TOL = 0.07
 
-def _find_sample_json(sample_id: str) -> Path | None:
-    """Return the first ``<sample_id>.json`` found anywhere under SAMPLES_DIR.
-
-    Samples are grouped into per-category subdirectories (``monomers/``,
-    ``homopolymers/``, ``rna_dna_ligand/``, ...), so a target's input json is
-    located by a recursive search rather than assuming a fixed subdirectory.
-    Returns ``None`` when no such file exists.
-    """
-    return next(SAMPLES_DIR.rglob(f"{sample_id}.json"), None)
-
-
 _SAMPLES_AVAILABLE = SAMPLES_DIR.is_dir() and all(
     _find_sample_json(sid) is not None for sid in _ALL_SAMPLE_IDS)
 
 
-_CKPT_ENV = {"openfold3": "OPENFOLD3_CKPT", "boltz-2": "boltz-2_CKPT"}
+_CKPT_ENV = {
+    "openfold3": "OPENFOLD3_CKPT",
+    "boltz-2": "BOLTZ2_CKPT",
+    "protenix-v2": "PROTENIX_V2_CKPT",
+}
 _HF_CKPT = {
     "openfold3": ("OpenFold/OpenFold3", "checkpoints/of3-p2-155k.pt"),
     "boltz-2": ("boltz-community/boltz-2", "boltz-2_conf.ckpt"),
+    "protenix-v2": ("TMF001/protenix-v2-weights", "protenix-v2.pt"),
 }
 
 @pytest.fixture(autouse=True)
@@ -162,7 +164,7 @@ def _free_captured_cuda_graphs():
         torch.cuda.empty_cache()
 
 
-def _default_model_config(model_source: str):
+def _default_of3_model_config(model_source: str):
     """Pretrained model config with any checkpoint-compatibility overrides.
 
     Returns ``None`` to use the engine's default pretrained config.
@@ -217,6 +219,59 @@ def _default_model_config(model_source: str):
 # ===========================================================================
 # Pipeline construction + execution (serial backend, via build_processor)
 # ===========================================================================
+def _routing_from_decorator(cls, *, bucket: bool):
+    """Input-routing config for a decorated module's ``num_tokens`` dim.
+
+    Reuses the tie points the class declares via ``@support_graph_optimization``
+    (``cls.graph_opt_default.input_routing_config.named_dim_ties`` — which axes
+    carry ``num_tokens``, inputs and outputs) and layers on the test's own
+    experimental input management: a 1024-token acceptance limit and, when
+    ``bucket`` is set, a linear 8-interval padding up to 1024.
+    """
+    factory = InputRoutingConfigFactory()
+    factory.set_named_dim_ties(
+        cls.graph_opt_default.input_routing_config.named_dim_ties)
+    factory.set_input_acceptance_dim("num_tokens", 1024)
+    if bucket:
+        factory.set_padded_dim("num_tokens", 1, 1024, 8, spacing_method="linear")
+    return factory.export_config()
+
+
+def _module_graph_optimization_config(
+    cls,
+    module_name: str,
+    input_key_method: InputKeyMethod,
+    sample_ids: tuple[str, ...],
+    prod_key: InputKeyMethod,
+    verify_capture: bool = True,
+    ) -> CUDAGraphOptimizationConfig:
+    """Assemble a module's ``CUDAGraphOptimizationConfig``.
+
+    For ``prod_key`` the routing comes straight from the module's
+    ``@support_graph_optimization`` decorator (``graph_opt_default``, the source
+    of truth); the other supported ``input_key_method`` is an experimental
+    override that reuses the decorator's tie points via
+    :func:`_routing_from_decorator`. ``num_graphs_max_for_this_module`` is sized
+    to ``len(sample_ids)`` (at most one captured graph per target).
+    """
+    if input_key_method == prod_key:
+        input_routing_config = cls.graph_opt_default.input_routing_config
+    elif input_key_method in (InputKeyMethod.EXACT,
+                              InputKeyMethod.BUCKETED_SHAPES):
+        input_routing_config = _routing_from_decorator(
+            cls, bucket=input_key_method == InputKeyMethod.BUCKETED_SHAPES)
+    else:
+        raise NotImplementedError(
+            f"unsupported input_key_method {input_key_method!r} for module "
+            f"{module_name!r}")
+    return CUDAGraphOptimizationConfig(
+        graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+        input_key_method=input_key_method,
+        input_routing_config=input_routing_config,
+        verify_capture=verify_capture,
+        num_graphs_max_for_this_module=len(sample_ids))
+
+
 def _openfold3_graph_optimization_config(
     module_name: str,
     input_key_method: InputKeyMethod,
@@ -225,174 +280,25 @@ def _openfold3_graph_optimization_config(
     ) -> CUDAGraphOptimizationConfig:
     """Build the CUDA-graph optimization config for an OpenFold3 ``module_name``.
 
-    Sets up an ``InputRoutingConfigFactory`` with the module's input-acceptance
-    dims (and, for ``BUCKETED_SHAPES``, its padded/bucketed dims plus output
-    ties). ``num_graphs_max_for_this_module`` is sized to ``len(sample_ids)``
-    (at most one captured graph per target). Raises for an unknown module or
-    unsupported ``input_key_method``.
+    ``token_transformer`` / ``diffusion_module`` are production-keyed ``EXACT``
+    and ``structure_pairformer`` (the shared ``PairformerModule``) is
+    ``BUCKETED_SHAPES``; the non-prod key is an experimental override. Raises for
+    an unknown module.
     """
-    if module_name == "token_transformer":
-        
-        # input acceptance
-        input_routing = InputRoutingConfigFactory()
-        input_routing.set_input_acceptance_dim(
-            dim_name="num_tokens",
-            dim_len_max=1024,
-        )
-        # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-        input_routing.input_dim_is_acceptance("a", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("s", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("z", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("z", -3, "num_tokens")
-        input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
-        
-        if input_key_method==InputKeyMethod.EXACT: # prod settting
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids),
-            )
-        
-        elif input_key_method==InputKeyMethod.BUCKETED_SHAPES: # experimental setting
-            input_routing.set_padded_dim(
-                dim_name="num_tokens",
-                dim_len_min=1,      # the model's min_seq_len floor
-                dim_len_max=1024,    # comfortably above the largest target (~199)
-                num_intervals=8,
-                spacing_method="linear",
-            )
-            # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-            input_routing.input_dim_is_padded("a", -2, "num_tokens")
-            input_routing.input_dim_is_padded("s", -2, "num_tokens")
-            input_routing.input_dim_is_padded("z", -2, "num_tokens")
-            input_routing.input_dim_is_padded("z", -3, "num_tokens")
-            input_routing.input_dim_is_padded("mask", -1, "num_tokens")
-            # Output tensor 0 (the updated token representation) token axis.
-            input_routing.output_dim_is_padded(0, -2, "num_tokens")
-            
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids))
-        
-        else:
-            raise NotImplementedError(f"unsupported input_key_method {input_key_method!r} for module {module_name!r}")
-
-        
-    elif module_name=="diffusion_module":
-
-        # input acceptance
-        input_routing = InputRoutingConfigFactory()
-        input_routing.set_input_acceptance_dim(
-            dim_name="num_tokens",
-            dim_len_max=1024,
-        )
-        # DiffusionModule.forward args (kwargs by name): the token axis rides
-        # token_mask (-1), si_input/si_trunk (-2), and zij_trunk (-2 and -3).
-        # xl_noisy/atom_mask carry the atom axis, so they are left untied.
-        input_routing.input_dim_is_acceptance("si_input", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("si_trunk", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("zij_trunk", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("zij_trunk", -3, "num_tokens")
-        input_routing.input_dim_is_acceptance("token_mask", -1, "num_tokens")
-        
-        if input_key_method==InputKeyMethod.EXACT: # prod setting
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids),
-            )
-
-        elif input_key_method==InputKeyMethod.BUCKETED_SHAPES: # experimental setting
-            input_routing.set_padded_dim(
-                dim_name="num_tokens",
-                dim_len_min=1,      # the model's min_seq_len floor
-                dim_len_max=1024,    # comfortably above the largest target (~199)
-                num_intervals=8,
-                spacing_method="linear",
-            )
-            # DiffusionModule.forward args (kwargs by name): the token axis rides
-            # token_mask (-1), si_input/si_trunk (-2), and zij_trunk (-2 and -3).
-            # xl_noisy/atom_mask carry the atom axis, so they are left untied.
-            input_routing.input_dim_is_padded("si_input", -2, "num_tokens")
-            input_routing.input_dim_is_padded("si_trunk", -2, "num_tokens")
-            input_routing.input_dim_is_padded("zij_trunk", -2, "num_tokens")
-            input_routing.input_dim_is_padded("zij_trunk", -3, "num_tokens")
-            input_routing.input_dim_is_padded("token_mask", -1, "num_tokens")
-            # Output tensor 0 (the updated token representation) token axis.
-            input_routing.output_dim_is_padded(0, -2, "num_tokens")
-
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids))
-        else:
-            raise NotImplementedError(f"unsupported input_key_method {input_key_method!r} for module {module_name!r}")
-
-    elif module_name=="structure_pairformer":
-        
-        input_routing = InputRoutingConfigFactory()
-        input_routing.set_input_acceptance_dim(
-            dim_name="num_tokens",
-            dim_len_max=1024,
-        )
-        # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-        input_routing.input_dim_is_acceptance("s", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("z", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("z", -3, "num_tokens")
-        input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
-        input_routing.input_dim_is_acceptance("pair_mask", -1, "num_tokens")
-        input_routing.input_dim_is_acceptance("pair_mask", -2, "num_tokens")
-        
-        if input_key_method == InputKeyMethod.EXACT: # experimental setting
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids),
-            )
-            
-        elif input_key_method == InputKeyMethod.BUCKETED_SHAPES: # prod setting
-            input_routing.set_padded_dim(
-                dim_name="num_tokens",
-                dim_len_min=1,      # the model's min_seq_len floor
-                dim_len_max=1024,    # comfortably above the largest target (~199)
-                num_intervals=8,
-                multiple_of=128,
-                spacing_method="linear",
-            )
-            # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-            input_routing.input_dim_is_padded("s", -2, "num_tokens")
-            input_routing.input_dim_is_padded("z", -2, "num_tokens")
-            input_routing.input_dim_is_padded("z", -3, "num_tokens")
-            input_routing.input_dim_is_padded("mask", -1, "num_tokens")
-            input_routing.input_dim_is_padded("pair_mask", -1, "num_tokens")
-            input_routing.input_dim_is_padded("pair_mask", -2, "num_tokens")
-            # Output tensor 0 (the updated token representation) token axis.
-            input_routing.output_dim_is_padded(0, -2, "num_tokens")
-            input_routing.output_dim_is_padded(1, -2, "num_tokens")
-            input_routing.output_dim_is_padded(1, -3, "num_tokens")
-            
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids))
-        else:
-            raise NotImplementedError
-
-    else:
-        raise ValueError(f"unsupported input_key_method {input_key_method!r} for module {module_name!r}")
+    cls_by_module = {
+        "token_transformer": OpenFold3DiffusionTransformer,
+        "diffusion_module": OF3DiffusionModule,
+        "structure_pairformer": PairformerModule,
+    }
+    if module_name not in cls_by_module:
+        raise ValueError(
+            f"unsupported module {module_name!r} for openfold3")
+    prod_key = (InputKeyMethod.BUCKETED_SHAPES
+                if module_name == "structure_pairformer"
+                else InputKeyMethod.EXACT)
+    return _module_graph_optimization_config(
+        cls_by_module[module_name], module_name, input_key_method, sample_ids,
+        prod_key, verify_capture)
 
 
 def _boltz2_graph_optimization_config(
@@ -417,158 +323,53 @@ def _boltz2_graph_optimization_config(
       (so it is not tied here) and its output is atom coordinates (no output
       tie).
 
-    Raises for an unknown module or unsupported ``input_key_method``.
+    ``token_transformer`` / ``diffusion_module`` are production-keyed ``EXACT``
+    and ``structure_pairformer`` (the shared ``PairformerModule``, called with
+    ``s``/``z`` positional but normalized to ``s``/``z`` by ``Signature.bind``)
+    is ``BUCKETED_SHAPES``; the non-prod key is an experimental override. Raises
+    for an unknown module.
     """
-    if module_name == "token_transformer":
-
-        # input acceptance
-        input_routing = InputRoutingConfigFactory()
-        input_routing.set_input_acceptance_dim(
-            dim_name="num_tokens",
-            dim_len_max=1024,
-        )
-        # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-        input_routing.input_dim_is_acceptance("a", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("s", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("z", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("z", -3, "num_tokens")
-        input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
-
-        if input_key_method == InputKeyMethod.EXACT: # prod setting
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids),
-            )
-
-        elif input_key_method == InputKeyMethod.BUCKETED_SHAPES: # experimental setting
-            input_routing.set_padded_dim(
-                dim_name="num_tokens",
-                dim_len_min=1,      # the model's min_seq_len floor
-                dim_len_max=1024,    # comfortably above the largest target (~199)
-                num_intervals=8,
-                spacing_method="linear",
-            )
-            # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-            input_routing.input_dim_is_padded("a", -2, "num_tokens")
-            input_routing.input_dim_is_padded("s", -2, "num_tokens")
-            input_routing.input_dim_is_padded("z", -2, "num_tokens")
-            input_routing.input_dim_is_padded("z", -3, "num_tokens")
-            input_routing.input_dim_is_padded("mask", -1, "num_tokens")
-            # Output tensor 0 (the updated token representation) token axis.
-            input_routing.output_dim_is_padded(0, -2, "num_tokens")
-
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids))
-        else:
-            raise NotImplementedError(f"unsupported input_key_method {input_key_method!r} for module {module_name!r}")
-
-    elif module_name == "diffusion_module":
-
-        # input acceptance
-        input_routing = InputRoutingConfigFactory()
-        input_routing.set_input_acceptance_dim(
-            dim_name="num_tokens",
-            dim_len_max=1024,
-        )
-        # boltz-2 DiffusionModule.forward args (kwargs by name): the token axis rides
-        # token_pad_mask (-1) and s_inputs/s_trunk (-2). The pair rep is nested inside
-        # diffusion_conditioning_kwargs, and r_noisy/atom_pad_mask carry the atom
-        # axis, so they are left untied.
-        input_routing.input_dim_is_acceptance("s_inputs", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("s_trunk", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("token_pad_mask", -1, "num_tokens")
-
-        if input_key_method == InputKeyMethod.EXACT: # prod setting
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids),
-            )
-
-        elif input_key_method == InputKeyMethod.BUCKETED_SHAPES: # experimental setting
-            input_routing.set_padded_dim(
-                dim_name="num_tokens",
-                dim_len_min=1,      # the model's min_seq_len floor
-                dim_len_max=1024,    # comfortably above the largest target (~199)
-                num_intervals=8,
-                spacing_method="linear",
-            )
-            input_routing.input_dim_is_padded("s_inputs", -2, "num_tokens")
-            input_routing.input_dim_is_padded("s_trunk", -2, "num_tokens")
-            input_routing.input_dim_is_padded("token_pad_mask", -1, "num_tokens")
-
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids))
-        else:
-            raise NotImplementedError(f"unsupported input_key_method {input_key_method!r} for module {module_name!r}")
-        
-    elif module_name == "structure_pairformer":  # not activated in production
-
-        input_routing = InputRoutingConfigFactory()
-        input_routing.set_input_acceptance_dim(
-            dim_name="num_tokens",
-            dim_len_max=1024,
-        )
-        # boltz-2 passes s, z positionally -> arg0, arg1; mask/pair_mask by
-        # keyword. arg1 (the pair rep) carries the token axis on dims -2 and -3.
-        input_routing.input_dim_is_acceptance("arg0", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("arg1", -2, "num_tokens")
-        input_routing.input_dim_is_acceptance("arg1", -3, "num_tokens")
-        input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
-        input_routing.input_dim_is_acceptance("pair_mask", -1, "num_tokens")
-        input_routing.input_dim_is_acceptance("pair_mask", -2, "num_tokens")
-
-        if input_key_method == InputKeyMethod.EXACT: # experimental setting
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids),
-            )
-
-        elif input_key_method == InputKeyMethod.BUCKETED_SHAPES: # prod setting
-            input_routing.set_padded_dim(
-                dim_name="num_tokens",
-                dim_len_min=1,      # the model's min_seq_len floor
-                dim_len_max=1024,    # comfortably above the largest target (~199)
-                num_intervals=8,
-                spacing_method="linear",
-            )
-            input_routing.input_dim_is_padded("arg0", -2, "num_tokens")
-            input_routing.input_dim_is_padded("arg1", -2, "num_tokens")
-            input_routing.input_dim_is_padded("arg1", -3, "num_tokens")
-            input_routing.input_dim_is_padded("mask", -1, "num_tokens")
-            input_routing.input_dim_is_padded("pair_mask", -1, "num_tokens")
-            input_routing.input_dim_is_padded("pair_mask", -2, "num_tokens")
-            # Outputs (s, z) are returned as a tuple -> positional, same as OpenFold3.
-            input_routing.output_dim_is_padded(0, -2, "num_tokens")
-            input_routing.output_dim_is_padded(1, -2, "num_tokens")
-            input_routing.output_dim_is_padded(1, -3, "num_tokens")
-
-            return CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                input_key_method=input_key_method,
-                input_routing_config=input_routing.export_config(),
-                verify_capture=verify_capture,
-                num_graphs_max_for_this_module=len(sample_ids))
-        else:
-            raise NotImplementedError(f"unsupported input_key_method {input_key_method!r} for module {module_name!r}")
-    else:
+    cls_by_module = {
+        "token_transformer": BoltzDiffusionTransformer,
+        "diffusion_module": BoltzDiffusionModule,
+        "structure_pairformer": PairformerModule,
+    }
+    if module_name not in cls_by_module:
         raise ValueError(f"unsupported module {module_name!r} for boltz-2")
+    prod_key = (InputKeyMethod.BUCKETED_SHAPES
+                if module_name == "structure_pairformer"
+                else InputKeyMethod.EXACT)
+    return _module_graph_optimization_config(
+        cls_by_module[module_name], module_name, input_key_method, sample_ids,
+        prod_key, verify_capture)
+
+
+def _protenix_graph_optimization_config(
+    module_name: str,
+    input_key_method: InputKeyMethod,
+    sample_ids: tuple[str, ...],
+    verify_capture: bool = True) -> CUDAGraphOptimizationConfig:
+    """Build the CUDA-graph optimization config for a Protenix ``module_name``.
+
+    Protenix graph-optimizes ``token_transformer`` (``a``/``s``/``z``/``mask``,
+    z carries the token axis on -2/-3) and ``diffusion_module``
+    (``s_inputs``/``s_trunk`` at -2, ``z_trunk`` at -2/-3; the mask lives inside
+    ``input_feature_dict`` and the output is atom coordinates, so neither is
+    tied). Its recycling-trunk pairformer is intentionally *not* graph-optimized
+    (replay produces NaN), so ``structure_pairformer`` is unsupported.
+    """
+    cls_by_module = {
+        "token_transformer": ProtenixDiffusionTransformer,
+        "diffusion_module": ProtenixDiffusionModule,
+    }
+    if module_name not in cls_by_module:
+        raise NotImplementedError(
+            f"module {module_name!r} is not graph-optimized for protenix "
+            "(only token_transformer and diffusion_module)")
+    # The production setting is EXACT (acceptance only); BUCKETED adds padding.
+    return _module_graph_optimization_config(
+        cls_by_module[module_name], module_name, input_key_method, sample_ids,
+        prod_key=InputKeyMethod.EXACT, verify_capture=verify_capture)
 
 
 def _build_graph_optimization_config(
@@ -592,6 +393,8 @@ def _build_graph_optimization_config(
         return _openfold3_graph_optimization_config(module_name, input_key_method, sample_ids)
     elif model_source == "boltz-2":
         return _boltz2_graph_optimization_config(module_name, input_key_method, sample_ids)
+    elif model_source == "protenix-v2":
+        return _protenix_graph_optimization_config(module_name, input_key_method, sample_ids)
     else:
         raise ValueError(f"unsupported model_source {model_source!r}")
 
@@ -618,7 +421,7 @@ def _build_processor_config(model_source: str,
     """
     
     engine_kwargs: dict = {"profile_inference": True}
-    default_model_cfg = _default_model_config(model_source)
+    default_model_cfg = _default_of3_model_config(model_source)
     if default_model_cfg is not None:
         engine_kwargs["config"] = default_model_cfg
     
@@ -651,61 +454,6 @@ def _build_processor_config(model_source: str,
         writer_stage=WriterStageConfig(output_path=str(output_dir),
                                        format="cif"))
     return engine_processor_config
-
-
-def _run_pipeline(model_source: str,
-                  module_name: str,
-                  requests: list[InputRequest],
-                  output_dir: Path,
-                  use_cuda_graph: bool,
-                  input_key_method: InputKeyMethod,
-                  sample_ids: tuple[str, ...],
-                  ) -> tuple[dict[str, Path], object]:
-    """Run the serial pipeline over ``requests`` and return written CIF paths.
-
-    Returns ``(paths_by_id, processor)``. The processor is returned so the
-    caller can introspect the in-process model (serial backend) to confirm the
-    graph engaged. ``should_continue_on_error`` defaults to False, so any
-    per-request failure raises rather than silently producing an empty output.
-    """
-    config = _build_processor_config(
-        model_source=model_source,
-        module_name=module_name,
-        output_dir=output_dir,
-        use_cuda_graph=use_cuda_graph,
-        sample_ids=sample_ids,
-        input_key_method=input_key_method)
-    processor = build_processor(config)
-
-    records = [{
-        "record": req,
-        "__record_id": req["input_id"],
-        "random_seed": SEED,
-    } for req in requests]
-
-    # No outer inference_mode: the folding engine's execute() already applies
-    # @torch.inference_mode() for the model forward (this is what disables grad
-    # so the tracker captures/replays), while the upstream CPU stages run in
-    # normal mode — matching run_pipeline.py's serial path.
-    seed_everything(SEED)
-    try:
-        processor(records)
-    except FoldingPredictionError as exc:
-        # The engine wraps the real per-request error in a batch-level
-        # FoldingPredictionError; surface the underlying model/postprocess
-        # exception (with its own traceback) so failures are diagnosable, and
-        # so a weights/metadata availability error still reaches the skip
-        # handler in the test body.
-        raise (exc.__cause__ or exc) from None
-
-    paths: dict[str, Path] = {}
-    for sid in sample_ids:
-        cif_path = output_dir / f"{sid}.cif"
-        assert cif_path.exists(), (
-            f"pipeline did not write expected output {cif_path} "
-            f"(model={model_source}, use_cuda_graph={use_cuda_graph})")
-        paths[sid] = cif_path
-    return paths, processor
 
 
 def _graph_states(processor) -> list[tuple]:
@@ -817,22 +565,43 @@ _INPUT_KEY_METHOD_PARAMS_EXACT_ONLY = [
     p for p in _INPUT_KEY_METHOD_PARAMS if InputKeyMethod.EXACT in p.values
 ]
 
-# ``sample_id_tuple`` parametrizations. Each tuple is one test invocation whose
-# eager and cuda-graph runs fold exactly those targets; the test id joins the
-# member sample ids with '-'.
+def _flatten_sample_ids(sample_ids: tuple) -> tuple[str, ...]:
+    """Flatten a ``sample_id_tuple`` to a flat tuple of sample-id strings.
+
+    Accepts both forms: a flat tuple of sample ids (e.g. ``("T1047s1",)``) and a
+    tuple of per-batch tuples (e.g. ``(("T1038",), ("T1047s1",))``). String
+    elements are sample ids; tuple elements are batches whose members are
+    flattened out. The pipeline runs one structure per forward
+    (``engine_stage`` asserts ``len(rows) == 1``), so batches are size-1 and
+    flattening recovers the per-target list the parity body folds into the graph
+    cache. Batches of size > 1 would need engine ``B>1`` support to run.
+    """
+    flat: list[str] = []
+    for item in sample_ids:
+        if isinstance(item, str):
+            flat.append(item)
+        else:
+            flat.extend(item)
+    return tuple(flat)
+
+
+# ``sample_id_tuple`` parametrizations. Each tuple is one test invocation, a
+# tuple of per-batch tuples whose eager and cuda-graph runs fold exactly those
+# targets; the test id joins the flattened member sample ids with '-'.
 _SAMPLE_ID_TUPLE_PARAMS_ALL = [
-    pytest.param(t, id="-".join(t)) for t in (
-        SAMPLE_ID_TUPLE_C, SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
+    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (
+        SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
 ]
 
 _SAMPLE_ID_TUPLE_PARAMS_D = [
-    pytest.param(t, id="-".join(t)) for t in (SAMPLE_ID_TUPLE_D,)
+    pytest.param(t, id="-".join(_flatten_sample_ids(t)))
+    for t in (SAMPLE_ID_TUPLE_D,)
 ]
 
 # Multi-target tuples only, for the modules exercised with EXACT keying that
 # run over the multi-sample tuples (D, E).
 _SAMPLE_ID_TUPLE_PARAMS_MULTI = [
-    pytest.param(t, id="-".join(t)) for t in (
+    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (
         SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
 ]
 
@@ -847,6 +616,7 @@ _CUDA_GRAPH_PARITY_MARKS = (
     pytest.mark.parametrize("input_key_method", _INPUT_KEY_METHOD_PARAMS),
     pytest.mark.parametrize("model_source", _MODEL_PARAMS),
 )
+
 
 def _cuda_graph_parity_marks(func):
     """Apply the shared ``_CUDA_GRAPH_PARITY_MARKS`` stack to a parity test.
@@ -878,6 +648,29 @@ def _cuda_graph_parity_marks_exact_only(func):
     return func
 
 
+# Models that graph-optimize their pairformer. Protenix is excluded: its
+# recycling-trunk pairformer is intentionally not graph-optimized (replay
+# produces NaN), so the pairformer parity test does not run for it.
+_PAIRFORMER_MODEL_PARAMS = [
+    p for p in _MODEL_PARAMS if "protenix-v2" not in p.values
+]
+
+
+def _cuda_graph_parity_marks_pairformer(func):
+    """Like ``_cuda_graph_parity_marks`` but restricted to models whose
+    pairformer is graph-optimized (excludes Protenix)."""
+    model_source = pytest.mark.parametrize("model_source",
+                                           _PAIRFORMER_MODEL_PARAMS)
+    # Swap the full model_source parametrize for the pairformer subset, leaving
+    # the other marks (skips, input_key_method) untouched.
+    marks = tuple(
+        model_source if m is _CUDA_GRAPH_PARITY_MARKS[3] else m
+        for m in _CUDA_GRAPH_PARITY_MARKS)
+    for mark in reversed(marks):
+        func = mark(func)
+    return func
+
+
 def _assert_cuda_graph_parity(model_source: str, module_name: str,
                              sample_ids: tuple[str, ...],
                              input_key_method: InputKeyMethod = InputKeyMethod.EXACT
@@ -886,9 +679,12 @@ def _assert_cuda_graph_parity(model_source: str, module_name: str,
     the graph captured/verified for every target and left the prediction
     unchanged. Shared body of the per-module parity tests below.
 
-    ``sample_ids`` is the target tuple to fold (this test's ``sample_id_tuple``);
+    ``sample_ids`` is this test's ``sample_id_tuple`` — a tuple of per-batch
+    tuples; it is flattened to the per-target sample-id list to fold (each batch
+    is size-1, the only form the one-structure-per-forward pipeline can run).
     ``input_key_method`` selects the graph-cache keying used for the cuda-graph
     run (see :func:`_build_processor_config`)."""
+    sample_ids = _flatten_sample_ids(sample_ids)
     requests = [_load_request(sid) for sid in sample_ids]
 
     with tempfile.TemporaryDirectory() as original_dir, \
@@ -898,25 +694,27 @@ def _assert_cuda_graph_parity(model_source: str, module_name: str,
 
         try:
             # --- Run 1: model with the CUDA-graph-wrapped module -----------
-            cudagraph_paths, cudagraph_proc = _run_pipeline(
+            cudagraph_config = _build_processor_config(
                 model_source=model_source,
-                requests=requests,
+                module_name=module_name,
                 output_dir=cudagraph_dir,
                 use_cuda_graph=True,
-                module_name=module_name,
-                input_key_method=input_key_method,
-                sample_ids=sample_ids)
+                sample_ids=sample_ids,
+                input_key_method=input_key_method)
+            cudagraph_paths, cudagraph_proc = _run_pipeline(
+                cudagraph_config, requests, sample_ids, cudagraph_dir)
             torch.cuda.empty_cache()
-            
+
             # --- Run 2: original (eager) model -----------------------------
-            original_paths, _ = _run_pipeline(
+            original_config = _build_processor_config(
                 model_source=model_source,
-                requests=requests,
+                module_name=module_name,
                 output_dir=original_dir,
                 use_cuda_graph=False,
-                module_name=module_name,
-                input_key_method=input_key_method,
-                sample_ids=sample_ids)
+                sample_ids=sample_ids,
+                input_key_method=input_key_method)
+            original_paths, _ = _run_pipeline(
+                original_config, requests, sample_ids, original_dir)
             torch.cuda.empty_cache()
 
 
@@ -961,7 +759,7 @@ def _assert_cuda_graph_parity(model_source: str, module_name: str,
             raise Exception("not implemented")
 
 
-@_cuda_graph_parity_marks
+@_cuda_graph_parity_marks_pairformer
 @pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_ALL)
 def test_cuda_graph_pairformer_parity(model_source, input_key_method,
                                       sample_id_tuple):
@@ -986,6 +784,3 @@ def test_cuda_graph_diffusion_module_parity(model_source, input_key_method,
     _assert_cuda_graph_parity(model_source, "diffusion_module",
                              sample_ids=sample_id_tuple,
                              input_key_method=input_key_method)
-
-
-

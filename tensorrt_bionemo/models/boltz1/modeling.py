@@ -46,8 +46,9 @@ from tensorrt_bionemo.pipeline.models.boltz2.const import (
     num_pocket_contact_info, num_tokens)
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
-from ..optimize_module_setter import (AcceleratedConfig, ModuleRegistry,
-                                      ModuleSpec, OptimizedModuleSetterMixin)
+from ..optimize_module_setter import (AcceleratedConfig,
+                                      DiscoveredModuleRegistry,
+                                      OptimizedModuleSetterMixin)
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (convert_hf_confidence_torch,
                       convert_hf_diffusion_conditioning_torch,
@@ -56,58 +57,21 @@ from .convert import (convert_hf_confidence_torch,
                       convert_hf_structure_module_torch)
 
 
-class Boltz1ModuleRegistry(ModuleRegistry):
-
-    def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
-        return {
-            "structure_pairformer":
-            ModuleSpec(
-                getter=lambda mod: mod.trunk.pairformer_module,
-                setter=lambda mod, opt: setattr(mod.trunk, "pairformer_module",
-                                                opt),
-                compiled_cls=None,
-                # graph_optimization_cls=CUDAGraphOptimizationTracker, wait to align on OF3 result
-            ),
-            "confidence_pairformer":
-            ModuleSpec(
-                getter=lambda mod: mod.confidence_module.pairformer_module,
-                setter=lambda mod, opt: setattr(mod.confidence_module,
-                                                "pairformer_module", opt),
-                compiled_cls=None,
-            ),
-            "token_transformer":
-            ModuleSpec(
-                getter=lambda mod:
-                (mod.structure_module.score_model.token_transformer),
-                setter=lambda mod, opt: setattr(
-                    mod.structure_module.score_model, "token_transformer", opt
-                ),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "diffusion_module":
-            ModuleSpec(
-                getter=lambda mod: mod.structure_module.score_model,
-                setter=lambda mod, opt: setattr(
-                    mod.structure_module, "score_model", opt),
-                graph_optimization_cls=CUDAGraphOptimizationTracker,
-            ),
-            "structure_msa":
-            ModuleSpec(
-                getter=lambda mod: mod.trunk.msa_module,
-                setter=lambda mod, opt: setattr(mod.trunk, "msa_module", opt),
-                compiled_cls=None,
-            ),
-            "confidence_msa":
-            ModuleSpec(
-                getter=lambda mod: mod.confidence_module.msa_module,
-                setter=lambda mod, opt: setattr(mod.confidence_module,
-                                                "msa_module", opt),
-                compiled_cls=None,
-            ),
-        }
-
-
 class Boltz1(nn.Module, OptimizedModuleSetterMixin):
+    # Whitelists gating modules are discovered generically 
+    # via ``@support_graph_optimization``.
+    GRAPH_OPT_ENABLED_MODULES = {
+        "token_transformer": "structure_module.score_model.token_transformer",
+        "diffusion_module": "structure_module.score_model",
+    }
+    
+    def get_optimized_modules(
+        self, accelerated_configs: dict[str, AcceleratedConfig]
+    ) -> DiscoveredModuleRegistry:
+        return DiscoveredModuleRegistry(
+            self, accelerated_configs,
+            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
+            graph_optimization_cls=CUDAGraphOptimizationTracker)
 
     def __init__(self,
                  config: BaseConfig = None,
@@ -250,12 +214,6 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             self.load_weights()
 
         self.eval()
-
-    def get_optimized_modules(
-        self,
-        accelerated_configs: dict[str,
-                                  AcceleratedConfig]) -> Boltz1ModuleRegistry:
-        return Boltz1ModuleRegistry(accelerated_configs)
 
     def load_weights(self, weights: dict = None):
         if weights is None:

@@ -1,4 +1,4 @@
 from .config import OpenFold3Config
-from .modeling import OpenFold3, OpenFold3ModuleRegistry
+from .modeling import OpenFold3
 
-__all__ = ["OpenFold3", "OpenFold3ModuleRegistry", "OpenFold3Config"]
+__all__ = ["OpenFold3", "OpenFold3Config"]

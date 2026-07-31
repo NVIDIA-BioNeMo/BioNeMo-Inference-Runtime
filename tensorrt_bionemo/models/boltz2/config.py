@@ -18,10 +18,6 @@ from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
                                       MSAModuleConfig, PairformerConfig)
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.pipeline.models.boltz2.const import num_tokens
-from tensorrt_bionemo._torch.graph_optimization.config import \
-    CUDAGraphOptimizationConfig, InputKeyMethod, GraphOptimizationMode
-from tensorrt_bionemo._torch.graph_optimization.config import \
-    InputRoutingConfigFactory
 
 
 class _Default:
@@ -101,30 +97,6 @@ class TemplateV2ModuleConfig(BaseConfig):
     )
 
 
-def boltz2_pairformer_input_routing_config():
-    input_routing = InputRoutingConfigFactory()
-    input_routing.set_padded_dim(
-        dim_name="num_tokens",
-        dim_len_min=4,
-        dim_len_max=2048,
-        num_intervals=8,
-        spacing_method="linear",
-    )
-    # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-    input_routing.input_dim_is_padded("s", -2, "num_tokens")
-    input_routing.input_dim_is_padded("z", -2, "num_tokens")
-    input_routing.input_dim_is_padded("z", -3, "num_tokens")
-    input_routing.input_dim_is_padded("mask", -1, "num_tokens")
-    input_routing.input_dim_is_padded("pair_mask", -1, "num_tokens")
-    input_routing.input_dim_is_padded("pair_mask", -2, "num_tokens")
-    # Output tensor 0 (the updated token representation) token axis.
-    input_routing.output_dim_is_padded(0, -2, "num_tokens")
-    input_routing.output_dim_is_padded(1, -2, "num_tokens")
-    input_routing.output_dim_is_padded(1, -3, "num_tokens")
-
-    return input_routing.export_config()
-
-
 class TrunkConfig(BaseConfig):
     use_templates_v2: bool = False
     msa_module: MSAModuleConfig = MSAModuleConfig(
@@ -149,9 +121,6 @@ class TrunkConfig(BaseConfig):
         trimul_high_precision=False,
         attention_initial_norm=False,
         version="v2",
-        # CUDAGraph no enable in prod for Boltz2
-        graph_optimization_config=CUDAGraphOptimizationConfig(
-            graph_optimization_mode=GraphOptimizationMode.NO_OPTIMIZATION)
     )
     template_module: TemplateV2ModuleConfig = TemplateV2ModuleConfig()
 
@@ -176,39 +145,6 @@ class AtomDiffusionConfig(BaseConfig):
     dim_fourier: int = 256
     version: str = "v2"
 
-
-def boltz2_dit_input_routing_config():
-    input_routing = InputRoutingConfigFactory()
-    input_routing.set_input_acceptance_dim(
-        dim_name="num_tokens",
-        dim_len_max=1024,
-    )
-    # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-    input_routing.input_dim_is_acceptance("a", -2, "num_tokens")
-    input_routing.input_dim_is_acceptance("s", -2, "num_tokens")
-    input_routing.input_dim_is_acceptance("z", -2, "num_tokens")
-    input_routing.input_dim_is_acceptance("z", -3, "num_tokens")
-    input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
-
-    return input_routing.export_config()
-
-
-def boltz2_diff_mod_input_routing_config():
-    input_routing = InputRoutingConfigFactory()
-    input_routing.set_input_acceptance_dim(
-        dim_name="num_tokens",
-        dim_len_max=1024,
-    )
-    # Inputs (kwargs by name); z carries the token axis on dims -2 and -3.
-    input_routing.input_dim_is_acceptance("a", -2, "num_tokens")
-    input_routing.input_dim_is_acceptance("s", -2, "num_tokens")
-    input_routing.input_dim_is_acceptance("z", -2, "num_tokens")
-    input_routing.input_dim_is_acceptance("z", -3, "num_tokens")
-    input_routing.input_dim_is_acceptance("mask", -1, "num_tokens")
-    input_routing.input_dim_is_acceptance("pair_mask", -1, "num_tokens")
-    input_routing.input_dim_is_acceptance("pair_mask", -2, "num_tokens")
-
-    return input_routing.export_config()
 
 class ScoreModelConfig(BaseConfig):
     atom_s: int = _Default.atom_s
@@ -248,11 +184,6 @@ class ScoreModelConfig(BaseConfig):
         conditioned_transition_using_silu=False,
         expansion_factor=2,
         version="v2",
-        graph_optimization_config=CUDAGraphOptimizationConfig(
-            input_key_method=InputKeyMethod.EXACT,
-            graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-            input_routing_config=boltz2_dit_input_routing_config(),
-        )
     )
     atom_decoder: DiffusionTransformerConfig = DiffusionTransformerConfig(
         num_blocks=3,
@@ -263,11 +194,6 @@ class ScoreModelConfig(BaseConfig):
         conditioned_transition_using_silu=False,
         expansion_factor=2,
         version="v2",
-    )
-    graph_optimization_config: GraphOptimizationMode = CUDAGraphOptimizationConfig(
-        input_key_method=InputKeyMethod.EXACT,
-        graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-        input_routing_config=boltz2_diff_mod_input_routing_config(),
     )
     version: str = "v2"
 

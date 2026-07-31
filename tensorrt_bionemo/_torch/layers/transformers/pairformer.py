@@ -24,6 +24,11 @@ from tensorrt_bionemo._torch.attention_backend.utils import (
     precompute_single_masks)
 from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_TRANSITION
 from tensorrt_bionemo._torch.distributed import AllReduceParams
+from tensorrt_bionemo._torch.graph_optimization.config import (
+    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod,
+    PaddedDimSpec, SpacingMethod)
+from tensorrt_bionemo._torch.graph_optimization.decorator import (
+    NamedDimTies, support_graph_optimization)
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
@@ -409,6 +414,43 @@ class PairformerLayerV2(PairformerLayerV1):
         return s, z
 
 
+@support_graph_optimization(
+    # ``num_tokens`` rides s (-2), z (-2 and -3), mask (-1), and pair_mask
+    # (-1 and -2) on the inputs, and both returned reps (s at -2, z at -2/-3)
+    # on the outputs. These ties are fixed by ``forward``'s signature.
+    named_dims=[
+        NamedDimTies(
+            name="num_tokens",
+            input_dims=(
+                ("s", (-2,)),
+                ("z", (-2, -3)),
+                ("mask", (-1,)),
+                ("pair_mask", (-1, -2)),
+            ),
+            output_dims=(
+                (0, (-2,)),
+                (1, (-2, -3)),
+            ),
+        ),
+    ],
+    static_args=("mask", "pair_mask"),
+    workspace_kwargs=("buffers",),
+    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
+    verify_capture=False,
+    input_key_method=InputKeyMethod.BUCKETED_SHAPES,
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(
+        name="num_tokens",
+        dim_len_max=1024,
+    ),
+    padded_dim_spec=PaddedDimSpec(
+        name="num_tokens",
+        dim_len_min=4,
+        dim_len_max=1024,
+        num_intervals=8,
+        multiple_of=128,
+        spacing_method=SpacingMethod.LINEAR,
+    )
+)
 class PairformerModule(nn.Module):
 
     def __init__(self, config: BaseConfig):

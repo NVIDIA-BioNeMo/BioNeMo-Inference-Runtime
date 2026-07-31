@@ -33,7 +33,7 @@ from tensorrt_bionemo._torch.graph_optimization.config import (
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker)
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    InputRoutingConfig, InputRoutingConfigFactory)
+    InputRoutingConfig, InputRoutingConfigFactory, NamedDimTies)
 
 DIM_LEN = 8  # feature dim of the stand-in token tensor: [B, n_tokens, DIM]
 
@@ -41,9 +41,20 @@ DIM_LEN = 8  # feature dim of the stand-in token tensor: [B, n_tokens, DIM]
 def _factory_with_rule(dim_len_max: int) -> InputRoutingConfigFactory:
     """A factory tying ``num_tokens`` to arg0 axis -2, capped at ``dim_len_max``."""
     factory = InputRoutingConfigFactory()
+    factory.set_named_dim_ties([
+        NamedDimTies(name="num_tokens", input_dims=(("arg0", (-2,)),)),
+    ])
     factory.set_input_acceptance_dim("num_tokens", dim_len_max)
-    factory.input_dim_is_acceptance("arg0", -2, "num_tokens")
     return factory
+
+
+class _ArgStub(nn.Module):
+    """Stub whose ``forward`` positional params are named ``arg0``/``arg1`` so the
+    tracker's positional-to-parameter-name normalization (item 1.1.8) keeps the
+    ``arg0``/``arg1`` tie names these tests use."""
+
+    def forward(self, arg0=None, arg1=None, mask=None, pair_mask=None, **kwargs):
+        return arg0
 
 
 def _tracker(input_routing_config=None) -> CUDAGraphOptimizationTracker:
@@ -51,7 +62,7 @@ def _tracker(input_routing_config=None) -> CUDAGraphOptimizationTracker:
     if input_routing_config is not None:
         cfg_kwargs["input_routing_config"] = input_routing_config
     cfg = CUDAGraphOptimizationConfig(**cfg_kwargs)
-    return CUDAGraphOptimizationTracker(cfg, inner_module=nn.Identity())
+    return CUDAGraphOptimizationTracker(cfg, inner_module=_ArgStub())
 
 
 def _accepted(tracker: CUDAGraphOptimizationTracker, *args, **kwargs) -> bool:
@@ -76,8 +87,10 @@ def test_input_accepted_respects_inclusive_limit(n_tokens, accepted):
 def test_no_acceptance_rule_accepts_any_size():
     """A padded dim with no acceptance rule imposes no cap."""
     factory = InputRoutingConfigFactory()
+    factory.set_named_dim_ties([
+        NamedDimTies(name="num_tokens", input_dims=(("arg0", (-2,)),)),
+    ])
     factory.set_padded_dim("num_tokens", 4, 2048, 8)
-    factory.input_dim_is_padded("arg0", -2, "num_tokens")
     tracker = _tracker(factory.export_config())
     assert _accepted(tracker, torch.zeros(1, 9999, DIM_LEN)) is True
 
@@ -111,13 +124,15 @@ def test_survives_json_and_pickle_roundtrip():
 # ---------------------------------------------------------------------------
 def _factory_pairformer_rule(dim_len_max: int) -> InputRoutingConfigFactory:
     factory = InputRoutingConfigFactory()
+    # s -> arg0 (-2); z -> arg1 (-2 and -3); mask (-1); pair_mask (-1 and -2).
+    factory.set_named_dim_ties([
+        NamedDimTies(
+            name="num_tokens",
+            input_dims=(("arg0", (-2,)), ("arg1", (-2, -3)), ("mask", (-1,)),
+                        ("pair_mask", (-1, -2))),
+        ),
+    ])
     factory.set_input_acceptance_dim("num_tokens", dim_len_max)
-    factory.input_dim_is_acceptance("arg0", -2, "num_tokens")       # s
-    factory.input_dim_is_acceptance("arg1", -2, "num_tokens")       # z
-    factory.input_dim_is_acceptance("arg1", -3, "num_tokens")       # z
-    factory.input_dim_is_acceptance("mask", -1, "num_tokens")       # mask
-    factory.input_dim_is_acceptance("pair_mask", -1, "num_tokens")  # pair_mask
-    factory.input_dim_is_acceptance("pair_mask", -2, "num_tokens")  # pair_mask
     return factory
 
 

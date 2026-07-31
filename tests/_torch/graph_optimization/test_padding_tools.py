@@ -39,7 +39,7 @@ from tensorrt_bionemo._torch.graph_optimization.config import (
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker)
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    InputRoutingConfigFactory)
+    InputRoutingConfigFactory, NamedDimTies)
 
 # Small stand-in feature dims for OpenFold3DiffusionTransformer inputs.
 BS = 1
@@ -68,17 +68,21 @@ def _make_bucketer() -> InputRoutingConfigFactory:
     padded dim so ``pad_output``/``unpad_output`` know which output dim rides it.
     """
     bucketer = InputRoutingConfigFactory()
+    # a/s passed positionally (arg0/arg1), z/mask by keyword; z carries the token
+    # dim on axes 1 and 2; output 0 (updated a) on axis 1.
+    bucketer.set_named_dim_ties([
+        NamedDimTies(
+            name="n_tokens",
+            input_dims=(("arg0", (1,)), ("arg1", (1,)), ("z", (1, 2)),
+                        ("mask", (1,))),
+            output_dims=((0, (1,)),),
+        ),
+    ])
     # multiple_of=1 disables the default 128-alignment snap so the small bucket
     # lengths (4, 7, 10, 13, 16) this round-trip test relies on are preserved.
     bucketer.set_padded_dim(
         "n_tokens", dim_len_min=4, dim_len_max=16, num_intervals=4,
         multiple_of=1)
-    bucketer.input_dim_is_padded("arg0", 1, "n_tokens")  # a  [B, S, D]
-    bucketer.input_dim_is_padded("arg1", 1, "n_tokens")  # s  [B, S, Dc]
-    bucketer.input_dim_is_padded("z", 1, "n_tokens")     # z  [B, S, S, Dp]
-    bucketer.input_dim_is_padded("z", 2, "n_tokens")
-    bucketer.input_dim_is_padded("mask", 1, "n_tokens")  # mask [B, S]
-    bucketer.output_dim_is_padded(0, 1, "n_tokens")      # out a [B, S, D]
     return bucketer
 
 

@@ -27,14 +27,37 @@ import biotite.structure as struc
 import biotite.structure.io.pdb as pdb
 import biotite.structure.io.pdbx as pdbx
 import numpy as np
+import torch
 
 import tests
 from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
+from tensorrt_bionemo.pipeline.processor.engine_proc import (
+    EngineProcessorConfig, build_processor)
+from tensorrt_bionemo.pipeline.stages.engine_stage import FoldingPredictionError
 from tests.common.test_utils.basic import path_for_package_in_repo
+from tests.common.test_utils.seeding import seed_everything
 
 REPO_ROOT = path_for_package_in_repo(tests).parent
 SAMPLES_DIR = REPO_ROOT / "examples" / "data" / "samples"
 MONOMERS_DIR = SAMPLES_DIR / "monomers"
+
+SEED = 42
+# Diffusion runtime args. num_sampling_steps need only exceed the warmup
+# threshold (3 calls) so each target's graph captures and then replays.
+RECYCLING_STEPS = 3
+NUM_SAMPLING_STEPS = 200
+DIFFUSION_SAMPLES = 5
+
+
+def _find_sample_json(sample_id: str) -> Path | None:
+    """Return the first ``<sample_id>.json`` found anywhere under SAMPLES_DIR.
+
+    Samples are grouped into per-category subdirectories (``monomers/``,
+    ``homopolymers/``, ``rna_dna_ligand/``, ...), so a target's input json is
+    located by a recursive search rather than assuming a fixed subdirectory.
+    Returns ``None`` when no such file exists.
+    """
+    return next(SAMPLES_DIR.rglob(f"{sample_id}.json"), None)
 
 
 # ===========================================================================
@@ -129,6 +152,106 @@ def _load_request(sample_id: str) -> InputRequest:
                 paired_msas=[],
             ))
     return InputRequest(input_id=entry["input_id"], polymers=polymers)
+
+
+# ===========================================================================
+# Pipeline construction + execution (serial backend, via build_processor)
+# ===========================================================================
+def _default_model_config(model_source: str):
+    """Pretrained model config with any checkpoint-compatibility overrides.
+
+    Returns ``None`` to use the engine's default pretrained config.
+
+    OpenFold3 ships checkpoints whose atom-transformer pair LayerNorms use
+    different layouts, so each config's ``shared_pair_norm`` flag must match
+    whichever checkpoint the engine will load (``OPENFOLD3_CKPT`` if set, else
+    the HF default ``of3-p2-155k.pt``):
+
+    * **shared** layout: a single ``atom_transformer.layer_norm_z`` per atom
+      transformer (e.g. ``of3-p2-155k.pt``). The converter looks for this key
+      only when ``shared_pair_norm=True`` (the pretrained-config default).
+    * **per-block** layout: a LayerNorm per block
+      (``blocks.N.attention_pair_bias.layer_norm_z``), e.g.
+      ``v19_78k_ft3_converted.pt`` or ``of3_ft3_v1.pt``. The converter looks
+      for these only when ``shared_pair_norm=False``.
+
+    Matching the wrong layout makes the weight converter look for keys the
+    checkpoint does not contain (``KeyError`` at load). Rather than guess the
+    layout from the checkpoint filename, inspect the checkpoint's keys and set
+    each transformer's flag from what is actually present.
+    """
+    if model_source != "openfold3":
+        return None
+    from tensorrt_bionemo.registry import get_model_class
+    cfg = get_model_class(model_source).get_pretrained_config(model_source)
+    # Only a locally-present ``OPENFOLD3_CKPT`` can be inspected cheaply; when
+    # it is unset the engine downloads the HF default (shared layout), which
+    # already matches the pretrained-config default, so leave the flags alone.
+    ckpt = os.environ.get("OPENFOLD3_CKPT")
+    if not ckpt or not Path(ckpt).is_file():
+        return cfg
+    state_dict = torch.load(
+        ckpt, map_location="cpu", mmap=True, weights_only=False)
+    if isinstance(state_dict, dict) and "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
+    # (checkpoint prefix, config attr holding that transformer's config)
+    transformers = [
+        ("input_embedder.atom_attn_enc",
+         cfg.input_embedder_config.atom_transformer_config),
+        ("diffusion_module.atom_attn_enc",
+         cfg.diffusion_module_config.atom_transformer_encoder_config),
+        ("diffusion_module.atom_attn_dec",
+         cfg.diffusion_module_config.atom_transformer_decoder_config),
+    ]
+    for prefix, tf_cfg in transformers:
+        shared_key = f"{prefix}.atom_transformer.layer_norm_z.weight"
+        tf_cfg.shared_pair_norm = shared_key in state_dict
+    return cfg
+
+
+def _run_pipeline(config: EngineProcessorConfig,
+                  requests: list[InputRequest],
+                  sample_ids: tuple[str, ...],
+                  output_dir: Path) -> tuple[dict[str, Path], object]:
+    """Run the serial pipeline over ``requests`` and return written CIF paths.
+
+    ``config`` is a fully-built ``EngineProcessorConfig`` (the per-suite
+    ``_build_processor_config`` helpers build these). Returns
+    ``(paths_by_id, processor)``; the processor is returned so the caller can
+    introspect the in-process model (serial backend) to confirm the graph
+    engaged. ``should_continue_on_error`` defaults to False, so any per-request
+    failure raises rather than silently producing an empty output.
+    """
+    processor = build_processor(config)
+
+    records = [{
+        "record": req,
+        "__record_id": req["input_id"],
+        "random_seed": SEED,
+    } for req in requests]
+
+    # No outer inference_mode: the folding engine's execute() already applies
+    # @torch.inference_mode() for the model forward (this is what disables grad
+    # so the tracker captures/replays), while the upstream CPU stages run in
+    # normal mode — matching run_pipeline.py's serial path.
+    seed_everything(SEED)
+    try:
+        processor(records)
+    except FoldingPredictionError as exc:
+        # The engine wraps the real per-request error in a batch-level
+        # FoldingPredictionError; surface the underlying model/postprocess
+        # exception (with its own traceback) so failures are diagnosable, and
+        # so a weights/metadata availability error still reaches the caller's
+        # skip handler.
+        raise (exc.__cause__ or exc) from None
+
+    paths: dict[str, Path] = {}
+    for sid in sample_ids:
+        cif_path = output_dir / f"{sid}.cif"
+        assert cif_path.exists(), (
+            f"pipeline did not write expected output {cif_path}")
+        paths[sid] = cif_path
+    return paths, processor
 
 
 # ===========================================================================

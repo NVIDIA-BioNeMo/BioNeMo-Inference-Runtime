@@ -298,6 +298,9 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         # path, where the captured graph reads the live shape on-device.
         input_tensor_shapes_cpu: TensorContainerShapes = (
             GraphOptimizationTracker._tensor_container_shapes_to_cpu(input_tensor_shapes))
+        # (1.2.4) The first representative call validates that every configured
+        # input tie resolves to a real tensor axis (raises otherwise). One-shot.
+        self.validate_input_ties(input_tensor_shapes_cpu)
         if not self.input_accepted(input_tensor_shapes_cpu):
             return self.inner_module(*args, **kwargs)
 

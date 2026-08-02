@@ -1,6 +1,5 @@
 pre-commit
-pytest
+pytest>=9.0.3  # <9.0.3: PYSEC-2026-1845 (tmpdir symlink)
 parameterized
-omegaconf==2.3.0
 biotraj==1.2.2  # used for tests
 ml_collections==1.1.0  # used for tests

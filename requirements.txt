@@ -1,22 +1,15 @@
 cuda-python>=13
-omegaconf==2.3.0
-transformers>=4.57.6,<4.58
 cuequivariance==0.10.0
 cuequivariance-ops-cu13==0.10.0
 cuequivariance-ops-torch-cu13==0.10.0
-cuequivariance-torch==0.10.0
-nvtx
-matplotlib # FIXME: this is added to make nvtx happy
 triton==3.6.0
 biopython>=1.87
-boto3==1.42.17
 ray[serve,data]==2.56.1  # installs pandas, pyarrow
-uvloop==0.21.0
+uvloop==0.21.0  # >=0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
 modelcif==1.6  # needed for CIFWriter
 rdkit==2025.9.6 # needed for Boltz2 Data pipeline
 nvidia-cutlass-dsl[cu13]==4.5.2
 apache-tvm-ffi>=0.1.6,<0.2
-torch-c-dlpack-ext==0.1.5
 biotite==1.6.0
 datasets==4.8.4 # https://github.com/huggingface/datasets/issues/7344
 lru-dict==1.4.1

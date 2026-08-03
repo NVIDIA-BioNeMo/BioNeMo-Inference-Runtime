@@ -1,0 +1,8 @@
+# CODEOWNERS — review routing for BioNeMo AIR (NVIDIA-BioNeMo/BioNeMoAIR)
+# Syntax: https://docs.github.com/articles/about-code-owners
+#
+# Owners are GitHub teams. A team routes review only if it has WRITE access to
+# this repo (Settings -> Collaborators and teams). The last matching rule wins.
+
+# Global owner: the maintainers team.
+* @NVIDIA-BioNeMo/bioair

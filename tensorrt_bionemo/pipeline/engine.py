@@ -94,9 +94,10 @@ class FoldingEngine:
         device_batch = self.transfer_batch_to_device(batch)
 
         if self.config.profile_inference:
-            # Single GPU-synced model-forward timing. Repeat counts for stable
-            # latency come from the benchmark replicating the dataset (full pipeline
-            # per replica) — not an in-engine forward loop / env knob.
+            # Single GPU-synced model-forward timing: one measurement per
+            # call, with no repeat loop and no environment knob. To average
+            # over repeats, run the full pipeline several times over the
+            # same inputs rather than looping the forward pass here.
             torch.cuda.synchronize()
             _t0 = time.perf_counter()
             output = self.model(device_batch, **self.runtime_args)

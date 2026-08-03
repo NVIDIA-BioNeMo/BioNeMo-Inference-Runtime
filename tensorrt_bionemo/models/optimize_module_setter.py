@@ -68,7 +68,7 @@ class ModuleRegistry(ABC):
         +--------------------------------------+----------------------------+
         | Requested                            | Result                     |
         +--------------------------------------+----------------------------+
-        | token_transformer alone              | kept (was broken)          |
+        | token_transformer alone              | kept                       |
         | diffusion_module + token_transformer | child dropped, parent wins |
         | token_transformer + pairformer       | both kept                  |
         +--------------------------------------+----------------------------+
@@ -183,13 +183,12 @@ def _module_path(spec: ModuleSpec) -> Optional[tuple[str, ...]]:
 class DiscoveredModuleRegistry(ModuleRegistry):
     """A :class:`ModuleRegistry` built by discovery instead of hand-written specs.
 
-    Replaces the per-model registry subclasses (item 1.2.1): every module in the
-    model decorated with ``@support_graph_optimization`` becomes a candidate,
-    keyed by its **qualified module path** (item 1.2.3, the canonical identity).
-    Generic ``get_submodule`` / ``set_submodule`` replace the handwritten
-    getter/setter lambdas. Config keys may be a qualified path directly, or one
-    of the optional ``role_aliases`` (e.g. ``"structure_pairformer"``) mapping a
-    friendly name to a path.
+    Every module in the model decorated with ``@support_graph_optimization``
+    becomes a candidate, keyed by its **qualified module path**, which is the
+    canonical identity used throughout this registry. Specs are built on the
+    generic ``get_submodule`` / ``set_submodule`` accessors. A config key may
+    be a qualified path directly, or one of the optional ``role_aliases``
+    (e.g. ``"structure_pairformer"``) mapping a friendly name to a path.
 
     Args:
         model: The model to discover decorated submodules on.
@@ -225,7 +224,7 @@ class DiscoveredModuleRegistry(ModuleRegistry):
         )
 
     def _select_module_configs(self, all_known, configs):
-        """Reject a configured key that resolves to no decorated module (1.2.5).
+        """Reject a configured key that resolves to no decorated module.
 
         A requested key must be either a discovered qualified path or a known
         role alias. Anything else is a configuration error (e.g. a typo or a
@@ -290,7 +289,7 @@ class DiscoveredModuleRegistry(ModuleRegistry):
         return specs
 
     def _child_module_names(self, specs: dict[str, ModuleSpec]) -> set[str]:
-        """Detect conflicts directly from qualified paths (item 1.2.2), using the
+        """Detect conflicts directly from qualified paths, using the
         discovered ``name -> path`` map. A name is dropped when it is a strict
         *descendant* of another configured path, or when it resolves to the
         *same* path as an already-kept name (e.g. a role alias and its canonical

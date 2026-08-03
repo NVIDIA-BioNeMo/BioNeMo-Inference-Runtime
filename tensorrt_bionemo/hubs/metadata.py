@@ -83,8 +83,9 @@ def resolve_from_env(env_var: str) -> Optional[str]:
 
 
 def metadata_cache_dir() -> Path:
-    """Root scanned for staged metadata assets: ``TENSORRT_BIONEMO_METADATA`` or
-    ``<CACHE_DIR>/metadata`` (where ``run_tests.sh`` stages them)."""
+    """Root scanned for staged metadata assets: ``TENSORRT_BIONEMO_METADATA``
+    or ``<CACHE_DIR>/metadata``, where pre-downloaded assets may be placed to
+    avoid a network fetch."""
     override = os.getenv("TENSORRT_BIONEMO_METADATA")
     if override:
         return Path(override)
@@ -94,7 +95,7 @@ def metadata_cache_dir() -> Path:
 
 def resolve_cached_metadata(env: str) -> Optional[str]:
     """Path of a metadata asset staged at ``<metadata_dir>/<env>`` (a file or
-    directory, typically a symlink created by run_tests.sh), else None. The
+    directory, and often a symlink to one), else None. The
     staged target already matches what the ``env`` override would point to — the
     raw file for plain assets, the extracted dir for archives — so it is returned
     as-is with no further prepare step."""
@@ -242,8 +243,8 @@ def load_metadata(
             metadata[meta_file.metadata_key] = local_path
             continue
 
-        # Fall back to an asset staged in the local cache (e.g. by run_tests.sh)
-        # before giving up to the HuggingFace hub.
+        # Fall back to an asset staged in the local cache before giving up
+        # to the HuggingFace hub.
         staged = resolve_cached_metadata(meta_file.env)
         if staged is not None:
             logger.info(f"Using staged local {meta_file.metadata_key} for "

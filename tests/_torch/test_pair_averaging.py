@@ -254,7 +254,7 @@ def test_pair_weighted_averaging_supports_blackwell(monkeypatch, sm):
 def test_pair_weighted_averaging_config_selects_n_bucket_before_s():
     """Changing S must not make a fixed N jump to another tuned N bucket."""
     # For N=1024, S=1600 is closer to the N=1024/S=2048 variant than S=1024.
-    # The old sqrt(N*S) selector instead jumped to the N=1536/S=1024 anchor.
+    # A sqrt(N*S) selector would instead pick the N=1536/S=1024 anchor.
     config = select_pwa_config(sm_version=80,
                                I=1024,
                                J=1024,

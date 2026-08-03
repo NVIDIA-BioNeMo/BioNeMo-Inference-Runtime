@@ -591,10 +591,10 @@ def test_sample_coords_drop_consumed_features(real_case):
 def test_protenix_module_registry_wiring():
     """Check token-transformer CUDA-graph discovery wiring.
 
-    The per-model registry was replaced by generic ``@support_graph_optimization``
-    discovery: the ``token_transformer`` role alias resolves to the decorated
-    ``diffusion_transformer`` by qualified path, and the generic getter/setter
-    use ``get_submodule`` / ``set_submodule``.
+    Discovery is generic rather than per-model: modules opt in via
+    ``@support_graph_optimization``, so the ``token_transformer`` role alias
+    resolves to the decorated ``diffusion_transformer`` by qualified path,
+    and the getter/setter use ``get_submodule`` / ``set_submodule``.
     """
     import torch.nn as nn
 

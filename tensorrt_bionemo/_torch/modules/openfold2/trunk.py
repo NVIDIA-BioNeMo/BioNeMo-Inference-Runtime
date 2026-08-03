@@ -191,7 +191,7 @@ class ExtraMSAStack(nn.Module):
         OpenFold2 ExtraMSAModule
         TODO: add support for subsampling, chunking
         Args:
-            config: tensorrt_bionemo.models.openfold2.configs.ExtraMSAModuleConfig
+            config: tensorrt_bionemo.configs.modules.ExtraMSAStackConfig
                 The configuration of the extra msa stack module.
         """
         super().__init__()
@@ -223,7 +223,7 @@ class ExtraMSAStack(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(

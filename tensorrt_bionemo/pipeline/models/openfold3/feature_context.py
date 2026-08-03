@@ -44,16 +44,16 @@ from .const import (_PROTEIN_1TO3, DNA_RESTYPE_1TO3, GAP_IDX, MOL_TYPE_DNA,
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# MSA character dispatch (D-05)
+# MSA character dispatch
 # ---------------------------------------------------------------------------
 
 # Module-level set to suppress repeated warnings for the same (char, mol_type)
-# pair (T-02-06: DoS via unbounded warning spam).
+# pair, so malformed input cannot flood the log.
 _seen_unknown_msa_chars: set[tuple[str, int]] = set()
 
 
 def _resolve_msa_char(char: str, mol_type: int) -> int:
-    """Polymer-type-aware MSA char -> 32-class restype index dispatch (D-05).
+    """Polymer-type-aware MSA char -> 32-class restype index dispatch.
 
     Args:
         char: Single MSA character (e.g. 'A', 'U', '-').
@@ -62,14 +62,14 @@ def _resolve_msa_char(char: str, mol_type: int) -> int:
     Returns:
         Restype index in the 32-class vocabulary.
 
-    Dispatch rules (D-05):
+    Dispatch rules:
       - Gap chars ('-', '.') -> GAP_IDX for all mol_types.
       - MOL_TYPE_PROTEIN -> MSA_CHAR_TO_IDX.get(char.upper(), UNK_IDX)
         (backward compat).
       - MOL_TYPE_RNA -> RNA_1_TO_IDX.get(char.upper(), UNK_IDX); unknown
         chars log a WARNING once per unique (char, mol_type) pair.
-      - MOL_TYPE_DNA / MOL_TYPE_LIGAND -> GAP_IDX unconditionally (zero-fill
-        per D-05: DNA never has MSA; ligand is always atomized).
+      - MOL_TYPE_DNA / MOL_TYPE_LIGAND -> GAP_IDX unconditionally (zero-fill:
+        DNA never has an MSA, and ligands are always atomized).
     """
     if char in ("-", "."):
         return GAP_IDX
@@ -83,7 +83,7 @@ def _resolve_msa_char(char: str, mol_type: int) -> int:
         idx = RNA_1_TO_IDX.get(c_upper)
         if idx is not None:
             return idx
-        # Unknown RNA MSA char — warn once per unique (char, mol_type) (T-02-06)
+        # Unknown RNA MSA char — warn once per unique (char, mol_type)
         key = (c_upper, mol_type)
         if key not in _seen_unknown_msa_chars:
             _seen_unknown_msa_chars.add(key)
@@ -92,7 +92,7 @@ def _resolve_msa_char(char: str, mol_type: int) -> int:
         return UNK_IDX
 
     if mol_type in (MOL_TYPE_DNA, MOL_TYPE_LIGAND):
-        # D-05: DNA/LIGAND positions are always zero-filled — no MSA for these.
+        # DNA/LIGAND positions are always zero-filled — no MSA for these.
         return GAP_IDX
 
     # Unknown mol_type — warn and return UNK_IDX
@@ -125,7 +125,7 @@ def _get_residue_from_ccd_with_oxt(ccd_code: str) -> struc.AtomArray:
 
 
 # ---------------------------------------------------------------------------
-# Nucleotide CCD helpers (D-01, D-02, D-03)
+# Nucleotide CCD helpers
 # ---------------------------------------------------------------------------
 
 
@@ -133,8 +133,8 @@ def _get_residue_from_ccd_with_oxt(ccd_code: str) -> struc.AtomArray:
 def _get_nucleotide_from_ccd(ccd_code: str) -> struc.AtomArray:
     """Heavy atoms only, phosphate leaving groups removed (OP3, O3P).
 
-    Per D-02: RNA/DNA polymer linkage leaving atoms are OP3 and O3P.
-    Per D-03: @lru_cache bounds biotite CCD disk-read overhead.
+    RNA/DNA polymer linkage leaving atoms are OP3 and O3P. The @lru_cache
+    bounds biotite CCD disk-read overhead.
     """
     res = struc_info.residue(ccd_code)
     res = res[res.element != "H"]
@@ -146,9 +146,9 @@ def _get_nucleotide_from_ccd(ccd_code: str) -> struc.AtomArray:
 def _get_nucleotide_from_ccd_with_leaving(ccd_code: str) -> struc.AtomArray:
     """Heavy atoms only, leaving groups kept (for RDKit topology).
 
-    Per D-02: Leaving groups (OP3/O3P) are retained for correct bond topology
-    during RDKit conformer generation, then filtered out in structure building.
-    Per D-03: @lru_cache bounds biotite CCD disk-read overhead.
+    Leaving groups (OP3/O3P) are retained for correct bond topology during
+    RDKit conformer generation, then filtered out in structure building. The
+    @lru_cache bounds biotite CCD disk-read overhead.
     """
     res = struc_info.residue(ccd_code)
     res = res[res.element != "H"]
@@ -227,9 +227,9 @@ def _build_nucleotide_rdkit_mol(
 def _embed_smiles_mol(mol: Chem.Mol) -> Chem.Mol:
     """Add ETKDGv3 conformer to an RDKit Mol built from SMILES.
 
-    Matches the ETKDGv3 seeded pattern from _build_residue_rdkit_mol (lines
-    88-116 of the original protein conformer helper). Adds Hs, embeds, removes
-    Hs.  Falls back to useRandomCoords if initial embedding fails.
+    Matches the ETKDGv3 seeded pattern used by _build_residue_rdkit_mol:
+    adds Hs, embeds, removes Hs. Falls back to useRandomCoords if the
+    initial embedding fails.
 
     Args:
         mol: Heavy-atom RDKit Mol (no conformer, no Hs).
@@ -299,11 +299,13 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
     For RNA/DNA inputs, each standard nucleotide residue = one token.
     Atom names, elements, and counts come directly from the CCD.
 
-    Dispatch decisions (citng context decisions):
-      D-01: Nucleotide CCD path mirrors OSS (biotite struc_info.residue).
-      D-02: Protein leaves OXT; RNA/DNA leave OP3/O3P.
-      D-03: @lru_cache on all CCD lookup helpers.
-      D-04: Unknown residues log a WARNING and fall back to type-specific placeholder.
+    Dispatch behaviour:
+      - The nucleotide CCD path mirrors upstream OpenFold-3 (biotite
+        ``struc_info.residue``).
+      - Protein residues drop OXT; RNA/DNA residues drop OP3/O3P.
+      - All CCD lookup helpers are @lru_cache'd.
+      - Unknown residues log a WARNING and fall back to a type-specific
+        placeholder.
     """
     token_resnames: list[str] = []
     token_chain_ids: list[str] = []
@@ -324,7 +326,8 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
     token_idx = 0
     atom_idx = 0
     # mol_idx_counter: tracks the unique conformer instance ID for ref_space_uid.
-    # OSS conformer.py:128-129 sets ref_space_uid = mol_idx (the index into
+    # Upstream ``featurize_reference_conformers_of3`` sets
+    # ref_space_uid = mol_idx (the index into
     # processed_ref_mol_list). One molecule per non-atomized residue or one
     # per atomized ligand chain. We track it explicitly per token so that
     # the ConformerFeatureGenerator can emit ref_space_uid by lookup.
@@ -333,14 +336,16 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
 
     # Assign entity IDs: same "entity representation" → same entity, with
     # IDs assigned by ALPHABETICAL SORT ORDER of unique representations.
-    # This mirrors OSS structure_with_ref_mols_from_query (query.py:552):
+    # This mirrors upstream ``structure_with_ref_mols_from_query``
+    # (``core/data/primitives/structure/query.py``):
     #     all_entities = sorted(all_entities)
     #     entity_to_id = {e: i + 1 for i, e in enumerate(all_entities)}
-    # Previous behavior assigned by first-appearance order, which broke L1
-    # equivalence on multimers where the first-appearing sequence wasn't
-    # the alphabetically-first one (Rule 1 fix in Plan 01-06 Task 1).
+    # Assigning IDs by first-appearance order instead would break equivalence
+    # on multimers where the first-appearing sequence is not the
+    # alphabetically-first one.
     #
-    # Entity representation per polymer type (matches OSS query.py:544-551):
+    # Entity representation per polymer type (also from
+    # ``structure_with_ref_mols_from_query``):
     #   - PROTEIN / RNA / DNA   : the sequence string
     #   - LIGAND_CCD            : the CCD code (stored in `sequence`)
     #   - LIGAND_SMILES         : the SMILES string (stored in `sequence`)
@@ -368,7 +373,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
 
         entity_id = entity_to_id[_entity_repr(poly)]
 
-        # Determine per-polymer-type residue lookup strategy (D-01 / D-02 / D-04)
+        # Determine per-polymer-type residue lookup strategy
         match polymer_type:
             case "protein":
                 resname_1_to_3 = _PROTEIN_1TO3
@@ -377,19 +382,19 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 _build_mol_fn = _build_residue_rdkit_mol
             case "rna":
                 resname_1_to_3 = RNA_RESTYPE_1TO3
-                unk_res_3 = "N"  # D-04: RNA unknown placeholder
+                unk_res_3 = "N"  # RNA unknown placeholder
                 _get_ccd_fn = _get_nucleotide_from_ccd
                 _build_mol_fn = _build_nucleotide_rdkit_mol
             case "dna":
                 resname_1_to_3 = DNA_RESTYPE_1TO3
-                unk_res_3 = "DN"  # D-04: DNA unknown placeholder
+                unk_res_3 = "DN"  # DNA unknown placeholder
                 _get_ccd_fn = _get_nucleotide_from_ccd
                 _build_mol_fn = _build_nucleotide_rdkit_mol
             case "ccd_ligand":
                 # CCD ligand: the entire chain is a single atomized token.
-                # Per 01-PATTERNS.md LIGAND_CCD dispatch: no leaving atoms
-                # removed for ligands (OSS uses MoleculeType.LIGAND, which has
-                # no leaving-atom list). Reuse the protein CCD helper which
+                # No leaving atoms are removed for ligands — upstream uses
+                # MoleculeType.LIGAND, which has no leaving-atom list.
+                # Reuse the protein CCD helper which
                 # only removes OXT — for a CCD ligand code (e.g. "ATP") there
                 # is no OXT, so _get_residue_from_ccd is safe.
                 ccd_code = sequence.strip()
@@ -400,12 +405,12 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 resname_3 = ccd_code  # e.g. "ATP", "ZN"
 
                 # Get atom array (heavy atoms — keep ALL atoms including
-                # OXT). OSS does NOT strip OXT for ligands: the leaving-atom
-                # list for MoleculeType.LIGAND is empty (residues.py
-                # MOLECULE_TYPE_TO_LEAVING_ATOMS). Some CCD ligands like SAH
-                # include an OXT that must be retained — stripping it caused
-                # the per-ligand-chain atom count to be off by one (Rule 1
-                # fix in Plan 01-06 Task 1).
+                # OXT). Upstream does NOT strip OXT for ligands: the
+                # leaving-atom list for MoleculeType.LIGAND is empty (see
+                # MOLECULE_TYPE_TO_LEAVING_ATOMS in ``residues.py``). Some CCD
+                # ligands like SAH include an OXT that must be retained —
+                # stripping it makes the per-ligand-chain atom count off by
+                # one.
                 try:
                     ccd_res = _get_residue_from_ccd_with_oxt(resname_3)
                     res_atom_names = list(ccd_res.atom_name)
@@ -433,18 +438,19 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 if len(charges) != len(res_atom_names):
                     charges = [0] * len(res_atom_names)
 
-                # OSS atomizes ligands: each atom becomes its own token.
-                # See openfold-3/openfold3/core/data/primitives/structure/
-                # tokenization.py:142 `tokenize_atom_array`. The whole-ligand-
-                # as-one-token shortcut produced an N-token vs N-atom-token
-                # mismatch on multi-atom ligands like SAH (26 atoms) → 1 vs 26.
-                # Rule 1 fix in Plan 01-06 Task 1.
+                # Upstream atomizes ligands: each atom becomes its own token.
+                # See ``tokenize_atom_array`` in
+                # ``core/data/primitives/structure/tokenization.py``. Treating
+                # the whole ligand as one token instead yields an N-token vs
+                # N-atom-token mismatch on multi-atom ligands like SAH
+                # (26 atoms) → 1 vs 26.
                 #
                 # ref_space_uid: each ligand CHAIN is one conformer instance
                 # → all atom-tokens of a chain share the same mol_idx
-                # (matches OSS conformer.py:128-129 where ref_space_uid =
-                # mol_idx and mol_idx enumerates processed_ref_mol_list which
-                # has one entry per ligand chain).
+                # (matches upstream ``featurize_reference_conformers_of3``,
+                # where ref_space_uid = mol_idx and mol_idx enumerates
+                # processed_ref_mol_list, which has one entry per ligand
+                # chain).
                 len(res_atom_names)
                 for cid in chain_ids:
                     chain_mol_idx = next_mol_idx
@@ -487,8 +493,8 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
 
             case "smiles_ligand":
                 # SMILES ligand: one atomized token per chain.
-                # Per 01-PATTERNS.md LIGAND_SMILES dispatch: RDKit MolFromSmiles
-                # → AddHs → ETKDGv3 → RemoveHs → per-element 1-indexed atom names.
+                # Pipeline: RDKit MolFromSmiles → AddHs → ETKDGv3 → RemoveHs
+                # → per-element 1-indexed atom names.
                 smiles = sequence.strip()
                 if not smiles:
                     raise ValueError(
@@ -502,7 +508,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                         f"chain {chain_ids}. Check that the SMILES string is valid."
                     )
 
-                # Add ETKDGv3 conformer (T-03-01: RDKit None already handled above)
+                # Add ETKDGv3 conformer (a None from RDKit is handled above)
                 try:
                     mol_embedded = _embed_smiles_mol(mol_raw)
                 except ValueError as e:
@@ -525,11 +531,10 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
 
                 resname_3 = "LIG"  # RESNAME_TO_IDX.get("LIG", UNK_IDX) → 20
 
-                # OSS atomizes ligands: each atom becomes its own token.
+                # Upstream atomizes ligands: each atom becomes its own token.
                 # Mirror the same pattern used for LIGAND_CCD above. Each
                 # SMILES ligand chain is ONE conformer instance — all atom-
                 # tokens of a chain share the same mol_idx (ref_space_uid).
-                # Rule 1 fix in Plan 01-06 Task 1.
                 n_smiles_atoms = len(smiles_atom_names)
                 for cid in chain_ids:
                     chain_mol_idx = next_mol_idx
@@ -575,7 +580,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 if res_char in resname_1_to_3:
                     resname_3 = resname_1_to_3[res_char]
                 else:
-                    # D-04: unknown residue → WARNING + placeholder
+                    # Unknown residue → WARNING + placeholder
                     _logger.warning(
                         "Unknown %s residue %r at chain %s position %d; "
                         "using placeholder %r",
@@ -587,7 +592,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                     )
                     resname_3 = unk_res_3
 
-                # Get atom array from Biotite CCD (D-01, D-02)
+                # Get atom array from Biotite CCD
                 try:
                     ccd_res = _get_ccd_fn(resname_3)
                     res_atom_names = list(ccd_res.atom_name)
@@ -607,7 +612,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                         res_atom_names = ["P", "C4'", "C3'"]
                         res_elements = ["P", "C", "C"]
 
-                # Build RDKit mol for conformer generation (D-02)
+                # Build RDKit mol for conformer generation
                 mol, in_crop_mask = _build_mol_fn(resname_3)
                 residue_mols.append(mol)
                 residue_crop_masks.append(in_crop_mask)
@@ -662,7 +667,8 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
         "residue_crop_masks": residue_crop_masks,
         "residue_atom_charges": residue_atom_charges,
         # token_mol_idx: per-token conformer instance ID used as
-        # ref_space_uid for each atom (OSS conformer.py:128-129).
+        # ref_space_uid for each atom (upstream
+        # ``featurize_reference_conformers_of3``).
         # Non-atomized residues bump per-residue; ligand chains share
         # one mol_idx across all atomized tokens of the chain.
         "token_mol_idx": token_mol_idx,
@@ -689,12 +695,12 @@ def _compute_sym_ids(
 def _renumber_chain_ids(chain_ids: list[str]) -> list[int]:
     """Renumber chain IDs to 1-based integers, sorted alphabetically.
 
-    Mirrors OSS pipelines/featurization/structure.py::create_basic_features
-    line 156, which uses ``np.unique(chain_ids_token, return_inverse=True)``
-    — i.e. unique chain IDs are sorted alphabetically and renumbered starting
-    at 1. Rule 1 fix in Plan 01-06 Task 1: previous behavior numbered chains
-    by first-appearance order, which broke multimer L1 equivalence when
-    chain_ids in the input JSON did not appear alphabetically (e.g.
+    Mirrors upstream ``featurize_structure_of3``
+    (``core/data/pipelines/featurization/structure.py``), which uses
+    ``np.unique(chain_ids_token, return_inverse=True)`` — i.e. unique chain
+    IDs are sorted alphabetically and renumbered starting at 1. Numbering by
+    first-appearance order instead would break multimer equivalence whenever
+    chain_ids in the input JSON do not appear alphabetically (e.g.
     hemoglobin's [A, C, B, D]).
     """
     unique_sorted = sorted(set(chain_ids))

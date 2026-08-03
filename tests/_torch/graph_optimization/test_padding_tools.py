@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shape-bucket padding tools (req 5.5-5.7).
+"""Shape-bucket padding tools.
 
 ``GraphOptimizationTracker.pad_input`` grows the flagged input dims up to their
 bucket length so one captured graph can serve a range of live shapes;

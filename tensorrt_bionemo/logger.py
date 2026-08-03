@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Project logger with the legacy TRT-LLM logger interface."""
+"""Project logger with the TRT-LLM logger interface."""
 
 import logging
 import os

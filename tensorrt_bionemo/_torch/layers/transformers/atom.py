@@ -115,7 +115,8 @@ class AtomTransformer(nn.Module):
         c = c.view((B, 1, NW, W, -1))  # expand dim 1 for broadcasting
         mask = mask.view(B, 1, NW, W)  # expand dim 1 for broadcasting
 
-        # and repeat at the dim 1, this is different from the original implementation.
+        # Broadcast over dim 1 (multiplicity) instead of materializing a
+        # repeated copy, unlike the upstream Boltz implementation.
         bias = bias.view((B, 1, NW, W, H, -1))  # expand dim 1 for broadcasting
 
         # q: [B, multiplicity, NW, W, D]
@@ -188,7 +189,6 @@ class AtomAttentionEncoder(nn.Module):
                 atom_s,
                 2 * token_s if structure_prediction else token_s,
                 bias=False,
-                # dtype=dtype,
                 dtype=torch.float32,
                 skip_create_weights=skip_create_weights,
             ),
@@ -251,7 +251,10 @@ class AtomAttentionEncoder(nn.Module):
             # r_to_q: [B, multiplicity, N_atoms, atom_s]
             r_input = r
             if self.version == "v1":
-                # See: https://github.com/jwohlwend/boltz/blob/main/src/boltz/model/modules/encoders.py#L512C13-L515C14
+                # Matches ``AtomAttentionEncoder.forward`` in the upstream
+                # Boltz repository (not vendored here), which zero-pads
+                # the 7 trailing feature channels for the v1 structure
+                # path.
                 r_input = torch.cat(
                     [r, torch.zeros((B, multiplicity, N, 7)).to(r)],
                     dim=-1,
@@ -276,7 +279,6 @@ class AtomAttentionEncoder(nn.Module):
             atom_to_token_mean = atom_to_token_mean.repeat_interleave(
                 multiplicity, 1)  # [B, multiplicity, N_atoms, N_res]
 
-            # a = torch.bmm(atom_to_token_mean.transpose(-2, -1), q_to_a) # [B, multiplicity, N_res, D]
             a = torch.einsum("bijd,bijk->bikd", q_to_a,
                              atom_to_token_mean)  # [B, multiplicity, N_res, D]
 
@@ -320,7 +322,6 @@ class AtomAttentionDecoder(nn.Module):
             token_s * 2,
             atom_s,
             bias=False,
-            # dtype=dtype,
             dtype=torch.float32,
             skip_create_weights=skip_create_weights)
 
@@ -395,7 +396,6 @@ class AtomAttentionDecoder(nn.Module):
             a_to_q = self.a_to_q_trans(a.float())
 
             # [B, multiplicity, N_atoms, 2*token_s]
-            # a_to_q = torch.bmm(atom_to_token, a_to_q)
             a_to_q = torch.einsum("bikj,bijd->bikd", atom_to_token.float(),
                                   a_to_q)
 

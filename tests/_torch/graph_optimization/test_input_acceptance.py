@@ -50,7 +50,7 @@ def _factory_with_rule(dim_len_max: int) -> InputRoutingConfigFactory:
 
 class _ArgStub(nn.Module):
     """Stub whose ``forward`` positional params are named ``arg0``/``arg1`` so the
-    tracker's positional-to-parameter-name normalization (item 1.1.8) keeps the
+    tracker's positional-to-parameter-name normalization keeps the
     ``arg0``/``arg1`` tie names these tests use."""
 
     def forward(self, arg0=None, arg1=None, mask=None, pair_mask=None, **kwargs):

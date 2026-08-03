@@ -183,7 +183,7 @@ class MSAModule(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
@@ -219,9 +219,8 @@ class MSAModule(nn.Module):
         has_deletion = has_deletion.unsqueeze(-1)
         deletion_value = deletion_value.unsqueeze(-1)
         is_paired = msa_paired.unsqueeze(-1)
-        # Optimized here: token_pad_mask is already in the begin of trunk module
-        # token_mask = token_pad_mask.to(self.dtype)
-        # token_mask = token_mask[:, :, None] * token_mask[:, None, :]
+        # ``token_pad_mask`` has already been applied at the start of the
+        # trunk module, so no pairwise token mask is rebuilt here.
 
         # Compute MSA embeddings
         if self.use_paired_feature:

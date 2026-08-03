@@ -123,8 +123,8 @@ STANDARD_PROTEIN_RESIDUES_ORDER = {
 STANDARD_RESIDUES_1 = STANDARD_PROTEIN_RESIDUES_1 + STANDARD_NUCLEIC_ACID_RESIDUES
 STANDARD_RESIDUES_WITH_GAP_1 = STANDARD_RESIDUES_1 + ["-"]
 
-# Atom names constituting the phosphate in nucleic acids (including alt_atom_ids which
-# can't hurt)
+# Atom names constituting the phosphate in nucleic acids, including the
+# alternate atom ids (O1P/O2P/O3P).
 NUCLEIC_ACID_PHOSPHATE_OXYGENS = ["OP1", "OP2", "OP3", "O1P", "O2P", "O3P"]
 
 # Token center atoms as defined in AF3 SI, Section 2.6.
@@ -328,7 +328,9 @@ def get_with_unknown_3_to_idx(key: str) -> int:
     return RESTYPE_INDEX_3.get(key, RESTYPE_INDEX_3["UNK"])
 
 
-# TODO: make a reusable primitive type for this function
+# Note: the str/int MSA array pair below is passed as raw numpy arrays rather
+# than a dedicated MSA type, so callers must keep msa_array and molecule_type
+# consistent themselves.
 def map_str_array_to_idx_array(msa_array: np.ndarray[str],
                                molecule_type: MoleculeType) -> np.ndarray[int]:
     """Creates an integer MSA array from a 1-character string MSA array.

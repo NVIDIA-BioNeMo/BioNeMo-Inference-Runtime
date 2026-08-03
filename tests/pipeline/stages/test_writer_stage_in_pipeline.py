@@ -61,8 +61,8 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
     """Check that the atomic structure written with PDBWriter is the same as
     the atomic structure written with CIFWriter..
 
-        Use alphafold2_1.pt weights.  openfold2_ptm_1 weights fail to load in
-        OpenFold2.load_weights()
+        Runs with the ``alphafold2_1`` weights: the writers are the subject
+        here, so any set that loads is sufficient.
 
         Args:
             tmp_path: pytest construct

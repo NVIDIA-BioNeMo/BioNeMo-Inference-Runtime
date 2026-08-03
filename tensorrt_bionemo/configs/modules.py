@@ -134,7 +134,7 @@ class ExtraMSAStackConfig(BaseConfig):
     trimul_high_precision: bool = False
 
 
-# This is a module for the affinity module in Boltz-2, will be deprecated in the future
+# Configuration for the affinity module in Boltz-2.
 class AffinityModuleConfig(BaseConfig):
     token_s: int = None
     token_z: int = None

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""ProtenixV2 model (prototype).
+"""ProtenixV2 model.
 
 Wires input embedder, RPE, constraint embedder, recycling trunk, diffusion +
 EDM sampling, distogram / confidence heads, and confidence summary. Building
@@ -324,8 +324,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         """RAII confidence: one sample at a time so N_sample logit stacks never all resident.
 
         ``held`` owns ``s_inputs`` / ``s`` / ``z`` / ``distogram_logits``. When
-        ``compact_output``, entries are popped at the same boundaries as the
-        historical ``del`` sites so peak memory matches.
+        ``compact_output``, each entry is popped as soon as its last consumer
+        has run, so the tensor is freed at the earliest possible point.
         """
         head, summ = self.confidence_head, self.confidence_summary
         # Reduce and release the raw distogram before constructing the

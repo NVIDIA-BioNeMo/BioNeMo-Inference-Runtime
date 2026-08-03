@@ -282,7 +282,8 @@ def convert_hf_evoformer(config: BaseConfig,
                          local_checkpoint: str = None,
                          model_name: str = "openfold2_ptm_1"):
     """
-    Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
+    Convert an evoformer model from a Hugging Face checkpoint into the
+    weights of this project's Torch evoformer module.
     """
     prefix = "evoformer"
 

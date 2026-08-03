@@ -172,8 +172,8 @@ def _default_model_config(model_source: str):
       only when ``shared_pair_norm=True`` (the pretrained-config default).
     * **per-block** layout: a LayerNorm per block
       (``blocks.N.attention_pair_bias.layer_norm_z``), e.g.
-      ``v19_78k_ft3_converted.pt`` or ``of3_ft3_v1.pt``. The converter looks
-      for these only when ``shared_pair_norm=False``.
+      ``of3_ft3_v1.pt``. The converter looks for these only when
+      ``shared_pair_norm=False``.
 
     Matching the wrong layout makes the weight converter look for keys the
     checkpoint does not contain (``KeyError`` at load). Rather than guess the

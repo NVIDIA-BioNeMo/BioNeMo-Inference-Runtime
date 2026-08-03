@@ -130,7 +130,7 @@ def build_template_pair_feat(batch: dict[str, torch.Tensor],
     template_mask = batch["template_pseudo_beta_mask"]
     template_mask_2d = template_mask[..., None] * template_mask[..., None, :]
 
-    # Compute distogram (this seems to differ slightly from Alg. 5)
+    # Compute distogram
     tpb = batch["template_pseudo_beta"]
     dgram = dgram_from_positions(tpb, min_bin, max_bin, no_bins, inf)
 

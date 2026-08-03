@@ -83,7 +83,7 @@ class PDBWriter(BaseWriter):
         )
 
     # ------------------------------------------------------------------
-    # Backwards-compatible helpers (kept for the existing test surface)
+    # Record-section helpers (public; usable independently of ``write``)
     # ------------------------------------------------------------------
 
     def get_pdb_headers(self) -> list[str]:

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Phase 1b: generic ``named_modules()`` discovery replaces per-model registries.
+"""Generic ``named_modules()`` discovery replaces per-model registries.
 
 Constructs OpenFold3 without weights (cheap, no GPU) and asserts the
 ``DiscoveredModuleRegistry`` behaves like the hand-written registry it replaced:
@@ -20,9 +20,9 @@ Constructs OpenFold3 without weights (cheap, no GPU) and asserts the
 * each role alias resolves to the expected decorated module *on the
   forward-reachable path* (not a dedup-first duplicate path),
 * a configured child is dropped when its parent is also configured
-  (parent/child conflict via qualified-path prefix, item 1.2.2),
+  (parent/child conflict via qualified-path prefix),
 * unconfigured modules are never selected, and a qualified-path key works
-  directly (item 1.2.3).
+  directly.
 """
 import pytest
 
@@ -85,7 +85,7 @@ def test_qualified_path_key_resolves_directly(of3_model):
 
 
 def test_alias_and_canonical_path_deduplicated(of3_model):
-    """(1.2.2) Configuring both a role alias and its canonical qualified path
+    """Configuring both a role alias and its canonical qualified path
     targets the same submodule twice; the duplicate is dropped so it is not
     wrapped twice."""
     reg = of3_model.get_optimized_modules({
@@ -98,7 +98,7 @@ def test_alias_and_canonical_path_deduplicated(of3_model):
 
 
 def test_missing_configured_path_is_config_error(of3_model):
-    """(1.2.5) A configured key with no decorated target raises, not silently
+    """A configured key with no decorated target raises, not silently
     skips."""
     with pytest.raises(ValueError, match="no decorated, discoverable target"):
         of3_model.get_optimized_modules(

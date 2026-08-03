@@ -14,9 +14,10 @@ def trifast_attention_kernel_fwd(
         DIM: tl.constexpr, BLOCK_J: tl.constexpr, BLOCK_K: tl.constexpr,
         CLOSEST_N: tl.constexpr):
     """
-    This code from trifast repository: https://github.com/latkins/trifast
-    But modified to be enable for building with TensorRT plugins and also used in Torch.
-    Disable auto-tunning for TRT and moves bs, si, n and h to be arguments.
+    Adapted from the trifast repository: https://github.com/latkins/trifast
+
+    Autotuning is disabled and ``bs``, ``si``, ``n`` and ``h`` are passed as
+    explicit arguments rather than inferred.
     """
 
     input_dtype = q_ptr.dtype.element_ty

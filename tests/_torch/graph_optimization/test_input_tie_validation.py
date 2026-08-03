@@ -12,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Item 1.2.4/1.2.5: the tracker validates input tie points against the first
-representative call — a tie to an absent tensor or out-of-range axis is a
-configuration error, not a silently-ignored rule."""
+"""The tracker validates input tie points against the first representative
+call — a tie to an absent tensor or out-of-range axis is a configuration
+error, not a silently-ignored rule."""
 import pytest
 import torch
 import torch.nn as nn
@@ -51,7 +51,7 @@ def test_valid_ties_pass_and_run_once():
     tracker.validate_input_ties({"s_shape": _shape(1, 50, 64)})  # 3-D, axis -2 ok
     assert tracker._input_ties_validated is True
     # Guarded: a later bad call is not re-validated (hot-path one-shot).
-    tracker.validate_input_ties({"x_shape": _shape(1, 2)})  # would fail if checked
+    tracker.validate_input_ties({"x_shape": _shape(1, 2)})
 
 
 def test_tie_to_absent_tensor_raises():

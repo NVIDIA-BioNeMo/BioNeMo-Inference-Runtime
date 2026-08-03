@@ -53,8 +53,9 @@ class AdaLN(nn.Module):
                                    dtype=dtype,
                                    eps=eps,
                                    bias=False)
-        # Fused s_scale and s_bias, but s_bias has no bias
-        # remember to set it to zero correctly
+        # Fused s_scale and s_bias projection. The upstream s_bias
+        # projection has no bias term, so the s_bias half of the fused
+        # bias vector is kept at zero.
         self.fused_s_scale_s_bias = Linear(
             self.dim_single_cond,
             2 * self.dim,

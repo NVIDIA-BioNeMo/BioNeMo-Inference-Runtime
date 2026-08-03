@@ -110,7 +110,7 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
         feats["is_dna"] = (mt == 2).to(torch.int32)
         feats["is_ligand"] = (mt == 3).to(torch.int32)
 
-        # FEAT-01 gap fix per 01-PATTERNS.md Critical Note 5: ligand tokens MUST set is_atomized=1
+        # Ligand tokens must set is_atomized=1.
         if len(mol_types) != n_tokens:
             raise ValueError(
                 f"token_mol_types length {len(mol_types)} != n_tokens {n_tokens}")
@@ -238,12 +238,12 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         feats: dict[str, torch.Tensor] = {}
 
         # ref_element: one-hot [N_atoms, 119]
-        # Encode using atomic number - 1 (matching OSS conformer.py:117-121).
-        # OSS calls PERIODIC_TABLE.GetAtomicNumber(elem) via RDKit which supports
-        # all 118 elements. The fallback ELEMENT_ATOMIC_NUMBER dict in const.py
-        # only had 11 entries, which caused metals (MG, NI, ZN, FE, ...) to
-        # silently encode as carbon (index 5). Use RDKit's periodic table as
-        # the source of truth (Rule 1 fix in Plan 01-06 Task 1).
+        # Encode using atomic number - 1, matching upstream
+        # ``featurize_reference_conformers_of3``, which calls
+        # PERIODIC_TABLE.GetAtomicNumber(elem) via RDKit and so supports all
+        # 118 elements. RDKit's periodic table is the source of truth here: a
+        # short hardcoded element table silently encodes metals (MG, NI, ZN,
+        # FE, ...) as carbon (index 5).
         from rdkit.Chem import GetPeriodicTable
         _pt = GetPeriodicTable()
         element_indices = []
@@ -281,18 +281,19 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         # For non-atomized residues this is per-residue (matches token_idx);
         # for atomized ligand chains all atoms of the chain share one
         # mol_idx (because there's one entry in processed_ref_mol_list per
-        # ligand chain). See openfold-3/openfold3/core/data/pipelines/
-        # featurization/conformer.py:128-129. The structure dict now
-        # carries token_mol_idx (per-token); we expand it per-atom here.
+        # ligand chain). See upstream ``featurize_reference_conformers_of3``
+        # in ``core/data/pipelines/featurization/conformer.py``. The structure
+        # dict carries token_mol_idx (per-token); we expand it per-atom here.
         token_mol_idx = struct.get("token_mol_idx")
         if token_mol_idx is not None:
             atom_mol_idx = [int(token_mol_idx[t]) for t in atom_token_idx]
             feats["ref_space_uid"] = torch.tensor(atom_mol_idx,
                                                   dtype=torch.int32)
         else:
-            # Backward compat for callers/tests that don't supply
-            # token_mol_idx (e.g. legacy 5-polymer smoke fixture). Fall
-            # back to per-token uid which matches the old behavior.
+            # Backward compat for callers that don't supply token_mol_idx:
+            # fall back to a per-token uid. This is exact for structures
+            # with no atomized (ligand) chains, where mol_idx and token_idx
+            # coincide.
             feats["ref_space_uid"] = torch.tensor(atom_token_idx,
                                                   dtype=torch.int32)
 
@@ -346,7 +347,7 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
     Produces: msa, has_deletion, deletion_value, deletion_mean,
     profile, num_paired_seqs, msa_mask.
 
-    Uses a broadcast/max_rows architecture matching the ductr reference:
+    Uses a broadcast/max_rows architecture:
     - One MSA matrix of shape [max_rows, n_tokens] shared across all chains.
     - Per-polymer MSA (query + all-paired-rows + unpaired[1:]) is broadcast
       to all chains belonging to that polymer (same MSA entry by identity).
@@ -426,7 +427,7 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
 
             # Determine mol_type for this polymer group from the first token
             # in its chain range (all tokens in a chain share the same mol_type).
-            # Used by _resolve_msa_char for polymer-type-aware MSA encoding (D-05).
+            # Used by _resolve_msa_char for polymer-type-aware MSA encoding.
             group_mol_type = (token_mol_types[start]
                               if start < len(token_mol_types) else 0)
 
@@ -436,8 +437,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # Track whether THIS polymer group has any MSA content. When False,
             # OSS leaves the chain's token slots at the pre-allocated gap fill
             # AND emits a zero profile + zero deletion_mean for those slots
-            # (see openfold3.core.data.primitives.featurization.msa.
-            # create_msa_feature_precursor_of3 lines 274-285 — the "else"
+            # (see ``create_msa_feature_precursor_of3`` in
+            # ``core/data/primitives/featurization/msa.py`` — the "else"
             # branch when chain_id_to_query_seq is empty). When True, row 0 is
             # the first row of the MSA file (paired or main), NOT a
             # sequence-derived row.
@@ -449,25 +450,25 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 and len(paired_entry.get("sequences", [])) > 0
             )
 
-            # Row 0: query — OSS `chain_id_to_query_seq[chain_id]` is
-            # populated as `all_msas_per_chain[first_key].msa[0, :]`
-            # (`openfold-3/openfold3/core/data/io/sequence/msa.py:546`),
-            # i.e., the MSA file's first row cropped to n_tokens — NOT the
-            # polymer's input query sequence. When the file row 0 differs
-            # from the polymer query (e.g. extra prefix/suffix residues, as
-            # in `prot_custom_msa_A.a3m` where row 0 is 134 chars but the
-            # query is 117), OSS still uses the file row 0 (cropped to
-            # n_tokens). We mirror that contract here.
+            # Row 0: query — upstream `chain_id_to_query_seq[chain_id]` is
+            # populated as `all_msas_per_chain[first_key].msa[0, :]` (see
+            # `parse_msas_sample_inference` in
+            # `core/data/io/sequence/msa.py`), i.e., the MSA file's first row
+            # cropped to n_tokens — NOT the polymer's input query sequence.
+            # When the file row 0 differs from the polymer query (e.g. the
+            # a3m carries extra prefix/suffix residues, so row 0 is wider
+            # than the query), upstream still uses the file row 0 (cropped
+            # to n_tokens). We mirror that contract here.
             #
-            # When the polymer has no MSA AT ALL, OSS emits a single all-gap
-            # row (`create_msa_feature_precursor_of3` "else" branch at
-            # line 277). TRT-BNM mirrors that path.
+            # When the polymer has no MSA AT ALL, upstream emits a single
+            # all-gap row (the `create_msa_feature_precursor_of3` "else"
+            # branch). TRT-BNM mirrors that path.
             #
-            # 01-07 Cycle 7 Plan A′: the unpaired loop below changed from
-            # `range(1, ...)` to `range(0, ...)` so the file's row 0 (the
-            # query duplicate per a3m convention) is also added to the main
-            # MSA section. This matches OSS's behavior of having the query
-            # row + the file's row 0 both present in the final MSA.
+            # The unpaired loop below starts at row 0, not row 1, so the
+            # file's row 0 (the query duplicate per a3m convention) is also
+            # added to the main MSA section. This matches upstream's behavior
+            # of having the query row + the file's row 0 both present in the
+            # final MSA.
             if has_msa_for_polymer and msa_entry is not None and msa_entry.get(
                     "sequences"):
                 qseq = msa_entry["sequences"][0]
@@ -480,8 +481,7 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             elif has_msa_for_polymer:
                 # Has paired MSA but no main MSA — use paired row 0 as query
                 # (matches OSS's behavior of `all_msas_per_chain[first_key]`
-                # ordering: paired comes first in `aln_order`). This branch
-                # is not exercised by any current test sample.
+                # ordering: paired comes first in `aln_order`).
                 pseq = paired_entry["sequences"][0]
                 qrow = [
                     _resolve_msa_char(c, group_mol_type) for c in pseq[:n_res]
@@ -492,44 +492,57 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             else:
                 # No MSA for this polymer — emit an all-gap row. The chain's
                 # token slots will read as GAP_IDX in the final MSA tensor,
-                # matching OSS create_msa_feature_precursor_of3 (line 277).
+                # matching upstream `create_msa_feature_precursor_of3`.
                 poly_rows.append([GAP_IDX] * n_res)
                 poly_dels.append([0] * n_res)
 
             # ------------------------------------------------------------
-            # EXT-05 fix (Cycle 9): paired-MSA semantics matching OSS.
+            # Paired-MSA semantics, matching upstream.
+            #
+            # The symbol names below refer to upstream OpenFold-3
+            # (github.com/aqlaboratory/openfold-3) at revision f16647af,
+            # which is the revision this pipeline was validated against.
+            # The `3rdparty/openfold-3` submodule is pinned to a different
+            # commit, so these symbols may differ or be absent at the
+            # current pin. The MSA row-count bookkeeping was refactored
+            # upstream after f16647af — `n_rows_paired_subsampled` became
+            # `n_rows_paired_cropped` and is now computed from the actual
+            # paired-row count rather than left at 0 — so re-validating
+            # against a newer upstream requires re-deriving the three
+            # consequences listed here.
             # ------------------------------------------------------------
-            # OSS's `MsaSampleProcessorInference.create_paired_msa` calls
+            # Upstream `MsaSampleProcessorInference.create_paired_msa` calls
             # `create_paired_from_precomputed` for precomputed paired MSAs.
             # That function does NOT call `msa_array_collection.set_row_counts(
             # n_rows_paired_subsampled=...)` — only the ONLINE pairing path in
-            # `create_paired` does (`sample_processing/msa.py:176`). So for ALL
-            # samples in our test set, `n_rows_paired_subsampled` stays at its
-            # default value of 0 (see `primitives/sequence/msa.py:441`).
+            # `create_paired` does. So whenever the paired MSA is
+            # precomputed — which is always the case for this pipeline —
+            # `n_rows_paired_subsampled` stays at its default value of 0 (see
+            # `MsaArrayCollection`).
             #
             # Consequences:
-            #   1. `vstack_pad_msa_arrays` (`primitives/featurization/msa.py:112`)
+            #   1. `vstack_pad_msa_arrays`
             #      gates the paired-MSA vstack on `n_rows_paired_subsampled > 0`
             #      — so for precomputed paired the paired rows are NEVER vstacked
             #      into the final per-chain MSA. Only `[query] + [main_filtered]`
             #      end up in the output tensor.
             #   2. In `create_main`, the paired MSA is still used to dedup main
-            #      rows via the `is_unique` filter (`sample_processing/msa.py:
-            #      290-314`): main rows whose byte-exact value equals any paired
-            #      row are dropped from the final main MSA.
+            #      rows via the `is_unique` filter: main rows whose byte-exact
+            #      value equals any paired row are dropped from the final main
+            #      MSA.
             #   3. The main cap becomes `max_rows - n_rows_paired_subsampled - 1
             #      = max_rows - 1` (since the counter is 0).
             #
             # Profile / deletion_mean are computed from `main_msa_redundant`
             # (the pre-filter, pre-cap, full-width main MSA) and column-indexed
-            # to the polymer's res_ids only at featurization time (`map_msas_to_
-            # tokens`, line 197-211 of `primitives/featurization/msa.py`). For
-            # samples where the file's aligned column count > n_res (e.g.
-            # `prot_custom_msa`: file_aligned_len=136, polymer_len=117), the
-            # full-width-then-crop matters: the OSS `np.repeat` profile bug
-            # uses `block_n_cols * n_symbols` as the bin stride, so the
-            # scrambling pattern depends on the FULL file width, not the
-            # cropped width.
+            # to the polymer's res_ids only at featurization time
+            # (`map_msas_to_tokens` in
+            # `core/data/primitives/featurization/msa.py`). For samples where
+            # the file's aligned column count > n_res (say a 136-column a3m
+            # for a 117-residue polymer), the full-width-then-crop
+            # matters: upstream's `np.repeat` profile uses
+            # `block_n_cols * n_symbols` as the bin stride, so the scrambling
+            # pattern depends on the FULL file width, not the cropped width.
             # ------------------------------------------------------------
 
             # Build paired rows at FILE WIDTH (not n_res) so the is_unique
@@ -539,8 +552,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # The paired pool is truncated to MAX_MSA_ROWS_PAIRED before the
             # is_unique filter — matching OSS `create_paired_from_precomputed`
             # which calls `prepaired_msa.truncate(max_rows_paired)` BEFORE the
-            # filter is applied (sample_processing/msa.py:223). Without this
-            # truncation we over-dedup main rows that OSS would have kept
+            # filter is applied. Without this truncation we over-dedup main
+            # rows that upstream would have kept
             # (because their byte-exact matches sit beyond paired_idx=2047).
             from .const import MAX_MSA_ROWS_PAIRED
             paired_rows_full: list[list[int]] = []
@@ -642,9 +655,10 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                     if n_main_appended >= main_cap:
                         break
                     # Crop the filtered row to n_res for the output tensor.
-                    # Mirrors OSS featurization-time `msa_array_vstack.msa[
-                    # :, msa_column_positions]` (line 197 of featurization/
-                    # msa.py) where `msa_column_positions = res_id - 1`.
+                    # Mirrors upstream featurization-time
+                    # `msa_array_vstack.msa[:, msa_column_positions]` in
+                    # `map_msas_to_tokens`, where
+                    # `msa_column_positions = res_id - 1`.
                     urow_full = unpaired_rows_full[seq_idx]
                     drow_full = unpaired_dels_full[seq_idx]
                     urow_cropped = urow_full[:n_res]
@@ -673,14 +687,14 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # native aligned-column width, THEN cropped to n_res. This matches
             # OSS's order of operations:
             #   1. `calculate_profile(main_msa_redundant)` on full file width
-            #      (`sample_processing/msa.py:324`).
+            #      (in `MsaSampleProcessor.create_query_seq`).
             #   2. `profile[msa_column_positions, :]` at featurization
-            #      (`primitives/featurization/msa.py:209`) where
+            #      (in `calculate_profile_del_mean`) where
             #      `msa_column_positions = res_id - 1`.
             #
             # When the polymer has no MSA at all, OSS emits zero profile and
-            # zero deletion_mean (`create_msa_feature_precursor_of3` line
-            # 283-284 — np.zeros for both fields in the no-MSA "else" branch).
+            # zero deletion_mean (`create_msa_feature_precursor_of3` uses
+            # np.zeros for both fields in the no-MSA "else" branch).
             if has_msa_for_polymer and unpaired_rows_full:
                 # deletion_mean: full-width then crop. Each chain's polymer
                 # has res_ids = [1..n_res] (sequential), so cropping to
@@ -697,25 +711,25 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                         deletion_mean_full
                     )
 
-                # 01-07 Cycle 6: Reproduce OSS's calculate_profile np.repeat
-                # bug (`core/data/primitives/sequence/msa.py:1217`) so that
-                # the model — which was trained on the scrambled column
-                # distribution — receives the same input it was trained on.
-                # The OSS bug uses np.repeat where np.tile is required,
-                # producing a column-permuted background-frequency profile
-                # instead of a per-column distribution. See NOTES.md
-                # ## Cycle 6 Profile + Template Parity (D-15 overturn).
+                # Intentionally reproduces upstream `calculate_profile`
+                # (`core/data/primitives/sequence/msa.py`), which uses
+                # np.repeat where np.tile would be required for a row-major
+                # ravel. The result is a column-permuted background-frequency
+                # profile rather than a per-column distribution. The released
+                # weights were trained against that permuted profile, so
+                # matching it bit-for-bit is required for parity — do not
+                # "fix" this to np.tile.
                 #
-                # 01-07 Cycle 9: compute on FULL file width then crop to n_res.
-                # Previously the profile was computed on already-cropped rows,
-                # which produced different scrambling for samples where
-                # file_aligned_len != polymer_len (e.g. prot_custom_msa).
+                # The profile is computed on the FULL file width and only then
+                # cropped to n_res. Computing it on already-cropped rows
+                # yields different scrambling whenever
+                # file_aligned_len != polymer_len.
                 msa_idx_arr = np.asarray(
                     unpaired_rows_full, dtype=np.int64
                 )
                 n_rows_msa, n_cols_full = msa_idx_arr.shape
                 n_symbols = NUM_MSA_CLASSES
-                # OSS chunk_size = 1000 (pipelines/sample_processing/msa.py:327)
+                # Upstream chunk_size = 1000 (in `create_query_seq`)
                 chunk_size = 1000
                 counts_full = np.zeros(
                     (n_cols_full, n_symbols), dtype=np.int64
@@ -726,9 +740,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                     msa_chunk = msa_idx_arr[:, col_start:col_end]
                     block_n_cols = col_end - col_start
                     val_indices = msa_chunk.ravel()  # row-major
-                    # OSS bug: np.repeat — should be np.tile for row-major
-                    # ravel, but the model was trained on this scrambled
-                    # mapping. Reproducing it intentionally.
+                    # np.repeat (not np.tile) is deliberate here — see the
+                    # profile-parity note above.
                     col_indices_local = np.repeat(
                         np.arange(block_n_cols), n_rows_msa
                     )
@@ -776,27 +789,19 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
 
         # Build the global [max_rows, n_tokens] MSA matrix.
         #
-        # 01-07 Cycle 7 Plan A′: msa_mask semantics changed. Previously
-        # `global_mask` was 1.0 only within each polymer's actual row count
-        # (`global_mask[:r, s:e] = 1.0`), so chains with shallow MSAs (or no
-        # MSA) had their mask=0 for rows beyond `r`. OSS does NOT do this:
-        # `create_msa_feature_precursor_of3` (`core/data/primitives/
-        # featurization/msa.py:248`) initializes `msa_mask` to all 1s and
-        # only zeros it later via the token-validity mask
-        # (`token_mask[np.newaxis, :]`, line 291-293) — never via the
-        # per-polymer row count. The previous behavior was a TRT-BNM bug
-        # that became visible once OSS subsampling was disabled and shapes
-        # were directly comparable.
-        #
-        # New semantics (matches OSS): `global_mask` is 1.0 everywhere by
-        # default, zeroed only where the token itself is padding (computed
-        # below from the `n_tokens` counted from valid tokens — for our
-        # test samples there is no padding, so mask remains all 1s).
+        # msa_mask semantics: `global_mask` is 1.0 everywhere by default and
+        # is zeroed only where the token itself is padding. It is NOT gated on
+        # each polymer's actual row count — masking rows beyond a chain's row
+        # count would diverge from upstream, where
+        # `create_msa_feature_precursor_of3`
+        # (`core/data/primitives/featurization/msa.py`) initializes `msa_mask`
+        # to all 1s and zeros it only via the token-validity mask
+        # (`token_mask[np.newaxis, :]`).
         global_msa = torch.full((max_rows, n_tokens),
                                 GAP_IDX,
                                 dtype=torch.long)
         global_del = torch.zeros(max_rows, n_tokens, dtype=torch.long)
-        # OSS initialization: msa_mask = 1.0 everywhere (line 248).
+        # Upstream initialization: msa_mask = 1.0 everywhere.
         global_mask = torch.ones(max_rows, n_tokens, dtype=torch.float32)
         global_profile = torch.zeros(n_tokens,
                                      NUM_MSA_CLASSES,
@@ -825,13 +830,16 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
         feats["deletion_value"] = compute_deletion_value(global_del)
         feats["deletion_mean"] = global_del_mean
         feats["profile"] = global_profile
-        # OSS only updates n_rows_paired_subsampled when ONLINE paired-MSA
-        # pairing runs (sample_processing/msa.py:176). With PRECOMPUTED
-        # paired MSAs (the path our test samples use), OSS leaves the
-        # counter at its default 0 — so OSS num_paired_seqs always reads
-        # as `0 + 1 = 1`. We mirror that contract here for L1 equivalence:
+        # At upstream OpenFold-3 (github.com/aqlaboratory/openfold-3)
+        # revision f16647af — the revision this pipeline was validated
+        # against, which is not the `3rdparty/openfold-3` submodule pin —
+        # n_rows_paired_subsampled is only updated when
+        # ONLINE paired-MSA pairing runs. With PRECOMPUTED paired MSAs — the
+        # path taken here — the counter stays at its default 0, so upstream
+        # num_paired_seqs reads as `0 + 1 = 1`. We mirror that contract here:
         # always emit 1 regardless of the actual loaded paired-row count.
-        # Rule 1 fix in Plan 01-06 Task 1.
+        # See the paired-MSA semantics note earlier in this method — this
+        # hardcoded 1 is tied to that revision's row-count bookkeeping.
         feats["num_paired_seqs"] = torch.tensor([1], dtype=torch.int32)
         feats["msa_mask"] = global_mask
 

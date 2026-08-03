@@ -132,7 +132,7 @@ class TemplateEmbedderConfig(BaseConfig):
     # Inner pair stack bf16; outer projections/LNs follow ``dtype``.
     pairformer_dtype: str = "bfloat16"
     # bf16 stack precision (not fp32 tri-mul accum) — matches trunk/MSA; fp32
-    # would double tri-mul activation and block fused kernels (memory-opt-scan P7).
+    # would double tri-mul activation and block fused kernels.
     trimul_high_precision: bool = False
 
 
@@ -337,7 +337,8 @@ class TrunkConfig(BaseConfig):
     c_s: int = _Default.c_s
     c_z: int = _Default.c_z
     n_cycle: int = _Default.n_cycle
-    # bf16 halves resident pair state but is opt-in: ten-cycle A/B shows drift vs fp32.
+    # bf16 halves resident pair state but is opt-in: it drifts from fp32 over a
+    # ten-cycle recycling run.
     pair_state_dtype: str = "float32"
     use_template: bool = True
     template_embedder_config: BaseConfig = TemplateEmbedderConfig()

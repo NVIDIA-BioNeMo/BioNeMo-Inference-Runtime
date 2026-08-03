@@ -144,8 +144,8 @@ class InputRoutingConfigFactory:
     def _upsert_by_name(items: list, item) -> None:
         """Replace an existing entry with the same ``.name``, else append.
 
-        Preserves first-seen order while letting a later declaration for a dim
-        override the earlier one (matching the old dict-keyed behavior)."""
+        Preserves first-seen order while letting a later declaration for a
+        dim override the earlier one."""
         for i, existing in enumerate(items):
             if existing.name == item.name:
                 items[i] = item
@@ -329,7 +329,7 @@ class InputRoutingConfigFactory:
         """Snapshot the collected rules into a :class:`InputRoutingConfig`.
 
         Raises:
-            ValueError: (1.1.10) if a named dimension's acceptance maximum
+            ValueError: if a named dimension's acceptance maximum
                 exceeds its largest capture bucket — an accepted input could
                 then not be padded to any bucket.
         """
@@ -355,7 +355,7 @@ class InputRoutingConfigFactory:
 
 
 def effective_ranges(config: InputRoutingConfig) -> Dict[str, dict]:
-    """Report the effective live range and capture bucket per named dim (1.1.10).
+    """Report the effective live range and capture bucket per named dim.
 
     For each named dimension the config references (via acceptance and/or
     padding), returns ``{dim_name: {"live_max", "covering_bucket",
@@ -460,7 +460,8 @@ class GraphOptimizationMode(enum.Enum):
     """
     NO_OPTIMIZATION = "no_optimization"
     CUDA_GRAPH_VIA_TORCH = "cuda_graph_via_torch"
-    # ToDo: TORCH_COMPILE = "torch_compile"
+    # Note: ``torch.compile`` is not offered as a mode here — the modules in
+    # this repo are optimized via explicit CUDA-graph capture instead.
 
 
 class InputKeyMethod(enum.Enum):

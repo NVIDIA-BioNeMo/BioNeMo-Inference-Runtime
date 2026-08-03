@@ -56,7 +56,8 @@ def convert_hf_pairformer(config: BaseConfig,
                           local_checkpoint: str = None,
                           model_name: str = "boltz-2"):
     """
-    Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
+    Convert a pairformer model from a Hugging Face checkpoint into the
+    weights of this project's Torch pairformer module.
     """
     prefix = "pairformer_module.layers"
     if pairformer_type == "confidence":
@@ -776,14 +777,14 @@ def _convert_pairformer_no_seq_block_torch(module_state_dict: dict,
                                            block_prefix: str, tbnm_prefix: str,
                                            out_dict: dict) -> None:
     """Convert a single ``PairformerNoSeqLayer`` block of HF weights into the
-    TRT-BNM dict-of-lists layout consumed by
+    TRT-BioNeMo dict-of-lists layout consumed by
     :func:`recursive_calling_load_weights`.
 
     Args:
         module_state_dict: Flat HF state-dict already stripped of any outer
             prefix (e.g. ``"template_module."``).
         block_prefix: HF prefix for this block (e.g. ``"pairformer.layers.0"``).
-        tbnm_prefix: TRT-BNM target prefix (typically the same as
+        tbnm_prefix: TRT-BioNeMo target prefix (typically the same as
             ``block_prefix``).
         out_dict: Output dict, mutated in place.
     """
@@ -900,7 +901,7 @@ def convert_hf_template_module_torch(config: BaseConfig = None,
                                      weights: dict = None,
                                      **kwargs):
     """Convert ``template_module.*`` weights from an HF Boltz-2 checkpoint
-    into the TRT-BNM ``TemplateV2Module`` dict-of-lists layout used by
+    into the TRT-BioNeMo ``TemplateV2Module`` dict-of-lists layout used by
     :func:`recursive_calling_load_weights`.
     """
     if weights is None:
@@ -1171,7 +1172,6 @@ def convert_hf_structure_module_torch(config: BaseConfig,
     }]
 
     # Load for atom attention encoder
-    # ws["atom_attention_encoder"] = {}
     DiT_weights = convert_hf_diffusion_transformer_torch(
         score_model_config.atom_encoder,
         local_checkpoint=local_checkpoint,

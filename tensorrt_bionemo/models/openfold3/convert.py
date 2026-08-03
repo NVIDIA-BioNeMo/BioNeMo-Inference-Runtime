@@ -452,7 +452,6 @@ def convert_hf_diffusion_transformer(config: DiffusionTransformerConfig,
     for name, param in state_dict.items():
         if name.startswith(prefix):
             name = name.replace(prefix, replace_prefix)
-            # int(name.split(".")[2])
             if "attention_pair_bias" in name:
                 # change name for AdaLN
                 if "layer_norm_a" in name:
@@ -793,8 +792,6 @@ def convert_hf_diffusion_transformer_torch(config: DiffusionTransformerConfig,
             tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0"] = [{
                 'weight':
                 module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.weight"]
-                # 'bias':
-                # module_state_dict[f"layers.{i}.pair_bias_attn.proj_z.0.bias"]
             }]
             tbnm_state_dict[f"layers.{i}.pair_bias_attn.proj_z.1"] = [{
                 'weight':

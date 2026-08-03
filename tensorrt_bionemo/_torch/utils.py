@@ -99,14 +99,10 @@ def recursive_calling_load_weights(module: nn.Module,
         if filter_func is not None and filter_func(name, module):
             continue
         if len(module._parameters) > 0:
-            # Uncomment to debug
-            # print(f"loading for: {name}")
             try:
                 if hasattr(module, 'load_weights'):
                     module.load_weights(weights=weights[name])
                 else:
-                    # Uncomment to debug
-                    # print(f" use copy_ to load {name}")
                     module_weights = weights[name][0]
                     for n, p in module._parameters.items():
                         if p is not None:

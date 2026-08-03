@@ -37,9 +37,8 @@ class Scenario:
     num_attention_heads: int = 4
     num_key_value_heads: int = 4
     gating: bool = True
-    # FIXME: add chunk_size and chunk_dim back
-    # chunk_size: int = None
-    # chunk_dim: int = None
+    # FIXME: chunked attention (chunk_size / chunk_dim) is not covered by
+    # this scenario type.
     torch_dtype: str = "float32"
 
 

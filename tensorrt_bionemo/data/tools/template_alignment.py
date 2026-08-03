@@ -5,7 +5,7 @@
 Model-agnostic helpers that turn a pairwise (kalign) alignment into a 1-based
 residue index map and score it. Vectorized port of OpenFold ``calculate_ids_hit``
 / ``compute_sequence_identity_and_coverage``:
-https://github.com/aqlaboratory/openfold/blob/be2ec1841f16c966c65ae0e7599ebbadc725757d/openfold/data/templates.py#L220-L289
+https://github.com/aqlaboratory/openfold/blob/be2ec1841f16c966c65ae0e7599ebbadc725757d/openfold/data/templates.py
 """
 from __future__ import annotations
 

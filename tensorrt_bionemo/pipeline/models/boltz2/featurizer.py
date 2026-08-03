@@ -54,7 +54,8 @@ def _fill_nonpolymer_frames(
 ) -> None:
     """In-place: replace ligand-token frames with (nearest_1, self, nearest_2).
 
-    Mirrors OSS ``compute_frames_nonpolymer`` (featurizerv2 lines 97-176).
+    Mirrors upstream ``compute_frames_nonpolymer``
+    (``boltz/data/feature/featurizerv2.py``).
     For each ``NONPOLYMER`` chain with >=3 atoms, builds a per-atom frame from
     the chain's intra-chain pairwise distances, preferring resolved atoms.
     """
@@ -105,7 +106,11 @@ def _frame_resolved_mask_oss(
     atom_num: int,
     res_type: int,
 ) -> bool:
-    """Compute frame resolved mask per token (OSS featurizerv2 lines 1280-1368)."""
+    """Compute frame resolved mask per token.
+
+    Mirrors upstream ``process_atom_features``
+    (``boltz/data/feature/featurizerv2.py``).
+    """
     res_type_name = tokens[res_type] if res_type < len(tokens) else "UNK"
     if atom_num < 3 or res_type_name in ["PAD", "UNK", "-"]:
         return False
@@ -357,7 +362,8 @@ def process_atom_features(
         ref_space_uid.extend([new_idx] * token.atom_num)
         atom_to_token.extend([token_id] * token.atom_num)
 
-        # OSS-aligned: bfactor/plddt from structure in same order as atom_data (featurizerv2 line 1384 + 1419)
+        # Upstream-aligned: bfactor/plddt from structure in the same order as
+        # atom_data (see ``process_atom_features``)
         atom_bfactor_list.extend(structure.bfactor[start:end].tolist())
         atom_plddt_list.extend(structure.plddt[start:end].tolist())
 
@@ -440,7 +446,8 @@ def process_atom_features(
                                      token.res_type))
         atom_idx += token.atom_num
 
-    # OSS compute_frames path: frame_resolved_mask = resolved_frame_data & mask_collinear (featurizerv2 line 1470, 176)
+    # Upstream compute_frames path:
+    # frame_resolved_mask = resolved_frame_data & mask_collinear
     coord_data = np.concatenate(coord_data_list, axis=1)
     frame_data_arr = np.array(frame_data, dtype=np.int64)
 
@@ -772,9 +779,9 @@ def process_msa_features(
         # tax=0 entries cross-chain and emits one "query self-pair" row after
         # the initial query. That tax=0 marking only exists when the OSS
         # pre-processing reads paired CSV input — a3m parsing leaves
-        # taxonomy=-1, ``taxonomy_map`` ends up empty (line 307 filters
-        # tax==-1; line 315 drops single-occurrence groups), and OSS emits
-        # NO self-pair row.
+        # taxonomy=-1, ``taxonomy_map`` ends up empty (``construct_paired_msa``
+        # filters tax==-1, then drops single-occurrence groups), and upstream
+        # emits NO self-pair row.
         #
         # Gate on the presence of actual taxonomy pairs (n_taxonomy_pairs>0)
         # rather than chain count: if no paired MSA contributed any rows,
@@ -887,14 +894,16 @@ def process_msa_features(
     msa_mask = torch.ones_like(msa, dtype=torch.float32)
     profile = msa_one_hot.float().mean(dim=0)
 
-    # Real per-row deletion counts, matching the bundled OSS reference
-    # ``src/boltz/data/feature/featurizerv2.py``
-    # (its ``construct_paired_msa`` reads the full ``all_deletions`` array per
-    # chain), which is the path the CASP15 benchmark
-    # (``Boltz2InferenceDataModule`` -> ``Boltz2Featurizer``) scores against.
+    # Real per-row deletion counts, matching the reference implementation in
+    # the upstream Boltz project (an external dependency, not vendored here:
+    # https://github.com/jwohlwend/boltz), file
+    # ``src/boltz/data/feature/featurizerv2.py`` — its
+    # ``construct_paired_msa`` reads the full ``all_deletions`` array per
+    # chain.
     #
-    # NOTE — historical OSS bug: an older ``construct_paired_msa`` reassigned
-    # ``chain_deletions`` to a slice of itself inside the inner loop, e.g.::
+    # NOTE — historical upstream bug: an older ``construct_paired_msa``
+    # reassigned ``chain_deletions`` to a slice of itself inside the inner
+    # loop, e.g.::
     #
     #     chain_deletions = chain_msa.deletions
     #     for sequence in chain_msa.sequences:
@@ -904,9 +913,10 @@ def process_msa_features(
     # After the first sequence, ``chain_deletions`` was a slice of itself, so
     # every subsequent ``[del_start:del_end]`` indexed into the already-shortened
     # array and came out empty — silently dropping all non-query deletion counts
-    # (``deletion_value`` became all zero). That bug is fixed in the bundled OSS,
-    # so we compute and use the real deletions here. Zeroing them diverges from
-    # the bundled OSS and measurably degrades lDDT on MSA-bearing protein samples.
+    # (``deletion_value`` became all zero). That bug is fixed in current
+    # upstream Boltz, so we compute and use the real deletions here. Zeroing
+    # them diverges from upstream and measurably degrades lDDT on MSA-bearing
+    # protein samples.
     has_deletion = deletion > 0
     deletion_val = np.pi / 2 * np.arctan(deletion.numpy() / 3)
     deletion_val = torch.from_numpy(deletion_val.astype(np.float32))
@@ -1060,7 +1070,11 @@ def process_residue_constraint_features(
 
 def process_chain_feature_constraints(
     structure: Optional[Structure], ) -> dict[str, torch.Tensor]:
-    """OSS-aligned: connected_chain/atom_index from bonds; symmetric_chain_index from entity_id (featurizerv2 lines 2018-2056)."""
+    """Upstream-aligned: connected_chain/atom_index from bonds;
+    symmetric_chain_index from entity_id. Mirrors
+    ``process_chain_feature_constraints``
+    (``boltz/data/feature/featurizerv2.py``).
+    """
     empty_2_0 = torch.empty((2, 0), dtype=torch.long)
     if structure is None:
         return {

@@ -436,7 +436,8 @@ def _parse_ccd_ligand_residue(
 
 def _parse_modified_residue(name: str, ref_mol, gemmi_res, res_idx: int) -> dict:
     """Parse a modified/non-standard polymer residue, mirroring OSS
-    ``parse_ccd_residue`` (``mmcif.py:371``, ``is_covalent=True``).
+    ``parse_ccd_residue`` (``boltz/data/parse/mmcif.py``,
+    ``is_covalent=True``).
 
     Sibling of :func:`_parse_ccd_ligand_residue` / :func:`_parse_polymer_residue`,
     but overlays real coordinates from a template gemmi residue (by atom name)
@@ -510,11 +511,11 @@ def _build_smiles_mol(smiles: str, name: str):
         atom.SetProp("name", atom_name)
 
     # Replicate OSS schema.compute_3d_conformer exactly: ETKDGv3 embed with a
-    # random-coords fallback, then UFF-optimize (maxIters=1000). The prior
-    # implementation used a plain EmbedMolecule(randomSeed=42) with no UFF
-    # relaxation, which produced a different conformer geometry than the OSS
-    # reference (ref_pos diverged). The conformer is named "Computed" so the
-    # downstream _get_conformer / _select_conformer picks it deterministically.
+    # random-coords fallback, then UFF-optimize (maxIters=1000). Both the
+    # embedding options and the UFF relaxation are required — any other
+    # combination yields a different conformer geometry and hence a
+    # different ref_pos. The conformer is named "Computed" so the downstream
+    # _get_conformer / _select_conformer picks it deterministically.
     options = AllChem.ETKDGv3()
     options.clearConfs = False
     conf_id = AllChem.EmbedMolecule(mol, options)

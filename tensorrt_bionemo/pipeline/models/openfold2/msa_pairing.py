@@ -22,7 +22,9 @@ import scipy.linalg
 
 import tensorrt_bionemo.pipeline.models.openfold2.const as rc
 
-# TODO: This stuff should probably also be in a config
+# Note: these pairing thresholds and pad values are module-level constants
+# rather than config fields — they match the OpenFold-2 multimer pairing
+# reference and are not intended to be tuned per run.
 MSA_GAP_IDX = rc.restypes_with_x_and_gap.index('-')
 SEQUENCE_GAP_CUTOFF = 0.5
 SEQUENCE_SIMILARITY_CUTOFF = 0.9

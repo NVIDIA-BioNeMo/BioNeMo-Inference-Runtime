@@ -127,7 +127,6 @@ class Openfold3RefAdaLN(BoltzRefAdaLN):
         assert extract_state_dict != {}, "extract weights is empty"
         layer_path = layer_path + '.adaln'
         weights_biases_path = [
-            # (f"{layer_path}.a_norm.weight", f"{layer_path}.a_norm.bias"),
             (f"{layer_path}.s_norm.weight", None),
             (f"{layer_path}.s_scale.weight", f"{layer_path}.s_scale.bias"),
             (f"{layer_path}.s_bias.weight", None),
@@ -137,7 +136,6 @@ class Openfold3RefAdaLN(BoltzRefAdaLN):
                                              [0]].shape[1]
         m = cls(dim, dim_single_cond)
         layers = [
-            # m.a_norm,
             m.s_norm,
             m.s_scale,
             m.s_bias,

@@ -184,7 +184,6 @@ class RefTriangleAttentionNode(nn.Module):
                                                 no_heads=no_heads)
         c_hidden = mha.c_hidden
         node = cls(c_in, c_hidden, no_heads, starting)
-        # setattr(node, "mha", mha)
         node.mha = mha
 
         biases_path = [
@@ -472,7 +471,6 @@ class RefAdaLN(nn.Module):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
-            # (f"{layer_path}.a_norm.weight", f"{layer_path}.a_norm.bias"),
             (f"{layer_path}.s_norm.weight", None),
             (f"{layer_path}.s_scale.weight", f"{layer_path}.s_scale.bias"),
             (f"{layer_path}.s_bias.weight", None),
@@ -481,7 +479,6 @@ class RefAdaLN(nn.Module):
         dim_single_cond = state_dict[weights_biases_path[1][0]].shape[1]
         m = cls(dim, dim_single_cond)
         layers = [
-            # m.a_norm,
             m.s_norm,
             m.s_scale,
             m.s_bias,

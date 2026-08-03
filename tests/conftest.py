@@ -29,8 +29,8 @@ running any test, i.e. before the first GPU op creates a cuBLAS handle):
 
 Individual tests also set these env vars inside their bodies, but that lands
 after CUDA is initialized and is only honored on some torch versions (torch 2.10
-/ nv25.12 honors it, torch 2.8 / nv25.08 does not -- causing CI to fail while
-local passes).
+/ nv25.12 honors it, torch 2.8 / nv25.08 does not), so the same test can behave
+differently across containers.
 """
 
 import os

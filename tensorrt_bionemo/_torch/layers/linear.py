@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Adapt from tensorrt_llm/_torch/modules/linear.py
+# Adapted from the fused-linear layer in NVIDIA TensorRT-LLM
+# (https://github.com/NVIDIA/TensorRT-LLM). TensorRT-LLM is not a
+# dependency of this package; only the layout is reused.
 
 import enum
 from dataclasses import dataclass
@@ -48,8 +50,9 @@ def load_weight(
     if isinstance(weight, torch.Tensor):
         # Avoid unnecessary copy
         return weight.to(device)
-    # WAR to check whether it is a safetensor slice since safetensor didn't register the type to the module
-    # safetensors slice, supports lazy loading, type(weight) is `builtin.PySafeSlice`
+    # Workaround: safetensors does not register its slice type with this
+    # module, so detect it structurally. A safetensors slice supports lazy
+    # loading; ``type(weight)`` is ``builtin.PySafeSlice``.
     elif hasattr(weight, "get_shape"):
         return weight[slice(None)].to(device)
     else:
@@ -68,7 +71,7 @@ class Linear(nn.Module):
         super().__init__()
         self.has_bias = bias
         self.dtype = dtype
-        # could be modified later
+        # Falls back to the default weights-loading configuration.
         self.weights_loading_config = weights_loading_config or WeightsLoadingConfig(
         )
 

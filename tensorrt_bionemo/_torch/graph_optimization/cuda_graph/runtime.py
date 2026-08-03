@@ -298,7 +298,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         # path, where the captured graph reads the live shape on-device.
         input_tensor_shapes_cpu: TensorContainerShapes = (
             GraphOptimizationTracker._tensor_container_shapes_to_cpu(input_tensor_shapes))
-        # (1.2.4) The first representative call validates that every configured
+        # The first representative call validates that every configured
         # input tie resolves to a real tensor axis (raises otherwise). One-shot.
         self.validate_input_ties(input_tensor_shapes_cpu)
         if not self.input_accepted(input_tensor_shapes_cpu):
@@ -319,10 +319,11 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         # compute key with adjusted input
         # -----------------------------------------------------------
         input_key, _ = self.update_graph_state_by_key(*adjusted_args, **adjusted_kwargs)
-        # Permanent eager: a key that previously failed the memory gate, capture,
-        # verification, or replay was evicted and recorded here. Run eager without
-        # touching per-key state (update_graph_state_by_key does not recreate it
-        # for such keys), so the key never re-warms (see _revert_to_eager).
+        # Permanent eager: a key that failed the memory gate, capture,
+        # verification, or replay on an earlier call was evicted and recorded
+        # here. Run eager without touching per-key state
+        # (update_graph_state_by_key does not recreate it for such keys), so
+        # the key never re-warms (see _revert_to_eager).
         if self.fallback_to_eager_by_key.get(input_key, False):
             return self.inner_module(*args, **kwargs)
         state = self.graph_state_by_key[input_key]
@@ -521,7 +522,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             return self.inner_module(*args, **kwargs)
         
         # -----------------------------------------------------------
-        # (-2) copy result from static buffers
+        # copy result from static buffers
         # -----------------------------------------------------------
         output = _clone_tensors(state.static_output)
         

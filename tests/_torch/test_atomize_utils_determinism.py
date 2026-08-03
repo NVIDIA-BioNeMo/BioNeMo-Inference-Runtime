@@ -141,7 +141,8 @@ def test_raw_cuda_scatter_add_is_nondeterministic(dtype):
     This is what makes the fix load-bearing. If a future GPU/PyTorch makes the
     raw op deterministic the contrast vanishes harmlessly -- so we skip (never
     fail red) rather than assert, while the determinism guarantee of the fix is
-    asserted unconditionally in ``test_aggregate_is_bit_identical_run_to_run``.
+    asserted unconditionally in
+    ``test_aggregate_atom_feat_is_bit_identical_run_to_run``.
     """
     inputs = _make_inputs(dtype)
     idx = inputs["atom_to_token_index"].unsqueeze(-1).expand(-1, -1, C_FEAT)

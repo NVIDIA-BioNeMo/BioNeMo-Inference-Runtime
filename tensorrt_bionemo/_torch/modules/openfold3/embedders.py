@@ -107,7 +107,7 @@ class InputEmbedderAllAtom(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(
@@ -495,7 +495,7 @@ class MSAModuleEmbedder(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(
@@ -786,7 +786,7 @@ class TemplateEmbedderAllAtom(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(

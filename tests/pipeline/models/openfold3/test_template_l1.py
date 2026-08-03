@@ -3,9 +3,8 @@
 
 """L1 regression tests for the OpenFold3 direct-CIF template featurization.
 
-Seven fixtures under ``examples/data/samples/templates/`` (from the
-OpenFold3-NIM ``data_with_template`` benchmark), each exercising a distinct
-featurization case:
+Seven fixtures under ``examples/data/samples/templates/``, each exercising
+a distinct featurization case:
 
   7tpu  multi-template top-k + rejection + score-ordered slotting
   8k7x  modified-residue non-standard branch + entity_poly MSE->'M'
@@ -20,9 +19,8 @@ instead of the raw tensors: the discrete per-token tensors in full plus stable
 reductions of the pairwise ones.
 
 The golden is generated from the current implementation (validated byte-exact,
-atol=1e-4, vs OSS dumps at submodule f16647af — see
-``workdir/openfold3-port/template_equiv/``). Regenerate after an intentional
-change with::
+atol=1e-4, against upstream OpenFold-3 at submodule revision f16647af).
+Regenerate after an intentional change with::
 
     python tests/pipeline/models/openfold3/test_template_l1.py --regen-golden
 """

@@ -323,14 +323,13 @@ nucleic_backbone_atom_index = {
 # MSA
 # -----------------------------------------------------------------------------
 
-# Match the OSS ``boltz predict`` runtime cap (3rdparty/boltz/src/boltz/main.py:
-# 1018-1019 and 672/1075) — predict-path default is ``max_msa_seqs=8192``,
-# NOT the 16384 from ``boltz.data.const.max_msa_seqs`` (which is the
-# training/general-purpose cap). The cached OSS feature dumps under
-# ``the OSS reference outputs`` were produced by the predict path, so byte-equivalent
-# TRT featurization requires the same 8192 cap. Without this alignment,
-# samples with deep MSAs (T1152: 15872 rows, smiles_demo: 15872, T1047s1:
-# 8395) produce shape mismatches in 5 MSA-derived feature tensors.
+# Match the upstream ``boltz predict`` runtime cap (``boltz.main.predict``) —
+# the predict-path default is ``max_msa_seqs=8192``, NOT the 16384 from
+# ``boltz.data.const.max_msa_seqs`` (which is the training/general-purpose
+# cap). Byte-equivalent TRT featurization against predict-path references
+# requires the same 8192 cap. Without this alignment, samples with deep MSAs
+# (T1152 and smiles_demo at 15872 rows, T1047s1 at 8395) produce shape
+# mismatches in 5 MSA-derived feature tensors.
 max_msa_seqs = 8192
 max_paired_seqs = 8192
 

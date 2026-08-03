@@ -91,7 +91,7 @@ MSA_CHAR_TO_IDX["-"] = 31  # gap
 MSA_CHAR_TO_IDX["."] = 31  # gap variant
 # RNA-exclusive char: U is unique to RNA and not present in protein alphabet.
 # Shared chars A/G/C/N overlap protein and RNA alphabets; mol_type dispatch in
-# MsaFeatureGenerator resolves ambiguity at generation time (D-05).
+# MsaFeatureGenerator resolves ambiguity at generation time.
 MSA_CHAR_TO_IDX["U"] = RESNAME_TO_IDX["U"]  # index 24: RNA Uracil
 
 # Gap index
@@ -139,15 +139,14 @@ TEMPLATE_CIF_DIRECT_MIN_SCORE = 0.1
 # ---------------------------------------------------------------------------
 # MSA constants
 # ---------------------------------------------------------------------------
-# Match the OSS schema default at
-# ``openfold-3/openfold3/projects/of3_all_atom/config/dataset_config_components.py:70``
-# (``MSASettings(max_rows=16384, max_rows_paired=8191)``). The OSS dump path
-# (``workdir/openfold3-port/feature_equiv/dump_oss_of3_features.py``) uses
-# this default, and ``dump_oss_of3_features.py`` is the ground truth for L1
-# feature equivalence. A prior cycle had lowered this to 4096 to match a
-# narrower OSS *debug* runner — but the dump path doesn't use that runner,
-# so the lower cap produced shape mismatches on samples with > 4096 rows
-# (T1152: 15873, smiles_demo: 15873, T1047s1: 8498, 6m3u: 4921).
+# Match the upstream OpenFold-3 schema default in ``MSASettings``
+# (``projects/of3_all_atom/config/dataset_config_components.py``):
+# ``max_rows=16384, max_rows_paired=8191``.
+#
+# These caps must track ``MSASettings``, not the narrower limits used by
+# upstream's debug runners. A lower cap silently truncates and produces shape
+# mismatches on samples with deep MSAs (e.g. T1152 and smiles_demo at 15873
+# rows, T1047s1 at 8498, 6m3u at 4921).
 MAX_MSA_ROWS = 16384
 MAX_MSA_ROWS_PAIRED = 8191
 

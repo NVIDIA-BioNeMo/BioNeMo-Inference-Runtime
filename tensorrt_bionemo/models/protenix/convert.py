@@ -12,10 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Protenix checkpoint -> TRT-BNM weight conversion.
+"""Protenix checkpoint -> TRT-BioNeMo weight conversion.
 
 The protenix-v2 checkpoint stores the OSS module names (``{"model": ...}`` /
-``module.`` already stripped by the hub loader). The TRT-BNM input embedder
+``module.`` already stripped by the hub loader). The TRT-BioNeMo input embedder
 reuses the shared fused DiT primitives, so the atom-transformer parameters have
 a different layout and must be remapped (fused KV / SwiGLU / AdaLN
 concatenations); atom feature projections are fused along their input channels.
@@ -85,7 +85,7 @@ def _merge_prefix(out: dict, prefix: str, converted: dict) -> None:
 
 def _convert_adaln(out: dict, weights: dict, src: str, tgt: str,
                    dtype: torch.dtype) -> None:
-    """OSS ``AdaptiveLayerNorm`` -> TRT-BNM ``AdaLN``.
+    """OSS ``AdaptiveLayerNorm`` -> TRT-BioNeMo ``AdaLN``.
 
     Fuses ``[s_scale; s_bias]``; the s_bias half has a zeroed bias slot
     (OSS ``linear_nobias_s`` has no bias).
@@ -179,7 +179,7 @@ def _convert_protenix_token_dit_block(out: dict, weights: dict, src_blk: str,
 def convert_hf_input_embedder_torch(config: BaseConfig,
                                     weights: dict,
                                     prefix: str = "input_embedder") -> dict:
-    """Convert protenix-v2 input-embedder weights to a TRT-BNM state_dict.
+    """Convert protenix-v2 input-embedder weights to a TRT-BioNeMo state_dict.
 
     Args:
         config: ``InputFeatureEmbedderConfig`` for the target module (drives the
@@ -256,10 +256,11 @@ def convert_constraint_embedder_torch(
         config: BaseConfig,
         weights: dict,
         prefix: str = "constraint_embedder") -> dict:
-    """Convert protenix-v2 constraint-embedder weights to a TRT-BNM state_dict.
+    """Convert protenix-v2 constraint-embedder weights to a
+    TRT-BioNeMo state_dict.
 
     Each enabled sub-embedder is a single bias-free ``c_z_input -> c_z``
-    projection with matching OSS / TRT-BNM names, so this is a per-embedder
+    projection with matching OSS / TRT-BioNeMo names, so this is a per-embedder
     dtype-cast copy. Disabled sub-embedders contribute nothing (protenix-v2
     disables all of them -> empty dict).
 
@@ -339,7 +340,7 @@ def _convert_pair_path(weights: dict,
                        dtype_str: str,
                        transition_dim: int,
                        transition_name: str = "transition_z") -> None:
-    """OpenFold-style pair block -> TRT-BNM keys via shared Boltz1 helpers.
+    """OpenFold-style pair block -> TRT-BioNeMo keys via shared Boltz1 helpers.
 
     ``transition_name`` is the target pair-transition attribute
     (``transition_z`` or ``pair_transition``).
@@ -377,7 +378,8 @@ def _convert_pair_path(weights: dict,
 def convert_template_embedder_torch(config: BaseConfig,
                                     weights: dict,
                                     prefix: str = "template_embedder") -> dict:
-    """Convert protenix-v2 template-embedder weights to a TRT-BNM state_dict.
+    """Convert protenix-v2 template-embedder weights to a TRT-BioNeMo
+    state_dict.
 
     Outer projections keep identical names; the inner pair stack routes through
     :func:`_convert_pair_path` (same path as MSA/pairformer converters).
@@ -476,7 +478,8 @@ def convert_pairformer_stack_torch(config: BaseConfig,
 
 def _convert_opm(weights: dict, src: str, tgt: str, out: dict,
                  dtype: torch.dtype) -> None:
-    """OSS ``OuterProductMean`` -> TRT-BNM ``OuterProductMean`` (fused a/b)."""
+    """OSS ``OuterProductMean`` -> TRT-BioNeMo ``OuterProductMean``
+    (fused a/b)."""
     out[f"{tgt}.norm.weight"] = weights[f"{src}.layer_norm.weight"].to(dtype)
     out[f"{tgt}.norm.bias"] = weights[f"{src}.layer_norm.bias"].to(dtype)
     out[f"{tgt}.fused_proj_a_b.weight"] = torch.cat(
@@ -488,8 +491,8 @@ def _convert_opm(weights: dict, src: str, tgt: str, out: dict,
 
 def _convert_msa_pwa(weights: dict, src: str, tgt: str, out: dict,
                      dtype: torch.dtype) -> None:
-    """OSS ``MSAPairWeightedAveraging`` -> TRT-BNM ``PairWeightedAveraging``
-    (fused v/g)."""
+    """OSS ``MSAPairWeightedAveraging`` -> TRT-BioNeMo
+    ``PairWeightedAveraging`` (fused v/g)."""
     out[f"{tgt}.norm_m.weight"] = weights[f"{src}.layernorm_m.weight"].to(
         dtype)
     out[f"{tgt}.norm_m.bias"] = weights[f"{src}.layernorm_m.bias"].to(dtype)
@@ -509,7 +512,8 @@ def _convert_msa_pwa(weights: dict, src: str, tgt: str, out: dict,
 
 def _convert_swiglu_transition(weights: dict, src: str, tgt: str, out: dict,
                                dtype: torch.dtype) -> None:
-    """OSS ``Transition`` (SwiGLU) -> TRT-BNM ``Transition`` (fused fc2/fc1)."""
+    """OSS ``Transition`` (SwiGLU) -> TRT-BioNeMo ``Transition``
+    (fused fc2/fc1)."""
     out[f"{tgt}.norm.weight"] = weights[f"{src}.layernorm1.weight"].to(dtype)
     out[f"{tgt}.norm.bias"] = weights[f"{src}.layernorm1.bias"].to(dtype)
     out[f"{tgt}.fused_fc2_fc1.weight"] = torch.cat([
@@ -641,7 +645,7 @@ def convert_diffusion_atom_encoder_torch(
     :func:`_convert_protenix_atom_dit_block`) plus the coordinate-conditioning
     projections: scale-only ``layernorm_s`` / ``layernorm_z`` and bias-free
     ``linear_no_bias_s`` / ``linear_no_bias_z`` / ``linear_no_bias_r`` (all
-    identical OSS / TRT-BNM names).
+    identical OSS / TRT-BioNeMo names).
 
     Args:
         config: ``DiffusionAtomAttentionEncoderConfig`` (block count via

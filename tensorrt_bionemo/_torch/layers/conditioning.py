@@ -73,8 +73,9 @@ class ContactConditioning(nn.Module):
                 dim=-1,
             ))
 
-        # Fold the unspecified/unselected masking IN PLACE (the encoder output is freshly owned):
-        # the original built 3-4 separate [N,N,token_z] temporaries for the multiply + two adds.
+        # Fold the unspecified/unselected masking IN PLACE (the encoder
+        # output is freshly owned), avoiding 3-4 separate
+        # [N,N,token_z] temporaries for the multiply and the two adds.
         mask = 1 - contact_conditioning[:, :, :, 0:2].sum(dim=-1, keepdim=True)
         final_contact_conditioning *= mask
         final_contact_conditioning += (self.encoding_unspecified *

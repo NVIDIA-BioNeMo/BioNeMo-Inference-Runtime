@@ -167,7 +167,8 @@ class ProtenixAtomAttentionEncoder(nn.Module):
                    dtype=dtype,
                    skip_create_weights=skip),
         )
-        # model_copy avoids re-validation choking on legacy None int fields.
+        # ``model_copy`` skips re-validation, which would reject int fields
+        # that are left as ``None`` in the source config.
         atc = config.atom_transformer_config.model_copy(
             update={
                 "dtype": config.dtype,

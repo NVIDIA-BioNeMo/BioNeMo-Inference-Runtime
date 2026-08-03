@@ -16,10 +16,10 @@
 
 These exercise the file-I/O contract only (fake artifacts, no GPU): a compiled
 kernel must never be published to its canonical ``{sha}.o`` path in a partial
-state. A writer killed mid-export (phase-1 xdist workers teeter on VRAM OOM)
-that leaves a truncated ``.o`` behind is what caused the SIGILL ("Fatal Python
-error: Illegal instruction") mass worker crashes: peers loaded the partial
-object and executed it.
+state. If an interrupted export leaves a truncated ``.o`` at that path, any
+process that later loads and executes it dies with SIGILL ("Fatal Python
+error: Illegal instruction") — an unrecoverable crash, not an exception the
+caller can handle.
 """
 
 import pytest

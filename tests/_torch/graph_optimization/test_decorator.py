@@ -20,12 +20,12 @@ Covers, for every decorated module class:
   input management into a ``graph_opt_default`` (a ``GraphOptimizationConfig``)
   whose ``input_routing_config`` ties the ``num_tokens`` dim, caps acceptance at
   1024, and carries the declared workspace/static names.
-* **Signature validation** (item 1.1.8) passes for every decorated class and
+* **Signature validation** passes for every decorated class and
   rejects a tie name that is not a real ``forward`` parameter.
-* **``Signature.bind`` normalization** (item 1.1.8) maps positional calls to
+* **``Signature.bind`` normalization** maps positional calls to
   parameter names — one name-based spec serves both a keyword caller (OpenFold3)
   and a positional one (boltz-2).
-* **Effective-range resolution** (item 1.1.10) + rejecting an acceptance max
+* **Effective-range resolution** + rejecting an acceptance max
   above the largest capture bucket.
 * **GPU parity smoke** — the decorator's config still drives a correct
   capture/replay through the real OpenFold3 pipeline.
@@ -79,7 +79,7 @@ _MODULE_CASES = [
 def test_graph_opt_default_declares_num_tokens(cls, workspaces, static_args):
     """The decorator stores a ``graph_opt_default`` config whose routing ties the
     ``num_tokens`` dim, caps acceptance at 1024, and carries the declared
-    workspace kwargs (1.1.7) and static args (1.1.6)."""
+    workspace kwargs and static args."""
     cfg = cls.graph_opt_default
     assert isinstance(cfg, GraphOptimizationConfig)
     routing = cfg.input_routing_config
@@ -93,7 +93,7 @@ def test_graph_opt_default_declares_num_tokens(cls, workspaces, static_args):
 @pytest.mark.parametrize("cls, _workspaces, _static_args", _MODULE_CASES)
 def test_decorated_spec_validates_against_forward(cls, _workspaces,
                                                   _static_args):
-    """(1.1.11) Every declared tie/workspace/static name is a real forward
+    """Every declared tie/workspace/static name is a real forward
     parameter, so validation (run at decoration time) passes on a re-check."""
     validate_spec_against_forward(cls)
 
@@ -136,7 +136,7 @@ def test_bind_forward_args_maps_positional_to_names():
 
 
 # ---------------------------------------------------------------------------
-# Item 1.1.10 — effective-range resolution + reject acceptance > largest bucket.
+# Effective-range resolution + reject acceptance > largest bucket.
 # ---------------------------------------------------------------------------
 def _factory_with_tie() -> InputRoutingConfigFactory:
     factory = InputRoutingConfigFactory()

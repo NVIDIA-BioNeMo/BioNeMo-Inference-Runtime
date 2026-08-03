@@ -198,8 +198,9 @@ _CHECKPOINT_EXTENSIONS = (".pt", ".ckpt")
 
 
 def local_checkpoint_dir() -> Path:
-    """Root scanned for staged checkpoints: ``TENSORRT_BIONEMO_CHECKPOINTS`` or
-    ``<CACHE_DIR>/checkpoints`` (where ``run_tests.sh --download`` stages them)."""
+    """Root scanned for staged checkpoints: ``TENSORRT_BIONEMO_CHECKPOINTS``
+    or ``<CACHE_DIR>/checkpoints``, where pre-downloaded checkpoints may be
+    placed to avoid a network fetch."""
     override = os.getenv("TENSORRT_BIONEMO_CHECKPOINTS")
     if override:
         return Path(override)
@@ -330,8 +331,8 @@ def load_local_weights(
             )
             filepath = None
         if not filepath:  # unset, empty, or invalid path
-            # Fall back to a checkpoint staged in the local cache (e.g. by
-            # run_tests.sh --download) before giving up to the HuggingFace hub.
+            # Fall back to a checkpoint staged in the local cache before
+            # giving up to the HuggingFace hub.
             filepath = resolve_cached_checkpoint(name)
             if filepath is not None:
                 logger.info(

@@ -1825,7 +1825,6 @@ class RefTemplatePointwiseAttention(nn.Module):
 
         # [*, N_res, N_res, N_temp, C_t]
         batch_dims = " ".join([f"b_{i}" for i in range(t.ndim - 4)])
-        # t = permute_final_dims(t, (1, 2, 0, 3))
         t = rearrange(t, f"{batch_dims} t i j c -> {batch_dims} i j t c")
 
         # [*, N_res, N_res, 1, C_z]

@@ -132,7 +132,7 @@ def support_graph_optimization(
 
     def _decorate(cls: Type) -> Type:
         setattr(cls, GRAPH_OPT_DEFAULT_ATTR, graph_opt_default)
-        # (1.1.8) Fail loudly at decoration time if a declared name is not a
+        # Fail loudly at decoration time if a declared name is not a
         # real forward parameter — a typo'd tie point is a config bug, not a
         # silently-ignored no-op.
         validate_spec_against_forward(cls)
@@ -142,7 +142,7 @@ def support_graph_optimization(
 
 
 def validate_spec_against_forward(cls_or_instance: Union[Type, object]) -> None:
-    """Validate declared names against ``forward``'s signature (item 1.1.8).
+    """Validate declared names against ``forward``'s signature.
 
     Every input-tie tensor name (except positional ``arg{i}`` references),
     workspace kwarg, and static arg must be a real parameter of ``forward`` —
@@ -193,7 +193,7 @@ def bind_forward_args(
     args: Sequence[Any],
     kwargs: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Normalize a live call to ``{parameter_name: value}`` (item 1.1.8).
+    """Normalize a live call to ``{parameter_name: value}``.
 
     Uses :meth:`inspect.Signature.bind_partial` to map positional arguments onto
     their parameter names, so routing keyed by name is independent of whether a

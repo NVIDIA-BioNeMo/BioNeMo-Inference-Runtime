@@ -39,7 +39,7 @@ from .feature_generators import (
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
     """Seed Python, NumPy, and Torch RNGs from context['random_seed'].
 
-    Implements FEAT-05 tri-seeding: all three global RNGs are seeded so that
+    All three global RNGs are seeded so that
     stochastic feature generators (ConformerFeatureGenerator's random
     augmentation via torch.randn, RDKit ETKDGv3 seeds via stdlib random) are
     fully reproducible given the same random_seed.

@@ -324,7 +324,6 @@ class RefPairwiseSelfAttention(nn.Module):
         if attn_metadata is not None:
             # Get key-value from the query for sequence local atom attention
             query_to_keys = attn_metadata.query_to_keys
-            # query_to_keys = lambda x: query_to_keys(x.view(bs, K * W, -1)).view(bs * K, H, -1)
             if query_to_keys is not None:
                 kv_in = query_to_keys(s)
                 mask = query_to_keys(mask.unsqueeze(-1)).squeeze(-1)

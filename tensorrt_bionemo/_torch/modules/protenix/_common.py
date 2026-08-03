@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 # Reference-conformer + windowing keys consumed by the atom encoder / diffusion
-# cache path. Order matches the historical ``prepare_cache`` / encoder kwargs.
+# cache path. Order matches the atom encoder's keyword arguments.
 ATOM_ENCODER_FEATURE_KEYS: tuple[str, ...] = (
     "atom_to_token_idx",
     "ref_pos",

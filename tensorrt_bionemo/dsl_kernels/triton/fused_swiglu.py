@@ -19,7 +19,7 @@ By reading from the packed buffer directly the kernel avoids the
 non-contiguous views that ``z.split(...)`` would produce and eliminates
 two extra kernel launches (silu + mul / mul).
 
-Adapted from vLLM's ``_swiglustep_and_mul_kernel`` (Apache-2.0).
+Adapted from vLLM's ``_silu_and_mul_kernel`` (Apache-2.0).
 
 Launch strategy
 ---------------

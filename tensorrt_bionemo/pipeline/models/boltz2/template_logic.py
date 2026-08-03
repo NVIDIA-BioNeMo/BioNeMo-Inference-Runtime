@@ -48,8 +48,9 @@ class Alignment:
 class TemplateMatch:
     """A query-chain ↔ template-chain match with alignment offsets.
 
-    Mirrors the alignment-carrying fields of OSS ``TemplateInfo``
-    (``boltz/data/types.py:549``). ``name`` is the template id (file stem).
+    Mirrors the alignment-carrying fields of upstream
+    ``boltz.data.types.TemplateInfo``. ``name`` is the template id
+    (file stem).
     """
 
     name: str
@@ -66,7 +67,8 @@ class TemplateMatch:
 def global_alignment_score(query: str, template: str) -> float:
     """Global blastp-scored alignment score between two sequences.
 
-    Reimplements OSS ``get_global_alignment_score`` (``schema.py:486``): a
+    Reimplements upstream ``get_global_alignment_score``
+    (``boltz/data/parse/schema.py``): a
     Biopython ``PairwiseAligner(scoring="blastp")`` in global mode, returning the
     top alignment's score. Used to build the chain-assignment cost matrix.
     """
@@ -78,7 +80,8 @@ def global_alignment_score(query: str, template: str) -> float:
 def local_alignments(query: str, template: str) -> list[Alignment]:
     """Ungapped local alignment blocks between query and template sequences.
 
-    Reimplements OSS ``get_local_alignments`` (``schema.py:508``): a blastp-scored
+    Reimplements upstream ``get_local_alignments``
+    (``boltz/data/parse/schema.py``): a blastp-scored
     ``PairwiseAligner`` in local mode with gap open/extend = ``-1000`` (so the
     alignment is effectively ungapped). Returns one :class:`Alignment` per block,
     taken from the alignment coordinate matrix rows (row 0 = query, row 1 =
@@ -113,7 +116,8 @@ def template_records_from_search(
 ) -> list[TemplateMatch]:
     """Auto-assign query chains to template chains, then align each pair.
 
-    Reimplements OSS ``get_template_records_from_search`` (``schema.py:543``):
+    Reimplements upstream ``get_template_records_from_search``
+    (``boltz/data/parse/schema.py``):
     build a ``len(chain_ids) x len(template_chain_ids)`` global-score matrix, solve
     the optimal assignment with ``linear_sum_assignment(..., maximize=True)``, then
     emit a :class:`TemplateMatch` per local-alignment block of each assigned pair.
@@ -157,7 +161,8 @@ def template_records_from_matching(
 ) -> list[TemplateMatch]:
     """Align an explicit 1:1 query-chain ↔ template-chain mapping.
 
-    Reimplements OSS ``get_template_records_from_matching`` (``schema.py:594``):
+    Reimplements upstream ``get_template_records_from_matching``
+    (``boltz/data/parse/schema.py``):
     zip the two chain-id lists (equal length, user-specified) and emit a
     :class:`TemplateMatch` per local-alignment block, skipping the assignment step.
     """
@@ -183,8 +188,9 @@ def template_records_from_matching(
 # ---------------------------------------------------------------------------
 # Template structure parse (gemmi) + tokenization (real coords).
 # Reuses TRT's residue definitions (const.ref_atoms/token_ids/res_to_*_atom_id)
-# so res_type/center/disto match the L1-matched query path; the only
-# template-specific part is overlaying the CIF's real coords + per-atom presence.
+# so res_type/center/disto are produced exactly as they are for the query
+# structure; the only template-specific part is overlaying the CIF's real
+# coords + per-atom presence.
 # ---------------------------------------------------------------------------
 _POLYMER_TYPE_TO_CHAIN_TYPE = {
     "PeptideL": "PROTEIN",
@@ -478,9 +484,10 @@ def tokenize_template(struct: Structure) -> list[Token]:
             frame_rot = _IDENTITY_ROT
             frame_t = _ZERO_T
             frame_mask = False
-            # OSS computes the backbone frame only for STANDARD residues; a
-            # modified residue (is_standard=False, e.g. CSO) is tokenized at
-            # residue level with frame_mask=False (boltz2.py:309-346).
+            # Upstream computes the backbone frame only for STANDARD
+            # residues; a modified residue (is_standard=False, e.g. CSO) is
+            # tokenized at residue level with frame_mask=False (see
+            # ``tokenize_structure`` in ``boltz/data/tokenize/boltz2.py``).
             if is_protein and res.is_standard and res.atom_num >= 3:
                 a0 = struct.atoms[res.atom_idx]
                 a1 = struct.atoms[res.atom_idx + 1]
@@ -536,8 +543,8 @@ def compute_template_features(
 ) -> dict:
     """Per-token template feature arrays for one template row.
 
-    Reimplements OSS ``compute_template_features``
-    (``featurizerv2.py:1696``). ``tmpl_rows`` is a list of
+    Reimplements upstream ``compute_template_features``
+    (``boltz/data/feature/featurizerv2.py``). ``tmpl_rows`` is a list of
     ``{"token": Token, "pdb_id": int, "q_idx": int}`` mapping a template token
     onto a query token index. Returns a dict of torch tensors (10 keys);
     ``query_to_template`` is allocated all-zeros exactly as OSS.
@@ -578,7 +585,7 @@ def compute_template_features(
     for asym_id, pdb_id in asym_id_to_pdb_id.items():
         visibility_ids[q_asym == asym_id] = pdb_id
 
-    # Set visibility for non-templated chains (hacked negative id).
+    # Set visibility for non-templated chains (sentinel negative id).
     for asym_id in np.unique(np.asarray(query_chain_asym_ids, dtype=np.int64)):
         if asym_id not in asym_id_to_pdb_id:
             visibility_ids[q_asym == asym_id] = -1 - asym_id
@@ -711,8 +718,10 @@ def build_template_features_from_row(
             tmpl_chain = tmpl.get("chain_id")
 
             if tmpl_chain is not None:
-                # Explicit 1:1 mapping: each query chain uses the named template
-                # chain (validated L1 path — leave unchanged).
+                # Explicit 1:1 mapping: each query chain uses the named
+                # template chain. When the caller names a template chain it
+                # must be honoured verbatim, so no Hungarian assignment or
+                # auto-selection is applied on this branch.
                 for query_chain in chain_ids:
                     matches.extend(
                         template_records_from_matching(

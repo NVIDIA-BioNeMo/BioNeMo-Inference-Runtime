@@ -107,7 +107,6 @@ def create_gather_indices(
 def query_to_keys_optimized(
         query: torch.Tensor,
         gather_indices: torch.Tensor,
-        # valid_mask: torch.Tensor,
         W: int = None,
         H: int = None) -> torch.Tensor:
     """Gather-based query→keys for sequence-local atom attention.

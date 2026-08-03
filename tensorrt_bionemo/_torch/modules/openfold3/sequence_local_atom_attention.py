@@ -39,7 +39,8 @@ def convert_pair_atom_to_blocks(
     n_key: int,
     attn_metadata: AttentionMetadata,
 ) -> torch.Tensor:
-    """TRT-compatible equivalent of OSS ``convert_trunk_pair_rep_to_blocks``.
+    """Graph-capturable equivalent of the OSS
+    ``convert_trunk_pair_rep_to_blocks``.
 
     Goal
     ----
@@ -74,13 +75,13 @@ def convert_pair_atom_to_blocks(
            (``atom_mask_q ⊗ atom_mask_k``) so the spurious "token 0" rows
            introduced by padding contribute nothing.
 
-    TRT-BNM implementation (this function)
-    --------------------------------------
-    The TRT path produces the **same indices and the same masked output**
+    Implementation here (this function)
+    -----------------------------------
+    This path produces the **same indices and the same masked output**
     using only ``gather`` primitives (no ``unfold``, no per-atom Python
-    branching), which keeps the kernel TRT-friendly and avoids TF32
-    precision loss seen with an ``einsum``-based approach (the original
-    bug behind the device-side OOB assert):
+    branching). That keeps every shape static and the whole function
+    CUDA-graph capturable, and it avoids the TF32 precision loss of an
+    ``einsum``-based gather:
 
         1. Right-pad ``atom_to_token_index`` and ``atom_mask`` to
            ``K*n_query`` with **zero** and reshape to
@@ -103,11 +104,9 @@ def convert_pair_atom_to_blocks(
            by the same ``query_to_keys`` gather of the padded atom mask),
            zeroing every OOB query/key pair.
 
-    The earlier edge-window-shift heuristic (which kept real atoms at the
-    edges by shifting the window inward) is intentionally not used here —
-    it diverged from the OSS reference at every edge block. The dead
-    helpers that implemented it have been removed; this docstring is the
-    only remaining reference.
+    An edge-window-shift heuristic (keeping real atoms at the edges by
+    shifting the window inward) is deliberately *not* used here: it
+    would diverge from the OSS reference at every edge block.
 
     Bit-exactness
     -------------
@@ -645,9 +644,6 @@ class AtomAttentionEncoder(nn.Module):
             dim=batch["atom_mask"].ndim - 1)
         atom_mask = atom_mask * attn_metadata.query_to_keys(atom_mask).squeeze(
             -1).unsqueeze(-2)
-
-        # # Note to devs: in previous checkpoints before v13, linear_l and linear_m
-        # #  were reversed. Changed it for consistent naming.
 
         cl_lm = (self.linear_l(self.relu(cl_l.unsqueeze(-2))) + self.linear_m(
             self.relu(cl_m.unsqueeze(-3)))) * atom_mask.unsqueeze(-1)

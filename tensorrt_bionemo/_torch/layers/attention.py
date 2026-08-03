@@ -256,7 +256,7 @@ class CrossTriangleAttention(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None,
     ) -> torch.Tensor:
         """
-        Currently only use in the TemplatePointWiseAttention layer. Fix me if has some other use cases.
+        Currently used only by the TemplatePointwiseAttention layer.
         Args:
             q_x: [*, N_res, N_res, 1, C_z]
             kv_x: [*, N_res, N_res, N_temp, C_t]

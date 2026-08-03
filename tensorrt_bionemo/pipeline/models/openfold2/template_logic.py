@@ -538,8 +538,10 @@ def _pack_selected_template(
 
     aligned_sequence = _aligned_template_sequence(num_residues, selected)
     # OpenFold's populated direct-CIF features use int64 one-hot values. Keep
-    # that boundary dtype so the OSS feature oracle can compare it exactly.
-    # The legacy empty-template path remains float32 for byte compatibility.
+    # that boundary dtype so the features compare byte-exactly against
+    # upstream OpenFold's output. The empty-template path
+    # (`_empty_template_feats`) emits float32 instead, also matching
+    # upstream.
     aatype = np.zeros((num_residues, 22), dtype=np.int64)
     for residue_index, residue in enumerate(aligned_sequence):
         aatype[residue_index, rc.HHBLITS_AA_TO_ID.get(residue, 20)] = 1.0

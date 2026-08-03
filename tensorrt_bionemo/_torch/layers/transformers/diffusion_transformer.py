@@ -184,7 +184,10 @@ class DiffusionTransformerLayer(nn.Module):
             precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
             buffers: Optional[PreallocatedBuffers] = None,
             **kwargs) -> torch.Tensor:
-        """ First version of DiffusionTransformerLayer, does not support multiplicity > 1 and atom encoder, decoder"""
+        """Forward for a single layer.
+
+        Does not support multiplicity > 1, nor the atom encoder / decoder.
+        """
         if self.initial_norm:
             b = self.adaln(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
         else:
@@ -256,7 +259,7 @@ class BoltzDiffusionTransformer(nn.Module):
     def __init__(self, config: BaseConfig):
         """
         Args:
-            config: tensorrt_bionemo.models.boltz1.configs.DiffusionTransformerConfig
+            config: tensorrt_bionemo.configs.modules.DiffusionTransformerConfig
                 The configuration of the token transformer module.
         """
         super().__init__()
@@ -290,7 +293,7 @@ class BoltzDiffusionTransformer(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(
@@ -350,7 +353,7 @@ class BoltzDiffusionTransformer(nn.Module):
 
         for i, layer in enumerate(self.layers):
             # CuTeDSL: z is [L, *, H, Sq, Sk_padded] -> z[i] is contiguous
-            # Others:  z is [*, H, Sq, Sk, L]        -> z[..., i] (legacy)
+            # Others:  z is [*, H, Sq, Sk, L]        -> z[..., i]
             bias = z[i] if self.pairwise_attention_backend == "CuTeDSL" else z[
                 ..., i]
             a = layer(a,
@@ -473,7 +476,7 @@ class OpenFold3DiffusionTransformer(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(

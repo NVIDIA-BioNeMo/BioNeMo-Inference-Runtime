@@ -8,7 +8,7 @@ Cover the pure-Python sequence-alignment + chain-assignment functions
 ``get_template_records_from_{search,matching}``) that decide which template
 chain maps to which query chain and at what offset. Biopython + SciPy only
 (no CCD/GPU/golden), so they run fast in CI. Full 12-tensor featurization is
-validated separately against OSS references (workdir L1 harness).
+covered separately, against the upstream Boltz implementation.
 """
 from __future__ import annotations
 

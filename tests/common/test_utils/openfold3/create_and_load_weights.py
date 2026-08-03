@@ -64,7 +64,8 @@ def load_msa_pair_weighted_averaging_weights_torch(module,
     """Load reference ``PairWeightedAveraging`` weights into the production
     module. The production module fuses ``linear_v`` and ``linear_g`` into
     a single ``fused_proj_m_g`` layer (output split: ``[v, g]`` along
-    dim=-1, see ``pair_averaging.py:122``); we concatenate them along the
+    dim=-1, see ``PairWeightedAveraging.fused_proj_m_g``); we concatenate them
+    along the
     output dim (dim=0 of the Linear weight, since ``Linear.weight`` has
     shape ``(out, in)``).
     """

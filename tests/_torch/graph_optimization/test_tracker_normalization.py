@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tracker consumption of decorator-declared data:
-* item 1.1.8 — positional args normalized to parameter names (``Signature.bind``).
-* item 1.1.7 — workspace kwargs read from the ``InputRoutingConfig``.
+* positional args normalized to parameter names (``Signature.bind``).
+* workspace kwargs read from the ``InputRoutingConfig``.
 """
 import torch
 import torch.nn as nn
@@ -40,7 +40,7 @@ def _tracker(inner, input_routing_config=None) -> CUDAGraphOptimizationTracker:
     return CUDAGraphOptimizationTracker(cfg, inner_module=inner)
 
 
-# --- item 1.1.8: positional -> parameter name normalization ----------------
+# --- positional -> parameter name normalization ----------------------------
 def test_positional_args_normalized_to_param_names():
     tracker = _tracker(_NamedStub())
     s = torch.zeros(1, 10, 4)
@@ -72,7 +72,7 @@ def test_positional_overflow_falls_back_to_argi():
     assert set(shapes) == {"s_shape", "arg1_shape", "arg2_shape"}
 
 
-# --- item 1.1.7: workspace kwargs sourced from the config ------------------
+# --- workspace kwargs sourced from the config ------------------------------
 def test_workspace_kwargs_read_from_config():
     factory = InputRoutingConfigFactory()
     factory.set_internal_workspace_kwargs(["scratch"])

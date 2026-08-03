@@ -65,8 +65,9 @@ def _make_template_feats(B: int, T: int, N: int, num_tokens: int,
     visibility_ids = torch.randint(0, 3, (B, T, N), device=device)
     # ``template_mask`` is reduced over dim=2 in the module
     # (``feats["template_mask"].any(dim=2)``). Upstream Boltz constructs it
-    # as ``(T, N)`` per-sample (see ``featurizerv2.py``), giving ``(B, T, N)``
-    # after batching so the reduction yields a per-template ``(B, T)`` mask.
+    # as ``(T, N)`` per-sample (in ``boltz/data/feature/featurizerv2.py``),
+    # giving ``(B, T, N)`` after batching so the reduction yields a
+    # per-template ``(B, T)`` mask.
     template_mask = torch.randint(0,
                                   2, (B, T, N),
                                   dtype=torch.float32,

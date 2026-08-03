@@ -296,8 +296,8 @@ class TriangleMultiplicationNode(nn.Module):
                 ``False`` for bipartite / interior-zero masks such as
                 Boltz-2 affinity ``cross_pair_mask`` -- the dispatcher
                 then routes the x_x dual GEMM around the CuTe path
-                (cuEquiv / CUTLASS / vanilla all consume ``mask``
-                directly without the prefix assumption).
+                (cuEquiv / vanilla both consume ``mask`` directly
+                without the prefix assumption).
         """
         super().__init__()
         if hidden_dim is None:
@@ -347,11 +347,11 @@ class TriangleMultiplicationNode(nn.Module):
 
         # TODO: Make this threshold configurable
         self._forward_impl_v2_threshold = 384
-        # Dedicated x0_x1 dispatcher: routes to CuTe (SM 80/86/89), legacy
-        # CUTLASS (SM 90), or cuEquiv / vanilla otherwise based on
+        # Dedicated x0_x1 dispatcher: routes to CuTe (SM 80/86/89/90) or
+        # cuEquiv / vanilla otherwise, based on
         # ``(high_precision_dtype, N=self.dim, K=self.hidden_dim)``. Note
         # that ``high_precision=True`` -> fp32 -> vanilla fallback (the
-        # CuTe / CUTLASS / cuEquiv paths only accept fp16 / bf16).
+        # CuTe / cuEquiv paths only accept fp16 / bf16).
         self._dual_gemm_x0_x1_op = get_dual_gemm_x0_x1_op(
             self.high_precision_dtype,
             transpose_out=False,

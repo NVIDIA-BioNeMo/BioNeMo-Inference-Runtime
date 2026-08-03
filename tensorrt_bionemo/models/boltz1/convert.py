@@ -156,7 +156,8 @@ def convert_hf_pairformer(config: BaseConfig,
                           local_checkpoint: str = None,
                           model_name: str = "boltz-1"):
     """
-    Convert a pairformer model from a Hugging Face checkpoint to a TensorRT model weights.
+    Convert a pairformer model from a Hugging Face checkpoint into the
+    weights of this project's Torch pairformer module.
 
     Args:
         pairformer_type: The type of pairformer to convert. 'structure' or 'confidence'
@@ -503,7 +504,8 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
                                      local_checkpoint: str = None,
                                      model_name: str = "boltz-1"):
     """
-    Convert a token transformer model from a Hugging Face checkpoint to a TensorRT model weights.
+    Convert a token transformer model from a Hugging Face checkpoint into
+    the weights of this project's Torch diffusion transformer module.
     Args:
         config: The configuration for the diffusion transformer module.
         local_checkpoint: The directory to load the checkpoint from. If local_checkpoint is None, the function will load from HuggingFace
@@ -532,7 +534,6 @@ def convert_hf_diffusion_transformer(config: BaseConfig = None,
                 f"{layer_tbm_prefix}.pair_bias_attn",
                 num_heads=config.num_heads,
                 attention_initial_norm=config.attention_initial_norm,
-                # compute_pair_bias=config.version == "v1",
                 compute_pair_bias=False,
                 dtype=config.dtype))
         weights.update(
@@ -1539,7 +1540,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
         model_name=model_name,
         weights=state_dict,
         prefix=f"{prefix}input_embedder.")
-    # tbnm_state_dict["input_embedder"] = input_embedder_weights
     for k, v in input_embedder_weights.items():
         tbnm_state_dict[f"input_embedder.{k}"] = v
 
@@ -1587,7 +1587,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
         weights=state_dict,
         pairformer_type="confidence",
     )
-    # tbnm_state_dict["pairformer"] = pairformer_weights
     for k, v in pairformer_weights.items():
         tbnm_state_dict[f"pairformer_module.{k}"] = v
     msa_module_weights = convert_hf_msa_module_torch(
@@ -1596,7 +1595,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
         model_name=model_name,
         weights=state_dict,
         prefix=f"{prefix}msa_module.")
-    # tbnm_state_dict["msa_module"] = msa_module_weights
     for k, v in msa_module_weights.items():
         tbnm_state_dict[f"msa_module.{k}"] = v
     tbnm_state_dict["final_s_norm"] = [{
@@ -1641,7 +1639,6 @@ def convert_hf_confidence_torch(config: BaseConfig,
             "bias":
             state_dict.get(f"{head_prefix}to_pae_logits.bias", None)
         }]
-    # tbnm_state_dict["heads"] = head_weights
     for k, v in head_weights.items():
         tbnm_state_dict[f"confidence_heads.{k}"] = v
     return tbnm_state_dict

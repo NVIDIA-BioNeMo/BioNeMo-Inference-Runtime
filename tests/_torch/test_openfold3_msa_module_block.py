@@ -22,8 +22,6 @@ import torch
 from tensorrt_bionemo._torch.attention_backend.utils import \
     precompute_pair_masks
 from tensorrt_bionemo._torch.modules.openfold3.trunk import MSAModuleBlock
-# TODO: fix this after finish full openfold3 model
-# pytestmark = pytest.mark.skip(reason="openfold3")
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl

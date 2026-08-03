@@ -218,7 +218,7 @@ class MultimerFeaturePairAndMerge:
         chain_keys = chains[0].keys()
         # This code learned from colabfold
         # This is a little bit different from OF2 OSS code regarding the removal of duplicated sequences based on unpaired MSAs.
-        # See: https://github.com/aqlaboratory/openfold/blob/main/openfold/data/feature_processing_multimer.py#L72
+        # See: https://github.com/aqlaboratory/openfold/blob/main/openfold/data/feature_processing_multimer.py
         updated_chains = []
         for chain_num, chain in enumerate(chains):
             new_chain = {k: v for k, v in chain.items() if "_all_seq" not in k}

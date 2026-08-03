@@ -249,8 +249,9 @@ class AffinityModule(nn.Module):
         # prefix), so the trimul x_x dual GEMM must avoid the CuTeDSL LM
         # kernel -- it masks via a per-row prefix count and would
         # silently produce wrong outputs. ``pair_mask_left_aligned=False``
-        # routes the dispatcher to cuEquiv / CUTLASS instead, which
-        # consume the full ``mask`` tensor and handle arbitrary masks.
+        # routes the dispatcher to the cuEquiv or vanilla path instead,
+        # which consume the full ``mask`` tensor and handle arbitrary
+        # masks.
         self.pairformer_stack = PairformerNoSeqModule(
             num_blocks=config.pairformer_num_blocks,
             token_z=config.token_z,
@@ -273,7 +274,7 @@ class AffinityModule(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(

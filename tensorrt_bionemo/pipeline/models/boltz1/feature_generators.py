@@ -77,8 +77,9 @@ class Boltz1ResidueConstraintFeatureGenerator(FeatureGeneratorBase):
         batch: dict[str, torch.Tensor],
         context: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
-        # OSS boltz1 inference runs with compute_constraint_features=True
-        # (data/module/inference.py:205), so ligand RDKit constraints
+        # Upstream boltz1 inference runs with compute_constraint_features=True
+        # (``BoltzInferenceDataset.__getitem__`` in
+        # ``boltz/data/module/inference.py``), so ligand RDKit constraints
         # (rdkit_bounds / chiral / stereo / planar) must be populated and fed
         # to the diffusion steering potentials. The constraints dict is built
         # by the inherited Boltz2 context generator and lives in the row.

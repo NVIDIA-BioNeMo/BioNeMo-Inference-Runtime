@@ -121,12 +121,12 @@ class PostProcessor(PostProcessorBase):
         residue_indices = _cpu(
             batch["residue_index"]).squeeze(0).numpy()[:n_tokens].astype(
             np.int64)
-        # OF3 asym_id is 1-indexed per OSS contract (see feature_context.py
-        # _renumber_chain_ids → chains numbered 1..N alphabetically). The
-        # FoldingOutput / CIF-writer chain_indices contract expects 0-indexed
-        # chain IDs (chain_tags[0] == 'A'). Subtract 1 to convert so chain A
-        # writes as 'A' rather than 'B' in the produced CIF.
-        # (Surfaced by Plan 07 e2e — OST_CMD chain_mapping was offset by 1.)
+        # OF3 asym_id is 1-indexed per the upstream contract (see
+        # ``_renumber_chain_ids`` in feature_context.py → chains numbered
+        # 1..N alphabetically). The FoldingOutput / CIF-writer chain_indices
+        # contract expects 0-indexed chain IDs (chain_tags[0] == 'A').
+        # Subtract 1 to convert so chain A writes as 'A' rather than 'B' in
+        # the produced CIF.
         chain_indices = _cpu(
             batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
         chain_indices = chain_indices - 1

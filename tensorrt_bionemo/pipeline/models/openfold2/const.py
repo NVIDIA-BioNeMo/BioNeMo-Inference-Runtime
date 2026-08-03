@@ -454,6 +454,12 @@ def load_stereo_chemical_props() -> Tuple[
     bond angles into the length of the opposite edge of the triangle
     ("residue_virtual_bonds").
 
+    Requires an external dependency that is NOT shipped with this package:
+    the data file is read from the installed ``openfold`` package as
+    ``openfold/resources/stereo_chemical_props.txt``. Install OpenFold
+    (https://github.com/aqlaboratory/openfold) and make sure that resource
+    is present, otherwise this call raises at import/read time.
+
     Returns:
       residue_bonds:  Dict that maps resname -> list of Bond tuples
       residue_virtual_bonds: Dict that maps resname -> list of Bond tuples

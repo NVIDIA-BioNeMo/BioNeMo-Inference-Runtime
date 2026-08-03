@@ -18,8 +18,7 @@ from unittest.mock import MagicMock
 import tests
 from tests.common.test_utils.basic import path_for_package_in_repo
 
-# List dependencies you want to skip
-MOCK_MODULES = ['gemmi']  # Add all missing dependencies here
+MOCK_MODULES = ['gemmi']
 
 # Inject mock modules BEFORE importing
 for mod_name in MOCK_MODULES:

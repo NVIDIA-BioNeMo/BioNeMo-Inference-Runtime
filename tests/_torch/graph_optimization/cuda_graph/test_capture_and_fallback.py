@@ -14,9 +14,9 @@
 # limitations under the License.
 """Capture/replay + fallback behavior of CUDAGraphOptimizationTracker.
 
-Covers requirement (4): revert to eager on (3.1/4.1.1) memory-gate refusal,
-(4.1.2) capture failure, and (4.1.3) replay failure — plus the grad/training
-guard — and asserts the captured path matches eager.
+Covers reverting to eager on memory-gate refusal, capture failure, and
+replay failure — plus the grad/training guard — and asserts the captured
+path matches eager.
 """
 import pytest
 import torch

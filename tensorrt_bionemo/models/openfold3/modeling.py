@@ -136,9 +136,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         W = self.n_query
         H = self.n_key
         device = batch["atom_mask"].device
-        # keys_indexing_matrix is retained for backward compatibility with
-        # code paths that may consult it; the actual query-to-keys op uses
-        # the bit-exact gather path below.
+        # ``keys_indexing_matrix`` drives the matmul-based query-to-keys
+        # path in ``sequence_local_atom``; it is stored here for callers
+        # that use it, while the op below takes the bit-exact gather path.
         self.keys_indexing_matrix = create_indexing_matrix(K, W, H, device)
         gather_indices, _ = create_gather_indices(K, W, H, device)
 
@@ -180,9 +180,6 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         config.msa_stack_module_config.set_dtype("bfloat16")
         config.template_embedder_config.template_pair_stack.set_dtype(
             "bfloat16")
-
-        # config.diffusion_module_config.set_dtype("bfloat16")
-        # config.diffusion_module_config.diffusion_transformer_config.token_transformer.set_dtype("bfloat16")
 
         config.auxiliary_heads_config.pairformer.set_triangle_attention_backend(
             tri_backend)
@@ -300,7 +297,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         no_rollout_samples: Optional[int] = None,
     ) -> dict:
         """
-        Mini diffusion rollout described in section 4.1.
+        Mini diffusion rollout.
         Implements Algorithm 1 lines 15-18.
 
         Args:
@@ -317,12 +314,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             Output dictionary containing the predicted trunk embeddings,
             all-atom positions, and confidence/distogram head logits
         """
-        # Check this again for accuracy
         # Compute atom positions
-        # with (
-        #         torch.no_grad(),
-        #         torch.amp.autocast(device_type="cuda", dtype=torch.float32),
-        # ):
         no_rollout_steps_eff = (no_rollout_steps if no_rollout_steps
                                 is not None else self.no_rollout_steps)
         no_rollout_samples_eff = (no_rollout_samples if no_rollout_samples

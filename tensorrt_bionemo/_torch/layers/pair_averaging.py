@@ -173,8 +173,9 @@ class PairWeightedAveraging(nn.Module):
                         dim=-1)
         # v, g are [B, S, N, H*D] views of vg (last dim H*D contiguous, N strided). The kernel reads
         # per-head D-blocks straight from this layout (head h = the h-th D-block), so we pass them
-        # AS-IS -- no permute, no .contiguous(): that avoids two full [B,S,N,H*D]-sized copies, which
-        # were the dominant memory/latency cost of the fused path.
+        # AS-IS -- no permute, no .contiguous(): that avoids two full
+        # [B,S,N,H*D]-sized copies, which would dominate the memory and
+        # latency cost of this path.
 
         b = self.proj_z(z)
         b = b.permute(0, 3, 1, 2)  # [B, H, N, N]

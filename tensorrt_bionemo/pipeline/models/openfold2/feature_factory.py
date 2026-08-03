@@ -65,10 +65,9 @@ _MULTIMER_FEATURE_KEYS = [
     "aatype",
     "all_atom_mask",
     "all_atom_positions",
-    # "all_chains_entity_ids",  # TODO: Resolve missing features, remove processed msa feats
-    # "all_crops_all_chains_mask",
-    # "all_crops_all_chains_positions",
-    # "all_crops_all_chains_residue_ids",
+    # TODO: the multimer cropping features (all_chains_entity_ids and the
+    # all_crops_all_chains_* group) are not produced by this pipeline yet.
+    # Once they are, list them here and drop the pre-processed MSA features.
     "assembly_num_chains",
     "asym_id",
     "atom14_atom_exists",
@@ -84,14 +83,12 @@ _MULTIMER_FEATURE_KEYS = [
     "extra_deletion_matrix",
     "extra_msa",
     "extra_msa_mask",
-    # "mem_peak",
     "msa",
     "msa_feat",
     "msa_mask",
     "msa_profile",
     "num_alignments",
     "num_templates",
-    # "queue_size",
     "residue_index",
     "residx_atom14_to_atom37",
     "residx_atom37_to_atom14",
@@ -208,16 +205,6 @@ def create_ensemble_feature_collator() -> list[FeatureCollatorSpec]:
 
 
 class FeatureFactory(FeatureFactoryBase):
-    # isort: off
-    # How to debug the feature factory:
-    # 1. OpenFold2 using some random in the feature generators.
-    # 2. Set the fixed random seed in the feature factory at functor:
-    #     - SampleMsa
-    #     - MakeMaskedMsa
-    #     - common.shaped_categorical
-    #     - CropExtraMsa
-    #     - transforms.RandomlyReplaceMsaWithUnknown
-    # isort: on
     pre_init: Callable = pre_init
     feature_generator_specs: list[FeatureGeneratorSpec] = [
         FeatureGeneratorSpec(name="use_clamped_fape",

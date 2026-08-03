@@ -82,9 +82,8 @@ def _build_attn_metadata(atom_mask_2d: torch.Tensor, n_query: int, n_key: int,
 
 
 def _make_inputs(sc: Scenario, device: torch.device):
-    """Synthetic data following the legacy harness: ~``n_atoms/n_tokens``
-    atoms per token via ``repeat_interleave``, optional sample dim, optional
-    all-ones mask."""
+    """Synthetic data: ~``n_atoms/n_tokens`` atoms per token via
+    ``repeat_interleave``, optional sample dim, optional all-ones mask."""
     torch.manual_seed(0)
 
     atoms_per_tok = max(1, sc.n_atoms // sc.n_tokens)

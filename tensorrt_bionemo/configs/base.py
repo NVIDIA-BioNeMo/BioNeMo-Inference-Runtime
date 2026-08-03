@@ -39,9 +39,12 @@ class BackendType:
 
 class BaseConfig(BaseModel):
     """
-    Base configuration for all modules and use for both Torch and TensorRT backends, contains recursively settable fields for all sub-modules.
+    Base configuration for all modules, containing recursively settable
+    fields for all sub-modules.
     It can propagate some common configurations to all sub-modules, such as dtype, etc.
-    TODO: Support for reference fields
+
+    Note: fields are propagated by value. Reference fields (one sub-module
+    config pointing at another's field) are not supported.
     """
     dtype: str = "float32"
     norm_epsilon: float = 1e-5
@@ -165,7 +168,7 @@ class BaseConfig(BaseModel):
         self._recursive_set(setter)
 
     def to_dict(self):
-        # Keep this method compatible with the legacy build() API.
+        # Return the config as a plain, JSON-serialisable dict.
         output = self.model_dump()
         return output
 

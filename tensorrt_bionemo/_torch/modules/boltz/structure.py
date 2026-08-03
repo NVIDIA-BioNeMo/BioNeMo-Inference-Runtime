@@ -170,7 +170,7 @@ class DiffusionConditioning(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(
@@ -318,7 +318,7 @@ class DiffusionModule(nn.Module):
 
         self.a_norm = nn.LayerNorm(
             2 * config.token_s, dtype=self.dtype,
-            eps=eps)  # if not transformer_post_ln else nn.Identity()
+            eps=eps)
 
         self.atom_attention_decoder = AtomAttentionDecoder(
             token_s=config.token_s,
@@ -344,10 +344,11 @@ class DiffusionModule(nn.Module):
     ):
         """
         Note:
-        This is different from the original implementation in the r_noisy tensor:
-        - Original: (B*multiplicity, N_atoms, 3)
-        - This: (B, multiplicity, N_atoms, 3)
-        The implementation give more clarity on the batch dimension and the multiplicity dimension.
+        The ``r_noisy`` layout differs from the upstream Boltz implementation:
+        - Upstream Boltz: (B*multiplicity, N_atoms, 3)
+        - Here: (B, multiplicity, N_atoms, 3)
+        Keeping the two dimensions separate makes the batch and
+        multiplicity axes explicit.
         This allows for better broadcasting when the atom coordinates are broadcasted to the atom attention decoder.
 
         Args:
@@ -811,7 +812,7 @@ class AtomDiffusion(SampleDiffusion):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(
@@ -907,7 +908,6 @@ class AtomDiffusion(SampleDiffusion):
         # Sanity check
         atom_mask = feature_dict["atom_pad_mask"]
         B, _ = atom_mask.shape
-        # assert B == 1, "Boltz atom diffusion only supports batch size 1"
 
         num_sampling_steps = num_sampling_steps if num_sampling_steps is not None else self.num_sampling_steps
 

@@ -165,8 +165,9 @@ def process_atom_features(
         # OSS boltz1 process_atom_features reads ref_element / ref_charge /
         # ref_pos (conformer) straight from structure.atoms — these were
         # populated from the CCD ref_mol during parsing (the same ccd.pkl mols
-        # boltz1 inference uses). We do NOT re-load a mol_dir molecule: mol_dir
-        # mols carry a different conformer set, which made ref_pos diverge.
+        # boltz1 inference uses). Do NOT re-load a mol_dir molecule here:
+        # mol_dir mols carry a different conformer set, so ref_pos would
+        # diverge from the reference implementation.
         for a in token_atoms:
             atom_name_list.append(_convert_atom_name(a.name))
             atom_element_list.append(a.element)
@@ -251,14 +252,16 @@ def process_atom_features(
     token_to_rep_atom_t = torch.tensor(token_to_rep_atom, dtype=torch.long)
 
     ref_pos = torch.from_numpy(atom_conformer_arr).float()
-    # Boltz1: ref_atom_name_chars uses % num_bins (line 827 in OSS featurizer.py)
+    # Boltz1: ref_atom_name_chars uses % num_bins (upstream
+    # ``process_atom_features`` in ``boltz/data/feature/featurizer.py``)
     ref_atom_name_chars = torch.from_numpy(atom_name_arr).long()
     ref_element = torch.from_numpy(atom_element_arr).long()
     ref_charge = torch.from_numpy(atom_charge_arr)  # int8
     ref_space_uid_t = torch.from_numpy(ref_space_uid_arr).long()
     coords = torch.from_numpy(coord_data).float()
 
-    # OSS Boltz1 featurizer.py line 840-842: whole-tensor augmentation (not per-ref-space)
+    # Upstream Boltz1 ``process_atom_features``: whole-tensor augmentation
+    # (not per-ref-space)
     resolved_mask_f = resolved_mask.float()
     ref_pos = _center_random_augmentation(
         ref_pos[None],

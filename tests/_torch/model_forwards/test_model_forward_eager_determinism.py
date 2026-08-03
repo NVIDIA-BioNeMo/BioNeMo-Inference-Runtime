@@ -14,20 +14,20 @@
 # limitations under the License.
 """Run-to-run determinism baseline for the diffusion (token) transformer path.
 
-Companion to ``model_forwards/test_model_forward_with_cudagraph.py``. Where that
-test asks "does the CUDA-graph replay match eager?", this one asks the
-prerequisite question: "is
-the *eager* model itself reproducible run-to-run?" — because the CUDA-graph
-parity premise (graph trajectory == eager trajectory over a 200-step diffusion
-rollout) only holds when the underlying kernels are deterministic..
+Companion to ``model_forwards/test_model_forward_with_cuda_graph.py``.
+Where that test asks "does the CUDA-graph replay match eager?", this one
+asks the prerequisite question: "is the *eager* model itself reproducible
+run-to-run?" — because the CUDA-graph parity premise (graph trajectory ==
+eager trajectory over a 200-step diffusion rollout) only holds when the
+underlying kernels are deterministic.
 
 Each model is run through the public ``build_processor`` API on the in-process
 **serial** backend **twice**, eager (no acceleration), with the *same* seed and
-inputs, over the same three bundled CASP14 monomers. The two runs' predicted
+inputs, over the same two bundled CASP14 monomers. The two runs' predicted
 structures are then compared per target (CA lDDT + max coordinate deviation).
 
-Both models are on the deterministic side of this baseline after mr204, and the
-test pins that for each:
+Both models are on the deterministic side of this baseline, and the test
+pins that for each:
 
   * **Boltz-2** — fully deterministic: the two eager runs are **bit-identical**
     (max\\|Δcoord\\| == 0, CA lDDT == 1.0) for every target. This is why its
@@ -73,7 +73,7 @@ SEED = 42
 REPO_ROOT = path_for_package_in_repo(tests).parent
 SAMPLES_DIR = REPO_ROOT / "examples" / "data" / "samples"
 MONOMERS_DIR = SAMPLES_DIR / "monomers"
-# Three smallest CASP14 monomers (≈95 / 100 residues).
+# Two smallest CASP14 monomers (≈95 / 100 residues).
 SAMPLE_IDS = ("T1031", "T1033")
 
 # Diffusion runtime args. A long rollout is what would surface any residual
@@ -323,8 +323,8 @@ def test_eager_run_to_run_determinism(model_source):
         # preserved), so a per-target ``lddt < 1.0`` check is not robust for the
         # non-deterministic model — only the aggregate (worst target) is.
         if expect_deterministic:
-            # After mr204 both models are deterministic: every target's two
-            # eager runs must be bit-identical.
+            # Both models are deterministic: every target's two eager runs
+            # must be bit-identical.
             for sid in SAMPLE_IDS:
                 lddt, max_dev = results[sid]
                 assert max_dev == 0.0 and lddt == 1.0, (
@@ -333,8 +333,12 @@ def test_eager_run_to_run_determinism(model_source):
                     f"max|Δcoord| {max_dev:.4f} Å — the eager forward lost "
                     "determinism")
         else:
-            # OpenFold3: per-step non-determinism amplifies over the rollout, so
-            # every target's two eager runs must differ (not bit-identical)...
+            # Branch for a model marked non-deterministic in
+            # EXPECT_DETERMINISTIC. No model is today, so it is currently
+            # unexercised; it is kept as the counterpart expectation. For
+            # such a model per-step non-determinism amplifies over the
+            # rollout, so every target's two eager runs must differ (not
+            # bit-identical)...
             for sid in SAMPLE_IDS:
                 lddt, max_dev = results[sid]
                 assert max_dev > 0.0, (

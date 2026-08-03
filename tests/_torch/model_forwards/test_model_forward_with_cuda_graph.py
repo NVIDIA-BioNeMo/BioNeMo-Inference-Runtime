@@ -18,9 +18,10 @@ Verifies that wrapping the diffusion (token) transformer in the CUDA-graph
 optimizer produces the *same* predicted structures as the unoptimized
 ("original") model — for both **OpenFold3** and **boltz-2**.
 
-Both runs go through the public ``build_processor`` API on the in-process
-**serial** backend, over three bundled sample targets from
-``examples/data/samples`` (the three smallest CASP14 monomers). The only
+Both runs go through the public ``build_processor`` API (the same entry point
+an application driving the pipeline uses) on the in-process
+**serial** backend, over two bundled sample targets from
+``examples/data/samples`` (the CASP14 monomers T1038 and T1047s1). The only
 difference between the two runs is the ``accelerated_configs`` passed to the
 engine:
 
@@ -88,17 +89,16 @@ REPO_ROOT = path_for_package_in_repo(tests).parent
 SAMPLES_DIR = REPO_ROOT / "examples" / "data" / "samples"
 # Bundled experimental ground-truth structures (``{sample_id}.pdb``).
 GT_DIR = SAMPLES_DIR / "gt"
-# Four smallest CASP14 monomers (≈95 / 100 / 199 / 232 residues)
+# Bundled CASP14 monomers and the capture bucket each falls into:
 #       id      num_tokens   num_token_bucket
 #       T1031   95              (1, 128)
 #       T1033   100             (1, 128)
 #       T1038   199             (129, 256)
 #       T1047s1 232             (129, 256)
-#SAMPLE_ID_TUPLE_B = ("T1047s1", )
-#SAMPLE_ID_TUPLE_C = ("T1038", )
+# The two tuples below use T1038 and T1047s1, one sample per batch, in
+# either order (the order is what varies between them).
 SAMPLE_ID_TUPLE_D = (("T1038",), ("T1047s1",)) # tuple of batches each of size 1
 SAMPLE_ID_TUPLE_E = (("T1047s1",), ("T1038",))
-#BATCHED_SAMPLE_ID_TUPLE_D = (("T1038", "T1047s1"),) # tuple with single batch of size 1
 
 # Every distinct sample id referenced by any tuple above; used only for the
 # module-level data-availability check below. Each test receives its own
@@ -178,8 +178,8 @@ def _default_of3_model_config(model_source: str):
       only when ``shared_pair_norm=True`` (the pretrained-config default).
     * **per-block** layout: a LayerNorm per block
       (``blocks.N.attention_pair_bias.layer_norm_z``), e.g.
-      ``v19_78k_ft3_converted.pt`` or ``of3_ft3_v1.pt``. The converter looks
-      for these only when ``shared_pair_norm=False``.
+      ``of3_ft3_v1.pt``. The converter looks for these only when
+      ``shared_pair_norm=False``.
 
     Matching the wrong layout makes the weight converter look for keys the
     checkpoint does not contain (``KeyError`` at load). Rather than guess the

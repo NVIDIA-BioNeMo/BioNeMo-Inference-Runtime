@@ -126,7 +126,6 @@ def test_pairformer_layer(sc: Scenario):
         z = z.to(dtype)
         mask = mask.to(dtype)
         pair_mask = pair_mask.to(dtype)
-        # ref_layer = ref_layer.to(dtype)
         # cast all modules to dtype, except norm_out in tri_mul
         for name, module in ref_layer.named_modules():
             if name.startswith("tri_attn_start.") or \
@@ -184,8 +183,8 @@ def test_pairformer_layer(sc: Scenario):
     else:
         # Asymmetric tolerance: ``ours`` must be no more than ``tol_mult``×
         # worse than the bf16 reference's distance to the fp32 ground
-        # truth.  The previous ``|d0-d1| / min(d0, d1) <= 0.5`` ratio
-        # check was symmetric and would *fail* when ``ours`` is
+        # truth.  A symmetric ratio check such as
+        # ``|d0-d1| / min(d0, d1) <= 0.5`` would *fail* when ``ours`` is
         # significantly *more* accurate than the reference (which happens
         # when the CuTeDSL left-mask kernel preserves higher-precision
         # accumulation than the eager bf16 reference's chain of bf16 ops).

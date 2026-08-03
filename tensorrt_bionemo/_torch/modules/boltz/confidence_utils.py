@@ -49,7 +49,6 @@ def compute_distogram(x_pred: torch.Tensor,
         B = BM // multiplicity
         mult = multiplicity
         x_pred = x_pred.view(B, mult, N, -1)
-    # x_pred_repr = torch.bmm(token_to_rep_atom.float(), x_pred)
     x_pred_repr = torch.einsum("bij,bmjk->bmik", token_to_rep_atom.float(),
                                x_pred)
     d = torch.cdist(x_pred_repr, x_pred_repr)  # [B, mult, N_tokens, N_tokens]

@@ -808,9 +808,6 @@ class Boltz1ConfidenceHeads(nn.Module):
             token_interface_pair_mask.sum(dim=(-2, -1)) + 1e-5)
 
         out_dict = dict(
-            # pde_logits=pde_logits,
-            # plddt_logits=plddt_logits,
-            # resolved_logits=resolved_logits,
             pde=pde,
             plddt=plddt,
             complex_plddt=complex_plddt,
@@ -846,7 +843,6 @@ class Boltz1ConfidenceModule(nn.Module):
                             num_pocket_contact_info)
         boundaries = torch.linspace(2, self.max_dist, self.num_dist_bins - 1)
 
-        # TODO: Replace nn.Embedding with tensorrt_llm.Embedding
         self.dist_bin_pairwise_embed = nn.Embedding(self.num_dist_bins,
                                                     self.token_z)
 
@@ -965,7 +961,7 @@ class Boltz1ConfidenceModule(nn.Module):
 
     def load_weights(self, weights: dict) -> None:
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(
@@ -1020,7 +1016,7 @@ class Boltz1ConfidenceModule(nn.Module):
         attn_metadata: Optional[AttentionMetadata] = None
     ) -> dict[str, torch.Tensor]:
         """
-        Forward pass for the confidence module with imitate_trunk=True.
+        Forward pass for the confidence module.
         Args:
             s: torch.Tensor
                 s from the trunk module. Shape, [B, N_tokens, token_s].

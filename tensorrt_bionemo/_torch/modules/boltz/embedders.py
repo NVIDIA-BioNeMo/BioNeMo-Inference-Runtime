@@ -420,7 +420,8 @@ class Boltz1InputEmbedder(nn.Module):
             skip_create_weights=config.skip_create_weights,
         )
 
-        # This trick is used to avoid call attention with bias caching.
+        # A per-block pair projection is kept here so the attention layers
+        # do not need to cache a shared projected bias.
         self.atom_enc_proj_z = nn.ModuleList()
         diffusion_transformer_config = config.diffusion_transformer
         for _ in range(diffusion_transformer_config.num_blocks):
@@ -450,7 +451,7 @@ class Boltz1InputEmbedder(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(
@@ -620,7 +621,7 @@ class Boltz2InputEmbedder(nn.Module):
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
-        # verify whether all the weights are loaded
+        # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
             raise ValueError(

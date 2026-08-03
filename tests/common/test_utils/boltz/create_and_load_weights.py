@@ -1011,7 +1011,6 @@ def create_adaln_weights(dim=None,
 
 def load_adaln_weights_ref_torch(module, weights_and_biases):
     a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight = weights_and_biases
-    # a_norm_weight.to("cuda")
     s_norm_weight.to("cuda")
     s_scale_weight.to("cuda")
     s_scale_bias.to("cuda")
@@ -1026,7 +1025,6 @@ def load_adaln_weights_ref_torch(module, weights_and_biases):
 def load_adaln_weights_torch(module, weights_and_biases, dtype=torch.float32):
     a_norm_weight, s_norm_weight, s_scale_weight, s_scale_bias, s_bias_weight = weights_and_biases
 
-    # module.a_norm.weight.data.copy_(a_norm_weight)
     module.s_norm.weight.data.copy_(s_norm_weight)
 
     module.fused_s_scale_s_bias.load_weights([

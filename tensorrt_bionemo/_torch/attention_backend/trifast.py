@@ -132,7 +132,6 @@ class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
                                                         DIM=self.head_dim,
                                                         CLOSEST_N=CLOSEST_N)
 
-        # l = rearrange(l, "(b h) ... -> b h ...", h=h, b=bs).contiguous()
         o = rearrange(o, "(b h) i j d -> b i j h d", h=self.num_heads,
                       b=bs).contiguous()
         return o

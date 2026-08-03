@@ -167,14 +167,14 @@ class CuteKernelCache(KernelCacheBase):
 
         The object file is exported to a unique temp file in the cache dir and
         then atomically renamed into place (``os.replace``). Exporting straight
-        to the canonical ``{sha}.o`` is not crash-safe: phase-1 xdist workers
-        are sized to teeter on VRAM OOM (see ``run_tests.sh``), so a worker
-        killed mid-``export_to_c`` would leave a *truncated* ``.o`` at the path
-        every other worker probes. A later worker — or the serial phase 2 —
-        then loads that partial object and executes it, dying with SIGILL
-        ("Fatal Python error: Illegal instruction"). The atomic rename means the
-        canonical path only ever names a fully-exported object; a killed writer
-        leaves at most a stray temp file, never a poisoned cache entry.
+        to the canonical ``{sha}.o`` is not crash-safe: under memory pressure
+        a writer can be killed mid-``export_to_c``, leaving a *truncated*
+        ``.o`` at the path every other process probes. A later reader then
+        loads that partial object and executes it, dying with SIGILL ("Fatal
+        Python error: Illegal instruction"). The atomic rename means the
+        canonical path only ever names a fully-exported object; a killed
+        writer leaves at most a stray temp file, never a poisoned cache
+        entry.
 
         Args:
             key: Hashable tuple identifying the kernel variant.

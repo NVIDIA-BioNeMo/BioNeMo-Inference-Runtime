@@ -32,7 +32,8 @@ def _run_kalign_cached(sequences: tuple[str, ...]) -> tuple[str, ...]:
 def run_kalign(sequences: list[str]) -> list[str]:
     """Align sequences with kalign, returning aligned (gapped) strings.
 
-    First sequence is the query; the rest are templates. Mirrors OSS
-    ``run_kalign`` (``tools/kalign.py``) including the ``lru_cache``.
+    First sequence is the query; the rest are templates. Mirrors the
+    upstream OpenFold3 ``run_kalign``
+    (``openfold3/core/data/tools/kalign.py``) including the ``lru_cache``.
     """
     return list(_run_kalign_cached(tuple(sequences)))

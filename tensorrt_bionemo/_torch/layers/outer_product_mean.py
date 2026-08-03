@@ -94,8 +94,9 @@ class OuterProductMean(nn.Module):
         """Pair-occupancy normalizer ``num_mask[b, i, j] = sum_s mask[b, s, i] * mask[b, s, j]``.
 
         This is exactly ``mask.T @ mask`` over the sequence dim, so ``torch.bmm`` contracts ``S``
-        inside the GEMM and never materializes the ``[B, S, N, N]`` outer product (which is why the
-        old path chunked ``S``). ``mask`` is ``[B, S, N, 1]``; returns ``[B, N, N, 1]``.
+        inside the GEMM and never materializes the ``[B, S, N, N]`` outer
+        product, so no chunking over ``S`` is needed. ``mask`` is
+        ``[B, S, N, 1]``; returns ``[B, N, N, 1]``.
         """
         m = mask.squeeze(-1)  # [B, S, N]
         # The fused kernel requires fp32 normalization. The eager path preserves
@@ -166,8 +167,8 @@ class OuterProductMean(nn.Module):
             opm_op = get_outer_product_mean_op(a.dtype)
             use_fused_opm = isinstance(opm_op, OuterProductMeanCuTe)
 
-        # The fused CuTe OPM kernel expects fp32 num_mask. Eager fallback keeps
-        # the mask dtype to preserve the old PyTorch path's dtype behavior.
+        # The fused CuTe OPM kernel expects an fp32 num_mask; the eager
+        # PyTorch fallback computes it in the mask's own dtype.
         num_mask = self._compute_num_mask(
             mask, dtype=torch.float32 if use_fused_opm else mask.dtype)
 

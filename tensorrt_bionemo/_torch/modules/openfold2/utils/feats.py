@@ -40,8 +40,12 @@ def atom14_to_atom37(atom14, batch):
 
 def pseudo_beta_fn(
     aatype: torch.Tensor, all_atom_positions: torch.Tensor, all_atom_mask: torch.Tensor | None = None
-) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Create pseudo beta features."""
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Create pseudo beta features.
+
+    Returns the pseudo-beta positions alone, or ``(positions, mask)`` when
+    ``all_atom_mask`` is given.
+    """
     is_gly = torch.eq(aatype, rc.restype_order["G"])
     ca_idx = rc.atom_order["CA"]
     cb_idx = rc.atom_order["CB"]

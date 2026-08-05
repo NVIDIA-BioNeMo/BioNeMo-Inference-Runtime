@@ -35,7 +35,7 @@ class OuterProductMean(nn.Module):
         norm_mask_by_eps: bool = False,
         norm_before_output: bool = True,
         cast_to_float_before_einsum: bool = False,
-        bias_flags: dict[str, bool] = {"proj_a": False, "proj_b": False, "proj_o": True},
+        bias_flags: dict[str, bool] | None = None,
         dtype: torch.dtype | None = None,
         skip_create_weights: bool = False,
         chunk_policy: ChunkPolicy | None = None,
@@ -50,6 +50,8 @@ class OuterProductMean(nn.Module):
             norm_mask_by_eps: Add mask by mask_eps to avoid zero division (this for OpenFold family models).
         """
         super().__init__()
+        if bias_flags is None:
+            bias_flags = {"proj_a": False, "proj_b": False, "proj_o": True}
         self.c_in = c_in
         self.c_hidden = c_hidden
         self.c_out = c_out

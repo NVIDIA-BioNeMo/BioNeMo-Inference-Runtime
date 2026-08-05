@@ -42,19 +42,21 @@ class TriangleAttention(nn.Module):
         num_attention_heads: int,
         num_key_value_heads: int | None = None,
         layer_idx: int,
-        bias_flags: dict[str, bool] = {
-            "q": False,
-            "k": False,
-            "v": False,
-            "g": False,
-            "o": False,
-        },
+        bias_flags: dict[str, bool] | None = None,
         gating: bool = True,
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
     ):
         super().__init__()
+        if bias_flags is None:
+            bias_flags = {
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": False,
+                "o": False,
+            }
         self.layer_idx = layer_idx
         self.hidden_size = hidden_size
         self.num_heads = num_attention_heads
@@ -180,20 +182,22 @@ class CrossTriangleAttention(nn.Module):
         num_attention_heads: int,
         num_key_value_heads: int | None = None,
         layer_idx: int,
-        bias_flags: dict[str, bool] = {
-            "q": False,
-            "k": False,
-            "v": False,
-            "g": False,
-            "z": False,
-            "o": False,
-        },
+        bias_flags: dict[str, bool] | None = None,
         gating: bool = True,
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
     ):
         super().__init__()
+        if bias_flags is None:
+            bias_flags = {
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": False,
+                "z": False,
+                "o": False,
+            }
         self.layer_idx = layer_idx
         self.q_hidden_size = q_hidden_size
         self.kv_hidden_size = kv_hidden_size
@@ -695,7 +699,7 @@ class MSAAttention(nn.Module):
         support_batch: bool = True,
         need_project_z: bool = True,
         transpose_input: bool = False,
-        bias_flags: dict[str, bool] = {"z": False},
+        bias_flags: dict[str, bool] | None = None,
         eps: float = 1e-5,
         inf: float = 1e9,
         dtype: torch.dtype = None,
@@ -703,6 +707,8 @@ class MSAAttention(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        if bias_flags is None:
+            bias_flags = {"z": False}
         assert support_batch, "support_batch is required for MSAAttention"
         self.local_layer_idx = local_layer_idx
         self.num_heads = num_heads
@@ -802,13 +808,7 @@ class GlobalAttention(nn.Module):
         c_in: int,
         c_hidden: int,
         no_heads: int,
-        bias_flags: dict[str, bool] = {
-            "q": False,
-            "k": False,
-            "v": False,
-            "g": True,
-            "o": True,
-        },
+        bias_flags: dict[str, bool] | None = None,
         eps: float = 1e-5,
         inf: float = 1e9,
         dtype: torch.dtype = None,
@@ -816,6 +816,14 @@ class GlobalAttention(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        if bias_flags is None:
+            bias_flags = {
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": True,
+                "o": True,
+            }
         self.c_in = c_in
         self.c_hidden = c_hidden
         self.no_heads = no_heads
@@ -910,13 +918,7 @@ class MSAColumnGlobalAttention(nn.Module):
         c_in: int,
         c_hidden: int,
         no_heads: int,
-        attn_bias_flags: dict[str, bool] = {
-            "q": False,
-            "k": False,
-            "v": False,
-            "g": True,
-            "o": True,
-        },
+        attn_bias_flags: dict[str, bool] | None = None,
         eps: float = 1e-5,
         inf: float = 1e9,
         dtype: torch.dtype = None,
@@ -924,6 +926,14 @@ class MSAColumnGlobalAttention(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        if attn_bias_flags is None:
+            attn_bias_flags = {
+                "q": False,
+                "k": False,
+                "v": False,
+                "g": True,
+                "o": True,
+            }
         self.local_layer_idx = local_layer_idx
         self.layer_norm_m = nn.LayerNorm(c_in, dtype=dtype, eps=eps)
 

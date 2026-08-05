@@ -43,12 +43,14 @@ class ModuleSpec:
 
 
 class ModuleRegistry(ABC):
-    def __init__(self, configs: dict[str, AcceleratedConfig | dict] = {}):
+    def __init__(self, configs: dict[str, AcceleratedConfig | dict] | None = None):
         """
         This class is used to store the checkpoints and module configs for the accelerated modules.
         Args:
             configs: A dictionary of AcceleratedConfig for the accelerated modules.
         """
+        if configs is None:
+            configs = {}
         all_known: dict[str, ModuleSpec] = self.get_accelerated_modules()
         self._configs = self._select_module_configs(all_known, configs)
 
@@ -194,7 +196,7 @@ class DiscoveredModuleRegistry(ModuleRegistry):
     def __init__(
         self,
         model: nn.Module,
-        configs: dict[str, "AcceleratedConfig | dict"] = {},
+        configs: dict[str, "AcceleratedConfig | dict"] | None = None,
         role_aliases: dict[str, str] | None = None,
         graph_optimization_cls: type | None = None,
     ):

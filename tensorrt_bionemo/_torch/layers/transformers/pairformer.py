@@ -473,7 +473,7 @@ class PairformerModule(nn.Module):
         z: torch.Tensor,
         mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadatas: dict[str, AttentionMetadata] | None = {},
+        attn_metadatas: dict[str, AttentionMetadata] | None = None,
         buffers: PreallocatedBuffers | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:

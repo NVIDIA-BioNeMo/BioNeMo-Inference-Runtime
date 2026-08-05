@@ -54,7 +54,7 @@ class TriangleAttentionNode(nn.Module):
         chunk_policy: ChunkPolicy | None = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
-        mha_bias_flags: dict[str, bool] = {"q": False, "k": False, "v": False, "g": False, "o": False},
+        mha_bias_flags: dict[str, bool] | None = None,
     ):
         """
         Args:
@@ -70,6 +70,8 @@ class TriangleAttentionNode(nn.Module):
             attn_backend (str): attention backend
         """
         super().__init__()
+        if mha_bias_flags is None:
+            mha_bias_flags = {"q": False, "k": False, "v": False, "g": False, "o": False}
         self.c_in = c_in
         self.c_hidden = c_hidden
         self.num_heads = num_heads
@@ -240,7 +242,7 @@ class TriangleMultiplicationNode(nn.Module):
         hidden_dim: int | None = None,
         eps: float = 1e-5,
         multiplication_type: TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.OUTGOING,
-        bias_flags: dict[str, bool] = {"p_in": False, "g_in": False, "p_out": False, "g_out": False},
+        bias_flags: dict[str, bool] | None = None,
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         high_precision: bool = True,
@@ -266,6 +268,8 @@ class TriangleMultiplicationNode(nn.Module):
         super().__init__()
         if hidden_dim is None:
             hidden_dim = dim
+        if bias_flags is None:
+            bias_flags = {"p_in": False, "g_in": False, "p_out": False, "g_out": False}
         self.dtype = dtype
         self.high_precision = high_precision
         self.mean_normalization = mean_normalization

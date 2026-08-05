@@ -324,10 +324,10 @@ def load_local_weights(
     elif name in PROTENIX_MODEL_NAMES:
         state_dict = _load_protenix_state_dict(filepath)
     else:
-        try:
-            state_dict = torch.load(filepath, weights_only=weights_only)
-        except TypeError:
-            state_dict = torch.load(filepath, weights_only=weights_only, map_location="cpu")
+        # Always land on CPU: a checkpoint saved from GPU otherwise restores
+        # onto CUDA, which fails outright on a CPU-only host and silently
+        # consumes VRAM everywhere else. The caller moves the weights.
+        state_dict = torch.load(filepath, weights_only=weights_only, map_location="cpu")
         if state_dict_key is not None:
             state_dict = state_dict[state_dict_key]
     return state_dict

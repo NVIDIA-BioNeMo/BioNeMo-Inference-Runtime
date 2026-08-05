@@ -147,7 +147,7 @@ def _modified_residue_parents(block) -> dict[str, str]:
     if residue_names is None or parent_names is None:
         return parents
 
-    for residue_name, parent_name in zip(residue_names.tolist(), parent_names.tolist()):
+    for residue_name, parent_name in zip(residue_names.tolist(), parent_names.tolist(), strict=True):
         parent_name = str(parent_name).strip().upper()
         if parent_name not in {"", ".", "?"}:
             parents[str(residue_name).strip().upper()] = parent_name.split(",", maxsplit=1)[0]
@@ -168,7 +168,7 @@ def _author_chain_by_label(block) -> dict[str, str]:
         labels = _category_column(scheme, "asym_id", str)
         authors = _category_column(scheme, "pdb_strand_id", str)
         if labels is not None and authors is not None:
-            for label, author in zip(labels.tolist(), authors.tolist()):
+            for label, author in zip(labels.tolist(), authors.tolist(), strict=True):
                 author = str(author).strip()
                 if author not in {"", ".", "?"}:
                     mapping.setdefault(str(label), author)
@@ -178,7 +178,7 @@ def _author_chain_by_label(block) -> dict[str, str]:
         labels = _category_column(atom_site, "label_asym_id", str)
         authors = _category_column(atom_site, "auth_asym_id", str)
         if labels is not None and authors is not None:
-            for label, author in zip(labels.tolist(), authors.tolist()):
+            for label, author in zip(labels.tolist(), authors.tolist(), strict=True):
                 author = str(author).strip()
                 if author not in {"", ".", "?"}:
                     mapping.setdefault(str(label), author)
@@ -206,7 +206,7 @@ def _canonical_sequence_by_label(
     entity_by_label: dict[str, str] = {}
     label_order: list[str] = []
     for index, (label, position, residue_name) in enumerate(
-        zip(labels.tolist(), positions.tolist(), residue_names.tolist())
+        zip(labels.tolist(), positions.tolist(), residue_names.tolist(), strict=True)
     ):
         label = str(label)
         if label not in names_by_label:

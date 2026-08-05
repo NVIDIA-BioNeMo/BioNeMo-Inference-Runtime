@@ -538,7 +538,7 @@ class FeatureContextGenerator(ContextGeneratorBase):
                             descriptions=["_".join(chain_ids)],
                         )
                     ]
-                    for polymer, chain_ids in zip(polymers, chain_ids_by_polymer)
+                    for polymer, chain_ids in zip(polymers, chain_ids_by_polymer, strict=True)
                 ]
             else:
                 # 2. Or, all polymers should have the same number of sequences in paired_msas

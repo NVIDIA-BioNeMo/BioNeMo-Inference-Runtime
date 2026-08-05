@@ -142,7 +142,7 @@ def template_records_from_search(
 
     records: list[TemplateMatch] = []
     thr = float("inf") if threshold is None else threshold
-    for r, c in zip(row_ind, col_ind):
+    for r, c in zip(row_ind, col_ind, strict=True):
         cid = chain_ids[r]
         tcid = template_chain_ids[c]
         for aln in local_alignments(sequences[cid], template_sequences[tcid]):
@@ -180,7 +180,7 @@ def template_records_from_matching(
     """
     records: list[TemplateMatch] = []
     thr = float("inf") if threshold is None else threshold
-    for cid, tcid in zip(chain_ids, template_chain_ids):
+    for cid, tcid in zip(chain_ids, template_chain_ids, strict=False):
         for aln in local_alignments(sequences[cid], template_sequences[tcid]):
             records.append(
                 TemplateMatch(
@@ -469,7 +469,7 @@ def tokenize_template(struct: Structure) -> list[Token]:
     coords = struct.coords
     token_idx = 0
 
-    chains = [c for c, m in zip(struct.chains, struct.mask) if m]
+    chains = [c for c, m in zip(struct.chains, struct.mask, strict=True) if m]
     for chain in chains:
         is_protein = chain.mol_type == chain_type_ids["PROTEIN"]
         res_start = chain.res_idx

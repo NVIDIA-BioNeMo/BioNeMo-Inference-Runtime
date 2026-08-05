@@ -931,7 +931,7 @@ class AtomDiffusion(SampleDiffusion):
 
         sigmas = self.sample_schedule(num_sampling_steps)
         gammas = torch.where(sigmas > self.gamma_min, self.gamma0, 0.0)
-        sigmas_and_gammas = list(zip(sigmas[:-1], sigmas[1:], gammas[1:]))
+        sigmas_and_gammas = list(zip(sigmas[:-1], sigmas[1:], gammas[1:], strict=True))
 
         # Draw the diffusion rollout's RNG from a private generator (seeded from
         # the default generator's state) so these eager torch.randn calls stay

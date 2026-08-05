@@ -1012,7 +1012,7 @@ class Boltz1ConfidenceModule(nn.Module):
         s_inputs_chunks = s_inputs.chunk(niter, dim=1)
         out_dicts = []
         for s_inputs_chunk, s_chunk, z_chunk, x_chunk, s_diffusion_chunk in zip(
-            s_inputs_chunks, s_chunks, z_chunks, x_chunks, s_diffusion_chunks
+            s_inputs_chunks, s_chunks, z_chunks, x_chunks, s_diffusion_chunks, strict=True
         ):
             n_samples = x_chunk.shape[1]
 

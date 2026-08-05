@@ -134,7 +134,7 @@ def _assert_container_identical(actual, expected, path="") -> None:
             _assert_container_identical(actual[k], expected[k], f"{path}.{k}")
     elif isinstance(expected, (list, tuple)):
         assert len(actual) == len(expected), f"length mismatch at {path!r}"
-        for i, (a, e) in enumerate(zip(actual, expected)):
+        for i, (a, e) in enumerate(zip(actual, expected, strict=True)):
             _assert_container_identical(a, e, f"{path}.{i}")
     else:
         assert actual == expected, f"leaf mismatch at {path!r}"

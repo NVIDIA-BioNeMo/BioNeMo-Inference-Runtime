@@ -153,7 +153,7 @@ def _compute_rdkit_bounds_constraints(mol, idx_map):
     bonds_set = {tuple(sorted(b)) for b in mol.GetSubstructMatches(Chem.MolFromSmarts("*~*"))}
     angles_set = {tuple(sorted([a[0], a[2]])) for a in mol.GetSubstructMatches(Chem.MolFromSmarts("*~*~*"))}
     constraints = []
-    for i, j in zip(*np.triu_indices(mol.GetNumAtoms(), k=1)):
+    for i, j in zip(*np.triu_indices(mol.GetNumAtoms(), k=1), strict=True):
         i, j = int(i), int(j)
         if i in idx_map and j in idx_map:
             constraints.append(
@@ -519,7 +519,7 @@ def _build_smiles_mol(smiles: str, name: str):
     # stereochemistry (this order matters; do not swap).
     canonical_order = Chem.CanonicalRankAtoms(mol)
     Chem.AssignStereochemistry(mol, force=True, cleanIt=True)
-    for atom, can_idx in zip(mol.GetAtoms(), canonical_order):
+    for atom, can_idx in zip(mol.GetAtoms(), canonical_order, strict=True):
         atom_name = atom.GetSymbol().upper() + str(int(can_idx) + 1)
         if len(atom_name) > 4:
             raise ValueError(f"SMILES {smiles!r} has an atom with a name longer than 4 chars: {atom_name}")

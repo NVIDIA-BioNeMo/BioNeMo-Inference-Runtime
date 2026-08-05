@@ -33,7 +33,7 @@ include = ["tensorrt_bionemo*"]
 [project]
 name = "tensorrt_bionemo"
 description = "TensorRT BioNeMo: GPU accelerated framework for protein folding"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.12,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 readme = "README.md"
 dynamic = ["dependencies", "version", "optional-dependencies"]
@@ -42,7 +42,58 @@ license = "Apache-2.0"
 ####################################################################################################
 ###############################  LINTING, FORMATTING AND TESTING CONFIGURATION  ####################
 ####################################################################################################
-[tool.autoflake]
-in-place = true
-remove_all_unused_imports = true
-remove_unused_variables = true
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+# Vendored + private trees are never linted (mirrors prek.toml's exclude).
+
+[tool.ruff.lint]
+# Enforced on changed files only, so the set stays low-noise: rules with little
+# existing debt and mostly auto-fixable, to avoid bloating small MRs.
+select = [
+  # pycodestyle errors — PEP 8 violations (indentation, syntax-y style).
+  # https://docs.astral.sh/ruff/rules/#pycodestyle-e-w
+  "E",
+  # Pyflakes — real bugs: unused imports/vars, undefined names, f-string issues.
+  # https://docs.astral.sh/ruff/rules/#pyflakes-f
+  "F",
+  # pycodestyle warnings — whitespace, blank lines, deprecated constructs.
+  # https://docs.astral.sh/ruff/rules/#pycodestyle-e-w
+  "W",
+  # isort — import ordering and grouping (auto-fixed).
+  # https://docs.astral.sh/ruff/rules/#isort-i
+  "I",
+  # pyupgrade — modernize syntax for the target Python (e.g. `list` over `List`).
+  # https://docs.astral.sh/ruff/rules/#pyupgrade-up
+  "UP",
+  # flake8-bugbear — likely bugs and footguns (mutable defaults, `raise` from).
+  # https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
+  "B",
+  # flake8-debugger — leftover `breakpoint()` / `pdb` calls.
+  # https://docs.astral.sh/ruff/rules/#flake8-debugger-t10
+  "T10",
+  # flake8-comprehensions — simpler, faster list/dict/set comprehensions.
+  # https://docs.astral.sh/ruff/rules/#flake8-comprehensions-c4
+  "C4",
+  # flake8-pie — remove redundant/dead constructs (dup dict keys, no-op code).
+  # https://docs.astral.sh/ruff/rules/#flake8-pie-pie
+  "PIE",
+  # flynt — prefer f-strings over `str.join` / `%` / `.format`.
+  # https://docs.astral.sh/ruff/rules/#flynt-fly
+  "FLY",
+  # pygrep-hooks — ban blanket `# noqa` / `# type: ignore` (enforces the
+  # "avoid # type: ignore" rule in docs/coding.md).
+  # https://docs.astral.sh/ruff/rules/#pygrep-hooks-pgh
+  "PGH",
+]
+# The formatter owns line wrapping; long strings/URLs/comments shouldn't fail lint.
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tensorrt_bionemo"]
+
+[tool.commitizen]
+# Conventional Commits. Used now only to lint commit/MR titles (`cz check`).
+# Changelog generation (`cz changelog`) and version bumps (`cz bump`) are a
+# follow-up — that's why the version config below is intentionally minimal.
+name = "cz_conventional_commits"

@@ -1,0 +1,94 @@
+# Style enforcement, run by prek (https://github.com/j178/prek) locally via git
+# hooks (`prek install`) and in CI (`validate:styles` job), only touch new and
+# changed files.
+#
+# See docs/coding.md for the rules these tools enforce.
+
+# Never touch vendored submodules or the private release bundle.
+
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.16.1"
+hooks = [
+  { id = "ruff-check", args = ["--fix"] },
+  { id = "ruff-format" },
+]
+
+[[repos]]
+# C/C++/CUDA formatting for cpp/ (handwritten kernels/bindings; see
+# .clang-format). Pinned to one version so output doesn't ping-pong across
+# machines.
+repo = "https://github.com/pre-commit/mirrors-clang-format"
+rev = "v22.1.8"
+hooks = [
+  # .h/.hpp/.cuh are already tagged c/c++/cuda by identify, so these three
+  # types cover headers too (there is no "h" tag; the header tag is "header").
+  { id = "clang-format", types_or = ["c", "c++", "cuda"] },
+]
+
+[[repos]]
+repo = "https://github.com/rvben/rumdl-pre-commit"
+rev = "v0.2.49"
+hooks = [
+  { id = "rumdl", args = ["--fix"] },
+]
+
+[[repos]]
+repo = "https://github.com/shellcheck-py/shellcheck-py"
+rev = "v0.11.0.1"
+hooks = [
+  { id = "shellcheck" },
+]
+
+[[repos]]
+repo = "https://github.com/maxwinterstein/shfmt-py"
+rev = "v4.0.0"
+hooks = [
+  # -i 2: 2-space indent; -ci: indent switch cases; -bn: binary ops at line start.
+  { id = "shfmt", args = ["-w", "-i", "2", "-ci", "-bn"] },
+]
+
+[[repos]]
+repo = "https://github.com/Lucas-C/pre-commit-hooks"
+rev = "v1.5.6"
+hooks = [
+  # Full NVIDIA SPDX Apache header on all source (.license-header.txt).
+  # --use-current-year matches any existing header regardless of its year/range
+  # (so existing headers are left alone) and stamps new files with the current
+  # year; only inserts where missing. Two entries: `#` comment style for
+  # python/shell/cmake, C-block style for c/c++/cuda.
+  { id = "insert-license", name = "insert license (python, shell, cmake)", types_or = [
+    "python",
+    "shell",
+    "cmake",
+  ], args = [
+    "--license-filepath",
+    ".license-header.txt",
+    "--comment-style",
+    "#",
+    "--use-current-year",
+  ] },
+  { id = "insert-license", name = "insert license (c, c++, cuda)", types_or = [
+    "c",
+    "c++",
+    "cuda",
+  ], args = [
+    "--license-filepath",
+    ".license-header.txt",
+    "--comment-style",
+    "/*| *| */",
+    "--use-current-year",
+  ] },
+]
+
+[[repos]]
+# Per-commit title linting (commit-msg stage): enforces the Conventional Commits
+# subject via `cz check`. Config in pyproject.toml [tool.commitizen]; the same
+# tool generates the changelog / bumps the version later. Local dev aid — under
+# ff + squash-on the enforced gate is the MR title (validate:mr-title). Requires
+# the commit-msg shim: `prek install -t pre-commit -t commit-msg`.
+repo = "https://github.com/commitizen-tools/commitizen"
+rev = "v4.17.0"
+hooks = [
+  { id = "commitizen" },
+]

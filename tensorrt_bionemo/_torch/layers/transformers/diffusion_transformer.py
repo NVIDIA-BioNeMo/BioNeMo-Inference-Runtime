@@ -12,30 +12,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.attention_backend.utils import (
-    PrecomputedSingleMasks, precompute_single_masks)
-from tensorrt_bionemo._torch.custom_ops.fused_layer_norm_no_affine import \
-    fused_layer_norm_no_affine
-from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
-    get_gated_sigmoid_op
+from tensorrt_bionemo._torch.attention_backend.utils import PrecomputedSingleMasks, precompute_single_masks
+from tensorrt_bionemo._torch.custom_ops.fused_layer_norm_no_affine import fused_layer_norm_no_affine
+from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
-from tensorrt_bionemo._torch.graph_optimization.decorator import (
-    NamedDimTies, support_graph_optimization)
+    GraphOptimizationMode,
+    InputAcceptanceDimSpec,
+    InputKeyMethod,
+)
+from tensorrt_bionemo._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_gather_indices, query_to_keys_optimized, to_blocks)
-from tensorrt_bionemo._torch.layers.transition import \
-    ConditionedTransitionBlock
+from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized, to_blocks
+from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers, ensure_buffer
@@ -81,8 +77,7 @@ def precompute_pair_biases(
     b_flat = 1
     for d in batch_dims:
         b_flat *= d
-    J_pad = (((J + bias_pad_multiple - 1) // bias_pad_multiple) *
-             bias_pad_multiple if bias_pad_multiple > 0 else J)
+    J_pad = ((J + bias_pad_multiple - 1) // bias_pad_multiple) * bias_pad_multiple if bias_pad_multiple > 0 else J
     if J_pad != J:
         z = F.pad(z, (0, 0, 0, J_pad - J))
     z_hat = fused_layer_norm_no_affine(z, eps=norm_eps)
@@ -99,30 +94,31 @@ def precompute_pair_biases(
 
 
 class DiffusionTransformerLayer(nn.Module):
-
-    def __init__(self,
-                 layer_idx: int,
-                 num_heads: int,
-                 dim: int = 384,
-                 dim_single_cond: Optional[int] = None,
-                 dim_pairwise: int = 128,
-                 bias_proj: bool = False,
-                 pair_norm: bool = True,
-                 dtype: torch.dtype = None,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 attention_initial_norm: bool = False,
-                 post_layer_norm: bool = False,
-                 use_ada_layer_norm: bool = True,
-                 use_separate_layer_norm: bool = False,
-                 chain_kv_norm: bool = False,
-                 skip_create_weights: bool = False,
-                 initial_norm: bool = True,
-                 conditioned_transition_using_silu: bool = False,
-                 attn_output_gate: bool = True,
-                 attn_gate_bias: bool = False,
-                 transition_expansion_factor: int = 2,
-                 attn_backend: str = "VANILLA"):
+    def __init__(
+        self,
+        layer_idx: int,
+        num_heads: int,
+        dim: int = 384,
+        dim_single_cond: int | None = None,
+        dim_pairwise: int = 128,
+        bias_proj: bool = False,
+        pair_norm: bool = True,
+        dtype: torch.dtype = None,
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        attention_initial_norm: bool = False,
+        post_layer_norm: bool = False,
+        use_ada_layer_norm: bool = True,
+        use_separate_layer_norm: bool = False,
+        chain_kv_norm: bool = False,
+        skip_create_weights: bool = False,
+        initial_norm: bool = True,
+        conditioned_transition_using_silu: bool = False,
+        attn_output_gate: bool = True,
+        attn_gate_bias: bool = False,
+        transition_expansion_factor: int = 2,
+        attn_backend: str = "VANILLA",
+    ):
         super().__init__()
 
         self.initial_norm = initial_norm
@@ -130,11 +126,7 @@ class DiffusionTransformerLayer(nn.Module):
         self.attn_output_gate = attn_output_gate
 
         if initial_norm:
-            self.adaln = AdaLN(dim,
-                               dim_single_cond,
-                               eps=eps,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+            self.adaln = AdaLN(dim, dim_single_cond, eps=eps, dtype=dtype, skip_create_weights=skip_create_weights)
 
         self.pair_bias_attn = AttentionPairBias(
             layer_idx=layer_idx,
@@ -152,16 +144,13 @@ class DiffusionTransformerLayer(nn.Module):
             inf=inf,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            attn_backend=attn_backend)
+            attn_backend=attn_backend,
+        )
 
         self.output_projection = None
         self._can_fuse_output_gate = False
         if self.attn_output_gate:
-            self.output_projection = Linear(
-                dim_single_cond,
-                dim,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+            self.output_projection = Linear(dim_single_cond, dim, dtype=dtype, skip_create_weights=skip_create_weights)
             self._can_fuse_output_gate = True
         self.transition = ConditionedTransitionBlock(
             dim_single=dim,
@@ -169,21 +158,23 @@ class DiffusionTransformerLayer(nn.Module):
             expansion_factor=transition_expansion_factor,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            using_silu=conditioned_transition_using_silu)
+            using_silu=conditioned_transition_using_silu,
+        )
         self.post_lnorm = None
         if post_layer_norm:
             self.post_lnorm = nn.LayerNorm(dim, dtype=dtype, eps=eps)
 
     def forward(
-            self,
-            a: torch.Tensor,
-            s: torch.Tensor,
-            bias: torch.Tensor,
-            mask: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
-            buffers: Optional[PreallocatedBuffers] = None,
-            **kwargs) -> torch.Tensor:
+        self,
+        a: torch.Tensor,
+        s: torch.Tensor,
+        bias: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+        precomputed_single_masks: PrecomputedSingleMasks | None = None,
+        buffers: PreallocatedBuffers | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
         """Forward for a single layer.
 
         Does not support multiplicity > 1, nor the atom encoder / decoder.
@@ -203,25 +194,20 @@ class DiffusionTransformerLayer(nn.Module):
             attn_metadata=attn_metadata,
             mask_bias=mask_bias,
             mask_bias_local=mask_bias_local,
-            buffers=buffers)
+            buffers=buffers,
+        )
         if self.attn_output_gate:
             if self._can_fuse_output_gate:
                 # The gated-sigmoid op broadcasts `s` (gate) across the
                 # multiplicity dim of `b` when their leading shapes differ,
                 # falling back to torch internally for unsupported patterns.
                 _gs_op = get_gated_sigmoid_op(b.dtype)
-                gs_buf = ensure_buffer(buffers, "dit_bsd_scratch", b.shape,
-                                       b.dtype, b.device)
-                b = _gs_op(s,
-                           self.output_projection.weight,
-                           b,
-                           self.output_projection.bias,
-                           output=gs_buf)
+                gs_buf = ensure_buffer(buffers, "dit_bsd_scratch", b.shape, b.dtype, b.device)
+                b = _gs_op(s, self.output_projection.weight, b, self.output_projection.bias, output=gs_buf)
             else:
                 b = F.sigmoid(self.output_projection(s)) * b
         a = a + b
-        a = a + self.transition(
-            a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
+        a = a + self.transition(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
         if self.post_lnorm is not None:
             a = self.post_lnorm(a)
         return a
@@ -239,23 +225,21 @@ _TOKEN_TRANSFORMER_DIMS = (
             ("z", (-2, -3)),
             ("mask", (-1,)),
         ),
-        output_dims=((0, (-2,)), ),
+        output_dims=((0, (-2,)),),
     ),
 )
 
 
 @support_graph_optimization(
     named_dims=_TOKEN_TRANSFORMER_DIMS,
-    workspace_kwargs=("buffers", ),
+    workspace_kwargs=("buffers",),
     graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
     input_key_method=InputKeyMethod.EXACT,
     # Default input management: accept up to 1024 tokens before falling back to
     # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(
-        name="num_tokens", dim_len_max=1024),
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
 )
 class BoltzDiffusionTransformer(nn.Module):
-
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -284,20 +268,19 @@ class BoltzDiffusionTransformer(nn.Module):
                     inf=config.mask_inf,
                     attention_initial_norm=config.attention_initial_norm,
                     skip_create_weights=config.skip_create_weights,
-                    attn_output_gate=getattr(config, 'attn_output_gate', True),
-                    attn_gate_bias=getattr(config, 'attn_gate_bias', False),
-                    transition_expansion_factor=getattr(
-                        config, 'transition_expansion_factor', 2),
+                    attn_output_gate=getattr(config, "attn_output_gate", True),
+                    attn_gate_bias=getattr(config, "attn_gate_bias", False),
+                    transition_expansion_factor=getattr(config, "transition_expansion_factor", 2),
                     attn_backend=config.pairwise_attention_backend,
-                ))
+                )
+            )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def _pad_bias(self, z: torch.Tensor) -> torch.Tensor:
         """Pad Sk and lay out z for efficient per-layer slicing by CuTeDSL.
@@ -322,15 +305,16 @@ class BoltzDiffusionTransformer(nn.Module):
         return z.movedim(-1, 0).contiguous()
 
     def forward(
-            self,
-            a: torch.Tensor = None,
-            s: torch.Tensor = None,
-            z: Optional[torch.Tensor] = None,
-            mask: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None,
-            precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
-            buffers: Optional[PreallocatedBuffers] = None,
-            **kwargs) -> torch.Tensor:
+        self,
+        a: torch.Tensor = None,
+        s: torch.Tensor = None,
+        z: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+        precomputed_single_masks: PrecomputedSingleMasks | None = None,
+        buffers: PreallocatedBuffers | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
         L = self.num_blocks
         # Transformer z -> [*, heads, N, N, L]
         N, M, D = z.shape[-3:]
@@ -343,10 +327,8 @@ class BoltzDiffusionTransformer(nn.Module):
         if precomputed_single_masks is None and mask is not None:
             query_to_keys = attn_metadata.query_to_keys if attn_metadata else None
             precomputed_single_masks = precompute_single_masks(
-                self.pairwise_attention_backend,
-                mask,
-                inf=self.mask_inf,
-                query_to_keys=query_to_keys)
+                self.pairwise_attention_backend, mask, inf=self.mask_inf, query_to_keys=query_to_keys
+            )
 
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
@@ -354,30 +336,23 @@ class BoltzDiffusionTransformer(nn.Module):
         for i, layer in enumerate(self.layers):
             # CuTeDSL: z is [L, *, H, Sq, Sk_padded] -> z[i] is contiguous
             # Others:  z is [*, H, Sq, Sk, L]        -> z[..., i]
-            bias = z[i] if self.pairwise_attention_backend == "CuTeDSL" else z[
-                ..., i]
-            a = layer(a,
-                      s,
-                      bias,
-                      mask,
-                      attn_metadata,
-                      precomputed_single_masks=precomputed_single_masks,
-                      buffers=buffers)
+            bias = z[i] if self.pairwise_attention_backend == "CuTeDSL" else z[..., i]
+            a = layer(
+                a, s, bias, mask, attn_metadata, precomputed_single_masks=precomputed_single_masks, buffers=buffers
+            )
         return a
 
 
 @support_graph_optimization(
     named_dims=_TOKEN_TRANSFORMER_DIMS,
-    workspace_kwargs=("buffers", ),
+    workspace_kwargs=("buffers",),
     graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
     input_key_method=InputKeyMethod.EXACT,
     # Default input management: accept up to 1024 tokens before falling back to
     # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(
-        name="num_tokens", dim_len_max=1024),
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
 )
 class OpenFold3DiffusionTransformer(nn.Module):
-
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -399,13 +374,10 @@ class OpenFold3DiffusionTransformer(nn.Module):
         self.dtype = config.torch_dtype
         self.pairwise_attention_backend = config.pairwise_attention_backend
         self.mask_inf = config.mask_inf
-        shared_pair_norm = getattr(config, 'shared_pair_norm', False)
+        shared_pair_norm = getattr(config, "shared_pair_norm", False)
 
         if shared_pair_norm:
-            self.layer_norm_z = nn.LayerNorm(config.dim_pairwise,
-                                             bias=False,
-                                             eps=config.norm_epsilon,
-                                             dtype=self.dtype)
+            self.layer_norm_z = nn.LayerNorm(config.dim_pairwise, bias=False, eps=config.norm_epsilon, dtype=self.dtype)
         for i in range(config.num_blocks):
             layer = DiffusionTransformerLayer(
                 layer_idx=i,
@@ -421,29 +393,24 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 inf=config.mask_inf,
                 attention_initial_norm=config.attention_initial_norm,
                 skip_create_weights=config.skip_create_weights,
-                conditioned_transition_using_silu=config.
-                conditioned_transition_using_silu,
-                initial_norm=True if not hasattr(config, 'initial_norm') else
-                config.initial_norm,
-                use_ada_layer_norm=True
-                if not hasattr(config, 'use_ada_layer_norm') else
-                config.use_ada_layer_norm,
+                conditioned_transition_using_silu=config.conditioned_transition_using_silu,
+                initial_norm=True if not hasattr(config, "initial_norm") else config.initial_norm,
+                use_ada_layer_norm=True if not hasattr(config, "use_ada_layer_norm") else config.use_ada_layer_norm,
                 use_separate_layer_norm=False
-                if not hasattr(config, 'use_separate_layer_norm') else
-                config.use_separate_layer_norm,
-                attn_output_gate=getattr(config, 'attn_output_gate', True),
-                attn_gate_bias=getattr(config, 'attn_gate_bias', False),
-                transition_expansion_factor=getattr(
-                    config, 'transition_expansion_factor', 2),
-                attn_backend=config.pairwise_attention_backend)
+                if not hasattr(config, "use_separate_layer_norm")
+                else config.use_separate_layer_norm,
+                attn_output_gate=getattr(config, "attn_output_gate", True),
+                attn_gate_bias=getattr(config, "attn_gate_bias", False),
+                transition_expansion_factor=getattr(config, "transition_expansion_factor", 2),
+                attn_backend=config.pairwise_attention_backend,
+            )
 
             if not shared_pair_norm and config.bias_proj:
                 # Replace the default bias=True LayerNorm in proj_z[0] with
                 # bias=False to match the reference model.
                 dim = layer.pair_bias_attn.proj_z[0].weight.shape
                 eps = layer.pair_bias_attn.proj_z[0].eps
-                layer.pair_bias_attn.proj_z[0] = nn.LayerNorm(
-                    dim, bias=False, eps=eps, dtype=config.torch_dtype)
+                layer.pair_bias_attn.proj_z[0] = nn.LayerNorm(dim, bias=False, eps=eps, dtype=config.torch_dtype)
             self.layers.append(layer)
 
         # Mega-GEMM precomputed bias: fuse per-layer LN γ into projection
@@ -451,16 +418,15 @@ class OpenFold3DiffusionTransformer(nn.Module):
         #   z_hat = layer_norm(z)          # one normalization, no affine
         #   out   = W_mega @ z_hat.T       # [NH, BIJ], J contiguous
         #   slice → N × [B, H, I, J]      # zero-copy views (B=1)
-        self._precompute_bias = (getattr(config, 'precompute_bias', True)
-                                 and getattr(config, 'bias_proj', False)
-                                 and not shared_pair_norm)
+        self._precompute_bias = (
+            getattr(config, "precompute_bias", True) and getattr(config, "bias_proj", False) and not shared_pair_norm
+        )
         if self._precompute_bias:
             self._num_heads = config.num_heads
             self._dim_pairwise = config.dim_pairwise
             self._norm_eps = config.norm_epsilon
-            self._bias_pad_multiple = (8 if config.pairwise_attention_backend
-                                       == "CuTeDSL" else -1)
-            self._W_mega: Optional[torch.Tensor] = None
+            self._bias_pad_multiple = 8 if config.pairwise_attention_backend == "CuTeDSL" else -1
+            self._W_mega: torch.Tensor | None = None
 
     def _build_mega_weight(self) -> None:
         """Fuse per-layer LN gamma into projection weights -> cached ``[N*H, D]``."""
@@ -470,40 +436,39 @@ class OpenFold3DiffusionTransformer(nn.Module):
         """Project all pair biases with the cached mega weight."""
         if self._W_mega is None:
             self._build_mega_weight()
-        return precompute_pair_biases(z, self._W_mega, len(self.layers),
-                                      self._num_heads, self._norm_eps,
-                                      self._bias_pad_multiple)
+        return precompute_pair_biases(
+            z, self._W_mega, len(self.layers), self._num_heads, self._norm_eps, self._bias_pad_multiple
+        )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
         if self._precompute_bias:
             self._W_mega = None
 
-    def forward(self,
-                a: torch.Tensor = None,
-                s: torch.Tensor = None,
-                z: Optional[torch.Tensor] = None,
-                mask: Optional[torch.Tensor] = None,
-                attn_metadata: Optional[AttentionMetadata] = None,
-                buffers: Optional[PreallocatedBuffers] = None,
-                **kwargs) -> torch.Tensor:
+    def forward(
+        self,
+        a: torch.Tensor = None,
+        s: torch.Tensor = None,
+        z: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
 
-        if hasattr(self, 'layer_norm_z'):
+        if hasattr(self, "layer_norm_z"):
             z = self.layer_norm_z(z)
 
         precomputed_single_masks = None
         if mask is not None:
             query_to_keys = attn_metadata.query_to_keys if attn_metadata else None
             precomputed_single_masks = precompute_single_masks(
-                self.pairwise_attention_backend,
-                mask,
-                inf=self.mask_inf,
-                query_to_keys=query_to_keys)
+                self.pairwise_attention_backend, mask, inf=self.mask_inf, query_to_keys=query_to_keys
+            )
 
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
@@ -525,31 +490,27 @@ class OpenFold3DiffusionTransformer(nn.Module):
                         mask,
                         attn_metadata,
                         precomputed_single_masks=precomputed_single_masks,
-                        buffers=buffers)
+                        buffers=buffers,
+                    )
             finally:
                 for layer in self.layers:
                     layer.pair_bias_attn.bias_proj = True
         else:
             for layer in self.layers:
-                a = layer(a,
-                          s,
-                          z,
-                          mask,
-                          attn_metadata,
-                          precomputed_single_masks=precomputed_single_masks,
-                          buffers=buffers)
+                a = layer(
+                    a, s, z, mask, attn_metadata, precomputed_single_masks=precomputed_single_masks, buffers=buffers
+                )
         return a
 
 
 @support_graph_optimization(
     named_dims=_TOKEN_TRANSFORMER_DIMS,
-    workspace_kwargs=("buffers", ),
+    workspace_kwargs=("buffers",),
     graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
     input_key_method=InputKeyMethod.EXACT,
     # Default input management: accept up to 1024 tokens before falling back to
     # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(
-        name="num_tokens", dim_len_max=1024),
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
 )
 class ProtenixDiffusionTransformer(nn.Module):
     """Protenix transformer for local atom and global token diffusion.
@@ -582,53 +543,44 @@ class ProtenixDiffusionTransformer(nn.Module):
                 initial_norm=getattr(config, "initial_norm", False),
                 attention_initial_norm=bool(config.attention_initial_norm),
                 use_ada_layer_norm=getattr(config, "use_ada_layer_norm", True),
-                use_separate_layer_norm=getattr(config,
-                                                "use_separate_layer_norm",
-                                                True),
+                use_separate_layer_norm=getattr(config, "use_separate_layer_norm", True),
                 chain_kv_norm=getattr(config, "chain_kv_norm", True),
                 attn_output_gate=config.attn_output_gate,
                 conditioned_transition_using_silu=cts,
                 transition_expansion_factor=config.transition_expansion_factor,
                 dtype=dtype,
                 skip_create_weights=config.skip_create_weights,
-                attn_backend=attn_backend)
+                attn_backend=attn_backend,
+            )
             # Protenix ``layernorm_z`` has no offset (create_offset=False).
             proj_ln = layer.pair_bias_attn.proj_z[0]
             layer.pair_bias_attn.proj_z[0] = nn.LayerNorm(
-                proj_ln.normalized_shape,
-                bias=False,
-                eps=proj_ln.eps,
-                dtype=dtype)
+                proj_ln.normalized_shape, bias=False, eps=proj_ln.eps, dtype=dtype
+            )
             self.layers.append(layer)
 
         self._num_heads = config.num_heads
         self._norm_eps = config.norm_epsilon
         self.pairwise_attention_backend = attn_backend
         self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
-        self._precompute_bias = bool(getattr(config, "precompute_bias",
-                                             True)) and bias_proj
+        self._precompute_bias = bool(getattr(config, "precompute_bias", True)) and bias_proj
 
     @staticmethod
-    def build_attn_metadata(num_blocks: int, n_queries: int, n_keys: int,
-                            device: torch.device) -> AttentionMetadata:
+    def build_attn_metadata(num_blocks: int, n_queries: int, n_keys: int, device: torch.device) -> AttentionMetadata:
         """Build metadata with local-window gather indices."""
-        gather_indices, _ = create_gather_indices(num_blocks, n_queries,
-                                                  n_keys, device)
+        gather_indices, _ = create_gather_indices(num_blocks, n_queries, n_keys, device)
 
         def _query_to_keys(x: torch.Tensor) -> torch.Tensor:
-            return query_to_keys_optimized(x,
-                                           gather_indices,
-                                           W=n_queries,
-                                           H=n_keys)
+            return query_to_keys_optimized(x, gather_indices, W=n_queries, H=n_keys)
 
         return AttentionMetadata(query_to_keys=_query_to_keys, bias_cache={})
 
     def _precompute_all_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
         # Rebuild to observe direct weight mutations.
         w_mega = build_bias_mega_weight(self.layers)
-        return precompute_pair_biases(z, w_mega, len(self.layers),
-                                      self._num_heads, self._norm_eps,
-                                      self._bias_pad_multiple)
+        return precompute_pair_biases(
+            z, w_mega, len(self.layers), self._num_heads, self._norm_eps, self._bias_pad_multiple
+        )
 
     def forward(
         self,
@@ -636,10 +588,10 @@ class ProtenixDiffusionTransformer(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        n_queries: Optional[int] = None,
-        n_keys: Optional[int] = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        n_queries: int | None = None,
+        n_keys: int | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """Apply local atom or global token diffusion attention.
 
@@ -661,13 +613,11 @@ class ProtenixDiffusionTransformer(nn.Module):
             B, N, _ = a.shape
             W, K = n_queries, z.shape[1]
             if attn_metadata is None:
-                attn_metadata = self.build_attn_metadata(
-                    K, n_queries, n_keys, a.device)
+                attn_metadata = self.build_attn_metadata(K, n_queries, n_keys, a.device)
             a_in = to_blocks(a, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
             s_in = to_blocks(s, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
             z_in = z.unsqueeze(1)  # [B, 1, K, W, H, c_z]
-            mask_in = to_blocks(mask.unsqueeze(-1).to(a.dtype), K,
-                                W).squeeze(-1).unsqueeze(1)  # [B, 1, K, W]
+            mask_in = to_blocks(mask.unsqueeze(-1).to(a.dtype), K, W).squeeze(-1).unsqueeze(1)  # [B, 1, K, W]
         else:
             # Global self-attention: no windowing, full pair bias, no gather.
             a_in, s_in, z_in, mask_in = a, s, z, mask
@@ -683,23 +633,13 @@ class ProtenixDiffusionTransformer(nn.Module):
                 layer.pair_bias_attn.bias_proj = False
             try:
                 for i, layer in enumerate(self.layers):
-                    a_in = layer(a_in,
-                                 s_in,
-                                 all_biases[i],
-                                 mask_in,
-                                 attn_metadata,
-                                 buffers=buffers)
+                    a_in = layer(a_in, s_in, all_biases[i], mask_in, attn_metadata, buffers=buffers)
             finally:
                 for layer in self.layers:
                     layer.pair_bias_attn.bias_proj = True
         else:
             for layer in self.layers:
-                a_in = layer(a_in,
-                             s_in,
-                             z_in,
-                             mask_in,
-                             attn_metadata,
-                             buffers=buffers)
+                a_in = layer(a_in, s_in, z_in, mask_in, attn_metadata, buffers=buffers)
 
         if local:
             return a_in.reshape(B, K * W, -1)[:, :N]

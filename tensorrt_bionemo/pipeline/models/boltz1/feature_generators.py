@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Boltz1 feature generators.
 
 Boltz1 has fewer feature groups than Boltz2:
@@ -16,46 +29,42 @@ import torch
 
 from tensorrt_bionemo.pipeline.base import FeatureGeneratorBase
 from tensorrt_bionemo.pipeline.models.boltz2.const import max_paired_seqs
+from tensorrt_bionemo.pipeline.models.boltz2.feature_generators import _row
+from tensorrt_bionemo.pipeline.models.boltz2.featurizer import (
+    process_chain_feature_constraints,
+    process_residue_constraint_features,
+)
+
+from .featurizer import process_atom_features, process_msa_features, process_token_features
 
 # OSS boltz1 inference (boltz.data.module.inference.BoltzInferenceDataModule)
 # calls the featurizer with ``max_seqs=const.max_msa_seqs`` = 16384. The boltz2
 # TRT const sets ``max_msa_seqs=8192`` (boltz2's predict-path default), which
 # would truncate boltz1 MSAs deeper than OSS. Use boltz1's 16384 here.
 BOLTZ1_MAX_MSA_SEQS = 16384
-from tensorrt_bionemo.pipeline.models.boltz2.feature_generators import _row
-from tensorrt_bionemo.pipeline.models.boltz2.featurizer import (
-    process_chain_feature_constraints, process_residue_constraint_features)
-
-from .featurizer import (process_atom_features, process_msa_features,
-                         process_token_features)
 
 
 class Boltz1TokenFeatureGenerator(FeatureGeneratorBase):
-
     def __call__(
         self,
         batch: dict[str, torch.Tensor],
         context: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         row = _row(context)
-        return process_token_features(row["tokens"], row["token_bonds"],
-                                      row["structure"])
+        return process_token_features(row["tokens"], row["token_bonds"], row["structure"])
 
 
 class Boltz1AtomFeatureGenerator(FeatureGeneratorBase):
-
     def __call__(
         self,
         batch: dict[str, torch.Tensor],
         context: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         row = _row(context)
-        return process_atom_features(row["structure"], row["tokens"],
-                                     row["molecules"])
+        return process_atom_features(row["structure"], row["tokens"], row["molecules"])
 
 
 class Boltz1MsaFeatureGenerator(FeatureGeneratorBase):
-
     def __call__(
         self,
         batch: dict[str, torch.Tensor],
@@ -67,11 +76,11 @@ class Boltz1MsaFeatureGenerator(FeatureGeneratorBase):
             msa_parsed_per_chain=row["msa_parsed_per_chain"],
             paired_msa_per_chain=row.get("paired_msa_per_chain"),
             max_seqs=BOLTZ1_MAX_MSA_SEQS,
-            max_paired=max_paired_seqs)
+            max_paired=max_paired_seqs,
+        )
 
 
 class Boltz1ResidueConstraintFeatureGenerator(FeatureGeneratorBase):
-
     def __call__(
         self,
         batch: dict[str, torch.Tensor],
@@ -89,7 +98,6 @@ class Boltz1ResidueConstraintFeatureGenerator(FeatureGeneratorBase):
 
 
 class Boltz1ChainConstraintFeatureGenerator(FeatureGeneratorBase):
-
     def __call__(
         self,
         batch: dict[str, torch.Tensor],

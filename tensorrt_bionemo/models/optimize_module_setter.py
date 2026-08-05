@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,16 +14,14 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 import torch.nn as nn
 
+from tensorrt_bionemo._torch.graph_optimization.config import GraphOptimizationMode
+from tensorrt_bionemo._torch.graph_optimization.decorator import GRAPH_OPT_DEFAULT_ATTR
 from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
-from tensorrt_bionemo._torch.graph_optimization.config import \
-    GraphOptimizationMode
-from tensorrt_bionemo._torch.graph_optimization.decorator import \
-    GRAPH_OPT_DEFAULT_ATTR
 from tensorrt_bionemo.logger import logger
 
 
@@ -37,14 +35,14 @@ class ModuleSpec:
         compiled_cls: ``CompilableModule`` subclass.  ``None`` if
             torch.compile is not supported for this module.
     """
+
     getter: Callable
     setter: Callable
-    compiled_cls: Optional[type] = None
-    graph_optimization_cls: Optional[type] = None
+    compiled_cls: type | None = None
+    graph_optimization_cls: type | None = None
 
 
 class ModuleRegistry(ABC):
-
     def __init__(self, configs: dict[str, AcceleratedConfig | dict] = {}):
         """
         This class is used to store the checkpoints and module configs for the accelerated modules.
@@ -55,8 +53,7 @@ class ModuleRegistry(ABC):
         self._configs = self._select_module_configs(all_known, configs)
 
     def _select_module_configs(
-        self, all_known: dict[str, ModuleSpec],
-        configs: dict[str, AcceleratedConfig | dict]
+        self, all_known: dict[str, ModuleSpec], configs: dict[str, AcceleratedConfig | dict]
     ) -> dict[str, AcceleratedConfig]:
         """Validate requested module configs against the known registry.
 
@@ -81,15 +78,14 @@ class ModuleRegistry(ABC):
                 logger.warning(f"Unknown module: {k}")
             elif k in to_drop:
                 logger.warning(
-                    f"Module '{k}' is nested inside another requested module; "
-                    f"skipping it in favour of its parent.")
+                    f"Module '{k}' is nested inside another requested module; skipping it in favour of its parent."
+                )
             else:
                 if isinstance(v, dict):
                     v = AcceleratedConfig(**v)
                 elif not isinstance(v, AcceleratedConfig):
                     raise TypeError(
-                        f"Config for module '{k}' must be AcceleratedConfig or dict, "
-                        f"got {type(v).__name__}"
+                        f"Config for module '{k}' must be AcceleratedConfig or dict, got {type(v).__name__}"
                     )
 
                 selected[k] = v
@@ -113,31 +109,28 @@ class ModuleRegistry(ABC):
             for other_name, other_path in paths.items():
                 if other_name == name or not other_path:
                     continue
-                is_child = (len(other_path) < len(path)
-                            and path[:len(other_path)] == other_path)
+                is_child = len(other_path) < len(path) and path[: len(other_path)] == other_path
                 if is_child:
                     children.add(name)
                     break
         return children
 
-    def get_module_config(self,
-                          module_name: str) -> Optional[AcceleratedConfig]:
+    def get_module_config(self, module_name: str) -> AcceleratedConfig | None:
         return self._configs.get(module_name, None)
 
-    def get_module_backend(self, module_name: str) -> Optional[BackendType]:
+    def get_module_backend(self, module_name: str) -> BackendType | None:
         return self._configs.get(module_name, None).backend
 
-    def get_module_checkpoint(self, module_name: str) -> Optional[str]:
+    def get_module_checkpoint(self, module_name: str) -> str | None:
         return self._configs.get(module_name, None).checkpoint
 
     def get_module_names(self) -> list[str]:
         return list(self._configs.keys())
 
-    def get_default_module_config(self,
-                                  module_name: str) -> Optional[BaseConfig]:
+    def get_default_module_config(self, module_name: str) -> BaseConfig | None:
         return self._configs.get(module_name, None).default
 
-    def get_module_need_fallback(self, module_name: str) -> Optional[Callable]:
+    def get_module_need_fallback(self, module_name: str) -> Callable | None:
         return self._configs.get(module_name, None).need_fallback
 
     @abstractmethod
@@ -164,10 +157,10 @@ class _ModulePathTracer:
         self.__dict__["_path"] = path
 
     def __getattr__(self, name: str) -> "_ModulePathTracer":
-        return _ModulePathTracer(self._path + (name, ))
+        return _ModulePathTracer(self._path + (name,))
 
 
-def _module_path(spec: ModuleSpec) -> Optional[tuple[str, ...]]:
+def _module_path(spec: ModuleSpec) -> tuple[str, ...] | None:
     """Return the attribute path ``spec.getter`` walks, or ``None``.
 
     ``None`` means the getter is not a plain attribute chain (it indexes,
@@ -202,8 +195,8 @@ class DiscoveredModuleRegistry(ModuleRegistry):
         self,
         model: nn.Module,
         configs: dict[str, "AcceleratedConfig | dict"] = {},
-        role_aliases: Optional[dict[str, str]] = None,
-        graph_optimization_cls: Optional[type] = None,
+        role_aliases: dict[str, str] | None = None,
+        graph_optimization_cls: type | None = None,
     ):
         self._model = model
         self._role_aliases = dict(role_aliases or {})
@@ -246,19 +239,18 @@ class DiscoveredModuleRegistry(ModuleRegistry):
             raise ValueError(
                 "graph optimization requested for module(s) with no decorated, "
                 f"discoverable target: {sorted(unknown)}. Known roles/paths: "
-                f"{sorted(all_known)}")
+                f"{sorted(all_known)}"
+            )
         if self._role_aliases:
             approved = set(self._role_aliases.values())
-            blocked = [
-                k for k in configs
-                if self._name_to_path.get(k) not in approved
-            ]
+            blocked = [k for k in configs if self._name_to_path.get(k) not in approved]
             if blocked:
                 raise ValueError(
                     "graph optimization requested for non-whitelisted "
                     f"module(s): {sorted(blocked)}. A module may be cuda-graphed "
                     "only if its path is a value in GRAPH_OPT_ENABLED_MODULES. "
-                    f"Approved paths: {sorted(approved)}")
+                    f"Approved paths: {sorted(approved)}"
+                )
         return super()._select_module_configs(all_known, configs)
 
     def get_accelerated_modules(self) -> dict[str, ModuleSpec]:
@@ -310,8 +302,7 @@ class DiscoveredModuleRegistry(ModuleRegistry):
                 if other_name == name or not other_path:
                     continue
                 other_parts = other_path.split(".")
-                if (len(other_parts) < len(parts)
-                        and parts[:len(other_parts)] == other_parts):
+                if len(other_parts) < len(parts) and parts[: len(other_parts)] == other_parts:
                     is_child = True
                     break
             if is_child:
@@ -322,17 +313,11 @@ class DiscoveredModuleRegistry(ModuleRegistry):
 
 
 class OptimizedModuleSetterMixin(ABC):
-
     @abstractmethod
-    def get_optimized_modules(
-            self,
-            accelerated_configs: dict[str,
-                                      AcceleratedConfig]) -> ModuleRegistry:
+    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> ModuleRegistry:
         raise NotImplementedError("Subclass must implement this method")
 
-    def optimize(self,
-                 accelerated_configs: dict[str, AcceleratedConfig],
-                 **kwargs) -> nn.Module:
+    def optimize(self, accelerated_configs: dict[str, AcceleratedConfig], **kwargs) -> nn.Module:
         """Build the optimized version of the model from the original.
 
         Supports torch backends (optionally with ``torch.compile`` when
@@ -367,9 +352,9 @@ class OptimizedModuleSetterMixin(ABC):
             # keeps the original as its eager ``inner_module`` / fallback.
             if backend == BackendType.TORCH and spec.graph_optimization_cls is not None:
                 org = spec.getter(self)
-                graph_config = getattr(acc_config.default,
-                                        "graph_optimization_config",
-                                        None) if acc_config.default else None
+                graph_config = (
+                    getattr(acc_config.default, "graph_optimization_config", None) if acc_config.default else None
+                )
                 # Fall back to the module's decorator-declared default
                 # (``graph_opt_default``, set by @support_graph_optimization) when
                 # the model config supplies no explicit graph-optimization config,
@@ -381,8 +366,7 @@ class OptimizedModuleSetterMixin(ABC):
                 if graph_config is not None:
                     graph_mode = getattr(graph_config, "graph_optimization_mode", None)
                     if graph_mode != GraphOptimizationMode.NO_OPTIMIZATION:
-                        opt_m = spec.graph_optimization_cls(config=graph_config,
-                                                        inner_module=org)
+                        opt_m = spec.graph_optimization_cls(config=graph_config, inner_module=org)
                         spec.setter(self, opt_m)
 
         return self

@@ -16,13 +16,16 @@
 * positional args normalized to parameter names (``Signature.bind``).
 * workspace kwargs read from the ``InputRoutingConfig``.
 """
+
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, InputKeyMethod, InputRoutingConfigFactory)
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
-    CUDAGraphOptimizationTracker
+    CUDAGraphOptimizationConfig,
+    InputKeyMethod,
+    InputRoutingConfigFactory,
+)
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 
 class _NamedStub(nn.Module):
@@ -56,8 +59,7 @@ def test_input_key_independent_of_call_spelling():
     tracker = _tracker(_NamedStub())
     s = torch.zeros(1, 10, 4)
     z = torch.zeros(1, 10, 10, 4)
-    assert (tracker.input_key_for_this_call(s, z)
-            == tracker.input_key_for_this_call(s=s, z=z))
+    assert tracker.input_key_for_this_call(s, z) == tracker.input_key_for_this_call(s=s, z=z)
 
 
 def test_positional_overflow_falls_back_to_argi():

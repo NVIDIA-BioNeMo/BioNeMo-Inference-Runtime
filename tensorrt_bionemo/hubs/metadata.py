@@ -17,9 +17,10 @@
 import logging
 import os
 import tarfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 from huggingface_hub import hf_hub_download
 
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 def download_hf_file(
     repo_id: str,
     filename: str,
-    cache_dir: Union[str, Path],
+    cache_dir: str | Path,
     local_files_only: bool = False,
 ) -> str:
     """Download a single file from HuggingFace Hub. Returns the local path."""
@@ -48,8 +49,8 @@ def download_hf_file(
 
 
 def extract_archive(
-    archive_path: Union[str, Path],
-    extract_to: Union[str, Path],
+    archive_path: str | Path,
+    extract_to: str | Path,
 ) -> Path:
     """Extract a tar archive into *extract_to* and return the extraction root.
 
@@ -66,8 +67,7 @@ def extract_archive(
             result_dir = extract_to
 
         if result_dir.exists() and any(result_dir.iterdir()):
-            logger.debug(
-                f"Archive already extracted at {result_dir}, skipping")
+            logger.debug(f"Archive already extracted at {result_dir}, skipping")
             return result_dir
 
         logger.info(f"Extracting {archive_path} to {extract_to}")
@@ -77,7 +77,7 @@ def extract_archive(
     return result_dir
 
 
-def resolve_from_env(env_var: str) -> Optional[str]:
+def resolve_from_env(env_var: str) -> str | None:
     """Return the value of an environment variable, or None."""
     return os.getenv(env_var)
 
@@ -90,10 +90,11 @@ def metadata_cache_dir() -> Path:
     if override:
         return Path(override)
     import tensorrt_bionemo
+
     return tensorrt_bionemo.CACHE_DIR / "metadata"
 
 
-def resolve_cached_metadata(env: str) -> Optional[str]:
+def resolve_cached_metadata(env: str) -> str | None:
     """Path of a metadata asset staged at ``<metadata_dir>/<env>`` (a file or
     directory, and often a symlink to one), else None. The
     staged target already matches what the ``env`` override would point to — the
@@ -107,13 +108,14 @@ def resolve_cached_metadata(env: str) -> Optional[str]:
 
 def get_model_cache_dir(
     model_name: str,
-    cache_dir: Optional[Union[str, Path]] = None,
+    cache_dir: str | Path | None = None,
 ) -> Path:
     """Return (and create) the per-model cache directory."""
     if cache_dir is not None:
         d = Path(cache_dir)
     else:
         import tensorrt_bionemo
+
         d = tensorrt_bionemo.CACHE_DIR / model_name
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -152,6 +154,7 @@ class MetadataFile:
             that transforms the raw download into whatever the model expects.
             Defaults to returning the downloaded file path unchanged.
     """
+
     metadata_key: str
     repo_id: str
     filename: str
@@ -217,7 +220,7 @@ HF_MODEL_METADATA: dict[str, list[MetadataFile]] = {
 
 def load_metadata(
     model_name: str,
-    cache_dir: Optional[Union[str, Path]] = None,
+    cache_dir: str | Path | None = None,
     local_files_only: bool = False,
 ) -> dict[str, Any]:
     """Resolve metadata for a model, trying env vars first then HuggingFace.
@@ -238,8 +241,7 @@ def load_metadata(
     for meta_file in HF_MODEL_METADATA[model_name]:
         local_path = resolve_from_env(meta_file.env)
         if local_path is not None:
-            logger.info(f"Using local {meta_file.metadata_key} from env "
-                        f"{meta_file.env}: {local_path}")
+            logger.info(f"Using local {meta_file.metadata_key} from env {meta_file.env}: {local_path}")
             metadata[meta_file.metadata_key] = local_path
             continue
 
@@ -247,20 +249,17 @@ def load_metadata(
         # to the HuggingFace hub.
         staged = resolve_cached_metadata(meta_file.env)
         if staged is not None:
-            logger.info(f"Using staged local {meta_file.metadata_key} for "
-                        f"{model_name}: {staged}")
+            logger.info(f"Using staged local {meta_file.metadata_key} for {model_name}: {staged}")
             metadata[meta_file.metadata_key] = staged
             continue
 
-        logger.info(f"Downloading {meta_file.metadata_key} from "
-                    f"{meta_file.repo_id}/{meta_file.filename}")
+        logger.info(f"Downloading {meta_file.metadata_key} from {meta_file.repo_id}/{meta_file.filename}")
         downloaded = download_hf_file(
             meta_file.repo_id,
             meta_file.filename,
             resolved_cache_dir,
             local_files_only,
         )
-        metadata[meta_file.metadata_key] = meta_file.prepare(
-            downloaded, resolved_cache_dir)
+        metadata[meta_file.metadata_key] = meta_file.prepare(downloaded, resolved_cache_dir)
 
     return metadata

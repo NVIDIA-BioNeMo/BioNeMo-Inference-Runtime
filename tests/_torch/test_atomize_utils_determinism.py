@@ -44,11 +44,11 @@ import torch
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import (
-    _deterministic_algorithms, aggregate_atom_feat_to_tokens)
+    _deterministic_algorithms,
+    aggregate_atom_feat_to_tokens,
+)
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="scatter_add_ non-determinism is CUDA-specific")
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="scatter_add_ non-determinism is CUDA-specific")
 
 # High atom:token ratio => many colliding scatter indices, which is what makes
 # the atomic-add ordering (and thus the non-determinism) actually bite.
@@ -68,14 +68,11 @@ def _make_inputs(dtype: torch.dtype, seed: int = 0):
     """
     g = torch.Generator(device="cuda").manual_seed(seed)
     dev = "cuda"
-    atom_to_token_index = torch.randint(
-        0, N_TOKEN, (N_BATCH, N_ATOM), device=dev, generator=g)
+    atom_to_token_index = torch.randint(0, N_TOKEN, (N_BATCH, N_ATOM), device=dev, generator=g)
     # Mostly-present atoms with a realistic fraction masked out.
-    atom_mask = (torch.rand(N_BATCH, N_ATOM, device=dev, generator=g)
-                 > 0.1).to(dtype)
+    atom_mask = (torch.rand(N_BATCH, N_ATOM, device=dev, generator=g) > 0.1).to(dtype)
     token_mask = torch.ones(N_BATCH, N_TOKEN, device=dev, dtype=dtype)
-    atom_feat = torch.randn(
-        N_BATCH, N_ATOM, C_FEAT, device=dev, dtype=dtype, generator=g)
+    atom_feat = torch.randn(N_BATCH, N_ATOM, C_FEAT, device=dev, dtype=dtype, generator=g)
     return {
         "token_mask": token_mask,
         "atom_to_token_index": atom_to_token_index,
@@ -116,7 +113,8 @@ def test_aggregate_atom_feat_is_bit_identical_run_to_run(dtype, aggregate_fn):
         assert torch.equal(out, ref), (
             f"run {i} diverged (dtype={dtype}, agg={aggregate_fn}): "
             f"max|Δ|={(out.float() - ref.float()).abs().max().item():.3e} -- "
-            "atom->token scatter lost determinism")
+            "atom->token scatter lost determinism"
+        )
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
@@ -125,8 +123,7 @@ def test_aggregate_atom_feat_matches_reference(dtype, aggregate_fn):
     """The deterministic scatter changes reduction order, not the math:
     output still matches a one-hot-matmul reference."""
     inputs = _make_inputs(dtype)
-    out = aggregate_atom_feat_to_tokens(
-        **inputs, aggregate_fn=aggregate_fn).float()
+    out = aggregate_atom_feat_to_tokens(**inputs, aggregate_fn=aggregate_fn).float()
     ref = _reference(inputs, aggregate_fn)
     # fp32 accumulation internally; bf16 only at the cast back to input dtype.
     atol, rtol = (1e-4, 1e-4) if dtype == torch.float32 else (3e-2, 3e-2)
@@ -157,20 +154,18 @@ def test_raw_cuda_scatter_add_is_nondeterministic(dtype):
     base = raw_scatter()
     diverged = any(not torch.equal(raw_scatter(), base) for _ in range(_REPEATS))
     if not diverged:
-        pytest.skip("raw CUDA scatter_add_ happened to be deterministic on "
-                    "this device/build; fix-side determinism still asserted "
-                    "elsewhere")
+        pytest.skip(
+            "raw CUDA scatter_add_ happened to be deterministic on "
+            "this device/build; fix-side determinism still asserted "
+            "elsewhere"
+        )
 
     # And confirm the fix makes that very same scatter reproducible.
     with _deterministic_algorithms():
-        det_base = torch.zeros(
-            N_BATCH, N_TOKEN, C_FEAT, device="cuda", dtype=dtype).scatter_add_(
-                1, idx, src)
+        det_base = torch.zeros(N_BATCH, N_TOKEN, C_FEAT, device="cuda", dtype=dtype).scatter_add_(1, idx, src)
         torch.cuda.synchronize()
         for _ in range(_REPEATS):
-            det = torch.zeros(
-                N_BATCH, N_TOKEN, C_FEAT, device="cuda",
-                dtype=dtype).scatter_add_(1, idx, src)
+            det = torch.zeros(N_BATCH, N_TOKEN, C_FEAT, device="cuda", dtype=dtype).scatter_add_(1, idx, src)
             torch.cuda.synchronize()
             assert torch.equal(det, det_base)
 

@@ -15,7 +15,8 @@
 """OpenFold3 feature factory: generators and collators for the feature stage."""
 
 import random
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import torch

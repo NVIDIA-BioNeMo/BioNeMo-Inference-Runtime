@@ -15,55 +15,51 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.attention_backend.interface import \
-    AttentionMetadata
-from tensorrt_bionemo._torch.attention_backend.utils import (
-    PrecomputedPairMasks, precompute_pair_masks)
-from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY, MSA_TRANSITION,
-                                                PAIR_TRANSITION)
+from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
+from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, MSA_TRANSITION, PAIR_TRANSITION
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
-from tensorrt_bionemo._torch.layers.transformers.evoformer import \
-    EvoformerBlock
+from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 
 
 class MSAModuleBlock(EvoformerBlock):
-
-    def __init__(self,
-                 *,
-                 local_layer_idx: int,
-                 c_m: int,
-                 c_z: int,
-                 c_hidden_msa_att: int,
-                 c_hidden_opm: int,
-                 c_hidden_mul: int,
-                 c_hidden_pair_att: int,
-                 no_heads_msa: int,
-                 no_heads_pair: int,
-                 transition_n: int,
-                 opm_first: bool,
-                 support_batch: bool = True,
-                 triangle_attn_backend: str = 'VANILLA',
-                 trimul_high_precision: bool = False,
-                 msa_att_row_chunk_size: Optional[int] = None,
-                 dtype: torch.dtype = None,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 skip_create_weights: bool = False,
-                 outer_product_mean_bias: Optional[dict] = None,
-                 tri_mul_out_bias: Optional[dict] = None,
-                 tri_mul_in_bias: Optional[dict] = None,
-                 tri_attn_start_bias: Optional[dict] = None,
-                 tri_attn_end_bias: Optional[dict] = None,
-                 last_block: bool = False,
-                 **kwargs):
+    def __init__(
+        self,
+        *,
+        local_layer_idx: int,
+        c_m: int,
+        c_z: int,
+        c_hidden_msa_att: int,
+        c_hidden_opm: int,
+        c_hidden_mul: int,
+        c_hidden_pair_att: int,
+        no_heads_msa: int,
+        no_heads_pair: int,
+        transition_n: int,
+        opm_first: bool,
+        support_batch: bool = True,
+        triangle_attn_backend: str = "VANILLA",
+        trimul_high_precision: bool = False,
+        msa_att_row_chunk_size: int | None = None,
+        dtype: torch.dtype = None,
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        skip_create_weights: bool = False,
+        outer_product_mean_bias: dict | None = None,
+        tri_mul_out_bias: dict | None = None,
+        tri_mul_in_bias: dict | None = None,
+        tri_attn_start_bias: dict | None = None,
+        tri_attn_end_bias: dict | None = None,
+        last_block: bool = False,
+        **kwargs,
+    ):
         super().__init__(
             local_layer_idx=local_layer_idx,
             c_m=c_m,
@@ -92,10 +88,10 @@ class MSAModuleBlock(EvoformerBlock):
         )
 
         if not last_block:
-            if hasattr(self, 'msa_att_row'):
+            if hasattr(self, "msa_att_row"):
                 del self.msa_att_row
 
-            if hasattr(self, 'msa_transition'):
+            if hasattr(self, "msa_transition"):
                 del self.msa_transition
 
             self.msa_att_row = PairWeightedAveraging(
@@ -140,8 +136,8 @@ class MSAModuleBlock(EvoformerBlock):
         self.msa_att_row_chunk_size = msa_att_row_chunk_size
 
     def _compute_opm(
-            self, m: torch.Tensor, z: torch.Tensor,
-            msa_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        self, m: torch.Tensor, z: torch.Tensor, msa_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         opm = self.outer_product_mean(m, mask=msa_mask)
         z = z + opm
         return m, z
@@ -152,8 +148,8 @@ class MSAModuleBlock(EvoformerBlock):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        precomputed_masks: Optional[PrecomputedPairMasks] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -185,18 +181,11 @@ class MSAModuleBlock(EvoformerBlock):
         z = z + self.tri_mul_in(z, mask=pair_mask)
 
         if precomputed_masks is not None:
-            z = z + self.tri_attn_start(z,
-                                        mask_bias=precomputed_masks.mask_bias,
-                                        attn_metadata=attn_metadata)
-            z = z + self.tri_attn_end(
-                z,
-                mask_bias=precomputed_masks.mask_bias_transposed,
-                attn_metadata=attn_metadata)
+            z = z + self.tri_attn_start(z, mask_bias=precomputed_masks.mask_bias, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_end(z, mask_bias=precomputed_masks.mask_bias_transposed, attn_metadata=attn_metadata)
         else:
-            z = z + self.tri_attn_start(
-                z, mask=pair_mask, attn_metadata=attn_metadata)
-            z = z + self.tri_attn_end(
-                z, mask=pair_mask, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_start(z, mask=pair_mask, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_end(z, mask=pair_mask, attn_metadata=attn_metadata)
 
         pair_trans_mask = pair_mask
         z = z + self.pair_transition(z, mask=pair_trans_mask.unsqueeze(-1))
@@ -205,7 +194,6 @@ class MSAModuleBlock(EvoformerBlock):
 
 
 class MSAModuleStack(nn.Module):
-
     def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
@@ -233,48 +221,21 @@ class MSAModuleStack(nn.Module):
                     inf=config.mask_inf,
                     skip_create_weights=config.skip_create_weights,
                     msa_att_row_chunk_size=config.msa_att_row_chunk_size,
-                    outer_product_mean_bias={
-                        "proj_a": False,
-                        "proj_b": False,
-                        "proj_o": True
-                    },
-                    tri_mul_out_bias={
-                        "p_in": False,
-                        "g_in": False,
-                        "p_out": False,
-                        "g_out": False
-                    },
-                    tri_mul_in_bias={
-                        "p_in": False,
-                        "g_in": False,
-                        "p_out": False,
-                        "g_out": False
-                    },
-                    tri_attn_start_bias={
-                        "q": False,
-                        "k": False,
-                        "v": False,
-                        "g": False,
-                        "z": False,
-                        "o": False
-                    },
-                    tri_attn_end_bias={
-                        "q": False,
-                        "k": False,
-                        "v": False,
-                        "g": False,
-                        "z": False,
-                        "o": False
-                    },
-                    last_block=True if i == self.num_blocks - 1 else False))
+                    outer_product_mean_bias={"proj_a": False, "proj_b": False, "proj_o": True},
+                    tri_mul_out_bias={"p_in": False, "g_in": False, "p_out": False, "g_out": False},
+                    tri_mul_in_bias={"p_in": False, "g_in": False, "p_out": False, "g_out": False},
+                    tri_attn_start_bias={"q": False, "k": False, "v": False, "g": False, "z": False, "o": False},
+                    tri_attn_end_bias={"q": False, "k": False, "v": False, "g": False, "z": False, "o": False},
+                    last_block=True if i == self.num_blocks - 1 else False,
+                )
+            )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -282,8 +243,8 @@ class MSAModuleStack(nn.Module):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        precomputed_masks: Optional[PrecomputedPairMasks] = None
+        attn_metadata: AttentionMetadata | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -315,21 +276,19 @@ class MSAModuleStack(nn.Module):
         msa_mask = msa_mask.to(dtype=self.config.torch_dtype)
         pair_mask = pair_mask.to(dtype=self.config.torch_dtype)
 
-        precomputed = precomputed_masks if precomputed_masks is not None else \
-            precompute_pair_masks(
+        precomputed = (
+            precomputed_masks
+            if precomputed_masks is not None
+            else precompute_pair_masks(
                 self.blocks[0].triangle_attn_backend,
                 pair_mask,
                 inf=self.blocks[0].inf,
                 dtype=self.blocks[0].dtype,
             )
+        )
 
         for block in self.blocks:
-            m, z = block(m,
-                         z,
-                         msa_mask,
-                         pair_mask,
-                         attn_metadata,
-                         precomputed_masks=precomputed)
+            m, z = block(m, z, msa_mask, pair_mask, attn_metadata, precomputed_masks=precomputed)
         if n_dims == 3:
             m = m.squeeze(0)
             z = z.squeeze(0)

@@ -19,11 +19,12 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerModule
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
 from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import (
-    broadcast_token_feat_to_atoms, get_token_representative_atoms,
-    max_atom_per_token_masked_select)
+    broadcast_token_feat_to_atoms,
+    get_token_representative_atoms,
+    max_atom_per_token_masked_select,
+)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.models.openfold3.config import PairformerConfig
 
@@ -33,16 +34,18 @@ class PairformerEmbedding(nn.Module):
     Implements AF3 Algorithm 31, line 1 - 6
     """
 
-    def __init__(self,
-                 pairformer: PairformerConfig,
-                 c_s_input: int,
-                 c_z: int,
-                 min_bin: float,
-                 max_bin: float,
-                 no_bin: int,
-                 inf: float,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        pairformer: PairformerConfig,
+        c_s_input: int,
+        c_z: int,
+        min_bin: float,
+        max_bin: float,
+        no_bin: int,
+        inf: float,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             pairformer:
@@ -68,30 +71,21 @@ class PairformerEmbedding(nn.Module):
         self.dtype = dtype
         self.skip_create_weights = skip_create_weights
 
-        self.linear_i = Linear(c_s_input,
-                               c_z,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=self.skip_create_weights)
+        self.linear_i = Linear(
+            c_s_input, c_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
-        self.linear_j = Linear(c_s_input,
-                               c_z,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=self.skip_create_weights)
+        self.linear_j = Linear(
+            c_s_input, c_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
         self.linear_distance = Linear(
-            self.no_bin,
-            c_z,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            self.no_bin, c_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
         bins = torch.linspace(min_bin, max_bin, no_bin)
         squared_bins = bins**2
-        upper = torch.cat([squared_bins[1:],
-                           squared_bins.new_tensor([inf])],
-                          dim=-1)
+        upper = torch.cat([squared_bins[1:], squared_bins.new_tensor([inf])], dim=-1)
         self.register_buffer("bins", bins, persistent=False)
         self.register_buffer("squared_bins", squared_bins, persistent=False)
         self.register_buffer("upper", upper, persistent=False)
@@ -106,17 +100,15 @@ class PairformerEmbedding(nn.Module):
         orig_dtype = zij.dtype
         with torch.amp.autocast(device_type="cuda", dtype=torch.float32):
             # si projection to zij
-            zij = (zij + self.linear_i(si_input.unsqueeze(-2)) +
-                   self.linear_j(si_input.unsqueeze(-3)))
+            zij = zij + self.linear_i(si_input.unsqueeze(-2)) + self.linear_j(si_input.unsqueeze(-3))
 
             # Embed pair distances of representative atoms
             dij = torch.sum(
-                (x_pred[..., None, :] - x_pred[..., None, :, :])**2,
+                (x_pred[..., None, :] - x_pred[..., None, :, :]) ** 2,
                 dim=-1,
                 keepdims=True,
             )
-            dij = ((dij > self.squared_bins) * (dij < self.upper)).type(
-                x_pred.dtype)
+            dij = ((dij > self.squared_bins) * (dij < self.upper)).type(x_pred.dtype)
             zij = zij + self.linear_distance(dij)
 
         return zij.to(dtype=orig_dtype)
@@ -146,8 +138,7 @@ class PairformerEmbedding(nn.Module):
         # outputs and the batch before calling the confidence heads.
         # Strip that dim so the pairformer sees plain [B, N, ...] tensors.
         def _strip_sample_dim(t: torch.Tensor, expected_ndim: int):
-            while t.ndim > expected_ndim and t.shape[-(expected_ndim +
-                                                       1)] == 1:
+            while t.ndim > expected_ndim and t.shape[-(expected_ndim + 1)] == 1:
                 t = t.squeeze(-(expected_ndim + 1))
             return t
 
@@ -166,7 +157,7 @@ class PairformerEmbedding(nn.Module):
             zij_chunk = self.embed_zij(
                 si_input=si_input,
                 zij=zij,
-                x_pred=x_pred[:, i:i + 1],
+                x_pred=x_pred[:, i : i + 1],
             )
             # embed_zij broadcasts to [B, 1, N, N, C_z]; squeeze sample dim
             zij_chunk = zij_chunk.squeeze(-4)
@@ -187,9 +178,15 @@ class PairformerEmbedding(nn.Module):
         # [B, num_samples, N, C_s] and [B, num_samples, N, N, C_z]
         return torch.cat(si_list, dim=-3), torch.cat(zij_list, dim=-4)
 
-    def pairformer_emb(self, si_input: torch.Tensor, si: torch.Tensor,
-                       zij: torch.Tensor, x_pred: torch.Tensor,
-                       single_mask: torch.Tensor, pair_mask: torch.Tensor):
+    def pairformer_emb(
+        self,
+        si_input: torch.Tensor,
+        si: torch.Tensor,
+        zij: torch.Tensor,
+        x_pred: torch.Tensor,
+        single_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+    ):
         zij = self.embed_zij(si_input=si_input, zij=zij, x_pred=x_pred)
         batch_dims = x_pred.shape[:-2]
 
@@ -203,8 +200,7 @@ class PairformerEmbedding(nn.Module):
 
         si = reshape_inputs(x=si, feat_dims=si.shape[-2:])
         zij = reshape_inputs(x=zij, feat_dims=zij.shape[-3:])
-        single_mask = reshape_inputs(x=single_mask,
-                                     feat_dims=single_mask.shape[-1:])
+        single_mask = reshape_inputs(x=single_mask, feat_dims=single_mask.shape[-1:])
         pair_mask = reshape_inputs(x=pair_mask, feat_dims=pair_mask.shape[-2:])
         si, zij = self.pairformer_stack(si, zij, single_mask, pair_mask)
 
@@ -213,14 +209,16 @@ class PairformerEmbedding(nn.Module):
 
         return si, zij
 
-    def forward(self,
-                si_input: torch.Tensor,
-                si: torch.Tensor,
-                zij: torch.Tensor,
-                x_pred: torch.Tensor,
-                single_mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                apply_per_sample: bool = False):
+    def forward(
+        self,
+        si_input: torch.Tensor,
+        si: torch.Tensor,
+        zij: torch.Tensor,
+        x_pred: torch.Tensor,
+        single_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        apply_per_sample: bool = False,
+    ):
         """
         Args:
             si_input:
@@ -275,12 +273,14 @@ class PredictedAlignedErrorHead(nn.Module):
     AF3 (subsection 4.3.2)
     """
 
-    def __init__(self,
-                 c_z: int,
-                 c_out: int,
-                 dtype: torch.dtype = torch.float32,
-                 eps: float = 1e-5,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_z: int,
+        c_out: int,
+        dtype: torch.dtype = torch.float32,
+        eps: float = 1e-5,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             c_z:
@@ -294,11 +294,7 @@ class PredictedAlignedErrorHead(nn.Module):
         self.c_out = c_out
 
         self.layer_norm = nn.LayerNorm(self.c_z, dtype=dtype, eps=eps)
-        self.linear = Linear(self.c_z,
-                             self.c_out,
-                             bias=False,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_z, self.c_out, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def _compute_logits(self, zij: torch.Tensor):
         logits = self.linear(self.layer_norm(zij))
@@ -325,12 +321,14 @@ class PredictedDistanceErrorHead(nn.Module):
     AF3 (subsection 4.3.3)
     """
 
-    def __init__(self,
-                 c_z: int,
-                 c_out: int,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_z: int,
+        c_out: int,
+        eps: float = 1e-5,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             c_z:
@@ -344,11 +342,7 @@ class PredictedDistanceErrorHead(nn.Module):
         self.c_out = c_out
 
         self.layer_norm = nn.LayerNorm(self.c_z, dtype=dtype, eps=eps)
-        self.linear = Linear(self.c_z,
-                             self.c_out,
-                             bias=False,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_z, self.c_out, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def _compute_logits(self, zij: torch.Tensor):
         logits = self.linear(self.layer_norm(zij))
@@ -375,13 +369,15 @@ class PerResidueLDDTAllAtom(nn.Module):
     Implements Plddt Head (Algorithm 31, Line 7) for AF3 (subsection 4.3.1)
     """
 
-    def __init__(self,
-                 c_s: int,
-                 c_out: int,
-                 max_atoms_per_token: int,
-                 dtype: torch.dtype = torch.float32,
-                 eps: float = 1e-5,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_s: int,
+        c_out: int,
+        max_atoms_per_token: int,
+        dtype: torch.dtype = torch.float32,
+        eps: float = 1e-5,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             c_s:
@@ -398,11 +394,13 @@ class PerResidueLDDTAllAtom(nn.Module):
         self.c_out = c_out
 
         self.layer_norm = nn.LayerNorm(self.c_s, dtype=dtype, eps=eps)
-        self.linear = Linear(self.c_s,
-                             self.max_atoms_per_token * self.c_out,
-                             bias=False,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(
+            self.c_s,
+            self.max_atoms_per_token * self.c_out,
+            bias=False,
+            dtype=dtype,
+            skip_create_weights=skip_create_weights,
+        )
 
     def forward(self, s: torch.Tensor, max_atom_per_token_mask: torch.Tensor):
         """
@@ -420,15 +418,13 @@ class PerResidueLDDTAllAtom(nn.Module):
         n_token = s.shape[-2]
 
         # Flatten batch dims
-        max_atom_per_token_mask = max_atom_per_token_mask.reshape(
-            -1, n_token * self.max_atoms_per_token)
+        max_atom_per_token_mask = max_atom_per_token_mask.reshape(-1, n_token * self.max_atoms_per_token)
 
         # [*, N_token, max_atoms_per_token * c_out]
         logits = self.linear(self.layer_norm(s))
 
         # [*, N_token * max_atoms_per_token, c_out]
-        logits = logits.reshape(*batch_dims,
-                                n_token * self.max_atoms_per_token, self.c_out)
+        logits = logits.reshape(*batch_dims, n_token * self.max_atoms_per_token, self.c_out)
 
         # [*, N_atom, c_out]
         logits = max_atom_per_token_masked_select(
@@ -444,13 +440,15 @@ class ExperimentallyResolvedHeadAllAtom(nn.Module):
     Implements resolvedHeads for AF3, subsection 4.3.3
     """
 
-    def __init__(self,
-                 c_s: int,
-                 c_out: int,
-                 max_atoms_per_token: int,
-                 dtype: torch.dtype = torch.float32,
-                 eps: float = 1e-5,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_s: int,
+        c_out: int,
+        max_atoms_per_token: int,
+        dtype: torch.dtype = torch.float32,
+        eps: float = 1e-5,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             c_s:
@@ -467,11 +465,13 @@ class ExperimentallyResolvedHeadAllAtom(nn.Module):
         self.c_out = c_out
 
         self.layer_norm = nn.LayerNorm(self.c_s, dtype=dtype, eps=eps)
-        self.linear = Linear(self.c_s,
-                             self.max_atoms_per_token * self.c_out,
-                             bias=False,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(
+            self.c_s,
+            self.max_atoms_per_token * self.c_out,
+            bias=False,
+            dtype=dtype,
+            skip_create_weights=skip_create_weights,
+        )
 
     def forward(self, s: torch.Tensor, max_atom_per_token_mask: torch.Tensor):
         """
@@ -489,15 +489,13 @@ class ExperimentallyResolvedHeadAllAtom(nn.Module):
         n_token = s.shape[-2]
 
         # Flatten batch dims
-        max_atom_per_token_mask = max_atom_per_token_mask.reshape(
-            -1, n_token * self.max_atoms_per_token)
+        max_atom_per_token_mask = max_atom_per_token_mask.reshape(-1, n_token * self.max_atoms_per_token)
 
         # [*, N_token, max_atoms_per_token * c_out]
         logits = self.linear(self.layer_norm(s))
 
         # [*, N_token * max_atoms_per_token, c_out]
-        logits = logits.reshape(*batch_dims,
-                                n_token * self.max_atoms_per_token, self.c_out)
+        logits = logits.reshape(*batch_dims, n_token * self.max_atoms_per_token, self.c_out)
 
         # [*, N_atom, c_out]
         logits = max_atom_per_token_masked_select(
@@ -535,11 +533,7 @@ class DistogramHead(nn.Module):
         self.c_z = c_z
         self.c_out = c_out
 
-        self.linear = Linear(self.c_z,
-                             self.c_out,
-                             bias=False,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_z, self.c_out, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def forward(self, z):
         """
@@ -595,49 +589,50 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             no_bin=config.no_bin,
             inf=config.inf,
             dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            skip_create_weights=self.skip_create_weights,
+        )
 
         self.pde = PredictedDistanceErrorHead(
-            c_z=config.pde.c_z,
-            c_out=config.pde.c_out,
-            dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            c_z=config.pde.c_z, c_out=config.pde.c_out, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
         self.plddt = PerResidueLDDTAllAtom(
             c_s=config.lddt.c_s,
             c_out=config.lddt.c_out,
             max_atoms_per_token=config.lddt.max_atoms_per_token,
             dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            skip_create_weights=self.skip_create_weights,
+        )
 
         self.distogram = DistogramHead(
             c_z=config.distogram.c_z,
             c_out=config.distogram.c_out,
             dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            skip_create_weights=self.skip_create_weights,
+        )
 
         self.experimentally_resolved = ExperimentallyResolvedHeadAllAtom(
             c_s=config.experimentally_resolved.c_s,
             c_out=config.experimentally_resolved.c_out,
-            max_atoms_per_token=config.experimentally_resolved.
-            max_atoms_per_token,
+            max_atoms_per_token=config.experimentally_resolved.max_atoms_per_token,
             dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            skip_create_weights=self.skip_create_weights,
+        )
 
         if config.pae.enabled:
             self.pae = PredictedAlignedErrorHead(
                 c_z=config.pae.c_z,
                 c_out=config.pae.c_out,
                 dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                skip_create_weights=self.skip_create_weights,
+            )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(self, batch: dict, si_input: torch.Tensor, output: dict):
         """
@@ -677,8 +672,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         out_dtype = output["atom_positions_predicted"].dtype
         si = output["si_trunk"].to(dtype=self.dtype)
         zij = output["zij_trunk"].to(dtype=self.dtype)
-        atom_positions_predicted = output["atom_positions_predicted"].to(
-            dtype=si.dtype)
+        atom_positions_predicted = output["atom_positions_predicted"].to(dtype=si.dtype)
 
         # Distogram head: Main loop (Algorithm 1), line 17
         distogram_logits = self.distogram(z=zij)
@@ -690,9 +684,8 @@ class AuxiliaryHeadsAllAtom(nn.Module):
 
         # Get representative atoms
         repr_x_pred, repr_x_mask = get_token_representative_atoms(
-            batch=batch,
-            x=atom_positions_predicted,
-            atom_mask=batch["atom_mask"])
+            batch=batch, x=atom_positions_predicted, atom_mask=batch["atom_mask"]
+        )
 
         out_device = atom_positions_predicted.device
 
@@ -719,13 +712,10 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         )
 
         si = si.to(device=out_device)
-        aux_out["plddt_logits"] = self.plddt(
-            s=si, max_atom_per_token_mask=max_atom_per_token_mask)
+        aux_out["plddt_logits"] = self.plddt(s=si, max_atom_per_token_mask=max_atom_per_token_mask)
 
-        experimentally_resolved_logits = self.experimentally_resolved(
-            si, max_atom_per_token_mask)
-        aux_out[
-            "experimentally_resolved_logits"] = experimentally_resolved_logits
+        experimentally_resolved_logits = self.experimentally_resolved(si, max_atom_per_token_mask)
+        aux_out["experimentally_resolved_logits"] = experimentally_resolved_logits
 
         pde_logits = self.pde(zij)
 

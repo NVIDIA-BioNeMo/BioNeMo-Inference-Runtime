@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Boltz2 constants and clean Python dataclass types (no NumPy structured dtypes)."""
 
 from __future__ import annotations
@@ -143,62 +156,198 @@ ref_atoms = {
     "PRO": ["N", "CA", "C", "O", "CB", "CG", "CD"],
     "SER": ["N", "CA", "C", "O", "CB", "OG"],
     "THR": ["N", "CA", "C", "O", "CB", "OG1", "CG2"],
-    "TRP": [
-        "N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "NE1", "CE2", "CE3",
-        "CZ2", "CZ3", "CH2"
-    ],
-    "TYR":
-    ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
+    "TRP": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "NE1", "CE2", "CE3", "CZ2", "CZ3", "CH2"],
+    "TYR": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
     "VAL": ["N", "CA", "C", "O", "CB", "CG1", "CG2"],
     "A": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "O2'", "C1'", "N9", "C8", "N7", "C5", "C6", "N6", "N1", "C2", "N3",
-        "C4"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "O2'",
+        "C1'",
+        "N9",
+        "C8",
+        "N7",
+        "C5",
+        "C6",
+        "N6",
+        "N1",
+        "C2",
+        "N3",
+        "C4",
     ],
     "G": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "O2'", "C1'", "N9", "C8", "N7", "C5", "C6", "O6", "N1", "C2", "N2",
-        "N3", "C4"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "O2'",
+        "C1'",
+        "N9",
+        "C8",
+        "N7",
+        "C5",
+        "C6",
+        "O6",
+        "N1",
+        "C2",
+        "N2",
+        "N3",
+        "C4",
     ],
     "C": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "O2'", "C1'", "N1", "C2", "O2", "N3", "C4", "N4", "C5", "C6"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "O2'",
+        "C1'",
+        "N1",
+        "C2",
+        "O2",
+        "N3",
+        "C4",
+        "N4",
+        "C5",
+        "C6",
     ],
     "U": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "O2'", "C1'", "N1", "C2", "O2", "N3", "C4", "O4", "C5", "C6"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "O2'",
+        "C1'",
+        "N1",
+        "C2",
+        "O2",
+        "N3",
+        "C4",
+        "O4",
+        "C5",
+        "C6",
     ],
-    "N": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "O2'", "C1'"
-    ],
+    "N": ["P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "O2'", "C1'"],
     "DA": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "C1'", "N9", "C8", "N7", "C5", "C6", "N6", "N1", "C2", "N3", "C4"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "C1'",
+        "N9",
+        "C8",
+        "N7",
+        "C5",
+        "C6",
+        "N6",
+        "N1",
+        "C2",
+        "N3",
+        "C4",
     ],
     "DG": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "C1'", "N9", "C8", "N7", "C5", "C6", "O6", "N1", "C2", "N2", "N3", "C4"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "C1'",
+        "N9",
+        "C8",
+        "N7",
+        "C5",
+        "C6",
+        "O6",
+        "N1",
+        "C2",
+        "N2",
+        "N3",
+        "C4",
     ],
     "DC": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "C1'", "N1", "C2", "O2", "N3", "C4", "N4", "C5", "C6"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "C1'",
+        "N1",
+        "C2",
+        "O2",
+        "N3",
+        "C4",
+        "N4",
+        "C5",
+        "C6",
     ],
     "DT": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "C1'", "N1", "C2", "O2", "N3", "C4", "O4", "C5", "C7", "C6"
+        "P",
+        "OP1",
+        "OP2",
+        "O5'",
+        "C5'",
+        "C4'",
+        "O4'",
+        "C3'",
+        "O3'",
+        "C2'",
+        "C1'",
+        "N1",
+        "C2",
+        "O2",
+        "N3",
+        "C4",
+        "O4",
+        "C5",
+        "C7",
+        "C6",
     ],
-    "DN": [
-        "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'",
-        "C1'"
-    ],
+    "DN": ["P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "C1'"],
 }
 
 protein_backbone_atom_names = ["N", "CA", "C", "O"]
-nucleic_backbone_atom_names = [
-    "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "O2'",
-    "C1'"
-]
+nucleic_backbone_atom_names = ["P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "O2'", "C1'"]
 
 res_to_center_atom = {
     "UNK": "CA",
@@ -268,14 +417,8 @@ res_to_disto_atom = {
     "DN": "C1'",
 }
 
-res_to_center_atom_id = {
-    res: ref_atoms[res].index(atom)
-    for res, atom in res_to_center_atom.items()
-}
-res_to_disto_atom_id = {
-    res: ref_atoms[res].index(atom)
-    for res, atom in res_to_disto_atom.items()
-}
+res_to_center_atom_id = {res: ref_atoms[res].index(atom) for res, atom in res_to_center_atom.items()}
+res_to_disto_atom_id = {res: ref_atoms[res].index(atom) for res, atom in res_to_disto_atom.items()}
 
 # -----------------------------------------------------------------------------
 # BONDS
@@ -310,14 +453,8 @@ contact_conditioning_info = {
 # BACKBONE ATOM INDICES (for atom_backbone_feat)
 # -----------------------------------------------------------------------------
 
-protein_backbone_atom_index = {
-    name: i
-    for i, name in enumerate(protein_backbone_atom_names)
-}
-nucleic_backbone_atom_index = {
-    name: i
-    for i, name in enumerate(nucleic_backbone_atom_names)
-}
+protein_backbone_atom_index = {name: i for i, name in enumerate(protein_backbone_atom_names)}
+nucleic_backbone_atom_index = {name: i for i, name in enumerate(nucleic_backbone_atom_names)}
 
 # -----------------------------------------------------------------------------
 # MSA
@@ -389,6 +526,7 @@ vdw_radii = [
 @dataclass
 class Atom:
     """Single atom in a residue."""
+
     name: str
     element: int
     charge: int
@@ -408,6 +546,7 @@ class Atom:
 @dataclass
 class Bond:
     """Bond between two atoms (global indices)."""
+
     chain_1: int
     chain_2: int
     res_1: int
@@ -427,6 +566,7 @@ class Bond:
 @dataclass
 class Residue:
     """Residue in a chain."""
+
     name: str  # 3-letter CCD name, e.g. "ALA"
     res_type: int  # token_id
     res_idx: int
@@ -448,6 +588,7 @@ class Residue:
 @dataclass
 class Chain:
     """Chain in the structure."""
+
     name: str
     mol_type: int
     entity_id: int
@@ -470,6 +611,7 @@ class Chain:
 @dataclass
 class Token:
     """Token (one per residue for polymers) for featurization."""
+
     token_idx: int
     atom_idx: int
     atom_num: int
@@ -505,6 +647,7 @@ class Token:
 @dataclass
 class TokenBond:
     """Bond between two tokens (by token index). type is bond_type + 1."""
+
     token_1: int
     token_2: int
     type: int = 1
@@ -520,13 +663,13 @@ class TokenBond:
 
 # OSS-compatible ensemble: one row per conformer (atom_coord_idx, atom_num).
 # Single conformer: [(0, n_atoms)] so coords[0:n_atoms] is the first conformer.
-EnsembleDtype = np.dtype([("atom_coord_idx", np.int32),
-                          ("atom_num", np.int32)])
+EnsembleDtype = np.dtype([("atom_coord_idx", np.int32), ("atom_num", np.int32)])
 
 
 @dataclass
 class Structure:
     """Full structure: atoms, bonds, residues, chains, coords, ensemble metadata."""
+
     atoms: list[Atom]
     bonds: list[Bond]
     residues: list[Residue]
@@ -563,29 +706,16 @@ class Structure:
         ens_raw = d["ensemble"]
         if isinstance(ens_raw, np.ndarray) and ens_raw.dtype == EnsembleDtype:
             ensemble = ens_raw
-        elif hasattr(ens_raw, '__len__') and len(ens_raw) > 0:
-            ensemble = np.array([tuple(e) for e in ens_raw],
-                                dtype=EnsembleDtype)
+        elif hasattr(ens_raw, "__len__") and len(ens_raw) > 0:
+            ensemble = np.array([tuple(e) for e in ens_raw], dtype=EnsembleDtype)
         else:
             ensemble = np.array([], dtype=EnsembleDtype)
 
         return cls(
-            atoms=[
-                Atom.from_dict(a) if isinstance(a, dict) else a
-                for a in d["atoms"]
-            ],
-            bonds=[
-                Bond.from_dict(b) if isinstance(b, dict) else b
-                for b in d["bonds"]
-            ],
-            residues=[
-                Residue.from_dict(r) if isinstance(r, dict) else r
-                for r in d["residues"]
-            ],
-            chains=[
-                Chain.from_dict(c) if isinstance(c, dict) else c
-                for c in d["chains"]
-            ],
+            atoms=[Atom.from_dict(a) if isinstance(a, dict) else a for a in d["atoms"]],
+            bonds=[Bond.from_dict(b) if isinstance(b, dict) else b for b in d["bonds"]],
+            residues=[Residue.from_dict(r) if isinstance(r, dict) else r for r in d["residues"]],
+            chains=[Chain.from_dict(c) if isinstance(c, dict) else c for c in d["chains"]],
             coords=_np(d["coords"], np.float32),
             ensemble=ensemble,
             mask=_np(d["mask"], bool),

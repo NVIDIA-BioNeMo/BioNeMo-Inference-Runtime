@@ -1,5 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Unit tests for the Boltz-2 template alignment core.
 
@@ -10,19 +22,25 @@ chain maps to which query chain and at what offset. Biopython + SciPy only
 (no CCD/GPU/golden), so they run fast in CI. Full 12-tensor featurization is
 covered separately, against the upstream Boltz implementation.
 """
+
 from __future__ import annotations
 
 import dataclasses
-
 from pathlib import Path
 
 import pytest
 
 from tensorrt_bionemo.pipeline.models.boltz2.template_logic import (
-    Alignment, TemplateMatch, _load_modified_mol, global_alignment_score,
-    local_alignments, parse_template_structure,
-    template_records_from_matching, template_records_from_search,
-    tokenize_template)
+    Alignment,
+    TemplateMatch,
+    _load_modified_mol,
+    global_alignment_score,
+    local_alignments,
+    parse_template_structure,
+    template_records_from_matching,
+    template_records_from_search,
+    tokenize_template,
+)
 
 _REPO = Path(__file__).resolve().parents[4]
 # Small committed template CIF (chain A, 211 protein residues); parses without
@@ -46,8 +64,7 @@ def test_global_alignment_score_self_exceeds_cross():
 
 
 def test_global_alignment_score_is_symmetric():
-    assert global_alignment_score(SEQ_A, SEQ_B) == global_alignment_score(
-        SEQ_B, SEQ_A)
+    assert global_alignment_score(SEQ_A, SEQ_B) == global_alignment_score(SEQ_B, SEQ_A)
 
 
 # --------------------------------------------------------------------------- #
@@ -64,7 +81,7 @@ def test_local_alignments_self_is_full_ungapped_block():
 
 def test_local_alignments_recovers_offset():
     """A query cut from the middle of the template aligns back at that offset."""
-    query = SEQ_A[_HEAD:len(SEQ_A) - _TAIL]
+    query = SEQ_A[_HEAD : len(SEQ_A) - _TAIL]
     a = local_alignments(query, SEQ_A)[0]
     assert a.query_st == 0
     assert a.template_st == _HEAD
@@ -76,11 +93,16 @@ def test_local_alignments_recovers_offset():
 # template_records_from_matching (explicit 1:1 chain mapping)
 # --------------------------------------------------------------------------- #
 def test_records_from_matching_offset_and_flags_propagate():
-    query = SEQ_A[_HEAD:len(SEQ_A) - _TAIL]
+    query = SEQ_A[_HEAD : len(SEQ_A) - _TAIL]
     recs = template_records_from_matching(
-        template_id="tmpl", chain_ids=["A"], sequences={"A": query},
-        template_chain_ids=["A"], template_sequences={"A": SEQ_A},
-        force=True, threshold=0.5)
+        template_id="tmpl",
+        chain_ids=["A"],
+        sequences={"A": query},
+        template_chain_ids=["A"],
+        template_sequences={"A": SEQ_A},
+        force=True,
+        threshold=0.5,
+    )
     assert len(recs) == 1
     r = recs[0]
     assert r.name == "tmpl"
@@ -92,8 +114,12 @@ def test_records_from_matching_offset_and_flags_propagate():
 
 def test_records_from_matching_default_threshold_is_inf():
     recs = template_records_from_matching(
-        template_id="t", chain_ids=["A"], sequences={"A": SEQ_A},
-        template_chain_ids=["A"], template_sequences={"A": SEQ_A})
+        template_id="t",
+        chain_ids=["A"],
+        sequences={"A": SEQ_A},
+        template_chain_ids=["A"],
+        template_sequences={"A": SEQ_A},
+    )
     assert recs[0].threshold == float("inf")
     assert recs[0].force is False
 
@@ -102,9 +128,11 @@ def test_records_from_matching_multichain_pairs_by_position():
     """matching zips the chain lists positionally (no re-assignment)."""
     recs = template_records_from_matching(
         template_id="t",
-        chain_ids=["A", "B"], sequences={"A": SEQ_A, "B": SEQ_B},
+        chain_ids=["A", "B"],
+        sequences={"A": SEQ_A, "B": SEQ_B},
         template_chain_ids=["TA", "TB"],
-        template_sequences={"TA": SEQ_A, "TB": SEQ_B})
+        template_sequences={"TA": SEQ_A, "TB": SEQ_B},
+    )
     mapping = {(r.query_chain, r.template_chain) for r in recs}
     assert ("A", "TA") in mapping
     assert ("B", "TB") in mapping
@@ -118,10 +146,12 @@ def test_records_from_search_assigns_by_sequence_not_order():
     chain via linear_sum_assignment on the global-score matrix."""
     recs = template_records_from_search(
         template_id="t",
-        chain_ids=["A", "B"], sequences={"A": SEQ_A, "B": SEQ_B},
+        chain_ids=["A", "B"],
+        sequences={"A": SEQ_A, "B": SEQ_B},
         # T1 carries B's sequence, T2 carries A's — order is deliberately swapped.
         template_chain_ids=["T1", "T2"],
-        template_sequences={"T1": SEQ_B, "T2": SEQ_A})
+        template_sequences={"T1": SEQ_B, "T2": SEQ_A},
+    )
     assignment = {r.query_chain: r.template_chain for r in recs}
     assert assignment["A"] == "T2"  # A matched to the chain holding SEQ_A
     assert assignment["B"] == "T1"  # B matched to the chain holding SEQ_B
@@ -131,8 +161,9 @@ def test_records_from_search_assigns_by_sequence_not_order():
 # dataclasses
 # --------------------------------------------------------------------------- #
 def test_templatematch_is_frozen():
-    m = TemplateMatch(name="t", query_chain="A", query_st=0, query_en=1,
-                      template_chain="A", template_st=0, template_en=1)
+    m = TemplateMatch(
+        name="t", query_chain="A", query_st=0, query_en=1, template_chain="A", template_st=0, template_en=1
+    )
     with pytest.raises(dataclasses.FrozenInstanceError):
         m.query_st = 5  # frozen dataclass -> mutation forbidden
 
@@ -149,6 +180,7 @@ def test_alignment_fields():
 # --------------------------------------------------------------------------- #
 def test_load_modified_mol_rejects_unsafe_names(tmp_path):
     import pickle
+
     # Plant a pickle one directory above mol_dir; a traversal name must not reach it.
     (tmp_path.parent / "evil.pkl").write_bytes(pickle.dumps({"x": 1}))
     for unsafe in ["../evil", "..", "a/b", "a.b", r"a\b", "toolong6", "MSE/../x"]:
@@ -175,8 +207,12 @@ def test_parse_then_self_align_is_full_coverage_offset_zero():
     _, seqs = parse_template_structure(str(_CIF_8WLE), fmt="cif")
     seq = seqs["A"]
     recs = template_records_from_matching(
-        template_id="8wle", chain_ids=["A"], sequences={"A": seq},
-        template_chain_ids=["A"], template_sequences={"A": seq})
+        template_id="8wle",
+        chain_ids=["A"],
+        sequences={"A": seq},
+        template_chain_ids=["A"],
+        template_sequences={"A": seq},
+    )
     assert len(recs) == 1
     r = recs[0]
     assert r.template_st - r.query_st == 0

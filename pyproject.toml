@@ -45,7 +45,8 @@ license = "Apache-2.0"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-# Vendored + private trees are never linted (mirrors prek.toml's exclude).
+# Vendored trees are never linted (mirrors prek.toml's exclude).
+extend-exclude = ["3rdparty"]
 
 [tool.ruff.lint]
 # Enforced on changed files only, so the set stays low-noise: rules with little
@@ -87,7 +88,12 @@ select = [
   "PGH",
 ]
 # The formatter owns line wrapping; long strings/URLs/comments shouldn't fail lint.
-ignore = ["E501"]
+# E741: single-letter names like B/I/J/H/D and l are the domain's tensor
+# shape-dim convention here; renaming would obscure the math and ripple across
+# call sites for no readability gain.
+# E731: assigning a lambda to a name is used deliberately for small local
+# helpers; rewriting to def is low-value churn.
+ignore = ["E501", "E741", "E731"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["tensorrt_bionemo"]

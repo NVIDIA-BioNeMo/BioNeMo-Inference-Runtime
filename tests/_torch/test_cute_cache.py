@@ -48,7 +48,7 @@ class _FakeArtifact:
         self.export_target = object_file_path
         if self.fail_after is not None:
             with open(object_file_path, "wb") as f:
-                f.write(self.payload[:self.fail_after])
+                f.write(self.payload[: self.fail_after])
             raise RuntimeError("simulated OOM mid-export")
         with open(object_file_path, "wb") as f:
             f.write(self.payload)
@@ -79,8 +79,7 @@ def test_crashed_export_publishes_no_partial_object(cache_dir):
     # error (logged) — the point is what it leaves on disk.
     cache.save_to_cache(key, _FakeArtifact(b"OBJECT_CONTENTS!", fail_after=3))
 
-    assert _o_files(cache_dir) == [], (
-        "a torn export left a canonical .o that peers would load and execute")
+    assert _o_files(cache_dir) == [], "a torn export left a canonical .o that peers would load and execute"
     assert _tmp_files(cache_dir) == [], "staging temp file was not cleaned up"
 
 
@@ -99,8 +98,8 @@ def test_successful_export_publishes_complete_object(cache_dir, monkeypatch):
 
     sentinel = object()
     monkeypatch.setattr(
-        cute_cache.cute.runtime, "load_module",
-        lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel})
+        cute_cache.cute.runtime, "load_module", lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel}
+    )
     assert cache.load_from_cache(key) is sentinel
 
 
@@ -112,7 +111,7 @@ def test_load_purges_corrupt_object(cache_dir, monkeypatch):
     # Publish a valid artifact, then clobber the file with garbage to mimic a
     # legacy corrupt object predating the atomic-write path.
     cache.save_to_cache(key, _FakeArtifact(b"VALID"))
-    (o_path, ) = _o_files(cache_dir)
+    (o_path,) = _o_files(cache_dir)
     o_path.write_bytes(b"\x00\xff not a real object file")
 
     def _boom(path, enable_tvm_ffi):

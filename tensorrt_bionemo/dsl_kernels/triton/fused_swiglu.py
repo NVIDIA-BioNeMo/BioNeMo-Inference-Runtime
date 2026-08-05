@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Triton kernel: fused SwiGLU activation.
 
 Computes one of two patterns in a single kernel launch, selected by
@@ -54,7 +67,7 @@ from tensorrt_bionemo.dsl_kernels.triton_cache import TritonKernelCache
 # ---------------------------------------------------------------------------
 
 
-@triton.jit(do_not_specialize=['out_row_stride', 'z_row_stride'])
+@triton.jit(do_not_specialize=["out_row_stride", "z_row_stride"])
 def _fused_swiglu_kernel(
     out_ptr,
     out_row_stride,
@@ -126,10 +139,7 @@ class FusedSwiGLU(TritonKernelCache):
 
     _global_cache: dict[tuple, dict] = {}
 
-    def __init__(self,
-                 d: int,
-                 three_way: bool,
-                 dtype: torch.dtype = torch.bfloat16):
+    def __init__(self, d: int, three_way: bool, dtype: torch.dtype = torch.bfloat16):
         self.d = d
         self.three_way = three_way
         self._block_size = _pick_block_size(d)
@@ -185,9 +195,7 @@ class FusedSwiGLU(TritonKernelCache):
         if output is not None:
             out_flat = output.reshape(num_rows, d)
         else:
-            out_flat = torch.empty((num_rows, d),
-                                   dtype=z.dtype,
-                                   device=z.device)
+            out_flat = torch.empty((num_rows, d), dtype=z.dtype, device=z.device)
 
         kernel = self._kernels[z.dtype]
         drv = kernel.driver
@@ -199,12 +207,19 @@ class FusedSwiGLU(TritonKernelCache):
             drv.launch(num_rows, self._tiles)
         else:
             kernel.launch(
-                (num_rows, self._tiles), out_flat, out_flat.stride(0), z_flat,
-                z_flat.stride(0), d, self.three_way, self._block_size)
+                (num_rows, self._tiles),
+                out_flat,
+                out_flat.stride(0),
+                z_flat,
+                z_flat.stride(0),
+                d,
+                self.three_way,
+                self._block_size,
+            )
 
         if output is not None:
             return output
-        return out_flat.reshape(z.shape[:-1] + (d, ))
+        return out_flat.reshape(z.shape[:-1] + (d,))
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +260,7 @@ def fused_swiglu(
         out_flat = torch.empty((num_rows, d), dtype=z.dtype, device=z.device)
 
     if num_rows == 0:
-        return out_flat.reshape(z.shape[:-1] + (d, ))
+        return out_flat.reshape(z.shape[:-1] + (d,))
 
     block_size = _pick_block_size(d)
     grid = (num_rows, triton.cdiv(d, block_size))
@@ -262,4 +277,4 @@ def fused_swiglu(
 
     if output is not None:
         return output
-    return out_flat.reshape(z.shape[:-1] + (d, ))
+    return out_flat.reshape(z.shape[:-1] + (d,))

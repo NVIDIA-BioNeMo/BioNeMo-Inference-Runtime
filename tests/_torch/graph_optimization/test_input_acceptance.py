@@ -22,6 +22,7 @@ rules are carried as plain data on the :class:`InputRoutingConfig` snapshot
 predicate is rebuilt from the config — including after (de)serialization — with
 no closure involved. These are pure shape checks, so no CUDA is needed.
 """
+
 import pickle
 
 import pytest
@@ -29,11 +30,13 @@ import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, InputKeyMethod)
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
-    CUDAGraphOptimizationTracker)
-from tensorrt_bionemo._torch.graph_optimization.config import (
-    InputRoutingConfig, InputRoutingConfigFactory, NamedDimTies)
+    CUDAGraphOptimizationConfig,
+    InputKeyMethod,
+    InputRoutingConfig,
+    InputRoutingConfigFactory,
+    NamedDimTies,
+)
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 DIM_LEN = 8  # feature dim of the stand-in token tensor: [B, n_tokens, DIM]
 
@@ -41,9 +44,11 @@ DIM_LEN = 8  # feature dim of the stand-in token tensor: [B, n_tokens, DIM]
 def _factory_with_rule(dim_len_max: int) -> InputRoutingConfigFactory:
     """A factory tying ``num_tokens`` to arg0 axis -2, capped at ``dim_len_max``."""
     factory = InputRoutingConfigFactory()
-    factory.set_named_dim_ties([
-        NamedDimTies(name="num_tokens", input_dims=(("arg0", (-2,)),)),
-    ])
+    factory.set_named_dim_ties(
+        [
+            NamedDimTies(name="num_tokens", input_dims=(("arg0", (-2,)),)),
+        ]
+    )
     factory.set_input_acceptance_dim("num_tokens", dim_len_max)
     return factory
 
@@ -73,12 +78,15 @@ def _accepted(tracker: CUDAGraphOptimizationTracker, *args, **kwargs) -> bool:
     return tracker.input_accepted(shapes)
 
 
-@pytest.mark.parametrize("n_tokens, accepted", [
-    (50, True),     # well under the limit
-    (100, True),    # equal to the limit is accepted (inclusive bound)
-    (101, False),   # just over (strict >)
-    (150, False),   # well over the limit
-])
+@pytest.mark.parametrize(
+    "n_tokens, accepted",
+    [
+        (50, True),  # well under the limit
+        (100, True),  # equal to the limit is accepted (inclusive bound)
+        (101, False),  # just over (strict >)
+        (150, False),  # well over the limit
+    ],
+)
 def test_input_accepted_respects_inclusive_limit(n_tokens, accepted):
     tracker = _tracker(_factory_with_rule(100).export_config())
     assert _accepted(tracker, torch.zeros(1, n_tokens, DIM_LEN)) is accepted
@@ -87,9 +95,11 @@ def test_input_accepted_respects_inclusive_limit(n_tokens, accepted):
 def test_no_acceptance_rule_accepts_any_size():
     """A padded dim with no acceptance rule imposes no cap."""
     factory = InputRoutingConfigFactory()
-    factory.set_named_dim_ties([
-        NamedDimTies(name="num_tokens", input_dims=(("arg0", (-2,)),)),
-    ])
+    factory.set_named_dim_ties(
+        [
+            NamedDimTies(name="num_tokens", input_dims=(("arg0", (-2,)),)),
+        ]
+    )
     factory.set_padded_dim("num_tokens", 4, 2048, 8)
     tracker = _tracker(factory.export_config())
     assert _accepted(tracker, torch.zeros(1, 9999, DIM_LEN)) is True
@@ -106,8 +116,7 @@ def test_survives_json_and_pickle_roundtrip():
     identical after a JSON or pickle round-trip of the config."""
     cfg = _factory_with_rule(100).export_config()
 
-    for restored in (InputRoutingConfig.model_validate_json(cfg.model_dump_json()),
-                     pickle.loads(pickle.dumps(cfg))):
+    for restored in (InputRoutingConfig.model_validate_json(cfg.model_dump_json()), pickle.loads(pickle.dumps(cfg))):
         tracker = _tracker(restored)
         assert _accepted(tracker, torch.zeros(1, 100, DIM_LEN)) is True
         assert _accepted(tracker, torch.zeros(1, 150, DIM_LEN)) is False
@@ -125,13 +134,14 @@ def test_survives_json_and_pickle_roundtrip():
 def _factory_pairformer_rule(dim_len_max: int) -> InputRoutingConfigFactory:
     factory = InputRoutingConfigFactory()
     # s -> arg0 (-2); z -> arg1 (-2 and -3); mask (-1); pair_mask (-1 and -2).
-    factory.set_named_dim_ties([
-        NamedDimTies(
-            name="num_tokens",
-            input_dims=(("arg0", (-2,)), ("arg1", (-2, -3)), ("mask", (-1,)),
-                        ("pair_mask", (-1, -2))),
-        ),
-    ])
+    factory.set_named_dim_ties(
+        [
+            NamedDimTies(
+                name="num_tokens",
+                input_dims=(("arg0", (-2,)), ("arg1", (-2, -3)), ("mask", (-1,)), ("pair_mask", (-1, -2))),
+            ),
+        ]
+    )
     factory.set_input_acceptance_dim("num_tokens", dim_len_max)
     return factory
 

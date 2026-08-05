@@ -35,24 +35,76 @@
 # canonical names with these strings or translate before ``RESNAME_TO_IDX``
 # lookup.
 RESTYPES_3 = [
-    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
-    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
-    "UNK",                               # index 20: unknown protein
-    "A", "G", "C", "U", "N",            # indices 21-25: RNA
-    "DA", "DG", "DC", "DT", "DN",       # indices 26-30: DNA
-    "GAP",                                # index 31: gap
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "CYS",
+    "GLN",
+    "GLU",
+    "GLY",
+    "HIS",
+    "ILE",
+    "LEU",
+    "LYS",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
+    "UNK",  # index 20: unknown protein
+    "A",
+    "G",
+    "C",
+    "U",
+    "N",  # indices 21-25: RNA
+    "DA",
+    "DG",
+    "DC",
+    "DT",
+    "DN",  # indices 26-30: DNA
+    "GAP",  # index 31: gap
 ]
 
 # Short codes (used for MSA and sequence encoding).
 # Protein and RNA entries are single-letter; DNA entries use two-character
 # codes (e.g. "DA", "DG", "DC", "DT", "DN").
 RESTYPES_1 = [
-    "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I",
-    "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V",
-    "X",                                  # index 20: unknown protein
-    "A", "G", "C", "U", "N",            # indices 21-25: RNA (same 1-letter)
-    "DA", "DG", "DC", "DT", "DN",       # indices 26-30: DNA
-    "-",                                  # index 31: gap
+    "A",
+    "R",
+    "N",
+    "D",
+    "C",
+    "Q",
+    "E",
+    "G",
+    "H",
+    "I",
+    "L",
+    "K",
+    "M",
+    "F",
+    "P",
+    "S",
+    "T",
+    "W",
+    "Y",
+    "V",
+    "X",  # index 20: unknown protein
+    "A",
+    "G",
+    "C",
+    "U",
+    "N",  # indices 21-25: RNA (same 1-letter)
+    "DA",
+    "DG",
+    "DC",
+    "DT",
+    "DN",  # indices 26-30: DNA
+    "-",  # index 31: gap
 ]
 
 NUM_RESTYPE_CLASSES = 32
@@ -63,10 +115,26 @@ RESNAME_TO_IDX = {name: i for i, name in enumerate(RESTYPES_3)}
 
 # 1-letter protein code to restype index
 _PROTEIN_1TO3 = {
-    "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS",
-    "Q": "GLN", "E": "GLU", "G": "GLY", "H": "HIS", "I": "ILE",
-    "L": "LEU", "K": "LYS", "M": "MET", "F": "PHE", "P": "PRO",
-    "S": "SER", "T": "THR", "W": "TRP", "Y": "TYR", "V": "VAL",
+    "A": "ALA",
+    "R": "ARG",
+    "N": "ASN",
+    "D": "ASP",
+    "C": "CYS",
+    "Q": "GLN",
+    "E": "GLU",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "L": "LEU",
+    "K": "LYS",
+    "M": "MET",
+    "F": "PHE",
+    "P": "PRO",
+    "S": "SER",
+    "T": "THR",
+    "W": "TRP",
+    "Y": "TYR",
+    "V": "VAL",
 }
 AA_1_TO_IDX = {k: RESNAME_TO_IDX[v] for k, v in _PROTEIN_1TO3.items()}
 AA_1_TO_IDX["X"] = 20  # unknown
@@ -109,8 +177,17 @@ NUM_ELEMENT_CLASSES = 119
 
 # Common elements in amino acids
 ELEMENT_TO_IDX = {
-    "H": 0, "C": 5, "N": 6, "O": 7, "F": 8, "P": 14,
-    "S": 15, "CL": 16, "SE": 33, "BR": 34, "I": 52,
+    "H": 0,
+    "C": 5,
+    "N": 6,
+    "O": 7,
+    "F": 8,
+    "P": 14,
+    "S": 15,
+    "CL": 16,
+    "SE": 33,
+    "BR": 34,
+    "I": 52,
 }
 
 # ---------------------------------------------------------------------------
@@ -163,8 +240,8 @@ POLYMER_TYPE_TO_MOL_TYPE = {
     "rna": MOL_TYPE_RNA,
     "dna": MOL_TYPE_DNA,
     "ligand": MOL_TYPE_LIGAND,
-    "ccd_ligand": MOL_TYPE_LIGAND,    # CCD-code ligand variant (TRT-BNM schema)
-    "smiles_ligand": MOL_TYPE_LIGAND, # SMILES ligand variant (TRT-BNM schema)
+    "ccd_ligand": MOL_TYPE_LIGAND,  # CCD-code ligand variant (TRT-BNM schema)
+    "smiles_ligand": MOL_TYPE_LIGAND,  # SMILES ligand variant (TRT-BNM schema)
 }
 
 # ---------------------------------------------------------------------------
@@ -192,27 +269,63 @@ AA_ATOMS = {
     "PRO": ["N", "CA", "C", "O", "CB", "CG", "CD"],
     "SER": ["N", "CA", "C", "O", "CB", "OG"],
     "THR": ["N", "CA", "C", "O", "CB", "OG1", "CG2"],
-    "TRP": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "NE1", "CE2",
-            "CE3", "CZ2", "CZ3", "CH2"],
-    "TYR": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2",
-            "CZ", "OH"],
+    "TRP": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "NE1", "CE2", "CE3", "CZ2", "CZ3", "CH2"],
+    "TYR": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
     "VAL": ["N", "CA", "C", "O", "CB", "CG1", "CG2"],
 }
 
 # Atom name → element symbol
 ATOM_NAME_TO_ELEMENT = {
-    "N": "N", "CA": "C", "C": "C", "O": "O", "CB": "C",
-    "CG": "C", "CG1": "C", "CG2": "C", "OG": "O", "OG1": "O",
-    "SG": "S", "CD": "C", "CD1": "C", "CD2": "C", "ND1": "N",
-    "ND2": "N", "OD1": "O", "OD2": "O", "SD": "S", "CE": "C",
-    "CE1": "C", "CE2": "C", "CE3": "C", "NE": "N", "NE1": "N",
-    "NE2": "N", "OE1": "O", "OE2": "O", "CH2": "C", "NH1": "N",
-    "NH2": "N", "OH": "O", "CZ": "C", "CZ2": "C", "CZ3": "C",
-    "NZ": "N", "OXT": "O",
+    "N": "N",
+    "CA": "C",
+    "C": "C",
+    "O": "O",
+    "CB": "C",
+    "CG": "C",
+    "CG1": "C",
+    "CG2": "C",
+    "OG": "O",
+    "OG1": "O",
+    "SG": "S",
+    "CD": "C",
+    "CD1": "C",
+    "CD2": "C",
+    "ND1": "N",
+    "ND2": "N",
+    "OD1": "O",
+    "OD2": "O",
+    "SD": "S",
+    "CE": "C",
+    "CE1": "C",
+    "CE2": "C",
+    "CE3": "C",
+    "NE": "N",
+    "NE1": "N",
+    "NE2": "N",
+    "OE1": "O",
+    "OE2": "O",
+    "CH2": "C",
+    "NH1": "N",
+    "NH2": "N",
+    "OH": "O",
+    "CZ": "C",
+    "CZ2": "C",
+    "CZ3": "C",
+    "NZ": "N",
+    "OXT": "O",
 }
 
 # Element symbol → atomic number (1-indexed for periodic table)
 ELEMENT_ATOMIC_NUMBER = {
-    "H": 1, "C": 6, "N": 7, "O": 8, "F": 9, "P": 15,
-    "S": 16, "CL": 17, "SE": 34, "BR": 35, "I": 53,
+    "H": 1,
+    "C": 6,
+    "N": 7,
+    "O": 8,
+    "F": 9,
+    "P": 15,
+    "S": 16,
+    "CL": 17,
+    "SE": 34,
+    "BR": 35,
+    "I": 53,
 }

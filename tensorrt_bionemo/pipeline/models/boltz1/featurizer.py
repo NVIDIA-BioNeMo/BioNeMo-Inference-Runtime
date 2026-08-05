@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Boltz1 feature computation from Structure + Tokens.
 
 Differences from Boltz2 (featurizerv2):
@@ -14,7 +27,7 @@ Differences from Boltz2 (featurizerv2):
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -22,12 +35,22 @@ from torch.nn.functional import one_hot
 
 # isort: off
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
-    Structure, Token, TokenBond, chain_type_ids, num_elements, num_tokens,
-    ref_atoms)
+    Structure,
+    Token,
+    TokenBond,
+    chain_type_ids,
+    num_elements,
+    num_tokens,
+    ref_atoms,
+)
 from tensorrt_bionemo._torch.tensor_utils import pad_dim
 from tensorrt_bionemo.pipeline.models.boltz2.featurizer import (
-    _center_random_augmentation, _compute_collinear_mask, _convert_atom_name,
-    _fill_nonpolymer_frames, _frame_resolved_mask_oss)
+    _center_random_augmentation,
+    _compute_collinear_mask,
+    _convert_atom_name,
+    _fill_nonpolymer_frames,
+    _frame_resolved_mask_oss,
+)
 # isort: on
 
 # Boltz1 pocket contact info (from OSS boltz.data.const)
@@ -43,7 +66,7 @@ def process_token_features(
     tokens_list: list[Token],
     token_bonds: list[TokenBond],
     structure: Structure,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """Build Boltz1 token-level feature tensors."""
     n = len(tokens_list)
@@ -51,27 +74,19 @@ def process_token_features(
     pad_len = (num_tok - n) if max_tokens is not None and n < max_tokens else 0
 
     token_index = torch.arange(n, dtype=torch.long)
-    residue_index = torch.tensor([t.res_idx for t in tokens_list],
-                                 dtype=torch.long)
+    residue_index = torch.tensor([t.res_idx for t in tokens_list], dtype=torch.long)
     asym_id = torch.tensor([t.asym_id for t in tokens_list], dtype=torch.long)
-    entity_id = torch.tensor([t.entity_id for t in tokens_list],
-                             dtype=torch.long)
+    entity_id = torch.tensor([t.entity_id for t in tokens_list], dtype=torch.long)
     sym_id = torch.tensor([t.sym_id for t in tokens_list], dtype=torch.long)
-    mol_type = torch.tensor([t.mol_type for t in tokens_list],
-                            dtype=torch.long)
-    res_type = torch.tensor([t.res_type for t in tokens_list],
-                            dtype=torch.long)
+    mol_type = torch.tensor([t.mol_type for t in tokens_list], dtype=torch.long)
+    res_type = torch.tensor([t.res_type for t in tokens_list], dtype=torch.long)
     res_type = one_hot(res_type, num_classes=num_tokens)
-    disto_center = torch.tensor([t.disto_coords for t in tokens_list],
-                                dtype=torch.float32)
-    cyclic_period = torch.tensor([t.cyclic_period for t in tokens_list],
-                                 dtype=torch.long)
+    disto_center = torch.tensor([t.disto_coords for t in tokens_list], dtype=torch.float32)
+    cyclic_period = torch.tensor([t.cyclic_period for t in tokens_list], dtype=torch.long)
 
     pad_mask = torch.ones(n, dtype=torch.float32)
-    resolved_mask = torch.tensor([t.resolved_mask for t in tokens_list],
-                                 dtype=torch.float32)
-    disto_mask = torch.tensor([t.disto_mask for t in tokens_list],
-                              dtype=torch.float32)
+    resolved_mask = torch.tensor([t.resolved_mask for t in tokens_list], dtype=torch.float32)
+    disto_mask = torch.tensor([t.disto_mask for t in tokens_list], dtype=torch.float32)
 
     tok_to_idx = {t.token_idx: i for i, t in enumerate(tokens_list)}
     bonds = torch.zeros(num_tok, num_tok, dtype=torch.float32)
@@ -86,8 +101,7 @@ def process_token_features(
     # Pocket feature: default UNSPECIFIED (inference, no binder/pocket info)
     pocket_np = np.full(n, pocket_contact_info["UNSPECIFIED"], dtype=np.int64)
     pocket_feature = torch.from_numpy(pocket_np).long()
-    pocket_feature = one_hot(pocket_feature,
-                             num_classes=len(pocket_contact_info))
+    pocket_feature = one_hot(pocket_feature, num_classes=len(pocket_contact_info))
 
     if pad_len > 0:
         token_index = pad_dim(token_index, 0, pad_len)
@@ -130,8 +144,8 @@ def process_atom_features(
     min_dist: float = 2.0,
     max_dist: float = 22.0,
     atoms_per_window_queries: int = 32,
-    max_atoms: Optional[int] = None,
-    max_tokens: Optional[int] = None,
+    max_atoms: int | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """Build Boltz1 atom-level feature tensors (no ensemble dim)."""
     n_tokens = len(tokens_list)
@@ -184,34 +198,30 @@ def process_atom_features(
         # Frame data (matches OSS boltz1 featurizer.py process_atom_features):
         # protein -> N/CA/C; RNA/DNA -> C1'/C3'/C4'; NONPOLYMER frames are
         # rebuilt below by _fill_nonpolymer_frames.
-        if (token.atom_num >= 3 and token.res_name in ref_atoms
-                and ref_atoms[token.res_name][:3] == ["N", "CA", "C"]):
+        if token.atom_num >= 3 and token.res_name in ref_atoms and ref_atoms[token.res_name][:3] == ["N", "CA", "C"]:
             frame_data.append([start, start + 1, start + 2])
-        elif (token.atom_num >= 3 and token.res_name in ref_atoms
-              and chain.mol_type
-              in (chain_type_ids["DNA"], chain_type_ids["RNA"])):
+        elif (
+            token.atom_num >= 3
+            and token.res_name in ref_atoms
+            and chain.mol_type in (chain_type_ids["DNA"], chain_type_ids["RNA"])
+        ):
             try:
                 ref = ref_atoms[token.res_name]
                 idx_c1 = ref.index("C1'")
                 idx_c3 = ref.index("C3'")
                 idx_c4 = ref.index("C4'")
-                frame_data.append(
-                    [start + idx_c1, start + idx_c3, start + idx_c4])
+                frame_data.append([start + idx_c1, start + idx_c3, start + idx_c4])
             except ValueError:
-                frame_data.append(
-                    [token.center_idx, token.center_idx, token.center_idx])
+                frame_data.append([token.center_idx, token.center_idx, token.center_idx])
         else:
-            frame_data.append(
-                [token.center_idx, token.center_idx, token.center_idx])
+            frame_data.append([token.center_idx, token.center_idx, token.center_idx])
         resolved_frame_data.append(
-            _frame_resolved_mask_oss(token_atoms, chain.mol_type,
-                                     token.res_name, token.atom_num,
-                                     token.res_type))
+            _frame_resolved_mask_oss(token_atoms, chain.mol_type, token.res_name, token.atom_num, token.res_type)
+        )
         atom_idx += token.atom_num
 
     # Coord data: (1, n_atoms, 3) single ensemble
-    coord_data = np.stack(coord_data_list) if len(
-        coord_data_list) == 1 else np.concatenate(coord_data_list, axis=0)
+    coord_data = np.stack(coord_data_list) if len(coord_data_list) == 1 else np.concatenate(coord_data_list, axis=0)
     coord_data = coord_data.reshape(1, -1, 3)
 
     # Frame collinear mask
@@ -233,8 +243,7 @@ def process_atom_features(
     v1 = frames_expanded[:, 1] - frames_expanded[:, 0]
     v2 = frames_expanded[:, 1] - frames_expanded[:, 2]
     mask_collinear = _compute_collinear_mask(v1, v2)
-    resolved_frame_np = np.array([float(x) for x in resolved_frame_data],
-                                 dtype=np.float32)
+    resolved_frame_np = np.array([float(x) for x in resolved_frame_data], dtype=np.float32)
     resolved_frame_np = resolved_frame_np * mask_collinear
 
     # Build tensors
@@ -245,8 +254,8 @@ def process_atom_features(
     ref_space_uid_arr = np.array(ref_space_uid, dtype=np.int64)
 
     resolved_mask = torch.tensor(
-        [structure.atoms[i].is_present for i in range(atom_idx)],
-        dtype=torch.bool)  # Boltz1: bool
+        [structure.atoms[i].is_present for i in range(atom_idx)], dtype=torch.bool
+    )  # Boltz1: bool
     pad_mask = torch.ones(atom_idx, dtype=torch.float32)
     atom_to_token_t = torch.tensor(atom_to_token, dtype=torch.long)
     token_to_rep_atom_t = torch.tensor(token_to_rep_atom, dtype=torch.long)
@@ -277,15 +286,13 @@ def process_atom_features(
     coords = coords - center[:, None]
 
     # One-hot encodings: Boltz1 uses % num_bins for atom names
-    ref_atom_name_chars = one_hot(ref_atom_name_chars % num_bins,
-                                  num_classes=num_bins)
+    ref_atom_name_chars = one_hot(ref_atom_name_chars % num_bins, num_classes=num_bins)
     ref_element = one_hot(ref_element, num_classes=num_elements)
     atom_to_token_t = one_hot(atom_to_token_t, num_classes=n_tokens)
     token_to_rep_atom_t = one_hot(token_to_rep_atom_t, num_classes=atom_idx)
 
     # Pad atoms
-    pad_len_atom = (((atom_idx - 1) // atoms_per_window_queries + 1) *
-                    atoms_per_window_queries - atom_idx)
+    pad_len_atom = ((atom_idx - 1) // atoms_per_window_queries + 1) * atoms_per_window_queries - atom_idx
     if max_atoms is not None:
         pad_len_atom = max_atoms - atom_idx
     if pad_len_atom > 0:
@@ -331,20 +338,20 @@ def process_atom_features(
 
 def process_msa_features(
     tokens_list: list[Token],
-    msa_parsed_per_chain: Optional[list[Optional[Any]]] = None,
-    paired_msa_per_chain: Optional[list[Optional[Any]]] = None,
+    msa_parsed_per_chain: list[Any | None] | None = None,
+    paired_msa_per_chain: list[Any | None] | None = None,
     max_seqs: int = 16384,
     max_paired: int = 8192,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     pad_to_max_seqs: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Build Boltz1 MSA features: msa is one-hot (N_MSA, L, 33)."""
-    from tensorrt_bionemo.pipeline.models.boltz2.featurizer import \
-        process_msa_features as _boltz2_msa
+    from tensorrt_bionemo.pipeline.models.boltz2.featurizer import process_msa_features as _boltz2_msa
 
     # Reuse Boltz2 MSA construction (produces token indices)
-    b2 = _boltz2_msa(tokens_list, msa_parsed_per_chain, paired_msa_per_chain,
-                     max_seqs, max_paired, max_tokens, pad_to_max_seqs)
+    b2 = _boltz2_msa(
+        tokens_list, msa_parsed_per_chain, paired_msa_per_chain, max_seqs, max_paired, max_tokens, pad_to_max_seqs
+    )
 
     # Boltz1: msa is one-hot (N_MSA, L, 33), msa_mask is int64
     msa_indices = b2["msa"]  # (N_MSA, L) long

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable, Literal, Optional, Union
+from collections.abc import Callable
+from typing import Any, Literal
 
 import torch
 from pydantic import BaseModel, Field, SkipValidation, model_validator
@@ -46,6 +47,7 @@ class BaseConfig(BaseModel):
     Note: fields are propagated by value. Reference fields (one sub-module
     config pointing at another's field) are not supported.
     """
+
     dtype: str = "float32"
     norm_epsilon: float = 1e-5
     mask_inf: float = 1e9
@@ -53,15 +55,15 @@ class BaseConfig(BaseModel):
     triangle_attention_backend: str = "VANILLA"
     pairwise_attention_backend: str = "SDPA"
     support_batch: bool = True
-    backend: Union[str, BackendType] = BackendType.TORCH
+    backend: str | BackendType = BackendType.TORCH
     # Opt-in CUDA-graph compilation for this module. Holds a
     # ``None | GraphOptimizationConfig`` (typed ``Any`` to avoid a config <->
     # graph_optimization import cycle). ``None`` means "leave eager"; a config
     # marks this module for wrapping by ``trtbnm_apply_graph_optimization`` /
     # ``OptimizedModuleSetterMixin.optimize`` when ``backend == TORCH``.
-    graph_optimization_config: Optional[Any] = None
+    graph_optimization_config: Any | None = None
     # This function is used to determine if the module needs to fallback to the torch backend based on the input arguments
-    need_fallback: Optional[Callable] = Field(exclude=True, default=None)
+    need_fallback: Callable | None = Field(exclude=True, default=None)
     max_batch_size: int = 1
     max_seq_len: int = 2048
     min_seq_len: int = 4
@@ -83,18 +85,16 @@ class BaseConfig(BaseModel):
     def _recursive_set(self, setter_func: Callable):
         for field_name in self.__dict__.keys():
             field = getattr(self, field_name)
-            if isinstance(field, BaseConfig) or issubclass(
-                    field.__class__, BaseConfig):
+            if isinstance(field, BaseConfig) or issubclass(field.__class__, BaseConfig):
                 field._recursive_set(setter_func)
         for field_name in self.__pydantic_extra__.keys():
             field = getattr(self, field_name)
-            if isinstance(field, BaseConfig) or issubclass(
-                    field.__class__, BaseConfig):
+            if isinstance(field, BaseConfig) or issubclass(field.__class__, BaseConfig):
                 field._recursive_set(setter_func)
         setter_func(self)
 
-    def set_dtype(self, value: Union[str, torch.dtype]) -> None:
-        """ Recursively set the dtype for all fields in the model """
+    def set_dtype(self, value: str | torch.dtype) -> None:
+        """Recursively set the dtype for all fields in the model"""
 
         def setter(x):
             if isinstance(value, torch.dtype):
@@ -174,7 +174,7 @@ class BaseConfig(BaseModel):
 
 
 def print_model_tree(model: BaseModel, indent: int = 0):
-    """ Print the model tree for debugging purposes """
+    """Print the model tree for debugging purposes"""
     prefix = "  " * indent
     for name, value in model:
         if isinstance(value, BaseModel):
@@ -185,19 +185,18 @@ def print_model_tree(model: BaseModel, indent: int = 0):
 
 
 class AcceleratedConfig(BaseModel):
-    checkpoint: Optional[str] = None
-    backend: Optional[str] = None
-    default: Optional[BaseConfig] = None
+    checkpoint: str | None = None
+    backend: str | None = None
+    default: BaseConfig | None = None
     warmup: bool = False
     compile: bool = False
-    need_fallback: Optional[Callable[..., bool]] = None
+    need_fallback: Callable[..., bool] | None = None
 
     class Config:
         arbitrary_types_allowed = True
 
 
 class PostProcessorConfig(BaseModel):
-
     class Config:
         extra = "allow"
         arbitrary_types_allowed = True
@@ -208,7 +207,7 @@ Device = Literal["auto", "cuda", "cpu"]
 
 class DeviceConfig(BaseModel):
     device: SkipValidation[Device | torch.device | None] = "auto"
-    device_type: Optional[str] = None
+    device_type: str | None = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -231,9 +230,9 @@ class DeviceConfig(BaseModel):
 
 
 class EngineConfig(BaseModel):
-    name: Optional[str] = None
-    model: Optional[BaseConfig] = None
-    device: Optional[DeviceConfig] = None
-    accelerated: Optional[dict[str, AcceleratedConfig]] = None
-    postprocessor: Optional[PostProcessorConfig] = None
+    name: str | None = None
+    model: BaseConfig | None = None
+    device: DeviceConfig | None = None
+    accelerated: dict[str, AcceleratedConfig] | None = None
+    postprocessor: PostProcessorConfig | None = None
     profile_inference: bool = False

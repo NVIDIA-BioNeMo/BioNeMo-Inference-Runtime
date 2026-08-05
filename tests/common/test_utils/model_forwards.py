@@ -31,8 +31,7 @@ import torch
 
 import tests
 from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
-    EngineProcessorConfig, build_processor)
+from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
 from tensorrt_bionemo.pipeline.stages.engine_stage import FoldingPredictionError
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.seeding import seed_everything
@@ -89,10 +88,10 @@ def _model_weights_available(model_source: str, _ckpt_env=_CKPT_ENV, _hf_ckpt=_H
     repo_id, filename = _hf_ckpt[model_source]
     try:
         from huggingface_hub import hf_hub_download
-        hf_hub_download(repo_id=repo_id,
-                        filename=filename,
-                        cache_dir=str(Path.home() / ".cache" / "hf"),
-                        local_files_only=True)
+
+        hf_hub_download(
+            repo_id=repo_id, filename=filename, cache_dir=str(Path.home() / ".cache" / "hf"), local_files_only=True
+        )
         return True
     except Exception:
         return False
@@ -105,6 +104,7 @@ def _availability_exceptions() -> tuple:
     excs: list = [FileNotFoundError, ConnectionError]
     try:
         from huggingface_hub import errors as hf_errors
+
         excs += [
             hf_errors.GatedRepoError,
             hf_errors.RepositoryNotFoundError,
@@ -140,9 +140,7 @@ def _load_request(sample_id: str) -> InputRequest:
         msa_field = poly.get("msas")
         msas: list[MSARecord] = []
         if isinstance(msa_field, str):
-            msas = [
-                MSARecord(path=str(MONOMERS_DIR / msa_field), format="a3m")
-            ]
+            msas = [MSARecord(path=str(MONOMERS_DIR / msa_field), format="a3m")]
         polymers.append(
             Polymer(
                 polymer_type=poly.get("polymer_type", "protein"),
@@ -150,7 +148,8 @@ def _load_request(sample_id: str) -> InputRequest:
                 sequence=poly["sequence"],
                 msas=msas,
                 paired_msas=[],
-            ))
+            )
+        )
     return InputRequest(input_id=entry["input_id"], polymers=polymers)
 
 
@@ -183,6 +182,7 @@ def _default_model_config(model_source: str):
     if model_source != "openfold3":
         return None
     from tensorrt_bionemo.registry import get_model_class
+
     cfg = get_model_class(model_source).get_pretrained_config(model_source)
     # Only a locally-present ``OPENFOLD3_CKPT`` can be inspected cheaply; when
     # it is unset the engine downloads the HF default (shared layout), which
@@ -190,18 +190,14 @@ def _default_model_config(model_source: str):
     ckpt = os.environ.get("OPENFOLD3_CKPT")
     if not ckpt or not Path(ckpt).is_file():
         return cfg
-    state_dict = torch.load(
-        ckpt, map_location="cpu", mmap=True, weights_only=False)
+    state_dict = torch.load(ckpt, map_location="cpu", mmap=True, weights_only=False)
     if isinstance(state_dict, dict) and "state_dict" in state_dict:
         state_dict = state_dict["state_dict"]
     # (checkpoint prefix, config attr holding that transformer's config)
     transformers = [
-        ("input_embedder.atom_attn_enc",
-         cfg.input_embedder_config.atom_transformer_config),
-        ("diffusion_module.atom_attn_enc",
-         cfg.diffusion_module_config.atom_transformer_encoder_config),
-        ("diffusion_module.atom_attn_dec",
-         cfg.diffusion_module_config.atom_transformer_decoder_config),
+        ("input_embedder.atom_attn_enc", cfg.input_embedder_config.atom_transformer_config),
+        ("diffusion_module.atom_attn_enc", cfg.diffusion_module_config.atom_transformer_encoder_config),
+        ("diffusion_module.atom_attn_dec", cfg.diffusion_module_config.atom_transformer_decoder_config),
     ]
     for prefix, tf_cfg in transformers:
         shared_key = f"{prefix}.atom_transformer.layer_norm_z.weight"
@@ -209,10 +205,9 @@ def _default_model_config(model_source: str):
     return cfg
 
 
-def _run_pipeline(config: EngineProcessorConfig,
-                  requests: list[InputRequest],
-                  sample_ids: tuple[str, ...],
-                  output_dir: Path) -> tuple[dict[str, Path], object]:
+def _run_pipeline(
+    config: EngineProcessorConfig, requests: list[InputRequest], sample_ids: tuple[str, ...], output_dir: Path
+) -> tuple[dict[str, Path], object]:
     """Run the serial pipeline over ``requests`` and return written CIF paths.
 
     ``config`` is a fully-built ``EngineProcessorConfig`` (the per-suite
@@ -224,11 +219,14 @@ def _run_pipeline(config: EngineProcessorConfig,
     """
     processor = build_processor(config)
 
-    records = [{
-        "record": req,
-        "__record_id": req["input_id"],
-        "random_seed": SEED,
-    } for req in requests]
+    records = [
+        {
+            "record": req,
+            "__record_id": req["input_id"],
+            "random_seed": SEED,
+        }
+        for req in requests
+    ]
 
     # No outer inference_mode: the folding engine's execute() already applies
     # @torch.inference_mode() for the model forward (this is what disables grad
@@ -248,8 +246,7 @@ def _run_pipeline(config: EngineProcessorConfig,
     paths: dict[str, Path] = {}
     for sid in sample_ids:
         cif_path = output_dir / f"{sid}.cif"
-        assert cif_path.exists(), (
-            f"pipeline did not write expected output {cif_path}")
+        assert cif_path.exists(), f"pipeline did not write expected output {cif_path}"
         paths[sid] = cif_path
     return paths, processor
 
@@ -269,8 +266,7 @@ def _read_ca(path: Path) -> struc.AtomArray:
         structure = pdb.PDBFile.read(str(path)).get_structure(model=1)
     else:
         structure = pdbx.get_structure(pdbx.CIFFile.read(str(path)), model=1)
-    return structure[struc.filter_amino_acids(structure)
-                     & (structure.atom_name == "CA")]
+    return structure[struc.filter_amino_acids(structure) & (structure.atom_name == "CA")]
 
 
 def _lddt_to_reference(prediction: Path, reference: Path) -> float:
@@ -287,9 +283,7 @@ def _lddt_to_reference(prediction: Path, reference: Path) -> float:
     pred = _read_ca(prediction)
     ref = _read_ca(reference)
     common = np.intersect1d(pred.res_id, ref.res_id)
-    assert common.size, (
-        f"no shared CA residues between prediction {prediction} and "
-        f"reference {reference}")
+    assert common.size, f"no shared CA residues between prediction {prediction} and reference {reference}"
     pred_m = pred[np.isin(pred.res_id, common)]
     ref_m = ref[np.isin(ref.res_id, common)]
     pred_m = pred_m[np.argsort(pred_m.res_id, kind="stable")]
@@ -297,8 +291,7 @@ def _lddt_to_reference(prediction: Path, reference: Path) -> float:
     return float(struc.lddt(ref_m, pred_m, aggregation="all"))
 
 
-def _parity_lddt(original_cif: Path,
-                 cudagraph_cif: Path) -> tuple[float, float]:
+def _parity_lddt(original_cif: Path, cudagraph_cif: Path) -> tuple[float, float]:
     """CA lDDT (+ max CA coordinate deviation) between two structures.
 
     Both structures come from the same model with identical atom ordering, so
@@ -307,8 +300,8 @@ def _parity_lddt(original_cif: Path,
     ref = _read_ca(original_cif)
     subj = _read_ca(cudagraph_cif)
     assert ref.array_length() == subj.array_length(), (
-        f"CA-atom count mismatch original={ref.array_length()} "
-        f"cudagraph={subj.array_length()}")
+        f"CA-atom count mismatch original={ref.array_length()} cudagraph={subj.array_length()}"
+    )
     lddt = float(struc.lddt(ref, subj, aggregation="all"))
     max_dev = float(np.abs(ref.coord - subj.coord).max())
     return lddt, max_dev

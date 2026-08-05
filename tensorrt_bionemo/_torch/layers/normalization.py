@@ -13,26 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.custom_ops import get_adaln_layernorm_sigmoid_op
-from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
-                                                   WeightsLoadingConfig)
+from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 
 class AdaLN(nn.Module):
-
-    def __init__(self,
-                 dim: int,
-                 dim_single_cond: int,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        dim: int,
+        dim_single_cond: int,
+        eps: float = 1e-5,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+    ):
         """Adaptive LayerNorm with a sigmoid-gated affine.
 
         Uses the fused CuTe DSL kernel, falling back to the inline torch
@@ -44,15 +43,8 @@ class AdaLN(nn.Module):
         self.dim_single_cond = dim_single_cond
         self.eps = eps
 
-        self.a_norm = nn.LayerNorm(self.dim,
-                                   dtype=dtype,
-                                   eps=eps,
-                                   elementwise_affine=False,
-                                   bias=False)
-        self.s_norm = nn.LayerNorm(self.dim_single_cond,
-                                   dtype=dtype,
-                                   eps=eps,
-                                   bias=False)
+        self.a_norm = nn.LayerNorm(self.dim, dtype=dtype, eps=eps, elementwise_affine=False, bias=False)
+        self.s_norm = nn.LayerNorm(self.dim_single_cond, dtype=dtype, eps=eps, bias=False)
         # Fused s_scale and s_bias projection. The upstream s_bias
         # projection has no bias term, so the s_bias half of the fused
         # bias vector is kept at zero.
@@ -62,17 +54,16 @@ class AdaLN(nn.Module):
             bias=True,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_KV_LINEAR))
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
+        )
 
-        self._fused_op = get_adaln_layernorm_sigmoid_op(
-            dtype if dtype is not None else torch.float32)
+        self._fused_op = get_adaln_layernorm_sigmoid_op(dtype if dtype is not None else torch.float32)
 
     def forward(
         self,
         a: torch.Tensor,
         s: torch.Tensor,
-        buffers: Optional[PreallocatedBuffers] = None,
+        buffers: PreallocatedBuffers | None = None,
         buffer_key: str = "adaln_out",
     ) -> torch.Tensor:
         """
@@ -97,8 +88,7 @@ class AdaLN(nn.Module):
             a = a.contiguous()
             # Write to a separate buffer so callers that use ``a`` as a
             # residual after this op see the original values.
-            out = ensure_buffer(buffers, buffer_key, a.shape, a.dtype,
-                                a.device)
+            out = ensure_buffer(buffers, buffer_key, a.shape, a.dtype, a.device)
             if out is None:
                 out = torch.empty_like(a)
             return self._fused_op(a, s_scale, s_bias, out=out, eps=self.eps)

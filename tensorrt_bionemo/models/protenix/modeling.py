@@ -20,39 +20,47 @@ OSS-facing ``FoldingOutput`` is deferred to the Protenix data pipeline.
 """
 
 from functools import partial
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
 
 # isort: off
 from tensorrt_bionemo._torch.attention_backend import (
-    AttentionMetadata, auto_select_pairwise_attention_backend,
-    auto_select_triangle_attention_backend)
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
-    CUDAGraphOptimizationTracker
+    AttentionMetadata,
+    auto_select_pairwise_attention_backend,
+    auto_select_triangle_attention_backend,
+)
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.position_encoders import \
-    RelativePositionEncoder
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_gather_indices, query_to_keys_optimized)
+from tensorrt_bionemo._torch.layers.position_encoders import RelativePositionEncoder
+from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
 from tensorrt_bionemo._torch.modules.protenix import (
-    ProtenixConfidenceHead, ProtenixConfidenceSummary,
-    ProtenixConstraintEmbedder, ProtenixDiffusionModule, ProtenixDistogramHead,
-    ProtenixInputFeatureEmbedder, ProtenixSampleDiffusion, ProtenixTrunk)
+    ProtenixConfidenceHead,
+    ProtenixConfidenceSummary,
+    ProtenixConstraintEmbedder,
+    ProtenixDiffusionModule,
+    ProtenixDistogramHead,
+    ProtenixInputFeatureEmbedder,
+    ProtenixSampleDiffusion,
+    ProtenixTrunk,
+)
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 
-from ..optimize_module_setter import (AcceleratedConfig,
-                                      DiscoveredModuleRegistry,
-                                      OptimizedModuleSetterMixin)
+from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry, OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
-    convert_confidence_head_torch, convert_constraint_embedder_torch,
-    convert_diffusion_module_torch, convert_distogram_head_torch,
-    convert_hf_input_embedder_torch, convert_input_projections_torch,
-    convert_relative_position_encoding_torch, convert_trunk_torch)
+    convert_confidence_head_torch,
+    convert_constraint_embedder_torch,
+    convert_diffusion_module_torch,
+    convert_distogram_head_torch,
+    convert_hf_input_embedder_torch,
+    convert_input_projections_torch,
+    convert_relative_position_encoding_torch,
+    convert_trunk_torch,
+)
 # isort: on
 
 
@@ -97,23 +105,21 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
     # ``accelerated_configs`` entry (by role or by the ``trunk.pairformer_stack``
     # path). The same applies to ``confidence_head.pairformer_stack``.
     GRAPH_OPT_ENABLED_MODULES = {
-        "token_transformer":
-        "diffusion_sampler.diffusion_module.diffusion_transformer",
+        "token_transformer": "diffusion_sampler.diffusion_module.diffusion_transformer",
         "diffusion_module": "diffusion_sampler.diffusion_module",
     }
 
-    def get_optimized_modules(
-        self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> DiscoveredModuleRegistry:
+    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
         return DiscoveredModuleRegistry(
-            self, accelerated_configs,
+            self,
+            accelerated_configs,
             role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
-            graph_optimization_cls=CUDAGraphOptimizationTracker)
+            graph_optimization_cls=CUDAGraphOptimizationTracker,
+        )
 
-    def __init__(self,
-                 config: BaseConfig = None,
-                 model_name: Optional[str] = None,
-                 include_load_weights: bool = False) -> None:
+    def __init__(
+        self, config: BaseConfig = None, model_name: str | None = None, include_load_weights: bool = False
+    ) -> None:
         super().__init__()
         self.model_name = model_name or SupMat.ProtenixV2
         self.config = config or self.get_pretrained_config(self.model_name)
@@ -121,8 +127,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         self.n_queries = self.config.n_queries
         self.n_keys = self.config.n_keys
 
-        self.input_embedder = ProtenixInputFeatureEmbedder(
-            self.config.input_embedder_config)
+        self.input_embedder = ProtenixInputFeatureEmbedder(self.config.input_embedder_config)
         rpe_config = self.config.relative_position_encoding_config
         self.relative_position_encoding = RelativePositionEncoder(
             token_z=rpe_config.c_z,
@@ -131,13 +136,12 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             fix_sym_check=rpe_config.fix_sym_check,
             cyclic_pos_enc=rpe_config.cyclic_pos_enc,
             dtype=self.dtype,
-            skip_create_weights=self.config.skip_create_weights)
-        self.constraint_embedder = ProtenixConstraintEmbedder(
-            self.config.constraint_embedder_config)
+            skip_create_weights=self.config.skip_create_weights,
+        )
+        self.constraint_embedder = ProtenixConstraintEmbedder(self.config.constraint_embedder_config)
 
         # Single / pair initialization projections (AF3 Alg. 1 lines 2-6).
-        c_s, c_z, c_s_inputs = (self.config.c_s, self.config.c_z,
-                                self.config.c_s_inputs)
+        c_s, c_z, c_s_inputs = (self.config.c_s, self.config.c_z, self.config.c_s_inputs)
         self.linear_no_bias_sinit = self._proj(c_s_inputs, c_s)
         self.linear_no_bias_zinit1 = self._proj(c_s, c_z)
         self.linear_no_bias_zinit2 = self._proj(c_s, c_z)
@@ -156,43 +160,31 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             s_min=sd.s_min,
             rho=sd.rho,
             n_step=sd.n_step,
-            use_cache=sd.enable_diffusion_shared_vars_cache)
+            use_cache=sd.enable_diffusion_shared_vars_cache,
+        )
 
         # Distogram head runs in fp32 (OSS disables autocast).
         dh = self.config.distogram_head_config
         self.distogram_head = ProtenixDistogramHead(
-            c_z=dh.c_z,
-            no_bins=dh.no_bins,
-            dtype=dh.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            c_z=dh.c_z, no_bins=dh.no_bins, dtype=dh.torch_dtype, skip_create_weights=self.config.skip_create_weights
+        )
 
-        self.confidence_head = ProtenixConfidenceHead(
-            self.config.confidence_head_config)
-        self.confidence_summary = ProtenixConfidenceSummary(
-            self.config.confidence_summary_config)
+        self.confidence_head = ProtenixConfidenceHead(self.config.confidence_head_config)
+        self.confidence_summary = ProtenixConfidenceSummary(self.config.confidence_summary_config)
 
         if include_load_weights:
             self.load_weights()
 
     def _proj(self, c_in: int, c_out: int):
-        return Linear(c_in,
-                      c_out,
-                      bias=False,
-                      dtype=self.dtype,
-                      skip_create_weights=self.config.skip_create_weights)
+        return Linear(c_in, c_out, bias=False, dtype=self.dtype, skip_create_weights=self.config.skip_create_weights)
 
-    def get_pretrained_config(self,
-                              model_name: str = SupMat.ProtenixV2
-                              ) -> BaseConfig:
+    def get_pretrained_config(self, model_name: str = SupMat.ProtenixV2) -> BaseConfig:
         config_class = PRETRAINED_CONFIG_REGISTRY.get(model_name)
         if config_class is None:
-            raise ValueError(
-                f"Protenix pretrained config not found for model name: "
-                f"{model_name}")
+            raise ValueError(f"Protenix pretrained config not found for model name: {model_name}")
         return _configure_inference_precision(config_class())
 
-    def generate_attn_metadata(
-            self, batch: dict[str, torch.Tensor]) -> AttentionMetadata:
+    def generate_attn_metadata(self, batch: dict[str, torch.Tensor]) -> AttentionMetadata:
         """Build atom-attention metadata (query→keys gather).
 
         Windows atoms into ``K = ceil(N_atom / n_queries)`` blocks of size
@@ -205,12 +197,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         K = (num_atoms + W - 1) // W
         device = batch["ref_pos"].device
         gather_indices, _ = create_gather_indices(K, W, H, device)
-        query_to_keys_func = partial(query_to_keys_optimized,
-                                     gather_indices=gather_indices,
-                                     W=W,
-                                     H=H)
-        return AttentionMetadata(query_to_keys=query_to_keys_func,
-                                 bias_cache={})
+        query_to_keys_func = partial(query_to_keys_optimized, gather_indices=gather_indices, W=W, H=H)
+        return AttentionMetadata(query_to_keys=query_to_keys_func, bias_cache={})
 
     def load_weights(self, weights: dict = None) -> None:
         """Load ported-module weights from a protenix-v2 checkpoint (or hub)."""
@@ -222,44 +210,37 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
 
         _strict(
             self.input_embedder,
-            convert_hf_input_embedder_torch(self.config.input_embedder_config,
-                                            weights,
-                                            prefix="input_embedder"))
+            convert_hf_input_embedder_torch(self.config.input_embedder_config, weights, prefix="input_embedder"),
+        )
         _strict(
             self.relative_position_encoding,
             convert_relative_position_encoding_torch(
-                self.config.relative_position_encoding_config,
-                weights,
-                prefix="relative_position_encoding"))
+                self.config.relative_position_encoding_config, weights, prefix="relative_position_encoding"
+            ),
+        )
         _strict(
             self.constraint_embedder,
             convert_constraint_embedder_torch(
-                self.config.constraint_embedder_config,
-                weights,
-                prefix="constraint_embedder"))
-        for name, weight in convert_input_projections_torch(
-                self.config, weights).items():
+                self.config.constraint_embedder_config, weights, prefix="constraint_embedder"
+            ),
+        )
+        for name, weight in convert_input_projections_torch(self.config, weights).items():
             getattr(self, name).load_state_dict({"weight": weight})
-        _strict(self.trunk,
-                convert_trunk_torch(self.config.trunk_config, weights))
+        _strict(self.trunk, convert_trunk_torch(self.config.trunk_config, weights))
         _strict(
             self.diffusion_sampler.diffusion_module,
-            convert_diffusion_module_torch(self.config.diffusion_module_config,
-                                           weights,
-                                           prefix="diffusion_module"))
+            convert_diffusion_module_torch(self.config.diffusion_module_config, weights, prefix="diffusion_module"),
+        )
         _strict(
             self.distogram_head,
-            convert_distogram_head_torch(self.config.distogram_head_config,
-                                         weights,
-                                         prefix="distogram_head"))
+            convert_distogram_head_torch(self.config.distogram_head_config, weights, prefix="distogram_head"),
+        )
         _strict(
             self.confidence_head,
-            convert_confidence_head_torch(self.config.confidence_head_config,
-                                          weights,
-                                          prefix="confidence_head"))
+            convert_confidence_head_torch(self.config.confidence_head_config, weights, prefix="confidence_head"),
+        )
 
-    def _relative_position_encoding(
-            self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    def _relative_position_encoding(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Project precomputed or generated ``relp`` into pair channels."""
         relp = batch.get("relp")
         if relp is None:
@@ -268,11 +249,11 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
                 residue_index=batch["residue_index"],
                 entity_id=batch["entity_id"],
                 token_index=batch["token_index"],
-                sym_id=batch["sym_id"])
+                sym_id=batch["sym_id"],
+            )
         return self.relative_position_encoding(relp=relp)
 
-    def _ensure_relp(self, batch: dict[str, torch.Tensor],
-                     drop_features) -> None:
+    def _ensure_relp(self, batch: dict[str, torch.Tensor], drop_features) -> None:
         """Generate ``relp`` if missing; drop residue/entity/token/sym indices."""
         if "relp" not in batch:
             batch["relp"] = self.relative_position_encoding.generate_relp(
@@ -280,30 +261,27 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
                 residue_index=batch["residue_index"],
                 entity_id=batch["entity_id"],
                 token_index=batch["token_index"],
-                sym_id=batch["sym_id"])
+                sym_id=batch["sym_id"],
+            )
         # relp now owns all downstream relative-position information.
         drop_features("residue_index", "entity_id", "token_index", "sym_id")
 
-    def _init_pair_state(self, s_inputs: torch.Tensor,
-                         batch: dict[str, torch.Tensor],
-                         drop_features) -> tuple[torch.Tensor, torch.Tensor]:
+    def _init_pair_state(
+        self, s_inputs: torch.Tensor, batch: dict[str, torch.Tensor], drop_features
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """AF3 Alg. 1 single/pair init with in-place RPE/token_bond/constraint."""
         s_init = self.linear_no_bias_sinit(s_inputs)
         pair_state_dtype = self.trunk.pair_state_dtype
-        z_init = (self.linear_no_bias_zinit1(s_init).unsqueeze(-2) +
-                  self.linear_no_bias_zinit2(s_init).unsqueeze(-3))
+        z_init = self.linear_no_bias_zinit1(s_init).unsqueeze(-2) + self.linear_no_bias_zinit2(s_init).unsqueeze(-3)
         # Freshly owned z_init: accumulate pair contributions in place in fp32
         # to avoid retaining old + contribution + new pair-sized tensors.
         z_init.add_(self._relative_position_encoding(batch))
         token_bonds = batch.get("token_bonds")
         if token_bonds is not None:
-            z_init.add_(
-                self.linear_no_bias_token_bond(
-                    token_bonds.unsqueeze(-1).to(self.dtype)))
+            z_init.add_(self.linear_no_bias_token_bond(token_bonds.unsqueeze(-1).to(self.dtype)))
         del token_bonds
         if "constraint_feature" in batch:
-            z_constraint = self.constraint_embedder(
-                batch["constraint_feature"])
+            z_constraint = self.constraint_embedder(batch["constraint_feature"])
             if z_constraint is not None:
                 z_init.add_(z_constraint)
             del z_constraint
@@ -330,8 +308,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         head, summ = self.confidence_head, self.confidence_summary
         # Reduce and release the raw distogram before constructing the
         # confidence pair state.
-        contact_probs = summ.contact_probs(
-            _unbatch(held["distogram_logits"], 3))
+        contact_probs = summ.contact_probs(_unbatch(held["distogram_logits"], 3))
         if compact_output:
             del held["distogram_logits"]
 
@@ -339,13 +316,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         atom_to_token_idx = _unbatch(batch["atom_to_token_idx"], 1).long()
         is_polymer = 1 - _unbatch(batch["is_ligand"], 1)
         has_frame = _unbatch(batch["has_frame"], 1)
-        token_is_ligand = summ.token_is_ligand(asym_id, atom_to_token_idx,
-                                               is_polymer)
-        ctx = head.prepare(batch,
-                           held["s_inputs"],
-                           held["s"],
-                           held["z"],
-                           pair_mask=batch.get("pair_mask"))
+        token_is_ligand = summ.token_is_ligand(asym_id, atom_to_token_idx, is_polymer)
+        ctx = head.prepare(batch, held["s_inputs"], held["s"], held["z"], pair_mask=batch.get("pair_mask"))
         if compact_output:
             held.pop("s_inputs", None)
             held.pop("s", None)
@@ -360,8 +332,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         summary_list = []
         full_list = [] if return_full_data else None
         for i in range(coordinate_ub.shape[0]):
-            plddt_i, pae_i, pde_i, _resolved_i = head.per_sample_logits(
-                ctx, coordinate[..., i, :, :])
+            plddt_i, pae_i, pde_i, _resolved_i = head.per_sample_logits(ctx, coordinate[..., i, :, :])
             summary_i, full_i = summ.summary_one_sample(
                 contact_probs,
                 _unbatch(plddt_i, 2),
@@ -374,7 +345,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
                 is_polymer,
                 token_is_ligand,
                 num_cycles,
-                return_full_data=return_full_data)
+                return_full_data=return_full_data,
+            )
             summary_list.append(summary_i)
             if full_list is not None:
                 full_list.append(full_i)
@@ -395,8 +367,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        num_sampling_steps: Optional[int] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        num_sampling_steps: int | None = None,
         diffusion_samples: int = 1,
         consume_input_features: bool = False,
     ) -> torch.Tensor:
@@ -420,13 +392,14 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             N_sample=diffusion_samples,
             attn_metadata=attn_metadata,
             drop_consumed_relp=True,
-            drop_consumed_features=consume_input_features)
+            drop_consumed_features=consume_input_features,
+        )
 
     def forward(
         self,
         batch: dict[str, torch.Tensor],
         recycling_steps: int = 3,
-        num_sampling_steps: Optional[int] = 200,
+        num_sampling_steps: int | None = 200,
         diffusion_samples: int = 1,
         compact_output: bool = False,
         return_full_data: bool = True,
@@ -482,21 +455,22 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         self._ensure_relp(batch, _drop_features)
 
         s_inputs = self.input_embedder(batch, attn_metadata=attn_metadata)
-        _drop_features("restype", "profile", "deletion_mean",
-                       "esm_token_embedding")
+        _drop_features("restype", "profile", "deletion_mean", "esm_token_embedding")
 
         s_init, z_init = self._init_pair_state(s_inputs, batch, _drop_features)
 
-        s, z = self.trunk(batch,
-                          s_inputs,
-                          s_init,
-                          z_init,
-                          num_cycles=num_cycles)
+        s, z = self.trunk(batch, s_inputs, s_init, z_init, num_cycles=num_cycles)
         del s_init, z_init
-        _drop_features("msa", "has_deletion", "deletion_value",
-                       "template_distogram", "template_pseudo_beta_mask",
-                       "template_aatype", "template_unit_vector",
-                       "template_backbone_frame_mask")
+        _drop_features(
+            "msa",
+            "has_deletion",
+            "deletion_value",
+            "template_distogram",
+            "template_pseudo_beta_mask",
+            "template_aatype",
+            "template_unit_vector",
+            "template_backbone_frame_mask",
+        )
 
         distogram_logits = self.distogram_head(z)
 
@@ -508,11 +482,20 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             attn_metadata=attn_metadata,
             num_sampling_steps=num_sampling_steps,
             diffusion_samples=diffusion_samples,
-            consume_input_features=consume_input_features)
+            consume_input_features=consume_input_features,
+        )
         del attn_metadata
-        _drop_features("relp", "ref_pos", "ref_charge", "ref_mask",
-                       "ref_atom_name_chars", "ref_element", "d_lm", "v_lm",
-                       "pad_info")
+        _drop_features(
+            "relp",
+            "ref_pos",
+            "ref_charge",
+            "ref_mask",
+            "ref_atom_name_chars",
+            "ref_element",
+            "d_lm",
+            "v_lm",
+            "pad_info",
+        )
 
         if compact_output:
             out = {"coordinate": coordinate}
@@ -525,8 +508,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
                 "distogram_logits": distogram_logits,
             }
 
-        have_conf = ("distogram_rep_atom_mask" in batch
-                     and "atom_to_tokatom_idx" in batch)
+        have_conf = "distogram_rep_atom_mask" in batch and "atom_to_tokatom_idx" in batch
         have_summary = have_conf and "has_frame" in batch and "is_ligand" in batch
         if have_summary:
             # Transfer trunk/distogram refs into held so compact mode can drop
@@ -539,16 +521,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             }
             if compact_output:
                 del s_inputs, s, z, distogram_logits
-            self._streaming_confidence(batch, out, held, coordinate,
-                                       num_cycles, compact_output,
-                                       return_full_data)
+            self._streaming_confidence(batch, out, held, coordinate, num_cycles, compact_output, return_full_data)
         elif have_conf and not compact_output:
-            out.update(
-                self.confidence_head(batch,
-                                     s_inputs,
-                                     s,
-                                     z,
-                                     coordinate,
-                                     pair_mask=batch.get("pair_mask")))
+            out.update(self.confidence_head(batch, s_inputs, s, z, coordinate, pair_mask=batch.get("pair_mask")))
         batch.clear()
         return out

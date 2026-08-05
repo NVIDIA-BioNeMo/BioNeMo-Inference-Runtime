@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,10 +27,8 @@ from biotite.structure import AtomArrayStack
 from tensorrt_bionemo.data.parsers import read_fasta
 from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
 from tensorrt_bionemo.pipeline.processor.base import SerialProcessor
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
-    EngineProcessorConfig, Processor, build_processor)
-from tensorrt_bionemo.pipeline.stages.configs import (
-    FeatureGeneratorStageConfig, ParserStageConfig, WriterStageConfig)
+from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig, Processor, build_processor
+from tensorrt_bionemo.pipeline.stages.configs import FeatureGeneratorStageConfig, ParserStageConfig, WriterStageConfig
 
 SAMPLE_DIR = Path("examples") / "data" / "samples" / "monomers"
 
@@ -41,19 +39,19 @@ def create_sample_requests(repeat: int = 1):
     sample_ids = ["T1031"]
     for i in range(repeat):
         for sample_id in sample_ids:
-            sequence = read_fasta(str(
-                SAMPLE_DIR / f"{sample_id}.fasta"))["sequences"][0]["sequence"]
+            sequence = read_fasta(str(SAMPLE_DIR / f"{sample_id}.fasta"))["sequences"][0]["sequence"]
             requests.append(
                 InputRequest(
                     input_id=f"{sample_id}_{i}",
                     polymers=[
-                        Polymer(chain_id="A",
-                                sequence=sequence,
-                                msas=[
-                                    MSARecord(path=str(SAMPLE_DIR / "msas" /
-                                                       f"{sample_id}.a3m"))
-                                ])
-                    ]))
+                        Polymer(
+                            chain_id="A",
+                            sequence=sequence,
+                            msas=[MSARecord(path=str(SAMPLE_DIR / "msas" / f"{sample_id}.a3m"))],
+                        )
+                    ],
+                )
+            )
     return requests
 
 
@@ -72,18 +70,17 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
     model_source = "alphafold2_1"
 
     # (1) Create a scratch-space directory
-    run_label = datetime.now().strftime('%Y%m%dT%H%M%S')
+    run_label = datetime.now().strftime("%Y%m%dT%H%M%S")
     output_path = os.path.join(
-        tmp_path, "output/tests/pipeline/stages",
+        tmp_path,
+        "output/tests/pipeline/stages",
         f"test_writer_stage_in_noop_pipeline_output_{run_label}",
-        f"writer_output_{run_label}")
+        f"writer_output_{run_label}",
+    )
 
     # (2) Define dataset
     requests = create_sample_requests()
-    records = [{
-        "record": req,
-        "__record_id": req["input_id"]
-    } for req in requests]
+    records = [{"record": req, "__record_id": req["input_id"]} for req in requests]
     ds = ray.data.from_items(records)
 
     # (3) Define and run processors for pdb and cif formats
@@ -92,17 +89,15 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
         executor_backend="ray",
         parser_stage=ParserStageConfig(compute=2),
         feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
-        writer_stage=WriterStageConfig(compute=2,
-                                       output_path=output_path,
-                                       format="pdb"))
+        writer_stage=WriterStageConfig(compute=2, output_path=output_path, format="pdb"),
+    )
     config_for_cif = EngineProcessorConfig(
         model_source=model_source,
         executor_backend="ray",
         parser_stage=ParserStageConfig(compute=2),
         feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
-        writer_stage=WriterStageConfig(compute=2,
-                                       output_path=output_path,
-                                       format="cif"))
+        writer_stage=WriterStageConfig(compute=2, output_path=output_path, format="cif"),
+    )
 
     processor_for_pdb: Processor = build_processor(config_for_pdb)
     processor_for_cif: Processor = build_processor(config_for_cif)
@@ -116,43 +111,33 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
 
     # (5) metrics to compare output
     for input_id in [req["input_id"] for req in requests]:
-        pdb_file = pdb.PDBFile.read(
-            os.path.join(output_path, f"{input_id}.pdb"))
+        pdb_file = pdb.PDBFile.read(os.path.join(output_path, f"{input_id}.pdb"))
         struc_from_pdb: AtomArrayStack = pdb.get_structure(pdb_file)
-        cif_file = pdbx.CIFFile.read(
-            os.path.join(output_path, f"{input_id}.cif"))
+        cif_file = pdbx.CIFFile.read(os.path.join(output_path, f"{input_id}.cif"))
         # ModelCIF has no auth_* fields; read label_* directly.
-        struc_from_cif: AtomArrayStack = pdbx.get_structure(
-            cif_file, use_author_fields=False)
+        struc_from_cif: AtomArrayStack = pdbx.get_structure(cif_file, use_author_fields=False)
 
         atom_coord_from_pdb: np.array = struc_from_pdb.coord
         atom_coord_from_cif: np.array = struc_from_cif.coord
 
-        npt.assert_allclose(atom_coord_from_pdb,
-                            atom_coord_from_cif,
-                            rtol=1e-3,
-                            atol=1e-3)
+        npt.assert_allclose(atom_coord_from_pdb, atom_coord_from_cif, rtol=1e-3, atol=1e-3)
 
 
 def test_serial_processor_pdb_cif_match(tmp_path: Path):
     """PDB-vs-CIF check using multi-format writer in one serial pass."""
 
     model_source = "alphafold2_1"
-    run_label = datetime.now().strftime('%Y%m%dT%H%M%S')
-    output_path = os.path.join(tmp_path, "output/tests/pipeline/stages",
-                               f"test_serial_processor_{run_label}",
-                               f"writer_output_{run_label}")
+    run_label = datetime.now().strftime("%Y%m%dT%H%M%S")
+    output_path = os.path.join(
+        tmp_path, "output/tests/pipeline/stages", f"test_serial_processor_{run_label}", f"writer_output_{run_label}"
+    )
 
     requests = create_sample_requests()
-    records = [{
-        "record": req,
-        "__record_id": req["input_id"]
-    } for req in requests]
+    records = [{"record": req, "__record_id": req["input_id"]} for req in requests]
 
-    config = EngineProcessorConfig(model_source=model_source,
-                                   writer_stage=WriterStageConfig(
-                                       output_path=output_path,
-                                       format=["pdb", "cif"]))
+    config = EngineProcessorConfig(
+        model_source=model_source, writer_stage=WriterStageConfig(output_path=output_path, format=["pdb", "cif"])
+    )
     processor = build_processor(config)
     assert isinstance(processor, SerialProcessor)
     results = processor(records)
@@ -166,22 +151,16 @@ def test_serial_processor_pdb_cif_match(tmp_path: Path):
         assert "cif" in paths, "output_paths should contain 'cif'"
 
     for input_id in [req["input_id"] for req in requests]:
-        pdb_file = pdb.PDBFile.read(
-            os.path.join(output_path, f"{input_id}.pdb"))
+        pdb_file = pdb.PDBFile.read(os.path.join(output_path, f"{input_id}.pdb"))
         struc_from_pdb: AtomArrayStack = pdb.get_structure(pdb_file)
-        cif_file = pdbx.CIFFile.read(
-            os.path.join(output_path, f"{input_id}.cif"))
+        cif_file = pdbx.CIFFile.read(os.path.join(output_path, f"{input_id}.cif"))
         # ModelCIF has no auth_* fields; read label_* directly.
-        struc_from_cif: AtomArrayStack = pdbx.get_structure(
-            cif_file, use_author_fields=False)
+        struc_from_cif: AtomArrayStack = pdbx.get_structure(cif_file, use_author_fields=False)
 
         atom_coord_from_pdb: np.array = struc_from_pdb.coord
         atom_coord_from_cif: np.array = struc_from_cif.coord
 
-        npt.assert_allclose(atom_coord_from_pdb,
-                            atom_coord_from_cif,
-                            rtol=1e-3,
-                            atol=1e-3)
+        npt.assert_allclose(atom_coord_from_pdb, atom_coord_from_cif, rtol=1e-3, atol=1e-3)
 
 
 def test_serial_processor_returns_output_paths(tmp_path: Path):
@@ -191,14 +170,11 @@ def test_serial_processor_returns_output_paths(tmp_path: Path):
     output_path = str(tmp_path / "serial_outputs")
 
     requests = create_sample_requests()
-    records = [{
-        "record": req,
-        "__record_id": req["input_id"]
-    } for req in requests]
+    records = [{"record": req, "__record_id": req["input_id"]} for req in requests]
 
-    config = EngineProcessorConfig(model_source=model_source,
-                                   writer_stage=WriterStageConfig(
-                                       output_path=output_path, format="pdb"))
+    config = EngineProcessorConfig(
+        model_source=model_source, writer_stage=WriterStageConfig(output_path=output_path, format="pdb")
+    )
     processor = build_processor(config)
     assert isinstance(processor, SerialProcessor)
 
@@ -209,13 +185,11 @@ def test_serial_processor_returns_output_paths(tmp_path: Path):
         assert row.get("__record_id") == req["input_id"]
         expected_path = os.path.join(output_path, f"{req['input_id']}.pdb")
         assert row.get("output_path") == expected_path
-        assert os.path.isfile(
-            expected_path), f"Missing output file: {expected_path}"
+        assert os.path.isfile(expected_path), f"Missing output file: {expected_path}"
         assert row.get("format") == "pdb"
 
         scores_raw = row.get("scores")
-        assert isinstance(scores_raw, str), \
-            f"scores should be a JSON string, got {type(scores_raw)}"
+        assert isinstance(scores_raw, str), f"scores should be a JSON string, got {type(scores_raw)}"
         scores = json.loads(scores_raw)
         assert isinstance(scores, dict), "scores should decode to a dict"
         assert "plddt" in scores, "scores dict should contain 'plddt'"

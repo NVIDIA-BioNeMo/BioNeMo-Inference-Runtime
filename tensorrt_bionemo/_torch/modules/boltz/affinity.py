@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -21,10 +20,8 @@ import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import PairwiseConditioning
-from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
-                                                   WeightsLoadingConfig)
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerNoSeqModule
+from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerNoSeqModule
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 
@@ -46,34 +43,38 @@ def get_best_coords(coords: torch.Tensor, iptm: torch.Tensor) -> torch.Tensor:
 
 
 def create_cross_pair_mask(
-        token_pad_mask: torch.Tensor,
-        mol_type: torch.Tensor,
-        affinity_token_mask: torch.Tensor,
-        include_mask_for_head: bool = False
+    token_pad_mask: torch.Tensor,
+    mol_type: torch.Tensor,
+    affinity_token_mask: torch.Tensor,
+    include_mask_for_head: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Create a cross-pair mask for affinity prediction.
     """
-    rec_mask = ((mol_type == 0))
+    rec_mask = mol_type == 0
     rec_mask = rec_mask * token_pad_mask
     lig_mask = (affinity_token_mask.to(torch.bool)) * token_pad_mask
     lig_mask = lig_mask * token_pad_mask
-    cross_pair_mask = (lig_mask[:, :, None] * rec_mask[:, None, :] +
-                       rec_mask[:, :, None] * lig_mask[:, None, :] +
-                       lig_mask[:, :, None] * lig_mask[:, None, :])
+    cross_pair_mask = (
+        lig_mask[:, :, None] * rec_mask[:, None, :]
+        + rec_mask[:, :, None] * lig_mask[:, None, :]
+        + lig_mask[:, :, None] * lig_mask[:, None, :]
+    )
     mask_for_head = None
     if include_mask_for_head:
         mask_for_head = cross_pair_mask.unsqueeze(-1) * (
-            1 - torch.eye(lig_mask.shape[1],
-                          device=lig_mask.device).unsqueeze(-1).unsqueeze(0))
+            1 - torch.eye(lig_mask.shape[1], device=lig_mask.device).unsqueeze(-1).unsqueeze(0)
+        )
     return cross_pair_mask, mask_for_head
 
 
-def compute_distogram(x_pred: torch.Tensor,
-                      boundaries: torch.Tensor,
-                      token_to_rep_atom: torch.Tensor,
-                      multiplicity: int = 1,
-                      dtype: torch.dtype = torch.int32) -> torch.Tensor:
+def compute_distogram(
+    x_pred: torch.Tensor,
+    boundaries: torch.Tensor,
+    token_to_rep_atom: torch.Tensor,
+    multiplicity: int = 1,
+    dtype: torch.dtype = torch.int32,
+) -> torch.Tensor:
     """
     Compute the distogram from the predicted atom coordinates.
     Args:
@@ -98,13 +99,14 @@ def compute_distogram(x_pred: torch.Tensor,
 
 
 class AffinityHeadsTransformer(nn.Module):
-
-    def __init__(self,
-                 token_z: int,
-                 token_s: int,
-                 dtype: torch.dtype = None,
-                 eps: float = 1e-5,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        token_z: int,
+        token_s: int,
+        dtype: torch.dtype = None,
+        eps: float = 1e-5,
+        skip_create_weights: bool = False,
+    ):
         super().__init__()
         self.token_z = token_z
         self.token_s = token_s
@@ -112,62 +114,34 @@ class AffinityHeadsTransformer(nn.Module):
         self.eps = eps
 
         self.affinity_out_mlp_linear_0 = Linear(
-            token_z,
-            token_z,
-            bias=True,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            token_z, token_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.affinity_out_mlp_linear_1 = Linear(
-            token_z,
-            token_s,
-            bias=True,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            token_z, token_s, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.to_affinity_pred_value_0 = Linear(
-            token_s,
-            token_s,
-            bias=True,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            token_s, token_s, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.to_affinity_pred_value_1 = Linear(
-            token_s,
-            token_s,
-            bias=True,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
-        self.to_affinity_pred_value_2 = nn.Linear(token_s,
-                                                  1,
-                                                  bias=True,
-                                                  dtype=dtype)
+            token_s, token_s, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
+        self.to_affinity_pred_value_2 = nn.Linear(token_s, 1, bias=True, dtype=dtype)
 
         self.to_affinity_pred_score_0 = Linear(
-            token_s,
-            token_s,
-            bias=True,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            token_s, token_s, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.to_affinity_pred_score_1 = Linear(
-            token_s,
-            token_s,
-            bias=True,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
-        self.to_affinity_pred_score_2 = nn.Linear(token_s,
-                                                  1,
-                                                  bias=True,
-                                                  dtype=dtype)
+            token_s, token_s, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
+        self.to_affinity_pred_score_2 = nn.Linear(token_s, 1, bias=True, dtype=dtype)
 
-        self.to_affinity_logits_binary = nn.Linear(1,
-                                                   1,
-                                                   bias=True,
-                                                   dtype=dtype)
+        self.to_affinity_logits_binary = nn.Linear(1, 1, bias=True, dtype=dtype)
 
-    def forward(self, z: torch.Tensor,
-                cross_pair_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, z: torch.Tensor, cross_pair_mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
             z: (B, I, token_s)
@@ -180,8 +154,7 @@ class AffinityHeadsTransformer(nn.Module):
                 after ``affinity_out_mlp`` (matches OSS boltz
                 ``AffinityHeadsTransformer``).
         """
-        g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (
-            torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7)
+        g = torch.sum(z * cross_pair_mask, dim=(1, 2)) / (torch.sum(cross_pair_mask, dim=(1, 2)) + 1e-7)
         g = self.affinity_out_mlp_linear_0(g)
         g = F.relu(g)
         g = self.affinity_out_mlp_linear_1(g)
@@ -205,9 +178,8 @@ class AffinityHeadsTransformer(nn.Module):
 
 
 class AffinityModule(nn.Module):
-
     def __init__(self, config: BaseConfig):
-        """ Boltz-2 Affinity Module
+        """Boltz-2 Affinity Module
         Args:
             config: tensorrt_bionemo.models.boltz2.configs.AffinityModuleConfig
                 The configuration of the affinity module.
@@ -217,32 +189,33 @@ class AffinityModule(nn.Module):
 
         skip_create_weights = False
         self.dist_bin_pairwise_embed = nn.Embedding(
-            num_embeddings=config.num_dist_bins,
-            embedding_dim=config.token_z,
-            dtype=config.torch_dtype)
+            num_embeddings=config.num_dist_bins, embedding_dim=config.token_z, dtype=config.torch_dtype
+        )
 
-        self.fused_s_to_z = Linear(config.token_s,
-                                   config.token_z * 2,
-                                   bias=False,
-                                   dtype=config.torch_dtype,
-                                   skip_create_weights=skip_create_weights,
-                                   weights_loading_config=WeightsLoadingConfig(
-                                       weight_mode=WeightMode.FUSED_KV_LINEAR))
-        self.z_norm = nn.LayerNorm(config.token_z,
-                                   eps=config.norm_epsilon,
-                                   dtype=config.torch_dtype)
-        self.z_linear = Linear(config.token_z,
-                               config.token_z,
-                               bias=False,
-                               dtype=config.torch_dtype,
-                               skip_create_weights=skip_create_weights)
+        self.fused_s_to_z = Linear(
+            config.token_s,
+            config.token_z * 2,
+            bias=False,
+            dtype=config.torch_dtype,
+            skip_create_weights=skip_create_weights,
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
+        )
+        self.z_norm = nn.LayerNorm(config.token_z, eps=config.norm_epsilon, dtype=config.torch_dtype)
+        self.z_linear = Linear(
+            config.token_z,
+            config.token_z,
+            bias=False,
+            dtype=config.torch_dtype,
+            skip_create_weights=skip_create_weights,
+        )
 
         self.pairwise_conditioner = PairwiseConditioning(
             token_z=config.token_z,
             dim_token_rel_pos_feats=config.token_z,
             num_transitions=2,
             eps=config.norm_epsilon,
-            dtype=config.torch_dtype)
+            dtype=config.torch_dtype,
+        )
 
         # Affinity ``cross_pair_mask`` is bipartite (receptor rows have
         # interior 1's in the ligand-column range, not a left-aligned
@@ -261,14 +234,16 @@ class AffinityModule(nn.Module):
             eps=config.norm_epsilon,
             inf=config.mask_inf,
             triangle_attn_backend=config.triangle_attention_backend,
-            pair_mask_left_aligned=False)
+            pair_mask_left_aligned=False,
+        )
 
         self.affinity_heads = AffinityHeadsTransformer(
             token_z=config.token_z,
             token_s=config.token_s,
             dtype=config.torch_dtype,
             eps=config.norm_epsilon,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+        )
 
         self.token_z = config.token_z
 
@@ -277,8 +252,7 @@ class AffinityModule(nn.Module):
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -287,7 +261,7 @@ class AffinityModule(nn.Module):
         distogram: torch.Tensor,
         cross_pair_mask_0: torch.Tensor,
         cross_pair_mask_1: torch.Tensor,
-        attn_metadatas: Optional[AttentionMetadata] = None
+        attn_metadatas: AttentionMetadata | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -313,12 +287,8 @@ class AffinityModule(nn.Module):
 
         embed_distogram = self.dist_bin_pairwise_embed(distogram)
 
-        z = z + self.pairwise_conditioner(z_trunk=z,
-                                          token_rel_pos_feats=embed_distogram)
-        z = self.pairformer_stack(z,
-                                  pair_mask=cross_pair_mask_0,
-                                  attn_metadatas=attn_metadatas)
-        pred_value, logits_binary, affinity_embedding = self.affinity_heads(
-            z, cross_pair_mask_1)
+        z = z + self.pairwise_conditioner(z_trunk=z, token_rel_pos_feats=embed_distogram)
+        z = self.pairformer_stack(z, pair_mask=cross_pair_mask_0, attn_metadatas=attn_metadatas)
+        pred_value, logits_binary, affinity_embedding = self.affinity_heads(z, cross_pair_mask_1)
 
         return pred_value, logits_binary, affinity_embedding

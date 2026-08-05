@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Callable
 from math import sqrt
-from typing import Any, Callable, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -21,42 +22,35 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
-from tensorrt_bionemo._torch.graph_optimization.decorator import (
-    NamedDimTies, support_graph_optimization)
+    GraphOptimizationMode,
+    InputAcceptanceDimSpec,
+    InputKeyMethod,
+)
+from tensorrt_bionemo._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from tensorrt_bionemo._torch.layers.attention import AttentionMetadata
-from tensorrt_bionemo._torch.layers.conditioning import (PairwiseConditioning,
-                                                         SingleConditioning)
+from tensorrt_bionemo._torch.layers.conditioning import PairwiseConditioning, SingleConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.noise_scheduler import (
-    SampleDiffusion, create_noise_schedule)
+from tensorrt_bionemo._torch.layers.noise_scheduler import SampleDiffusion, create_noise_schedule
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
-from tensorrt_bionemo._torch.layers.random_augmentation import \
-    compute_random_augmentation
-from tensorrt_bionemo._torch.layers.transformers.atom import (
-    AtomAttentionDecoder, AtomAttentionEncoder)
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    BoltzDiffusionTransformer
-from tensorrt_bionemo._torch.layers.transition import \
-    ConditionedTransitionBlock
+from tensorrt_bionemo._torch.layers.random_augmentation import compute_random_augmentation
+from tensorrt_bionemo._torch.layers.transformers.atom import AtomAttentionDecoder, AtomAttentionEncoder
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import BoltzDiffusionTransformer
+from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock
 from tensorrt_bionemo._torch.modules.boltz.embedders import AtomEmbedding
-from tensorrt_bionemo._torch.modules.boltz.loss.diffusion import \
-    weighted_rigid_align
-from tensorrt_bionemo._torch.modules.boltz.physical.potentials import \
-    get_potentials
-from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
-    BoltzSteeringParams
-from tensorrt_bionemo._torch.utils import (commit_graph_safe_generator,
-                                           make_graph_safe_generator,
-                                           recursive_calling_load_weights)
+from tensorrt_bionemo._torch.modules.boltz.loss.diffusion import weighted_rigid_align
+from tensorrt_bionemo._torch.modules.boltz.physical.potentials import get_potentials
+from tensorrt_bionemo._torch.modules.boltz.physical.steering import BoltzSteeringParams
+from tensorrt_bionemo._torch.utils import (
+    commit_graph_safe_generator,
+    make_graph_safe_generator,
+    recursive_calling_load_weights,
+)
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.pipeline.models.boltz2.const import (
-    num_pocket_contact_info, num_tokens)
+from tensorrt_bionemo.pipeline.models.boltz2.const import num_pocket_contact_info, num_tokens
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class DiffusionConditioning(nn.Module):
-
     def __init__(
         self,
         token_s: int,
@@ -79,8 +73,8 @@ class DiffusionConditioning(nn.Module):
         eps: float = 1e-5,
         version: str = "v1",
         dtype: torch.dtype = torch.float32,
-        pairwise_conditioner_dtype: Optional[torch.dtype] = None,
-        token_trans_bias_dtype: Optional[torch.dtype] = None,
+        pairwise_conditioner_dtype: torch.dtype | None = None,
+        token_trans_bias_dtype: torch.dtype | None = None,
         skip_create_weights: bool = False,
     ) -> None:
         super().__init__()
@@ -126,7 +120,8 @@ class DiffusionConditioning(nn.Module):
                 nn.Sequential(
                     nn.LayerNorm(atom_z),
                     nn.Linear(atom_z, atom_encoder_heads, bias=False),
-                ))
+                )
+            )
 
         self.atom_dec_proj_z = nn.ModuleList()
         for _ in range(atom_decoder_depth):
@@ -134,21 +129,19 @@ class DiffusionConditioning(nn.Module):
                 nn.Sequential(
                     nn.LayerNorm(atom_z),
                     nn.Linear(atom_z, atom_decoder_heads, bias=False),
-                ))
+                )
+            )
 
         self.token_trans_proj_z = nn.ModuleList()
         for _ in range(token_transformer_depth):
             self.token_trans_proj_z.append(
                 nn.Sequential(
                     nn.LayerNorm(token_z, dtype=self.token_trans_bias_dtype),
-                    nn.Linear(token_z,
-                              token_transformer_heads,
-                              bias=False,
-                              dtype=self.token_trans_bias_dtype),
-                ))
+                    nn.Linear(token_z, token_transformer_heads, bias=False, dtype=self.token_trans_bias_dtype),
+                )
+            )
 
-    def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor],
-                             module_name: str) -> dict[str, Any]:
+    def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor], module_name: str) -> dict[str, Any]:
         keys = []
         if module_name == "atom_embedding":
             keys = [
@@ -173,8 +166,7 @@ class DiffusionConditioning(nn.Module):
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -210,11 +202,12 @@ class DiffusionConditioning(nn.Module):
             relative_position_encoding,
         ).to(self.dtype)
 
-        q, c, p = self.atom_embedding(**self.get_module_feed_dict(
-            feature_dict, "atom_embedding"),
-                                      query_to_keys=query_to_keys,
-                                      s_trunk=s_trunk,
-                                      z=z)
+        q, c, p = self.atom_embedding(
+            **self.get_module_feed_dict(feature_dict, "atom_embedding"),
+            query_to_keys=query_to_keys,
+            s_trunk=s_trunk,
+            z=z,
+        )
 
         atom_enc_bias = []
         for layer in self.atom_enc_proj_z:
@@ -255,8 +248,7 @@ class DiffusionConditioning(nn.Module):
     input_key_method=InputKeyMethod.EXACT,
     # Default input management: accept up to 1024 tokens before falling back to
     # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(
-        name="num_tokens", dim_len_max=1024),
+    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
 )
 class DiffusionModule(nn.Module):
     """Diffusion module"""
@@ -270,9 +262,15 @@ class DiffusionModule(nn.Module):
         self.dtype = config.torch_dtype
 
         # Ensure the dtype is consistent for all the modules
-        assert self.dtype == config.atom_encoder.torch_dtype, f"DiffusionModule dtype: {self.dtype}, atom_encoder dtype: {config.atom_encoder.torch_dtype}"
-        assert self.dtype == config.atom_decoder.torch_dtype, f"DiffusionModule dtype: {self.dtype}, atom_decoder dtype: {config.atom_decoder.torch_dtype}"
-        assert self.dtype == config.token_transformer.torch_dtype, f"DiffusionModule dtype: {self.dtype}, token_transformer dtype: {config.token_transformer.torch_dtype}"
+        assert self.dtype == config.atom_encoder.torch_dtype, (
+            f"DiffusionModule dtype: {self.dtype}, atom_encoder dtype: {config.atom_encoder.torch_dtype}"
+        )
+        assert self.dtype == config.atom_decoder.torch_dtype, (
+            f"DiffusionModule dtype: {self.dtype}, atom_decoder dtype: {config.atom_decoder.torch_dtype}"
+        )
+        assert self.dtype == config.token_transformer.torch_dtype, (
+            f"DiffusionModule dtype: {self.dtype}, token_transformer dtype: {config.token_transformer.torch_dtype}"
+        )
 
         skip_create_weights = config.skip_create_weights
         eps = config.norm_epsilon
@@ -292,7 +290,8 @@ class DiffusionModule(nn.Module):
             additional_input_dim=additional_input_dim,
             eps=eps,
             dtype=self.dtype,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+        )
         self.atom_attention_encoder = AtomAttentionEncoder(
             atom_s=config.atom_s,
             token_s=config.token_s,
@@ -303,22 +302,23 @@ class DiffusionModule(nn.Module):
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             version=config.version,
             dtype=config.atom_encoder.torch_dtype,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+        )
 
         self.s_to_a_linear = nn.Sequential(
             nn.LayerNorm(2 * config.token_s, dtype=self.dtype, eps=eps),
-            Linear(2 * config.token_s,
-                   2 * config.token_s,
-                   bias=False,
-                   dtype=self.dtype,
-                   skip_create_weights=config.skip_create_weights))
+            Linear(
+                2 * config.token_s,
+                2 * config.token_s,
+                bias=False,
+                dtype=self.dtype,
+                skip_create_weights=config.skip_create_weights,
+            ),
+        )
 
-        self.token_transformer = BoltzDiffusionTransformer(
-            config=config.token_transformer)
+        self.token_transformer = BoltzDiffusionTransformer(config=config.token_transformer)
 
-        self.a_norm = nn.LayerNorm(
-            2 * config.token_s, dtype=self.dtype,
-            eps=eps)
+        self.a_norm = nn.LayerNorm(2 * config.token_s, dtype=self.dtype, eps=eps)
 
         self.atom_attention_decoder = AtomAttentionDecoder(
             token_s=config.token_s,
@@ -328,7 +328,8 @@ class DiffusionModule(nn.Module):
             diffusion_transformer_config=config.atom_decoder,
             diffusion_transformer_cls=BoltzDiffusionTransformer,
             dtype=config.atom_decoder.torch_dtype,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+        )
 
     def forward(
         self,
@@ -340,7 +341,7 @@ class DiffusionModule(nn.Module):
         r_noisy: torch.Tensor,
         times: torch.Tensor,
         diffusion_conditioning_kwargs: dict[str, torch.Tensor],
-        attn_metadata: Optional[AttentionMetadata] = None,
+        attn_metadata: AttentionMetadata | None = None,
     ):
         """
         Note:
@@ -398,7 +399,7 @@ class DiffusionModule(nn.Module):
         )
         # s: [B, multiplicity, N, 2*token_s]
 
-        buffers: Optional[PreallocatedBuffers] = None
+        buffers: PreallocatedBuffers | None = None
         if self.token_transformer.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
 
@@ -435,14 +436,16 @@ class DiffusionModule(nn.Module):
         a = self.a_norm(a)
 
         # Broadcast token activations to atoms and run Sequence-local Atom Attention
-        r_update = self.atom_attention_decoder(atom_to_token=atom_to_token,
-                                               atom_pad_mask=atom_pad_mask,
-                                               a=a,
-                                               q=q_skip,
-                                               c=c_skip,
-                                               bias=atom_dec_bias,
-                                               attn_metadata=attn_metadata,
-                                               buffers=buffers)
+        r_update = self.atom_attention_decoder(
+            atom_to_token=atom_to_token,
+            atom_pad_mask=atom_pad_mask,
+            a=a,
+            q=q_skip,
+            c=c_skip,
+            bias=atom_dec_bias,
+            attn_metadata=attn_metadata,
+            buffers=buffers,
+        )
 
         return r_update, a
 
@@ -478,10 +481,8 @@ class OutTokenFeatUpdate(nn.Module):
         self.fourier_embed = FourierEmbedding(dim_fourier, dtype=dtype)
         self.norm_fourier = nn.LayerNorm(dim_fourier, dtype=dtype)
         self.transition_block = ConditionedTransitionBlock(
-            2 * token_s,
-            2 * token_s + dim_fourier,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            2 * token_s, 2 * token_s + dim_fourier, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
     def forward(
         self,
@@ -504,8 +505,7 @@ class OutTokenFeatUpdate(nn.Module):
         next_a = self.norm_next(next_a)
         # [B, multiplicity, dim_fourier]
         fourier_embed = self.fourier_embed(times)
-        normed_fourier = (self.norm_fourier(fourier_embed).unsqueeze(2).expand(
-            -1, -1, next_a.shape[2], -1))
+        normed_fourier = self.norm_fourier(fourier_embed).unsqueeze(2).expand(-1, -1, next_a.shape[2], -1)
         cond_a = torch.cat((acc_a, normed_fourier), dim=-1)
 
         acc_a = acc_a + self.transition_block(next_a, cond_a)
@@ -514,16 +514,17 @@ class OutTokenFeatUpdate(nn.Module):
 
 
 class PotentialGuidance:
-
-    def __init__(self,
-                 steering_args: BoltzSteeringParams = None,
-                 atom_mask: torch.Tensor = None,
-                 multiplicity: int = 1,
-                 num_sampling_steps: int = 50,
-                 step_scale: float = 1.0,
-                 boltz2: bool = False,
-                 device: torch.device = None) -> None:
-        """ Initialize the BoltzPotentialGuidance
+    def __init__(
+        self,
+        steering_args: BoltzSteeringParams = None,
+        atom_mask: torch.Tensor = None,
+        multiplicity: int = 1,
+        num_sampling_steps: int = 50,
+        step_scale: float = 1.0,
+        boltz2: bool = False,
+        device: torch.device = None,
+    ) -> None:
+        """Initialize the BoltzPotentialGuidance
         Args:
             steering_args: BoltzSteeringParams
                 The steering arguments.
@@ -556,19 +557,18 @@ class PotentialGuidance:
             # Boltz1 does not support contact guidance update
             self.steering_args.contact_guidance_update = False
 
-        self.need_guidance_update = self.steering_args.physical_guidance_update or self.steering_args.contact_guidance_update
+        self.need_guidance_update = (
+            self.steering_args.physical_guidance_update or self.steering_args.contact_guidance_update
+        )
         self.potentials = get_potentials(steering_args, boltz2=boltz2)
         if self.steering_args.fk_steering:
             self.multiplicity = multiplicity * self.steering_args.num_particles
             # [B, multiplicity*num_particles, 0]
-            self.energy_traj = torch.empty(
-                (self.batch_size, self.multiplicity, 0), device=device)
+            self.energy_traj = torch.empty((self.batch_size, self.multiplicity, 0), device=device)
             # [B, multiplicity, num_particles]
             self.resample_weights = torch.ones(
-                self.batch_size,
-                multiplicity,
-                self.steering_args.num_particles,
-                device=device)
+                self.batch_size, multiplicity, self.steering_args.num_particles, device=device
+            )
         if self.need_guidance_update:
             # [B, multiplicity*num_particles, N_atoms, 3]
             self.scaled_guidance_update = torch.zeros(
@@ -610,20 +610,21 @@ class PotentialGuidance:
         if self.steering_args is None:
             return
         if self.need_guidance_update:
-            self.scaled_guidance_update = torch.einsum(
-                "bmij,bmjk->bmik", self.scaled_guidance_update, random_R)
+            self.scaled_guidance_update = torch.einsum("bmij,bmjk->bmik", self.scaled_guidance_update, random_R)
 
-    def update_resampling_weights(self, atom_coords_denoised: torch.Tensor,
-                                  eps: torch.Tensor, steering_t: float,
-                                  noise_var: float,
-                                  feed_dict: dict[str, torch.Tensor]) -> None:
+    def update_resampling_weights(
+        self,
+        atom_coords_denoised: torch.Tensor,
+        eps: torch.Tensor,
+        steering_t: float,
+        noise_var: float,
+        feed_dict: dict[str, torch.Tensor],
+    ) -> None:
 
         if not self.need_fk_resampling(noise_var):
             return
 
-        energy = torch.zeros(self.batch_size,
-                             self.multiplicity,
-                             device=self.device)
+        energy = torch.zeros(self.batch_size, self.multiplicity, device=self.device)
         for potential in self.potentials:
             parameters = potential.compute_parameters(steering_t)
             if parameters["resampling_weight"] > 0:
@@ -633,8 +634,7 @@ class PotentialGuidance:
                     parameters,
                 )
                 energy += parameters["resampling_weight"] * component_energy
-        self.energy_traj = torch.cat((self.energy_traj, energy.unsqueeze(-1)),
-                                     dim=-1)
+        self.energy_traj = torch.cat((self.energy_traj, energy.unsqueeze(-1)), dim=-1)
         # Compute log G values
         if self.step_idx == 0:
             log_G = -1 * energy
@@ -642,11 +642,10 @@ class PotentialGuidance:
             log_G = self.energy_traj[..., -2] - self.energy_traj[..., -1]
 
         # Compute ll difference between guided and unguided transition distribution
-        if (self.steering_args.physical_guidance_update or
-                self.steering_args.contact_guidance_update) and noise_var > 0:
-            ll_difference = (eps**2 -
-                             (eps + self.scaled_guidance_update)**2).sum(
-                                 dim=(-1, -2)) / (2 * noise_var)
+        if (
+            self.steering_args.physical_guidance_update or self.steering_args.contact_guidance_update
+        ) and noise_var > 0:
+            ll_difference = (eps**2 - (eps + self.scaled_guidance_update) ** 2).sum(dim=(-1, -2)) / (2 * noise_var)
         else:
             ll_difference = torch.zeros_like(energy)
 
@@ -654,14 +653,19 @@ class PotentialGuidance:
         # [B, multiplicity, num_particles]
         self.resample_weights = F.softmax(
             (ll_difference + self.steering_args.fk_lambda * log_G).reshape(
-                self.batch_size, -1, self.steering_args.num_particles),
+                self.batch_size, -1, self.steering_args.num_particles
+            ),
             dim=-1,
         )
 
     def apply_guidance_update(
-            self, atom_coords_denoised: torch.Tensor, steering_t: float,
-            sigma_t: float, t_hat: float,
-            feed_dict: dict[str, torch.Tensor]) -> torch.Tensor:
+        self,
+        atom_coords_denoised: torch.Tensor,
+        steering_t: float,
+        sigma_t: float,
+        t_hat: float,
+        feed_dict: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
         if not self.need_guidance_update_by_step():
             return atom_coords_denoised
 
@@ -670,18 +674,15 @@ class PotentialGuidance:
             energy_gradient = torch.zeros_like(atom_coords_denoised)
             for potential in self.potentials:
                 parameters = potential.compute_parameters(steering_t)
-                if (parameters["guidance_weight"] > 0 and
-                    (guidance_step) % parameters["guidance_interval"] == 0):
-                    energy_gradient += parameters[
-                        "guidance_weight"] * potential.compute_gradient(
-                            atom_coords_denoised + guidance_update,
-                            feed_dict,
-                            parameters,
-                        )
+                if parameters["guidance_weight"] > 0 and (guidance_step) % parameters["guidance_interval"] == 0:
+                    energy_gradient += parameters["guidance_weight"] * potential.compute_gradient(
+                        atom_coords_denoised + guidance_update,
+                        feed_dict,
+                        parameters,
+                    )
             guidance_update -= energy_gradient
         atom_coords_denoised += guidance_update
-        self.scaled_guidance_update = (guidance_update * -1 * self.step_scale *
-                                       (sigma_t - t_hat) / t_hat)
+        self.scaled_guidance_update = guidance_update * -1 * self.step_scale * (sigma_t - t_hat) / t_hat
         return atom_coords_denoised
 
     def fk_resampling(
@@ -690,11 +691,10 @@ class PotentialGuidance:
         atom_coords_noisy: torch.Tensor,
         atom_mask: torch.Tensor,
         noise_var: float,
-        atom_coords_denoised: Optional[torch.Tensor] = None,
-        token_repr: Optional[torch.Tensor] = None,
-        token_a: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-               Optional[torch.Tensor], Optional[torch.Tensor]]:
+        atom_coords_denoised: torch.Tensor | None = None,
+        token_repr: torch.Tensor | None = None,
+        token_a: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         if not self.need_fk_resampling(noise_var):
             return atom_coords, atom_coords_noisy, atom_mask, atom_coords_denoised, token_repr, token_a
 
@@ -707,25 +707,23 @@ class PotentialGuidance:
             sample_size,
             replacement=True,
         ).view(self.batch_size, -1, sample_size)
-        resample_indices = resample_indices + self.steering_args.num_particles * torch.arange(
-            self.resample_weights.shape[1],
-            device=self.resample_weights.device)[None, :, None]
-        resample_indices = resample_indices.view(
-            self.batch_size, -1)  # [B, multiplicity*sample_size]
+        resample_indices = (
+            resample_indices
+            + self.steering_args.num_particles
+            * torch.arange(self.resample_weights.shape[1], device=self.resample_weights.device)[None, :, None]
+        )
+        resample_indices = resample_indices.view(self.batch_size, -1)  # [B, multiplicity*sample_size]
 
-        batch_indices = torch.arange(self.batch_size,
-                                     device=self.device).unsqueeze(1)
+        batch_indices = torch.arange(self.batch_size, device=self.device).unsqueeze(1)
 
         atom_coords = atom_coords[batch_indices, resample_indices]
         atom_coords_noisy = atom_coords_noisy[batch_indices, resample_indices]
         atom_mask = atom_mask[batch_indices, resample_indices]
         if atom_coords_denoised is not None:
-            atom_coords_denoised = atom_coords_denoised[batch_indices,
-                                                        resample_indices]
+            atom_coords_denoised = atom_coords_denoised[batch_indices, resample_indices]
         self.energy_traj = self.energy_traj[batch_indices, resample_indices]
         if self.need_guidance_update:
-            self.scaled_guidance_update = self.scaled_guidance_update[
-                batch_indices, resample_indices]
+            self.scaled_guidance_update = self.scaled_guidance_update[batch_indices, resample_indices]
         if token_repr is not None:
             token_repr = token_repr[batch_indices, resample_indices]
         if token_a is not None:
@@ -754,10 +752,12 @@ class AtomDiffusion(SampleDiffusion):
                 The configuration of the atom diffusion module.
         """
         atom_diffusion_config = config.atom_diffusion
-        super().__init__(gamma0=atom_diffusion_config.gamma_0,
-                         gamma_min=atom_diffusion_config.gamma_min,
-                         noise_scale=atom_diffusion_config.noise_scale,
-                         step_scale=atom_diffusion_config.step_scale)
+        super().__init__(
+            gamma0=atom_diffusion_config.gamma_0,
+            gamma_min=atom_diffusion_config.gamma_min,
+            noise_scale=atom_diffusion_config.noise_scale,
+            step_scale=atom_diffusion_config.step_scale,
+        )
         score_model_config = config.score_model
         self.score_model = DiffusionModule(config=score_model_config)
 
@@ -800,8 +800,7 @@ class AtomDiffusion(SampleDiffusion):
         return (self.sigma_data**2) / (sigma**2 + self.sigma_data**2)
 
     def c_out(self, sigma):
-        return sigma * self.sigma_data / torch.sqrt(self.sigma_data**2 +
-                                                    sigma**2)
+        return sigma * self.sigma_data / torch.sqrt(self.sigma_data**2 + sigma**2)
 
     def c_in(self, sigma):
         return 1 / torch.sqrt(sigma**2 + self.sigma_data**2)
@@ -815,8 +814,7 @@ class AtomDiffusion(SampleDiffusion):
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def preconditioned_network_forward(
         self,
@@ -827,8 +825,8 @@ class AtomDiffusion(SampleDiffusion):
         feature_dict: dict[str, torch.Tensor],
         network_condition_kwargs: dict[str, torch.Tensor],
         multiplicity: int = 1,
-        attn_metadata: Optional[AttentionMetadata] = None,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch, device = noised_atom_coords.shape[0], noised_atom_coords.device
 
         if isinstance(sigma, float):
@@ -854,21 +852,22 @@ class AtomDiffusion(SampleDiffusion):
             # Boltz2 does not use token_a
             token_a = None
 
-        denoised_coords = (self.c_skip(padded_sigma) * noised_atom_coords +
-                           self.c_out(padded_sigma) * r_update)
+        denoised_coords = self.c_skip(padded_sigma) * noised_atom_coords + self.c_out(padded_sigma) * r_update
         return denoised_coords, token_a
 
     def sample_schedule(self, num_sampling_steps=None):
         # Shared AF3 schedule: Boltz uses ``num_sampling_steps`` points and
         # appends a trailing 0 (``final="append_zero"``).
-        return create_noise_schedule(num_points=num_sampling_steps,
-                                     sigma_data=self.sigma_data,
-                                     s_max=self.sigma_max,
-                                     s_min=self.sigma_min,
-                                     rho=self.rho,
-                                     device=self.device,
-                                     dtype=torch.float32,
-                                     final="append_zero")
+        return create_noise_schedule(
+            num_points=num_sampling_steps,
+            sigma_data=self.sigma_data,
+            s_max=self.sigma_max,
+            s_min=self.sigma_min,
+            rho=self.rho,
+            device=self.device,
+            dtype=torch.float32,
+            final="append_zero",
+        )
 
     def sample(
         self,
@@ -880,7 +879,7 @@ class AtomDiffusion(SampleDiffusion):
         steering_args: BoltzSteeringParams = None,
         network_condition_kwargs: dict[str, torch.Tensor] = None,
         feature_dict: dict[str, torch.Tensor] = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
+        attn_metadata: AttentionMetadata | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Sample the structure from the diffusion model.
@@ -945,87 +944,69 @@ class AtomDiffusion(SampleDiffusion):
 
         # atom position is noise at the beginning
         init_sigma = sigmas[0]
-        atom_coords = init_sigma * torch.randn(
-            coords_shape, device=self.device, generator=generator)
+        atom_coords = init_sigma * torch.randn(coords_shape, device=self.device, generator=generator)
         token_repr = None
         token_a = None
         atom_coords_denoised = None
 
         # Casting dtype for score model before run the loop, this ensure for both with and without autocast modes.
-        network_condition_kwargs["q"] = network_condition_kwargs["q"].to(
-            self.score_model.dtype)
-        network_condition_kwargs["c"] = network_condition_kwargs["c"].to(
-            self.score_model.dtype)
-        network_condition_kwargs["atom_enc_bias"] = network_condition_kwargs[
-            "atom_enc_bias"].to(self.score_model.dtype)
-        network_condition_kwargs[
-            "token_trans_bias"] = network_condition_kwargs[
-                "token_trans_bias"].to(self.score_model.dtype)
-        network_condition_kwargs["atom_dec_bias"] = network_condition_kwargs[
-            "atom_dec_bias"].to(self.score_model.dtype)
+        network_condition_kwargs["q"] = network_condition_kwargs["q"].to(self.score_model.dtype)
+        network_condition_kwargs["c"] = network_condition_kwargs["c"].to(self.score_model.dtype)
+        network_condition_kwargs["atom_enc_bias"] = network_condition_kwargs["atom_enc_bias"].to(self.score_model.dtype)
+        network_condition_kwargs["token_trans_bias"] = network_condition_kwargs["token_trans_bias"].to(
+            self.score_model.dtype
+        )
+        network_condition_kwargs["atom_dec_bias"] = network_condition_kwargs["atom_dec_bias"].to(self.score_model.dtype)
 
-        for step_idx, (sigma_tm, sigma_t,
-                       gamma) in enumerate(sigmas_and_gammas):
+        for step_idx, (sigma_tm, sigma_t, gamma) in enumerate(sigmas_and_gammas):
             potentials_guidance.set_diffusion_reverse_step(step_idx)
             random_R, random_tr = compute_random_augmentation(
                 batch_size=B,
                 multiplicity=multiplicity,
                 device=atom_coords.device,
                 dtype=atom_coords.dtype,
-                generator=generator)
+                generator=generator,
+            )
             atom_coords = atom_coords - atom_coords.mean(dim=-2, keepdims=True)
-            atom_coords = (
-                torch.einsum("bmnd,bmds->bmns", atom_coords, random_R) +
-                random_tr)
+            atom_coords = torch.einsum("bmnd,bmds->bmns", atom_coords, random_R) + random_tr
 
             if atom_coords_denoised is not None:
                 # Apply the random rotation and translation to the denoised coordinates
-                atom_coords_denoised -= atom_coords_denoised.mean(
-                    dim=-2, keepdims=True)
-                atom_coords_denoised = (torch.einsum(
-                    "bmnd,bmds->bmns", atom_coords_denoised, random_R) +
-                                        random_tr)
+                atom_coords_denoised -= atom_coords_denoised.mean(dim=-2, keepdims=True)
+                atom_coords_denoised = torch.einsum("bmnd,bmds->bmns", atom_coords_denoised, random_R) + random_tr
             potentials_guidance.apply_random_rotation(random_R)
-            sigma_tm, sigma_t, gamma = sigma_tm.item(), sigma_t.item(
-            ), gamma.item()
+            sigma_tm, sigma_t, gamma = sigma_tm.item(), sigma_t.item(), gamma.item()
 
             t_hat = sigma_tm * (1 + gamma)
             steering_t = 1.0 - (step_idx / num_sampling_steps)
             noise_var = self.noise_scale**2 * (t_hat**2 - sigma_tm**2)
-            eps = sqrt(noise_var) * torch.randn(
-                coords_shape, device=self.device, generator=generator)
+            eps = sqrt(noise_var) * torch.randn(coords_shape, device=self.device, generator=generator)
             atom_coords_noisy = atom_coords + eps
 
             with torch.no_grad():
                 atom_coords_denoised = torch.zeros_like(atom_coords_noisy)
-                sample_ids = torch.arange(multiplicity).to(
-                    atom_coords_noisy.device)
+                sample_ids = torch.arange(multiplicity).to(atom_coords_noisy.device)
                 # This fix the Boltz chunking for diffusion samples in the original code
-                n_chunks = (multiplicity + max_parallel_samples -
-                            1) // max_parallel_samples
+                n_chunks = (multiplicity + max_parallel_samples - 1) // max_parallel_samples
                 sample_ids_chunks = sample_ids.chunk(n_chunks)
                 for sample_ids_chunk in sample_ids_chunks:
                     atom_coords_denoised_chunk, token_a_chunk = self.preconditioned_network_forward(
                         s_trunk=s_trunk,
                         s_inputs=s_inputs,
-                        noised_atom_coords=atom_coords_noisy[:,
-                                                             sample_ids_chunk],
+                        noised_atom_coords=atom_coords_noisy[:, sample_ids_chunk],
                         sigma=t_hat,
                         feature_dict=feature_dict,
                         network_condition_kwargs=network_condition_kwargs,
                         multiplicity=sample_ids_chunk.numel(),
                         attn_metadata=attn_metadata,
                     )
-                    atom_coords_denoised[:,
-                                         sample_ids_chunk] = atom_coords_denoised_chunk
+                    atom_coords_denoised[:, sample_ids_chunk] = atom_coords_denoised_chunk
                     if token_a_chunk is not None:
                         # Boltz1 requires token_a
                         if token_a is None:
-                            token_a = torch.zeros(B,
-                                                  multiplicity,
-                                                  *token_a_chunk.shape[2:],
-                                                  device=self.device,
-                                                  dtype=token_a_chunk.dtype)
+                            token_a = torch.zeros(
+                                B, multiplicity, *token_a_chunk.shape[2:], device=self.device, dtype=token_a_chunk.dtype
+                            )
                         token_a[:, sample_ids_chunk] = token_a_chunk
                 potentials_guidance.update_resampling_weights(
                     atom_coords_denoised,
@@ -1042,7 +1023,7 @@ class AtomDiffusion(SampleDiffusion):
                     t_hat,
                     feature_dict,
                 )
-                atom_coords, atom_coords_noisy, atom_mask, atom_coords_denoised, token_repr, token_a = \
+                atom_coords, atom_coords_noisy, atom_mask, atom_coords_denoised, token_repr, token_a = (
                     potentials_guidance.fk_resampling(
                         atom_coords,
                         atom_coords_noisy,
@@ -1052,21 +1033,18 @@ class AtomDiffusion(SampleDiffusion):
                         token_repr,
                         token_a,
                     )
+                )
 
             if self.out_token_feat_update is not None:
                 if token_repr is None:
                     token_repr = torch.zeros_like(token_a)
 
                 sigma = torch.full(
-                    (atom_coords_denoised.shape[0],
-                     atom_coords_denoised.shape[1]),
+                    (atom_coords_denoised.shape[0], atom_coords_denoised.shape[1]),
                     t_hat,
                     device=atom_coords_denoised.device,
                 )
-                token_repr = self.out_token_feat_update(
-                    times=self.c_noise(sigma),
-                    acc_a=token_repr,
-                    next_a=token_a)
+                token_repr = self.out_token_feat_update(times=self.c_noise(sigma), acc_a=token_repr, next_a=token_a)
 
             if self.alignment_reverse_diff:
                 with torch.autocast("cuda", enabled=False):
@@ -1078,13 +1056,11 @@ class AtomDiffusion(SampleDiffusion):
                     )
                 atom_coords_noisy = atom_coords_noisy.to(atom_coords_denoised)
 
-            denoised_over_sigma = (atom_coords_noisy -
-                                   atom_coords_denoised) / t_hat
+            denoised_over_sigma = (atom_coords_noisy - atom_coords_denoised) / t_hat
             # Euler method: step_size = self.step_scale * (sigma_t - t_hat)
             # slope = (atom_coords_noisy - atom_coords_denoised) / t_hat
             # The slope is defined in EDM paper: dx/dsigma = (x - D(x, sigma)) / sigma * sigma^2/(sigma^2 + sigma_data^2)
-            atom_coords_next = (atom_coords_noisy + self.step_scale *
-                                (sigma_t - t_hat) * denoised_over_sigma)
+            atom_coords_next = atom_coords_noisy + self.step_scale * (sigma_t - t_hat) * denoised_over_sigma
 
             atom_coords = atom_coords_next
 
@@ -1093,4 +1069,4 @@ class AtomDiffusion(SampleDiffusion):
         # un-wrapped model (numerics unchanged).
         commit_graph_safe_generator(generator, self.device)
 
-        return dict(sample_atom_coords=atom_coords, diff_token_repr=token_repr)
+        return {"sample_atom_coords": atom_coords, "diff_token_repr": token_repr}

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,19 +14,23 @@
 # limitations under the License.
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 import pytest
 import torch
 from test_utils.boltz.create_and_load_weights import (
-    create_outer_product_mean_weights, load_outer_product_mean_weights_torch)
+    create_outer_product_mean_weights,
+    load_outer_product_mean_weights_torch,
+)
 from test_utils.boltz.ref_layers import RefOuterProductMean
 
 from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
 from tensorrt_bionemo._torch.custom_ops import outer_product_mean as opm_ops
 from tensorrt_bionemo._torch.custom_ops.outer_product_mean import (
-    OuterProductMeanCuTe, _select_opm_config_bucket, get_outer_product_mean_op,
-    select_opm_config)
+    OuterProductMeanCuTe,
+    _select_opm_config_bucket,
+    get_outer_product_mean_op,
+    select_opm_config,
+)
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, skip_if_no_cutedsl
@@ -39,7 +43,7 @@ class Scenario:
     torch_dtype: str = "float32"
     # Output token-rows per chunk via a registry-style ChunkPolicy. Row-chunking is numerically
     # identical, so the chunked output must still match the ref.
-    policy_chunk: Optional[int] = None
+    policy_chunk: int | None = None
     n_seq: int = 32
     n_res: int = 64
     norm_before_output: bool = True
@@ -62,16 +66,22 @@ class Scenario:
         Scenario(policy_chunk=12, n_res=65),
     ],
     ids=[
-        "float32", "bfloat16", "float16", "bfloat16_n128", "bfloat16_nb_false",
-        "policy_chunk16", "policy_chunk_partial"
-    ])
+        "float32",
+        "bfloat16",
+        "float16",
+        "bfloat16_n128",
+        "bfloat16_nb_false",
+        "policy_chunk16",
+        "policy_chunk_partial",
+    ],
+)
 def test_outer_product_mean(sc: Scenario):
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     ref_m = RefOuterProductMean.load_weights()
     ref_m = ref_m.to(device)
@@ -83,32 +93,26 @@ def test_outer_product_mean(sc: Scenario):
 
     # A low min_size makes the policy trip at the test's token count, so `policy_chunk` scenarios
     # exercise the registry-driven output-row chunking.
-    chunk_policy = (ChunkPolicy(chunk_size=sc.policy_chunk, min_size=1)
-                    if sc.policy_chunk is not None else None)
+    chunk_policy = ChunkPolicy(chunk_size=sc.policy_chunk, min_size=1) if sc.policy_chunk is not None else None
     outer_product_mean = OuterProductMean(
         c_in=ref_m.c_in,
         c_hidden=ref_m.c_hidden,
         c_out=ref_m.c_out,
         norm_before_output=sc.norm_before_output,
         dtype=dtype,
-        chunk_policy=chunk_policy)
-    load_outer_product_mean_weights_torch(outer_product_mean,
-                                          weights_and_biases,
-                                          dtype=dtype)
+        chunk_policy=chunk_policy,
+    )
+    load_outer_product_mean_weights_torch(outer_product_mean, weights_and_biases, dtype=dtype)
     outer_product_mean.to(device)
 
     # On a CuTeDSL-capable GPU the half-precision, non-chunked path must resolve
     # to the fused custom op (guards against a silent fall-back to eager).
-    if (dtype in (torch.float16, torch.bfloat16)
-            and SM_VERSION in _CUTEDSL_SM):
+    if dtype in (torch.float16, torch.bfloat16) and SM_VERSION in _CUTEDSL_SM:
         assert outer_product_mean._opm_eligible
-        assert isinstance(get_outer_product_mean_op(dtype),
-                          OuterProductMeanCuTe)
+        assert isinstance(get_outer_product_mean_op(dtype), OuterProductMeanCuTe)
 
-    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_m.c_in,
-                    dtype=torch.float32).cuda()
-    mask = torch.randint(0, 2, (bs, sc.n_seq, sc.n_res),
-                         dtype=torch.float32).to(device)
+    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_m.c_in, dtype=torch.float32).cuda()
+    mask = torch.randint(0, 2, (bs, sc.n_seq, sc.n_res), dtype=torch.float32).to(device)
 
     with torch.inference_mode():
         ref_output_float = ref_m(m, mask)
@@ -127,16 +131,13 @@ def test_outer_product_mean(sc: Scenario):
         diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
-        diff1_mean = torch.mean(
-            torch.abs(ref_output.float() - ref_output_float))
+        diff1_mean = torch.mean(torch.abs(ref_output.float() - ref_output_float))
 
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2
 
 
-@pytest.mark.parametrize("rows", [8, 16, 40, 7],
-                         ids=["r8", "r16", "r40_all", "r7_partial"])
+@pytest.mark.parametrize("rows", [8, 16, 40, 7], ids=["r8", "r16", "r40_all", "r7_partial"])
 def test_outer_product_mean_chunk_matches_dense(rows: int):
     """Output token-row chunking (registry policy) matches the dense path.
 
@@ -144,12 +145,11 @@ def test_outer_product_mean_chunk_matches_dense(rows: int):
     ``a[:, :, i]``, so slicing the output token dim and concatenating is numerically identical.
     """
     torch.manual_seed(0)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
-    opm = OuterProductMean(c_in=32, c_hidden=8, c_out=16,
-                           dtype=torch.float32).to(device)
+    opm = OuterProductMean(c_in=32, c_hidden=8, c_out=16, dtype=torch.float32).to(device)
     opm.eval()
     # Constructed weights are zero-initialized (production loads them); give them real values so
     # the dense-vs-chunked comparison is meaningful rather than 0 == 0.
@@ -179,26 +179,21 @@ def test_outer_product_mean_chunk_matches_dense(rows: int):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16],
-                         ids=["bf16", "fp16"])
-@pytest.mark.parametrize("norm_before_output", [True, False],
-                         ids=["nb1", "nb0"])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+@pytest.mark.parametrize("norm_before_output", [True, False], ids=["nb1", "nb0"])
 @pytest.mark.parametrize(
     "n_seq,n_res",
     [(128, 64), (256, 128), (100, 130), (127, 63), (31, 129)],
     ids=["s128n64", "s256n128", "s100n130", "s127n63", "s31n129"],
 )
-def test_outer_product_mean_cute_matches_eager(dtype, norm_before_output,
-                                               n_seq, n_res):
+def test_outer_product_mean_cute_matches_eager(dtype, norm_before_output, n_seq, n_res):
     skip_if_no_cutedsl()
     torch.manual_seed(0)
     c_in, c_hidden, c_out = 128, 32, 128
 
-    layer = OuterProductMean(c_in=c_in,
-                             c_hidden=c_hidden,
-                             c_out=c_out,
-                             norm_before_output=norm_before_output,
-                             dtype=dtype).cuda()
+    layer = OuterProductMean(
+        c_in=c_in, c_hidden=c_hidden, c_out=c_out, norm_before_output=norm_before_output, dtype=dtype
+    ).cuda()
     with torch.no_grad():
         for p in layer.parameters():
             p.normal_(0, 0.3)
@@ -220,8 +215,8 @@ def test_outer_product_mean_cute_matches_eager(dtype, norm_before_output,
     diff = (out_kernel.float() - out_eager.float()).abs()
     rel_l2 = (diff.norm() / out_eager.float().norm().clamp_min(1e-6)).item()
     assert rel_l2 < 2e-2, (
-        f"kernel vs eager rel_l2={rel_l2:.3e} (dtype={dtype}, "
-        f"nb={norm_before_output}, S={n_seq}, N={n_res})")
+        f"kernel vs eager rel_l2={rel_l2:.3e} (dtype={dtype}, nb={norm_before_output}, S={n_seq}, N={n_res})"
+    )
 
 
 def test_outer_product_mean_op_selector():
@@ -246,25 +241,15 @@ def test_outer_product_mean_config_selects_n_bucket_before_s():
     """Changing S must not make a fixed N jump to another tuned N bucket."""
     # For N=1024, S=1600 is closer to the N=1024/S=2048 variant than S=1024.
     # A sqrt(N*S) selector would instead pick the N=1536/S=1024 anchor.
-    config = select_opm_config(sm_version=80,
-                               I=1024,
-                               J=1024,
-                               S=1600,
-                               norm_before=True,
-                               has_bias=True,
-                               dtype_str="bf16")
+    config = select_opm_config(sm_version=80, I=1024, J=1024, S=1600, norm_before=True, has_bias=True, dtype_str="bf16")
 
     assert (config.TILE_I, config.TILE_J) == (8, 4)
     assert config.atom_layout_s == (4, 2, 1)
     assert config.atom_layout_o == (1, 8, 1)
 
-    selected, variants = _select_opm_config_bucket(sm_version=80,
-                                                   I=1024,
-                                                   J=1024,
-                                                   S=1600,
-                                                   norm_before=True,
-                                                   has_bias=True,
-                                                   dtype_str="bf16")
+    selected, variants = _select_opm_config_bucket(
+        sm_version=80, I=1024, J=1024, S=1600, norm_before=True, has_bias=True, dtype_str="bf16"
+    )
     assert selected.config_key() == config.config_key()
     # N=1024 has three distinct tuned S variants; the backend precompiles all.
     assert len({variant.config_key() for variant in variants}) == 3

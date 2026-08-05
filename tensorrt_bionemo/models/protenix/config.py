@@ -18,8 +18,7 @@ Defaults track the ``protenix-v2`` checkpoint (ByteDance OSS
 ``configs_base.py`` + ``configs_model_type.py`` overrides).
 """
 
-from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
-                                      PairformerConfig)
+from tensorrt_bionemo.configs import BaseConfig, DiffusionTransformerConfig, PairformerConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.models.openfold3.config import MSAModuleStackConfig
 
@@ -105,8 +104,7 @@ class InputFeatureEmbedderConfig(BaseConfig):
     # protenix-v2 disables ESM; embedding_dim is the class fallback (esm2-3b).
     esm_enabled: bool = False
     esm_embedding_dim: int = 2560
-    atom_transformer_config: DiffusionTransformerConfig = _atom_transformer_config(
-    )
+    atom_transformer_config: DiffusionTransformerConfig = _atom_transformer_config()
 
 
 class RelativePositionEncodingConfig(BaseConfig):
@@ -126,8 +124,7 @@ class TemplateEmbedderConfig(BaseConfig):
     c_z: int = _Default.c_z
     n_blocks: int = _Default.template_n_blocks
     pairwise_head_width: int = _Default.template_pairwise_head_width
-    pairwise_num_heads: int = (_Default.template_c //
-                               _Default.template_pairwise_head_width)
+    pairwise_num_heads: int = _Default.template_c // _Default.template_pairwise_head_width
     num_intermediate_factor: int = _Default.template_num_intermediate_factor
     # Inner pair stack bf16; outer projections/LNs follow ``dtype``.
     pairformer_dtype: str = "bfloat16"
@@ -206,8 +203,7 @@ class DiffusionAtomAttentionEncoderConfig(BaseConfig):
     n_queries: int = _Default.n_queries
     n_keys: int = _Default.n_keys
     has_coords: bool = True
-    atom_transformer_config: DiffusionTransformerConfig = (
-        _atom_transformer_config())
+    atom_transformer_config: DiffusionTransformerConfig = _atom_transformer_config()
     dtype: str = "float32"
 
 
@@ -219,8 +215,7 @@ class AtomAttentionDecoderConfig(BaseConfig):
     c_atompair: int = _Default.c_atompair
     n_queries: int = _Default.n_queries
     n_keys: int = _Default.n_keys
-    atom_transformer_config: DiffusionTransformerConfig = (
-        _atom_transformer_config())
+    atom_transformer_config: DiffusionTransformerConfig = _atom_transformer_config()
     dtype: str = "float32"
 
 
@@ -253,8 +248,7 @@ class DiffusionModuleConfig(BaseConfig):
     sigma_data: float = _Default.sigma_data
     diffusion_conditioning_config: BaseConfig = DiffusionConditioningConfig()
     atom_encoder_config: BaseConfig = DiffusionAtomAttentionEncoderConfig()
-    token_transformer_config: DiffusionTransformerConfig = (
-        _token_transformer_config())
+    token_transformer_config: DiffusionTransformerConfig = _token_transformer_config()
     atom_decoder_config: BaseConfig = AtomAttentionDecoderConfig()
     dtype: str = "float32"
 
@@ -267,8 +261,7 @@ class DistogramHeadConfig(BaseConfig):
     dtype: str = "float32"
 
 
-def _pairformer_config(
-        num_blocks: int = _Default.pairformer_n_blocks) -> PairformerConfig:
+def _pairformer_config(num_blocks: int = _Default.pairformer_n_blocks) -> PairformerConfig:
     """Pairformer: ``version=v1`` + ``attention_initial_norm``; trunk + confidence head."""
     return PairformerConfig(
         token_s=_Default.c_s,
@@ -370,8 +363,7 @@ class ProtenixConfig(BaseConfig):
     n_queries: int = _Default.n_queries
     n_keys: int = _Default.n_keys
     input_embedder_config: BaseConfig = InputFeatureEmbedderConfig()
-    relative_position_encoding_config: BaseConfig = RelativePositionEncodingConfig(
-    )
+    relative_position_encoding_config: BaseConfig = RelativePositionEncodingConfig()
     constraint_embedder_config: BaseConfig = ConstraintEmbedderConfig()
     trunk_config: BaseConfig = TrunkConfig()
     diffusion_module_config: BaseConfig = DiffusionModuleConfig()

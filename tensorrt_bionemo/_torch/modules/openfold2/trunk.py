@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,25 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.attention_backend.utils import (
-    PrecomputedPairMasks, precompute_pair_masks)
+from tensorrt_bionemo._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
 from tensorrt_bionemo._torch.layers.attention import MSAColumnGlobalAttention
-from tensorrt_bionemo._torch.layers.transformers.evoformer import \
-    EvoformerBlock
-from tensorrt_bionemo._torch.layers.transformers.evoformer import \
-    EvoformerStack as _EvoformerStack
+from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
+from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerStack as _EvoformerStack
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 
 
 class EvoformerStack(_EvoformerStack):
-    """ Overriding the forward method to support batch dimension. OF2 may pass tensors without batch dimension. """
+    """Overriding the forward method to support batch dimension. OF2 may pass tensors without batch dimension."""
 
     def forward(
         self,
@@ -38,7 +34,7 @@ class EvoformerStack(_EvoformerStack):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None
+        attn_metadata: AttentionMetadata | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # cast the tensors to the correct dtype
         m = m.to(dtype=self.config.torch_dtype)
@@ -62,28 +58,29 @@ class EvoformerStack(_EvoformerStack):
 
 
 class ExtraMSABlock(EvoformerBlock):
-
-    def __init__(self,
-                 *,
-                 local_layer_idx: int,
-                 c_m: int,
-                 c_z: int,
-                 c_hidden_msa_att: int,
-                 c_hidden_opm: int,
-                 c_hidden_mul: int,
-                 c_hidden_pair_att: int,
-                 no_heads_msa: int,
-                 no_heads_pair: int,
-                 transition_n: int,
-                 opm_first: bool,
-                 support_batch: bool = True,
-                 triangle_attn_backend: str = 'VANILLA',
-                 dtype: torch.dtype = None,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 skip_create_weights: bool = False,
-                 trimul_high_precision: bool = False,
-                 **kwargs):
+    def __init__(
+        self,
+        *,
+        local_layer_idx: int,
+        c_m: int,
+        c_z: int,
+        c_hidden_msa_att: int,
+        c_hidden_opm: int,
+        c_hidden_mul: int,
+        c_hidden_pair_att: int,
+        no_heads_msa: int,
+        no_heads_pair: int,
+        transition_n: int,
+        opm_first: bool,
+        support_batch: bool = True,
+        triangle_attn_backend: str = "VANILLA",
+        dtype: torch.dtype = None,
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        skip_create_weights: bool = False,
+        trimul_high_precision: bool = False,
+        **kwargs,
+    ):
         super().__init__(
             local_layer_idx=local_layer_idx,
             c_m=c_m,
@@ -120,11 +117,12 @@ class ExtraMSABlock(EvoformerBlock):
             eps=eps,
             inf=inf,
             dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+        )
 
     def _compute_opm(
-            self, m: torch.Tensor, z: torch.Tensor,
-            msa_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        self, m: torch.Tensor, z: torch.Tensor, msa_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         opm = self.outer_product_mean(m, mask=msa_mask)
         z = z + opm
         return m, z
@@ -135,8 +133,8 @@ class ExtraMSABlock(EvoformerBlock):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        precomputed_masks: Optional[PrecomputedPairMasks] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -153,8 +151,7 @@ class ExtraMSABlock(EvoformerBlock):
         """
         if self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
-        m = m + self.msa_att_row(
-            m, z, mask=msa_mask, attn_metadata=attn_metadata)
+        m = m + self.msa_att_row(m, z, mask=msa_mask, attn_metadata=attn_metadata)
         m = m + self.msa_att_col(m, mask=msa_mask)
         msa_trans_mask = msa_mask
         m = m + self.msa_transition(m, mask=msa_trans_mask)
@@ -165,18 +162,11 @@ class ExtraMSABlock(EvoformerBlock):
         z = z + self.tri_mul_in(z, mask=pair_mask)
 
         if precomputed_masks is not None:
-            z = z + self.tri_attn_start(z,
-                                        mask_bias=precomputed_masks.mask_bias,
-                                        attn_metadata=attn_metadata)
-            z = z + self.tri_attn_end(
-                z,
-                mask_bias=precomputed_masks.mask_bias_transposed,
-                attn_metadata=attn_metadata)
+            z = z + self.tri_attn_start(z, mask_bias=precomputed_masks.mask_bias, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_end(z, mask_bias=precomputed_masks.mask_bias_transposed, attn_metadata=attn_metadata)
         else:
-            z = z + self.tri_attn_start(
-                z, mask=pair_mask, attn_metadata=attn_metadata)
-            z = z + self.tri_attn_end(
-                z, mask=pair_mask, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_start(z, mask=pair_mask, attn_metadata=attn_metadata)
+            z = z + self.tri_attn_end(z, mask=pair_mask, attn_metadata=attn_metadata)
 
         pair_trans_mask = pair_mask
         z = z + self.pair_transition(z, mask=pair_trans_mask)
@@ -185,7 +175,6 @@ class ExtraMSABlock(EvoformerBlock):
 
 
 class ExtraMSAStack(nn.Module):
-
     def __init__(self, config: BaseConfig) -> None:
         """
         OpenFold2 ExtraMSAModule
@@ -219,15 +208,15 @@ class ExtraMSAStack(nn.Module):
                     inf=config.mask_inf,
                     skip_create_weights=config.skip_create_weights,
                     trimul_high_precision=config.trimul_high_precision,
-                ))
+                )
+            )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -235,7 +224,7 @@ class ExtraMSAStack(nn.Module):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None
+        attn_metadata: AttentionMetadata | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -271,12 +260,7 @@ class ExtraMSAStack(nn.Module):
         )
 
         for block in self.blocks:
-            m, z = block(m,
-                         z,
-                         msa_mask,
-                         pair_mask,
-                         attn_metadata,
-                         precomputed_masks=precomputed)
+            m, z = block(m, z, msa_mask, pair_mask, attn_metadata, precomputed_masks=precomputed)
         if n_dims == 3:
             m = m.squeeze(0)
             z = z.squeeze(0)

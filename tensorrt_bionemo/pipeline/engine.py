@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
-from typing import Any, Callable, Optional, Type
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -26,13 +27,15 @@ from tensorrt_bionemo.pipeline.base import PostProcessorBase
 
 
 class FoldingEngine:
-    """ Folding engine for folding tasks. """
+    """Folding engine for folding tasks."""
 
-    def __init__(self,
-                 config: EngineConfig,
-                 model_cls: Type[nn.Module],
-                 postprocessor_cls: Optional[Type[Callable]] = None,
-                 runtime_args: Optional[dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        config: EngineConfig,
+        model_cls: type[nn.Module],
+        postprocessor_cls: type[Callable] | None = None,
+        runtime_args: dict[str, Any] | None = None,
+    ) -> None:
         self.config = config
         self.model_name = config.name
         self.model_config = config.model
@@ -50,10 +53,9 @@ class FoldingEngine:
         self.create_postprocessor()
 
     def create_model(self) -> nn.Module:
-        """ Create the model from the model config. """
+        """Create the model from the model config."""
         # Need the model name to load the weights
-        self.model = self.model_cls(config=self.model_config,
-                                    model_name=self.model_name)
+        self.model = self.model_cls(config=self.model_config, model_name=self.model_name)
         self.model.to(self.device_config.device)
         self.model.eval()
 
@@ -66,31 +68,28 @@ class FoldingEngine:
         return self.model
 
     def create_postprocessor(self) -> Callable:
-        """ Create the post processor from the post processor config. """
+        """Create the post processor from the post processor config."""
         self.postprocessor = self.postprocessor_cls(self.postprocessor_config)
 
-    def transfer_batch_to_device(self, batch: dict[str,
-                                                   Any]) -> dict[str, Any]:
-        """ Transfer the batch to the device. """
+    def transfer_batch_to_device(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Transfer the batch to the device."""
         device_batch = {}
         for k, v in batch.items():
             if isinstance(v, torch.Tensor):
-                device_batch[k] = torch.as_tensor(
-                    v, device=self.device_config.device)
+                device_batch[k] = torch.as_tensor(v, device=self.device_config.device)
             elif isinstance(v, np.ndarray):
                 # Copy if read-only to avoid PyTorch UserWarning
                 arr = np.asarray(v, order="C")
                 if not arr.flags.writeable:
                     arr = arr.copy()
-                device_batch[k] = torch.as_tensor(
-                    arr, device=self.device_config.device)
+                device_batch[k] = torch.as_tensor(arr, device=self.device_config.device)
             else:
                 device_batch[k] = v
         return device_batch
 
     @torch.inference_mode()
     def execute(self, batch: dict[str, Any]) -> FoldingOutput:
-        """ Execute the model with the input. """
+        """Execute the model with the input."""
         device_batch = self.transfer_batch_to_device(batch)
 
         if self.config.profile_inference:

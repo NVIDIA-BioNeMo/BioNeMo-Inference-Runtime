@@ -19,8 +19,13 @@ import math
 import torch
 import torch.nn.functional as F
 
-from .const import (ATOM_NAME_TO_ELEMENT, ELEMENT_ATOMIC_NUMBER,
-                    NUM_ATOM_NAME_CHARS, NUM_CHAR_CLASSES, NUM_ELEMENT_CLASSES)
+from .const import (
+    ATOM_NAME_TO_ELEMENT,
+    ELEMENT_ATOMIC_NUMBER,
+    NUM_ATOM_NAME_CHARS,
+    NUM_CHAR_CLASSES,
+    NUM_ELEMENT_CLASSES,
+)
 
 
 def encode_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
@@ -33,10 +38,7 @@ def encode_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
     Returns:
         [*, num_classes] one-hot encoded tensor.
     """
-    x_one_hot = torch.zeros(*x.shape,
-                            num_classes,
-                            device=x.device,
-                            dtype=torch.int32)
+    x_one_hot = torch.zeros(*x.shape, num_classes, device=x.device, dtype=torch.int32)
     x_one_hot.scatter_(-1, x.unsqueeze(-1).long(), 1)
     return x_one_hot
 
@@ -99,8 +101,7 @@ def encode_element_one_hot(atom_names: list[str]) -> torch.Tensor:
     return F.one_hot(idx_tensor, NUM_ELEMENT_CLASSES).to(torch.int32)
 
 
-def deletion_matrix_from_raw(raw_sequences: list[str],
-                             query_length: int) -> list[list[int]]:
+def deletion_matrix_from_raw(raw_sequences: list[str], query_length: int) -> list[list[int]]:
     """Extract deletion counts from raw A3M sequences.
 
     In A3M format, lowercase letters represent insertions relative to the
@@ -158,12 +159,10 @@ def compute_deletion_value(deletion_matrix: torch.Tensor) -> torch.Tensor:
     Returns:
         [N_rows, N_tokens] float32 tensor in [0, 4).
     """
-    return (torch.atan(deletion_matrix.float() / 3.0) * (8.0 / math.pi)).to(
-        torch.float32)
+    return (torch.atan(deletion_matrix.float() / 3.0) * (8.0 / math.pi)).to(torch.float32)
 
 
-def _sample_rotations(shape: tuple, dtype: torch.dtype,
-                      device: torch.device) -> torch.Tensor:
+def _sample_rotations(shape: tuple, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
     """Sample uniform random rotations via quaternion → rotation matrix.
 
     Matches AF3 Algorithm 19 / OSS sample_rotations().
@@ -172,24 +171,24 @@ def _sample_rotations(shape: tuple, dtype: torch.dtype,
     quats = quats / quats.norm(dim=-1, keepdim=True)
     # Quaternion to rotation matrix
     w, x, y, z = quats.unbind(-1)
-    rots = torch.stack([
-        1 - 2 * (y * y + z * z),
-        2 * (x * y - w * z),
-        2 * (x * z + w * y),
-        2 * (x * y + w * z),
-        1 - 2 * (x * x + z * z),
-        2 * (y * z - w * x),
-        2 * (x * z - w * y),
-        2 * (y * z + w * x),
-        1 - 2 * (x * x + y * y),
-    ],
-                       dim=-1).reshape(*shape, 3, 3)
+    rots = torch.stack(
+        [
+            1 - 2 * (y * y + z * z),
+            2 * (x * y - w * z),
+            2 * (x * z + w * y),
+            2 * (x * y + w * z),
+            1 - 2 * (x * x + z * z),
+            2 * (y * z - w * x),
+            2 * (x * z - w * y),
+            2 * (y * z + w * x),
+            1 - 2 * (x * x + y * y),
+        ],
+        dim=-1,
+    ).reshape(*shape, 3, 3)
     return rots
 
 
-def centre_random_augmentation(pos: torch.Tensor,
-                               mask: torch.Tensor,
-                               scale_trans: float = 1.0) -> torch.Tensor:
+def centre_random_augmentation(pos: torch.Tensor, mask: torch.Tensor, scale_trans: float = 1.0) -> torch.Tensor:
     """Centre, randomly rotate and translate conformer coordinates.
 
     Matches OSS centre_random_augmentation() (AF3 Algorithm 19).
@@ -202,11 +201,8 @@ def centre_random_augmentation(pos: torch.Tensor,
     Returns:
         [*, N_atoms, 3] augmented positions.
     """
-    rots = _sample_rotations(shape=pos.shape[:-2],
-                             dtype=pos.dtype,
-                             device=pos.device)
-    trans = scale_trans * torch.randn(
-        (*pos.shape[:-2], 3), dtype=pos.dtype, device=pos.device)
+    rots = _sample_rotations(shape=pos.shape[:-2], dtype=pos.dtype, device=pos.device)
+    trans = scale_trans * torch.randn((*pos.shape[:-2], 3), dtype=pos.dtype, device=pos.device)
 
     mean_pos = torch.sum(
         pos * mask[..., None],
@@ -244,13 +240,11 @@ def create_template_restype(
     import numpy as np
 
     flat = np.asarray(res_names).reshape(-1)
-    idx = np.fromiter((resname_to_idx.get(str(n), unk_idx) for n in flat),
-                      dtype=np.int64,
-                      count=flat.size).reshape(np.asarray(res_names).shape)
+    idx = np.fromiter((resname_to_idx.get(str(n), unk_idx) for n in flat), dtype=np.int64, count=flat.size).reshape(
+        np.asarray(res_names).shape
+    )
     restype_index = torch.tensor(idx, dtype=torch.int64)
-    one_hot = torch.zeros(*restype_index.shape,
-                          num_classes,
-                          dtype=torch.int32)
+    one_hot = torch.zeros(*restype_index.shape, num_classes, dtype=torch.int32)
     one_hot.scatter_(-1, restype_index.unsqueeze(-1), 1)
     return one_hot.to(torch.int32)
 
@@ -273,14 +267,12 @@ def create_template_distogram(
 
     coords = np.asarray(pseudo_beta_atom_coords)
     distogram = np.sum(
-        (coords[..., None, :] - coords[..., None, :, :])**2,
+        (coords[..., None, :] - coords[..., None, :, :]) ** 2,
         axis=-1,
         keepdims=True,
     )
-    lower = np.linspace(min_bin, max_bin, n_bins)**2
-    upper = np.concatenate([lower[1:],
-                            np.array([inf_value], dtype=lower.dtype)],
-                           axis=-1)
+    lower = np.linspace(min_bin, max_bin, n_bins) ** 2
+    upper = np.concatenate([lower[1:], np.array([inf_value], dtype=lower.dtype)], axis=-1)
     binned = ((distogram > lower) * (distogram < upper)).astype(distogram.dtype)
     template_distogram = torch.tensor(binned, dtype=torch.float32)
 
@@ -289,8 +281,7 @@ def create_template_distogram(
     return template_distogram * pair * multichain_pair_mask
 
 
-def _rot3_from_two_vectors(e0: torch.Tensor,
-                           e1: torch.Tensor) -> torch.Tensor:
+def _rot3_from_two_vectors(e0: torch.Tensor, e1: torch.Tensor) -> torch.Tensor:
     """Gram-Schmidt rotation from two vectors (OSS ``Rot3Array.from_two_vectors``).
 
     x-axis is ``e0`` normalized; the ``e1`` component orthogonal to x forms the
@@ -319,9 +310,7 @@ def create_template_unit_vector(
     """
     import numpy as np
 
-    coords = torch.nan_to_num(torch.tensor(np.asarray(frame_atom_coords),
-                                           dtype=torch.float32),
-                              nan=0.0)
+    coords = torch.nan_to_num(torch.tensor(np.asarray(frame_atom_coords), dtype=torch.float32), nan=0.0)
     n_xyz = coords[:, :, 0, :]
     ca_xyz = coords[:, :, 1, :]
     c_xyz = coords[:, :, 2, :]

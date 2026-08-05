@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -20,15 +20,11 @@ import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.transformers.atom import \
-    AtomAttentionEncoder
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    BoltzDiffusionTransformer
+from tensorrt_bionemo._torch.layers.transformers.atom import AtomAttentionEncoder
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import BoltzDiffusionTransformer
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
-from tensorrt_bionemo.pipeline.models.boltz2.const import (num_chain_types,
-                                                           num_method_types,
-                                                           num_tokens)
+from tensorrt_bionemo.pipeline.models.boltz2.const import num_chain_types, num_method_types, num_tokens
 
 
 class AtomEmbedding(nn.Module):
@@ -95,11 +91,8 @@ class AtomEmbedding(nn.Module):
         self.version = version
 
         self.embed_atom_features = Linear(
-            atom_feature_dim,
-            atom_s,
-            bias=version != "v1",
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            atom_feature_dim, atom_s, bias=version != "v1", dtype=dtype, skip_create_weights=skip_create_weights
+        )
         self.embed_atompair_ref_pos = Linear(
             3,
             atom_z,
@@ -195,15 +188,16 @@ class AtomEmbedding(nn.Module):
                 ),
             )
 
-    def _compute_atom_feats_v1(self,
-                               ref_pos: torch.Tensor,
-                               ref_charge: torch.Tensor,
-                               atom_pad_mask: torch.Tensor,
-                               ref_element: torch.Tensor,
-                               ref_atom_name_chars: Optional[
-                                   torch.Tensor] = None,
-                               **kwargs) -> torch.Tensor:
-        """ Compute the atom features for the Boltz1x version. """
+    def _compute_atom_feats_v1(
+        self,
+        ref_pos: torch.Tensor,
+        ref_charge: torch.Tensor,
+        atom_pad_mask: torch.Tensor,
+        ref_element: torch.Tensor,
+        ref_atom_name_chars: torch.Tensor | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        """Compute the atom features for the Boltz1x version."""
         B, N, _ = ref_pos.shape
         atom_feats = torch.cat(
             [
@@ -218,17 +212,18 @@ class AtomEmbedding(nn.Module):
         return atom_feats
 
     def _compute_atom_feats_v2(
-            self,
-            ref_pos: torch.Tensor,
-            ref_charge: torch.Tensor,
-            ref_element: torch.Tensor,
-            ref_atom_name_chars: Optional[torch.Tensor] = None,
-            atom_backbone_feat: Optional[torch.Tensor] = None,
-            res_type: Optional[torch.Tensor] = None,
-            modified: Optional[torch.Tensor] = None,
-            mol_type: Optional[torch.Tensor] = None,
-            atom_to_token: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """ Compute the atom features for the Boltz2 version. """
+        self,
+        ref_pos: torch.Tensor,
+        ref_charge: torch.Tensor,
+        ref_element: torch.Tensor,
+        ref_atom_name_chars: torch.Tensor | None = None,
+        atom_backbone_feat: torch.Tensor | None = None,
+        res_type: torch.Tensor | None = None,
+        modified: torch.Tensor | None = None,
+        mol_type: torch.Tensor | None = None,
+        atom_to_token: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Compute the atom features for the Boltz2 version."""
         B, N, _ = ref_pos.shape
         atom_ref_pos = ref_pos
         atom_feats = [
@@ -241,12 +236,9 @@ class AtomEmbedding(nn.Module):
         if self.use_atom_backbone_feat:
             atom_feats.append(atom_backbone_feat)
         if self.use_residue_feats_atoms:
-            res_feats = torch.cat([
-                res_type,
-                modified.unsqueeze(-1),
-                F.one_hot(mol_type, num_classes=4).float()
-            ],
-                                  dim=-1)
+            res_feats = torch.cat(
+                [res_type, modified.unsqueeze(-1), F.one_hot(mol_type, num_classes=4).float()], dim=-1
+            )
             atom_to_token = atom_to_token.float()
             atom_res_feats = torch.bmm(atom_to_token, res_feats)
             atom_feats.append(atom_res_feats)
@@ -261,14 +253,14 @@ class AtomEmbedding(nn.Module):
         ref_space_uid: torch.Tensor,
         ref_charge: torch.Tensor,
         ref_element: torch.Tensor,
-        ref_atom_name_chars: Optional[torch.Tensor] = None,
-        atom_backbone_feat: Optional[torch.Tensor] = None,
-        res_type: Optional[torch.Tensor] = None,
-        modified: Optional[torch.Tensor] = None,
-        mol_type: Optional[torch.Tensor] = None,
-        query_to_keys: Optional[Callable] = None,
-        s_trunk: Optional[torch.Tensor] = None,
-        z: Optional[torch.Tensor] = None,
+        ref_atom_name_chars: torch.Tensor | None = None,
+        atom_backbone_feat: torch.Tensor | None = None,
+        res_type: torch.Tensor | None = None,
+        modified: torch.Tensor | None = None,
+        mol_type: torch.Tensor | None = None,
+        query_to_keys: Callable | None = None,
+        s_trunk: torch.Tensor | None = None,
+        z: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -346,15 +338,11 @@ class AtomEmbedding(nn.Module):
         d_norm = 1 / (1 + d_norm)
 
         atom_mask_queries = atom_mask.view(B, K, W, 1)
-        atom_mask_keys = (query_to_keys(atom_mask.unsqueeze(-1).float()).view(
-            B, K, 1, H).bool())
+        atom_mask_keys = query_to_keys(atom_mask.unsqueeze(-1).float()).view(B, K, 1, H).bool()
         atom_uid_queries = atom_uid.view(B, K, W, 1)
-        atom_uid_keys = (query_to_keys(atom_uid.unsqueeze(-1).float()).view(
-            B, K, 1, H).long())
+        atom_uid_keys = query_to_keys(atom_uid.unsqueeze(-1).float()).view(B, K, 1, H).long()
         # Bool[B, K, W, H, 1]
-        v = ((atom_mask_queries
-              & atom_mask_keys
-              & (atom_uid_queries == atom_uid_keys)).float().unsqueeze(-1))
+        v = (atom_mask_queries & atom_mask_keys & (atom_uid_queries == atom_uid_keys)).float().unsqueeze(-1)
 
         p = self.embed_atompair_ref_pos(d) * v
         p = p + self.embed_atompair_ref_dist(d_norm) * v
@@ -370,8 +358,7 @@ class AtomEmbedding(nn.Module):
             s_to_c = torch.bmm(atom_to_token, s_to_c)
             c = c + s_to_c.to(c)
 
-            atom_to_token_queries = atom_to_token.view(B, K, W,
-                                                       atom_to_token.shape[-1])
+            atom_to_token_queries = atom_to_token.view(B, K, W, atom_to_token.shape[-1])
             atom_to_token_keys = query_to_keys(atom_to_token)
             # squeeze the multiplicity dimension
             atom_to_token_keys = atom_to_token_keys.squeeze(1)
@@ -385,15 +372,13 @@ class AtomEmbedding(nn.Module):
             p = p + z_to_p.to(p)
 
         p = p + self.c_to_p_trans_q(c.view(B, K, W, 1, c.shape[-1]))
-        p = p + self.c_to_p_trans_k(
-            query_to_keys(c).view(B, K, 1, H, c.shape[-1]))
+        p = p + self.c_to_p_trans_k(query_to_keys(c).view(B, K, 1, H, c.shape[-1]))
         p = p + self.p_mlp(p)
 
         return q, c, p
 
 
 class Boltz1InputEmbedder(nn.Module):
-
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -427,15 +412,16 @@ class Boltz1InputEmbedder(nn.Module):
         for _ in range(diffusion_transformer_config.num_blocks):
             self.atom_enc_proj_z.append(
                 nn.Sequential(
-                    nn.LayerNorm(config.atom_z,
-                                 dtype=config.torch_dtype,
-                                 eps=config.norm_epsilon),
-                    Linear(config.atom_z,
-                           diffusion_transformer_config.num_heads,
-                           bias=False,
-                           dtype=config.torch_dtype,
-                           skip_create_weights=config.skip_create_weights),
-                ))
+                    nn.LayerNorm(config.atom_z, dtype=config.torch_dtype, eps=config.norm_epsilon),
+                    Linear(
+                        config.atom_z,
+                        diffusion_transformer_config.num_heads,
+                        bias=False,
+                        dtype=config.torch_dtype,
+                        skip_create_weights=config.skip_create_weights,
+                    ),
+                )
+            )
 
         self.atom_attention_encoder = AtomAttentionEncoder(
             atom_s=config.atom_s,
@@ -454,23 +440,23 @@ class Boltz1InputEmbedder(nn.Module):
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
-            self,
-            atom_to_token: torch.Tensor,
-            ref_pos: torch.Tensor,
-            atom_pad_mask: torch.Tensor,
-            ref_space_uid: torch.Tensor,
-            ref_charge: torch.Tensor,
-            ref_element: torch.Tensor,
-            ref_atom_name_chars: torch.Tensor,
-            res_type: torch.Tensor,
-            profile: Optional[torch.Tensor] = None,
-            deletion_mean: Optional[torch.Tensor] = None,
-            pocket_feature: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+        self,
+        atom_to_token: torch.Tensor,
+        ref_pos: torch.Tensor,
+        atom_pad_mask: torch.Tensor,
+        ref_space_uid: torch.Tensor,
+        ref_charge: torch.Tensor,
+        ref_element: torch.Tensor,
+        ref_atom_name_chars: torch.Tensor,
+        res_type: torch.Tensor,
+        profile: torch.Tensor | None = None,
+        deletion_mean: torch.Tensor | None = None,
+        pocket_feature: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             atom_to_token: torch.Tensor
@@ -510,11 +496,14 @@ class Boltz1InputEmbedder(nn.Module):
             query_to_keys=attn_metadata.query_to_keys,
         )
 
-        atom_enc_bias = torch.cat(
-            [proj_z(bias) for proj_z in self.atom_enc_proj_z], dim=-1)
+        atom_enc_bias = torch.cat([proj_z(bias) for proj_z in self.atom_enc_proj_z], dim=-1)
 
         # [B, 1, N_res, D]
-        a, _, _, = self.atom_attention_encoder(
+        (
+            a,
+            _,
+            _,
+        ) = self.atom_attention_encoder(
             atom_to_token=atom_to_token,
             atom_pad_mask=atom_pad_mask,
             q=q,
@@ -525,17 +514,12 @@ class Boltz1InputEmbedder(nn.Module):
 
         # multiplicity is 1 for InputEmbedder, we do squeeze here:
         a = a.squeeze(1)
-        s = torch.cat([
-            a, res_type, profile,
-            deletion_mean.unsqueeze(-1), pocket_feature
-        ],
-                      dim=-1)
+        s = torch.cat([a, res_type, profile, deletion_mean.unsqueeze(-1), pocket_feature], dim=-1)
 
         return s
 
 
 class Boltz2InputEmbedder(nn.Module):
-
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -564,12 +548,13 @@ class Boltz2InputEmbedder(nn.Module):
 
         self.atom_enc_proj_z = nn.Sequential(
             nn.LayerNorm(config.atom_z),
-            Linear(config.atom_z,
-                   config.diffusion_transformer.num_blocks *
-                   config.diffusion_transformer.num_heads,
-                   bias=False,
-                   dtype=config.torch_dtype,
-                   skip_create_weights=config.skip_create_weights),
+            Linear(
+                config.atom_z,
+                config.diffusion_transformer.num_blocks * config.diffusion_transformer.num_heads,
+                bias=False,
+                dtype=config.torch_dtype,
+                skip_create_weights=config.skip_create_weights,
+            ),
         )
 
         self.atom_attention_encoder = AtomAttentionEncoder(
@@ -589,13 +574,15 @@ class Boltz2InputEmbedder(nn.Module):
             config.token_s,
             bias=False,
             dtype=config.torch_dtype,
-            skip_create_weights=config.skip_create_weights)
+            skip_create_weights=config.skip_create_weights,
+        )
         self.msa_profile_encoding = Linear(
             num_tokens + 1,
             config.token_s,
             bias=False,
             dtype=config.torch_dtype,
-            skip_create_weights=config.skip_create_weights)
+            skip_create_weights=config.skip_create_weights,
+        )
 
         self.add_method_conditioning = config.add_method_conditioning
         self.add_modified_flag = config.add_modified_flag
@@ -603,49 +590,43 @@ class Boltz2InputEmbedder(nn.Module):
         self.add_mol_type_feat = config.add_mol_type_feat
 
         if self.add_method_conditioning:
-            self.method_conditioning_init = nn.Embedding(
-                num_method_types, config.token_s, dtype=config.torch_dtype)
+            self.method_conditioning_init = nn.Embedding(num_method_types, config.token_s, dtype=config.torch_dtype)
         if self.add_modified_flag:
-            self.modified_conditioning_init = nn.Embedding(
-                2, config.token_s, dtype=config.torch_dtype)
+            self.modified_conditioning_init = nn.Embedding(2, config.token_s, dtype=config.torch_dtype)
         if self.add_cyclic_flag:
             self.cyclic_conditioning_init = Linear(
-                1,
-                config.token_s,
-                bias=False,
-                dtype=config.torch_dtype,
-                skip_create_weights=config.skip_create_weights)
+                1, config.token_s, bias=False, dtype=config.torch_dtype, skip_create_weights=config.skip_create_weights
+            )
         if self.add_mol_type_feat:
-            self.mol_type_conditioning_init = nn.Embedding(
-                num_chain_types, config.token_s)
+            self.mol_type_conditioning_init = nn.Embedding(num_chain_types, config.token_s)
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
-            self,
-            atom_to_token: torch.Tensor,
-            ref_pos: torch.Tensor,
-            atom_pad_mask: torch.Tensor,
-            ref_space_uid: torch.Tensor,
-            ref_charge: torch.Tensor,
-            ref_element: torch.Tensor,
-            ref_atom_name_chars: torch.Tensor,
-            res_type: torch.Tensor,
-            profile: Optional[torch.Tensor] = None,
-            deletion_mean: Optional[torch.Tensor] = None,
-            pocket_feature: Optional[torch.Tensor] = None,
-            atom_backbone_feat: Optional[torch.Tensor] = None,
-            method_feature: Optional[torch.Tensor] = None,
-            modified: Optional[torch.Tensor] = None,
-            cyclic_period: Optional[torch.Tensor] = None,
-            mol_type: Optional[torch.Tensor] = None,
-            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+        self,
+        atom_to_token: torch.Tensor,
+        ref_pos: torch.Tensor,
+        atom_pad_mask: torch.Tensor,
+        ref_space_uid: torch.Tensor,
+        ref_charge: torch.Tensor,
+        ref_element: torch.Tensor,
+        ref_atom_name_chars: torch.Tensor,
+        res_type: torch.Tensor,
+        profile: torch.Tensor | None = None,
+        deletion_mean: torch.Tensor | None = None,
+        pocket_feature: torch.Tensor | None = None,
+        atom_backbone_feat: torch.Tensor | None = None,
+        method_feature: torch.Tensor | None = None,
+        modified: torch.Tensor | None = None,
+        cyclic_period: torch.Tensor | None = None,
+        mol_type: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             atom_to_token: torch.Tensor
@@ -693,7 +674,11 @@ class Boltz2InputEmbedder(nn.Module):
         atom_enc_bias = self.atom_enc_proj_z(bias)
 
         # [B, 1, N_res, D]
-        a, _, _, = self.atom_attention_encoder(
+        (
+            a,
+            _,
+            _,
+        ) = self.atom_attention_encoder(
             atom_to_token=atom_to_token,
             atom_pad_mask=atom_pad_mask,
             q=q,
@@ -705,9 +690,11 @@ class Boltz2InputEmbedder(nn.Module):
         # multiplicity is 1 for InputEmbedder, we do squeeze here:
         a = a.squeeze(1)
         deletion_mean = deletion_mean.unsqueeze(-1)
-        s = (a + self.res_type_encoding(res_type.float()) +
-             self.msa_profile_encoding(
-                 torch.cat([profile, deletion_mean], dim=-1)))
+        s = (
+            a
+            + self.res_type_encoding(res_type.float())
+            + self.msa_profile_encoding(torch.cat([profile, deletion_mean], dim=-1))
+        )
 
         if self.add_method_conditioning:
             s = s + self.method_conditioning_init(method_feature)

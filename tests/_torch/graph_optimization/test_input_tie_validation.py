@@ -15,29 +15,34 @@
 """The tracker validates input tie points against the first representative
 call — a tie to an absent tensor or out-of-range axis is a configuration
 error, not a silently-ignored rule."""
+
 import pytest
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, InputKeyMethod, InputRoutingConfigFactory,
-    NamedDimTies)
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
-    CUDAGraphOptimizationTracker
+    CUDAGraphOptimizationConfig,
+    InputKeyMethod,
+    InputRoutingConfigFactory,
+    NamedDimTies,
+)
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 
 def _tracker(factory: InputRoutingConfigFactory) -> CUDAGraphOptimizationTracker:
     cfg = CUDAGraphOptimizationConfig(
-        input_key_method=InputKeyMethod.BUCKETED_SHAPES,
-        input_routing_config=factory.export_config())
+        input_key_method=InputKeyMethod.BUCKETED_SHAPES, input_routing_config=factory.export_config()
+    )
     return CUDAGraphOptimizationTracker(cfg, inner_module=nn.Identity())
 
 
 def _acceptance_factory() -> InputRoutingConfigFactory:
     f = InputRoutingConfigFactory()
-    f.set_named_dim_ties([
-        NamedDimTies(name="num_tokens", input_dims=(("s", (-2,)),)),
-    ])
+    f.set_named_dim_ties(
+        [
+            NamedDimTies(name="num_tokens", input_dims=(("s", (-2,)),)),
+        ]
+    )
     f.set_input_acceptance_dim("num_tokens", 100)
     return f
 
@@ -68,11 +73,12 @@ def test_tie_to_out_of_range_axis_raises():
 
 def test_padded_ties_are_also_validated():
     f = InputRoutingConfigFactory()
-    f.set_named_dim_ties([
-        NamedDimTies(name="num_tokens", input_dims=(("z", (-3,)),)),
-    ])
-    f.set_padded_dim("num_tokens", dim_len_min=4, dim_len_max=16,
-                     num_intervals=4, multiple_of=1)
+    f.set_named_dim_ties(
+        [
+            NamedDimTies(name="num_tokens", input_dims=(("z", (-3,)),)),
+        ]
+    )
+    f.set_padded_dim("num_tokens", dim_len_min=4, dim_len_max=16, num_intervals=4, multiple_of=1)
     tracker = _tracker(f)
     with pytest.raises(ValueError, match="no such tensor is present"):
         tracker.validate_input_ties({"s_shape": _shape(1, 8, 8, 32)})  # no z_shape

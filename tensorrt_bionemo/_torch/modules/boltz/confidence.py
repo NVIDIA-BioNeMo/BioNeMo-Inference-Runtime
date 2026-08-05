@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 from torch import nn
@@ -21,23 +21,29 @@ from torch import nn
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.conditioning import ContactConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.position_encoders import \
-    RelativePositionEncoder
+from tensorrt_bionemo._torch.layers.position_encoders import RelativePositionEncoder
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.pipeline.models.boltz2.const import (
-    bond_types, chain_type_ids, contact_conditioning_info,
-    num_pocket_contact_info, num_tokens)
+    bond_types,
+    chain_type_ids,
+    contact_conditioning_info,
+    num_pocket_contact_info,
+    num_tokens,
+)
 
-from .confidence_utils import (compute_aggregated_metric, compute_distogram,
-                               compute_ptms, concat_out_dicts,
-                               repeat_with_multiplicity)
+from .confidence_utils import (
+    compute_aggregated_metric,
+    compute_distogram,
+    compute_ptms,
+    concat_out_dicts,
+    repeat_with_multiplicity,
+)
 from .embedders import Boltz1InputEmbedder
 from .trunk import MSAModule, PairformerModule
 
 
 class Boltz2ConfidenceHeads(nn.Module):
-
     def __init__(
         self,
         config: BaseConfig = None,
@@ -55,9 +61,8 @@ class Boltz2ConfidenceHeads(nn.Module):
         self.register_buffer("contacts", contacts, persistent=False)
 
         self.register_buffer(
-            'arange_max_num_atoms',
-            torch.arange(self.max_num_atoms_per_token).reshape(1, 1, -1),
-            persistent=False)
+            "arange_max_num_atoms", torch.arange(self.max_num_atoms_per_token).reshape(1, 1, -1), persistent=False
+        )
 
         # Weight values for iplddt computation
         self.ligand_weight: int = 20
@@ -66,121 +71,84 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         if self.use_separate_heads:
             self.to_pae_intra_logits = Linear(
-                config.token_z,
-                config.num_pae_bins,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_z, config.num_pae_bins, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
             self.to_pae_inter_logits = Linear(
-                config.token_z,
-                config.num_pae_bins,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_z, config.num_pae_bins, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
         else:
             self.to_pae_logits = Linear(
-                config.token_z,
-                config.num_pae_bins,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_z, config.num_pae_bins, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
 
         if self.use_separate_heads:
             self.to_pde_intra_logits = Linear(
-                config.token_z,
-                config.num_pde_bins,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_z, config.num_pde_bins, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
             self.to_pde_inter_logits = Linear(
-                config.token_z,
-                config.num_pde_bins,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_z, config.num_pde_bins, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
         else:
             self.to_pde_logits = Linear(
-                config.token_z,
-                config.num_pde_bins,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_z, config.num_pde_bins, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
 
         if self.token_level_confidence:
             self.to_plddt_logits = Linear(
-                config.token_s,
-                config.num_plddt_bins,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_s, config.num_plddt_bins, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
             self.to_resolved_logits = Linear(
-                config.token_s,
-                2,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                config.token_s, 2, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
         else:
             self.to_plddt_logits = Linear(
                 config.token_s,
                 config.num_plddt_bins * self.max_num_atoms_per_token,
                 bias=False,
                 dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                skip_create_weights=skip_create_weights,
+            )
             self.to_resolved_logits = Linear(
                 config.token_s,
                 2 * self.max_num_atoms_per_token,
                 bias=False,
                 dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                skip_create_weights=skip_create_weights,
+            )
 
     def load_weights(self, weights: dict):
 
         if self.use_separate_heads:
-            self.to_pae_intra_logits.load_weights(
-                weights["to_pae_intra_logits"])
-            self.to_pae_inter_logits.load_weights(
-                weights["to_pae_inter_logits"])
+            self.to_pae_intra_logits.load_weights(weights["to_pae_intra_logits"])
+            self.to_pae_inter_logits.load_weights(weights["to_pae_inter_logits"])
         else:
             self.to_pae_logits.load_weights(weights["to_pae_logits"])
 
         if self.use_separate_heads:
-            self.to_pde_intra_logits.load_weights(
-                weights["to_pde_intra_logits"])
-            self.to_pde_inter_logits.load_weights(
-                weights["to_pde_inter_logits"])
+            self.to_pde_intra_logits.load_weights(weights["to_pde_intra_logits"])
+            self.to_pde_inter_logits.load_weights(weights["to_pde_inter_logits"])
         else:
             self.to_pde_logits.load_weights(weights["to_pde_logits"])
 
         self.to_resolved_logits.load_weights(weights["to_resolved_logits"])
         self.to_plddt_logits.load_weights(weights["to_plddt_logits"])
 
-    def _compute_pae_outputs(self,
-                             z,
-                             x_pred,
-                             feats,
-                             multiplicity,
-                             is_same_chain=None,
-                             is_different_chain=None):
+    def _compute_pae_outputs(self, z, x_pred, feats, multiplicity, is_same_chain=None, is_different_chain=None):
         """Compute the pae-derived outputs (``pae`` + ptm/iptm/...) in a helper."""
         if self.use_separate_heads:
             pae_intra_logits = self.to_pae_intra_logits(z)
-            pae_intra_logits = pae_intra_logits * is_same_chain.float(
-            ).unsqueeze(-1)
+            pae_intra_logits = pae_intra_logits * is_same_chain.float().unsqueeze(-1)
 
             pae_inter_logits = self.to_pae_inter_logits(z)
-            pae_inter_logits = pae_inter_logits * is_different_chain.float(
-            ).unsqueeze(-1)
+            pae_inter_logits = pae_inter_logits * is_different_chain.float().unsqueeze(-1)
 
             pae_logits = pae_inter_logits + pae_intra_logits
         else:
             pae_logits = self.to_pae_logits(z)
 
-        out: Dict[str, torch.Tensor] = {
-            "pae": compute_aggregated_metric(pae_logits, end=32)
-        }
+        out: dict[str, torch.Tensor] = {"pae": compute_aggregated_metric(pae_logits, end=32)}
         try:
-            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
-                pae_logits, x_pred, feats)
+            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(pae_logits, x_pred, feats)
             out["ptm"] = ptm
             out["iptm"] = iptm
             out["ligand_iptm"] = ligand_iptm
@@ -188,10 +156,8 @@ class Boltz2ConfidenceHeads(nn.Module):
             out["pair_chains_iptm"] = pair_chains_iptm
         except Exception as e:
             print(f"Error in compute_ptms: {e}")
-            for _k in ("ptm", "iptm", "ligand_iptm", "protein_iptm",
-                       "pair_chains_iptm"):
-                out[_k] = z.new_zeros((z.shape[0], z.shape[1]),
-                                      dtype=torch.float32)
+            for _k in ("ptm", "iptm", "ligand_iptm", "protein_iptm", "pair_chains_iptm"):
+                out[_k] = z.new_zeros((z.shape[0], z.shape[1]), dtype=torch.float32)
         return out
 
     def _compute_pde(self, z, is_same_chain=None, is_different_chain=None):
@@ -199,12 +165,10 @@ class Boltz2ConfidenceHeads(nn.Module):
         z_sym = z + z.transpose(2, 3)
         if self.use_separate_heads:
             pde_intra_logits = self.to_pde_intra_logits(z_sym)
-            pde_intra_logits = pde_intra_logits * is_same_chain.float(
-            ).unsqueeze(-1)
+            pde_intra_logits = pde_intra_logits * is_same_chain.float().unsqueeze(-1)
 
             pde_inter_logits = self.to_pde_inter_logits(z_sym)
-            pde_inter_logits = pde_inter_logits * is_different_chain.float(
-            ).unsqueeze(-1)
+            pde_inter_logits = pde_inter_logits * is_different_chain.float().unsqueeze(-1)
 
             pde_logits = pde_inter_logits + pde_intra_logits
         else:
@@ -217,7 +181,7 @@ class Boltz2ConfidenceHeads(nn.Module):
         z: torch.Tensor,
         x_pred: torch.Tensor,
         d: torch.Tensor,
-        feats: Optional[Dict[str, torch.Tensor]],
+        feats: dict[str, torch.Tensor] | None,
         pred_distogram_logits: torch.Tensor,
         multiplicity: int = 1,
     ):
@@ -246,16 +210,13 @@ class Boltz2ConfidenceHeads(nn.Module):
         is_different_chain = None
         if self.use_separate_heads:
             asym_id_token = feats["asym_id"]
-            is_same_chain = asym_id_token.unsqueeze(
-                -1) == asym_id_token.unsqueeze(-2)
-            is_same_chain = repeat_with_multiplicity(is_same_chain,
-                                                     multiplicity)
+            is_same_chain = asym_id_token.unsqueeze(-1) == asym_id_token.unsqueeze(-2)
+            is_same_chain = repeat_with_multiplicity(is_same_chain, multiplicity)
             is_different_chain = ~is_same_chain
 
         # Compute the pae + pde outputs here, in helpers, so their [N, N, num_bins] logits and the
         # softmax-aggregation temporaries free on return.
-        pae_out = self._compute_pae_outputs(z, x_pred, feats, multiplicity,
-                                            is_same_chain, is_different_chain)
+        pae_out = self._compute_pae_outputs(z, x_pred, feats, multiplicity, is_same_chain, is_different_chain)
         pde = self._compute_pde(z, is_same_chain, is_different_chain)
 
         plddt_logits = self.to_plddt_logits(s)
@@ -269,67 +230,63 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         plddt = compute_aggregated_metric(plddt_logits)
 
-        token_pad_mask = repeat_with_multiplicity(feats["token_pad_mask"],
-                                                  multiplicity)
+        token_pad_mask = repeat_with_multiplicity(feats["token_pad_mask"], multiplicity)
 
-        complex_plddt = (plddt * token_pad_mask).sum(
-            dim=-1) / token_pad_mask.sum(dim=-1)
+        complex_plddt = (plddt * token_pad_mask).sum(dim=-1) / token_pad_mask.sum(dim=-1)
 
         is_contact = (d < 8).float()
-        is_different_chain = (feats["asym_id"].unsqueeze(-1)
-                              != feats["asym_id"].unsqueeze(-2)).float()
+        is_different_chain = (feats["asym_id"].unsqueeze(-1) != feats["asym_id"].unsqueeze(-2)).float()
 
-        is_different_chain = repeat_with_multiplicity(is_different_chain,
-                                                      multiplicity)
+        is_different_chain = repeat_with_multiplicity(is_different_chain, multiplicity)
 
         token_interface_mask = torch.max(
-            is_contact * is_different_chain *
-            (1 - is_ligand_token).unsqueeze(-1),
+            is_contact * is_different_chain * (1 - is_ligand_token).unsqueeze(-1),
             dim=-1,
         ).values
-        token_non_interface_mask = (1 - token_interface_mask) * (
-            1 - is_ligand_token)
-        iplddt_weight = (is_ligand_token * self.ligand_weight +
-                         token_interface_mask * self.interface_weight +
-                         token_non_interface_mask * self.non_interface_weight)
-        complex_iplddt = (plddt * token_pad_mask * iplddt_weight).sum(
-            dim=-1) / torch.sum(token_pad_mask * iplddt_weight, dim=-1)
+        token_non_interface_mask = (1 - token_interface_mask) * (1 - is_ligand_token)
+        iplddt_weight = (
+            is_ligand_token * self.ligand_weight
+            + token_interface_mask * self.interface_weight
+            + token_non_interface_mask * self.non_interface_weight
+        )
+        complex_iplddt = (plddt * token_pad_mask * iplddt_weight).sum(dim=-1) / torch.sum(
+            token_pad_mask * iplddt_weight, dim=-1
+        )
 
         # Compute the gPDE and giPDE (pde was aggregated up front in _compute_pde)
 
         pred_distogram_prob = repeat_with_multiplicity(
-            nn.functional.softmax(pred_distogram_logits, dim=-1), multiplicity)
+            nn.functional.softmax(pred_distogram_logits, dim=-1), multiplicity
+        )
 
         prob_contact = (pred_distogram_prob * self.contacts).sum(-1)
-        token_pad_mask = repeat_with_multiplicity(feats["token_pad_mask"],
-                                                  multiplicity)
+        token_pad_mask = repeat_with_multiplicity(feats["token_pad_mask"], multiplicity)
 
         token_pad_pair_mask = (
-            token_pad_mask.unsqueeze(-1) * token_pad_mask.unsqueeze(-2) *
-            (1 - torch.eye(
-                token_pad_mask.shape[2],
-                device=token_pad_mask.device).unsqueeze(0).unsqueeze(0)))
+            token_pad_mask.unsqueeze(-1)
+            * token_pad_mask.unsqueeze(-2)
+            * (1 - torch.eye(token_pad_mask.shape[2], device=token_pad_mask.device).unsqueeze(0).unsqueeze(0))
+        )
 
         token_pair_mask = token_pad_pair_mask * prob_contact
 
-        complex_pde = (pde * token_pair_mask).sum(
-            dim=(2, 3)) / token_pair_mask.sum(dim=(2, 3))
+        complex_pde = (pde * token_pair_mask).sum(dim=(2, 3)) / token_pair_mask.sum(dim=(2, 3))
 
         asym_id = repeat_with_multiplicity(feats["asym_id"], multiplicity)
 
-        token_interface_pair_mask = token_pair_mask * (
-            asym_id.unsqueeze(-1) != asym_id.unsqueeze(-2))
-        complex_ipde = (pde * token_interface_pair_mask).sum(
-            dim=(2, 3)) / (token_interface_pair_mask.sum(dim=(2, 3)) + 1e-5)
-
-        out_dict = dict(
-            pde=pde,
-            plddt=plddt,
-            complex_plddt=complex_plddt,
-            complex_iplddt=complex_iplddt,
-            complex_pde=complex_pde,
-            complex_ipde=complex_ipde,
+        token_interface_pair_mask = token_pair_mask * (asym_id.unsqueeze(-1) != asym_id.unsqueeze(-2))
+        complex_ipde = (pde * token_interface_pair_mask).sum(dim=(2, 3)) / (
+            token_interface_pair_mask.sum(dim=(2, 3)) + 1e-5
         )
+
+        out_dict = {
+            "pde": pde,
+            "plddt": plddt,
+            "complex_plddt": complex_plddt,
+            "complex_iplddt": complex_iplddt,
+            "complex_pde": complex_pde,
+            "complex_ipde": complex_ipde,
+        }
         # pae / ptm outputs were computed up front (see _compute_pae_outputs) so pae_logits freed
         # before this section; merge them in here.
         out_dict.update(pae_out)
@@ -343,7 +300,7 @@ class Boltz2ConfidenceModule(nn.Module):
     def __init__(
         self,
         config: BaseConfig = None,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
         skip_create_weights: bool = False,
         **kwargs,
     ):
@@ -351,11 +308,9 @@ class Boltz2ConfidenceModule(nn.Module):
         self.config = config
         self.max_num_atoms_per_token = 23
         self.no_update_s = config.no_update_s
-        boundaries = torch.linspace(2, config.max_dist,
-                                    config.num_dist_bins - 1)
+        boundaries = torch.linspace(2, config.max_dist, config.num_dist_bins - 1)
         self.register_buffer("boundaries", boundaries)
-        self.dist_bin_pairwise_embed = nn.Embedding(config.num_dist_bins,
-                                                    config.token_z)
+        self.dist_bin_pairwise_embed = nn.Embedding(config.num_dist_bins, config.token_z)
 
         self.dtype = dtype
         self.skip_create_weights = skip_create_weights
@@ -364,59 +319,36 @@ class Boltz2ConfidenceModule(nn.Module):
         self.token_s = config.token_s
         self.token_z = config.token_z
 
-        self.s_to_z = Linear(self.token_s,
-                             self.token_z,
-                             bias=False,
-                             dtype=self.dtype,
-                             skip_create_weights=self.skip_create_weights)
+        self.s_to_z = Linear(
+            self.token_s, self.token_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
         self.s_to_z_transpose = Linear(
-            self.token_s,
-            self.token_z,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            self.token_s, self.token_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
         self.add_s_to_z_prod = config.add_s_to_z_prod
         if self.add_s_to_z_prod:
             self.s_to_z_prod_in1 = Linear(
-                self.token_s,
-                self.token_z,
-                bias=False,
-                dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                self.token_s, self.token_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+            )
             self.s_to_z_prod_in2 = Linear(
-                self.token_s,
-                self.token_z,
-                bias=False,
-                dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                self.token_s, self.token_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+            )
             self.s_to_z_prod_out = Linear(
-                self.token_z,
-                self.token_z,
-                bias=False,
-                dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                self.token_z, self.token_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+            )
 
-        self.s_inputs_norm = nn.LayerNorm(self.token_s,
-                                          dtype=self.dtype,
-                                          eps=config.norm_epsilon)
+        self.s_inputs_norm = nn.LayerNorm(self.token_s, dtype=self.dtype, eps=config.norm_epsilon)
         if not self.no_update_s:
-            self.s_norm = nn.LayerNorm(self.token_s,
-                                       dtype=self.dtype,
-                                       eps=config.norm_epsilon)
-        self.z_norm = nn.LayerNorm(self.token_z,
-                                   dtype=self.dtype,
-                                   eps=config.norm_epsilon)
+            self.s_norm = nn.LayerNorm(self.token_s, dtype=self.dtype, eps=config.norm_epsilon)
+        self.z_norm = nn.LayerNorm(self.token_z, dtype=self.dtype, eps=config.norm_epsilon)
 
         self.add_s_input_to_s = config.add_s_input_to_s
         if self.add_s_input_to_s:
             self.s_input_to_s = Linear(
-                self.token_s,
-                self.token_s,
-                bias=False,
-                dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                self.token_s, self.token_s, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+            )
 
         self.add_z_input_to_z = config.add_z_input_to_z
         if self.add_z_input_to_z:
@@ -424,22 +356,21 @@ class Boltz2ConfidenceModule(nn.Module):
                 token_z=self.token_z,
                 fix_sym_check=config.fix_sym_check,
                 cyclic_pos_enc=config.cyclic_pos_enc,
-                period_broadcast=config.relative_position_encoder.
-                period_broadcast,
+                period_broadcast=config.relative_position_encoder.period_broadcast,
                 dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                skip_create_weights=self.skip_create_weights,
+            )
             self.token_bonds = Linear(
-                1 if config.maximum_bond_distance == 0 else
-                config.maximum_bond_distance + 2,
+                1 if config.maximum_bond_distance == 0 else config.maximum_bond_distance + 2,
                 self.token_z,
                 bias=False,
                 dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                skip_create_weights=self.skip_create_weights,
+            )
 
             self.bond_type_feature = config.bond_type_feature
             if config.bond_type_feature:
-                self.token_bonds_type = nn.Embedding(
-                    len(bond_types) + 1, config.token_z)
+                self.token_bonds_type = nn.Embedding(len(bond_types) + 1, config.token_z)
 
             self.contact_conditioning = ContactConditioning(
                 token_z=config.token_z,
@@ -447,16 +378,16 @@ class Boltz2ConfidenceModule(nn.Module):
                 cutoff_max=config.conditioning_cutoff_max,
                 contact_conditioning_info=contact_conditioning_info,
                 dtype=self.dtype,
-                skip_create_weights=self.skip_create_weights)
+                skip_create_weights=self.skip_create_weights,
+            )
 
         self.pairformer_stack = PairformerModule(config=config.pairformer)
 
         self.return_latent_feats = config.return_latent_feats
 
         self.confidence_heads = Boltz2ConfidenceHeads(
-            config=config.confidence_heads,
-            dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            config=config.confidence_heads, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
     def load_weights(self, weights: dict = None):
         """
@@ -467,48 +398,43 @@ class Boltz2ConfidenceModule(nn.Module):
 
         not_loaded_weight = set(weights.keys()) - loaded_weight
         if not_loaded_weight:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weight}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weight}")
 
-    def _build_pairformer_inputs(self, x_pred_chunk, s, z, feats,
-                                 token_to_rep_atom, current_multiplicity):
+    def _build_pairformer_inputs(self, x_pred_chunk, s, z, feats, token_to_rep_atom, current_multiplicity):
         """Build ``(d, s_t, z_t, mask, pair_mask)`` for the confidence pairformer.
 
         Kept in a helper so the large fp32 ``distogram``-embed + ``pair_z`` intermediates (~16 GB at
         large N) are freed on return -- only the (pairformer-dtype) inputs survive into the stack.
         """
-        d, distogram = compute_distogram(x_pred_chunk, self.boundaries,
-                                         token_to_rep_atom,
-                                         current_multiplicity)
+        d, distogram = compute_distogram(x_pred_chunk, self.boundaries, token_to_rep_atom, current_multiplicity)
         distogram = self.dist_bin_pairwise_embed(distogram)
         pair_z = repeat_with_multiplicity(z, current_multiplicity) + distogram
 
         pf_dtype = self.config.pairformer.torch_dtype
-        mask = repeat_with_multiplicity(feats["token_pad_mask"],
-                                        current_multiplicity)
+        mask = repeat_with_multiplicity(feats["token_pad_mask"], current_multiplicity)
         mask = mask.flatten(0, 1).to(pf_dtype)
 
-        pair_mask = (feats["token_pad_mask"][:, :, None] *
-                     feats["token_pad_mask"][:, None, :])
+        pair_mask = feats["token_pad_mask"][:, :, None] * feats["token_pad_mask"][:, None, :]
         pair_mask = repeat_with_multiplicity(pair_mask, current_multiplicity)
         pair_mask = pair_mask.flatten(0, 1).to(pf_dtype)
 
-        s_t = repeat_with_multiplicity(s, current_multiplicity).flatten(
-            0, 1).to(pf_dtype)
+        s_t = repeat_with_multiplicity(s, current_multiplicity).flatten(0, 1).to(pf_dtype)
         z_t = pair_z.flatten(0, 1).to(pf_dtype)
         return d, s_t, z_t, mask, pair_mask
 
-    def forward(self,
-                s_inputs,
-                s,
-                z,
-                x_pred,
-                feats,
-                pred_distogram_logits,
-                multiplicity=1,
-                max_parallel_samples: int = 1,
-                run_sequentially=True,
-                attn_metadata: Optional[AttentionMetadata] = None):
+    def forward(
+        self,
+        s_inputs,
+        s,
+        z,
+        x_pred,
+        feats,
+        pred_distogram_logits,
+        multiplicity=1,
+        max_parallel_samples: int = 1,
+        run_sequentially=True,
+        attn_metadata: AttentionMetadata | None = None,
+    ):
         """
         Inputs:
         s_inputs: (Batch_size, N_atoms, token_s)
@@ -558,13 +484,11 @@ class Boltz2ConfidenceModule(nn.Module):
         if x_pred.ndim == 3:
             BM, N, _ = x_pred.shape
             batch_size = BM // multiplicity
-            x_pred = x_pred.reshape(batch_size, multiplicity,
-                                    *x_pred.shape[1:])
+            x_pred = x_pred.reshape(batch_size, multiplicity, *x_pred.shape[1:])
         elif x_pred.ndim == 4:
             batch_size, multiplicity, _, _ = x_pred.shape
 
-        niter = (multiplicity + max_parallel_samples -
-                 1) // max_parallel_samples
+        niter = (multiplicity + max_parallel_samples - 1) // max_parallel_samples
 
         assert max_parallel_samples <= multiplicity, "max_parallel_samples must be less than or equal to multiplicity"
 
@@ -582,7 +506,6 @@ class Boltz2ConfidenceModule(nn.Module):
         z = self.z_norm(z)
 
         if self.add_z_input_to_z:
-
             relative_position_encoding = self.rel_pos(
                 asym_id=feats["asym_id"],
                 residue_index=feats["residue_index"],
@@ -598,22 +521,21 @@ class Boltz2ConfidenceModule(nn.Module):
             if self.bond_type_feature:
                 z += self.token_bonds_type(feats["type_bonds"].long())
             z += self.contact_conditioning(
-                contact_conditioning=feats["contact_conditioning"],
-                contact_threshold=feats["contact_threshold"])
+                contact_conditioning=feats["contact_conditioning"], contact_threshold=feats["contact_threshold"]
+            )
 
         z += self.s_to_z(s_inputs)[:, :, None, :]
         z += self.s_to_z_transpose(s_inputs)[:, None, :, :]
         if self.add_s_to_z_prod:
             z += self.s_to_z_prod_out(
-                self.s_to_z_prod_in1(s_inputs)[:, :, None, :] *
-                self.s_to_z_prod_in2(s_inputs)[:, None, :, :])
+                self.s_to_z_prod_in1(s_inputs)[:, :, None, :] * self.s_to_z_prod_in2(s_inputs)[:, None, :, :]
+            )
 
         z = z.to(self.config.pairformer.torch_dtype)
 
         # These raw pair feats are fully consumed by the z-init above (and by the trunk before this
         # module); drop them so their [N, N, *] buffers free before the per-sample pairformer loop.
-        for _feat_key in ("contact_conditioning", "contact_threshold",
-                          "token_bonds", "type_bonds"):
+        for _feat_key in ("contact_conditioning", "contact_threshold", "token_bonds", "type_bonds"):
             feats.pop(_feat_key, None)
 
         token_to_rep_atom = feats["token_to_rep_atom"]
@@ -625,14 +547,10 @@ class Boltz2ConfidenceModule(nn.Module):
             # Build pairformer inputs in a helper so the fp32 distogram-embed + pair_z (~16 GB)
             # intermediates are freed on return, before the pairformer stack runs.
             d, s_t, z_t, mask, pair_mask = self._build_pairformer_inputs(
-                x_pred_chunk, s, z, feats, token_to_rep_atom,
-                current_multiplicity)
+                x_pred_chunk, s, z, feats, token_to_rep_atom, current_multiplicity
+            )
 
-            s_t, z_t = self.pairformer_stack(s_t,
-                                             z_t,
-                                             mask=mask,
-                                             pair_mask=pair_mask,
-                                             attn_metadata=attn_metadata)
+            s_t, z_t = self.pairformer_stack(s_t, z_t, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
             s_t = s_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             z_t = z_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             out_dict = {}
@@ -650,7 +568,8 @@ class Boltz2ConfidenceModule(nn.Module):
                     feats=feats,
                     multiplicity=current_multiplicity,
                     pred_distogram_logits=pred_distogram_logits,
-                ))
+                )
+            )
             out_dicts_chunks.append(out_dict)
 
         out_dict = concat_out_dicts(out_dicts_chunks)
@@ -682,26 +601,30 @@ class Boltz1ConfidenceHeads(nn.Module):
             self.num_pde_bins,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         self.to_plddt_logits = Linear(
             self.token_s,
             self.num_plddt_bins,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         self.to_resolved_logits = Linear(
             self.token_s,
             2,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         if self.config.compute_pae:
             self.to_pae_logits = Linear(
                 self.token_z,
                 self.num_pae_bins,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                skip_create_weights=self.config.skip_create_weights)
+                skip_create_weights=self.config.skip_create_weights,
+            )
 
     def _compute_pde(self, z):
         """Aggregate ``pde`` in a helper so the ``[N, N, num_pde_bins]`` ``pde_logits`` (+ its
@@ -717,8 +640,7 @@ class Boltz1ConfidenceHeads(nn.Module):
         """
         pae_logits = self.to_pae_logits(z)
         out = {"pae": compute_aggregated_metric(pae_logits, end=32)}
-        ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
-            pae_logits, x_pred, feature_dict)
+        ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(pae_logits, x_pred, feature_dict)
         out["ptm"] = ptm
         out["iptm"] = iptm
         out["ligand_iptm"] = ligand_iptm
@@ -749,10 +671,8 @@ class Boltz1ConfidenceHeads(nn.Module):
         """
         B, multiplicity, N_tokens, _ = s.shape
         asym_id = feature_dict["asym_id"]
-        token_pad_mask = repeat_with_multiplicity(
-            feature_dict["token_pad_mask"], multiplicity)
-        token_type = repeat_with_multiplicity(feature_dict["mol_type"],
-                                              multiplicity)
+        token_pad_mask = repeat_with_multiplicity(feature_dict["token_pad_mask"], multiplicity)
+        token_type = repeat_with_multiplicity(feature_dict["mol_type"], multiplicity)
 
         # Compute the pLDDT logits; pde is aggregated in a helper so its [N, N, num_pde_bins]
         # pde_logits frees on return (before the plddt/complex-metric section below).
@@ -768,53 +688,46 @@ class Boltz1ConfidenceHeads(nn.Module):
 
         # Compute the aggregated pLDDT and iPLDDT
         plddt = compute_aggregated_metric(plddt_logits)
-        complex_plddt = (plddt * token_pad_mask).sum(
-            dim=-1) / token_pad_mask.sum(dim=-1)
+        complex_plddt = (plddt * token_pad_mask).sum(dim=-1) / token_pad_mask.sum(dim=-1)
 
         is_contact = (d < 8).float()
-        is_different_chain = (asym_id.unsqueeze(-1)
-                              != asym_id.unsqueeze(-2)).float()
-        is_different_chain = repeat_with_multiplicity(is_different_chain,
-                                                      multiplicity)
+        is_different_chain = (asym_id.unsqueeze(-1) != asym_id.unsqueeze(-2)).float()
+        is_different_chain = repeat_with_multiplicity(is_different_chain, multiplicity)
         token_interface_mask = torch.max(
-            is_contact * is_different_chain *
-            (1 - is_ligand_token).unsqueeze(-1),
+            is_contact * is_different_chain * (1 - is_ligand_token).unsqueeze(-1),
             dim=-1,
         ).values
-        iplddt_weight = (is_ligand_token * ligand_weight +
-                         token_interface_mask * interface_weight)
-        complex_iplddt = (plddt * token_pad_mask * iplddt_weight).sum(
-            dim=-1) / (torch.sum(token_pad_mask * iplddt_weight, dim=-1) +
-                       1e-5)
+        iplddt_weight = is_ligand_token * ligand_weight + token_interface_mask * interface_weight
+        complex_iplddt = (plddt * token_pad_mask * iplddt_weight).sum(dim=-1) / (
+            torch.sum(token_pad_mask * iplddt_weight, dim=-1) + 1e-5
+        )
 
         # Compute the aggregated PDE and iPDE (pde was aggregated up front in _compute_pde)
-        pred_distogram_prob = nn.functional.softmax(pred_distogram_logits,
-                                                    dim=-1)
-        pred_distogram_prob = repeat_with_multiplicity(pred_distogram_prob,
-                                                       multiplicity)
+        pred_distogram_prob = nn.functional.softmax(pred_distogram_logits, dim=-1)
+        pred_distogram_prob = repeat_with_multiplicity(pred_distogram_prob, multiplicity)
         prob_contact = (pred_distogram_prob * self.contacts).sum(-1)
         token_pad_pair_mask = (
-            token_pad_mask.unsqueeze(-1) * token_pad_mask.unsqueeze(-2) *
-            (1 - torch.eye(N_tokens,
-                           device=token_pad_mask.device)[None, None, :, :]))
+            token_pad_mask.unsqueeze(-1)
+            * token_pad_mask.unsqueeze(-2)
+            * (1 - torch.eye(N_tokens, device=token_pad_mask.device)[None, None, :, :])
+        )
 
         token_pair_mask = token_pad_pair_mask * prob_contact
-        complex_pde = (pde * token_pair_mask).sum(
-            dim=(-2, -1)) / token_pair_mask.sum(dim=(-2, -1))
+        complex_pde = (pde * token_pair_mask).sum(dim=(-2, -1)) / token_pair_mask.sum(dim=(-2, -1))
         asym_id = repeat_with_multiplicity(asym_id, multiplicity)
-        token_interface_pair_mask = token_pair_mask * (
-            asym_id.unsqueeze(-1) != asym_id.unsqueeze(-2))
+        token_interface_pair_mask = token_pair_mask * (asym_id.unsqueeze(-1) != asym_id.unsqueeze(-2))
         complex_ipde = (pde * token_interface_pair_mask).sum(dim=(-2, -1)) / (
-            token_interface_pair_mask.sum(dim=(-2, -1)) + 1e-5)
-
-        out_dict = dict(
-            pde=pde,
-            plddt=plddt,
-            complex_plddt=complex_plddt,
-            complex_iplddt=complex_iplddt,
-            complex_pde=complex_pde,
-            complex_ipde=complex_ipde,
+            token_interface_pair_mask.sum(dim=(-2, -1)) + 1e-5
         )
+
+        out_dict = {
+            "pde": pde,
+            "plddt": plddt,
+            "complex_plddt": complex_plddt,
+            "complex_iplddt": complex_iplddt,
+            "complex_pde": complex_pde,
+            "complex_ipde": complex_ipde,
+        }
         if self.config.compute_pae:
             # pae + ptm in a helper so pae_logits + its aggregation temporaries free on return.
             out_dict.update(self._compute_pae_outputs(z, x_pred, feature_dict))
@@ -822,15 +735,15 @@ class Boltz1ConfidenceHeads(nn.Module):
 
 
 class Boltz1ConfidenceModule(nn.Module):
-
     def __init__(self, config: BaseConfig):
         super().__init__()
         self.config = config
         self.input_embedder_config = config.input_embedder
         self.pairformer_config = config.pairformer
         self.msa_module_config = config.msa_module
-        assert self.pairformer_config.torch_dtype == self.msa_module_config.torch_dtype, \
+        assert self.pairformer_config.torch_dtype == self.msa_module_config.torch_dtype, (
             f"Boltz1ConfidenceModule pairformer dtype: {self.pairformer_config.torch_dtype}, msa dtype: {self.msa_module_config.torch_dtype}"
+        )
 
         self.max_num_atoms_per_token = 23
         self.no_update_s = self.pairformer_config.no_update_s
@@ -839,12 +752,10 @@ class Boltz1ConfidenceModule(nn.Module):
         self.num_dist_bins = self.config.num_dist_bins
         self.token_z = self.config.token_z
         self.token_s = self.config.token_s
-        self.s_input_dim = (self.token_s + 2 * num_tokens + 1 +
-                            num_pocket_contact_info)
+        self.s_input_dim = self.token_s + 2 * num_tokens + 1 + num_pocket_contact_info
         boundaries = torch.linspace(2, self.max_dist, self.num_dist_bins - 1)
 
-        self.dist_bin_pairwise_embed = nn.Embedding(self.num_dist_bins,
-                                                    self.token_z)
+        self.dist_bin_pairwise_embed = nn.Embedding(self.num_dist_bins, self.token_z)
 
         self.register_buffer("boundaries", boundaries)
 
@@ -855,20 +766,23 @@ class Boltz1ConfidenceModule(nn.Module):
             self.token_s,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
 
         self.s_to_z = Linear(
             self.s_input_dim,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         self.s_to_z_transpose = Linear(
             self.s_input_dim,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
 
         self.add_s_to_z_prod = self.config.add_s_to_z_prod
         if self.add_s_to_z_prod:
@@ -877,38 +791,44 @@ class Boltz1ConfidenceModule(nn.Module):
                 self.token_z,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                skip_create_weights=self.config.skip_create_weights)
+                skip_create_weights=self.config.skip_create_weights,
+            )
             self.s_to_z_prod_in2 = Linear(
                 self.s_input_dim,
                 self.token_z,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                skip_create_weights=self.config.skip_create_weights)
+                skip_create_weights=self.config.skip_create_weights,
+            )
             self.s_to_z_prod_out = Linear(
                 self.token_z,
                 self.token_z,
                 bias=False,
                 dtype=self.config.torch_dtype,
-                skip_create_weights=self.config.skip_create_weights)
+                skip_create_weights=self.config.skip_create_weights,
+            )
 
         self.s_init = Linear(
             self.s_input_dim,
             self.token_s,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         self.z_init_1 = Linear(
             self.s_input_dim,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         self.z_init_2 = Linear(
             self.s_input_dim,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
 
         self.input_embedder = Boltz1InputEmbedder(self.input_embedder_config)
         self.rel_pos = RelativePositionEncoder(
@@ -917,21 +837,19 @@ class Boltz1ConfidenceModule(nn.Module):
             cyclic_pos_enc=True,
             period_broadcast=True,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         self.token_bonds = Linear(
             1,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
 
         # Normalization layers
-        self.s_norm = nn.LayerNorm(self.token_s,
-                                   dtype=self.config.torch_dtype,
-                                   eps=self.config.norm_epsilon)
-        self.z_norm = nn.LayerNorm(self.token_z,
-                                   dtype=self.config.torch_dtype,
-                                   eps=self.config.norm_epsilon)
+        self.s_norm = nn.LayerNorm(self.token_s, dtype=self.config.torch_dtype, eps=self.config.norm_epsilon)
+        self.z_norm = nn.LayerNorm(self.token_z, dtype=self.config.torch_dtype, eps=self.config.norm_epsilon)
 
         # Recycling projections
         self.s_recycle = Linear(
@@ -939,23 +857,21 @@ class Boltz1ConfidenceModule(nn.Module):
             self.token_s,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
         self.z_recycle = Linear(
             self.token_z,
             self.token_z,
             bias=False,
             dtype=self.config.torch_dtype,
-            skip_create_weights=self.config.skip_create_weights)
+            skip_create_weights=self.config.skip_create_weights,
+        )
 
         self.msa_module = MSAModule(self.msa_module_config)
         self.pairformer_module = PairformerModule(self.pairformer_config)
 
-        self.final_s_norm = nn.LayerNorm(self.token_s,
-                                         dtype=self.config.torch_dtype,
-                                         eps=self.config.norm_epsilon)
-        self.final_z_norm = nn.LayerNorm(self.token_z,
-                                         dtype=self.config.torch_dtype,
-                                         eps=self.config.norm_epsilon)
+        self.final_s_norm = nn.LayerNorm(self.token_s, dtype=self.config.torch_dtype, eps=self.config.norm_epsilon)
+        self.final_z_norm = nn.LayerNorm(self.token_z, dtype=self.config.torch_dtype, eps=self.config.norm_epsilon)
 
         self.confidence_heads = Boltz1ConfidenceHeads(self.config.heads)
 
@@ -964,28 +880,28 @@ class Boltz1ConfidenceModule(nn.Module):
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
-    def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor],
-                             module_name: str) -> dict[str, Any]:
+    def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor], module_name: str) -> dict[str, Any]:
         keys = []
         if module_name == "input_embedder":
             keys = [
-                "atom_to_token", "ref_pos", "atom_pad_mask", "ref_space_uid",
-                "ref_charge", "ref_element", "ref_atom_name_chars", "res_type",
-                "profile", "deletion_mean", "pocket_feature"
+                "atom_to_token",
+                "ref_pos",
+                "atom_pad_mask",
+                "ref_space_uid",
+                "ref_charge",
+                "ref_element",
+                "ref_atom_name_chars",
+                "res_type",
+                "profile",
+                "deletion_mean",
+                "pocket_feature",
             ]
         elif module_name == "relative_position_encoding":
-            keys = [
-                "asym_id", "residue_index", "entity_id", "cyclic_period",
-                "token_index", "sym_id"
-            ]
+            keys = ["asym_id", "residue_index", "entity_id", "cyclic_period", "token_index", "sym_id"]
         elif module_name == "msa_module":
-            keys = [
-                "msa", "has_deletion", "deletion_value", "msa_paired",
-                "msa_mask"
-            ]
+            keys = ["msa", "has_deletion", "deletion_value", "msa_paired", "msa_mask"]
         else:
             raise ValueError(f"Module name {module_name} not supported")
         return {key: feed_dict.get(key, None) for key in keys}
@@ -994,11 +910,9 @@ class Boltz1ConfidenceModule(nn.Module):
         """Fold the distogram embedding into ``z_chunk`` in a helper so the large fp32 ``distogram``
         intermediate (~8 GB at large N) frees on return, before the msa_module/pairformer run.
         """
-        d, distogram = compute_distogram(x_chunk,
-                                         self.boundaries,
-                                         token_to_rep_atom,
-                                         n_samples,
-                                         dtype=self.config.torch_dtype)
+        d, distogram = compute_distogram(
+            x_chunk, self.boundaries, token_to_rep_atom, n_samples, dtype=self.config.torch_dtype
+        )
         distogram = self.dist_bin_pairwise_embed(distogram)
         z_chunk += distogram  # [B, mult, N_tokens, N_tokens, token_z]
         return d, z_chunk
@@ -1011,9 +925,9 @@ class Boltz1ConfidenceModule(nn.Module):
         feature_dict: dict[str, torch.Tensor],
         pred_distogram_logits: torch.Tensor,
         multiplicity: int = 1,
-        s_diffusion: Optional[torch.Tensor] = None,
-        max_parallel_samples: Optional[int] = None,
-        attn_metadata: Optional[AttentionMetadata] = None
+        s_diffusion: torch.Tensor | None = None,
+        max_parallel_samples: int | None = None,
+        attn_metadata: AttentionMetadata | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass for the confidence module.
@@ -1044,34 +958,30 @@ class Boltz1ConfidenceModule(nn.Module):
         if max_parallel_samples is None:
             max_parallel_samples = 1
         if x_pred.ndim == 3:
-            B = x_pred.shape[
-                0] // multiplicity  # [B*mult, N_atoms, 3] -> [B, mult, N_atoms, 3]
+            B = x_pred.shape[0] // multiplicity  # [B*mult, N_atoms, 3] -> [B, mult, N_atoms, 3]
             x_pred = x_pred.reshape(B, multiplicity, *x_pred.shape[1:])
         else:
             B, multiplicity, _, _ = x_pred.shape
 
-        niter = (multiplicity + max_parallel_samples -
-                 1) // max_parallel_samples
+        niter = (multiplicity + max_parallel_samples - 1) // max_parallel_samples
         x_chunks = x_pred.chunk(niter, dim=1)
         if s_diffusion is not None:
             if s_diffusion.ndim == 3:
                 # [B, mult, ...]
-                s_diffusion = s_diffusion.reshape(B, multiplicity,
-                                                  *s_diffusion.shape[1:])
+                s_diffusion = s_diffusion.reshape(B, multiplicity, *s_diffusion.shape[1:])
             s_diffusion_chunks = s_diffusion.chunk(niter, dim=1)
         else:
             s_diffusion_chunks = [None] * niter
 
-        s_inputs = self.input_embedder(**self.get_module_feed_dict(
-            feature_dict, "input_embedder"),
-                                       attn_metadata=attn_metadata)
+        s_inputs = self.input_embedder(
+            **self.get_module_feed_dict(feature_dict, "input_embedder"), attn_metadata=attn_metadata
+        )
         s_init = self.s_init(s_inputs)
-        z_init = (self.z_init_1(s_inputs)[:, :, None] +
-                  self.z_init_2(s_inputs)[:, None, :])
+        z_init = self.z_init_1(s_inputs)[:, :, None] + self.z_init_2(s_inputs)[:, None, :]
 
         relative_position_encoding = self.rel_pos(
-            **self.get_module_feed_dict(feature_dict,
-                                        "relative_position_encoding"), )
+            **self.get_module_feed_dict(feature_dict, "relative_position_encoding"),
+        )
         # In-place accumulation into the freshly-built z_init / z, avoiding per-term [N, N, c_z]
         # fp32 temporaries during pair init.
         z_init += relative_position_encoding
@@ -1086,8 +996,8 @@ class Boltz1ConfidenceModule(nn.Module):
 
         if self.config.add_s_to_z_prod:
             z += self.s_to_z_prod_out(
-                (self.s_to_z_prod_in1(s_inputs)[:, :, None, :] *
-                 self.s_to_z_prod_in2(s_inputs)[:, None, :, :]))
+                self.s_to_z_prod_in1(s_inputs)[:, :, None, :] * self.s_to_z_prod_in2(s_inputs)[:, None, :, :]
+            )
 
         # token_bonds is fully consumed by the z-init above (and by the trunk before this module);
         # drop it so its [N, N, 1] buffer frees before the per-sample pairformer loop.
@@ -1102,8 +1012,8 @@ class Boltz1ConfidenceModule(nn.Module):
         s_inputs_chunks = s_inputs.chunk(niter, dim=1)
         out_dicts = []
         for s_inputs_chunk, s_chunk, z_chunk, x_chunk, s_diffusion_chunk in zip(
-                s_inputs_chunks, s_chunks, z_chunks, x_chunks,
-                s_diffusion_chunks):
+            s_inputs_chunks, s_chunks, z_chunks, x_chunks, s_diffusion_chunks
+        ):
             n_samples = x_chunk.shape[1]
 
             if self.config.use_s_diffusion:
@@ -1113,15 +1023,11 @@ class Boltz1ConfidenceModule(nn.Module):
             token_to_rep_atom = feature_dict["token_to_rep_atom"]
             # Fold distogram into z_chunk in a helper so the fp32 distogram embed frees on return,
             # before the msa_module + pairformer_module run.
-            d, z_chunk = self._add_distogram(x_chunk, z_chunk,
-                                             token_to_rep_atom, n_samples)
+            d, z_chunk = self._add_distogram(x_chunk, z_chunk, token_to_rep_atom, n_samples)
 
             mask = feature_dict["token_pad_mask"]
-            pair_mask = mask[:, :,
-                             None] * mask[:,
-                                          None, :]  # [B, N_tokens, N_tokens]
-            pair_mask = repeat_with_multiplicity(
-                pair_mask, n_samples)  # [B, mult, N_tokens, N_tokens]
+            pair_mask = mask[:, :, None] * mask[:, None, :]  # [B, N_tokens, N_tokens]
+            pair_mask = repeat_with_multiplicity(pair_mask, n_samples)  # [B, mult, N_tokens, N_tokens]
 
             # Currently, MSAModule and Pairformer doesn't support multiplicity > 1, so we reshape here
             # This won't dont change the result for batching
@@ -1129,8 +1035,7 @@ class Boltz1ConfidenceModule(nn.Module):
             s_chunk = s_chunk.flatten(0, 1).to(input_dtype)
             z_chunk = z_chunk.flatten(0, 1).to(input_dtype)
             s_inputs_chunk = s_inputs_chunk.flatten(0, 1).to(input_dtype)
-            mask = repeat_with_multiplicity(mask,
-                                            n_samples)  # [B, mult, N_tokens]
+            mask = repeat_with_multiplicity(mask, n_samples)  # [B, mult, N_tokens]
             mask = mask.flatten(0, 1).to(input_dtype)
             pair_mask = pair_mask.flatten(0, 1).to(input_dtype)
 
@@ -1139,19 +1044,16 @@ class Boltz1ConfidenceModule(nn.Module):
                 z=z_chunk,
                 emb=s_inputs_chunk,
                 token_pad_mask=pair_mask,
-                **self.get_module_feed_dict(feature_dict, "msa_module"))
+                **self.get_module_feed_dict(feature_dict, "msa_module"),
+            )
 
-            s_chunk, z_chunk = self.pairformer_module(s=s_chunk,
-                                                      z=z_chunk,
-                                                      mask=mask,
-                                                      pair_mask=pair_mask)
+            s_chunk, z_chunk = self.pairformer_module(s=s_chunk, z=z_chunk, mask=mask, pair_mask=pair_mask)
 
             # Recover dtype for the final output
             s_chunk = s_chunk.to(self.config.torch_dtype)
             z_chunk = z_chunk.to(self.config.torch_dtype)
 
-            s_chunk, z_chunk = self.final_s_norm(s_chunk), self.final_z_norm(
-                z_chunk)
+            s_chunk, z_chunk = self.final_s_norm(s_chunk), self.final_z_norm(z_chunk)
 
             # Recover multiplicity dimension for heads
             s_chunk = s_chunk.unflatten(0, (B, n_samples))

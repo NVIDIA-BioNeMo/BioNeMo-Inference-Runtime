@@ -52,14 +52,12 @@ import torch
 
 import tests
 from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
-    EngineProcessorConfig, build_processor)
+from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
 from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
 from tensorrt_bionemo.pipeline.stages.engine_stage import FoldingPredictionError
+from tests._torch.model_forwards.test_model_forward_with_cuda_graph import _default_of3_model_config
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.seeding import seed_everything
-from tests._torch.model_forwards.test_model_forward_with_cuda_graph import (
-    _default_of3_model_config)
 
 # --- Test configuration ----------------------------------------------------
 # Each model is run eager twice and its two runs compared. Whether the two runs
@@ -83,8 +81,7 @@ RECYCLING_STEPS = 3
 NUM_SAMPLING_STEPS = 200
 DIFFUSION_SAMPLES = 1
 
-_SAMPLES_AVAILABLE = MONOMERS_DIR.is_dir() and all(
-    (MONOMERS_DIR / f"{sid}.json").exists() for sid in SAMPLE_IDS)
+_SAMPLES_AVAILABLE = MONOMERS_DIR.is_dir() and all((MONOMERS_DIR / f"{sid}.json").exists() for sid in SAMPLE_IDS)
 
 # Per-model checkpoint resolution (local-checkpoint env var + HF repo/file).
 # CI provides the checkpoint (env var or authenticated/cached HF); elsewhere the
@@ -112,10 +109,10 @@ def _model_weights_available(model_source: str) -> bool:
     repo_id, filename = _HF_CKPT[model_source]
     try:
         from huggingface_hub import hf_hub_download
-        hf_hub_download(repo_id=repo_id,
-                        filename=filename,
-                        cache_dir=str(Path.home() / ".cache" / "hf"),
-                        local_files_only=True)
+
+        hf_hub_download(
+            repo_id=repo_id, filename=filename, cache_dir=str(Path.home() / ".cache" / "hf"), local_files_only=True
+        )
         return True
     except Exception:
         return False
@@ -128,6 +125,7 @@ def _availability_exceptions() -> tuple:
     excs: list = [FileNotFoundError, ConnectionError]
     try:
         from huggingface_hub import errors as hf_errors
+
         excs += [
             hf_errors.GatedRepoError,
             hf_errors.RepositoryNotFoundError,
@@ -171,15 +169,15 @@ def _load_request(sample_id: str) -> InputRequest:
                 sequence=poly["sequence"],
                 msas=msas,
                 paired_msas=[],
-            ))
+            )
+        )
     return InputRequest(input_id=entry["input_id"], polymers=polymers)
 
 
 # ===========================================================================
 # Pipeline construction + execution (serial backend, eager, via build_processor)
 # ===========================================================================
-def _build_processor_config(model_source: str,
-                            output_dir: Path) -> EngineProcessorConfig:
+def _build_processor_config(model_source: str, output_dir: Path) -> EngineProcessorConfig:
     """Build a serial-backend, eager ``EngineProcessorConfig`` for the model.
 
     No ``accelerated_configs`` — the diffusion (token) transformer runs eager.
@@ -198,13 +196,11 @@ def _build_processor_config(model_source: str,
             "num_sampling_steps": NUM_SAMPLING_STEPS,
             "diffusion_samples": DIFFUSION_SAMPLES,
         },
-        writer_stage=WriterStageConfig(output_path=str(output_dir),
-                                       format="cif"),
+        writer_stage=WriterStageConfig(output_path=str(output_dir), format="cif"),
     )
 
 
-def _run_pipeline(model_source: str, requests: list[InputRequest],
-                  output_dir: Path) -> dict[str, Path]:
+def _run_pipeline(model_source: str, requests: list[InputRequest], output_dir: Path) -> dict[str, Path]:
     """Run the eager serial pipeline over ``requests`` and return written CIFs.
 
     ``should_continue_on_error`` defaults to False, so any per-request failure
@@ -213,11 +209,14 @@ def _run_pipeline(model_source: str, requests: list[InputRequest],
     config = _build_processor_config(model_source, output_dir)
     processor = build_processor(config)
 
-    records = [{
-        "record": req,
-        "__record_id": req["input_id"],
-        "random_seed": SEED,
-    } for req in requests]
+    records = [
+        {
+            "record": req,
+            "__record_id": req["input_id"],
+            "random_seed": SEED,
+        }
+        for req in requests
+    ]
 
     # No outer inference_mode: the folding engine's execute() already applies
     # @torch.inference_mode() for the model forward, while the upstream CPU
@@ -236,9 +235,7 @@ def _run_pipeline(model_source: str, requests: list[InputRequest],
     paths: dict[str, Path] = {}
     for sid in SAMPLE_IDS:
         cif_path = output_dir / f"{sid}.cif"
-        assert cif_path.exists(), (
-            f"pipeline did not write expected output {cif_path} "
-            f"(model={model_source})")
+        assert cif_path.exists(), f"pipeline did not write expected output {cif_path} (model={model_source})"
         paths[sid] = cif_path
     return paths
 
@@ -249,11 +246,8 @@ def _run_pipeline(model_source: str, requests: list[InputRequest],
 def _read_ca(cif_path: Path) -> struc.AtomArray:
     """Load the first model from a CIF and keep CA atoms of amino acids."""
     # ModelCIF has no auth_* fields; read label_* directly.
-    structure = pdbx.get_structure(pdbx.CIFFile.read(str(cif_path)),
-                                   model=1,
-                                   use_author_fields=False)
-    return structure[struc.filter_amino_acids(structure)
-                     & (structure.atom_name == "CA")]
+    structure = pdbx.get_structure(pdbx.CIFFile.read(str(cif_path)), model=1, use_author_fields=False)
+    return structure[struc.filter_amino_acids(structure) & (structure.atom_name == "CA")]
 
 
 def _compare_lddt(cif_a: Path, cif_b: Path) -> tuple[float, float]:
@@ -265,8 +259,8 @@ def _compare_lddt(cif_a: Path, cif_b: Path) -> tuple[float, float]:
     ref = _read_ca(cif_a)
     subj = _read_ca(cif_b)
     assert ref.array_length() == subj.array_length(), (
-        f"CA-atom count mismatch a={ref.array_length()} "
-        f"b={subj.array_length()}")
+        f"CA-atom count mismatch a={ref.array_length()} b={subj.array_length()}"
+    )
     lddt = float(struc.lddt(ref, subj, aggregation="all"))
     max_dev = float(np.abs(ref.coord - subj.coord).max())
     return lddt, max_dev
@@ -275,10 +269,8 @@ def _compare_lddt(cif_a: Path, cif_b: Path) -> tuple[float, float]:
 # ===========================================================================
 # Test
 # ===========================================================================
-@pytest.mark.skipif(not torch.cuda.is_available(),
-                    reason="eager determinism test requires CUDA")
-@pytest.mark.skipif(not _SAMPLES_AVAILABLE,
-                    reason=f"sample data not found under {MONOMERS_DIR}")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="eager determinism test requires CUDA")
+@pytest.mark.skipif(not _SAMPLES_AVAILABLE, reason=f"sample data not found under {MONOMERS_DIR}")
 @pytest.mark.parametrize(
     "model_source",
     [
@@ -286,17 +278,17 @@ def _compare_lddt(cif_a: Path, cif_b: Path) -> tuple[float, float]:
             m,
             marks=pytest.mark.skipif(
                 not _model_weights_available(m),
-                reason=f"{m} checkpoint unavailable (set {_CKPT_ENV[m]} or HF "
-                f"auth for {_HF_CKPT[m][0]})"),
-        ) for m in MODEL_SOURCES
+                reason=f"{m} checkpoint unavailable (set {_CKPT_ENV[m]} or HF auth for {_HF_CKPT[m][0]})",
+            ),
+        )
+        for m in MODEL_SOURCES
     ],
 )
 def test_eager_run_to_run_determinism(model_source):
     requests = [_load_request(sid) for sid in SAMPLE_IDS]
     expect_deterministic = EXPECT_DETERMINISTIC[model_source]
 
-    with tempfile.TemporaryDirectory() as dir_a, \
-            tempfile.TemporaryDirectory() as dir_b:
+    with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as dir_b:
         dir_a = Path(dir_a)
         dir_b = Path(dir_b)
 
@@ -306,16 +298,17 @@ def test_eager_run_to_run_determinism(model_source):
             torch.cuda.empty_cache()
             paths_b = _run_pipeline(model_source, requests, dir_b)
         except _AVAILABILITY_EXC as exc:
-            pytest.skip(f"{model_source}: weights/metadata unavailable "
-                        f"({type(exc).__name__}: {exc})")
+            pytest.skip(f"{model_source}: weights/metadata unavailable ({type(exc).__name__}: {exc})")
 
         results = {}
         for sid in SAMPLE_IDS:
             lddt, max_dev = _compare_lddt(paths_a[sid], paths_b[sid])
             results[sid] = (lddt, max_dev)
-            print(f"[determinism] {model_source} {sid}: CA lDDT={lddt:.4f} "
-                  f"max|Δcoord|={max_dev:.4f} Å "
-                  f"(expect {'identical' if expect_deterministic else 'divergent'})")
+            print(
+                f"[determinism] {model_source} {sid}: CA lDDT={lddt:.4f} "
+                f"max|Δcoord|={max_dev:.4f} Å "
+                f"(expect {'identical' if expect_deterministic else 'divergent'})"
+            )
 
         # Bit-identicality (max|Δcoord| == 0) is the reliable per-target
         # determinism discriminator. CA lDDT is a lenient *local* metric: it can
@@ -331,7 +324,8 @@ def test_eager_run_to_run_determinism(model_source):
                     f"{model_source} {sid}: expected bit-identical eager runs "
                     f"(lDDT 1.0, max|Δcoord| 0.0) but got lDDT {lddt:.4f}, "
                     f"max|Δcoord| {max_dev:.4f} Å — the eager forward lost "
-                    "determinism")
+                    "determinism"
+                )
         else:
             # Branch for a model marked non-deterministic in
             # EXPECT_DETERMINISTIC. No model is today, so it is currently
@@ -345,7 +339,8 @@ def test_eager_run_to_run_determinism(model_source):
                     f"{model_source} {sid}: expected non-deterministic eager "
                     f"runs (max|Δcoord| > 0) but the two runs were bit-identical "
                     f"(lDDT {lddt:.4f}, max|Δcoord| 0.0) — the forward became "
-                    "deterministic (path changed?)")
+                    "deterministic (path changed?)"
+                )
             # ...and the divergence must be large enough to change the predicted
             # structure for at least the worst-affected target (CA lDDT < 1.0).
             min_lddt = min(lddt for lddt, _ in results.values())
@@ -353,4 +348,5 @@ def test_eager_run_to_run_determinism(model_source):
                 f"{model_source}: expected the non-determinism to drop CA lDDT "
                 f"below 1.0 for at least one target, but the minimum across "
                 f"{list(SAMPLE_IDS)} was {min_lddt:.4f} — the forward became "
-                "deterministic (path changed?)")
+                "deterministic (path changed?)"
+            )

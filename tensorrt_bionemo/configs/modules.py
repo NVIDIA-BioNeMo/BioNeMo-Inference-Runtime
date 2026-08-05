@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
 
 import torch
 from pydantic import field_serializer, model_validator
@@ -24,7 +23,7 @@ from .base import BaseConfig
 
 
 class PairformerConfig(BaseConfig):
-    token_s: Optional[int] = None
+    token_s: int | None = None
     token_z: int = None
     pairwise_head_width: int = None
     pairwise_num_heads: int = None
@@ -32,12 +31,12 @@ class PairformerConfig(BaseConfig):
     num_heads: int = None
     no_update_s: bool = False
     no_update_z: bool = False
-    s_path_dtype: Optional[Union[str, torch.dtype]] = None
-    post_layer_norm: Optional[bool] = False
+    s_path_dtype: str | torch.dtype | None = None
+    post_layer_norm: bool | None = False
     triangle_attn_cueq_fallback_threshold: int = 0
     trimul_high_precision: bool = False
     trimul_mean_normalization: bool = False
-    attention_initial_norm: Optional[bool] = True
+    attention_initial_norm: bool | None = True
     version: str = "v1"
 
     @field_serializer("s_path_dtype")
@@ -47,7 +46,7 @@ class PairformerConfig(BaseConfig):
             return torch_dtype_to_str(v)
         return v
 
-    def set_dtype(self, value: Union[str, torch.dtype]) -> None:
+    def set_dtype(self, value: str | torch.dtype) -> None:
         super().set_dtype(value)
         if self.s_path_dtype is None:
             self.s_path_dtype = self.torch_dtype
@@ -64,21 +63,17 @@ class DiffusionTransformerConfig(BaseConfig):
     num_heads: int = None
     dim: int = None
     dim_single_cond: int = None
-    dim_pairwise: Optional[int] = None
+    dim_pairwise: int | None = None
     expansion_factor: int = None
-    multiplicity: Optional[int] = 1
-    attention_initial_norm: Optional[bool] = None
-    post_layer_norm: Optional[bool] = None
-    conditioned_transition_using_silu: Optional[bool] = None
-    bias_proj: Optional[bool] = None
+    multiplicity: int | None = 1
+    attention_initial_norm: bool | None = None
+    post_layer_norm: bool | None = None
+    conditioned_transition_using_silu: bool | None = None
+    bias_proj: bool | None = None
     # When True, load_weights expects a single "layer_norm_z" weight entry
     # (matching the reference where one LayerNorm is shared across all blocks)
     # and broadcasts it to every block's proj_z.0.  Other modules that use
     # independent per-block LayerNorms should leave this False (default).
-    shared_pair_norm: bool = False
-    # When True, load_weights expects a single "layer_norm_z" entry and
-    # broadcasts it to every block's proj_z.0, matching the reference
-    # architecture where one LayerNorm is shared across all blocks.
     shared_pair_norm: bool = False
     attn_output_gate: bool = True
     attn_gate_bias: bool = False

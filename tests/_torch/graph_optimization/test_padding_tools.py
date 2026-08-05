@@ -31,21 +31,23 @@ tied to one named padded dimension. ``a`` and ``s`` are passed positionally and
 the ``arg{i}`` and keyword walk paths. These are pure shape ops, so the test
 needs no CUDA and does not instantiate the module.
 """
+
 import pytest
 import torch
 
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, InputKeyMethod)
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
-    CUDAGraphOptimizationTracker)
-from tensorrt_bionemo._torch.graph_optimization.config import (
-    InputRoutingConfigFactory, NamedDimTies)
+    CUDAGraphOptimizationConfig,
+    InputKeyMethod,
+    InputRoutingConfigFactory,
+    NamedDimTies,
+)
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 # Small stand-in feature dims for OpenFold3DiffusionTransformer inputs.
 BS = 1
-DIM = 8               # a: [BS, n_tokens, DIM]
-DIM_SINGLE_COND = 6   # s: [BS, n_tokens, DIM_SINGLE_COND]
-DIM_PAIRWISE = 4      # z: [BS, n_tokens, n_tokens, DIM_PAIRWISE]
+DIM = 8  # a: [BS, n_tokens, DIM]
+DIM_SINGLE_COND = 6  # s: [BS, n_tokens, DIM_SINGLE_COND]
+DIM_PAIRWISE = 4  # z: [BS, n_tokens, n_tokens, DIM_PAIRWISE]
 
 # Bucket boundary lengths configured by _make_bucketer's padded dim.
 _BUCKET_LENGTHS = (4, 7, 10, 13, 16)
@@ -70,19 +72,18 @@ def _make_bucketer() -> InputRoutingConfigFactory:
     bucketer = InputRoutingConfigFactory()
     # a/s passed positionally (arg0/arg1), z/mask by keyword; z carries the token
     # dim on axes 1 and 2; output 0 (updated a) on axis 1.
-    bucketer.set_named_dim_ties([
-        NamedDimTies(
-            name="n_tokens",
-            input_dims=(("arg0", (1,)), ("arg1", (1,)), ("z", (1, 2)),
-                        ("mask", (1,))),
-            output_dims=((0, (1,)),),
-        ),
-    ])
+    bucketer.set_named_dim_ties(
+        [
+            NamedDimTies(
+                name="n_tokens",
+                input_dims=(("arg0", (1,)), ("arg1", (1,)), ("z", (1, 2)), ("mask", (1,))),
+                output_dims=((0, (1,)),),
+            ),
+        ]
+    )
     # multiple_of=1 disables the default 128-alignment snap so the small bucket
     # lengths (4, 7, 10, 13, 16) this round-trip test relies on are preserved.
-    bucketer.set_padded_dim(
-        "n_tokens", dim_len_min=4, dim_len_max=16, num_intervals=4,
-        multiple_of=1)
+    bucketer.set_padded_dim("n_tokens", dim_len_min=4, dim_len_max=16, num_intervals=4, multiple_of=1)
     return bucketer
 
 
@@ -119,13 +120,12 @@ def _diffusion_transformer_output(n_tokens: int):
 
 def _assert_container_identical(actual, expected, path="") -> None:
     """Recursively assert two containers are structurally and value-identical."""
-    assert type(actual) is type(expected), (
-        f"type mismatch at {path!r}: {type(actual)} != {type(expected)}")
+    assert type(actual) is type(expected), f"type mismatch at {path!r}: {type(actual)} != {type(expected)}"
     if isinstance(expected, torch.Tensor):
         assert actual.shape == expected.shape, (
-            f"shape mismatch at {path!r}: {tuple(actual.shape)} != "
-            f"{tuple(expected.shape)}")
-        
+            f"shape mismatch at {path!r}: {tuple(actual.shape)} != {tuple(expected.shape)}"
+        )
+
         # assert bit-level equality
         assert torch.equal(actual, expected), f"value mismatch at {path!r}"
     elif isinstance(expected, dict):
@@ -149,12 +149,11 @@ def test_pad_input_pads_flagged_token_axis():
     args, kwargs = _diffusion_transformer_inputs(n_tokens=5)
     shapes = tracker._extract_tensor_container_shapes(args, kwargs)
 
-    padded_args, padded_kwargs = tracker.pad_input(
-        args, kwargs, input_tensor_shapes=shapes)
+    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes)
 
     # The token axis of every flagged tensor is padded 5 -> 7; feature dims and
     # the batch dim are untouched.
-    assert padded_args[0].shape == (BS, 7, DIM)              # a
+    assert padded_args[0].shape == (BS, 7, DIM)  # a
     assert padded_args[1].shape == (BS, 7, DIM_SINGLE_COND)  # s
     assert padded_kwargs["z"].shape == (BS, 7, 7, DIM_PAIRWISE)
     assert padded_kwargs["mask"].shape == (BS, 7)
@@ -175,16 +174,14 @@ def test_pad_input_across_live_token_counts(n_tokens):
     shapes = tracker._extract_tensor_container_shapes(args, kwargs)
     bucket = _bucket_len(n_tokens)
 
-    padded_args, padded_kwargs = tracker.pad_input(
-        args, kwargs, input_tensor_shapes=shapes)
+    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes)
 
     assert padded_args[0].shape == (BS, bucket, DIM)
     assert padded_args[1].shape == (BS, bucket, DIM_SINGLE_COND)
     assert padded_kwargs["z"].shape == (BS, bucket, bucket, DIM_PAIRWISE)
     assert padded_kwargs["mask"].shape == (BS, bucket)
     assert torch.equal(padded_args[0][:, :n_tokens, :], args[0])
-    assert torch.equal(
-        padded_kwargs["z"][:, :n_tokens, :n_tokens, :], kwargs["z"])
+    assert torch.equal(padded_kwargs["z"][:, :n_tokens, :n_tokens, :], kwargs["z"])
 
 
 def test_pad_input_without_bucket_config_is_noop():
@@ -193,8 +190,7 @@ def test_pad_input_without_bucket_config_is_noop():
     args, kwargs = _diffusion_transformer_inputs(n_tokens=5)
     shapes = tracker._extract_tensor_container_shapes(args, kwargs)
 
-    padded_args, padded_kwargs = tracker.pad_input(
-        args, kwargs, input_tensor_shapes=shapes)
+    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes)
 
     _assert_container_identical(padded_args, args, "padded_args")
     _assert_container_identical(padded_kwargs, kwargs, "padded_kwargs")
@@ -226,9 +222,7 @@ def test_unpad_output_truncates_to_live_length(n_tokens):
     input_tensor_shapes = tracker._extract_tensor_container_shapes(args, kwargs)
     output = _diffusion_transformer_output(n_tokens)  # [BS, n_tokens, DIM]
 
-    restored = tracker.unpad_output(
-        (_pad_token_axis_to_bucket(output),),
-        input_tensor_shapes=input_tensor_shapes)
+    restored = tracker.unpad_output((_pad_token_axis_to_bucket(output),), input_tensor_shapes=input_tensor_shapes)
 
     assert restored.shape == (BS, n_tokens, DIM)
     _assert_container_identical(restored, output, "output")
@@ -241,7 +235,6 @@ def test_unpad_output_without_bucket_config_is_noop():
     input_tensor_shapes = tracker._extract_tensor_container_shapes(args, kwargs)
     output = _diffusion_transformer_output(n_tokens=5)
 
-    restored = tracker.unpad_output(
-        (output,), input_tensor_shapes=input_tensor_shapes)
+    restored = tracker.unpad_output((output,), input_tensor_shapes=input_tensor_shapes)
 
     _assert_container_identical(restored, output, "output")

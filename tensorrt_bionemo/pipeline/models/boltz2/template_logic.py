@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Boltz-2 structural template logic — parse, chain selection, residue alignment.
 
 Fresh TRT-BNM reimplementation of the OSS ``boltz`` v2.2.1 template pipeline
@@ -13,18 +26,15 @@ or explicit 1:1 zip); the offsets it returns feed the token-index mapping
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 from Bio import Align
 from scipy.optimize import linear_sum_assignment
 
-from tensorrt_bionemo.data.utils import (normalize_gemmi_structure,
-                                         read_gemmi_structure)
+from tensorrt_bionemo.data.utils import normalize_gemmi_structure, read_gemmi_structure
 
 from . import const
-from .const import (Atom, Chain, EnsembleDtype, Residue, Structure, Token,
-                    chain_type_ids)
+from .const import Atom, Chain, EnsembleDtype, Residue, Structure, Token, chain_type_ids
 from .structure import _parse_modified_residue
 from .tokenizer_logic import _IDENTITY_ROT, _ZERO_T, compute_frame
 
@@ -101,7 +111,8 @@ def local_alignments(query: str, template: str) -> list[Alignment]:
                 query_en=int(coords[0][1]),
                 template_st=int(coords[1][0]),
                 template_en=int(coords[1][1]),
-            ))
+            )
+        )
     return out
 
 
@@ -112,7 +123,7 @@ def template_records_from_search(
     template_chain_ids: list[str],
     template_sequences: dict[str, str],
     force: bool = False,
-    threshold: Optional[float] = None,
+    threshold: float | None = None,
 ) -> list[TemplateMatch]:
     """Auto-assign query chains to template chains, then align each pair.
 
@@ -122,10 +133,10 @@ def template_records_from_search(
     the optimal assignment with ``linear_sum_assignment(..., maximize=True)``, then
     emit a :class:`TemplateMatch` per local-alignment block of each assigned pair.
     """
-    score_matrix = [[
-        global_alignment_score(sequences[cid], template_sequences[tcid])
-        for tcid in template_chain_ids
-    ] for cid in chain_ids]
+    score_matrix = [
+        [global_alignment_score(sequences[cid], template_sequences[tcid]) for tcid in template_chain_ids]
+        for cid in chain_ids
+    ]
 
     row_ind, col_ind = linear_sum_assignment(score_matrix, maximize=True)
 
@@ -146,7 +157,8 @@ def template_records_from_search(
                     template_en=aln.template_en,
                     force=force,
                     threshold=thr,
-                ))
+                )
+            )
     return records
 
 
@@ -157,7 +169,7 @@ def template_records_from_matching(
     template_chain_ids: list[str],
     template_sequences: dict[str, str],
     force: bool = False,
-    threshold: Optional[float] = None,
+    threshold: float | None = None,
 ) -> list[TemplateMatch]:
     """Align an explicit 1:1 query-chain ↔ template-chain mapping.
 
@@ -181,7 +193,8 @@ def template_records_from_matching(
                     template_en=aln.template_en,
                     force=force,
                     threshold=thr,
-                ))
+                )
+            )
     return records
 
 
@@ -216,13 +229,13 @@ def _load_modified_mol(name: str, mol_dir):
     if key in _MODIFIED_MOL_CACHE:
         return _MODIFIED_MOL_CACHE[key]
     from tensorrt_bionemo.data.utils import load_component_mol
+
     mol = load_component_mol(mol_dir, name)
     _MODIFIED_MOL_CACHE[key] = mol
     return mol
 
 
-def _parse_template_polymer(polymer, polymer_type, sequence: list, chain_id: str,
-                            mol_dir=None) -> dict:
+def _parse_template_polymer(polymer, polymer_type, sequence: list, chain_id: str, mol_dir=None) -> dict:
     """Parse one gemmi polymer into a residue list with real coords overlaid.
 
     Mirrors OSS ``parse_polymer``: align the full sequence to the polymer
@@ -233,9 +246,7 @@ def _parse_template_polymer(polymer, polymer_type, sequence: list, chain_id: str
     import gemmi
 
     sequence = [gemmi.Entity.first_mon(item) for item in sequence]
-    result = gemmi.align_sequence_to_polymer(
-        sequence, polymer, polymer_type, gemmi.AlignmentScoring()
-    )
+    result = gemmi.align_sequence_to_polymer(sequence, polymer, polymer_type, gemmi.AlignmentScoring())
 
     ref_res = set(const.tokens)
     i = 0
@@ -260,8 +271,7 @@ def _parse_template_polymer(polymer, polymer_type, sequence: list, chain_id: str
             # Fall back to a plain UNK atom set when no CCD mol is available.
             ref_mol = _load_modified_mol(res_name, mol_dir)
             if ref_mol is not None:
-                residues.append(
-                    _parse_modified_residue(res_name, ref_mol, res, j))
+                residues.append(_parse_modified_residue(res_name, ref_mol, res, j))
                 continue
             res_name = "UNK"
 
@@ -350,8 +360,7 @@ def parse_template_structure(
             continue
         parsed_chains.append(
             _parse_template_polymer(
-                raw_chain, entity.polymer_type, list(entity.full_sequence),
-                subchain_id, mol_dir=mol_dir
+                raw_chain, entity.polymer_type, list(entity.full_sequence), subchain_id, mol_dir=mol_dir
             )
         )
 
@@ -637,7 +646,7 @@ def process_template_features(
         tmpl_tokens = template_tokens[name]
         tmpl_chain_name_to_asym = {c.name: c.asym_id for c in tmpl_struct.chains}
 
-        m: Optional[TemplateMatch] = None
+        m: TemplateMatch | None = None
         for m in matches:
             offset = m.template_st - m.query_st
 
@@ -652,9 +661,7 @@ def process_template_features(
                 q_idx = q_indices[t.res_idx - offset]
                 row_tokens.append({"token": t, "pdb_id": template_id, "q_idx": q_idx})
 
-        row_features = compute_template_features(
-            query_tokens, query_chain_asym_ids, row_tokens, max_tokens
-        )
+        row_features = compute_template_features(query_tokens, query_chain_asym_ids, row_tokens, max_tokens)
         row_features["template_force"] = torch.tensor(m.force)
         row_features["template_force_threshold"] = torch.tensor(
             m.threshold if m.threshold is not None else float("inf"),
@@ -675,8 +682,8 @@ def build_template_features_from_row(
     templates_row: list[dict],
     num_tokens: int,
     mol_dir=None,
-    max_templates: Optional[int] = None,
-) -> Optional[dict]:
+    max_templates: int | None = None,
+) -> dict | None:
     """Build the stacked template features from a threaded ``row["templates"]``.
 
     ``templates_row`` (built by ``Boltz2ContextGenerator``) is a list, one entry
@@ -706,9 +713,7 @@ def build_template_features_from_row(
             fmt = tmpl.get("format") or "cif"
             name = hashlib.sha1(content.encode("utf-8")).hexdigest()[:12]
             if name not in parsed_cache:
-                tmpl_struct, tmpl_seqs = parse_template_structure(
-                    content, fmt=fmt, from_content=True, mol_dir=mol_dir
-                )
+                tmpl_struct, tmpl_seqs = parse_template_structure(content, fmt=fmt, from_content=True, mol_dir=mol_dir)
                 parsed_cache[name] = (
                     tmpl_struct,
                     tmpl_seqs,
@@ -740,7 +745,7 @@ def build_template_features_from_row(
                     template_records_from_search(
                         template_id=name,
                         chain_ids=list(chain_ids),
-                        sequences={cid: query_seq for cid in chain_ids},
+                        sequences=dict.fromkeys(chain_ids, query_seq),
                         template_chain_ids=list(tmpl_seqs.keys()),
                         template_sequences=tmpl_seqs,
                     )

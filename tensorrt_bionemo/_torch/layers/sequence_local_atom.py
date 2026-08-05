@@ -16,9 +16,7 @@ import torch
 import torch.nn.functional as F
 
 
-def pad_to_multiple_and_divide(tensor: torch.Tensor,
-                               multiple: int,
-                               dim: int = 1):
+def pad_to_multiple_and_divide(tensor: torch.Tensor, multiple: int, dim: int = 1):
     """
     Pad a tensor to a multiple of a given value along a given dimension.
     Args:
@@ -29,7 +27,7 @@ def pad_to_multiple_and_divide(tensor: torch.Tensor,
         The padded and divided tensor.
     """
     current_size = tensor.shape[dim]
-    pad_size = (multiple - (tensor.shape[dim] % multiple))
+    pad_size = multiple - (tensor.shape[dim] % multiple)
     extend_size = tensor.shape[dim] + pad_size
     pad = [0, 0] * (tensor.dim() - dim - 1) + [0, pad_size]
     tensor = torch.nn.functional.pad(tensor, pad, mode="constant", value=0.0)
@@ -49,15 +47,13 @@ def to_blocks(x: torch.Tensor, num_blocks: int, window: int) -> torch.Tensor:
     B, N, D = x.shape
     pad = num_blocks * window - N
     if pad < 0:
-        raise ValueError(
-            f"num_blocks*window ({num_blocks * window}) < N ({N})")
+        raise ValueError(f"num_blocks*window ({num_blocks * window}) < N ({N})")
     if pad > 0:
         x = F.pad(x, (0, 0, 0, pad))
     return x.reshape(B, num_blocks, window, D)
 
 
-def create_indexing_matrix(K: int, W: int, H: int,
-                           device: torch.device) -> torch.Tensor:
+def create_indexing_matrix(K: int, W: int, H: int, device: torch.device) -> torch.Tensor:
     """
     Create the indexing matrix for the sequence local atom attention.
     Args:
@@ -79,16 +75,13 @@ def create_indexing_matrix(K: int, W: int, H: int,
     assert h % 2 == 0
 
     arange = torch.arange(2 * K, device=device)
-    index = ((arange.unsqueeze(0) - arange.unsqueeze(1)) + h // 2).clamp(
-        min=0, max=h + 1)
+    index = ((arange.unsqueeze(0) - arange.unsqueeze(1)) + h // 2).clamp(min=0, max=h + 1)
     index = index.view(K, 2, 2 * K)[:, 0, :]
     onehot = F.one_hot(index, num_classes=h + 2)[..., 1:-1].transpose(1, 0)
     return onehot.reshape(2 * K, h * K).float()
 
 
-def create_gather_indices(
-        K: int, W: int, H: int,
-        device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def create_gather_indices(K: int, W: int, H: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
     """Precompute gather indices + validity mask from the indexing matrix.
 
     Returns:
@@ -99,16 +92,13 @@ def create_gather_indices(
     col_has_nonzero = mat.sum(dim=0) > 0  # [h*K]
     indices = mat.argmax(dim=0)  # [h*K]
     # Zero-columns: point to a sentinel row (2*K) that will be zero-padded
-    indices = torch.where(col_has_nonzero, indices,
-                          torch.tensor(2 * K, device=device))
+    indices = torch.where(col_has_nonzero, indices, torch.tensor(2 * K, device=device))
     return indices.long(), col_has_nonzero
 
 
 def query_to_keys_optimized(
-        query: torch.Tensor,
-        gather_indices: torch.Tensor,
-        W: int = None,
-        H: int = None) -> torch.Tensor:
+    query: torch.Tensor, gather_indices: torch.Tensor, W: int = None, H: int = None
+) -> torch.Tensor:
     """Gather-based query→keys for sequence-local atom attention.
 
     Bit-exact to the einsum formulation but avoids TF32 precision loss on
@@ -159,10 +149,9 @@ def query_to_keys_optimized(
     return result
 
 
-def query_to_keys(query: torch.Tensor,
-                  keys_indexing_matrix: torch.Tensor,
-                  W: int = None,
-                  H: int = None) -> torch.Tensor:
+def query_to_keys(
+    query: torch.Tensor, keys_indexing_matrix: torch.Tensor, W: int = None, H: int = None
+) -> torch.Tensor:
     """
     Convert the query to keys for the sequence local atom attention.
     Args:
@@ -195,6 +184,6 @@ def query_to_keys(query: torch.Tensor,
         raise ValueError("Query tensor must be 3, 4, or 5 dimensions")
     # 2*K: number of areas, W//2: area size
     query = query.view(B, multiplicity, 2 * K, W // 2, D)
-    return torch.einsum("b m j i d, j k -> b m k i d", query,
-                        keys_indexing_matrix.to(query.dtype)).reshape(
-                            B, multiplicity, K, H, D)
+    return torch.einsum("b m j i d, j k -> b m k i d", query, keys_indexing_matrix.to(query.dtype)).reshape(
+        B, multiplicity, K, H, D
+    )

@@ -13,15 +13,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import tensorrt_bionemo.pipeline.models.openfold2.const as rc
-from tensorrt_bionemo._torch.modules.openfold2.utils.geometry import \
-    rigid_matrix_vector
+from tensorrt_bionemo._torch.modules.openfold2.utils.geometry import rigid_matrix_vector
 from tensorrt_bionemo._torch.tensor_utils import batched_gather
 
 from .rigid_utils import Rigid
@@ -41,10 +39,8 @@ def atom14_to_atom37(atom14, batch):
 
 
 def pseudo_beta_fn(
-    aatype: torch.Tensor,
-    all_atom_positions: torch.Tensor,
-    all_atom_mask: Optional[torch.Tensor] = None
-) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    aatype: torch.Tensor, all_atom_positions: torch.Tensor, all_atom_mask: torch.Tensor | None = None
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Create pseudo beta features."""
     is_gly = torch.eq(aatype, rc.restype_order["G"])
     ca_idx = rc.atom_order["CA"]
@@ -56,16 +52,15 @@ def pseudo_beta_fn(
     )
 
     if all_atom_mask is not None:
-        pseudo_beta_mask = torch.where(is_gly, all_atom_mask[..., ca_idx],
-                                       all_atom_mask[..., cb_idx])
+        pseudo_beta_mask = torch.where(is_gly, all_atom_mask[..., ca_idx], all_atom_mask[..., cb_idx])
         return pseudo_beta, pseudo_beta_mask
     else:
         return pseudo_beta
 
 
-def build_extra_msa_feat(extra_msa: torch.Tensor,
-                         extra_has_deletion: torch.Tensor,
-                         extra_deletion_value: torch.Tensor) -> torch.Tensor:
+def build_extra_msa_feat(
+    extra_msa: torch.Tensor, extra_has_deletion: torch.Tensor, extra_deletion_value: torch.Tensor
+) -> torch.Tensor:
     msa_1hot = torch.nn.functional.one_hot(extra_msa, 23)
     msa_feat = [
         msa_1hot,
@@ -75,9 +70,7 @@ def build_extra_msa_feat(extra_msa: torch.Tensor,
     return torch.cat(msa_feat, dim=-1)
 
 
-def build_extra_msa_feat_multimer(
-        extra_msa: torch.Tensor,
-        extra_deletion_matrix: torch.Tensor) -> torch.Tensor:
+def build_extra_msa_feat_multimer(extra_msa: torch.Tensor, extra_deletion_matrix: torch.Tensor) -> torch.Tensor:
     """Expand extra_msa into 1hot and concat with other extra msa features.
 
     We do this as late as possible as the one_hot extra msa can be very large.
@@ -93,11 +86,9 @@ def build_extra_msa_feat_multimer(
     """
     # 23 = 20 amino acids + 'X' for unknown + gap + bert mask
     msa_1hot = torch.nn.functional.one_hot(extra_msa, 23)
-    has_deletion = torch.clamp(extra_deletion_matrix, min=0., max=1.)[...,
-                                                                      None]
+    has_deletion = torch.clamp(extra_deletion_matrix, min=0.0, max=1.0)[..., None]
     pi = torch.acos(torch.zeros(1, device=extra_deletion_matrix.device)) * 2
-    deletion_value = ((torch.atan(extra_deletion_matrix / 3.) *
-                       (2. / pi))[..., None])
+    deletion_value = (torch.atan(extra_deletion_matrix / 3.0) * (2.0 / pi))[..., None]
     catted = torch.cat([msa_1hot, has_deletion, deletion_value], dim=-1)
 
     return catted
@@ -110,23 +101,23 @@ def dgram_from_positions(
     no_bins: float = 39,
     inf: float = 1e8,
 ):
-    dgram = torch.sum((pos[..., None, :] - pos[..., None, :, :])**2,
-                      dim=-1,
-                      keepdim=True)
-    lower = torch.linspace(min_bin, max_bin, no_bins, device=pos.device)**2
+    dgram = torch.sum((pos[..., None, :] - pos[..., None, :, :]) ** 2, dim=-1, keepdim=True)
+    lower = torch.linspace(min_bin, max_bin, no_bins, device=pos.device) ** 2
     upper = torch.cat([lower[1:], lower.new_tensor([inf])], dim=-1)
     dgram = ((dgram > lower) * (dgram < upper)).type(dgram.dtype)
 
     return dgram
 
 
-def build_template_pair_feat(batch: dict[str, torch.Tensor],
-                             min_bin: float,
-                             max_bin: float,
-                             no_bins: int,
-                             use_unit_vector: bool = False,
-                             eps: float = 1e-20,
-                             inf: float = 1e8) -> torch.Tensor:
+def build_template_pair_feat(
+    batch: dict[str, torch.Tensor],
+    min_bin: float,
+    max_bin: float,
+    no_bins: int,
+    use_unit_vector: bool = False,
+    eps: float = 1e-20,
+    inf: float = 1e8,
+) -> torch.Tensor:
     template_mask = batch["template_pseudo_beta_mask"]
     template_mask_2d = template_mask[..., None] * template_mask[..., None, :]
 
@@ -142,11 +133,8 @@ def build_template_pair_feat(batch: dict[str, torch.Tensor],
     )
 
     n_res = batch["template_aatype"].shape[-1]
-    to_concat.append(aatype_one_hot[..., None, :, :].expand(
-        *aatype_one_hot.shape[:-2], n_res, -1, -1))
-    to_concat.append(aatype_one_hot[...,
-                                    None, :].expand(*aatype_one_hot.shape[:-2],
-                                                    -1, n_res, -1))
+    to_concat.append(aatype_one_hot[..., None, :, :].expand(*aatype_one_hot.shape[:-2], n_res, -1, -1))
+    to_concat.append(aatype_one_hot[..., None, :].expand(*aatype_one_hot.shape[:-2], -1, n_res, -1))
 
     n, ca, c = [rc.atom_order[a] for a in ["N", "CA", "C"]]
     rigids = Rigid.make_transform_from_reference(
@@ -161,15 +149,14 @@ def build_template_pair_feat(batch: dict[str, torch.Tensor],
     inv_distance_scalar = torch.rsqrt(eps + torch.sum(rigid_vec**2, dim=-1))
 
     t_aa_masks = batch["template_all_atom_mask"]
-    template_mask = (t_aa_masks[..., n] * t_aa_masks[..., ca] *
-                     t_aa_masks[..., c])
+    template_mask = t_aa_masks[..., n] * t_aa_masks[..., ca] * t_aa_masks[..., c]
     template_mask_2d = template_mask[..., None] * template_mask[..., None, :]
 
     inv_distance_scalar = inv_distance_scalar * template_mask_2d
     unit_vector = rigid_vec * inv_distance_scalar[..., None]
 
-    if (not use_unit_vector):
-        unit_vector = unit_vector * 0.
+    if not use_unit_vector:
+        unit_vector = unit_vector * 0.0
 
     to_concat.extend(torch.unbind(unit_vector[..., None, :], dim=-1))
     to_concat.append(template_mask_2d[..., None])
@@ -180,20 +167,16 @@ def build_template_pair_feat(batch: dict[str, torch.Tensor],
     return act
 
 
-def build_template_angle_feat(
-        template_feats: dict[str, torch.Tensor]) -> torch.Tensor:
+def build_template_angle_feat(template_feats: dict[str, torch.Tensor]) -> torch.Tensor:
     template_aatype = template_feats["template_aatype"]
     torsion_angles_sin_cos = template_feats["template_torsion_angles_sin_cos"]
-    alt_torsion_angles_sin_cos = template_feats[
-        "template_alt_torsion_angles_sin_cos"]
+    alt_torsion_angles_sin_cos = template_feats["template_alt_torsion_angles_sin_cos"]
     torsion_angles_mask = template_feats["template_torsion_angles_mask"]
     template_angle_feat = torch.cat(
         [
             nn.functional.one_hot(template_aatype, 22),
-            torsion_angles_sin_cos.reshape(*torsion_angles_sin_cos.shape[:-2],
-                                           14),
-            alt_torsion_angles_sin_cos.reshape(
-                *alt_torsion_angles_sin_cos.shape[:-2], 14),
+            torsion_angles_sin_cos.reshape(*torsion_angles_sin_cos.shape[:-2], 14),
+            alt_torsion_angles_sin_cos.reshape(*alt_torsion_angles_sin_cos.shape[:-2], 14),
             torsion_angles_mask,
         ],
         dim=-1,
@@ -203,7 +186,7 @@ def build_template_angle_feat(
 
 
 def torsion_angles_to_frames(
-    r: Union[Rigid, rigid_matrix_vector.Rigid3Array],
+    r: Rigid | rigid_matrix_vector.Rigid3Array,
     alpha: torch.Tensor,
     aatype: torch.Tensor,
     rrgdf: torch.Tensor,
@@ -219,12 +202,11 @@ def torsion_angles_to_frames(
     #   One [*, N, 8, 3]    translation matrix
     default_r = rigid_type.from_tensor_4x4(default_4x4)
 
-    bb_rot = alpha.new_zeros((*((1, ) * len(alpha.shape[:-1])), 2))
+    bb_rot = alpha.new_zeros((*((1,) * len(alpha.shape[:-1])), 2))
     bb_rot[..., 1] = 1
 
     # [*, N, 8, 2]
-    alpha = torch.cat([bb_rot.expand(*alpha.shape[:-2], -1, -1), alpha],
-                      dim=-2)
+    alpha = torch.cat([bb_rot.expand(*alpha.shape[:-2], -1, -1), alpha], dim=-2)
 
     # [*, N, 8, 3, 3]
     # Produces rotation matrices of the form:
@@ -270,7 +252,7 @@ def torsion_angles_to_frames(
 
 
 def frames_and_literature_positions_to_atom14_pos(
-    r: Union[Rigid, rigid_matrix_vector.Rigid3Array],
+    r: Rigid | rigid_matrix_vector.Rigid3Array,
     aatype: torch.Tensor,
     default_frames,
     group_idx,
@@ -293,8 +275,7 @@ def frames_and_literature_positions_to_atom14_pos(
     t_atoms_to_global = r[..., None, :] * group_mask
 
     # [*, N, 14]
-    t_atoms_to_global = t_atoms_to_global.map_tensor_fn(
-        lambda x: torch.sum(x, dim=-1))
+    t_atoms_to_global = t_atoms_to_global.map_tensor_fn(lambda x: torch.sum(x, dim=-1))
 
     # [*, N, 14]
     atom_mask = atom_mask[aatype, ...].unsqueeze(-1)

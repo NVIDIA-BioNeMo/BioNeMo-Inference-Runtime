@@ -24,24 +24,31 @@ import logging
 from typing import Any
 
 import numpy as np
-
-logger = logging.getLogger(__name__)
 import torch
 import torch.nn.functional as F
 
 from tensorrt_bionemo.pipeline.base import FeatureGeneratorBase
 
-from .common import (centre_random_augmentation, compute_deletion_value,
-                     encode_atom_name_chars_one_hot, encode_one_hot)
-from .const import (DEFAULT_N_TEMPLATES, ELEMENT_ATOMIC_NUMBER, GAP_IDX,
-                    MAX_MSA_ROWS, MOL_TYPE_LIGAND, MSA_CHAR_TO_IDX,
-                    NUM_ELEMENT_CLASSES, NUM_MSA_CLASSES, NUM_RESTYPE_CLASSES,
-                    RESNAME_TO_IDX, TEMPLATE_DISTOGRAM_N_BINS, UNK_IDX)
+from .common import centre_random_augmentation, compute_deletion_value, encode_atom_name_chars_one_hot, encode_one_hot
+from .const import (
+    DEFAULT_N_TEMPLATES,
+    GAP_IDX,
+    MAX_MSA_ROWS,
+    MOL_TYPE_LIGAND,
+    NUM_ELEMENT_CLASSES,
+    NUM_MSA_CLASSES,
+    NUM_RESTYPE_CLASSES,
+    RESNAME_TO_IDX,
+    TEMPLATE_DISTOGRAM_N_BINS,
+    UNK_IDX,
+)
 from .feature_context import (
     _compute_sym_ids,
     _renumber_chain_ids,
     _resolve_msa_char,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _get_row(context: dict[str, Any]) -> dict[str, Any]:
@@ -86,8 +93,7 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
         feats["residue_index"] = torch.tensor(res_ids, dtype=torch.int32)
 
         # asym_id: renumbered chain IDs (1-based)
-        feats["asym_id"] = torch.tensor(_renumber_chain_ids(chain_ids),
-                                        dtype=torch.int32)
+        feats["asym_id"] = torch.tensor(_renumber_chain_ids(chain_ids), dtype=torch.int32)
 
         # entity_id
         feats["entity_id"] = torch.tensor(entity_ids, dtype=torch.int32)
@@ -112,8 +118,7 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
 
         # Ligand tokens must set is_atomized=1.
         if len(mol_types) != n_tokens:
-            raise ValueError(
-                f"token_mol_types length {len(mol_types)} != n_tokens {n_tokens}")
+            raise ValueError(f"token_mol_types length {len(mol_types)} != n_tokens {n_tokens}")
         mol_types_t = torch.tensor(mol_types, dtype=torch.int32)
         feats["is_atomized"] = (mol_types_t == MOL_TYPE_LIGAND).to(torch.int32)
 
@@ -121,19 +126,16 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
         feats["token_mask"] = torch.ones(n_tokens, dtype=torch.float32)
 
         # num_atoms_per_token
-        feats["num_atoms_per_token"] = torch.tensor(atoms_per_tok,
-                                                    dtype=torch.int32)
+        feats["num_atoms_per_token"] = torch.tensor(atoms_per_tok, dtype=torch.int32)
 
         # start_atom_index
-        feats["start_atom_index"] = torch.tensor(start_atoms,
-                                                 dtype=torch.int32)
+        feats["start_atom_index"] = torch.tensor(start_atoms, dtype=torch.int32)
 
         # atom_mask
         feats["atom_mask"] = torch.ones(n_atoms, dtype=torch.float32)
 
         # atom_to_token_index
-        feats["atom_to_token_index"] = torch.tensor(atom_tok_idx,
-                                                    dtype=torch.int32)
+        feats["atom_to_token_index"] = torch.tensor(atom_tok_idx, dtype=torch.int32)
 
         # token_bonds: between atomized-only tokens (OSS
         # filter_fully_atomized_bonds in cleanup.py). For standard protein
@@ -150,6 +152,7 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
             # per group). For each group, read RDKit bonds and convert
             # (atom-local-index pairs) -> (token-index pairs).
             from collections import defaultdict
+
             mol_idx_to_tokens: dict[int, list[int]] = defaultdict(list)
             for ti, mi in enumerate(token_mol_idx_ctx):
                 # Only include atomized tokens (ligands)
@@ -170,9 +173,7 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
                 # in the mol each token represents.
                 # Build a map atom_in_mol_idx -> token_idx
                 atom_in_mol_to_token: dict[int, int] = {}
-                crop_masks_ctx = row["structure"].get(
-                    "residue_crop_masks", []
-                )
+                crop_masks_ctx = row["structure"].get("residue_crop_masks", [])
                 for ti in ti_list:
                     if ti >= len(crop_masks_ctx):
                         continue
@@ -192,9 +193,7 @@ class StructureFeatureGenerator(FeatureGeneratorBase):
                             token_bonds[t1, t2] = 1
                             token_bonds[t2, t1] = 1
                 except Exception as e:
-                    logger.warning(
-                        "token_bonds extraction failed for ligand mol_idx=%s: %s",
-                        mi, e, exc_info=True)
+                    logger.warning("token_bonds extraction failed for ligand mol_idx=%s: %s", mi, e, exc_info=True)
                     # Defensive — log but don't crash. The feature is set
                     # to zeros for this chain.
         feats["token_bonds"] = token_bonds
@@ -232,8 +231,7 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         atoms_per_token = struct["atoms_per_token"]
         residue_mols = struct.get("residue_mols", [None] * n_tokens)
         residue_crop_masks = struct.get("residue_crop_masks", [])
-        residue_atom_charges = struct.get("residue_atom_charges",
-                                          [[0]] * n_tokens)
+        residue_atom_charges = struct.get("residue_atom_charges", [[0]] * n_tokens)
 
         feats: dict[str, torch.Tensor] = {}
 
@@ -245,6 +243,7 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         # short hardcoded element table silently encodes metals (MG, NI, ZN,
         # FE, ...) as carbon (index 5).
         from rdkit.Chem import GetPeriodicTable
+
         _pt = GetPeriodicTable()
         element_indices = []
         for elem in atom_elements:
@@ -273,8 +272,7 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         feats["ref_charge"] = torch.tensor(all_charges, dtype=torch.float32)
 
         # ref_atom_name_chars: [N_atoms, 4, 64]
-        feats["ref_atom_name_chars"] = encode_atom_name_chars_one_hot(
-            atom_names)
+        feats["ref_atom_name_chars"] = encode_atom_name_chars_one_hot(atom_names)
 
         # ref_space_uid: per-atom unique conformer instance ID. OSS sets
         # ref_space_uid = mol_idx (the index into processed_ref_mol_list).
@@ -287,15 +285,13 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         token_mol_idx = struct.get("token_mol_idx")
         if token_mol_idx is not None:
             atom_mol_idx = [int(token_mol_idx[t]) for t in atom_token_idx]
-            feats["ref_space_uid"] = torch.tensor(atom_mol_idx,
-                                                  dtype=torch.int32)
+            feats["ref_space_uid"] = torch.tensor(atom_mol_idx, dtype=torch.int32)
         else:
             # Backward compat for callers that don't supply token_mol_idx:
             # fall back to a per-token uid. This is exact for structures
             # with no atomized (ligand) chains, where mol_idx and token_idx
             # coincide.
-            feats["ref_space_uid"] = torch.tensor(atom_token_idx,
-                                                  dtype=torch.int32)
+            feats["ref_space_uid"] = torch.tensor(atom_token_idx, dtype=torch.int32)
 
         # ref_pos: from RDKit conformer coordinates, centred per residue
         ref_pos = torch.zeros(n_atoms, 3, dtype=torch.float32)
@@ -307,12 +303,10 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
             if n_at == 0:
                 continue
 
-            mol = residue_mols[tok_idx] if tok_idx < len(
-                residue_mols) else None
-            crop_mask = (residue_crop_masks[tok_idx]
-                         if tok_idx < len(residue_crop_masks) else None)
-            tok_pos = ref_pos[atom_offset:atom_offset + n_at]
-            tok_mask = ref_mask[atom_offset:atom_offset + n_at]
+            mol = residue_mols[tok_idx] if tok_idx < len(residue_mols) else None
+            crop_mask = residue_crop_masks[tok_idx] if tok_idx < len(residue_crop_masks) else None
+            tok_pos = ref_pos[atom_offset : atom_offset + n_at]
+            tok_mask = ref_mask[atom_offset : atom_offset + n_at]
 
             if mol is not None and mol.GetNumConformers() > 0:
                 conf = mol.GetConformer()
@@ -325,14 +319,13 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
                     if out_idx >= n_at:
                         break
                     pt = conf.GetAtomPosition(ai)
-                    tok_pos[out_idx] = torch.tensor([pt.x, pt.y, pt.z],
-                                                    dtype=torch.float32)
+                    tok_pos[out_idx] = torch.tensor([pt.x, pt.y, pt.z], dtype=torch.float32)
                     out_idx += 1
 
             # Apply random centering + rotation + translation
             # (matching OSS centre_random_augmentation / AF3 Algorithm 19)
             augmented = centre_random_augmentation(tok_pos, tok_mask.float())
-            ref_pos[atom_offset:atom_offset + n_at] = augmented
+            ref_pos[atom_offset : atom_offset + n_at] = augmented
             atom_offset += n_at
 
         feats["ref_pos"] = ref_pos
@@ -364,7 +357,6 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
         struct = row["structure"]
         msa_per_chain = row.get("msa_per_chain", [])
         paired_msa_per_chain = row.get("paired_msa_per_chain", [])
-        chain_sequences = row.get("chain_sequences", [])
 
         n_tokens = struct["n_tokens"]
         chain_ids = struct["token_chain_ids"]
@@ -388,28 +380,26 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
         msa_id_to_group: dict[int, int] = {}
 
         for chain_idx, cid in enumerate(unique_chains):
-            msa_entry = msa_per_chain[chain_idx] if chain_idx < len(
-                msa_per_chain) else None
-            paired_entry = paired_msa_per_chain[chain_idx] if chain_idx < len(
-                paired_msa_per_chain) else None
+            msa_entry = msa_per_chain[chain_idx] if chain_idx < len(msa_per_chain) else None
+            paired_entry = paired_msa_per_chain[chain_idx] if chain_idx < len(paired_msa_per_chain) else None
             # Group chains by MSA identity. Chains sharing an MSA dict get
             # the same eid (→ same polymer group). Chains with no MSA get a
             # unique eid via id(None) + chain_idx so they don't collapse
             # together.
-            eid = id(
-                msa_entry) if msa_entry is not None else id(None) + chain_idx
+            eid = id(msa_entry) if msa_entry is not None else id(None) + chain_idx
 
             if eid in msa_id_to_group:
-                polymer_groups[msa_id_to_group[eid]]["chains"].append(
-                    (chain_idx, cid))
+                polymer_groups[msa_id_to_group[eid]]["chains"].append((chain_idx, cid))
             else:
                 msa_id_to_group[eid] = len(polymer_groups)
-                polymer_groups.append({
-                    "chains": [(chain_idx, cid)],
-                    "msa_entry": msa_entry,
-                    "paired_entry": paired_entry,
-                    "chain_idx": chain_idx,
-                })
+                polymer_groups.append(
+                    {
+                        "chains": [(chain_idx, cid)],
+                        "msa_entry": msa_entry,
+                        "paired_entry": paired_entry,
+                        "chain_idx": chain_idx,
+                    }
+                )
 
         # Build per-polymer MSA row lists and compute statistics
         max_rows = 1
@@ -422,14 +412,11 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             paired_entry = group["paired_entry"]
             start, end = chain_token_ranges[first_cid]
             n_res = end - start
-            seq = chain_sequences[first_chain_idx] if first_chain_idx < len(
-                chain_sequences) else ""
 
             # Determine mol_type for this polymer group from the first token
             # in its chain range (all tokens in a chain share the same mol_type).
             # Used by _resolve_msa_char for polymer-type-aware MSA encoding.
-            group_mol_type = (token_mol_types[start]
-                              if start < len(token_mol_types) else 0)
+            group_mol_type = token_mol_types[start] if start < len(token_mol_types) else 0
 
             poly_rows: list[list[int]] = []
             poly_dels: list[list[int]] = []
@@ -442,12 +429,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # branch when chain_id_to_query_seq is empty). When True, row 0 is
             # the first row of the MSA file (paired or main), NOT a
             # sequence-derived row.
-            has_msa_for_polymer = (
-                msa_entry is not None
-                and len(msa_entry.get("sequences", [])) > 0
-            ) or (
-                paired_entry is not None
-                and len(paired_entry.get("sequences", [])) > 0
+            has_msa_for_polymer = (msa_entry is not None and len(msa_entry.get("sequences", [])) > 0) or (
+                paired_entry is not None and len(paired_entry.get("sequences", [])) > 0
             )
 
             # Row 0: query — upstream `chain_id_to_query_seq[chain_id]` is
@@ -469,12 +452,9 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # added to the main MSA section. This matches upstream's behavior
             # of having the query row + the file's row 0 both present in the
             # final MSA.
-            if has_msa_for_polymer and msa_entry is not None and msa_entry.get(
-                    "sequences"):
+            if has_msa_for_polymer and msa_entry is not None and msa_entry.get("sequences"):
                 qseq = msa_entry["sequences"][0]
-                qrow = [
-                    _resolve_msa_char(c, group_mol_type) for c in qseq[:n_res]
-                ]
+                qrow = [_resolve_msa_char(c, group_mol_type) for c in qseq[:n_res]]
                 qrow += [GAP_IDX] * (n_res - len(qrow))
                 poly_rows.append(qrow)
                 poly_dels.append([0] * n_res)
@@ -483,9 +463,7 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 # (matches OSS's behavior of `all_msas_per_chain[first_key]`
                 # ordering: paired comes first in `aln_order`).
                 pseq = paired_entry["sequences"][0]
-                qrow = [
-                    _resolve_msa_char(c, group_mol_type) for c in pseq[:n_res]
-                ]
+                qrow = [_resolve_msa_char(c, group_mol_type) for c in pseq[:n_res]]
                 qrow += [GAP_IDX] * (n_res - len(qrow))
                 poly_rows.append(qrow)
                 poly_dels.append([0] * n_res)
@@ -556,20 +534,17 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # rows that upstream would have kept
             # (because their byte-exact matches sit beyond paired_idx=2047).
             from .const import MAX_MSA_ROWS_PAIRED
+
             paired_rows_full: list[list[int]] = []
             paired_full_width = 0
             if paired_entry is not None:
                 paired_seqs = paired_entry.get("sequences", [])
                 paired_seqs = paired_seqs[:MAX_MSA_ROWS_PAIRED]
-                paired_full_width = max(
-                    (len(s) for s in paired_seqs), default=0
-                )
+                paired_full_width = max((len(s) for s in paired_seqs), default=0)
                 for pseq in paired_seqs:
                     prow_full = [GAP_IDX] * paired_full_width
                     for j in range(min(len(pseq), paired_full_width)):
-                        prow_full[j] = _resolve_msa_char(
-                            pseq[j], group_mol_type
-                        )
+                        prow_full[j] = _resolve_msa_char(pseq[j], group_mol_type)
                     paired_rows_full.append(prow_full)
 
             # Build main MSA rows at FILE WIDTH for is_unique / profile.
@@ -581,20 +556,15 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             if msa_entry is not None:
                 msa_seqs = msa_entry.get("sequences", [])
                 msa_raw = msa_entry.get("raw", msa_seqs)
-                main_full_width = max(
-                    (len(s) for s in msa_seqs), default=0
-                )
+                main_full_width = max((len(s) for s in msa_seqs), default=0)
                 for seq_idx in range(len(msa_seqs)):
                     useq = msa_seqs[seq_idx]
-                    uraw = msa_raw[seq_idx] if seq_idx < len(
-                        msa_raw) else useq
+                    uraw = msa_raw[seq_idx] if seq_idx < len(msa_raw) else useq
                     del_counts = _extract_deletion_counts(uraw)
                     urow_full = [GAP_IDX] * main_full_width
                     drow_full = [0] * main_full_width
                     for j in range(min(len(useq), main_full_width)):
-                        urow_full[j] = _resolve_msa_char(
-                            useq[j], group_mol_type
-                        )
+                        urow_full[j] = _resolve_msa_char(useq[j], group_mol_type)
                         if j < len(del_counts):
                             drow_full[j] = del_counts[j]
                     unpaired_rows_full.append(urow_full)
@@ -614,27 +584,23 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 common_w = max(main_full_width, paired_full_width)
                 main_arr = np.full(
                     (len(unpaired_rows_full), common_w),
-                    GAP_IDX, dtype=np.int64,
+                    GAP_IDX,
+                    dtype=np.int64,
                 )
                 for i, r in enumerate(unpaired_rows_full):
-                    main_arr[i, :len(r)] = r
+                    main_arr[i, : len(r)] = r
                 paired_arr = np.full(
                     (len(paired_rows_full), common_w),
-                    GAP_IDX, dtype=np.int64,
+                    GAP_IDX,
+                    dtype=np.int64,
                 )
                 for i, r in enumerate(paired_rows_full):
-                    paired_arr[i, :len(r)] = r
+                    paired_arr[i, : len(r)] = r
                 # Match OSS `np.isin` on void-view trick: each row becomes
                 # a single void item with size n_cols * itemsize.
-                main_view = main_arr.view(
-                    np.dtype((np.void, main_arr.dtype.itemsize * common_w))
-                )
-                paired_view = paired_arr.view(
-                    np.dtype((np.void, paired_arr.dtype.itemsize * common_w))
-                )
-                is_unique_arr = np.squeeze(
-                    ~np.isin(main_view, paired_view), axis=-1
-                )
+                main_view = main_arr.view(np.dtype((np.void, main_arr.dtype.itemsize * common_w)))
+                paired_view = paired_arr.view(np.dtype((np.void, paired_arr.dtype.itemsize * common_w)))
+                is_unique_arr = np.squeeze(~np.isin(main_view, paired_view), axis=-1)
                 is_unique_mask = is_unique_arr.tolist()
             elif unpaired_rows_full:
                 is_unique_mask = [True] * len(unpaired_rows_full)
@@ -665,12 +631,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                     drow_cropped = drow_full[:n_res]
                     # Right-pad with GAP_IDX / 0 if file row is shorter.
                     if len(urow_cropped) < n_res:
-                        urow_cropped = urow_cropped + [GAP_IDX] * (
-                            n_res - len(urow_cropped)
-                        )
-                        drow_cropped = drow_cropped + [0] * (
-                            n_res - len(drow_cropped)
-                        )
+                        urow_cropped = urow_cropped + [GAP_IDX] * (n_res - len(urow_cropped))
+                        drow_cropped = drow_cropped + [0] * (n_res - len(drow_cropped))
                     poly_rows.append(urow_cropped)
                     poly_dels.append(drow_cropped)
                     n_main_appended += 1
@@ -699,17 +661,13 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 # deletion_mean: full-width then crop. Each chain's polymer
                 # has res_ids = [1..n_res] (sequential), so cropping to
                 # [0:n_res] matches `del_mean[msa_column_positions]`.
-                del_t_full = torch.tensor(
-                    unpaired_dels_full, dtype=torch.float32
-                )
+                del_t_full = torch.tensor(unpaired_dels_full, dtype=torch.float32)
                 deletion_mean_full = del_t_full.mean(dim=0)  # [main_full_width]
                 if deletion_mean_full.numel() >= n_res:
                     deletion_mean = deletion_mean_full[:n_res].clone()
                 else:
                     deletion_mean = torch.zeros(n_res, dtype=torch.float32)
-                    deletion_mean[:deletion_mean_full.numel()] = (
-                        deletion_mean_full
-                    )
+                    deletion_mean[: deletion_mean_full.numel()] = deletion_mean_full
 
                 # Intentionally reproduces upstream `calculate_profile`
                 # (`core/data/primitives/sequence/msa.py`), which uses
@@ -724,16 +682,12 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 # cropped to n_res. Computing it on already-cropped rows
                 # yields different scrambling whenever
                 # file_aligned_len != polymer_len.
-                msa_idx_arr = np.asarray(
-                    unpaired_rows_full, dtype=np.int64
-                )
+                msa_idx_arr = np.asarray(unpaired_rows_full, dtype=np.int64)
                 n_rows_msa, n_cols_full = msa_idx_arr.shape
                 n_symbols = NUM_MSA_CLASSES
                 # Upstream chunk_size = 1000 (in `create_query_seq`)
                 chunk_size = 1000
-                counts_full = np.zeros(
-                    (n_cols_full, n_symbols), dtype=np.int64
-                )
+                counts_full = np.zeros((n_cols_full, n_symbols), dtype=np.int64)
                 col_start = 0
                 while col_start < n_cols_full:
                     col_end = min(col_start + chunk_size, n_cols_full)
@@ -742,19 +696,13 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                     val_indices = msa_chunk.ravel()  # row-major
                     # np.repeat (not np.tile) is deliberate here — see the
                     # profile-parity note above.
-                    col_indices_local = np.repeat(
-                        np.arange(block_n_cols), n_rows_msa
-                    )
-                    to_count_local = (
-                        col_indices_local * n_symbols + val_indices
-                    )
+                    col_indices_local = np.repeat(np.arange(block_n_cols), n_rows_msa)
+                    to_count_local = col_indices_local * n_symbols + val_indices
                     chunk_counts_1d = np.bincount(
                         to_count_local,
                         minlength=block_n_cols * n_symbols,
                     )
-                    chunk_counts_2d = chunk_counts_1d.reshape(
-                        block_n_cols, n_symbols
-                    )
+                    chunk_counts_2d = chunk_counts_1d.reshape(block_n_cols, n_symbols)
                     counts_full[col_start:col_end, :] += chunk_counts_2d
                     col_start = col_end
                 profile_full = counts_full / n_rows_msa
@@ -762,30 +710,24 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 if profile_full.shape[0] >= n_res:
                     profile_cropped = profile_full[:n_res, :]
                 else:
-                    profile_cropped = np.zeros(
-                        (n_res, n_symbols), dtype=profile_full.dtype
-                    )
-                    profile_cropped[
-                        :profile_full.shape[0], :
-                    ] = profile_full
-                profile = torch.from_numpy(
-                    profile_cropped.astype(np.float32)
-                )
+                    profile_cropped = np.zeros((n_res, n_symbols), dtype=profile_full.dtype)
+                    profile_cropped[: profile_full.shape[0], :] = profile_full
+                profile = torch.from_numpy(profile_cropped.astype(np.float32))
             else:
                 deletion_mean = torch.zeros(n_res, dtype=torch.float32)
-                profile = torch.zeros(
-                    n_res, NUM_MSA_CLASSES, dtype=torch.float32
-                )
+                profile = torch.zeros(n_res, NUM_MSA_CLASSES, dtype=torch.float32)
 
-            polymer_data.append({
-                "chains": group["chains"],
-                "poly_rows": poly_rows,
-                "poly_dels": poly_dels,
-                "n_rows": n_poly_rows,
-                "deletion_mean": deletion_mean,
-                "profile": profile,
-                "n_res": n_res,
-            })
+            polymer_data.append(
+                {
+                    "chains": group["chains"],
+                    "poly_rows": poly_rows,
+                    "poly_dels": poly_dels,
+                    "n_rows": n_poly_rows,
+                    "deletion_mean": deletion_mean,
+                    "profile": profile,
+                    "n_res": n_res,
+                }
+            )
 
         # Build the global [max_rows, n_tokens] MSA matrix.
         #
@@ -797,23 +739,17 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
         # (`core/data/primitives/featurization/msa.py`) initializes `msa_mask`
         # to all 1s and zeros it only via the token-validity mask
         # (`token_mask[np.newaxis, :]`).
-        global_msa = torch.full((max_rows, n_tokens),
-                                GAP_IDX,
-                                dtype=torch.long)
+        global_msa = torch.full((max_rows, n_tokens), GAP_IDX, dtype=torch.long)
         global_del = torch.zeros(max_rows, n_tokens, dtype=torch.long)
         # Upstream initialization: msa_mask = 1.0 everywhere.
         global_mask = torch.ones(max_rows, n_tokens, dtype=torch.float32)
-        global_profile = torch.zeros(n_tokens,
-                                     NUM_MSA_CLASSES,
-                                     dtype=torch.float32)
+        global_profile = torch.zeros(n_tokens, NUM_MSA_CLASSES, dtype=torch.float32)
         global_del_mean = torch.zeros(n_tokens, dtype=torch.float32)
 
         for pd in polymer_data:
             r = pd["n_rows"]
-            rows_t = torch.tensor(pd["poly_rows"],
-                                  dtype=torch.long)  # [r, n_res]
-            dels_t = torch.tensor(pd["poly_dels"],
-                                  dtype=torch.long)  # [r, n_res]
+            rows_t = torch.tensor(pd["poly_rows"], dtype=torch.long)  # [r, n_res]
+            dels_t = torch.tensor(pd["poly_dels"], dtype=torch.long)  # [r, n_res]
 
             # Broadcast to ALL chains of this polymer
             for _, cid in pd["chains"]:
@@ -824,8 +760,7 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
                 global_del_mean[s:e] = pd["deletion_mean"]
 
         feats: dict[str, torch.Tensor] = {}
-        feats["msa"] = encode_one_hot(global_msa,
-                                      NUM_MSA_CLASSES).to(torch.int32)
+        feats["msa"] = encode_one_hot(global_msa, NUM_MSA_CLASSES).to(torch.int32)
         feats["has_deletion"] = (global_del != 0).to(torch.float32)
         feats["deletion_value"] = compute_deletion_value(global_del)
         feats["deletion_mean"] = global_del_mean
@@ -879,27 +814,15 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
     def _no_template_feats(self, n_tokens: int) -> dict[str, torch.Tensor]:
         n_templ = DEFAULT_N_TEMPLATES
         feats: dict[str, torch.Tensor] = {}
-        template_restype = torch.zeros(n_templ,
-                                       n_tokens,
-                                       NUM_RESTYPE_CLASSES,
-                                       dtype=torch.int32)
+        template_restype = torch.zeros(n_templ, n_tokens, NUM_RESTYPE_CLASSES, dtype=torch.int32)
         template_restype[..., GAP_IDX] = 1
         feats["template_restype"] = template_restype
-        feats["template_pseudo_beta_mask"] = torch.zeros(n_templ,
-                                                         n_tokens,
-                                                         dtype=torch.float32)
-        feats["template_backbone_frame_mask"] = torch.zeros(
-            n_templ, n_tokens, dtype=torch.float32)
-        feats["template_distogram"] = torch.zeros(n_templ,
-                                                  n_tokens,
-                                                  n_tokens,
-                                                  TEMPLATE_DISTOGRAM_N_BINS,
-                                                  dtype=torch.float32)
-        feats["template_unit_vector"] = torch.zeros(n_templ,
-                                                    n_tokens,
-                                                    n_tokens,
-                                                    3,
-                                                    dtype=torch.float32)
+        feats["template_pseudo_beta_mask"] = torch.zeros(n_templ, n_tokens, dtype=torch.float32)
+        feats["template_backbone_frame_mask"] = torch.zeros(n_templ, n_tokens, dtype=torch.float32)
+        feats["template_distogram"] = torch.zeros(
+            n_templ, n_tokens, n_tokens, TEMPLATE_DISTOGRAM_N_BINS, dtype=torch.float32
+        )
+        feats["template_unit_vector"] = torch.zeros(n_templ, n_tokens, n_tokens, 3, dtype=torch.float32)
         return feats
 
     def __call__(
@@ -913,16 +836,17 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         if not templates_per_chain:
             return self._no_template_feats(n_tokens)
 
-        from .common import (create_template_distogram, create_template_restype,
-                             create_template_unit_vector)
-        from .const import (MOL_TYPE_PROTEIN, TEMPLATE_CIF_DIRECT_MIN_SCORE,
-                            TEMPLATE_DISTOGRAM_INF_VALUE,
-                            TEMPLATE_DISTOGRAM_MAX_BIN,
-                            TEMPLATE_DISTOGRAM_MIN_BIN,
-                            TEMPLATE_MIN_TOKENS_PER_CHAIN, TEMPLATE_TAKE_TOP_K)
-        from .template_logic import (fill_precursor_for_chain,
-                                     resolve_template_idx_map,
-                                     select_template_for_cif)
+        from .common import create_template_distogram, create_template_restype, create_template_unit_vector
+        from .const import (
+            MOL_TYPE_PROTEIN,
+            TEMPLATE_CIF_DIRECT_MIN_SCORE,
+            TEMPLATE_DISTOGRAM_INF_VALUE,
+            TEMPLATE_DISTOGRAM_MAX_BIN,
+            TEMPLATE_DISTOGRAM_MIN_BIN,
+            TEMPLATE_MIN_TOKENS_PER_CHAIN,
+            TEMPLATE_TAKE_TOP_K,
+        )
+        from .template_logic import fill_precursor_for_chain, resolve_template_idx_map, select_template_for_cif
 
         struct = row["structure"]
         token_chain_ids = struct["token_chain_ids"]
@@ -933,16 +857,12 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         n_templ = DEFAULT_N_TEMPLATES
         res_names = np.full((n_templ, n_tokens), "GAP", dtype=np.dtype("U3"))
         pb_coords = np.full((n_templ, n_tokens, 3), np.nan, dtype=np.float64)
-        frame_coords = np.full((n_templ, n_tokens, 3, 3),
-                               np.nan,
-                               dtype=np.float64)
+        frame_coords = np.full((n_templ, n_tokens, 3, 3), np.nan, dtype=np.float64)
 
         # Group protein tokens by their original chain_id, preserving order.
         for cid in dict.fromkeys(token_chain_ids):
             token_pos = [
-                i for i in range(n_tokens)
-                if token_chain_ids[i] == cid
-                and token_mol_types[i] == MOL_TYPE_PROTEIN
+                i for i in range(n_tokens) if token_chain_ids[i] == cid and token_mol_types[i] == MOL_TYPE_PROTEIN
             ]
             if len(token_pos) < TEMPLATE_MIN_TOKENS_PER_CHAIN:
                 continue
@@ -950,10 +870,7 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
             if not templates:
                 continue
             query_seq = template_query_seq.get(cid, "")
-            token_pos_by_res_id = {
-                int(token_res_ids[i]): i
-                for i in token_pos
-            }
+            token_pos_by_res_id = {int(token_res_ids[i]): i for i in token_pos}
 
             selected = []
             for tmpl in templates:
@@ -989,28 +906,27 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
                 if eff_idx is None:
                     continue  # dropped: consumes no template slot
                 if eff_idx.shape[0] > 0:
-                    fill_precursor_for_chain(sel, slot, eff_idx,
-                                             token_pos_by_res_id, res_names,
-                                             pb_coords, frame_coords)
+                    fill_precursor_for_chain(
+                        sel, slot, eff_idx, token_pos_by_res_id, res_names, pb_coords, frame_coords
+                    )
                 # A kept template still occupies a slot (all-GAP if empty).
                 slot += 1
 
         # A pseudo-beta / backbone frame is present iff its coords are not NaN.
-        pb_mask = torch.tensor(~np.isnan(pb_coords).any(axis=-1),
-                               dtype=torch.float32)
-        bb_mask = torch.tensor(~np.isnan(frame_coords).any(axis=(-2, -1)),
-                               dtype=torch.float32)
+        pb_mask = torch.tensor(~np.isnan(pb_coords).any(axis=-1), dtype=torch.float32)
+        bb_mask = torch.tensor(~np.isnan(frame_coords).any(axis=(-2, -1)), dtype=torch.float32)
 
         # Inter/intra-chain pair mask from asym_id, shaped [1, N, N, 1] to
         # broadcast over templates and the last feature dim.
         asym = np.asarray(_renumber_chain_ids(token_chain_ids))
-        mc_pair = torch.tensor(
-            (asym[:, None] == asym[None, :]).astype(np.float32),
-            dtype=torch.float32)[None, :, :, None]
+        mc_pair = torch.tensor((asym[:, None] == asym[None, :]).astype(np.float32), dtype=torch.float32)[
+            None, :, :, None
+        ]
 
         feats: dict[str, torch.Tensor] = {}
         feats["template_restype"] = create_template_restype(
-            res_names, pb_mask, RESNAME_TO_IDX, UNK_IDX, NUM_RESTYPE_CLASSES)
+            res_names, pb_mask, RESNAME_TO_IDX, UNK_IDX, NUM_RESTYPE_CLASSES
+        )
         feats["template_pseudo_beta_mask"] = pb_mask
         feats["template_backbone_frame_mask"] = bb_mask
         feats["template_distogram"] = create_template_distogram(
@@ -1022,6 +938,5 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
             TEMPLATE_DISTOGRAM_N_BINS,
             TEMPLATE_DISTOGRAM_INF_VALUE,
         )
-        feats["template_unit_vector"] = create_template_unit_vector(
-            frame_coords, bb_mask, mc_pair)
+        feats["template_unit_vector"] = create_template_unit_vector(frame_coords, bb_mask, mc_pair)
         return feats

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,37 +13,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.auto_chunk import (CHUNK_REGISTRY,
-                                                DIFFUSION_PAIR_TRANSITION)
+from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, DIFFUSION_PAIR_TRANSITION
 from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.position_encoders import FourierEmbedding
 from tensorrt_bionemo._torch.layers.transition import Transition
-from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import \
-    relpos_complex
+from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import relpos_complex
 
 
 class ContactConditioning(nn.Module):
-    """ Boltz2 Contact Conditioning """
+    """Boltz2 Contact Conditioning"""
 
-    def __init__(self,
-                 token_z: int,
-                 cutoff_min: float,
-                 cutoff_max: float,
-                 contact_conditioning_info: dict[str, int],
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        token_z: int,
+        cutoff_min: float,
+        cutoff_max: float,
+        contact_conditioning_info: dict[str, int],
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         super().__init__()
 
         self.fourier_embedding = FourierEmbedding(token_z, dtype=dtype)
-        self.encoder = Linear(token_z + len(contact_conditioning_info) - 1,
-                              token_z,
-                              dtype=dtype,
-                              skip_create_weights=skip_create_weights)
+        self.encoder = Linear(
+            token_z + len(contact_conditioning_info) - 1, token_z, dtype=dtype, skip_create_weights=skip_create_weights
+        )
         self.encoding_unspecified = nn.Parameter(torch.zeros(token_z))
         self.encoding_unselected = nn.Parameter(torch.zeros(token_z))
         self.cutoff_min = cutoff_min
@@ -51,13 +49,11 @@ class ContactConditioning(nn.Module):
 
         self.contact_conditioning_info = contact_conditioning_info
 
-    def forward(self, contact_conditioning: torch.Tensor,
-                contact_threshold: torch.Tensor):
+    def forward(self, contact_conditioning: torch.Tensor, contact_threshold: torch.Tensor):
         assert self.contact_conditioning_info["UNSPECIFIED"] == 0
         assert self.contact_conditioning_info["UNSELECTED"] == 1
         final_contact_conditioning = contact_conditioning[:, :, :, 2:]
-        contact_threshold_normalized = (contact_threshold - self.cutoff_min
-                                        ) / (self.cutoff_max - self.cutoff_min)
+        contact_threshold_normalized = (contact_threshold - self.cutoff_min) / (self.cutoff_max - self.cutoff_min)
         # Inline the Fourier features into the cat instead of binding them to a variable, so the
         # [N,N,token_z] fp32 fourier tensor (~15 GB at N~5k) is freed right after the cat rather
         # than kept live through the encoder + masking below.
@@ -66,65 +62,63 @@ class ContactConditioning(nn.Module):
                 [
                     final_contact_conditioning,
                     contact_threshold_normalized.unsqueeze(-1),
-                    self.fourier_embedding(
-                        contact_threshold_normalized.flatten()).reshape(
-                            contact_threshold_normalized.shape + (-1, )),
+                    self.fourier_embedding(contact_threshold_normalized.flatten()).reshape(
+                        contact_threshold_normalized.shape + (-1,)
+                    ),
                 ],
                 dim=-1,
-            ))
+            )
+        )
 
         # Fold the unspecified/unselected masking IN PLACE (the encoder
         # output is freshly owned), avoiding 3-4 separate
         # [N,N,token_z] temporaries for the multiply and the two adds.
         mask = 1 - contact_conditioning[:, :, :, 0:2].sum(dim=-1, keepdim=True)
         final_contact_conditioning *= mask
-        final_contact_conditioning += (self.encoding_unspecified *
-                                       contact_conditioning[:, :, :, 0:1])
-        final_contact_conditioning += (self.encoding_unselected *
-                                       contact_conditioning[:, :, :, 1:2])
+        final_contact_conditioning += self.encoding_unspecified * contact_conditioning[:, :, :, 0:1]
+        final_contact_conditioning += self.encoding_unselected * contact_conditioning[:, :, :, 1:2]
         return final_contact_conditioning
 
 
 class PairwiseConditioning(nn.Module):
-
-    def __init__(self,
-                 token_z: int,
-                 dim_token_rel_pos_feats: int,
-                 num_transitions: int = 2,
-                 transition_expansion_factor: int = 2,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        token_z: int,
+        dim_token_rel_pos_feats: int,
+        num_transitions: int = 2,
+        transition_expansion_factor: int = 2,
+        eps: float = 1e-5,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+    ):
         super().__init__()
         self.dtype = dtype
         self.token_z = token_z
         self.dim_token_rel_pos_feats = dim_token_rel_pos_feats
         self.num_transitions = num_transitions
 
-        self.init_proj_norm = nn.LayerNorm(token_z + dim_token_rel_pos_feats,
-                                           eps=eps,
-                                           dtype=dtype)
+        self.init_proj_norm = nn.LayerNorm(token_z + dim_token_rel_pos_feats, eps=eps, dtype=dtype)
 
-        self.init_proj_linear = Linear(token_z + dim_token_rel_pos_feats,
-                                       token_z,
-                                       bias=False,
-                                       dtype=dtype,
-                                       skip_create_weights=skip_create_weights)
+        self.init_proj_linear = Linear(
+            token_z + dim_token_rel_pos_feats, token_z, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         transitions = []
         for i in range(num_transitions):
             transitions.append(
-                Transition(dim=token_z,
-                           hidden=token_z * transition_expansion_factor,
-                           out_dim=token_z,
-                           eps=eps,
-                           dtype=dtype,
-                           layer_idx=i,
-                           skip_create_weights=skip_create_weights))
+                Transition(
+                    dim=token_z,
+                    hidden=token_z * transition_expansion_factor,
+                    out_dim=token_z,
+                    eps=eps,
+                    dtype=dtype,
+                    layer_idx=i,
+                    skip_create_weights=skip_create_weights,
+                )
+            )
         self.transitions = nn.ModuleList(transitions)
 
-    def forward(self, z_trunk: torch.Tensor,
-                token_rel_pos_feats: torch.Tensor) -> torch.Tensor:
+    def forward(self, z_trunk: torch.Tensor, token_rel_pos_feats: torch.Tensor) -> torch.Tensor:
         # Cast inputs to the conditioner dtype so the [N, N, *] init-proj + FFN run at that
         # precision even when the trunk feeds a higher-precision (e.g. fp32) pair rep.
         if self.dtype is not None:
@@ -141,46 +135,40 @@ class PairwiseConditioning(nn.Module):
 class SingleConditioning(nn.Module):
     """Boltz single conditioning layer."""
 
-    def __init__(self,
-                 token_s: int = 384,
-                 dim_fourier: int = 256,
-                 num_transitions: int = 2,
-                 transition_expansion_factor: int = 2,
-                 additional_input_dim: int = 0,
-                 eps: float = 1e-20,
-                 disable_times: bool = False,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False) -> None:
+    def __init__(
+        self,
+        token_s: int = 384,
+        dim_fourier: int = 256,
+        num_transitions: int = 2,
+        transition_expansion_factor: int = 2,
+        additional_input_dim: int = 0,
+        eps: float = 1e-20,
+        disable_times: bool = False,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ) -> None:
         super().__init__()
         self.eps = eps
         self.disable_times = disable_times
         input_dim = 2 * token_s + additional_input_dim
 
         self.norm_single = nn.LayerNorm(input_dim, dtype=dtype, eps=eps)
-        self.single_embed = Linear(input_dim,
-                                   2 * token_s,
-                                   dtype=dtype,
-                                   skip_create_weights=skip_create_weights)
+        self.single_embed = Linear(input_dim, 2 * token_s, dtype=dtype, skip_create_weights=skip_create_weights)
         if not self.disable_times:
-            self.fourier_embed = FourierEmbedding(dim_fourier,
-                                                  dtype=torch.float32)
-            self.norm_fourier = nn.LayerNorm(dim_fourier,
-                                             dtype=torch.float32,
-                                             eps=eps)
+            self.fourier_embed = FourierEmbedding(dim_fourier, dtype=torch.float32)
+            self.norm_fourier = nn.LayerNorm(dim_fourier, dtype=torch.float32, eps=eps)
             self.fourier_to_single = Linear(
-                dim_fourier,
-                2 * token_s,
-                bias=False,
-                dtype=torch.float32,
-                skip_create_weights=skip_create_weights)
+                dim_fourier, 2 * token_s, bias=False, dtype=torch.float32, skip_create_weights=skip_create_weights
+            )
 
         transitions = nn.ModuleList([])
         for _ in range(num_transitions):
-            transition = Transition(dim=2 * token_s,
-                                    hidden=transition_expansion_factor * 2 *
-                                    token_s,
-                                    dtype=dtype,
-                                    skip_create_weights=skip_create_weights)
+            transition = Transition(
+                dim=2 * token_s,
+                hidden=transition_expansion_factor * 2 * token_s,
+                dtype=dtype,
+                skip_create_weights=skip_create_weights,
+            )
             transitions.append(transition)
 
         self.transitions = transitions
@@ -190,7 +178,7 @@ class SingleConditioning(nn.Module):
         times: torch.Tensor,
         s_trunk: torch.Tensor,
         s_inputs: torch.Tensor,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Args:
             times: [B, multiplicity] or [B]
@@ -233,17 +221,19 @@ class DiffusionConditioning(nn.Module):
         same-entity features into the pair representation.
     """
 
-    def __init__(self,
-                 c_s_input: int,
-                 c_s: int,
-                 c_z: int,
-                 c_fourier_emb: int,
-                 max_relative_idx: int,
-                 max_relative_chain: int,
-                 sigma_data: float,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_s_input: int,
+        c_s: int,
+        c_z: int,
+        c_fourier_emb: int,
+        max_relative_idx: int,
+        max_relative_chain: int,
+        sigma_data: float,
+        eps: float = 1e-5,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             c_s_input:
@@ -276,60 +266,48 @@ class DiffusionConditioning(nn.Module):
         num_rel_token_bins = 2 * max_relative_idx + 2
         num_rel_chain_bins = 2 * max_relative_chain + 2
         num_same_entity_features = 1
-        num_relpos_dims = (num_rel_pos_bins + num_rel_token_bins +
-                           num_rel_chain_bins + num_same_entity_features)
+        num_relpos_dims = num_rel_pos_bins + num_rel_token_bins + num_rel_chain_bins + num_same_entity_features
 
-        self.layer_norm_z = nn.LayerNorm(num_relpos_dims + self.c_z,
-                                         bias=False,
-                                         dtype=dtype,
-                                         eps=eps)
-        self.linear_z = Linear(num_relpos_dims + self.c_z,
-                               self.c_z,
-                               bias=False,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.layer_norm_z = nn.LayerNorm(num_relpos_dims + self.c_z, bias=False, dtype=dtype, eps=eps)
+        self.linear_z = Linear(
+            num_relpos_dims + self.c_z, self.c_z, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         # Only transition_z is row-chunkable; transition_s uses dim 1 for samples.
-        self.transition_z = nn.ModuleList([
-            Transition(dim=self.c_z,
-                       hidden=self.c_z * 2,
-                       eps=eps,
-                       dtype=dtype,
-                       skip_create_weights=skip_create_weights,
-                       auto_chunk_policy=CHUNK_REGISTRY.get(
-                           DIFFUSION_PAIR_TRANSITION)) for _ in range(2)
-        ])
+        self.transition_z = nn.ModuleList(
+            [
+                Transition(
+                    dim=self.c_z,
+                    hidden=self.c_z * 2,
+                    eps=eps,
+                    dtype=dtype,
+                    skip_create_weights=skip_create_weights,
+                    auto_chunk_policy=CHUNK_REGISTRY.get(DIFFUSION_PAIR_TRANSITION),
+                )
+                for _ in range(2)
+            ]
+        )
 
-        self.layer_norm_s = nn.LayerNorm(self.c_s + self.c_s_input,
-                                         bias=False,
-                                         dtype=dtype,
-                                         eps=eps)
-        self.linear_s = Linear(self.c_s + self.c_s_input,
-                               self.c_s,
-                               bias=False,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.layer_norm_s = nn.LayerNorm(self.c_s + self.c_s_input, bias=False, dtype=dtype, eps=eps)
+        self.linear_s = Linear(
+            self.c_s + self.c_s_input, self.c_s, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.fourier_emb = FourierEmbedding(c_fourier_emb, dtype=dtype)
 
-        self.layer_norm_n = nn.LayerNorm(self.c_fourier_emb,
-                                         bias=False,
-                                         dtype=dtype,
-                                         eps=eps)
-        self.linear_n = Linear(self.c_fourier_emb,
-                               self.c_s,
-                               bias=False,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.layer_norm_n = nn.LayerNorm(self.c_fourier_emb, bias=False, dtype=dtype, eps=eps)
+        self.linear_n = Linear(
+            self.c_fourier_emb, self.c_s, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
-        self.transition_s = nn.ModuleList([
-            Transition(dim=self.c_s,
-                       hidden=self.c_s * 2,
-                       eps=eps,
-                       dtype=dtype,
-                       skip_create_weights=skip_create_weights)
-            for _ in range(2)
-        ])
+        self.transition_s = nn.ModuleList(
+            [
+                Transition(
+                    dim=self.c_s, hidden=self.c_s * 2, eps=eps, dtype=dtype, skip_create_weights=skip_create_weights
+                )
+                for _ in range(2)
+            ]
+        )
 
     def _embed_trunk_inputs(
         self,
@@ -362,8 +340,8 @@ class DiffusionConditioning(nn.Module):
         return si, zij
 
     def _forward(
-            self, si: torch.Tensor, zij: torch.Tensor,
-            token_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        self, si: torch.Tensor, zij: torch.Tensor, token_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         pair_token_mask = token_mask.unsqueeze(-1) * token_mask.unsqueeze(-2)
 
         # Pair conditioning
@@ -377,13 +355,13 @@ class DiffusionConditioning(nn.Module):
         return si, zij
 
     def forward(
-            self,
-            batch: dict,
-            t: torch.Tensor,
-            si_input: torch.Tensor,
-            si_trunk: torch.Tensor,
-            zij_trunk: torch.Tensor,
-            use_conditioning: bool = True
+        self,
+        batch: dict,
+        t: torch.Tensor,
+        si_input: torch.Tensor,
+        si_trunk: torch.Tensor,
+        zij_trunk: torch.Tensor,
+        use_conditioning: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -408,11 +386,7 @@ class DiffusionConditioning(nn.Module):
             si_trunk = si_trunk.zero_()
             zij_trunk = zij_trunk.zero_()
 
-        si, zij = self._embed_trunk_inputs(batch=batch,
-                                           t=t,
-                                           si_input=si_input,
-                                           si_trunk=si_trunk,
-                                           zij_trunk=zij_trunk)
+        si, zij = self._embed_trunk_inputs(batch=batch, t=t, si_input=si_input, si_trunk=si_trunk, zij_trunk=zij_trunk)
 
         si, zij = self._forward(si=si, zij=zij, token_mask=token_mask)
 

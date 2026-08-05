@@ -13,17 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.custom_ops.fused_ln_proj_moveaxis_pad import \
-    LNProjMoveaxisPad
-from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
-    get_gated_sigmoid_op
-from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
-                                                   WeightsLoadingConfig)
+from tensorrt_bionemo._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
+from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
+from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
@@ -38,24 +34,26 @@ class TriangleAttention(nn.Module):
     The module implements lines 2,4, and 5-7 from Algorithm 14 from https://www.nature.com/articles/s41586-024-07487-w#Sec19.
     """
 
-    def __init__(self,
-                 *,
-                 hidden_size: int,
-                 head_dim: int,
-                 num_attention_heads: int,
-                 num_key_value_heads: Optional[int] = None,
-                 layer_idx: int,
-                 bias_flags: dict[str, bool] = {
-                     "q": False,
-                     "k": False,
-                     "v": False,
-                     "g": False,
-                     "o": False,
-                 },
-                 gating: bool = True,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 attn_backend: str = "VANILLA"):
+    def __init__(
+        self,
+        *,
+        hidden_size: int,
+        head_dim: int,
+        num_attention_heads: int,
+        num_key_value_heads: int | None = None,
+        layer_idx: int,
+        bias_flags: dict[str, bool] = {
+            "q": False,
+            "k": False,
+            "v": False,
+            "g": False,
+            "o": False,
+        },
+        gating: bool = True,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        attn_backend: str = "VANILLA",
+    ):
         super().__init__()
         self.layer_idx = layer_idx
         self.hidden_size = hidden_size
@@ -75,8 +73,7 @@ class TriangleAttention(nn.Module):
             self.q_size + 2 * self.kv_size,
             bias=bias_flags["q"] or bias_flags["k"] or bias_flags["v"],
             dtype=dtype,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_QKV_LINEAR),
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_QKV_LINEAR),
             skip_create_weights=skip_create_weights,
         )
         self.o_proj = Linear(
@@ -107,9 +104,9 @@ class TriangleAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        biases: Optional[list[torch.Tensor]] = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        biases: list[torch.Tensor] | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -128,38 +125,41 @@ class TriangleAttention(nn.Module):
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         # q: [B, I, J, H*D] → kernel output: [B*I, J, H, D]
-        attn_buf = ensure_buffer(buffers, "tri_attn_output",
-                                 (q.shape[0] * q.shape[1], q.shape[2],
-                                  self.num_heads, self.head_dim), q.dtype,
-                                 q.device) if buffers is not None else None
+        attn_buf = (
+            ensure_buffer(
+                buffers,
+                "tri_attn_output",
+                (q.shape[0] * q.shape[1], q.shape[2], self.num_heads, self.head_dim),
+                q.dtype,
+                q.device,
+            )
+            if buffers is not None
+            else None
+        )
         # LSE companion: [B*I, J, H, 1] float32. Consumed by the left-mask
         # CuTeDSL kernels (Ampere SM80/86/89 and Hopper SM90); ignored by all
         # other backends (they accept it via **kwargs without using it).
-        attn_lse_buf = ensure_buffer(buffers, "tri_attn_lse",
-                                     (q.shape[0] * q.shape[1], q.shape[2],
-                                      self.num_heads, 1), torch.float32,
-                                     q.device) if buffers is not None else None
-        mha_o = self.attn.forward(q,
-                                  k,
-                                  v,
-                                  biases=biases,
-                                  metadata=attn_metadata,
-                                  output=attn_buf,
-                                  output_lse=attn_lse_buf)
+        attn_lse_buf = (
+            ensure_buffer(
+                buffers,
+                "tri_attn_lse",
+                (q.shape[0] * q.shape[1], q.shape[2], self.num_heads, 1),
+                torch.float32,
+                q.device,
+            )
+            if buffers is not None
+            else None
+        )
+        mha_o = self.attn.forward(
+            q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf, output_lse=attn_lse_buf
+        )
         if self.g_proj is not None:
             mha_flat = mha_o.reshape(-1, self.num_heads * self.head_dim)
             _gs_op = get_gated_sigmoid_op(mha_flat.dtype)
-            attn_output = _gs_op(hidden_states,
-                                 self.g_proj.weight,
-                                 mha_flat,
-                                 self.g_proj.bias,
-                                 output=mha_flat)
-            attn_output = attn_output.reshape(hidden_states.shape[:-1] +
-                                              (self.num_heads *
-                                               self.head_dim, ))
+            attn_output = _gs_op(hidden_states, self.g_proj.weight, mha_flat, self.g_proj.bias, output=mha_flat)
+            attn_output = attn_output.reshape(hidden_states.shape[:-1] + (self.num_heads * self.head_dim,))
         else:
-            attn_output = mha_o.reshape(mha_o.shape[:-2] +
-                                        (self.num_heads * self.head_dim, ))
+            attn_output = mha_o.reshape(mha_o.shape[:-2] + (self.num_heads * self.head_dim,))
         if not attn_output.is_contiguous():
             attn_output = attn_output.contiguous()
         attn_output = self.o_proj(attn_output)
@@ -171,26 +171,28 @@ class CrossTriangleAttention(nn.Module):
     A module that implements the triangle attention mechanism with tensor parallelism in torch
     """
 
-    def __init__(self,
-                 *,
-                 q_hidden_size: int,
-                 kv_hidden_size: int,
-                 head_dim: int,
-                 num_attention_heads: int,
-                 num_key_value_heads: Optional[int] = None,
-                 layer_idx: int,
-                 bias_flags: dict[str, bool] = {
-                     "q": False,
-                     "k": False,
-                     "v": False,
-                     "g": False,
-                     "z": False,
-                     "o": False,
-                 },
-                 gating: bool = True,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 attn_backend: str = "VANILLA"):
+    def __init__(
+        self,
+        *,
+        q_hidden_size: int,
+        kv_hidden_size: int,
+        head_dim: int,
+        num_attention_heads: int,
+        num_key_value_heads: int | None = None,
+        layer_idx: int,
+        bias_flags: dict[str, bool] = {
+            "q": False,
+            "k": False,
+            "v": False,
+            "g": False,
+            "z": False,
+            "o": False,
+        },
+        gating: bool = True,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        attn_backend: str = "VANILLA",
+    ):
         super().__init__()
         self.layer_idx = layer_idx
         self.q_hidden_size = q_hidden_size
@@ -219,8 +221,7 @@ class CrossTriangleAttention(nn.Module):
             2 * self.kv_size,
             bias=bias_flags["k"] or bias_flags["v"],
             dtype=dtype,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_KV_LINEAR),
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
             skip_create_weights=skip_create_weights,
         )
         self.o_proj = Linear(
@@ -252,8 +253,8 @@ class CrossTriangleAttention(nn.Module):
         self,
         q_x: torch.Tensor,
         kv_x: torch.Tensor,
-        biases: Optional[list[torch.Tensor]] = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
+        biases: list[torch.Tensor] | None = None,
+        attn_metadata: AttentionMetadata | None = None,
     ) -> torch.Tensor:
         """
         Currently used only by the TemplatePointwiseAttention layer.
@@ -266,20 +267,13 @@ class CrossTriangleAttention(nn.Module):
         q = self.q_proj(q_x)
         kv = self.kv_proj(kv_x)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
-        mha_o = self.attn.forward(q,
-                                  k,
-                                  v,
-                                  biases=biases,
-                                  metadata=attn_metadata)
+        mha_o = self.attn.forward(q, k, v, biases=biases, metadata=attn_metadata)
         if self.g_proj is not None:
-            mha_flat = mha_o.reshape(mha_o.shape[:-2] +
-                                     (self.num_heads * self.head_dim, ))
+            mha_flat = mha_o.reshape(mha_o.shape[:-2] + (self.num_heads * self.head_dim,))
             _gs_op = get_gated_sigmoid_op(mha_flat.dtype)
-            attn_output = _gs_op(q_x, self.g_proj.weight, mha_flat,
-                                 self.g_proj.bias)
+            attn_output = _gs_op(q_x, self.g_proj.weight, mha_flat, self.g_proj.bias)
         else:
-            attn_output = mha_o.reshape(mha_o.shape[:-2] +
-                                        (self.num_heads * self.head_dim, ))
+            attn_output = mha_o.reshape(mha_o.shape[:-2] + (self.num_heads * self.head_dim,))
         if not attn_output.is_contiguous():
             attn_output = attn_output.contiguous()
         attn_output = self.o_proj(attn_output)
@@ -307,24 +301,26 @@ class AttentionPairBias(nn.Module):
     query-normalized representation before applying their AdaLN.
     """
 
-    def __init__(self,
-                 layer_idx: int,
-                 c_s: int,
-                 c_z: int,
-                 num_heads: int,
-                 initial_norm: bool = True,
-                 bias_proj: bool = False,
-                 pair_norm: bool = True,
-                 dtype: torch.dtype = None,
-                 inf: float = 1e6,
-                 eps: float = 1e-5,
-                 use_initial_ada_layer_norm: bool = False,
-                 use_separate_layer_norm: bool = False,
-                 use_ada_layer_norm: bool = True,
-                 chain_kv_norm: bool = False,
-                 gate_bias: bool = False,
-                 skip_create_weights: bool = False,
-                 attn_backend: str = "VANILLA"):
+    def __init__(
+        self,
+        layer_idx: int,
+        c_s: int,
+        c_z: int,
+        num_heads: int,
+        initial_norm: bool = True,
+        bias_proj: bool = False,
+        pair_norm: bool = True,
+        dtype: torch.dtype = None,
+        inf: float = 1e6,
+        eps: float = 1e-5,
+        use_initial_ada_layer_norm: bool = False,
+        use_separate_layer_norm: bool = False,
+        use_ada_layer_norm: bool = True,
+        chain_kv_norm: bool = False,
+        gate_bias: bool = False,
+        skip_create_weights: bool = False,
+        attn_backend: str = "VANILLA",
+    ):
         super().__init__()
         self.layer_idx = layer_idx
         self.c_s = c_s
@@ -353,17 +349,11 @@ class AttentionPairBias(nn.Module):
         if self.use_separate_layer_norm:
             if self.use_ada_layer_norm:
                 self.layer_norm_a_q = AdaLN(
-                    self.c_s,
-                    self.c_s,
-                    eps=eps,
-                    dtype=dtype,
-                    skip_create_weights=skip_create_weights)
+                    self.c_s, self.c_s, eps=eps, dtype=dtype, skip_create_weights=skip_create_weights
+                )
                 self.layer_norm_a_k = AdaLN(
-                    self.c_s,
-                    self.c_s,
-                    dtype=dtype,
-                    eps=eps,
-                    skip_create_weights=skip_create_weights)
+                    self.c_s, self.c_s, dtype=dtype, eps=eps, skip_create_weights=skip_create_weights
+                )
             else:
                 self.layer_norm_a_q = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
                 self.layer_norm_a_k = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
@@ -381,8 +371,7 @@ class AttentionPairBias(nn.Module):
             bias=False,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_KV_LINEAR),
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
         self.proj_g = Linear(
             self.c_s,
@@ -423,20 +412,19 @@ class AttentionPairBias(nn.Module):
         )
         self.attn_backend = attn_backend
         self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
-        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(
-            D=c_z, H=self.num_heads, dtype=dtype
-            or torch.bfloat16) if self.bias_proj else None
+        self._ln_proj_moveaxis_pad = (
+            LNProjMoveaxisPad(D=c_z, H=self.num_heads, dtype=dtype or torch.bfloat16) if self.bias_proj else None
+        )
 
     def _prep_inputs(
         self,
         s: torch.Tensor,
         mask: torch.Tensor,
         single_embedding: torch.Tensor | None,
-        attn_metadata: Optional[AttentionMetadata],
-        mask_bias: Optional[torch.Tensor],
-        mask_bias_local: Optional[torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-               Optional[torch.Tensor]]:
+        attn_metadata: AttentionMetadata | None,
+        mask_bias: torch.Tensor | None,
+        mask_bias_local: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Normalize *s*, derive *kv_in*, and route masks through ``query_to_keys``.
 
         Two distinct flows depending on the model family:
@@ -490,24 +478,18 @@ class AttentionPairBias(nn.Module):
                     mask_bias = None
                 if self.use_separate_layer_norm and self.chain_kv_norm:
                     # Gather commutes with the per-row query AdaLN.
-                    assert self.use_ada_layer_norm, \
-                        "chain_kv_norm requires use_ada_layer_norm"
-                    assert single_embedding is not None, \
-                        "single_embedding is required for AdaLN"
+                    assert self.use_ada_layer_norm, "chain_kv_norm requires use_ada_layer_norm"
+                    assert single_embedding is not None, "single_embedding is required for AdaLN"
                     s = self.layer_norm_a_q(s, single_embedding)
-                    kv_in = self.layer_norm_a_k(
-                        query_to_keys(s), query_to_keys(single_embedding))
+                    kv_in = self.layer_norm_a_k(query_to_keys(s), query_to_keys(single_embedding))
                 else:
                     kv_in = query_to_keys(s)
                     if self.use_separate_layer_norm:
                         if self.use_ada_layer_norm:
-                            assert single_embedding is not None, \
-                                "single_embedding is required for AdaLN"
-                            single_embedding_kv = query_to_keys(
-                                single_embedding)
+                            assert single_embedding is not None, "single_embedding is required for AdaLN"
+                            single_embedding_kv = query_to_keys(single_embedding)
                             s = self.layer_norm_a_q(s, single_embedding)
-                            kv_in = self.layer_norm_a_k(
-                                kv_in, single_embedding_kv)
+                            kv_in = self.layer_norm_a_k(kv_in, single_embedding_kv)
                         else:
                             s = self.layer_norm_a_q(s)
                             kv_in = self.layer_norm_a_k(kv_in)
@@ -534,7 +516,7 @@ class AttentionPairBias(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        mask_bias: Optional[torch.Tensor],
+        mask_bias: torch.Tensor | None,
     ) -> list[torch.Tensor]:
         """Build the ``[mask_bias, pair_bias]`` list consumed by the attention kernel.
 
@@ -588,7 +570,7 @@ class AttentionPairBias(nn.Module):
             pair_bias = self._ln_proj_moveaxis_pad(
                 z,
                 ln_weight=ln.weight if ln is not None else None,
-                ln_bias=getattr(ln, 'bias', None) if ln is not None else None,
+                ln_bias=getattr(ln, "bias", None) if ln is not None else None,
                 proj_weight=proj.weight,
                 pad_multiple=self._bias_pad_multiple,
                 proj_z=self.proj_z,
@@ -613,10 +595,10 @@ class AttentionPairBias(nn.Module):
         z: torch.Tensor,
         mask: torch.Tensor,
         single_embedding: torch.Tensor | None = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        mask_bias: Optional[torch.Tensor] = None,
-        mask_bias_local: Optional[torch.Tensor] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        mask_bias: torch.Tensor | None = None,
+        mask_bias_local: torch.Tensor | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """Single and TP Distributed version for AttentionPairBias.
 
@@ -661,10 +643,9 @@ class AttentionPairBias(nn.Module):
         Returns:
             Output tensor with the same shape as *s*.
         """
-        s, kv_in, mask, mask_bias = self._prep_inputs(s, mask,
-                                                      single_embedding,
-                                                      attn_metadata, mask_bias,
-                                                      mask_bias_local)
+        s, kv_in, mask, mask_bias = self._prep_inputs(
+            s, mask, single_embedding, attn_metadata, mask_bias, mask_bias_local
+        )
 
         q, k, v = self._prep_qkv(s, kv_in)
 
@@ -673,25 +654,25 @@ class AttentionPairBias(nn.Module):
         _b_flat = 1
         for _d in q.shape[:-2]:
             _b_flat *= _d
-        attn_buf = ensure_buffer(buffers, "pw_attn_output",
-                                 (_b_flat, q.shape[-2], self.num_heads,
-                                  self.head_dim), q.dtype,
-                                 q.device) if buffers is not None else None
+        attn_buf = (
+            ensure_buffer(
+                buffers, "pw_attn_output", (_b_flat, q.shape[-2], self.num_heads, self.head_dim), q.dtype, q.device
+            )
+            if buffers is not None
+            else None
+        )
         # LSE companion: [B_flat, Sq, H, 1] float32. Consumed by the
         # left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper SM90);
         # ignored by all other backends (they accept it via **kwargs without
         # using it).
-        attn_lse_buf = ensure_buffer(buffers, "pw_attn_lse",
-                                     (_b_flat, q.shape[-2], self.num_heads,
-                                      1), torch.float32,
-                                     q.device) if buffers is not None else None
-        mha_o = self.attn.forward(q,
-                                  k,
-                                  v,
-                                  biases=biases,
-                                  metadata=attn_metadata,
-                                  output=attn_buf,
-                                  output_lse=attn_lse_buf)
+        attn_lse_buf = (
+            ensure_buffer(buffers, "pw_attn_lse", (_b_flat, q.shape[-2], self.num_heads, 1), torch.float32, q.device)
+            if buffers is not None
+            else None
+        )
+        mha_o = self.attn.forward(
+            q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf, output_lse=attn_lse_buf
+        )
         batch_dims = mha_o.shape[:-2]
         o = mha_o.reshape(-1, self.num_heads * self.head_dim)
 
@@ -703,23 +684,24 @@ class AttentionPairBias(nn.Module):
 
 
 class MSAAttention(nn.Module):
-
-    def __init__(self,
-                 *,
-                 local_layer_idx: int,
-                 c_in: int,
-                 num_heads: int,
-                 c_z: Optional[int] = None,
-                 triangle_attn_backend: str = 'VANILLA',
-                 support_batch: bool = True,
-                 need_project_z: bool = True,
-                 transpose_input: bool = False,
-                 bias_flags: dict[str, bool] = {"z": False},
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 **kwargs):
+    def __init__(
+        self,
+        *,
+        local_layer_idx: int,
+        c_in: int,
+        num_heads: int,
+        c_z: int | None = None,
+        triangle_attn_backend: str = "VANILLA",
+        support_batch: bool = True,
+        need_project_z: bool = True,
+        transpose_input: bool = False,
+        bias_flags: dict[str, bool] = {"z": False},
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        **kwargs,
+    ):
         super().__init__()
         assert support_batch, "support_batch is required for MSAAttention"
         self.local_layer_idx = local_layer_idx
@@ -739,10 +721,7 @@ class MSAAttention(nn.Module):
         self.proj_z = None
         self._ln_proj_moveaxis_pad = None
         if need_project_z:
-            self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(D=c_z,
-                                                           H=self.num_heads,
-                                                           dtype=dtype
-                                                           or torch.bfloat16)
+            self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(D=c_z, H=self.num_heads, dtype=dtype or torch.bfloat16)
             self.proj_z_norm = nn.LayerNorm(c_z, dtype=dtype, eps=eps)
             self.proj_z = Linear(
                 self.c_z,
@@ -771,12 +750,14 @@ class MSAAttention(nn.Module):
             attn_backend=self.triangle_attn_backend,
         )
 
-    def forward(self,
-                m: torch.Tensor,
-                z: torch.Tensor,
-                mask: torch.Tensor,
-                attn_metadata: Optional[AttentionMetadata] = None,
-                buffers: Optional[PreallocatedBuffers] = None):
+    def forward(
+        self,
+        m: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
+    ):
         """
         Args:
             m: [*, J, I, c_in]
@@ -790,7 +771,7 @@ class MSAAttention(nn.Module):
         if self.triangle_attn_backend == "CuTeDSL":
             mask_bias = (mask > 0.5).sum(dim=-1).to(torch.int32).contiguous()
         else:
-            mask_bias = ((mask - 1.0) * self.inf)
+            mask_bias = (mask - 1.0) * self.inf
             mask_bias = mask_bias.unsqueeze(-2).unsqueeze(-3)
 
         if self.proj_z_norm and self.proj_z and z is not None:
@@ -803,43 +784,37 @@ class MSAAttention(nn.Module):
                 proj_z=nn.Sequential(self.proj_z_norm, self.proj_z),
             )
         else:
-            if self.triangle_attn_backend != 'VANILLA':
-                z_shape = [
-                    *m.shape[:m.ndim - 3], self.num_heads,
-                    m.size(-2),
-                    m.size(-2)
-                ]
+            if self.triangle_attn_backend != "VANILLA":
+                z_shape = [*m.shape[: m.ndim - 3], self.num_heads, m.size(-2), m.size(-2)]
                 z = torch.zeros(z_shape, dtype=self.dtype, device=m.device)
         biases = [mask_bias, z]
         m = self.layer_norm_m(m)
 
-        output = self.mha(m,
-                          biases=biases,
-                          attn_metadata=attn_metadata,
-                          buffers=buffers)
+        output = self.mha(m, biases=biases, attn_metadata=attn_metadata, buffers=buffers)
         if self.transpose_input:
             output = permute_final_dims(output, (1, 0, 2))
         return output
 
 
 class GlobalAttention(nn.Module):
-
-    def __init__(self,
-                 c_in: int,
-                 c_hidden: int,
-                 no_heads: int,
-                 bias_flags: dict[str, bool] = {
-                     "q": False,
-                     "k": False,
-                     "v": False,
-                     "g": True,
-                     "o": True,
-                 },
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 **kwargs):
+    def __init__(
+        self,
+        c_in: int,
+        c_hidden: int,
+        no_heads: int,
+        bias_flags: dict[str, bool] = {
+            "q": False,
+            "k": False,
+            "v": False,
+            "g": True,
+            "o": True,
+        },
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        **kwargs,
+    ):
         super().__init__()
         self.c_in = c_in
         self.c_hidden = c_hidden
@@ -862,8 +837,7 @@ class GlobalAttention(nn.Module):
             bias=bias_flags["k"] or bias_flags["v"],
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_KV_LINEAR),
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
         self.proj_g = Linear(
             c_in,
@@ -891,11 +865,10 @@ class GlobalAttention(nn.Module):
         kv = self.fused_proj_kv(m)
         k, v = kv.split([self.c_hidden, self.c_hidden], dim=-1)
 
-        q = torch.sum(m * mask.unsqueeze(-1),
-                      dim=-2) / (torch.sum(mask, dim=-1)[..., None] + self.eps)
+        q = torch.sum(m * mask.unsqueeze(-1), dim=-2) / (torch.sum(mask, dim=-1)[..., None] + self.eps)
 
         q = self.proj_q(q)  # tp by heads not by c_hidden
-        q *= (self.c_hidden**(-0.5))
+        q *= self.c_hidden ** (-0.5)
         # [*, N_res, H, C_hidden]
         q = q.view(q.shape[:-1] + (self.no_heads, -1))
 
@@ -921,7 +894,7 @@ class GlobalAttention(nn.Module):
         o = o.unsqueeze(-3) * g
 
         # [*, N_res, N_seq, H * C_hidden]
-        o = o.reshape(o.shape[:-2] + (-1, ))
+        o = o.reshape(o.shape[:-2] + (-1,))
 
         # [*, N_res, N_seq, C_in]
         m = self.proj_o(o)
@@ -930,25 +903,26 @@ class GlobalAttention(nn.Module):
 
 
 class MSAColumnGlobalAttention(nn.Module):
-
-    def __init__(self,
-                 *,
-                 local_layer_idx: int,
-                 c_in: int,
-                 c_hidden: int,
-                 no_heads: int,
-                 attn_bias_flags: dict[str, bool] = {
-                     "q": False,
-                     "k": False,
-                     "v": False,
-                     "g": True,
-                     "o": True,
-                 },
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 **kwargs):
+    def __init__(
+        self,
+        *,
+        local_layer_idx: int,
+        c_in: int,
+        c_hidden: int,
+        no_heads: int,
+        attn_bias_flags: dict[str, bool] = {
+            "q": False,
+            "k": False,
+            "v": False,
+            "g": True,
+            "o": True,
+        },
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        **kwargs,
+    ):
         super().__init__()
         self.local_layer_idx = local_layer_idx
         self.layer_norm_m = nn.LayerNorm(c_in, dtype=dtype, eps=eps)

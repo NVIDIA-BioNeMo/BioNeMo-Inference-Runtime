@@ -18,6 +18,7 @@
 Diffusion module. Implements the algorithms in section 3.7 of the
 Supplementary Information.
 """
+
 import math
 
 import torch
@@ -25,30 +26,29 @@ import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod)
-from tensorrt_bionemo._torch.graph_optimization.decorator import (
-    NamedDimTies, support_graph_optimization)
+    GraphOptimizationMode,
+    InputAcceptanceDimSpec,
+    InputKeyMethod,
+)
+from tensorrt_bionemo._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from tensorrt_bionemo._torch.layers.conditioning import DiffusionConditioning
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.noise_scheduler import \
-    SampleDiffusion as _SampleDiffusion
-from tensorrt_bionemo._torch.layers.noise_scheduler import \
-    create_noise_schedule as _create_noise_schedule
-from tensorrt_bionemo._torch.layers.random_augmentation import (
-    quaternion_to_matrix, random_quaternions)
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    OpenFold3DiffusionTransformer as DiffusionTransformer
+from tensorrt_bionemo._torch.layers.noise_scheduler import SampleDiffusion as _SampleDiffusion
+from tensorrt_bionemo._torch.layers.noise_scheduler import create_noise_schedule as _create_noise_schedule
+from tensorrt_bionemo._torch.layers.random_augmentation import quaternion_to_matrix, random_quaternions
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import (
+    OpenFold3DiffusionTransformer as DiffusionTransformer,
+)
 from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import (
-    AtomAttentionDecoder, AtomAttentionEncoder)
-from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import \
-    compute_atom_broadcast_index
-from tensorrt_bionemo._torch.utils import (recursive_calling_load_weights,
-                                           safe_generator)
+    AtomAttentionDecoder,
+    AtomAttentionEncoder,
+)
+from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index
+from tensorrt_bionemo._torch.utils import recursive_calling_load_weights, safe_generator
 from tensorrt_bionemo.configs import BaseConfig
 
 
-def broadcast_atom_mask(positions: torch.Tensor,
-                        atom_mask: torch.Tensor) -> torch.Tensor:
+def broadcast_atom_mask(positions: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
     """Reshape ``atom_mask`` to broadcast against an atom-position tensor.
 
     ``positions`` is ``[*, ..., N_atom, 3]`` and ``atom_mask`` is
@@ -63,16 +63,15 @@ def broadcast_atom_mask(positions: torch.Tensor,
     extra_batch_dims = positions.ndim - atom_mask.ndim - 1
     return atom_mask.reshape(
         *atom_mask.shape[:-1],
-        *((1, ) * extra_batch_dims),
+        *((1,) * extra_batch_dims),
         atom_mask.shape[-1],
         1,
     ).to(positions.dtype)
 
 
-def sample_rotations(shape,
-                     dtype: torch.dtype,
-                     device: torch.device,
-                     generator: torch.Generator = None) -> torch.Tensor:
+def sample_rotations(
+    shape, dtype: torch.dtype, device: torch.device, generator: torch.Generator = None
+) -> torch.Tensor:
     """Sample random rotation matrices via random unit quaternions."""
 
     n = math.prod(shape)
@@ -81,10 +80,8 @@ def sample_rotations(shape,
 
 
 def centre_random_augmentation(
-        xl: torch.Tensor,
-        atom_mask: torch.Tensor,
-        scale_trans: float = 1.0,
-        generator: torch.Generator = None) -> torch.Tensor:
+    xl: torch.Tensor, atom_mask: torch.Tensor, scale_trans: float = 1.0, generator: torch.Generator = None
+) -> torch.Tensor:
     """
     Implements AF3 Algorithm 19.
 
@@ -104,15 +101,9 @@ def centre_random_augmentation(
     Returns:
         Updated atom position with random global rotation and translation
     """
-    rots = sample_rotations(shape=xl.shape[:-2],
-                            dtype=xl.dtype,
-                            device=xl.device,
-                            generator=generator)
+    rots = sample_rotations(shape=xl.shape[:-2], dtype=xl.dtype, device=xl.device, generator=generator)
 
-    trans = scale_trans * torch.randn((*xl.shape[:-2], 3),
-                                      dtype=xl.dtype,
-                                      device=xl.device,
-                                      generator=generator)
+    trans = scale_trans * torch.randn((*xl.shape[:-2], 3), dtype=xl.dtype, device=xl.device, generator=generator)
 
     atom_mask_broadcast = broadcast_atom_mask(xl, atom_mask)
     mean_xl = torch.sum(
@@ -150,14 +141,16 @@ def create_noise_schedule(
     Returns:
         Noise schedule ``[no_rollout_steps + 1]``.
     """
-    return _create_noise_schedule(num_points=int(no_rollout_steps) + 1,
-                                  sigma_data=sigma_data,
-                                  s_max=s_max,
-                                  s_min=s_min,
-                                  rho=p,
-                                  device=device,
-                                  dtype=dtype,
-                                  final="keep")
+    return _create_noise_schedule(
+        num_points=int(no_rollout_steps) + 1,
+        sigma_data=sigma_data,
+        s_max=s_max,
+        s_min=s_min,
+        rho=p,
+        device=device,
+        dtype=dtype,
+        final="keep",
+    )
 
 
 @support_graph_optimization(
@@ -172,14 +165,15 @@ def create_noise_schedule(
                 ("si_trunk", (-2,)),
                 ("zij_trunk", (-2, -3)),
                 ("token_mask", (-1,)),
-            )
+            ),
         ),
     ),
     graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
     verify_capture=False,
     input_key_method=InputKeyMethod.EXACT,
     input_acceptance_dim_spec=InputAcceptanceDimSpec(
-        name="num_tokens", dim_len_max=1024,
+        name="num_tokens",
+        dim_len_max=1024,
     ),
 )
 class DiffusionModule(nn.Module):
@@ -206,14 +200,13 @@ class DiffusionModule(nn.Module):
             c_s=config.c_s,
             c_z=config.c_z,
             c_fourier_emb=config.diffusion_conditioning_config.c_fourier_emb,
-            max_relative_idx=config.diffusion_conditioning_config.
-            max_relative_idx,
-            max_relative_chain=config.diffusion_conditioning_config.
-            max_relative_chain,
+            max_relative_idx=config.diffusion_conditioning_config.max_relative_idx,
+            max_relative_chain=config.diffusion_conditioning_config.max_relative_chain,
             sigma_data=config.sigma_data,
             eps=config.eps,
             dtype=config.torch_dtype,
-            skip_create_weights=config.skip_create_weights)
+            skip_create_weights=config.skip_create_weights,
+        )
 
         self.atom_attn_enc = AtomAttentionEncoder(
             c_atom_ref_element=config.c_atom_ref_element,
@@ -230,25 +223,17 @@ class DiffusionModule(nn.Module):
             eps=config.eps,
             add_noisy_pos=config.add_noisy_pos,
             dtype=config.torch_dtype,
-            skip_create_weights=config.skip_create_weights)
+            skip_create_weights=config.skip_create_weights,
+        )
 
-        self.layer_norm_s = nn.LayerNorm(self.c_s,
-                                         bias=False,
-                                         dtype=self.dtype,
-                                         eps=config.eps)
-        self.linear_s = Linear(self.c_s,
-                               self.c_token,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=self.skip_create_weights)
+        self.layer_norm_s = nn.LayerNorm(self.c_s, bias=False, dtype=self.dtype, eps=config.eps)
+        self.linear_s = Linear(
+            self.c_s, self.c_token, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
-        self.diffusion_transformer = DiffusionTransformer(
-            config=config.diffusion_transformer_config.token_transformer)
+        self.diffusion_transformer = DiffusionTransformer(config=config.diffusion_transformer_config.token_transformer)
 
-        self.layer_norm_a = nn.LayerNorm(self.c_token,
-                                         bias=False,
-                                         dtype=self.dtype,
-                                         eps=config.eps)
+        self.layer_norm_a = nn.LayerNorm(self.c_token, bias=False, dtype=self.dtype, eps=config.eps)
 
         self.atom_attn_dec = AtomAttentionDecoder(
             c_atom=config.c_atom,
@@ -261,15 +246,15 @@ class DiffusionModule(nn.Module):
             inf=config.inf,
             eps=config.eps,
             dtype=config.torch_dtype,
-            skip_create_weights=config.skip_create_weights)
+            skip_create_weights=config.skip_create_weights,
+        )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -324,16 +309,16 @@ class DiffusionModule(nn.Module):
             si_input=si_input,
             si_trunk=si_trunk,
             zij_trunk=zij_trunk,
-            use_conditioning=use_conditioning)
+            use_conditioning=use_conditioning,
+        )
 
         xl_noisy = xl_noisy * broadcast_atom_mask(xl_noisy, atom_mask)
 
-        rl_noisy = xl_noisy / torch.sqrt(t[..., None, None] ** 2 +
-                                         self.sigma_data**2)
+        rl_noisy = xl_noisy / torch.sqrt(t[..., None, None] ** 2 + self.sigma_data**2)
 
         # Note: These modules are not memory-intensive compared to other parts of the
         # model (i.e. TemplateStack) so chunking is unnecessary for now.
-        
+
         # Input (dim 0 = batch B, dim 1 = the diffusion-samples axis S; the
         # token-level tensors carry a size-1 S placeholder that broadcasts):
         #   atom_mask: [B, 1, N_atom]
@@ -358,31 +343,30 @@ class DiffusionModule(nn.Module):
         # Input
         #   si: [B, 1, N_token, c_token=384]
         #   ai: [B, S, N_token, c_atom=768]
-        #   
+        #
         # The output of the linear_s has shape [B, 1, N_token, c_atom],
         # so broadcasts with ai for multiplicity S>1
         ai = ai + self.linear_s(self.layer_norm_s(si))
 
         token_dtype = self.diffusion_transformer.dtype
-        ai = self.diffusion_transformer(a=ai.to(dtype=token_dtype),
-                                        s=si.to(dtype=token_dtype),
-                                        z=zij.to(dtype=token_dtype),
-                                        mask=token_mask.to(dtype=token_dtype))
+        ai = self.diffusion_transformer(
+            a=ai.to(dtype=token_dtype),
+            s=si.to(dtype=token_dtype),
+            z=zij.to(dtype=token_dtype),
+            mask=token_mask.to(dtype=token_dtype),
+        )
         if token_dtype != torch.float32:
             ai = ai.float()
 
         ai = self.layer_norm_a(ai)
-        rl_update = self.atom_attn_dec(batch=batch,
-                                       atom_mask=atom_mask,
-                                       ai=ai,
-                                       ql=ql,
-                                       cl=cl,
-                                       plm=plm,
-                                       attn_metadata=attn_metadata)
-        sq_t = t[..., None, None]**2
-        xl_out = (self.sq_sigma_data / (self.sq_sigma_data + sq_t) * xl_noisy +
-                  self.sigma_data * t[..., None, None] /
-                  torch.sqrt(self.sq_sigma_data + sq_t) * rl_update)
+        rl_update = self.atom_attn_dec(
+            batch=batch, atom_mask=atom_mask, ai=ai, ql=ql, cl=cl, plm=plm, attn_metadata=attn_metadata
+        )
+        sq_t = t[..., None, None] ** 2
+        xl_out = (
+            self.sq_sigma_data / (self.sq_sigma_data + sq_t) * xl_noisy
+            + self.sigma_data * t[..., None, None] / torch.sqrt(self.sq_sigma_data + sq_t) * rl_update
+        )
 
         xl_out = xl_out * broadcast_atom_mask(xl_out, atom_mask)
 
@@ -412,15 +396,16 @@ class OpenFold3SampleDiffusion(_SampleDiffusion):
                 Instantiated denoising diffusion module used at each sampling
                 step.
         """
-        super().__init__(gamma0=config.gamma_0,
-                         gamma_min=config.gamma_min,
-                         noise_scale=config.noise_scale,
-                         step_scale=config.step_scale)
+        super().__init__(
+            gamma0=config.gamma_0,
+            gamma_min=config.gamma_min,
+            noise_scale=config.noise_scale,
+            step_scale=config.step_scale,
+        )
         self.diffusion_module = diffusion_module
         self.use_conditioning = config.use_conditioning
 
-    def denoise(self, x_noisy: torch.Tensor, sigma_hat: torch.Tensor,
-                ctx: dict) -> torch.Tensor:
+    def denoise(self, x_noisy: torch.Tensor, sigma_hat: torch.Tensor, ctx: dict) -> torch.Tensor:
         return self.diffusion_module(
             batch=ctx["batch"],
             xl_noisy=x_noisy,
@@ -495,20 +480,17 @@ class OpenFold3SampleDiffusion(_SampleDiffusion):
             )
 
             for tau, c_tau in enumerate(noise_schedule[1:]):
-                xl = centre_random_augmentation(xl=xl,
-                                                atom_mask=atom_mask,
-                                                generator=generator)
+                xl = centre_random_augmentation(xl=xl, atom_mask=atom_mask, generator=generator)
 
                 gamma = self.gamma0 if c_tau > self.gamma_min else 0
 
                 t = noise_schedule[tau] * (gamma + 1)
 
-                noise = (self.noise_scale *
-                         torch.sqrt(t**2 - noise_schedule[tau]**2) *
-                         torch.randn(xl.shape,
-                                     dtype=xl.dtype,
-                                     device=xl.device,
-                                     generator=generator))
+                noise = (
+                    self.noise_scale
+                    * torch.sqrt(t**2 - noise_schedule[tau] ** 2)
+                    * torch.randn(xl.shape, dtype=xl.dtype, device=xl.device, generator=generator)
+                )
 
                 xl_noisy = xl + noise
 

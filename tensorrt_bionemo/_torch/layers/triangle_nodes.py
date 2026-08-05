@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,23 +14,18 @@
 # limitations under the License.
 
 from enum import IntEnum
-from typing import Optional
 
 import torch
 import torch.nn as nn
-from cuequivariance_ops_torch.fused_layer_norm_torch import \
-    layer_norm_transpose
+from cuequivariance_ops_torch.fused_layer_norm_torch import layer_norm_transpose
 
-from tensorrt_bionemo._torch.custom_ops.fused_ln_proj_moveaxis_pad import \
-    LNProjMoveaxisPad
-from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
-                                                   WeightsLoadingConfig)
+from tensorrt_bionemo._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
+from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
-from ..auto_chunk import (CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy,
-                          chunk_apply)
+from ..auto_chunk import CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy, chunk_apply
 from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
 from ..custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 from .attention import TriangleAttention
@@ -47,27 +42,20 @@ class TriangleMultiplicationNodeType(IntEnum):
 
 
 class TriangleAttentionNode(nn.Module):
-
     def __init__(
         self,
         c_in: int,
         c_hidden: int,
         num_heads: int,
-        node_type: TriangleAttentionNodeType = TriangleAttentionNodeType.
-        STARTING,
+        node_type: TriangleAttentionNodeType = TriangleAttentionNodeType.STARTING,
         inf: float = 1e9,
         layer_idx: int = 0,
         dtype: torch.dtype = None,
-        chunk_policy: Optional[ChunkPolicy] = None,
+        chunk_policy: ChunkPolicy | None = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
-        mha_bias_flags: dict[str, bool] = {
-            "q": False,
-            "k": False,
-            "v": False,
-            "g": False,
-            "o": False
-        }):
+        mha_bias_flags: dict[str, bool] = {"q": False, "k": False, "v": False, "g": False, "o": False},
+    ):
         """
         Args:
             c_in (int): input channel dimension
@@ -92,8 +80,7 @@ class TriangleAttentionNode(nn.Module):
         # Query-row chunking policy (registry default unless overridden). Attention within each row
         # is independent, so row-chunking is numerically identical; bounds the [chunk, J, H, ...]
         # attention temporaries at large N.
-        self.chunk_policy = (chunk_policy if chunk_policy is not None else
-                             CHUNK_REGISTRY.get(TRIANGLE_ATTENTION))
+        self.chunk_policy = chunk_policy if chunk_policy is not None else CHUNK_REGISTRY.get(TRIANGLE_ATTENTION)
         self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype)
         self.linear = Linear(
             self.c_in,
@@ -119,25 +106,19 @@ class TriangleAttentionNode(nn.Module):
         self.J_padded_multiple = -1
         if self.attn_backend == "CuTeDSL":
             self.J_padded_multiple = 8
-        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(D=self.c_in,
-                                                       H=self.num_heads,
-                                                       dtype=dtype
-                                                       or torch.bfloat16)
+        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(D=self.c_in, H=self.num_heads, dtype=dtype or torch.bfloat16)
 
     @staticmethod
-    def _ensure_contiguous(
-            x: torch.Tensor,
-            mask_bias: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """ The attention kernels require contiguous inputs """
+    def _ensure_contiguous(x: torch.Tensor, mask_bias: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The attention kernels require contiguous inputs"""
         if not x.is_contiguous():
             x = x.contiguous()
         if not mask_bias.is_contiguous():
             mask_bias = mask_bias.contiguous()
         return x, mask_bias
 
-    def _ensure_dtype(self, x: torch.Tensor,
-                      mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """ Ensure the dtype of the input and mask """
+    def _ensure_dtype(self, x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Ensure the dtype of the input and mask"""
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
         if mask.dtype != self.dtype:
@@ -174,22 +155,19 @@ class TriangleAttentionNode(nn.Module):
         x: torch.Tensor,
         mask_bias: torch.Tensor,
         triangle_bias: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """Run MHA for a (possibly row-chunked) slice of ``x``; ``triangle_bias`` is shared."""
-        return self.mha(x,
-                        biases=[mask_bias, triangle_bias],
-                        attn_metadata=attn_metadata,
-                        buffers=buffers)
+        return self.mha(x, biases=[mask_bias, triangle_bias], attn_metadata=attn_metadata, buffers=buffers)
 
     def forward(
         self,
         x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        mask_bias: Optional[torch.Tensor] = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        mask: torch.Tensor | None = None,
+        mask_bias: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """
         Forward pass for the triangle attention node. Currently supports only
@@ -215,10 +193,7 @@ class TriangleAttentionNode(nn.Module):
                 mask = x.new_ones(x.shape[:-1])
             if self.node_type == TriangleAttentionNodeType.ENDING:
                 mask = mask.transpose(1, 2)
-            precomputed = precompute_pair_masks(self.attn_backend,
-                                                mask,
-                                                inf=self.inf,
-                                                dtype=self.dtype)
+            precomputed = precompute_pair_masks(self.attn_backend, mask, inf=self.inf, dtype=self.dtype)
             mask_bias = precomputed.mask_bias
 
         x, triangle_bias = self._prep_bias(x)
@@ -228,61 +203,50 @@ class TriangleAttentionNode(nn.Module):
         # rows so it passes through). ``chunk_apply`` falls back to a single dense call below the
         # policy threshold, so small N is unaffected.
         if self.chunk_policy is not None:
-            output = chunk_apply(self._mha_slice,
-                                 x,
-                                 mask_bias,
-                                 policy=self.chunk_policy,
-                                 cat_dim=1,
-                                 triangle_bias=triangle_bias,
-                                 attn_metadata=attn_metadata,
-                                 buffers=buffers)
+            output = chunk_apply(
+                self._mha_slice,
+                x,
+                mask_bias,
+                policy=self.chunk_policy,
+                cat_dim=1,
+                triangle_bias=triangle_bias,
+                attn_metadata=attn_metadata,
+                buffers=buffers,
+            )
         else:
-            output = self._mha_slice(x,
-                                     mask_bias,
-                                     triangle_bias,
-                                     attn_metadata=attn_metadata,
-                                     buffers=buffers)
+            output = self._mha_slice(x, mask_bias, triangle_bias, attn_metadata=attn_metadata, buffers=buffers)
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)
         return output
 
 
 class TriangleAttentionStartingNode(TriangleAttentionNode):
-
     def __init__(self, *args, **kwargs):
-        kwargs['node_type'] = TriangleAttentionNodeType.STARTING
+        kwargs["node_type"] = TriangleAttentionNodeType.STARTING
         super().__init__(*args, **kwargs)
 
 
 class TriangleAttentionEndingNode(TriangleAttentionNode):
-
     def __init__(self, *args, **kwargs):
-        kwargs['node_type'] = TriangleAttentionNodeType.ENDING
+        kwargs["node_type"] = TriangleAttentionNodeType.ENDING
         super().__init__(*args, **kwargs)
 
 
 class TriangleMultiplicationNode(nn.Module):
-
     def __init__(
-            self,
-            layer_idx: int = 0,
-            dim: int = 128,
-            hidden_dim: Optional[int] = None,
-            eps: float = 1e-5,
-            multiplication_type:
-        TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.
-        OUTGOING,
-            bias_flags: dict[str, bool] = {
-                "p_in": False,
-                "g_in": False,
-                "p_out": False,
-                "g_out": False
-            },
-            dtype: torch.dtype = None,
-            skip_create_weights: bool = False,
-            high_precision: bool = True,
-            mean_normalization: bool = False,
-            pair_mask_left_aligned: bool = True):
+        self,
+        layer_idx: int = 0,
+        dim: int = 128,
+        hidden_dim: int | None = None,
+        eps: float = 1e-5,
+        multiplication_type: TriangleMultiplicationNodeType = TriangleMultiplicationNodeType.OUTGOING,
+        bias_flags: dict[str, bool] = {"p_in": False, "g_in": False, "p_out": False, "g_out": False},
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        high_precision: bool = True,
+        mean_normalization: bool = False,
+        pair_mask_left_aligned: bool = True,
+    ):
         """Triangle multiplication node.
 
         Args:
@@ -312,38 +276,42 @@ class TriangleMultiplicationNode(nn.Module):
         self.hidden_dim = hidden_dim
         self.multiplication_type = multiplication_type
         self.norm_in = nn.LayerNorm(self.dim, dtype=dtype, eps=eps)
-        self.p_in = Linear(self.dim,
-                           2 * self.hidden_dim,
-                           bias=bias_flags["p_in"],
-                           dtype=dtype,
-                           weights_loading_config=WeightsLoadingConfig(
-                               weight_mode=WeightMode.FUSED_KV_LINEAR),
-                           skip_create_weights=skip_create_weights)
-        self.g_in = Linear(self.dim,
-                           2 * self.hidden_dim,
-                           bias=bias_flags["g_in"],
-                           dtype=dtype,
-                           weights_loading_config=WeightsLoadingConfig(
-                               weight_mode=WeightMode.FUSED_KV_LINEAR),
-                           skip_create_weights=skip_create_weights)
+        self.p_in = Linear(
+            self.dim,
+            2 * self.hidden_dim,
+            bias=bias_flags["p_in"],
+            dtype=dtype,
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
+            skip_create_weights=skip_create_weights,
+        )
+        self.g_in = Linear(
+            self.dim,
+            2 * self.hidden_dim,
+            bias=bias_flags["g_in"],
+            dtype=dtype,
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
+            skip_create_weights=skip_create_weights,
+        )
         # Use float32 for the output layers
         if self.high_precision:
             self.high_precision_dtype = torch.float32
         else:
             self.high_precision_dtype = dtype
-        self.norm_out = nn.LayerNorm(self.hidden_dim,
-                                     dtype=self.high_precision_dtype,
-                                     eps=eps)
-        self.p_out = Linear(self.hidden_dim,
-                            self.dim,
-                            bias=bias_flags["p_out"],
-                            dtype=self.high_precision_dtype,
-                            skip_create_weights=skip_create_weights)
-        self.g_out = Linear(self.dim,
-                            self.dim,
-                            bias=bias_flags["g_out"],
-                            dtype=self.high_precision_dtype,
-                            skip_create_weights=skip_create_weights)
+        self.norm_out = nn.LayerNorm(self.hidden_dim, dtype=self.high_precision_dtype, eps=eps)
+        self.p_out = Linear(
+            self.hidden_dim,
+            self.dim,
+            bias=bias_flags["p_out"],
+            dtype=self.high_precision_dtype,
+            skip_create_weights=skip_create_weights,
+        )
+        self.g_out = Linear(
+            self.dim,
+            self.dim,
+            bias=bias_flags["g_out"],
+            dtype=self.high_precision_dtype,
+            skip_create_weights=skip_create_weights,
+        )
 
         # TODO: Make this threshold configurable
         self._forward_impl_v2_threshold = 384
@@ -366,32 +334,31 @@ class TriangleMultiplicationNode(nn.Module):
             transpose_out=False,
             N=2 * self.hidden_dim,
             K=self.dim,
-            pair_mask_left_aligned=self.pair_mask_left_aligned)
+            pair_mask_left_aligned=self.pair_mask_left_aligned,
+        )
         self._dual_gemm_x_x_op_transpose = get_dual_gemm_x_x_op(
             self.dtype,
             transpose_out=True,
             N=2 * self.hidden_dim,
             K=self.dim,
-            pair_mask_left_aligned=self.pair_mask_left_aligned)
+            pair_mask_left_aligned=self.pair_mask_left_aligned,
+        )
 
-    def _einsum_compute(self, a: torch.Tensor,
-                        b: torch.Tensor) -> torch.Tensor:
+    def _einsum_compute(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
             return torch.einsum("bikd,bjkd->bijd", a, b)
         return torch.einsum("bkid,bkjd->bijd", a, b)
 
     def _ensure_dtype(self, x: torch.Tensor) -> torch.Tensor:
-        """ Ensure the dtype of the input """
+        """Ensure the dtype of the input"""
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
         return x
 
     def _forward_impl_v1(
-            self,
-            x: torch.Tensor,
-            mask: torch.Tensor,
-            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """ This version is used for short sequences in eager mode
+        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """This version is used for short sequences in eager mode
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
@@ -404,13 +371,9 @@ class TriangleMultiplicationNode(nn.Module):
 
         dg_actual_seqlen = actual_seqlen
         x_in = x
-        x = self._dual_gemm_x_x_op(x,
-                                   self.g_in.weight,
-                                   self.p_in.weight,
-                                   self.g_in.bias,
-                                   self.p_in.bias,
-                                   mask,
-                                   actual_seqlen=dg_actual_seqlen)
+        x = self._dual_gemm_x_x_op(
+            x, self.g_in.weight, self.p_in.weight, self.g_in.bias, self.p_in.bias, mask, actual_seqlen=dg_actual_seqlen
+        )
         x = x.to(self.high_precision_dtype)
 
         a, b = x.split([self.dim, self.dim], dim=-1)
@@ -423,18 +386,16 @@ class TriangleMultiplicationNode(nn.Module):
         x_0_out = self.norm_out(x)
         x_1_out = x_in.to(self.high_precision_dtype)
 
-        x = self._dual_gemm_x0_x1_op(x_1_out, x_0_out, self.g_out.weight,
-                                     self.p_out.weight, self.g_out.bias,
-                                     self.p_out.bias)
+        x = self._dual_gemm_x0_x1_op(
+            x_1_out, x_0_out, self.g_out.weight, self.p_out.weight, self.g_out.bias, self.p_out.bias
+        )
         x = self._ensure_dtype(x)
         return x
 
     def _forward_impl_v2(
-            self,
-            x: torch.Tensor,
-            mask: torch.Tensor,
-            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """ This version is used for long sequences and in the compile mode.
+        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """This version is used for long sequences and in the compile mode.
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
@@ -443,11 +404,7 @@ class TriangleMultiplicationNode(nn.Module):
                 (same as ``actual_s_kv`` from CuTeDSL precompute).
         """
         x = self._ensure_dtype(x)
-        x = layer_norm_transpose(x,
-                                 self.norm_in.weight,
-                                 self.norm_in.bias,
-                                 eps=self.eps,
-                                 layout="bijd->bijd")
+        x = layer_norm_transpose(x, self.norm_in.weight, self.norm_in.bias, eps=self.eps, layout="bijd->bijd")
 
         x_in = x
         # Gated dual gemm
@@ -475,41 +432,30 @@ class TriangleMultiplicationNode(nn.Module):
             x = torch.einsum("dbki,dbkj->dbij", a, b)
 
         # Output normalization
-        x_out = layer_norm_transpose(x,
-                                     self.norm_out.weight,
-                                     self.norm_out.bias,
-                                     eps=self.eps,
-                                     layout="dbij->bijd")
+        x_out = layer_norm_transpose(x, self.norm_out.weight, self.norm_out.bias, eps=self.eps, layout="dbij->bijd")
 
         # Output gating
         x_out = x_out.to(self.high_precision_dtype)
         x_in = x_in.to(self.high_precision_dtype)
-        x = self._dual_gemm_x0_x1_op(x_in, x_out, self.g_out.weight,
-                                     self.p_out.weight, self.g_out.bias,
-                                     self.p_out.bias)
+        x = self._dual_gemm_x0_x1_op(
+            x_in, x_out, self.g_out.weight, self.p_out.weight, self.g_out.bias, self.p_out.bias
+        )
         return x
 
     def _eager_mode_forward(
-            self,
-            x: torch.Tensor,
-            mask: torch.Tensor,
-            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
+        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
+    ) -> torch.Tensor:
         seq_len = x.shape[-2]
         if seq_len < self._forward_impl_v2_threshold:
             return self._forward_impl_v1(x, mask, actual_seqlen=actual_seqlen)
         return self._forward_impl_v2(x, mask, actual_seqlen=actual_seqlen)
 
     def _compile_mode_forward(
-            self,
-            x: torch.Tensor,
-            mask: torch.Tensor,
-            actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
+        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
+    ) -> torch.Tensor:
         return self._forward_impl_v2(x, mask, actual_seqlen=actual_seqlen)
 
-    def forward(self,
-                x: torch.Tensor,
-                mask: torch.Tensor,
-                actual_seqlen: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None) -> torch.Tensor:
         """
         Args:
             x: input pair tensor ``[B, I, J, c_in]``.
@@ -533,7 +479,5 @@ class TriangleMultiplicationNode(nn.Module):
                 callers must pass ``None`` instead.
         """
         if not torch.compiler.is_compiling():
-            return self._eager_mode_forward(x,
-                                            mask,
-                                            actual_seqlen=actual_seqlen)
+            return self._eager_mode_forward(x, mask, actual_seqlen=actual_seqlen)
         return self._compile_mode_forward(x, mask, actual_seqlen=actual_seqlen)

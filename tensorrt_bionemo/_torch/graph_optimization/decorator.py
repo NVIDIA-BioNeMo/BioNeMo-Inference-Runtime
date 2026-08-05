@@ -37,16 +37,24 @@ tracker does its own positional-to-parameter-name normalization for a live call
 (``_positional_param_names``); ``bind_forward_args`` below is a standalone
 utility providing that same ``inspect.Signature``-based normalization.
 """
+
 from __future__ import annotations
 
 import inspect
 import re
-from typing import Any, Callable, Dict, Optional, Sequence, Type, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from tensorrt_bionemo._torch.graph_optimization.config import (  # noqa: F401
-    CUDAGraphOptimizationConfig, GraphOptimizationConfig, GraphOptimizationMode,
-    InputAcceptanceDimSpec, InputKeyMethod, InputRoutingConfig, NamedDimTies,
-    PaddedDimSpec)
+    CUDAGraphOptimizationConfig,
+    GraphOptimizationConfig,
+    GraphOptimizationMode,
+    InputAcceptanceDimSpec,
+    InputKeyMethod,
+    InputRoutingConfig,
+    NamedDimTies,
+    PaddedDimSpec,
+)
 
 # Attribute the decorator stashes its ``GraphOptimizationConfig`` default under
 # on the decorated class.
@@ -66,8 +74,8 @@ def support_graph_optimization(
     static_args: Sequence[str] = (),
     workspace_kwargs: Sequence[str] = (),
     verify_capture: bool = False,
-    input_acceptance_dim_spec: Optional[InputAcceptanceDimSpec] = None,
-    padded_dim_spec: Optional[PaddedDimSpec] = None,
+    input_acceptance_dim_spec: InputAcceptanceDimSpec | None = None,
+    padded_dim_spec: PaddedDimSpec | None = None,
 ):
     """Attach a default graph-optimization config to a module class.
 
@@ -105,9 +113,7 @@ def support_graph_optimization(
     input_routing_config = InputRoutingConfig(
         named_dim_ties=list(named_dims),
         padded_dims=[padded_dim_spec] if padded_dim_spec is not None else [],
-        input_acceptance_dims=(
-            [input_acceptance_dim_spec]
-            if input_acceptance_dim_spec is not None else []),
+        input_acceptance_dims=([input_acceptance_dim_spec] if input_acceptance_dim_spec is not None else []),
         static_args=list(static_args),
         internal_workspace_kwargs=list(workspace_kwargs),
     )
@@ -128,9 +134,10 @@ def support_graph_optimization(
         raise ValueError(
             f"unsupported graph_optimization_mode {graph_optimization_mode!r}; "
             f"expected {GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH} or "
-            f"{GraphOptimizationMode.NO_OPTIMIZATION}")
+            f"{GraphOptimizationMode.NO_OPTIMIZATION}"
+        )
 
-    def _decorate(cls: Type) -> Type:
+    def _decorate(cls: type) -> type:
         setattr(cls, GRAPH_OPT_DEFAULT_ATTR, graph_opt_default)
         # Fail loudly at decoration time if a declared name is not a
         # real forward parameter — a typo'd tie point is a config bug, not a
@@ -141,7 +148,7 @@ def support_graph_optimization(
     return _decorate
 
 
-def validate_spec_against_forward(cls_or_instance: Union[Type, object]) -> None:
+def validate_spec_against_forward(cls_or_instance: type | object) -> None:
     """Validate declared names against ``forward``'s signature.
 
     Every input-tie tensor name (except positional ``arg{i}`` references),
@@ -151,20 +158,14 @@ def validate_spec_against_forward(cls_or_instance: Union[Type, object]) -> None:
     """
     config = getattr(cls_or_instance, GRAPH_OPT_DEFAULT_ATTR, None)
     if not isinstance(config, GraphOptimizationConfig):
-        target = getattr(cls_or_instance, "__name__",
-                         type(cls_or_instance).__name__)
-        raise ValueError(
-            f"{target!r} is not decorated with @support_graph_optimization "
-            "(no graph_opt_default found)")
+        target = getattr(cls_or_instance, "__name__", type(cls_or_instance).__name__)
+        raise ValueError(f"{target!r} is not decorated with @support_graph_optimization (no graph_opt_default found)")
     routing = config.input_routing_config
-    forward = getattr(cls_or_instance, "forward")
+    forward = cls_or_instance.forward
     sig = inspect.signature(forward)
     param_names = set(sig.parameters)
-    has_var_keyword = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD
-        for p in sig.parameters.values())
-    owner = getattr(cls_or_instance, "__name__",
-                    type(cls_or_instance).__name__)
+    has_var_keyword = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    owner = getattr(cls_or_instance, "__name__", type(cls_or_instance).__name__)
 
     def _check(name: str, kind: str) -> None:
         if _POSITIONAL_NAME.match(name):
@@ -174,7 +175,8 @@ def validate_spec_against_forward(cls_or_instance: Union[Type, object]) -> None:
         raise ValueError(
             f"@support_graph_optimization on {owner}: {kind} {name!r} is not a "
             f"parameter of forward "
-            f"{tuple(n for n in param_names if n != 'self')}")
+            f"{tuple(n for n in param_names if n != 'self')}"
+        )
 
     named_dim_ties = routing.named_dim_ties if routing is not None else ()
     workspace_kwargs = routing.internal_workspace_kwargs if routing is not None else ()
@@ -191,8 +193,8 @@ def validate_spec_against_forward(cls_or_instance: Union[Type, object]) -> None:
 def bind_forward_args(
     forward: Callable,
     args: Sequence[Any],
-    kwargs: Dict[str, Any],
-) -> Dict[str, Any]:
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
     """Normalize a live call to ``{parameter_name: value}``.
 
     Uses :meth:`inspect.Signature.bind_partial` to map positional arguments onto
@@ -205,7 +207,7 @@ def bind_forward_args(
     """
     sig = inspect.signature(forward)
     bound = sig.bind_partial(*args, **kwargs)
-    normalized: Dict[str, Any] = {}
+    normalized: dict[str, Any] = {}
     for name, value in bound.arguments.items():
         kind = sig.parameters[name].kind
         if kind is inspect.Parameter.VAR_POSITIONAL:

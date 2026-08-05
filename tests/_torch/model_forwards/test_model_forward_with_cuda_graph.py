@@ -54,34 +54,41 @@ import torch
 
 import tests
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, GraphOptimizationMode, InputKeyMethod,
-    InputRoutingConfigFactory)
+    CUDAGraphOptimizationConfig,
+    GraphOptimizationMode,
+    InputKeyMethod,
+    InputRoutingConfigFactory,
+)
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
-    CUDAGraphOptimizationTracker, CUDAGraphPreparationState)
+    CUDAGraphOptimizationTracker,
+    CUDAGraphPreparationState,
+)
 from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import (
-    BoltzDiffusionTransformer, OpenFold3DiffusionTransformer,
-    ProtenixDiffusionTransformer)
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerModule
-from tensorrt_bionemo._torch.modules.boltz.structure import \
-    DiffusionModule as BoltzDiffusionModule
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import \
-    DiffusionModule as OF3DiffusionModule
-from tensorrt_bionemo._torch.modules.protenix.diffusion import \
-    ProtenixDiffusionModule
+    BoltzDiffusionTransformer,
+    OpenFold3DiffusionTransformer,
+    ProtenixDiffusionTransformer,
+)
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
+from tensorrt_bionemo._torch.modules.boltz.structure import DiffusionModule as BoltzDiffusionModule
+from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
+from tensorrt_bionemo._torch.modules.protenix.diffusion import ProtenixDiffusionModule
 from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
-    EngineProcessorConfig)
+from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig
 from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.model_forwards import (
-    _AVAILABILITY_EXC, _CKPT_ENV, _find_sample_json, _HF_CKPT,
-    _lddt_to_reference, _load_request, _model_weights_available, _run_pipeline)
+    _AVAILABILITY_EXC,
+    _find_sample_json,
+    _lddt_to_reference,
+    _load_request,
+    _model_weights_available,
+    _run_pipeline,
+)
 
 # --- Test configuration ----------------------------------------------------
 # Models whose diffusion/token transformer is graph-optimizable. Each is run
 # through the full pipeline twice (eager vs cuda-graph) and compared.
-MODEL_SOURCES = ("openfold3", )
+MODEL_SOURCES = ("openfold3",)
 SEED = 42
 
 # Bundled sample data (no Git LFS — real files shipped in the repo).
@@ -97,18 +104,15 @@ GT_DIR = SAMPLES_DIR / "gt"
 #       T1047s1 232             (129, 256)
 # The two tuples below use T1038 and T1047s1, one sample per batch, in
 # either order (the order is what varies between them).
-SAMPLE_ID_TUPLE_D = (("T1038",), ("T1047s1",)) # tuple of batches each of size 1
+SAMPLE_ID_TUPLE_D = (("T1038",), ("T1047s1",))  # tuple of batches each of size 1
 SAMPLE_ID_TUPLE_E = (("T1047s1",), ("T1038",))
 
 # Every distinct sample id referenced by any tuple above; used only for the
 # module-level data-availability check below. Each test receives its own
 # ``sample_ids`` tuple via the ``sample_id_tuple`` parametrization.
-_ALL_SAMPLE_IDS = tuple(sorted({
-    sid
-    for tup in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
-    for batch in tup
-    for sid in batch
-}))
+_ALL_SAMPLE_IDS = tuple(
+    sorted({sid for tup in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E) for batch in tup for sid in batch})
+)
 
 # Diffusion runtime args. num_sampling_steps need only exceed the warmup
 # threshold (3 calls) so each target's graph captures and then replays.
@@ -121,10 +125,14 @@ DIFFUSION_SAMPLES = 5
 # non-associativity), so the two need only agree in accuracy, not bit-for-bit.
 LDDT_GT_PARITY_TOL = 0.07
 
-_SAMPLES_AVAILABLE = SAMPLES_DIR.is_dir() and all(
-    _find_sample_json(sid) is not None for sid in _ALL_SAMPLE_IDS)
+_SAMPLES_AVAILABLE = SAMPLES_DIR.is_dir() and all(_find_sample_json(sid) is not None for sid in _ALL_SAMPLE_IDS)
 
 
+# Deliberately NOT the tables of the same name in tests.common.test_utils
+# .model_forwards: the keys here are this module's model-source names
+# (``boltz-2``, plus ``protenix-v2``, which the shared tables omit), and they
+# are passed explicitly to ``_model_weights_available`` below. Do not "dedupe"
+# these by importing the shared ones -- the keys would no longer match.
 _CKPT_ENV = {
     "openfold3": "OPENFOLD3_CKPT",
     "boltz-2": "BOLTZ2_CKPT",
@@ -135,6 +143,7 @@ _HF_CKPT = {
     "boltz-2": ("boltz-community/boltz-2", "boltz-2_conf.ckpt"),
     "protenix-v2": ("TMF001/protenix-v2-weights", "protenix-v2.pt"),
 }
+
 
 @pytest.fixture(autouse=True)
 def _free_captured_cuda_graphs():
@@ -189,6 +198,7 @@ def _default_of3_model_config(model_source: str):
     if model_source != "openfold3":
         return None
     from tensorrt_bionemo.registry import get_model_class
+
     cfg = get_model_class(model_source).get_pretrained_config(model_source)
     # Only a locally-present ``OPENFOLD3_CKPT`` can be inspected cheaply; when
     # it is unset the engine downloads the HF default (shared layout), which
@@ -196,18 +206,14 @@ def _default_of3_model_config(model_source: str):
     ckpt = os.environ.get("OPENFOLD3_CKPT")
     if not ckpt or not Path(ckpt).is_file():
         return cfg
-    state_dict = torch.load(
-        ckpt, map_location="cpu", mmap=True, weights_only=False)
+    state_dict = torch.load(ckpt, map_location="cpu", mmap=True, weights_only=False)
     if isinstance(state_dict, dict) and "state_dict" in state_dict:
         state_dict = state_dict["state_dict"]
     # (checkpoint prefix, config attr holding that transformer's config)
     transformers = [
-        ("input_embedder.atom_attn_enc",
-         cfg.input_embedder_config.atom_transformer_config),
-        ("diffusion_module.atom_attn_enc",
-         cfg.diffusion_module_config.atom_transformer_encoder_config),
-        ("diffusion_module.atom_attn_dec",
-         cfg.diffusion_module_config.atom_transformer_decoder_config),
+        ("input_embedder.atom_attn_enc", cfg.input_embedder_config.atom_transformer_config),
+        ("diffusion_module.atom_attn_enc", cfg.diffusion_module_config.atom_transformer_encoder_config),
+        ("diffusion_module.atom_attn_dec", cfg.diffusion_module_config.atom_transformer_decoder_config),
     ]
     for prefix, tf_cfg in transformers:
         shared_key = f"{prefix}.atom_transformer.layer_norm_z.weight"
@@ -228,8 +234,7 @@ def _routing_from_decorator(cls, *, bucket: bool):
     ``bucket`` is set, a linear 8-interval padding up to 1024.
     """
     factory = InputRoutingConfigFactory()
-    factory.set_named_dim_ties(
-        cls.graph_opt_default.input_routing_config.named_dim_ties)
+    factory.set_named_dim_ties(cls.graph_opt_default.input_routing_config.named_dim_ties)
     factory.set_input_acceptance_dim("num_tokens", 1024)
     if bucket:
         factory.set_padded_dim("num_tokens", 1, 1024, 8, spacing_method="linear")
@@ -243,7 +248,7 @@ def _module_graph_optimization_config(
     sample_ids: tuple[str, ...],
     prod_key: InputKeyMethod,
     verify_capture: bool = True,
-    ) -> CUDAGraphOptimizationConfig:
+) -> CUDAGraphOptimizationConfig:
     """Assemble a module's ``CUDAGraphOptimizationConfig``.
 
     For ``prod_key`` the routing comes straight from the module's
@@ -255,28 +260,25 @@ def _module_graph_optimization_config(
     """
     if input_key_method == prod_key:
         input_routing_config = cls.graph_opt_default.input_routing_config
-    elif input_key_method in (InputKeyMethod.EXACT,
-                              InputKeyMethod.BUCKETED_SHAPES):
-        input_routing_config = _routing_from_decorator(
-            cls, bucket=input_key_method == InputKeyMethod.BUCKETED_SHAPES)
+    elif input_key_method in (InputKeyMethod.EXACT, InputKeyMethod.BUCKETED_SHAPES):
+        input_routing_config = _routing_from_decorator(cls, bucket=input_key_method == InputKeyMethod.BUCKETED_SHAPES)
     else:
-        raise NotImplementedError(
-            f"unsupported input_key_method {input_key_method!r} for module "
-            f"{module_name!r}")
+        raise NotImplementedError(f"unsupported input_key_method {input_key_method!r} for module {module_name!r}")
     return CUDAGraphOptimizationConfig(
         graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
         input_key_method=input_key_method,
         input_routing_config=input_routing_config,
         verify_capture=verify_capture,
-        num_graphs_max_for_this_module=len(sample_ids))
+        num_graphs_max_for_this_module=len(sample_ids),
+    )
 
 
 def _openfold3_graph_optimization_config(
     module_name: str,
     input_key_method: InputKeyMethod,
     sample_ids: tuple[str, ...],
-    verify_capture : bool = True,
-    ) -> CUDAGraphOptimizationConfig:
+    verify_capture: bool = True,
+) -> CUDAGraphOptimizationConfig:
     """Build the CUDA-graph optimization config for an OpenFold3 ``module_name``.
 
     ``token_transformer`` / ``diffusion_module`` are production-keyed ``EXACT``
@@ -290,21 +292,16 @@ def _openfold3_graph_optimization_config(
         "structure_pairformer": PairformerModule,
     }
     if module_name not in cls_by_module:
-        raise ValueError(
-            f"unsupported module {module_name!r} for openfold3")
-    prod_key = (InputKeyMethod.BUCKETED_SHAPES
-                if module_name == "structure_pairformer"
-                else InputKeyMethod.EXACT)
+        raise ValueError(f"unsupported module {module_name!r} for openfold3")
+    prod_key = InputKeyMethod.BUCKETED_SHAPES if module_name == "structure_pairformer" else InputKeyMethod.EXACT
     return _module_graph_optimization_config(
-        cls_by_module[module_name], module_name, input_key_method, sample_ids,
-        prod_key, verify_capture)
+        cls_by_module[module_name], module_name, input_key_method, sample_ids, prod_key, verify_capture
+    )
 
 
 def _boltz2_graph_optimization_config(
-    module_name: str,
-    input_key_method: InputKeyMethod,
-    sample_ids: tuple[str, ...],
-    verify_capture: bool = True) -> CUDAGraphOptimizationConfig:
+    module_name: str, input_key_method: InputKeyMethod, sample_ids: tuple[str, ...], verify_capture: bool = True
+) -> CUDAGraphOptimizationConfig:
     """Build the CUDA-graph optimization config for a boltz-2 ``module_name``.
 
     The token axis (``num_tokens``) is tied per module:
@@ -335,19 +332,15 @@ def _boltz2_graph_optimization_config(
     }
     if module_name not in cls_by_module:
         raise ValueError(f"unsupported module {module_name!r} for boltz-2")
-    prod_key = (InputKeyMethod.BUCKETED_SHAPES
-                if module_name == "structure_pairformer"
-                else InputKeyMethod.EXACT)
+    prod_key = InputKeyMethod.BUCKETED_SHAPES if module_name == "structure_pairformer" else InputKeyMethod.EXACT
     return _module_graph_optimization_config(
-        cls_by_module[module_name], module_name, input_key_method, sample_ids,
-        prod_key, verify_capture)
+        cls_by_module[module_name], module_name, input_key_method, sample_ids, prod_key, verify_capture
+    )
 
 
 def _protenix_graph_optimization_config(
-    module_name: str,
-    input_key_method: InputKeyMethod,
-    sample_ids: tuple[str, ...],
-    verify_capture: bool = True) -> CUDAGraphOptimizationConfig:
+    module_name: str, input_key_method: InputKeyMethod, sample_ids: tuple[str, ...], verify_capture: bool = True
+) -> CUDAGraphOptimizationConfig:
     """Build the CUDA-graph optimization config for a Protenix ``module_name``.
 
     Protenix graph-optimizes ``token_transformer`` (``a``/``s``/``z``/``mask``,
@@ -363,12 +356,17 @@ def _protenix_graph_optimization_config(
     }
     if module_name not in cls_by_module:
         raise NotImplementedError(
-            f"module {module_name!r} is not graph-optimized for protenix "
-            "(only token_transformer and diffusion_module)")
+            f"module {module_name!r} is not graph-optimized for protenix (only token_transformer and diffusion_module)"
+        )
     # The production setting is EXACT (acceptance only); BUCKETED adds padding.
     return _module_graph_optimization_config(
-        cls_by_module[module_name], module_name, input_key_method, sample_ids,
-        prod_key=InputKeyMethod.EXACT, verify_capture=verify_capture)
+        cls_by_module[module_name],
+        module_name,
+        input_key_method,
+        sample_ids,
+        prod_key=InputKeyMethod.EXACT,
+        verify_capture=verify_capture,
+    )
 
 
 def _build_graph_optimization_config(
@@ -376,7 +374,8 @@ def _build_graph_optimization_config(
     module_name: str,
     input_key_method: InputKeyMethod,
     sample_ids: tuple[str, ...],
-    use_cuda_graph: bool) -> CUDAGraphOptimizationConfig | None:
+    use_cuda_graph: bool,
+) -> CUDAGraphOptimizationConfig | None:
     """Build the CUDA-graph optimization config for ``module_name``.
 
     Returns ``None`` when ``use_cuda_graph`` is False (eager, no acceleration).
@@ -398,13 +397,14 @@ def _build_graph_optimization_config(
         raise ValueError(f"unsupported model_source {model_source!r}")
 
 
-def _build_processor_config(model_source: str,
-                            module_name: str,
-                            output_dir: Path,
-                            use_cuda_graph: bool,
-                            sample_ids: tuple[str, ...],
-                            input_key_method: InputKeyMethod = InputKeyMethod.EXACT
-                            ) -> EngineProcessorConfig:
+def _build_processor_config(
+    model_source: str,
+    module_name: str,
+    output_dir: Path,
+    use_cuda_graph: bool,
+    sample_ids: tuple[str, ...],
+    input_key_method: InputKeyMethod = InputKeyMethod.EXACT,
+) -> EngineProcessorConfig:
     """Build a serial-backend ``EngineProcessorConfig`` for ``model_source``.
 
     When ``use_cuda_graph`` is set, the engine is given an ``accelerated_configs``
@@ -418,26 +418,25 @@ def _build_processor_config(model_source: str,
     ``BUCKETED_SHAPES`` pads inputs into shape buckets so targets in the
     same bucket share one captured graph.
     """
-    
+
     engine_kwargs: dict = {"profile_inference": True}
     default_model_cfg = _default_of3_model_config(model_source)
     if default_model_cfg is not None:
         engine_kwargs["config"] = default_model_cfg
-    
+
     # overwrite default graph_optimization_config with a CUDAGraphOptimizationConfig if use_cuda_graph is True
     graph_optimization_config = _build_graph_optimization_config(
         model_source=model_source,
         module_name=module_name,
         input_key_method=input_key_method,
         sample_ids=sample_ids,
-        use_cuda_graph=use_cuda_graph)
+        use_cuda_graph=use_cuda_graph,
+    )
 
     engine_kwargs["accelerated_configs"] = {
-        module_name:
-        AcceleratedConfig(
+        module_name: AcceleratedConfig(
             backend=BackendType.TORCH,
-            default=BaseConfig(
-                graph_optimization_config=graph_optimization_config),
+            default=BaseConfig(graph_optimization_config=graph_optimization_config),
         ),
     }
     # insert engine_kwargs, which include the shape configuration
@@ -450,8 +449,8 @@ def _build_processor_config(model_source: str,
             "num_sampling_steps": NUM_SAMPLING_STEPS,
             "diffusion_samples": DIFFUSION_SAMPLES,
         },
-        writer_stage=WriterStageConfig(output_path=str(output_dir),
-                                       format="cif"))
+        writer_stage=WriterStageConfig(output_path=str(output_dir), format="cif"),
+    )
     return engine_processor_config
 
 
@@ -475,10 +474,12 @@ def _graph_states(processor) -> list[tuple]:
         break
     assert isinstance(tracker, CUDAGraphOptimizationTracker), (
         "expected the token transformer to be wrapped in a "
-        f"CUDAGraphOptimizationTracker, found {type(tracker).__name__}")
-    return [(s.preparation_state,
-             tracker.fallback_to_eager_by_key.get(k, False))
-            for k, s in tracker.graph_state_by_key.items()]
+        f"CUDAGraphOptimizationTracker, found {type(tracker).__name__}"
+    )
+    return [
+        (s.preparation_state, tracker.fallback_to_eager_by_key.get(k, False))
+        for k, s in tracker.graph_state_by_key.items()
+    ]
 
 
 def _assert_graph_verified_and_no_eager_fallback(states: list[tuple]) -> None:
@@ -488,11 +489,10 @@ def _assert_graph_verified_and_no_eager_fallback(states: list[tuple]) -> None:
         states: per-key ``(preparation_state, fallback_to_eager)`` tuples as
             returned by :func:`_graph_states`.
     """
-    assert states and all(
-        ps == CUDAGraphPreparationState.GRAPH_VERIFIED and not fb
-        for ps, fb in states), (
-            "expected every captured key to end GRAPH_VERIFIED with no "
-            f"eager fallback, got {[(ps.name, fb) for ps, fb in states]}")
+    assert states and all(ps == CUDAGraphPreparationState.GRAPH_VERIFIED and not fb for ps, fb in states), (
+        "expected every captured key to end GRAPH_VERIFIED with no "
+        f"eager fallback, got {[(ps.name, fb) for ps, fb in states]}"
+    )
 
 
 # ===========================================================================
@@ -503,7 +503,8 @@ def _assert_cudagraph_lddt_to_gt_matches_eager(
     original_paths: dict,
     cudagraph_paths: dict,
     input_key_method: InputKeyMethod,
-    sample_ids: tuple[str, ...]) -> None:
+    sample_ids: tuple[str, ...],
+) -> None:
     """Assert the cuda-graph prediction is as accurate as the eager one.
 
     For each target, computes the CA lDDT of the eager prediction and of the
@@ -524,15 +525,18 @@ def _assert_cudagraph_lddt_to_gt_matches_eager(
         gt = GT_DIR / f"{sid}.pdb"
         lddt_eager = _lddt_to_reference(original_paths[sid], gt)
         lddt_cudagraph = _lddt_to_reference(cudagraph_paths[sid], gt)
-        delta = (lddt_cudagraph - lddt_eager)
-        print(f"[parity] {model_source} {input_key_method.name} {sid}: "
-              f"cudagraph-vs-GT CA lDDT={lddt_cudagraph:.4f} Δ={delta:.4f}, "
-              f"eager-vs-GT CA lDDT={lddt_eager:.4f} ")
-              
+        delta = lddt_cudagraph - lddt_eager
+        print(
+            f"[parity] {model_source} {input_key_method.name} {sid}: "
+            f"cudagraph-vs-GT CA lDDT={lddt_cudagraph:.4f} Δ={delta:.4f}, "
+            f"eager-vs-GT CA lDDT={lddt_eager:.4f} "
+        )
+
         assert lddt_cudagraph >= lddt_eager - LDDT_GT_PARITY_TOL, (
             f"{model_source} {sid}: cudagraph-vs-GT lDDT-CA {lddt_cudagraph:.4f}"
             f" from eager-vs-GT {lddt_eager:.4f} by {delta:.4f}"
-            f" is worse than tol={LDDT_GT_PARITY_TOL} — the graph changed the prediction's accuracy")
+            f" is worse than tol={LDDT_GT_PARITY_TOL} — the graph changed the prediction's accuracy"
+        )
 
 
 # ===========================================================================
@@ -545,9 +549,10 @@ _MODEL_PARAMS = [
         m,
         marks=pytest.mark.skipif(
             not _model_weights_available(m, _ckpt_env=_CKPT_ENV, _hf_ckpt=_HF_CKPT),
-            reason=f"{m} checkpoint unavailable (set {_CKPT_ENV[m]} or HF "
-            f"auth for {_HF_CKPT[m][0]})"),
-    ) for m in MODEL_SOURCES
+            reason=f"{m} checkpoint unavailable (set {_CKPT_ENV[m]} or HF auth for {_HF_CKPT[m][0]})",
+        ),
+    )
+    for m in MODEL_SOURCES
 ]
 
 # The token transformer is exercised with both graph-cache keying strategies:
@@ -560,9 +565,8 @@ _INPUT_KEY_METHOD_PARAMS = [
 
 # Subset of the above restricted to the parameter sets that include
 # ``InputKeyMethod.EXACT`` — for modules with no BUCKETED_SHAPES config path.
-_INPUT_KEY_METHOD_PARAMS_EXACT_ONLY = [
-    p for p in _INPUT_KEY_METHOD_PARAMS if InputKeyMethod.EXACT in p.values
-]
+_INPUT_KEY_METHOD_PARAMS_EXACT_ONLY = [p for p in _INPUT_KEY_METHOD_PARAMS if InputKeyMethod.EXACT in p.values]
+
 
 def _flatten_sample_ids(sample_ids: tuple) -> tuple[str, ...]:
     """Flatten a ``sample_id_tuple`` to a flat tuple of sample-id strings.
@@ -588,30 +592,23 @@ def _flatten_sample_ids(sample_ids: tuple) -> tuple[str, ...]:
 # tuple of per-batch tuples whose eager and cuda-graph runs fold exactly those
 # targets; the test id joins the flattened member sample ids with '-'.
 _SAMPLE_ID_TUPLE_PARAMS_ALL = [
-    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (
-        SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
+    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
 ]
 
-_SAMPLE_ID_TUPLE_PARAMS_D = [
-    pytest.param(t, id="-".join(_flatten_sample_ids(t)))
-    for t in (SAMPLE_ID_TUPLE_D,)
-]
+_SAMPLE_ID_TUPLE_PARAMS_D = [pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (SAMPLE_ID_TUPLE_D,)]
 
 # Multi-target tuples only, for the modules exercised with EXACT keying that
 # run over the multi-sample tuples (D, E).
 _SAMPLE_ID_TUPLE_PARAMS_MULTI = [
-    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (
-        SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
+    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
 ]
 
 # Shared skip/parametrize stack for every per-module parity test: CUDA + sample
 # data required, run each (model_source, input_key_method) combination. Listed
 # top-to-bottom exactly as the decorators would stack.
 _CUDA_GRAPH_PARITY_MARKS = (
-    pytest.mark.skipif(not torch.cuda.is_available(),
-                       reason="pipeline CUDA-graph parity test requires CUDA"),
-    pytest.mark.skipif(not _SAMPLES_AVAILABLE,
-                       reason=f"sample data not found under {SAMPLES_DIR}"),
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="pipeline CUDA-graph parity test requires CUDA"),
+    pytest.mark.skipif(not _SAMPLES_AVAILABLE, reason=f"sample data not found under {SAMPLES_DIR}"),
     pytest.mark.parametrize("input_key_method", _INPUT_KEY_METHOD_PARAMS),
     pytest.mark.parametrize("model_source", _MODEL_PARAMS),
 )
@@ -635,13 +632,10 @@ def _cuda_graph_parity_marks_exact_only(func):
     (e.g. ``diffusion_module`` / ``sample_diffusion``, which have no
     BUCKETED_SHAPES config path). The test still takes ``input_key_method``,
     but it only ever resolves to ``InputKeyMethod.EXACT``."""
-    exact_only = pytest.mark.parametrize(
-        "input_key_method", _INPUT_KEY_METHOD_PARAMS_EXACT_ONLY)
+    exact_only = pytest.mark.parametrize("input_key_method", _INPUT_KEY_METHOD_PARAMS_EXACT_ONLY)
     # Swap the full input_key_method parametrize for the EXACT-only subset,
     # leaving the other marks (skips, model_source) untouched.
-    marks = tuple(
-        exact_only if m is _CUDA_GRAPH_PARITY_MARKS[2] else m
-        for m in _CUDA_GRAPH_PARITY_MARKS)
+    marks = tuple(exact_only if m is _CUDA_GRAPH_PARITY_MARKS[2] else m for m in _CUDA_GRAPH_PARITY_MARKS)
     for mark in reversed(marks):
         func = mark(func)
     return func
@@ -650,30 +644,27 @@ def _cuda_graph_parity_marks_exact_only(func):
 # Models that graph-optimize their pairformer. Protenix is excluded: its
 # recycling-trunk pairformer is intentionally not graph-optimized (replay
 # produces NaN), so the pairformer parity test does not run for it.
-_PAIRFORMER_MODEL_PARAMS = [
-    p for p in _MODEL_PARAMS if "protenix-v2" not in p.values
-]
+_PAIRFORMER_MODEL_PARAMS = [p for p in _MODEL_PARAMS if "protenix-v2" not in p.values]
 
 
 def _cuda_graph_parity_marks_pairformer(func):
     """Like ``_cuda_graph_parity_marks`` but restricted to models whose
     pairformer is graph-optimized (excludes Protenix)."""
-    model_source = pytest.mark.parametrize("model_source",
-                                           _PAIRFORMER_MODEL_PARAMS)
+    model_source = pytest.mark.parametrize("model_source", _PAIRFORMER_MODEL_PARAMS)
     # Swap the full model_source parametrize for the pairformer subset, leaving
     # the other marks (skips, input_key_method) untouched.
-    marks = tuple(
-        model_source if m is _CUDA_GRAPH_PARITY_MARKS[3] else m
-        for m in _CUDA_GRAPH_PARITY_MARKS)
+    marks = tuple(model_source if m is _CUDA_GRAPH_PARITY_MARKS[3] else m for m in _CUDA_GRAPH_PARITY_MARKS)
     for mark in reversed(marks):
         func = mark(func)
     return func
 
 
-def _assert_cuda_graph_parity(model_source: str, module_name: str,
-                             sample_ids: tuple[str, ...],
-                             input_key_method: InputKeyMethod = InputKeyMethod.EXACT
-                             ) -> None:
+def _assert_cuda_graph_parity(
+    model_source: str,
+    module_name: str,
+    sample_ids: tuple[str, ...],
+    input_key_method: InputKeyMethod = InputKeyMethod.EXACT,
+) -> None:
     """Run ``model_source`` eager vs cuda-graph on ``module_name`` and assert
     the graph captured/verified for every target and left the prediction
     unchanged. Shared body of the per-module parity tests below.
@@ -686,8 +677,7 @@ def _assert_cuda_graph_parity(model_source: str, module_name: str,
     sample_ids = _flatten_sample_ids(sample_ids)
     requests = [_load_request(sid) for sid in sample_ids]
 
-    with tempfile.TemporaryDirectory() as original_dir, \
-            tempfile.TemporaryDirectory() as cudagraph_dir:
+    with tempfile.TemporaryDirectory() as original_dir, tempfile.TemporaryDirectory() as cudagraph_dir:
         original_dir = Path(original_dir)
         cudagraph_dir = Path(cudagraph_dir)
 
@@ -699,9 +689,9 @@ def _assert_cuda_graph_parity(model_source: str, module_name: str,
                 output_dir=cudagraph_dir,
                 use_cuda_graph=True,
                 sample_ids=sample_ids,
-                input_key_method=input_key_method)
-            cudagraph_paths, cudagraph_proc = _run_pipeline(
-                cudagraph_config, requests, sample_ids, cudagraph_dir)
+                input_key_method=input_key_method,
+            )
+            cudagraph_paths, cudagraph_proc = _run_pipeline(cudagraph_config, requests, sample_ids, cudagraph_dir)
             torch.cuda.empty_cache()
 
             # --- Run 2: original (eager) model -----------------------------
@@ -711,75 +701,72 @@ def _assert_cuda_graph_parity(model_source: str, module_name: str,
                 output_dir=original_dir,
                 use_cuda_graph=False,
                 sample_ids=sample_ids,
-                input_key_method=input_key_method)
-            original_paths, _ = _run_pipeline(
-                original_config, requests, sample_ids, original_dir)
+                input_key_method=input_key_method,
+            )
+            original_paths, _ = _run_pipeline(original_config, requests, sample_ids, original_dir)
             torch.cuda.empty_cache()
 
-
         except _AVAILABILITY_EXC as exc:
-            pytest.skip(f"{model_source}: weights/metadata unavailable "
-                        f"({type(exc).__name__}: {exc})")
+            pytest.skip(f"{model_source}: weights/metadata unavailable ({type(exc).__name__}: {exc})")
 
         # The token transformer must have captured AND verified a graph for
         # every distinct target shape, with no eager fallback.
         states = _graph_states(cudagraph_proc)
         _assert_graph_verified_and_no_eager_fallback(states)
-        
+
         if input_key_method == InputKeyMethod.EXACT:
             # Each target is a distinct token-transformer input shape, so EXACT
             # keying captures exactly one graph per target.
             assert len(states) == len(sample_ids), (
-                f"expected {len(sample_ids)} captured graphs (one per target), "
-                f"got {len(states)}")
-            
+                f"expected {len(sample_ids)} captured graphs (one per target), got {len(states)}"
+            )
+
             # --- Parity: cuda-graph predictions must match the original --------
             _assert_cudagraph_lddt_to_gt_matches_eager(
                 model_source=model_source,
                 original_paths=original_paths,
                 cudagraph_paths=cudagraph_paths,
                 input_key_method=input_key_method,
-                sample_ids=sample_ids)
+                sample_ids=sample_ids,
+            )
 
         elif input_key_method == InputKeyMethod.BUCKETED_SHAPES:
             # Bucketed keying pads targets into shared shape buckets, so several
             # targets can replay one captured graph: expect between one graph
             # (all targets in one bucket) and one-per-target.
             assert 1 <= len(states) <= len(sample_ids), (
-                f"expected 1..{len(sample_ids)} captured graphs for "
-                f"{input_key_method.name}, got {len(states)}")
+                f"expected 1..{len(sample_ids)} captured graphs for {input_key_method.name}, got {len(states)}"
+            )
             _assert_cudagraph_lddt_to_gt_matches_eager(
                 model_source=model_source,
                 original_paths=original_paths,
                 cudagraph_paths=cudagraph_paths,
                 input_key_method=input_key_method,
-                sample_ids=sample_ids)
+                sample_ids=sample_ids,
+            )
         else:
             raise Exception("not implemented")
 
 
 @_cuda_graph_parity_marks_pairformer
 @pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_ALL)
-def test_cuda_graph_pairformer_parity(model_source, input_key_method,
-                                      sample_id_tuple):
-    _assert_cuda_graph_parity(model_source, "structure_pairformer",
-                             sample_ids=sample_id_tuple,
-                             input_key_method=input_key_method)
+def test_cuda_graph_pairformer_parity(model_source, input_key_method, sample_id_tuple):
+    _assert_cuda_graph_parity(
+        model_source, "structure_pairformer", sample_ids=sample_id_tuple, input_key_method=input_key_method
+    )
 
 
 @_cuda_graph_parity_marks_exact_only
 @pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_MULTI)
-def test_cuda_graph_token_transformer_parity(model_source, input_key_method,
-                                             sample_id_tuple):
-    _assert_cuda_graph_parity(model_source, "token_transformer",
-                             sample_ids=sample_id_tuple,
-                             input_key_method=input_key_method)
+def test_cuda_graph_token_transformer_parity(model_source, input_key_method, sample_id_tuple):
+    _assert_cuda_graph_parity(
+        model_source, "token_transformer", sample_ids=sample_id_tuple, input_key_method=input_key_method
+    )
 
 
 @_cuda_graph_parity_marks_exact_only
 @pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_MULTI)
-def test_cuda_graph_diffusion_module_parity(model_source, input_key_method,
-                                            sample_id_tuple):
-    _assert_cuda_graph_parity(model_source, "diffusion_module",
-                             sample_ids=sample_id_tuple,
-                             input_key_method=input_key_method)
+def test_cuda_graph_diffusion_module_parity(model_source, input_key_method, sample_id_tuple):
+    _assert_cuda_graph_parity(
+        model_source, "diffusion_module", sample_ids=sample_id_tuple, input_key_method=input_key_method
+    )

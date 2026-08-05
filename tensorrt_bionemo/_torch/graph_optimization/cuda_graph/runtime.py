@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,29 +31,31 @@ The shared input-key derivation and shape-bucket padding live on the
 :class:`GraphOptimizationTracker` base in
 :mod:`tensorrt_bionemo._torch.graph_optimization.tracker`.
 """
+
 import enum
 import gc
 from typing import Any
 
-from lru import LRU
-
 import torch
+import torch.nn as nn
+from lru import LRU
 from torch import Tensor
 from torch.cuda.streams import Stream
-import torch.nn as nn
 
-from tensorrt_bionemo.logger import logger
-from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, InputKeyMethod)
+from tensorrt_bionemo._torch.graph_optimization.config import CUDAGraphOptimizationConfig, InputKeyMethod
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.memory import (
-    check_capacity_for_capture, container_device, tensor_bytes)
+    check_capacity_for_capture,
+    container_device,
+    tensor_bytes,
+)
 from tensorrt_bionemo._torch.graph_optimization.tensor_copy_utils import (
     _assert_equal_but_distinct,
     _clone_tensors,
     _copy_tensors_into,
-    _delete_tensors_in_container)
-from tensorrt_bionemo._torch.graph_optimization.tracker import (
-    GraphOptimizationTracker, TensorContainerShapes)
+    _delete_tensors_in_container,
+)
+from tensorrt_bionemo._torch.graph_optimization.tracker import GraphOptimizationTracker, TensorContainerShapes
+from tensorrt_bionemo.logger import logger
 
 
 class CUDAGraphPreparationState(enum.Enum):
@@ -77,6 +79,7 @@ class CUDAGraphPreparationState(enum.Enum):
             verification); every call copies inputs into the static buffers and
             replays the graph.
     """
+
     WARMUP = 0
     WARMUP_KERNELS_COMPILED = 1
     WARMUP_MEMORY_ALLOCATOR_READY = 2
@@ -92,6 +95,7 @@ class CUDAGraphState:
     warmup/capture, the static input/output buffers (fixed-address clones the
     captured graph reads from and writes to), and the captured graph itself.
     """
+
     def __init__(self) -> None:
         self.preparation_state: CUDAGraphPreparationState = CUDAGraphPreparationState.WARMUP
         self.num_prev_calls_by_input_key: int = 0
@@ -154,9 +158,8 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         - the warmup/capture state-machine position for that key
         - the static input/output buffers and captured graph for that key
     """
-    def __init__(self,
-                 config: CUDAGraphOptimizationConfig,
-                 inner_module: nn.Module | None = None) -> None:
+
+    def __init__(self, config: CUDAGraphOptimizationConfig, inner_module: nn.Module | None = None) -> None:
         """Validate the config and create the LRU cache of per-key graph state.
 
         Args:
@@ -171,8 +174,8 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             raise ValueError(f"Expected CUDAGraphOptimizationConfig, got {type(self.graph_optimization_config)}")
 
         self.graph_state_by_key = LRU(
-            size=self.graph_optimization_config.num_graphs_max_for_this_module,
-            callback=cudagraph_delete_callback)
+            size=self.graph_optimization_config.num_graphs_max_for_this_module, callback=cudagraph_delete_callback
+        )
 
         # Per-key permanent-eager flags, keyed by input key. Kept on the tracker
         # (not on the per-key CUDAGraphState) so a key stays eager across calls
@@ -273,7 +276,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
 
     def forward(self, *args, **kwargs) -> Tensor | tuple[Tensor, ...]:
         """Graph-compile per input key, reverting to eager when unsafe.
-        
+
         Args:
             args (tuple):  Positional args.  If positional args, then (,).
             kwargs (dict): Keyword args.  If keyword args, then {}.
@@ -287,17 +290,17 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         #   - run eager and do not create/advance any per-key state.
         if torch.is_grad_enabled():
             return self.inner_module(*args, **kwargs)
-        
+
         # Early eager exit if input does not satisfy input-acceptance-rule
-        input_tensor_shapes: TensorContainerShapes = (
-            self._extract_tensor_container_shapes(args, kwargs))
+        input_tensor_shapes: TensorContainerShapes = self._extract_tensor_container_shapes(args, kwargs)
         # Host-side copy for the control flow that reads dim lengths as Python
         # ints (input acceptance here, output un-padding below): those
         # ``int(shape[...])`` reads would each force a D2H sync on the CUDA
         # ``input_tensor_shapes``. The CUDA copy is kept for the capture/replay
         # path, where the captured graph reads the live shape on-device.
-        input_tensor_shapes_cpu: TensorContainerShapes = (
-            GraphOptimizationTracker._tensor_container_shapes_to_cpu(input_tensor_shapes))
+        input_tensor_shapes_cpu: TensorContainerShapes = GraphOptimizationTracker._tensor_container_shapes_to_cpu(
+            input_tensor_shapes
+        )
         # The first representative call validates that every configured
         # input tie resolves to a real tensor axis (raises otherwise). One-shot.
         self.validate_input_ties(input_tensor_shapes_cpu)
@@ -308,12 +311,11 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         # adjust input to target tensor shapes
         # -----------------------------------------------------------
         if self.graph_optimization_config.input_key_method == InputKeyMethod.EXACT:
-            adjusted_args = args     # assign same address
-            adjusted_kwargs = kwargs # assign same address
-        
+            adjusted_args = args  # assign same address
+            adjusted_kwargs = kwargs  # assign same address
+
         elif self.graph_optimization_config.input_key_method == InputKeyMethod.BUCKETED_SHAPES:
-            adjusted_args, adjusted_kwargs = self.pad_input(
-                args, kwargs, input_tensor_shapes=input_tensor_shapes_cpu)
+            adjusted_args, adjusted_kwargs = self.pad_input(args, kwargs, input_tensor_shapes=input_tensor_shapes_cpu)
 
         # -----------------------------------------------------------
         # compute key with adjusted input
@@ -332,50 +334,40 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         # select call methods
         # ----------------------------------------------------------
         ps = state.preparation_state
-        if ps in (CUDAGraphPreparationState.WARMUP,
-                  CUDAGraphPreparationState.WARMUP_KERNELS_COMPILED):
-            
-            adjusted_output = self._warmup_call( # adjusted_output: Tensor | tuple[Tensor]
-                adjusted_args, adjusted_kwargs, input_key, input_tensor_shapes)
-            
+        if ps in (CUDAGraphPreparationState.WARMUP, CUDAGraphPreparationState.WARMUP_KERNELS_COMPILED):
+            adjusted_output = self._warmup_call(  # adjusted_output: Tensor | tuple[Tensor]
+                adjusted_args, adjusted_kwargs, input_key, input_tensor_shapes
+            )
+
         elif ps == CUDAGraphPreparationState.WARMUP_MEMORY_ALLOCATOR_READY:
-            adjusted_output =  self._capture_call(
-                adjusted_args, adjusted_kwargs, input_key, input_tensor_shapes)
-        
-        elif ps in (CUDAGraphPreparationState.GRAPH_CAPTURED,
-                    CUDAGraphPreparationState.GRAPH_VERIFIED):
-            adjusted_output = self._replay_call(
-                adjusted_args, adjusted_kwargs, input_key, input_tensor_shapes)
-        
+            adjusted_output = self._capture_call(adjusted_args, adjusted_kwargs, input_key, input_tensor_shapes)
+
+        elif ps in (CUDAGraphPreparationState.GRAPH_CAPTURED, CUDAGraphPreparationState.GRAPH_VERIFIED):
+            adjusted_output = self._replay_call(adjusted_args, adjusted_kwargs, input_key, input_tensor_shapes)
+
         else:
             raise ValueError(f"Invalid state {ps} for key {input_key}")
-    
+
         # ------------------------------------------------
         # adjust output to orig tensor shapes
         # -----------------------------------------------
         if self.graph_optimization_config.input_key_method == InputKeyMethod.EXACT:
-            output = adjusted_output # assign same address
+            output = adjusted_output  # assign same address
         elif self.graph_optimization_config.input_key_method == InputKeyMethod.BUCKETED_SHAPES:
             # Splat a tuple output into unpad_output's positional args; pass a
             # single-tensor output as one arg. Splatting a bare tensor would
             # iterate it over dim 0, silently dropping its leading
             # (batch/samples) axis.
             if isinstance(adjusted_output, tuple):
-                output = self.unpad_output(
-                    adjusted_output,
-                    input_tensor_shapes_cpu)
+                output = self.unpad_output(adjusted_output, input_tensor_shapes_cpu)
             else:
-                output = self.unpad_output(
-                    (adjusted_output,),
-                    input_tensor_shapes_cpu)
-    
+                output = self.unpad_output((adjusted_output,), input_tensor_shapes_cpu)
+
         return output
 
-    def _warmup_call(self, 
-                     args: Tensor | tuple | Any, 
-                     kwargs: dict, 
-                     input_key: str,
-                     input_tensor_shapes: TensorContainerShapes) -> Tensor | tuple[Tensor, ...]:
+    def _warmup_call(
+        self, args: Tensor | tuple | Any, kwargs: dict, input_key: str, input_tensor_shapes: TensorContainerShapes
+    ) -> Tensor | tuple[Tensor, ...]:
         """Eager run on a side stream; clone the fixed-address static output
         buffer once (the static input buffers are cloned later at capture time).
 
@@ -399,39 +391,35 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
 
         state.warmup_stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(state.warmup_stream):
-            adjusted_output = self._f_capture(
-                args, kwargs, input_tensor_shapes=input_tensor_shapes)
+            adjusted_output = self._f_capture(args, kwargs, input_tensor_shapes=input_tensor_shapes)
 
         torch.cuda.current_stream().wait_stream(state.warmup_stream)
 
         if device is not None:
             peak_activation = torch.cuda.max_memory_allocated(device) - allocated_before
-            state.warmup_peak_activation_bytes = max(
-                state.warmup_peak_activation_bytes, peak_activation)
+            state.warmup_peak_activation_bytes = max(state.warmup_peak_activation_bytes, peak_activation)
 
         # Create and populate static output buffers once
         #   - state.static_output can be a Tensor or a tuple[Tuple]
         if state.static_output is None:
             state.static_output = _clone_tensors(adjusted_output)
-        
+
         return adjusted_output
-        
-    def _capture_call(self,
-                      args: tuple,
-                      kwargs: dict,
-                      input_key: str,
-                      input_tensor_shapes: TensorContainerShapes) -> Tensor | tuple[Tensor, ...]:
+
+    def _capture_call(
+        self, args: tuple, kwargs: dict, input_key: str, input_tensor_shapes: TensorContainerShapes
+    ) -> Tensor | tuple[Tensor, ...]:
         """Gate on memory, capture the graph, then replay once for this call.
-        
+
         Copy live inputs into the static buffers.
-        
-        Benchmarks show that it is an order of magnitude faster to copy the 
-        live inputs into the static buffers, than to check if arg has different 
-        values than static_input_arg and static_input_kwargs, and only copy if 
-        they differ. The latter is a deep recursive check that is expensive 
+
+        Benchmarks show that it is an order of magnitude faster to copy the
+        live inputs into the static buffers, than to check if arg has different
+        values than static_input_arg and static_input_kwargs, and only copy if
+        they differ. The latter is a deep recursive check that is expensive
         for large nested structures.
-        
-        
+
+
         At this call
             (1) kernels are compiled
             (2) the caching allocator is primed
@@ -439,10 +427,10 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                 warmup (the static input buffers are created here, below)
 
         Any refusal/failure reverts this key permanently to eager.
-        
+
         Arguments:
             args: adjusted or not adjusted based on caller
-        
+
         """
         # Finish warmup work before capturing. Make the warmup stream wait on the
         # current stream's queued work (which produced this call's inputs), then
@@ -464,26 +452,25 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         if state.static_input_kwargs is None:
             state.static_input_kwargs = _clone_tensors(kwargs)
         if state.static_unadjusted_input_tensor_shapes is None:
-            state.static_unadjusted_input_tensor_shapes = _clone_tensors(
-                input_tensor_shapes)
+            state.static_unadjusted_input_tensor_shapes = _clone_tensors(input_tensor_shapes)
 
         # Check that the static input/output buffers fit within the memory gate
-        state.working_set_bytes = (tensor_bytes(state.static_input_arg)
-                                   + tensor_bytes(state.static_input_kwargs)
-                                   + tensor_bytes(state.static_unadjusted_input_tensor_shapes)
-                                   + tensor_bytes(state.static_output))
+        state.working_set_bytes = (
+            tensor_bytes(state.static_input_arg)
+            + tensor_bytes(state.static_input_kwargs)
+            + tensor_bytes(state.static_unadjusted_input_tensor_shapes)
+            + tensor_bytes(state.static_output)
+        )
         # Gate on the static-buffer working set plus the activation working set
         # measured during warmup (0 if unmeasured, e.g. no CUDA input), so the
         # check reflects the intermediate activations the capture holds resident,
         # not just the input/output buffers.
         check = check_capacity_for_capture(
-            working_set_bytes=(state.working_set_bytes
-                               + state.warmup_peak_activation_bytes),
-            input_container=(state.static_input_arg, state.static_input_kwargs))
+            working_set_bytes=(state.working_set_bytes + state.warmup_peak_activation_bytes),
+            input_container=(state.static_input_arg, state.static_input_kwargs),
+        )
         if not check.ok:
-            logger.info(
-                f"{type(self).__name__}: skipping capture, revert to eager "
-                f"({check.reason})")
+            logger.info(f"{type(self).__name__}: skipping capture, revert to eager ({check.reason})")
             self._revert_to_eager(input_key)
             return self.inner_module(*args, **kwargs)
 
@@ -498,11 +485,10 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                     state.static_input_arg,
                     state.static_input_kwargs,
                     input_tensor_shapes=state.static_unadjusted_input_tensor_shapes,
-                    )
-                
+                )
+
         except Exception as exc:  # noqa: BLE001 - any capture failure -> eager
-            logger.info(
-                f"{type(self).__name__}: capture failed, revert to eager ({exc})")
+            logger.info(f"{type(self).__name__}: capture failed, revert to eager ({exc})")
             self._revert_to_eager(input_key)
             return self.inner_module(*args, **kwargs)
 
@@ -513,26 +499,24 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             if not self._verify_capture(args, kwargs, input_key, input_tensor_shapes):
                 return self.inner_module(*args, **kwargs)
         state.preparation_state = CUDAGraphPreparationState.GRAPH_VERIFIED
-            
+
         # --------------------------------------------------------------------
         # replay the graph on the real stream
         # --------------------------------------------------------------------
         replay_ok: bool = self._replay(input_key, state)
         if not replay_ok:
             return self.inner_module(*args, **kwargs)
-        
+
         # -----------------------------------------------------------
         # copy result from static buffers
         # -----------------------------------------------------------
         output = _clone_tensors(state.static_output)
-        
+
         return output
 
-    def _verify_capture(self,
-                        args: tuple,
-                        kwargs: dict,
-                        input_key: str,
-                        input_tensor_shapes: TensorContainerShapes) -> bool:
+    def _verify_capture(
+        self, args: tuple, kwargs: dict, input_key: str, input_tensor_shapes: TensorContainerShapes
+    ) -> bool:
         """Check that the captured graph produced the same output as eager.
 
         On mismatch, catches the ``AssertionError``, reverts this key
@@ -542,53 +526,47 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             ``True`` if the replay output matches eager, ``False`` otherwise.
         """
         state = self.graph_state_by_key[input_key]
-        state.graph.replay() # same data as used for capture
-        
-        eager_out = self._f_capture(
-            args, kwargs, input_tensor_shapes=input_tensor_shapes)
+        state.graph.replay()  # same data as used for capture
+
+        eager_out = self._f_capture(args, kwargs, input_tensor_shapes=input_tensor_shapes)
         replay_out = _clone_tensors(state.static_output)
         try:
             _assert_equal_but_distinct(eager_out, replay_out)
             return True
         except AssertionError as exc:
-            logger.info(
-                f"{type(self).__name__}: capture verification failed, revert to eager ({exc})")
+            logger.info(f"{type(self).__name__}: capture verification failed, revert to eager ({exc})")
             self._revert_to_eager(input_key)
             return False
-        
-    def _replay_call(self,
-                    args: Tensor | tuple,
-                    kwargs: dict,
-                    input_key: str,
-                    input_tensor_shapes: TensorContainerShapes = None) -> Tensor | tuple[Tensor, ...]:
-        
+
+    def _replay_call(
+        self, args: Tensor | tuple, kwargs: dict, input_key: str, input_tensor_shapes: TensorContainerShapes = None
+    ) -> Tensor | tuple[Tensor, ...]:
+
         # Copy only the *real* inputs; graph-internal scratch kwargs (e.g.
         # ``buffers``) are left to the captured graph (see
         # GRAPH_INTERNAL_WORKSPACE_KWARGS). Guard the copy: if the live inputs
         # no longer line up with the captured static buffers (an un-keyed
         # shape change, or a scratch container the key didn't capture),
         # revert this key permanently to eager instead of crashing here.
-    
+
         state = self.graph_state_by_key[input_key]
-   
+
         _copy_tensors_into(dest=state.static_input_arg, src=args)
         _copy_tensors_into(
-            dest=self._graph_input_kwargs(state.static_input_kwargs),
-            src=self._graph_input_kwargs(kwargs))
-        _copy_tensors_into(
-            dest=state.static_unadjusted_input_tensor_shapes, 
-            src=input_tensor_shapes)
+            dest=self._graph_input_kwargs(state.static_input_kwargs), src=self._graph_input_kwargs(kwargs)
+        )
+        _copy_tensors_into(dest=state.static_unadjusted_input_tensor_shapes, src=input_tensor_shapes)
 
         replay_ok: bool = self._replay(input_key, state)
         if not replay_ok:
             return self.inner_module(*args, **kwargs)
-        
+
         # -----------------------------------------------------------
         # copy result from static buffers
         # -----------------------------------------------------------
         adjusted_output = _clone_tensors(state.static_output)
         return adjusted_output
-    
+
     def _evict_key(self, key: str) -> None:
         """Drop ``key``'s cached graph state: free its captured graph and remove
         the entry from ``graph_state_by_key``.
@@ -623,9 +601,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         try:
             state.graph.replay()
         except Exception as exc:  # noqa: BLE001 - any replay failure -> evict
-            logger.info(
-                f"{type(self).__name__}: replay failed, evicting cached graph "
-                f"for key {input_key!r} ({exc})")
+            logger.info(f"{type(self).__name__}: replay failed, evicting cached graph for key {input_key!r} ({exc})")
             self._revert_to_eager(input_key)
             return False
 
@@ -636,7 +612,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         args: tuple,
         kwargs: dict,
         input_tensor_shapes: TensorContainerShapes = None,
-        ) -> Tensor | tuple[Tensor]:
+    ) -> Tensor | tuple[Tensor]:
         """Run the wrapped module for warmup / capture / verification.
 
         The padding of ``args`` / ``kwargs`` (and hence of the returned output)

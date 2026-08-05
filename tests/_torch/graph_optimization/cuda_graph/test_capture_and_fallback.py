@@ -18,19 +18,20 @@ Covers reverting to eager on memory-gate refusal, capture failure, and
 replay failure — plus the grad/training guard — and asserts the captured
 path matches eager.
 """
+
 import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_mem
 import tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime as trk
-from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig)
+from tensorrt_bionemo._torch.graph_optimization.config import CUDAGraphOptimizationConfig
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_mem
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
-    CUDAGraphOptimizationTracker, CUDAGraphPreparationState)
+    CUDAGraphOptimizationTracker,
+    CUDAGraphPreparationState,
+)
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA-graph tests require CUDA")
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-graph tests require CUDA")
 
 NUM_CALLS_TO_CAPTURE = 4  # warmup thresholds (1, 3) + capture on the next call
 
@@ -42,8 +43,7 @@ def _make():
     raw = nn.Sequential(nn.Linear(8, 8), nn.ReLU(), nn.Linear(8, 8))
     raw.load_state_dict(net.state_dict())
     raw = raw.cuda().eval()
-    tracker = CUDAGraphOptimizationTracker(
-        CUDAGraphOptimizationConfig(), inner_module=net).eval()
+    tracker = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(), inner_module=net).eval()
     return tracker, raw
 
 
@@ -82,8 +82,8 @@ def test_memory_gate_refusal_reverts_to_eager(monkeypatch):
     m, raw = _make()
     x = torch.randn(2, 8, device="cuda")
     monkeypatch.setattr(
-        trk, "check_capacity_for_capture",
-        lambda *a, **k: gc_mem.MemoryCheck(False, "forced-low-mem", 1 << 40, 1 << 20))
+        trk, "check_capacity_for_capture", lambda *a, **k: gc_mem.MemoryCheck(False, "forced-low-mem", 1 << 40, 1 << 20)
+    )
     with torch.no_grad():
         ref = raw(x)
         # The NUM_CALLS_TO_CAPTURE-th call reaches the capture step, where the
@@ -163,8 +163,7 @@ class _MutatesScratchBuffers(nn.Module):
 
     def forward(self, x, buffers=None):
         if buffers is not None:
-            buffers["pw"] = torch.zeros(x.shape[0], 768, device=x.device,
-                                        dtype=x.dtype)
+            buffers["pw"] = torch.zeros(x.shape[0], 768, device=x.device, dtype=x.dtype)
         return x * 2.0 + 1.0
 
 
@@ -173,10 +172,8 @@ def test_input_key_ignores_scratch_buffers():
     # that differ only in their (side-effect) scratch shape share one graph.
     m, _ = _make()
     x = torch.randn(2, 8, device="cuda")
-    k_small = m.input_key_for_this_call(
-        x, buffers={"pw": torch.zeros(2, 128, device="cuda")})
-    k_large = m.input_key_for_this_call(
-        x, buffers={"pw": torch.zeros(2, 768, device="cuda")})
+    k_small = m.input_key_for_this_call(x, buffers={"pw": torch.zeros(2, 128, device="cuda")})
+    k_large = m.input_key_for_this_call(x, buffers={"pw": torch.zeros(2, 768, device="cuda")})
     k_none = m.input_key_for_this_call(x)
     assert k_small == k_large == k_none
 
@@ -187,9 +184,7 @@ def test_shared_scratch_buffers_capture_then_replay_matches_eager():
     # treated as a graph input. Before the fix this crashed in the per-replay
     # static-buffer copy ("size of tensor a (768) must match tensor b (128)").
     net = _MutatesScratchBuffers().cuda().eval()
-    m = CUDAGraphOptimizationTracker(
-        CUDAGraphOptimizationConfig(verify_capture=True),
-        inner_module=net).eval()
+    m = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(verify_capture=True), inner_module=net).eval()
     x = torch.randn(2, 8, device="cuda")
     ref = x * 2.0 + 1.0
     with torch.no_grad():

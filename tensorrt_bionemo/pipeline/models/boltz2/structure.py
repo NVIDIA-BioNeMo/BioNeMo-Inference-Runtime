@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Build a :class:`Structure` from :class:`InputParsed`.
 
 Supports the full basic-schema polymer set used by Boltz2:
@@ -24,12 +37,27 @@ from typing import Any
 
 import numpy as np
 
-from .const import (Atom, Bond, Chain, EnsembleDtype, Residue, Structure,
-                    bond_type_ids, chain_type_ids, chirality_type_ids,
-                    dna_letter_to_token, prot_letter_to_token, ref_atoms,
-                    res_to_center_atom_id, res_to_disto_atom_id,
-                    rna_letter_to_token, token_ids, unk_bond_type,
-                    unk_chirality_type, unk_token_ids)
+from .const import (
+    Atom,
+    Bond,
+    Chain,
+    EnsembleDtype,
+    Residue,
+    Structure,
+    bond_type_ids,
+    chain_type_ids,
+    chirality_type_ids,
+    dna_letter_to_token,
+    prot_letter_to_token,
+    ref_atoms,
+    res_to_center_atom_id,
+    res_to_disto_atom_id,
+    rna_letter_to_token,
+    token_ids,
+    unk_bond_type,
+    unk_chirality_type,
+    unk_token_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +97,7 @@ def _seq_to_tokens(polymer_type: str, sequence: str) -> list[str]:
         unk = "DN"
         mapping = dna_letter_to_token
     else:
-        raise ValueError(
-            f"Unknown polymer type for sequence mapping: {polymer_type}")
+        raise ValueError(f"Unknown polymer type for sequence mapping: {polymer_type}")
     return [mapping.get(c, unk) for c in sequence]
 
 
@@ -92,8 +119,7 @@ def _parse_polymer_residue(res_name: str, ccd: dict) -> list[Atom]:
         idx = ref_atom.GetIdx()
         pos = conformer.GetAtomPosition(idx)
         ref_coords = (float(pos.x), float(pos.y), float(pos.z))
-        chirality = chirality_type_ids.get(str(ref_atom.GetChiralTag()),
-                                           unk_chirality)
+        chirality = chirality_type_ids.get(str(ref_atom.GetChiralTag()), unk_chirality)
         atoms.append(
             Atom(
                 name=atom_name,
@@ -103,7 +129,8 @@ def _parse_polymer_residue(res_name: str, ccd: dict) -> list[Atom]:
                 conformer=ref_coords,
                 is_present=True,
                 chirality=chirality,
-            ))
+            )
+        )
     return atoms
 
 
@@ -120,30 +147,24 @@ def _compute_rdkit_bounds_constraints(mol, idx_map):
         return []
     mol.UpdatePropertyCache(strict=False)
     Chem.GetSymmSSSR(mol)
-    bounds = GetMoleculeBoundsMatrix(mol,
-                                     set15bounds=True,
-                                     scaleVDW=True,
-                                     doTriangleSmoothing=True,
-                                     useMacrocycle14config=False)
-    bonds_set = {
-        tuple(sorted(b))
-        for b in mol.GetSubstructMatches(Chem.MolFromSmarts("*~*"))
-    }
-    angles_set = {
-        tuple(sorted([a[0], a[2]]))
-        for a in mol.GetSubstructMatches(Chem.MolFromSmarts("*~*~*"))
-    }
+    bounds = GetMoleculeBoundsMatrix(
+        mol, set15bounds=True, scaleVDW=True, doTriangleSmoothing=True, useMacrocycle14config=False
+    )
+    bonds_set = {tuple(sorted(b)) for b in mol.GetSubstructMatches(Chem.MolFromSmarts("*~*"))}
+    angles_set = {tuple(sorted([a[0], a[2]])) for a in mol.GetSubstructMatches(Chem.MolFromSmarts("*~*~*"))}
     constraints = []
     for i, j in zip(*np.triu_indices(mol.GetNumAtoms(), k=1)):
         i, j = int(i), int(j)
         if i in idx_map and j in idx_map:
-            constraints.append({
-                "atom_idxs": (idx_map[i], idx_map[j]),
-                "is_bond": tuple(sorted([i, j])) in bonds_set,
-                "is_angle": tuple(sorted([i, j])) in angles_set,
-                "upper_bound": float(bounds[i, j]),
-                "lower_bound": float(bounds[j, i]),
-            })
+            constraints.append(
+                {
+                    "atom_idxs": (idx_map[i], idx_map[j]),
+                    "is_bond": tuple(sorted([i, j])) in bonds_set,
+                    "is_angle": tuple(sorted([i, j])) in angles_set,
+                    "upper_bound": float(bounds[i, j]),
+                    "lower_bound": float(bounds[j, i]),
+                }
+            )
     return constraints
 
 
@@ -155,40 +176,38 @@ def _compute_chiral_atom_constraints(mol, idx_map):
     constraints = []
     if not all(atom.HasProp("_CIPRank") for atom in mol.GetAtoms()):
         return constraints
-    for center_idx, orientation in Chem.FindMolChiralCenters(
-            mol, includeUnassigned=False):
+    for center_idx, orientation in Chem.FindMolChiralCenters(mol, includeUnassigned=False):
         center = mol.GetAtomWithIdx(center_idx)
-        neighbors = [(neighbor.GetIdx(), int(neighbor.GetProp("_CIPRank")))
-                     for neighbor in center.GetNeighbors()]
+        neighbors = [(neighbor.GetIdx(), int(neighbor.GetProp("_CIPRank"))) for neighbor in center.GetNeighbors()]
         neighbors = sorted(neighbors, key=lambda x: x[1], reverse=True)
         neighbors = tuple(n[0] for n in neighbors)
         is_r = orientation == "R"
-        if len(neighbors) > 4 or center.GetHybridization(
-        ) != HybridizationType.SP3:
+        if len(neighbors) > 4 or center.GetHybridization() != HybridizationType.SP3:
             continue
         ref_idxs = (*neighbors[:3], center_idx)
         if all(i in idx_map for i in ref_idxs):
-            constraints.append({
-                "atom_idxs": tuple(idx_map[i] for i in ref_idxs),
-                "is_reference": True,
-                "is_r": is_r,
-            })
+            constraints.append(
+                {
+                    "atom_idxs": tuple(idx_map[i] for i in ref_idxs),
+                    "is_reference": True,
+                    "is_r": is_r,
+                }
+            )
         if len(neighbors) == 4:
             for skip_idx in range(3):
-                chiral_set = neighbors[:skip_idx] + neighbors[skip_idx + 1:]
+                chiral_set = neighbors[:skip_idx] + neighbors[skip_idx + 1 :]
                 if skip_idx % 2 == 0:
-                    atom_idxs = chiral_set[::-1] + (center_idx, )
+                    atom_idxs = chiral_set[::-1] + (center_idx,)
                 else:
-                    atom_idxs = chiral_set + (center_idx, )
+                    atom_idxs = chiral_set + (center_idx,)
                 if all(i in idx_map for i in atom_idxs):
-                    constraints.append({
-                        "atom_idxs":
-                        tuple(idx_map[i] for i in atom_idxs),
-                        "is_reference":
-                        False,
-                        "is_r":
-                        is_r,
-                    })
+                    constraints.append(
+                        {
+                            "atom_idxs": tuple(idx_map[i] for i in atom_idxs),
+                            "is_reference": False,
+                            "is_r": is_r,
+                        }
+                    )
     return constraints
 
 
@@ -217,36 +236,36 @@ def _compute_stereo_bond_constraints(mol, idx_map):
             for n in mol.GetAtomWithIdx(start_idx).GetNeighbors()
             if n.GetIdx() != end_idx
         ]
-        start_neighbors = [
-            n[0]
-            for n in sorted(start_neighbors, key=lambda x: x[1], reverse=True)
-        ]
-        end_neighbors = [(n.GetIdx(), int(n.GetProp("_CIPRank")))
-                         for n in mol.GetAtomWithIdx(end_idx).GetNeighbors()
-                         if n.GetIdx() != start_idx]
+        start_neighbors = [n[0] for n in sorted(start_neighbors, key=lambda x: x[1], reverse=True)]
         end_neighbors = [
-            n[0]
-            for n in sorted(end_neighbors, key=lambda x: x[1], reverse=True)
+            (n.GetIdx(), int(n.GetProp("_CIPRank")))
+            for n in mol.GetAtomWithIdx(end_idx).GetNeighbors()
+            if n.GetIdx() != start_idx
         ]
+        end_neighbors = [n[0] for n in sorted(end_neighbors, key=lambda x: x[1], reverse=True)]
         is_e = stereo == BondStereo.STEREOE
         if not start_neighbors or not end_neighbors:
             continue
 
         ref_idxs = (start_neighbors[0], start_idx, end_idx, end_neighbors[0])
         if all(i in idx_map for i in ref_idxs):
-            constraints.append({
-                "atom_idxs": tuple(idx_map[i] for i in ref_idxs),
-                "is_reference": True,
-                "is_e": is_e,
-            })
+            constraints.append(
+                {
+                    "atom_idxs": tuple(idx_map[i] for i in ref_idxs),
+                    "is_reference": True,
+                    "is_e": is_e,
+                }
+            )
         if len(start_neighbors) == 2 and len(end_neighbors) == 2:
             alt = (start_neighbors[1], start_idx, end_idx, end_neighbors[1])
             if all(i in idx_map for i in alt):
-                constraints.append({
-                    "atom_idxs": tuple(idx_map[i] for i in alt),
-                    "is_reference": False,
-                    "is_e": is_e,
-                })
+                constraints.append(
+                    {
+                        "atom_idxs": tuple(idx_map[i] for i in alt),
+                        "is_reference": False,
+                        "is_e": is_e,
+                    }
+                )
     return constraints
 
 
@@ -293,8 +312,7 @@ def _compute_flatness_constraints(mol, idx_map):
     rings6: list[dict] = []
     for match in mol.GetSubstructMatches(planar_bond_smarts):
         if all(i in idx_map for i in match):
-            planar_bonds.append(
-                {"atom_idxs": tuple(idx_map[i] for i in match)})
+            planar_bonds.append({"atom_idxs": tuple(idx_map[i] for i in match)})
     for match in mol.GetSubstructMatches(ring5_smarts):
         if all(i in idx_map for i in match):
             rings5.append({"atom_idxs": tuple(idx_map[i] for i in match)})
@@ -305,8 +323,7 @@ def _compute_flatness_constraints(mol, idx_map):
 
 
 def _parse_ccd_ligand_residue(
-    ref_mol,
-    drop_leaving_atoms: bool = False
+    ref_mol, drop_leaving_atoms: bool = False
 ) -> tuple[list[Atom], list[tuple[int, int, int]], dict[str, list[dict]]]:
     """Parse a CCD ligand residue: heavy atoms + bonds + per-residue constraints.
 
@@ -345,6 +362,7 @@ def _parse_ccd_ligand_residue(
     # done here. Match OSS exactly: cache only, no re-perception.
     try:
         from rdkit import Chem as _Chem
+
         _Chem.GetSSSR(ref_mol)
         ref_mol.UpdatePropertyCache(strict=False)
     except Exception:
@@ -353,23 +371,26 @@ def _parse_ccd_ligand_residue(
     if CalcNumHeavyAtoms(ref_mol) == 1:
         ref_mol = AllChem.RemoveHs(ref_mol, sanitize=False)
         ref_atom = ref_mol.GetAtoms()[0]
-        chirality = chirality_type_ids.get(str(ref_atom.GetChiralTag()),
-                                           unk_chirality)
+        chirality = chirality_type_ids.get(str(ref_atom.GetChiralTag()), unk_chirality)
         try:
             name = ref_atom.GetProp("name")
         except KeyError:
             name = ref_atom.GetSymbol().upper()
-        return [
-            Atom(
-                name=name,
-                element=ref_atom.GetAtomicNum(),
-                charge=ref_atom.GetFormalCharge(),
-                coords=(0.0, 0.0, 0.0),
-                conformer=(0.0, 0.0, 0.0),
-                is_present=True,
-                chirality=chirality,
-            )
-        ], [], empty_constraints
+        return (
+            [
+                Atom(
+                    name=name,
+                    element=ref_atom.GetAtomicNum(),
+                    charge=ref_atom.GetFormalCharge(),
+                    coords=(0.0, 0.0, 0.0),
+                    conformer=(0.0, 0.0, 0.0),
+                    is_present=True,
+                    chirality=chirality,
+                )
+            ],
+            [],
+            empty_constraints,
+        )
 
     conformer = _get_conformer(ref_mol)
     atoms: list[Atom] = []
@@ -390,8 +411,7 @@ def _parse_ccd_ligand_residue(
             atom_name = ref_atom.GetSymbol().upper()
         pos = conformer.GetAtomPosition(ref_atom.GetIdx())
         ref_coords = (float(pos.x), float(pos.y), float(pos.z))
-        chirality = chirality_type_ids.get(str(ref_atom.GetChiralTag()),
-                                           unk_chirality)
+        chirality = chirality_type_ids.get(str(ref_atom.GetChiralTag()), unk_chirality)
         atoms.append(
             Atom(
                 name=atom_name,
@@ -401,7 +421,8 @@ def _parse_ccd_ligand_residue(
                 conformer=ref_coords,
                 is_present=True,
                 chirality=chirality,
-            ))
+            )
+        )
         idx_map[i] = atom_idx
         atom_idx += 1
 
@@ -421,8 +442,7 @@ def _parse_ccd_ligand_residue(
     rdkit_bounds = _compute_rdkit_bounds_constraints(ref_mol, idx_map)
     chiral_atoms = _compute_chiral_atom_constraints(ref_mol, idx_map)
     stereo_bonds = _compute_stereo_bond_constraints(ref_mol, idx_map)
-    planar_bonds, planar_ring_5, planar_ring_6 = _compute_flatness_constraints(
-        ref_mol, idx_map)
+    planar_bonds, planar_ring_5, planar_ring_6 = _compute_flatness_constraints(ref_mol, idx_map)
     constraints = {
         "rdkit_bounds": rdkit_bounds,
         "chiral_atoms": chiral_atoms,
@@ -447,6 +467,7 @@ def _parse_modified_residue(name: str, ref_mol, gemmi_res, res_idx: int) -> dict
     template featurizer in ``template_logic``.
     """
     from rdkit import Chem
+
     ref_mol = Chem.RemoveHs(ref_mol, sanitize=False)
     is_present = gemmi_res is not None
     pdb_pos: dict[str, tuple[float, float, float]] = {}
@@ -459,29 +480,25 @@ def _parse_modified_residue(name: str, ref_mol, gemmi_res, res_idx: int) -> dict
     if len(ref_atom_list) == 1:
         nm = ref_atom_list[0].GetProp("name")
         coords = pdb_pos.get(nm)
-        atoms.append((nm, coords or (0.0, 0.0, 0.0),
-                      bool(coords is not None and is_present)))
+        atoms.append((nm, coords or (0.0, 0.0, 0.0), bool(coords is not None and is_present)))
     else:
         for a in ref_atom_list:
             nm = a.GetProp("name")
             # Skip covalent leaving atoms not present in the PDB (OSS rule).
-            if (a.HasProp("leaving_atom")
-                    and int(a.GetProp("leaving_atom")) == 1
-                    and nm not in pdb_pos):
+            if a.HasProp("leaving_atom") and int(a.GetProp("leaving_atom")) == 1 and nm not in pdb_pos:
                 continue
             coords = pdb_pos.get(nm)
-            atoms.append((nm, coords or (0.0, 0.0, 0.0),
-                          bool(coords is not None and is_present)))
+            atoms.append((nm, coords or (0.0, 0.0, 0.0), bool(coords is not None and is_present)))
 
     return {
-        "name": name,                       # keep CCD name (token metadata)
-        "res_type": token_ids["UNK"],       # OSS types modified residues as UNK
+        "name": name,  # keep CCD name (token metadata)
+        "res_type": token_ids["UNK"],  # OSS types modified residues as UNK
         "res_idx": res_idx,
         "atoms": atoms,
-        "atom_center": 0,                   # OSS parse_ccd_residue: no center
+        "atom_center": 0,  # OSS parse_ccd_residue: no center
         "atom_disto": 0,
         "is_present": is_present,
-        "is_standard": False,               # OSS: modified residue -> no frame
+        "is_standard": False,  # OSS: modified residue -> no frame
     }
 
 
@@ -505,9 +522,7 @@ def _build_smiles_mol(smiles: str, name: str):
     for atom, can_idx in zip(mol.GetAtoms(), canonical_order):
         atom_name = atom.GetSymbol().upper() + str(int(can_idx) + 1)
         if len(atom_name) > 4:
-            raise ValueError(
-                f"SMILES {smiles!r} has an atom with a name longer than 4 chars: {atom_name}"
-            )
+            raise ValueError(f"SMILES {smiles!r} has an atom with a name longer than 4 chars: {atom_name}")
         atom.SetProp("name", atom_name)
 
     # Replicate OSS schema.compute_3d_conformer exactly: ETKDGv3 embed with a
@@ -523,8 +538,7 @@ def _build_smiles_mol(smiles: str, name: str):
         options.useRandomCoords = True
         conf_id = AllChem.EmbedMolecule(mol, options)
     if conf_id == -1:
-        raise ValueError(
-            f"Failed to compute 3D conformer for SMILES {smiles!r}")
+        raise ValueError(f"Failed to compute 3D conformer for SMILES {smiles!r}")
     try:
         AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=1000)
     except (RuntimeError, ValueError):
@@ -623,11 +637,16 @@ def build_structure_from_input(
             mol_type = chain_type_ids[polymer_type.upper()]
             seq_tokens = _seq_to_tokens(polymer_type, sequence)
             residues_atoms_bonds = [
-                (res_name, _parse_polymer_residue(res_name, ccd), [],
-                 _empty_constraints, True,
-                 token_ids.get(res_name, token_ids[_unk_for(polymer_type)]),
-                 res_to_center_atom_id.get(res_name, 0),
-                 res_to_disto_atom_id.get(res_name, 0))
+                (
+                    res_name,
+                    _parse_polymer_residue(res_name, ccd),
+                    [],
+                    _empty_constraints,
+                    True,
+                    token_ids.get(res_name, token_ids[_unk_for(polymer_type)]),
+                    res_to_center_atom_id.get(res_name, 0),
+                    res_to_disto_atom_id.get(res_name, 0),
+                )
                 for res_name in seq_tokens
             ]
         elif polymer_type in _LIGAND_TYPES:
@@ -639,24 +658,16 @@ def build_structure_from_input(
                 for code in codes:
                     ref_mol = ccd.get(code)
                     if ref_mol is None:
-                        raise ValueError(
-                            f"CCD missing ligand component: {code!r} in polymer"
-                            f" entity {entity_id}")
-                    atoms, bonds, residue_constraints = (
-                        _parse_ccd_ligand_residue(ref_mol))
-                    residues_atoms_bonds.append(
-                        (code, atoms, bonds, residue_constraints, False,
-                         unk_prot_id, 0, 0))
+                        raise ValueError(f"CCD missing ligand component: {code!r} in polymer entity {entity_id}")
+                    atoms, bonds, residue_constraints = _parse_ccd_ligand_residue(ref_mol)
+                    residues_atoms_bonds.append((code, atoms, bonds, residue_constraints, False, unk_prot_id, 0, 0))
             else:  # smiles_ligand
                 ligand_counter += 1
                 lig_name = f"LIG{ligand_counter}"
                 mol = _build_smiles_mol(sequence, lig_name)
                 extra_mols[lig_name] = mol
-                atoms, bonds, residue_constraints = _parse_ccd_ligand_residue(
-                    mol)
-                residues_atoms_bonds.append(
-                    (lig_name, atoms, bonds, residue_constraints, False,
-                     unk_prot_id, 0, 0))
+                atoms, bonds, residue_constraints = _parse_ccd_ligand_residue(mol)
+                residues_atoms_bonds.append((lig_name, atoms, bonds, residue_constraints, False, unk_prot_id, 0, 0))
         else:
             raise ValueError(f"Unsupported polymer_type: {polymer_type!r}")
 
@@ -669,13 +680,17 @@ def build_structure_from_input(
             chain_atom_count = 0
             chain_res_count = 0
             for res_idx_in_chain, (
-                    res_name, atoms, bonds, residue_constraints, is_standard,
-                    res_type, center_off,
-                    disto_off) in enumerate(residues_atoms_bonds):
+                res_name,
+                atoms,
+                bonds,
+                residue_constraints,
+                is_standard,
+                res_type,
+                center_off,
+                disto_off,
+            ) in enumerate(residues_atoms_bonds):
                 if not atoms:
-                    raise ValueError(
-                        f"Residue {res_name} has no atoms (mol_type={polymer_type})"
-                    )
+                    raise ValueError(f"Residue {res_name} has no atoms (mol_type={polymer_type})")
                 atom_center_global = global_atom_idx + center_off
                 atom_disto_global = global_atom_idx + disto_off
                 all_residues.append(
@@ -689,9 +704,10 @@ def build_structure_from_input(
                         atom_disto=atom_disto_global,
                         is_standard=is_standard,
                         is_present=True,
-                    ))
+                    )
+                )
                 all_atoms.extend(atoms)
-                for (a1, a2, btype) in bonds:
+                for a1, a2, btype in bonds:
                     all_bonds.append(
                         Bond(
                             chain_1=chain_idx,
@@ -701,59 +717,58 @@ def build_structure_from_input(
                             atom_1=global_atom_idx + a1,
                             atom_2=global_atom_idx + a2,
                             type=btype,
-                        ))
+                        )
+                    )
                 for c in residue_constraints["rdkit_bounds"]:
                     a1, a2 = c["atom_idxs"]
-                    rdkit_bounds_global.append({
-                        "atom_idxs":
-                        (global_atom_idx + a1, global_atom_idx + a2),
-                        "is_bond":
-                        c["is_bond"],
-                        "is_angle":
-                        c["is_angle"],
-                        "upper_bound":
-                        c["upper_bound"],
-                        "lower_bound":
-                        c["lower_bound"],
-                    })
+                    rdkit_bounds_global.append(
+                        {
+                            "atom_idxs": (global_atom_idx + a1, global_atom_idx + a2),
+                            "is_bond": c["is_bond"],
+                            "is_angle": c["is_angle"],
+                            "upper_bound": c["upper_bound"],
+                            "lower_bound": c["lower_bound"],
+                        }
+                    )
                 for c in residue_constraints["chiral_atoms"]:
                     a = c["atom_idxs"]
-                    chiral_atoms_global.append({
-                        "atom_idxs":
-                        tuple(global_atom_idx + i for i in a),
-                        "is_reference":
-                        c["is_reference"],
-                        "is_r":
-                        c["is_r"],
-                    })
+                    chiral_atoms_global.append(
+                        {
+                            "atom_idxs": tuple(global_atom_idx + i for i in a),
+                            "is_reference": c["is_reference"],
+                            "is_r": c["is_r"],
+                        }
+                    )
                 for c in residue_constraints["stereo_bonds"]:
                     a = c["atom_idxs"]
-                    stereo_bonds_global.append({
-                        "atom_idxs":
-                        tuple(global_atom_idx + i for i in a),
-                        "is_reference":
-                        c["is_reference"],
-                        "is_e":
-                        c["is_e"],
-                    })
+                    stereo_bonds_global.append(
+                        {
+                            "atom_idxs": tuple(global_atom_idx + i for i in a),
+                            "is_reference": c["is_reference"],
+                            "is_e": c["is_e"],
+                        }
+                    )
                 for c in residue_constraints["planar_bonds"]:
                     a = c["atom_idxs"]
-                    planar_bonds_global.append({
-                        "atom_idxs":
-                        tuple(global_atom_idx + i for i in a),
-                    })
+                    planar_bonds_global.append(
+                        {
+                            "atom_idxs": tuple(global_atom_idx + i for i in a),
+                        }
+                    )
                 for c in residue_constraints["planar_ring_5"]:
                     a = c["atom_idxs"]
-                    planar_ring_5_global.append({
-                        "atom_idxs":
-                        tuple(global_atom_idx + i for i in a),
-                    })
+                    planar_ring_5_global.append(
+                        {
+                            "atom_idxs": tuple(global_atom_idx + i for i in a),
+                        }
+                    )
                 for c in residue_constraints["planar_ring_6"]:
                     a = c["atom_idxs"]
-                    planar_ring_6_global.append({
-                        "atom_idxs":
-                        tuple(global_atom_idx + i for i in a),
-                    })
+                    planar_ring_6_global.append(
+                        {
+                            "atom_idxs": tuple(global_atom_idx + i for i in a),
+                        }
+                    )
                 global_atom_idx += len(atoms)
                 global_res_idx += 1
                 chain_atom_count += len(atoms)
@@ -770,7 +785,8 @@ def build_structure_from_input(
                     res_idx=chain_res_start,
                     res_num=chain_res_count,
                     cyclic_period=0,
-                ))
+                )
+            )
             chain_idx += 1
 
     n_atoms = len(all_atoms)

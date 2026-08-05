@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# Upstream OpenFold/Boltz reference implementation, mirrored for parity tests.
+# Kept in upstream style (star imports, forward refs), not held to these rules.
+# ruff: noqa: B006, B020, B905
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -24,22 +27,14 @@ from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo.hubs import load_weights
 
 
-def _prep_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
-              head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _prep_qkv(
+    q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int, head_dim: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     batch_dims = " ".join([f"b_{i}" for i in range(q.ndim - 2)])
-    q = rearrange(q,
-                  f"{batch_dims} j (h d) -> {batch_dims} h j d",
-                  h=no_heads,
-                  d=head_dim)
-    k = rearrange(k,
-                  f"{batch_dims} j (h d) -> {batch_dims} h d j",
-                  h=no_heads,
-                  d=head_dim)
-    v = rearrange(v,
-                  f"{batch_dims} j (h d) -> {batch_dims} h j d",
-                  h=no_heads,
-                  d=head_dim)
+    q = rearrange(q, f"{batch_dims} j (h d) -> {batch_dims} h j d", h=no_heads, d=head_dim)
+    k = rearrange(k, f"{batch_dims} j (h d) -> {batch_dims} h d j", h=no_heads, d=head_dim)
+    v = rearrange(v, f"{batch_dims} j (h d) -> {batch_dims} h j d", h=no_heads, d=head_dim)
     return q, k, v
 
 
@@ -49,7 +44,7 @@ def plain_mha(
     v: torch.Tensor,
     no_heads: int,
     head_dim: int,
-    biases: Optional[list[torch.Tensor]] = None,
+    biases: list[torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Simple MHA for triangular attention, pairwise attention, and global attention.
     Args:
@@ -79,24 +74,20 @@ def plain_mha(
 
 
 class RefTriangleAttention(nn.Module):
-    """ Reference: https://github.com/jwohlwend/boltz/blob/v0.4.1/src/boltz/model/layers/triangular_attention/primitives.py#L310
+    """Reference: https://github.com/jwohlwend/boltz/blob/v0.4.1/src/boltz/model/layers/triangular_attention/primitives.py#L310
     Testing purposes only
     """
 
-    def __init__(self,
-                 c_q: int,
-                 c_k: int,
-                 c_v: int,
-                 c_hidden: int,
-                 no_heads: int,
-                 gating: bool = True,
-                 bias_flags: dict[str, bool] = {
-                     "q": False,
-                     "k": False,
-                     "v": False,
-                     "g": False,
-                     "o": False
-                 }):
+    def __init__(
+        self,
+        c_q: int,
+        c_k: int,
+        c_v: int,
+        c_hidden: int,
+        no_heads: int,
+        gating: bool = True,
+        bias_flags: dict[str, bool] = {"q": False, "k": False, "v": False, "g": False, "o": False},
+    ):
         """
         Args:
             c_q (int): query dimension
@@ -115,33 +106,24 @@ class RefTriangleAttention(nn.Module):
         self.gating = gating
         self.bias_flags = bias_flags
 
-        self.linear_q = nn.Linear(c_q,
-                                  self.c_hidden * self.no_heads,
-                                  bias=bias_flags["q"])
-        self.linear_k = nn.Linear(c_k,
-                                  self.c_hidden * self.no_heads,
-                                  bias=bias_flags["k"])
-        self.linear_v = nn.Linear(c_v,
-                                  self.c_hidden * self.no_heads,
-                                  bias=bias_flags["v"])
-        self.linear_o = nn.Linear(self.c_hidden * self.no_heads,
-                                  c_q,
-                                  bias=bias_flags["o"])
+        self.linear_q = nn.Linear(c_q, self.c_hidden * self.no_heads, bias=bias_flags["q"])
+        self.linear_k = nn.Linear(c_k, self.c_hidden * self.no_heads, bias=bias_flags["k"])
+        self.linear_v = nn.Linear(c_v, self.c_hidden * self.no_heads, bias=bias_flags["v"])
+        self.linear_o = nn.Linear(self.c_hidden * self.no_heads, c_q, bias=bias_flags["o"])
 
         self.linear_g = None
         if self.gating:
-            self.linear_g = nn.Linear(c_q,
-                                      self.c_hidden * self.no_heads,
-                                      bias=bias_flags["g"])
+            self.linear_g = nn.Linear(c_q, self.c_hidden * self.no_heads, bias=bias_flags["g"])
         self.sigmoid = nn.Sigmoid()
 
     @classmethod
     def load_weights(
-            cls,
-            model: str = "boltz-1",
-            layer_path: str = "pairformer_module.layers.0.tri_att_start.mha",
-            no_heads: int = 4,
-            state_dict: Optional[dict] = None) -> 'RefTriangleAttention':
+        cls,
+        model: str = "boltz-1",
+        layer_path: str = "pairformer_module.layers.0.tri_att_start.mha",
+        no_heads: int = 4,
+        state_dict: dict | None = None,
+    ) -> "RefTriangleAttention":
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         weights_path = [
@@ -162,49 +144,46 @@ class RefTriangleAttention(nn.Module):
             layer.weight.data.copy_(state_dict[weights_path])
         return attn
 
-    def forward(self,
-                q_x: torch.Tensor,
-                kv_x: torch.Tensor,
-                biases: Optional[list[torch.Tensor]] = None):
+    def forward(self, q_x: torch.Tensor, kv_x: torch.Tensor, biases: list[torch.Tensor] | None = None):
         q = self.linear_q(q_x)
         k = self.linear_k(kv_x)
         v = self.linear_v(kv_x)
-        mha_o = plain_mha(q.contiguous(), k.contiguous(), v.contiguous(),
-                          self.no_heads, self.c_hidden, biases)
+        mha_o = plain_mha(q.contiguous(), k.contiguous(), v.contiguous(), self.no_heads, self.c_hidden, biases)
         o = mha_o
         if self.linear_g is not None:
             g = F.sigmoid(self.linear_g(q_x))
             g = g.view(g.shape[:-1] + (self.no_heads, self.c_hidden))
             o = o * g
-        o = o.view(o.shape[:-2] + (self.no_heads * self.c_hidden, ))
+        o = o.view(o.shape[:-2] + (self.no_heads * self.c_hidden,))
         o = self.linear_o(o)
 
         return o
 
 
 class RefPairwiseSelfAttention(nn.Module):
-    """ Reference: https://github.com/jwohlwend/boltz/blob/v0.4.1/src/boltz/model/layers/attention.py#L8
+    """Reference: https://github.com/jwohlwend/boltz/blob/v0.4.1/src/boltz/model/layers/attention.py#L8
     Testing purposes only, without model cache for Pairformer module
     # TODO: Add a ref pairwise attention for diffusion modules (with model cache)
     """
 
     def __init__(
-            self,
-            c_s: int,
-            c_z: int,
-            num_heads: int,
-            inf: float = 1e9,
-            bias_flags: dict[str, bool] = {
-                "q": True,
-                "k": False,
-                "v": False,
-                "g": False,
-                "z": False,
-                "o": False
-            },  # default for boltz
-            compute_pair_bias: bool = True,
-            transform_mask: bool = True,
-            initial_norm: bool = True) -> None:
+        self,
+        c_s: int,
+        c_z: int,
+        num_heads: int,
+        inf: float = 1e9,
+        bias_flags: dict[str, bool] = {
+            "q": True,
+            "k": False,
+            "v": False,
+            "g": False,
+            "z": False,
+            "o": False,
+        },  # default for boltz
+        compute_pair_bias: bool = True,
+        transform_mask: bool = True,
+        initial_norm: bool = True,
+    ) -> None:
         """
         Args:
             c_s (int):  The input sequence dimension.
@@ -245,10 +224,11 @@ class RefPairwiseSelfAttention(nn.Module):
 
     @classmethod
     def load_weights(
-            cls,
-            model: str = "boltz-1",
-            layer_path: str = "pairformer_module.layers.0.attention",
-            state_dict: Optional[dict] = None) -> 'RefPairwiseSelfAttention':
+        cls,
+        model: str = "boltz-1",
+        layer_path: str = "pairformer_module.layers.0.attention",
+        state_dict: dict | None = None,
+    ) -> "RefPairwiseSelfAttention":
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         c_s = state_dict[f"{layer_path}.proj_q.weight"].shape[0]
@@ -264,28 +244,21 @@ class RefPairwiseSelfAttention(nn.Module):
             num_heads = 4
 
         has_norm_s = f"{layer_path}.norm_s.weight" in state_dict
-        attn = cls(c_s,
-                   c_z,
-                   num_heads,
-                   compute_pair_bias=compute_pair_bias,
-                   initial_norm=has_norm_s)
+        attn = cls(c_s, c_z, num_heads, compute_pair_bias=compute_pair_bias, initial_norm=has_norm_s)
 
         # One list, so paths and target modules cannot drift apart.
         to_load = []
         if has_norm_s:
-            to_load.append((f"{layer_path}.norm_s.weight",
-                            f"{layer_path}.norm_s.bias", attn.norm_s))
+            to_load.append((f"{layer_path}.norm_s.weight", f"{layer_path}.norm_s.bias", attn.norm_s))
         to_load += [
-            (f"{layer_path}.proj_q.weight", f"{layer_path}.proj_q.bias",
-             attn.proj_q),
+            (f"{layer_path}.proj_q.weight", f"{layer_path}.proj_q.bias", attn.proj_q),
             (f"{layer_path}.proj_k.weight", None, attn.proj_k),
             (f"{layer_path}.proj_v.weight", None, attn.proj_v),
             (f"{layer_path}.proj_g.weight", None, attn.proj_g),
         ]
         if compute_pair_bias:
             to_load += [
-                (f"{layer_path}.proj_z.0.weight",
-                 f"{layer_path}.proj_z.0.bias", attn.proj_z[0]),
+                (f"{layer_path}.proj_z.0.weight", f"{layer_path}.proj_z.0.bias", attn.proj_z[0]),
                 (f"{layer_path}.proj_z.1.weight", None, attn.proj_z[1]),
             ]
         to_load.append((f"{layer_path}.proj_o.weight", None, attn.proj_o))
@@ -299,13 +272,14 @@ class RefPairwiseSelfAttention(nn.Module):
         return attn
 
     def forward(
-            self,
-            s: torch.Tensor,
-            z: torch.Tensor,
-            mask: torch.Tensor,
-            compute_pair_bias: bool = True,
-            multiplicity: int = 1,
-            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+        self,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        compute_pair_bias: bool = True,
+        multiplicity: int = 1,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             s (torch.Tensor): The input sequence (B, I, Ds) or (B, J, I, Ds).
@@ -346,8 +320,7 @@ class RefPairwiseSelfAttention(nn.Module):
         else:
             mask_bias = mask.float()
 
-        mha_o = plain_mha(q, k, v, self.num_heads, self.head_dim,
-                          [mask_bias, z])
+        mha_o = plain_mha(q, k, v, self.num_heads, self.head_dim, [mask_bias, z])
         batch_dims = mha_o.shape[:-2]
         o = mha_o.reshape(*batch_dims, self.num_heads * self.head_dim)
 

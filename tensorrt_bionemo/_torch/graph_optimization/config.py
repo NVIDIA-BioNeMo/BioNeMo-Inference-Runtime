@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import enum
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from tensorrt_bionemo.configs.base import BaseConfig
 
 
-class SpacingMethod(str, enum.Enum):
+class SpacingMethod(enum.StrEnum):
     """How the bucket boundary lengths for a padded dimension are spaced between
     ``dim_len_min`` and ``dim_len_max``.
 
@@ -31,6 +31,7 @@ class SpacingMethod(str, enum.Enum):
         EXPONENTIAL: Geometrically spaced lengths (``np.geomspace``), giving
             finer buckets at small lengths and coarser ones at large lengths.
     """
+
     LINEAR = "linear"
     EXPONENTIAL = "exponential"
 
@@ -53,9 +54,10 @@ class NamedDimTies:
         output_dims: Ordered ``(output_tensor_index, axes)`` pairs tying output
             tensor axes to ``name`` (used only when bucketing/padding is active).
     """
+
     name: str
-    input_dims: Tuple[Tuple[str, Tuple[int, ...]], ...]
-    output_dims: Tuple[Tuple[int, Tuple[int, ...]], ...] = ()
+    input_dims: tuple[tuple[str, tuple[int, ...]], ...]
+    output_dims: tuple[tuple[int, tuple[int, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,12 +104,11 @@ class InputRoutingConfig(BaseModel):
             per-replay static-buffer copy.
     """
 
-    named_dim_ties: List[NamedDimTies] = Field(default_factory=list)
-    padded_dims: List[PaddedDimSpec] = Field(default_factory=list)
-    input_acceptance_dims: List[InputAcceptanceDimSpec] = Field(
-        default_factory=list)
-    static_args: List[str] = Field(default_factory=list)
-    internal_workspace_kwargs: List[str] = Field(default_factory=list)
+    named_dim_ties: list[NamedDimTies] = Field(default_factory=list)
+    padded_dims: list[PaddedDimSpec] = Field(default_factory=list)
+    input_acceptance_dims: list[InputAcceptanceDimSpec] = Field(default_factory=list)
+    static_args: list[str] = Field(default_factory=list)
+    internal_workspace_kwargs: list[str] = Field(default_factory=list)
 
     class Config:
         extra = "allow"
@@ -130,15 +131,15 @@ class InputRoutingConfigFactory:
 
     def __init__(self) -> None:
         # Tie points: which forward input/output axes carry each named dim.
-        self.named_dim_ties: List[NamedDimTies] = []
+        self.named_dim_ties: list[NamedDimTies] = []
         # Per-dim declarative bucket (padding) specs, keyed by ``.name``.
-        self.padded_dims: List[PaddedDimSpec] = []
+        self.padded_dims: list[PaddedDimSpec] = []
         # Per-dim acceptance-limit specs, keyed by ``.name``.
-        self.input_acceptance_dims: List[InputAcceptanceDimSpec] = []
+        self.input_acceptance_dims: list[InputAcceptanceDimSpec] = []
         # Names of forward args declared static (order-preserving, deduped).
-        self.static_args: List[str] = []
+        self.static_args: list[str] = []
         # Names of forward kwargs carrying graph-internal workspaces.
-        self.internal_workspace_kwargs: List[str] = []
+        self.internal_workspace_kwargs: list[str] = []
 
     @staticmethod
     def _upsert_by_name(items: list, item) -> None:
@@ -160,7 +161,6 @@ class InputRoutingConfigFactory:
         """
         for tie in named_dim_ties:
             self._upsert_by_name(self.named_dim_ties, tie)
-
 
     def set_static_args(self, arg_names: Sequence[str]) -> None:
         """Declare ``forward`` arguments that are static for a given input key.
@@ -196,9 +196,7 @@ class InputRoutingConfigFactory:
                 accepted when it does not exceed this, rejected only when
                 strictly greater.
         """
-        self._upsert_by_name(
-            self.input_acceptance_dims,
-            InputAcceptanceDimSpec(name=dim_name, dim_len_max=dim_len_max))
+        self._upsert_by_name(self.input_acceptance_dims, InputAcceptanceDimSpec(name=dim_name, dim_len_max=dim_len_max))
 
     def set_padded_dim(
         self,
@@ -207,7 +205,7 @@ class InputRoutingConfigFactory:
         dim_len_max: int,
         num_intervals: int,
         multiple_of: int = 128,
-        spacing_method: Union[SpacingMethod, str] = SpacingMethod.LINEAR,
+        spacing_method: SpacingMethod | str = SpacingMethod.LINEAR,
     ) -> None:
         """Declare a named padded dimension and its bucket-boundary lengths.
 
@@ -234,21 +232,21 @@ class InputRoutingConfigFactory:
         """
         if dim_len_min < 0 or dim_len_max < dim_len_min:
             raise ValueError(
-                "Require 0 <= dim_len_min <= dim_len_max, got "
-                f"dim_len_min={dim_len_min}, dim_len_max={dim_len_max}")
+                f"Require 0 <= dim_len_min <= dim_len_max, got dim_len_min={dim_len_min}, dim_len_max={dim_len_max}"
+            )
         if num_intervals < 1:
-            raise ValueError(
-                f"num_intervals must be >= 1, got {num_intervals}")
+            raise ValueError(f"num_intervals must be >= 1, got {num_intervals}")
         try:
             spacing_method = SpacingMethod(spacing_method)
         except ValueError:
+            # `from None`: the enum's own "'x' is not a valid SpacingMethod"
+            # message adds nothing over the one below, which already lists the
+            # valid values, so chaining it would only pad the traceback.
             raise ValueError(
-                f"spacing_method must be one of {[m.value for m in SpacingMethod]}, "
-                f"got {spacing_method!r}")
+                f"spacing_method must be one of {[m.value for m in SpacingMethod]}, got {spacing_method!r}"
+            ) from None
         if spacing_method == SpacingMethod.EXPONENTIAL and dim_len_min < 1:
-            raise ValueError(
-                "exponential spacing requires dim_len_min >= 1, got "
-                f"{dim_len_min}")
+            raise ValueError(f"exponential spacing requires dim_len_min >= 1, got {dim_len_min}")
 
         self._upsert_by_name(
             self.padded_dims,
@@ -259,13 +257,14 @@ class InputRoutingConfigFactory:
                 num_intervals=num_intervals,
                 multiple_of=multiple_of,
                 spacing_method=spacing_method.value,
-            ))
+            ),
+        )
 
     @staticmethod
     def snap_to(
-        dim_len_values: Tuple[int, ...],
+        dim_len_values: tuple[int, ...],
         multiple_of: int,
-    ) -> Tuple[int, ...]:
+    ) -> tuple[int, ...]:
         """Round each length up to the lowest multiple of ``multiple_of``.
 
         Every entry of ``dim_len_values`` is increased (never decreased) to the
@@ -290,14 +289,11 @@ class InputRoutingConfigFactory:
         if multiple_of < 1:
             raise ValueError(f"multiple_of must be >= 1, got {multiple_of}")
         if any(v < 0 for v in dim_len_values):
-            raise ValueError(
-                "dim_len_values must be non-negative, got "
-                f"{tuple(dim_len_values)}")
-        return tuple(
-            InputRoutingConfigFactory.ceil_div(v, multiple_of) * multiple_of for v in dim_len_values)
+            raise ValueError(f"dim_len_values must be non-negative, got {tuple(dim_len_values)}")
+        return tuple(InputRoutingConfigFactory.ceil_div(v, multiple_of) * multiple_of for v in dim_len_values)
 
     @staticmethod
-    def ceil_div(k: int, divisor: int)-> int:
+    def ceil_div(k: int, divisor: int) -> int:
         return (k + divisor - 1) // divisor
 
     @staticmethod
@@ -306,7 +302,7 @@ class InputRoutingConfigFactory:
         dim_len_max: int,
         num_intervals: int,
         spacing_method: SpacingMethod,
-    ) -> Tuple[int, ...]:
+    ) -> tuple[int, ...]:
         """Return the integer bucket-boundary lengths for a padded dimension.
 
         ``num_intervals`` is the number of intervals dividing
@@ -316,13 +312,13 @@ class InputRoutingConfigFactory:
         tensor dimension lengths are integers.
         """
         if spacing_method == SpacingMethod.LINEAR:
-            values = np.linspace(dim_len_min, dim_len_max, num=num_intervals+1)
+            values = np.linspace(dim_len_min, dim_len_max, num=num_intervals + 1)
         elif spacing_method == SpacingMethod.EXPONENTIAL:
-            values = np.geomspace(dim_len_min, dim_len_max, num=num_intervals+1)
+            values = np.geomspace(dim_len_min, dim_len_max, num=num_intervals + 1)
         else:
             raise ValueError(
-                f"spacing_method must be one of {[m.value for m in SpacingMethod]}, "
-                f"got {spacing_method!r}")
+                f"spacing_method must be one of {[m.value for m in SpacingMethod]}, got {spacing_method!r}"
+            )
         return tuple(int(round(v)) for v in values)
 
     def export_config(self) -> InputRoutingConfig:
@@ -344,7 +340,8 @@ class InputRoutingConfigFactory:
                     f"acceptance maximum {acc.dim_len_max} for dim "
                     f"{acc.name!r} exceeds its largest capture bucket "
                     f"{largest_bucket}; an accepted input could not be padded "
-                    "to a bucket")
+                    "to a bucket"
+                )
         return InputRoutingConfig(
             named_dim_ties=list(self.named_dim_ties),
             padded_dims=list(self.padded_dims),
@@ -354,7 +351,7 @@ class InputRoutingConfigFactory:
         )
 
 
-def effective_ranges(config: InputRoutingConfig) -> Dict[str, dict]:
+def effective_ranges(config: InputRoutingConfig) -> dict[str, dict]:
     """Report the effective live range and capture bucket per named dim.
 
     For each named dimension the config references (via acceptance and/or
@@ -370,11 +367,10 @@ def effective_ranges(config: InputRoutingConfig) -> Dict[str, dict]:
     Purely informational; :meth:`InputRoutingConfigFactory.export_config` is what
     rejects an acceptance maximum above the largest bucket.
     """
-    acceptance_by_name = {
-        spec.name: spec.dim_len_max for spec in config.input_acceptance_dims}
+    acceptance_by_name = {spec.name: spec.dim_len_max for spec in config.input_acceptance_dims}
     padded_by_name = {spec.name: spec for spec in config.padded_dims}
 
-    ranges: Dict[str, dict] = {}
+    ranges: dict[str, dict] = {}
     for dim_name in sorted(set(acceptance_by_name) | set(padded_by_name)):
         acceptance_max = acceptance_by_name.get(dim_name)
         spec = padded_by_name.get(dim_name)
@@ -383,8 +379,7 @@ def effective_ranges(config: InputRoutingConfig) -> Dict[str, dict]:
         live_max = acceptance_max if acceptance_max is not None else largest_bucket
         covering_bucket = None
         if bucket_lengths is not None and live_max is not None:
-            covering_bucket = min(
-                (b for b in bucket_lengths if b >= live_max), default=None)
+            covering_bucket = min((b for b in bucket_lengths if b >= live_max), default=None)
         ranges[dim_name] = {
             "live_max": live_max,
             "covering_bucket": covering_bucket,
@@ -393,12 +388,12 @@ def effective_ranges(config: InputRoutingConfig) -> Dict[str, dict]:
     return ranges
 
 
-def _bucket_lengths(spec: PaddedDimSpec) -> Tuple[int, ...]:
+def _bucket_lengths(spec: PaddedDimSpec) -> tuple[int, ...]:
     """Recompute the aligned bucket-boundary lengths for a declarative
     :class:`PaddedDimSpec` (which stores the spec, not the derived lengths)."""
     values = InputRoutingConfigFactory.compute_dim_len_values(
-        spec.dim_len_min, spec.dim_len_max, spec.num_intervals,
-        SpacingMethod(spec.spacing_method))
+        spec.dim_len_min, spec.dim_len_max, spec.num_intervals, SpacingMethod(spec.spacing_method)
+    )
     return InputRoutingConfigFactory.snap_to(values, spec.multiple_of)
 
 
@@ -409,43 +404,51 @@ def _bucket_lengths(spec: PaddedDimSpec) -> Tuple[int, ...]:
 # accepted and/or padded is decided by its presence in ``input_acceptance_dims``
 # / ``padded_dims``.
 # ---------------------------------------------------------------------------
-def input_acceptance_assignments(
-        config: InputRoutingConfig) -> List[Tuple[str, int, str]]:
+def input_acceptance_assignments(config: InputRoutingConfig) -> list[tuple[str, int, str]]:
     """``[(tensor_name, dim_idx, dim_name)]`` for every input axis tied to a dim
     that carries an acceptance limit."""
     accepted = {spec.name for spec in config.input_acceptance_dims}
-    return [(tensor_name, axis, tie.name)
-            for tie in config.named_dim_ties if tie.name in accepted
-            for tensor_name, axes in tie.input_dims for axis in axes]
+    return [
+        (tensor_name, axis, tie.name)
+        for tie in config.named_dim_ties
+        if tie.name in accepted
+        for tensor_name, axes in tie.input_dims
+        for axis in axes
+    ]
 
 
-def input_padded_assignments(
-        config: InputRoutingConfig) -> List[Tuple[str, int, str]]:
+def input_padded_assignments(config: InputRoutingConfig) -> list[tuple[str, int, str]]:
     """``[(tensor_name, dim_idx, dim_name)]`` for every input axis tied to a dim
     that carries a bucket (padding) spec."""
     padded = {spec.name for spec in config.padded_dims}
-    return [(tensor_name, axis, tie.name)
-            for tie in config.named_dim_ties if tie.name in padded
-            for tensor_name, axes in tie.input_dims for axis in axes]
+    return [
+        (tensor_name, axis, tie.name)
+        for tie in config.named_dim_ties
+        if tie.name in padded
+        for tensor_name, axes in tie.input_dims
+        for axis in axes
+    ]
 
 
-def output_padded_assignments(
-        config: InputRoutingConfig) -> List[Tuple[int, int, str]]:
+def output_padded_assignments(config: InputRoutingConfig) -> list[tuple[int, int, str]]:
     """``[(output_tensor_index, dim_idx, dim_name)]`` for every output axis tied
     to a dim that carries a bucket (padding) spec."""
     padded = {spec.name for spec in config.padded_dims}
-    return [(out_idx, axis, tie.name)
-            for tie in config.named_dim_ties if tie.name in padded
-            for out_idx, axes in tie.output_dims for axis in axes]
+    return [
+        (out_idx, axis, tie.name)
+        for tie in config.named_dim_ties
+        if tie.name in padded
+        for out_idx, axes in tie.output_dims
+        for axis in axes
+    ]
 
 
-def acceptance_max_by_name(config: InputRoutingConfig) -> Dict[str, int]:
+def acceptance_max_by_name(config: InputRoutingConfig) -> dict[str, int]:
     """``{dim_name: dim_len_max}`` acceptance limits keyed by name."""
     return {spec.name: spec.dim_len_max for spec in config.input_acceptance_dims}
 
 
-def bucket_lengths_by_name(
-        config: InputRoutingConfig) -> Dict[str, Tuple[int, ...]]:
+def bucket_lengths_by_name(config: InputRoutingConfig) -> dict[str, tuple[int, ...]]:
     """``{dim_name: (aligned bucket-boundary lengths)}`` for each padded dim."""
     return {spec.name: _bucket_lengths(spec) for spec in config.padded_dims}
 
@@ -458,6 +461,7 @@ class GraphOptimizationMode(enum.Enum):
         CUDA_GRAPH_VIA_TORCH: Wrap the module to drive per-input-key CUDA-graph
             warmup, capture, and replay via ``torch.cuda.graph``.
     """
+
     NO_OPTIMIZATION = "no_optimization"
     CUDA_GRAPH_VIA_TORCH = "cuda_graph_via_torch"
     # Note: ``torch.compile`` is not offered as a mode here — the modules in
@@ -477,6 +481,7 @@ class InputKeyMethod(enum.Enum):
             graph serves a range of live shapes; inputs are padded up to their
             bucket length for capture/replay and outputs truncated back.
     """
+
     EXACT = "exact"
     BUCKETED_SHAPES = "bucketed_shapes"
 
@@ -502,9 +507,10 @@ class GraphOptimizationConfig(BaseConfig):
             captured graphs; the least-recently-used graph is evicted (and its
             buffers freed) once this many distinct input keys are live.
     """
+
     graph_optimization_mode: GraphOptimizationMode = GraphOptimizationMode.NO_OPTIMIZATION
     input_key_method: InputKeyMethod = InputKeyMethod.EXACT
-    input_routing_config: Optional[InputRoutingConfig] = None
+    input_routing_config: InputRoutingConfig | None = None
     num_graphs_max_for_this_module: int = 1
 
 
@@ -527,8 +533,7 @@ class CUDAGraphOptimizationConfig(GraphOptimizationConfig):
             a mismatch reverts that key permanently to eager. Adds one extra eager
             forward at capture time, so it is off by default.
     """
+
     num_calls_for_kernel_compilation: int = 1
     num_calls_for_memory_allocator: int = 3
     verify_capture: bool = False
-
-

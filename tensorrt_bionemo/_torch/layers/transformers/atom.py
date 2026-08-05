@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -24,12 +24,13 @@ from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class AtomTransformer(nn.Module):
-
-    def __init__(self,
-                 attn_window_queries: int = None,
-                 attn_window_keys: int = None,
-                 diffusion_transformer_config: BaseConfig = None,
-                 diffusion_transformer_cls: Any = None):
+    def __init__(
+        self,
+        attn_window_queries: int = None,
+        attn_window_keys: int = None,
+        diffusion_transformer_config: BaseConfig = None,
+        diffusion_transformer_cls: Any = None,
+    ):
         """
         Args:
             attn_window_queries: int
@@ -48,24 +49,21 @@ class AtomTransformer(nn.Module):
         # [B, mult, NW, ...] is incompatible with the CuTeDSL kernel's
         # multiplicity broadcast (batch_b = flat_idx // mult assumes mult
         # is the innermost batch dim, but NW is innermost here).
-        if getattr(diffusion_transformer_config, 'pairwise_attention_backend',
-                   '') == "CuTeDSL":
+        if getattr(diffusion_transformer_config, "pairwise_attention_backend", "") == "CuTeDSL":
             diffusion_transformer_config.pairwise_attention_backend = "SDPA"
-        self.diffusion_transformer: nn.Module = diffusion_transformer_cls(
-            diffusion_transformer_config)
+        self.diffusion_transformer: nn.Module = diffusion_transformer_cls(diffusion_transformer_config)
 
     def load_weights(self, weights: dict):
-        self.diffusion_transformer.load_weights(
-            weights["diffusion_transformer"])
+        self.diffusion_transformer.load_weights(weights["diffusion_transformer"])
 
     def forward(
         self,
         q: torch.Tensor,
         c: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-        mask: Optional[torch.Tensor] = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        bias: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -136,18 +134,19 @@ class AtomTransformer(nn.Module):
 
 
 class AtomAttentionEncoder(nn.Module):
-
-    def __init__(self,
-                 atom_s: int,
-                 token_s: int,
-                 atoms_per_window_queries: int,
-                 atoms_per_window_keys: int,
-                 diffusion_transformer_config: BaseConfig = None,
-                 diffusion_transformer_cls: Any = None,
-                 structure_prediction=True,
-                 version: str = "v1",
-                 dtype: Optional[torch.dtype] = None,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        atom_s: int,
+        token_s: int,
+        atoms_per_window_queries: int,
+        atoms_per_window_keys: int,
+        diffusion_transformer_config: BaseConfig = None,
+        diffusion_transformer_cls: Any = None,
+        structure_prediction=True,
+        version: str = "v1",
+        dtype: torch.dtype | None = None,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             token_s: int
@@ -173,7 +172,8 @@ class AtomAttentionEncoder(nn.Module):
                 atom_s,
                 bias=False,
                 dtype=dtype,
-                skip_create_weights=skip_create_weights)
+                skip_create_weights=skip_create_weights,
+            )
 
         self.atom_encoder_dtype = diffusion_transformer_config.torch_dtype
         self.atom_encoder = AtomTransformer(
@@ -196,8 +196,7 @@ class AtomAttentionEncoder(nn.Module):
         )
 
     def load_weights(self, weights: dict):
-        self.atom_to_token_trans[0].load_weights(
-            weights["atom_to_token_trans.0"])
+        self.atom_to_token_trans[0].load_weights(weights["atom_to_token_trans.0"])
         self.atom_encoder.load_weights(weights["atom_encoder"])
         if hasattr(self, "r_to_q_trans"):
             self.r_to_q_trans.load_weights(weights["r_to_q_trans"])
@@ -210,8 +209,8 @@ class AtomAttentionEncoder(nn.Module):
         c: torch.Tensor,
         bias: torch.Tensor,
         r: torch.Tensor = None,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -263,41 +262,43 @@ class AtomAttentionEncoder(nn.Module):
             # q: [B, multiplicity, N_atoms, atom_s]
             q = q + r_to_q
 
-        q = self.atom_encoder(q=q.to(self.atom_encoder_dtype),
-                              c=c.to(self.atom_encoder_dtype),
-                              bias=bias.to(self.atom_encoder_dtype),
-                              mask=atom_mask.to(self.atom_encoder_dtype),
-                              attn_metadata=attn_metadata,
-                              buffers=buffers)
+        q = self.atom_encoder(
+            q=q.to(self.atom_encoder_dtype),
+            c=c.to(self.atom_encoder_dtype),
+            bias=bias.to(self.atom_encoder_dtype),
+            mask=atom_mask.to(self.atom_encoder_dtype),
+            attn_metadata=attn_metadata,
+            buffers=buffers,
+        )
         q = q.to(self.dtype)
         with torch.autocast("cuda", enabled=False):
             # [B, multiplicity, N_atoms, 2 * token_s]
             q_to_a = self.atom_to_token_trans(q.float())
-            atom_to_token_mean = atom_to_token.float() / (
-                atom_to_token.sum(dim=1, keepdim=True) + 1e-6)
+            atom_to_token_mean = atom_to_token.float() / (atom_to_token.sum(dim=1, keepdim=True) + 1e-6)
             atom_to_token_mean = atom_to_token_mean.unsqueeze(1)
             atom_to_token_mean = atom_to_token_mean.repeat_interleave(
-                multiplicity, 1)  # [B, multiplicity, N_atoms, N_res]
+                multiplicity, 1
+            )  # [B, multiplicity, N_atoms, N_res]
 
-            a = torch.einsum("bijd,bijk->bikd", q_to_a,
-                             atom_to_token_mean)  # [B, multiplicity, N_res, D]
+            a = torch.einsum("bijd,bijk->bikd", q_to_a, atom_to_token_mean)  # [B, multiplicity, N_res, D]
 
         a = a.to(q)
         return a, q, c
 
 
 class AtomAttentionDecoder(nn.Module):
-
-    def __init__(self,
-                 token_s: int,
-                 atom_s: int,
-                 atoms_per_window_queries: int,
-                 atoms_per_window_keys: int,
-                 diffusion_transformer_config: BaseConfig,
-                 diffusion_transformer_cls: Any = None,
-                 structure_prediction=True,
-                 dtype: Optional[torch.dtype] = None,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        token_s: int,
+        atom_s: int,
+        atoms_per_window_queries: int,
+        atoms_per_window_keys: int,
+        diffusion_transformer_config: BaseConfig,
+        diffusion_transformer_cls: Any = None,
+        structure_prediction=True,
+        dtype: torch.dtype | None = None,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             token_s: int
@@ -319,11 +320,8 @@ class AtomAttentionDecoder(nn.Module):
         self.token_s = token_s
         self.atom_s = atom_s
         self.a_to_q_trans = Linear(
-            token_s * 2,
-            atom_s,
-            bias=False,
-            dtype=torch.float32,
-            skip_create_weights=skip_create_weights)
+            token_s * 2, atom_s, bias=False, dtype=torch.float32, skip_create_weights=skip_create_weights
+        )
 
         self.atom_decoder_dtype = diffusion_transformer_config.torch_dtype
         self.atom_decoder = AtomTransformer(
@@ -334,26 +332,18 @@ class AtomAttentionDecoder(nn.Module):
         )
 
         self.atom_feat_to_atom_pos_update = nn.Sequential(
-            nn.LayerNorm(atom_s,
-                         dtype=dtype,
-                         eps=diffusion_transformer_config.norm_epsilon),
-            Linear(atom_s,
-                   3,
-                   bias=False,
-                   dtype=dtype,
-                   skip_create_weights=skip_create_weights))
+            nn.LayerNorm(atom_s, dtype=dtype, eps=diffusion_transformer_config.norm_epsilon),
+            Linear(atom_s, 3, bias=False, dtype=dtype, skip_create_weights=skip_create_weights),
+        )
 
     def load_weights(self, weights: dict):
         self.a_to_q_trans.load_weights(weights["a_to_q_trans"])
         self.atom_decoder.load_weights(weights["atom_decoder"])
 
-        self.atom_feat_to_atom_pos_update[0].weight.data.copy_(
-            weights["atom_feat_to_atom_pos_update.0"][0]["weight"])
-        self.atom_feat_to_atom_pos_update[0].bias.data.copy_(
-            weights["atom_feat_to_atom_pos_update.0"][0]["bias"])
+        self.atom_feat_to_atom_pos_update[0].weight.data.copy_(weights["atom_feat_to_atom_pos_update.0"][0]["weight"])
+        self.atom_feat_to_atom_pos_update[0].bias.data.copy_(weights["atom_feat_to_atom_pos_update.0"][0]["bias"])
 
-        self.atom_feat_to_atom_pos_update[1].load_weights(
-            weights["atom_feat_to_atom_pos_update.1"])
+        self.atom_feat_to_atom_pos_update[1].load_weights(weights["atom_feat_to_atom_pos_update.1"])
 
     def forward(
         self,
@@ -363,8 +353,8 @@ class AtomAttentionDecoder(nn.Module):
         q: torch.Tensor,
         c: torch.Tensor,
         bias: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -396,8 +386,7 @@ class AtomAttentionDecoder(nn.Module):
             a_to_q = self.a_to_q_trans(a.float())
 
             # [B, multiplicity, N_atoms, 2*token_s]
-            a_to_q = torch.einsum("bikj,bijd->bikd", atom_to_token.float(),
-                                  a_to_q)
+            a_to_q = torch.einsum("bikj,bijd->bikd", atom_to_token.float(), a_to_q)
 
         # Auto broadcast the q and a_to_q
         if q.ndim == 3:
@@ -407,12 +396,14 @@ class AtomAttentionDecoder(nn.Module):
         atom_mask = atom_pad_mask.bool()
 
         # [B, multiplicity, N_atoms, atom_s]
-        q = self.atom_decoder(q=q.to(self.atom_decoder_dtype),
-                              c=c.to(self.atom_decoder_dtype),
-                              bias=bias.to(self.atom_decoder_dtype),
-                              mask=atom_mask.to(self.atom_decoder_dtype),
-                              attn_metadata=attn_metadata,
-                              buffers=buffers)
+        q = self.atom_decoder(
+            q=q.to(self.atom_decoder_dtype),
+            c=c.to(self.atom_decoder_dtype),
+            bias=bias.to(self.atom_decoder_dtype),
+            mask=atom_mask.to(self.atom_decoder_dtype),
+            attn_metadata=attn_metadata,
+            buffers=buffers,
+        )
         q = q.to(self.dtype)
         # [B, multiplicity, N_atoms, 3]
         r_update = self.atom_feat_to_atom_pos_update(q)

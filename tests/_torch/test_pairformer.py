@@ -19,15 +19,18 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 from test_utils.boltz.create_and_load_weights import (
-    create_pairformer_layer_weights, load_pairformer_layer_weights_torch)
+    create_pairformer_layer_weights,
+    load_pairformer_layer_weights_torch,
+)
 from test_utils.boltz.ref_layers import RefPairformerLayer
 
-from tensorrt_bionemo._torch.attention_backend import (AttentionType,
-                                                       get_attention_backend)
+from tensorrt_bionemo._torch.attention_backend import AttentionType, get_attention_backend
 from tensorrt_bionemo._torch.attention_backend.utils import (
-    PrecomputedPairMasks, precompute_pair_masks, precompute_single_masks)
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerLayerV1
+    PrecomputedPairMasks,
+    precompute_pair_masks,
+    precompute_single_masks,
+)
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerLayerV1
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl_single
@@ -47,37 +50,28 @@ class Scenario:
     torch_dtype: str = "float32"
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="VANILLA",
-             pairwise_attn_backend="VANILLA",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV",
-             pairwise_attn_backend="VANILLA",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CuTeDSL",
-             pairwise_attn_backend="VANILLA",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="VANILLA",
-             pairwise_attn_backend="CuTeDSL",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CuTeDSL",
-             pairwise_attn_backend="CuTeDSL",
-             torch_dtype="bfloat16"),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
+    ],
+)
 def test_pairformer_layer(sc: Scenario):
     _skip_if_cutedsl(sc.triangle_attn_backend, sc.pairwise_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-    pairwise_metadata_cls = get_attention_backend(
-        sc.pairwise_attn_backend, AttentionType.PAIRWISE).Metadata
-    triangle_metadata_cls = get_attention_backend(
-        sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
+    pairwise_metadata_cls = get_attention_backend(sc.pairwise_attn_backend, AttentionType.PAIRWISE).Metadata
+    triangle_metadata_cls = get_attention_backend(sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
     bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     ref_layer = RefPairformerLayer.load_weights()
     ref_layer = ref_layer.to(device)
@@ -95,7 +89,7 @@ def test_pairformer_layer(sc: Scenario):
         triangle_attn_backend=sc.triangle_attn_backend,
         pairwise_attn_backend=sc.pairwise_attn_backend,
         skip_create_weights=False,
-        attention_initial_norm=True  # Pairformer v1 uses attention_initial_norm
+        attention_initial_norm=True,  # Pairformer v1 uses attention_initial_norm
     )
     layer.to(device)
     load_pairformer_layer_weights_torch(layer, weights_and_biases, dtype)
@@ -108,11 +102,7 @@ def test_pairformer_layer(sc: Scenario):
     # left-mask kernel's ``actual_s_kv`` contract.  Fully-padded query rows
     # exist; the kernel handles them (early-exit work tile) and the
     # PyTorch reference produces NaN there, which we filter out below.
-    mask = make_left_aligned_mask(bs,
-                                  sc.seq_len,
-                                  dtype=torch.float32,
-                                  device=device,
-                                  min_valid=sc.seq_len // 2)
+    mask = make_left_aligned_mask(bs, sc.seq_len, dtype=torch.float32, device=device, min_valid=sc.seq_len // 2)
     pair_mask = mask[..., None] * mask[..., None, :]
 
     attn_metadatas = {
@@ -128,25 +118,16 @@ def test_pairformer_layer(sc: Scenario):
         pair_mask = pair_mask.to(dtype)
         # cast all modules to dtype, except norm_out in tri_mul
         for name, module in ref_layer.named_modules():
-            if name.startswith("tri_attn_start.") or \
-                name.startswith("tri_attn_end.") or \
-                name.startswith("transition_s.") or \
-                name.startswith("transition_z.") or \
-                name.startswith("attention."):
+            if name.startswith(("tri_attn_start.", "tri_attn_end.", "transition_s.", "transition_z.", "attention.")):
                 module.to(dtype)
-            elif name.startswith("tri_mul_out.") or name.startswith(
-                    "tri_mul_in."):
-                if not "norm_out" in name and not "p_out" in name and not "g_out" in name:
+            elif name.startswith(("tri_mul_out.", "tri_mul_in.")):
+                if "norm_out" not in name and "p_out" not in name and "g_out" not in name:
                     module.to(dtype)
                 else:
                     module.float()
 
         ref_s, ref_z = ref_layer(s, z, mask, pair_mask)
-        output_s, output_z = layer(s,
-                                   z,
-                                   mask,
-                                   pair_mask,
-                                   attn_metadatas=attn_metadatas)
+        output_s, output_z = layer(s, z, mask, pair_mask, attn_metadatas=attn_metadatas)
 
     assert ref_s.shape == output_s.shape
     assert ref_z.shape == output_z.shape
@@ -159,8 +140,7 @@ def test_pairformer_layer(sc: Scenario):
     z_keep = pair_mask.float().unsqueeze(-1)  # [B, N, N, 1]
 
     def _masked(x: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
-        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0,
-                                neginf=0.0) * keep
+        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0) * keep
 
     if dtype == torch.float32:
         # ``ours`` (PairformerLayerV1) and the OSS ``RefPairformerLayer`` are
@@ -172,14 +152,8 @@ def test_pairformer_layer(sc: Scenario):
         # the 12k elements. ``atol/rtol = 1e-3`` was tighter than that
         # cross-implementation float32 agreement; 1e-2 leaves ~2x headroom over
         # the observed drift while still catching real regressions.
-        torch.testing.assert_close(_masked(ref_s, s_keep),
-                                   _masked(output_s, s_keep),
-                                   atol=4e-2,
-                                   rtol=4e-2)
-        torch.testing.assert_close(_masked(ref_z, z_keep),
-                                   _masked(output_z, z_keep),
-                                   atol=4e-2,
-                                   rtol=4e-2)
+        torch.testing.assert_close(_masked(ref_s, s_keep), _masked(output_s, s_keep), atol=4e-2, rtol=4e-2)
+        torch.testing.assert_close(_masked(ref_z, z_keep), _masked(output_z, z_keep), atol=4e-2, rtol=4e-2)
     else:
         # Asymmetric tolerance: ``ours`` must be no more than ``tol_mult``×
         # worse than the bf16 reference's distance to the fp32 ground
@@ -195,13 +169,11 @@ def test_pairformer_layer(sc: Scenario):
             ("s", output_s, ref_s, ref_s_float, s_keep),
             ("z", output_z, ref_z, ref_z_float, z_keep),
         ]:
-            diff_ours = torch.max(
-                torch.abs(_masked(out_v, keep) - _masked(ref_f32_v, keep)))
-            diff_ref = torch.max(
-                torch.abs(_masked(ref_v, keep) - _masked(ref_f32_v, keep)))
+            diff_ours = torch.max(torch.abs(_masked(out_v, keep) - _masked(ref_f32_v, keep)))
+            diff_ref = torch.max(torch.abs(_masked(ref_v, keep) - _masked(ref_f32_v, keep)))
             assert diff_ours <= tol_mult * diff_ref + 1e-3, (
-                f"{name}: ours_diff={diff_ours.item()}, "
-                f"ref_diff={diff_ref.item()}")
+                f"{name}: ours_diff={diff_ours.item()}, ref_diff={diff_ref.item()}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -217,14 +189,8 @@ def test_precompute_pair_masks(backend_name: str, dtype: torch.dtype):
     B, I, J = 2, 16, 16
     inf_val = 1e9
 
-    pair_mask = torch.randint(0,
-                              2, (B, I, J),
-                              dtype=torch.float32,
-                              device=device)
-    precomputed = precompute_pair_masks(backend_name,
-                                        pair_mask,
-                                        inf=inf_val,
-                                        dtype=dtype)
+    pair_mask = torch.randint(0, 2, (B, I, J), dtype=torch.float32, device=device)
+    precomputed = precompute_pair_masks(backend_name, pair_mask, inf=inf_val, dtype=dtype)
 
     assert isinstance(precomputed, PrecomputedPairMasks)
     assert precomputed.pair_mask is pair_mask
@@ -235,18 +201,14 @@ def test_precompute_pair_masks(backend_name: str, dtype: torch.dtype):
 
     mask_typed = pair_mask.to(dtype)
     expected_bias = (inf_val * (mask_typed - 1))[..., :, None, None, :]
-    expected_bias_t = (inf_val * (mask_typed.transpose(-2, -1) - 1))[..., :,
-                                                                     None,
-                                                                     None, :]
+    expected_bias_t = (inf_val * (mask_typed.transpose(-2, -1) - 1))[..., :, None, None, :]
     torch.testing.assert_close(precomputed.mask_bias, expected_bias)
-    torch.testing.assert_close(precomputed.mask_bias_transposed,
-                               expected_bias_t)
+    torch.testing.assert_close(precomputed.mask_bias_transposed, expected_bias_t)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("seq_len", [16, 13])
-def test_precompute_pair_masks_cutedsl_left_aligned(dtype: torch.dtype,
-                                                    seq_len: int):
+def test_precompute_pair_masks_cutedsl_left_aligned(dtype: torch.dtype, seq_len: int):
     """CuTeDSL precompute returns int32 ``actual_s_kv`` per row in ``mask_bias``.
 
     Left-aligned ``pair_mask = seq_mask[..., None] * seq_mask[..., None, :]``
@@ -257,17 +219,11 @@ def test_precompute_pair_masks_cutedsl_left_aligned(dtype: torch.dtype,
     B, I, J = 2, seq_len, seq_len
     inf_val = 1e9
 
-    n_valid = torch.tensor([seq_len, max(1, seq_len - 3)],
-                           dtype=torch.int64,
-                           device=device)
-    seq_mask = (torch.arange(seq_len, device=device).view(1, seq_len)
-                < n_valid.view(B, 1)).to(torch.float32)
+    n_valid = torch.tensor([seq_len, max(1, seq_len - 3)], dtype=torch.int64, device=device)
+    seq_mask = (torch.arange(seq_len, device=device).view(1, seq_len) < n_valid.view(B, 1)).to(torch.float32)
     pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
 
-    precomputed = precompute_pair_masks("CuTeDSL",
-                                        pair_mask,
-                                        inf=inf_val,
-                                        dtype=dtype)
+    precomputed = precompute_pair_masks("CuTeDSL", pair_mask, inf=inf_val, dtype=dtype)
 
     assert isinstance(precomputed, PrecomputedPairMasks)
     assert precomputed.pair_mask is pair_mask
@@ -278,9 +234,9 @@ def test_precompute_pair_masks_cutedsl_left_aligned(dtype: torch.dtype,
     assert precomputed.mask_bias.shape == (B, I)
     assert precomputed.mask_bias_transposed.shape == (B, J)
 
-    expected = torch.where(seq_mask.bool(),
-                           n_valid.view(B, 1).to(torch.int32),
-                           torch.zeros_like(seq_mask, dtype=torch.int32))
+    expected = torch.where(
+        seq_mask.bool(), n_valid.view(B, 1).to(torch.int32), torch.zeros_like(seq_mask, dtype=torch.int32)
+    )
     torch.testing.assert_close(precomputed.mask_bias, expected)
     torch.testing.assert_close(precomputed.mask_bias_transposed, expected)
 
@@ -301,10 +257,7 @@ def test_precompute_pair_masks_cutedsl_rejects_non_left_aligned(seq_len: int):
     # Random 0/1 mask: with high probability it is not non-increasing along
     # at least one axis, so the precompute must reject it.
     torch.manual_seed(0)
-    pair_mask = torch.randint(0,
-                              2, (B, I, J),
-                              dtype=torch.float32,
-                              device=device)
+    pair_mask = torch.randint(0, 2, (B, I, J), dtype=torch.float32, device=device)
     # Force an interior zero so the input is guaranteed non-left-aligned
     # regardless of the random draw.
     pair_mask[0, 0, 0] = 1.0
@@ -315,35 +268,26 @@ def test_precompute_pair_masks_cutedsl_rejects_non_left_aligned(seq_len: int):
         precompute_pair_masks("CuTeDSL", pair_mask)
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="VANILLA",
-             pairwise_attn_backend="VANILLA",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV",
-             pairwise_attn_backend="VANILLA",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CuTeDSL",
-             pairwise_attn_backend="VANILLA",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="VANILLA",
-             pairwise_attn_backend="CuTeDSL",
-             torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CuTeDSL",
-             pairwise_attn_backend="CuTeDSL",
-             torch_dtype="bfloat16"),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
+    ],
+)
 def test_pairformer_layer_precomputed_masks(sc: Scenario):
     """Outputs with precomputed masks must exactly match the original path."""
     _skip_if_cutedsl(sc.triangle_attn_backend, sc.pairwise_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-    triangle_metadata_cls = get_attention_backend(
-        sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
-    pairwise_metadata_cls = get_attention_backend(
-        sc.pairwise_attn_backend, AttentionType.PAIRWISE).Metadata
+    triangle_metadata_cls = get_attention_backend(sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
+    pairwise_metadata_cls = get_attention_backend(sc.pairwise_attn_backend, AttentionType.PAIRWISE).Metadata
     bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
     device = torch.device("cuda")
@@ -368,17 +312,8 @@ def test_pairformer_layer_precomputed_masks(sc: Scenario):
     layer.to(device)
     load_pairformer_layer_weights_torch(layer, weights_and_biases, dtype)
 
-    s = torch.randn(bs,
-                    sc.seq_len,
-                    ref_layer.token_s,
-                    dtype=dtype,
-                    device=device)
-    z = torch.randn(bs,
-                    sc.seq_len,
-                    sc.seq_len,
-                    ref_layer.token_z,
-                    dtype=dtype,
-                    device=device)
+    s = torch.randn(bs, sc.seq_len, ref_layer.token_s, dtype=dtype, device=device)
+    z = torch.randn(bs, sc.seq_len, sc.seq_len, ref_layer.token_z, dtype=dtype, device=device)
     mask = make_left_aligned_mask(bs, sc.seq_len, dtype=dtype, device=device)
     pair_mask = (mask[..., None] * mask[..., None, :]).to(dtype)
 
@@ -387,20 +322,11 @@ def test_pairformer_layer_precomputed_masks(sc: Scenario):
         "pairwise_attn": pairwise_metadata_cls(),
     }
 
-    precomputed = precompute_pair_masks(sc.triangle_attn_backend,
-                                        pair_mask,
-                                        inf=1e9,
-                                        dtype=dtype)
-    precomputed_single = precompute_single_masks(sc.pairwise_attn_backend,
-                                                 mask,
-                                                 inf=1e9)
+    precomputed = precompute_pair_masks(sc.triangle_attn_backend, pair_mask, inf=1e9, dtype=dtype)
+    precomputed_single = precompute_single_masks(sc.pairwise_attn_backend, mask, inf=1e9)
 
     with torch.inference_mode():
-        out_s, out_z = layer(s,
-                             z,
-                             mask,
-                             pair_mask,
-                             attn_metadatas=attn_metadatas)
+        out_s, out_z = layer(s, z, mask, pair_mask, attn_metadatas=attn_metadatas)
 
         out_s_pre, out_z_pre = layer(
             s,
@@ -409,7 +335,8 @@ def test_pairformer_layer_precomputed_masks(sc: Scenario):
             pair_mask,
             attn_metadatas=attn_metadatas,
             precomputed_masks=precomputed,
-            precomputed_single_masks=precomputed_single)
+            precomputed_single_masks=precomputed_single,
+        )
 
     torch.testing.assert_close(out_s_pre, out_s, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
@@ -452,8 +379,8 @@ def test_precomputed_pair_masks_no_actual_seqlen_field():
 
 
 def _make_minimal_pairformer_layer(
-        triangle_attn_backend: str = "VANILLA",
-        dtype: torch.dtype = torch.bfloat16) -> PairformerLayerV1:
+    triangle_attn_backend: str = "VANILLA", dtype: torch.dtype = torch.bfloat16
+) -> PairformerLayerV1:
     """Cheap PairformerLayerV1 with no weight load, suitable for wiring spies."""
     return PairformerLayerV1(
         layer_idx=0,
@@ -539,29 +466,16 @@ def test_get_dual_gemm_x_x_op_pair_mask_left_aligned_flag():
     (it applies a per-row prefix-count mask). The flag should route to
     cuEquiv (default fallback) or CUTLASS (SM90) instead.
     """
-    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import (
-        _invoke_cute_dual_gemm_x_x, get_dual_gemm_x_x_op)
+    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import _invoke_cute_dual_gemm_x_x, get_dual_gemm_x_x_op
 
-    op_default = get_dual_gemm_x_x_op(torch.bfloat16,
-                                      transpose_out=False,
-                                      N=128,
-                                      K=128,
-                                      pair_mask_left_aligned=True)
+    op_default = get_dual_gemm_x_x_op(torch.bfloat16, transpose_out=False, N=128, K=128, pair_mask_left_aligned=True)
 
-    op_bipartite = get_dual_gemm_x_x_op(torch.bfloat16,
-                                        transpose_out=False,
-                                        N=128,
-                                        K=128,
-                                        pair_mask_left_aligned=False)
+    op_bipartite = get_dual_gemm_x_x_op(torch.bfloat16, transpose_out=False, N=128, K=128, pair_mask_left_aligned=False)
     assert op_bipartite is not _invoke_cute_dual_gemm_x_x, (
-        "pair_mask_left_aligned=False must route around the CuTe LM "
-        f"kernel, got {op_bipartite.__name__}")
+        f"pair_mask_left_aligned=False must route around the CuTe LM kernel, got {op_bipartite.__name__}"
+    )
 
-    op_transpose = get_dual_gemm_x_x_op(torch.bfloat16,
-                                        transpose_out=True,
-                                        N=128,
-                                        K=128,
-                                        pair_mask_left_aligned=False)
+    op_transpose = get_dual_gemm_x_x_op(torch.bfloat16, transpose_out=True, N=128, K=128, pair_mask_left_aligned=False)
     assert op_transpose is not _invoke_cute_dual_gemm_x_x
 
     del op_default
@@ -570,8 +484,7 @@ def test_get_dual_gemm_x_x_op_pair_mask_left_aligned_flag():
 def test_pairformer_pair_mask_left_aligned_propagates_to_trimul():
     """The Pairformer ctor flag must reach both ``TriangleMultiplicationNode``
     children and the underlying x_x dual GEMM ops they hold."""
-    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import \
-        _invoke_cute_dual_gemm_x_x
+    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import _invoke_cute_dual_gemm_x_x
 
     layer_aligned = _make_minimal_pairformer_layer()
     assert layer_aligned.pair_mask_left_aligned is True
@@ -595,12 +508,9 @@ def test_pairformer_pair_mask_left_aligned_propagates_to_trimul():
     assert layer_bipartite.pair_mask_left_aligned is False
     assert layer_bipartite.tri_mul_out.pair_mask_left_aligned is False
     assert layer_bipartite.tri_mul_in.pair_mask_left_aligned is False
-    assert (layer_bipartite.tri_mul_out._dual_gemm_x_x_op
-            is not _invoke_cute_dual_gemm_x_x)
-    assert (layer_bipartite.tri_mul_in._dual_gemm_x_x_op
-            is not _invoke_cute_dual_gemm_x_x)
-    assert (layer_bipartite.tri_mul_out._dual_gemm_x_x_op_transpose
-            is not _invoke_cute_dual_gemm_x_x)
+    assert layer_bipartite.tri_mul_out._dual_gemm_x_x_op is not _invoke_cute_dual_gemm_x_x
+    assert layer_bipartite.tri_mul_in._dual_gemm_x_x_op is not _invoke_cute_dual_gemm_x_x
+    assert layer_bipartite.tri_mul_out._dual_gemm_x_x_op_transpose is not _invoke_cute_dual_gemm_x_x
 
 
 def test_pairformer_transform_z_skips_actual_seqlen_when_not_left_aligned():
@@ -641,9 +551,7 @@ def test_pairformer_transform_z_skips_actual_seqlen_when_not_left_aligned():
 
     mb_int32 = torch.zeros(B, N, dtype=torch.int32, device=device)
     mb_int32_t = torch.zeros(B, N, dtype=torch.int32, device=device)
-    pre = PrecomputedPairMasks(pair_mask=pair_mask,
-                               mask_bias=mb_int32,
-                               mask_bias_transposed=mb_int32_t)
+    pre = PrecomputedPairMasks(pair_mask=pair_mask, mask_bias=mb_int32, mask_bias_transposed=mb_int32_t)
     layer._transform_z(z, pair_mask, precomputed_masks=pre)
     assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
     assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
@@ -654,8 +562,7 @@ def test_pairformer_no_seq_module_forwards_pair_mask_left_aligned():
     forwarding from ``PairformerLayerV1``: ``pair_mask_left_aligned``
     must reach every layer in the stack (the affinity construction
     relies on this)."""
-    from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-        PairformerNoSeqModule
+    from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerNoSeqModule
 
     stack = PairformerNoSeqModule(
         num_blocks=2,

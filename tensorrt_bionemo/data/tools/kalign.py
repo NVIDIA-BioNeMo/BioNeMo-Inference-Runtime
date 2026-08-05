@@ -17,6 +17,7 @@
 Thin wrapper over ``kalign-python`` (``kalign.align``) — the same library OSS
 ``run_kalign`` uses. Kept under ``data/tools`` for reuse across models.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache

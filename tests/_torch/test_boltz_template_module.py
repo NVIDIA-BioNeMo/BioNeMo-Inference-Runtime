@@ -17,8 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from test_utils.boltz.create_and_load_weights import (
-    create_template_module_weights, load_template_module_weights_torch)
+from test_utils.boltz.create_and_load_weights import create_template_module_weights, load_template_module_weights_torch
 from test_utils.boltz.ref_layers import RefTemplateV2Module
 
 from tensorrt_bionemo._torch.modules.boltz.template import TemplateV2Module
@@ -34,9 +33,9 @@ class Scenario:
     triangle_attn_backend: str = "VANILLA"
 
 
-def _make_template_feats(B: int, T: int, N: int, num_tokens: int,
-                         num_bins: int,
-                         device: torch.device) -> dict[str, torch.Tensor]:
+def _make_template_feats(
+    B: int, T: int, N: int, num_tokens: int, num_bins: int, device: torch.device
+) -> dict[str, torch.Tensor]:
     """Build a dummy template feature dict matching the layout consumed by
     :class:`TemplateV2Module`/``RefTemplateV2Module``.
 
@@ -44,21 +43,14 @@ def _make_template_feats(B: int, T: int, N: int, num_tokens: int,
     so the module's own up/down casts mirror real inference.
     """
     template_restype = torch.nn.functional.one_hot(
-        torch.randint(0, num_tokens, (B, T, N), device=device),
-        num_classes=num_tokens).float()
-    template_frame_rot = torch.eye(3, device=device).expand(B, T, N, 3,
-                                                            3).contiguous()
+        torch.randint(0, num_tokens, (B, T, N), device=device), num_classes=num_tokens
+    ).float()
+    template_frame_rot = torch.eye(3, device=device).expand(B, T, N, 3, 3).contiguous()
     template_frame_t = torch.randn(B, T, N, 3, device=device)
-    template_mask_frame = torch.randint(0,
-                                        2, (B, T, N),
-                                        dtype=torch.float32,
-                                        device=device)
+    template_mask_frame = torch.randint(0, 2, (B, T, N), dtype=torch.float32, device=device)
     template_cb = torch.randn(B, T, N, 3, device=device)
     template_ca = torch.randn(B, T, N, 3, device=device)
-    template_mask_cb = torch.randint(0,
-                                     2, (B, T, N),
-                                     dtype=torch.float32,
-                                     device=device)
+    template_mask_cb = torch.randint(0, 2, (B, T, N), dtype=torch.float32, device=device)
     # ``visibility_ids`` are integer chain ids (cdist mask). Keep at most a
     # couple of distinct values so the equality test produces a non-trivial
     # mask.
@@ -68,10 +60,7 @@ def _make_template_feats(B: int, T: int, N: int, num_tokens: int,
     # as ``(T, N)`` per-sample (in ``boltz/data/feature/featurizerv2.py``),
     # giving ``(B, T, N)`` after batching so the reduction yields a
     # per-template ``(B, T)`` mask.
-    template_mask = torch.randint(0,
-                                  2, (B, T, N),
-                                  dtype=torch.float32,
-                                  device=device)
+    template_mask = torch.randint(0, 2, (B, T, N), dtype=torch.float32, device=device)
     return {
         "template_restype": template_restype,
         "template_frame_rot": template_frame_rot,
@@ -85,20 +74,23 @@ def _make_template_feats(B: int, T: int, N: int, num_tokens: int,
     }
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(),
-    Scenario(torch_dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(),
+        Scenario(torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CUEQUIV"),
+        Scenario(triangle_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
+    ],
+)
 def test_template_v2_module(sc: Scenario):
     _skip_if_cutedsl(sc.triangle_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 
     dtype = str_dtype_to_torch(sc.torch_dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     token_z = 64
     template_dim = 32
@@ -106,18 +98,22 @@ def test_template_v2_module(sc: Scenario):
     num_tokens = 33
     num_bins = 38
 
-    ref = RefTemplateV2Module(token_z=token_z,
-                              template_dim=template_dim,
-                              template_blocks=template_blocks,
-                              num_tokens=num_tokens,
-                              num_bins=num_bins).to(device)
+    ref = RefTemplateV2Module(
+        token_z=token_z,
+        template_dim=template_dim,
+        template_blocks=template_blocks,
+        num_tokens=num_tokens,
+        num_bins=num_bins,
+    ).to(device)
     wb = create_template_module_weights(from_ref=ref)
 
-    cfg = TemplateV2ModuleConfig(token_z=token_z,
-                                 template_dim=template_dim,
-                                 template_blocks=template_blocks,
-                                 num_tokens=num_tokens,
-                                 num_bins=num_bins)
+    cfg = TemplateV2ModuleConfig(
+        token_z=token_z,
+        template_dim=template_dim,
+        template_blocks=template_blocks,
+        num_tokens=num_tokens,
+        num_bins=num_bins,
+    )
     cfg.set_dtype(sc.torch_dtype)
     cfg.set_triangle_attention_backend(sc.triangle_attn_backend)
 
@@ -127,11 +123,7 @@ def test_template_v2_module(sc: Scenario):
 
     B, T, N = 1, 3, 32
     z = torch.randn(B, N, N, token_z, dtype=torch.float32, device=device)
-    seq_mask = make_left_aligned_mask(B,
-                                      N,
-                                      dtype=torch.float32,
-                                      device=device,
-                                      min_valid=N // 2)
+    seq_mask = make_left_aligned_mask(B, N, dtype=torch.float32, device=device, min_valid=N // 2)
     pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
     feats = _make_template_feats(B, T, N, num_tokens, num_bins, device)
 
@@ -156,14 +148,10 @@ def test_template_v2_module(sc: Scenario):
     keep = pair_mask.float().unsqueeze(-1)  # [B, N, N, 1]
 
     def _masked(x: torch.Tensor) -> torch.Tensor:
-        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0,
-                                neginf=0.0) * keep
+        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0) * keep
 
     if dtype == torch.float32:
-        torch.testing.assert_close(_masked(out),
-                                   _masked(ref_out),
-                                   atol=1e-3,
-                                   rtol=1e-4)
+        torch.testing.assert_close(_masked(out), _masked(ref_out), atol=1e-3, rtol=1e-4)
     else:
         # Compare bf16 outputs against ref_float using the same statistical
         # pattern as ``test_boltz_msa_module.test_msa_layer``: the TRT-BNM
@@ -177,6 +165,5 @@ def test_template_v2_module(sc: Scenario):
         diff1_max = torch.max(torch.abs(d_ref))
         diff1_mean = torch.mean(torch.abs(d_ref))
 
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2

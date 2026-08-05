@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,26 +13,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
 
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.attention_backend.utils import (
-    PrecomputedPairMasks, PrecomputedSingleMasks, precompute_pair_masks,
-    precompute_single_masks)
+    PrecomputedPairMasks,
+    PrecomputedSingleMasks,
+    precompute_pair_masks,
+    precompute_single_masks,
+)
 from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_TRANSITION
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    GraphOptimizationMode, InputAcceptanceDimSpec, InputKeyMethod,
-    PaddedDimSpec, SpacingMethod)
-from tensorrt_bionemo._torch.graph_optimization.decorator import (
-    NamedDimTies, support_graph_optimization)
+    GraphOptimizationMode,
+    InputAcceptanceDimSpec,
+    InputKeyMethod,
+    PaddedDimSpec,
+    SpacingMethod,
+)
+from tensorrt_bionemo._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
-    TriangleAttentionEndingNode, TriangleAttentionStartingNode,
-    TriangleMultiplicationNode, TriangleMultiplicationNodeType)
+    TriangleAttentionEndingNode,
+    TriangleAttentionStartingNode,
+    TriangleMultiplicationNode,
+    TriangleMultiplicationNodeType,
+)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
@@ -40,29 +48,30 @@ from tensorrt_bionemo.utils import str_dtype_to_torch
 
 
 class PairformerLayerV1(nn.Module):
-
-    def __init__(self,
-                 layer_idx: int = 0,
-                 token_s: int = 384,
-                 token_z: int = 128,
-                 num_heads: int = 16,
-                 pairwise_head_width: int = 32,
-                 pairwise_num_heads: int = 4,
-                 no_update_s: bool = False,
-                 no_update_z: bool = False,
-                 dtype: torch.dtype = None,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 triangle_attn_backend: str = "VANILLA",
-                 pairwise_attn_backend: str = "VANILLA",
-                 skip_create_weights: bool = False,
-                 attention_initial_norm: bool = False,
-                 s_path_dtype: Union[str, torch.dtype, None] = None,
-                 trimul_high_precision: bool = True,
-                 trimul_mean_normalization: bool = False,
-                 pair_mask_left_aligned: bool = True,
-                 pair_transition_factor: int = 4,
-                 **kwargs):
+    def __init__(
+        self,
+        layer_idx: int = 0,
+        token_s: int = 384,
+        token_z: int = 128,
+        num_heads: int = 16,
+        pairwise_head_width: int = 32,
+        pairwise_num_heads: int = 4,
+        no_update_s: bool = False,
+        no_update_z: bool = False,
+        dtype: torch.dtype = None,
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        triangle_attn_backend: str = "VANILLA",
+        pairwise_attn_backend: str = "VANILLA",
+        skip_create_weights: bool = False,
+        attention_initial_norm: bool = False,
+        s_path_dtype: str | torch.dtype | None = None,
+        trimul_high_precision: bool = True,
+        trimul_mean_normalization: bool = False,
+        pair_mask_left_aligned: bool = True,
+        pair_transition_factor: int = 4,
+        **kwargs,
+    ):
         """Pairformer layer.
 
         Args:
@@ -175,9 +184,9 @@ class PairformerLayerV1(nn.Module):
         self,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-        precomputed_masks: Optional[PrecomputedPairMasks] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        attn_metadatas: dict[str, AttentionMetadata] | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         # For the CuTeDSL triangle-attention backend, ``mask_bias`` /
         # ``mask_bias_transposed`` ARE the per-row int32 valid-count
@@ -192,14 +201,15 @@ class PairformerLayerV1(nn.Module):
         # bipartite cases (affinity ``cross_pair_mask``) we drop the
         # fast-path even when an int32 tensor is present.
         tri_out_actual_seqlen = tri_in_actual_seqlen = None
-        if (self.pair_mask_left_aligned and precomputed_masks is not None
-                and precomputed_masks.mask_bias.dtype == torch.int32):
+        if (
+            self.pair_mask_left_aligned
+            and precomputed_masks is not None
+            and precomputed_masks.mask_bias.dtype == torch.int32
+        ):
             tri_out_actual_seqlen = precomputed_masks.mask_bias
             tri_in_actual_seqlen = precomputed_masks.mask_bias_transposed
-        z = z + self.tri_mul_out(
-            z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen)
-        z = z + self.tri_mul_in(
-            z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen)
+        z = z + self.tri_mul_out(z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen)
+        z = z + self.tri_mul_in(z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen)
         z = z.to(self.dtype)
 
         tri_attn_metadata = (attn_metadatas or {}).get("triangle_attn")
@@ -210,74 +220,70 @@ class PairformerLayerV1(nn.Module):
             mb_start = mb_end = None
             pair_mask = pair_mask.to(self.dtype)
 
-        z = z + self.tri_attn_start(z,
-                                    mask=pair_mask,
-                                    mask_bias=mb_start,
-                                    attn_metadata=tri_attn_metadata,
-                                    buffers=buffers)
-        z = z + self.tri_attn_end(z,
-                                  mask=pair_mask,
-                                  mask_bias=mb_end,
-                                  attn_metadata=tri_attn_metadata,
-                                  buffers=buffers)
+        z = z + self.tri_attn_start(
+            z, mask=pair_mask, mask_bias=mb_start, attn_metadata=tri_attn_metadata, buffers=buffers
+        )
+        z = z + self.tri_attn_end(z, mask=pair_mask, mask_bias=mb_end, attn_metadata=tri_attn_metadata, buffers=buffers)
 
         z = z + self.transition_z(z)
         return z
 
     def forward(
-            self,
-            s: torch.Tensor,
-            z: torch.Tensor,
-            mask: torch.Tensor,
-            pair_mask: torch.Tensor,
-            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-            precomputed_masks: Optional[PrecomputedPairMasks] = None,
-            precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
-            buffers: Optional[PreallocatedBuffers] = None,
-            **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self._transform_z(z,
-                              pair_mask,
-                              attn_metadatas,
-                              precomputed_masks=precomputed_masks,
-                              buffers=buffers)
+        self,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadatas: dict[str, AttentionMetadata] | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
+        precomputed_single_masks: PrecomputedSingleMasks | None = None,
+        buffers: PreallocatedBuffers | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        z = self._transform_z(z, pair_mask, attn_metadatas, precomputed_masks=precomputed_masks, buffers=buffers)
         if not self.no_update_s:
             mask_bias = precomputed_single_masks.mask_bias if precomputed_single_masks else None
-            s = s + self.attention(s,
-                                   z,
-                                   mask,
-                                   attn_metadata=(attn_metadatas
-                                                  or {}).get("pairwise_attn"),
-                                   mask_bias=mask_bias,
-                                   buffers=buffers)
+            s = s + self.attention(
+                s,
+                z,
+                mask,
+                attn_metadata=(attn_metadatas or {}).get("pairwise_attn"),
+                mask_bias=mask_bias,
+                buffers=buffers,
+            )
             s = s + self.transition_s(s)
         return s, z
 
 
 class PairformerNoSeqLayer(PairformerLayerV1):
-
-    def __init__(self,
-                 *,
-                 layer_idx: int,
-                 token_z: int = 128,
-                 pairwise_head_width: int = 32,
-                 pairwise_num_heads: int = 4,
-                 **kwargs):
+    def __init__(
+        self,
+        *,
+        layer_idx: int,
+        token_z: int = 128,
+        pairwise_head_width: int = 32,
+        pairwise_num_heads: int = 4,
+        **kwargs,
+    ):
         kwargs["no_update_s"] = True
-        super().__init__(layer_idx=layer_idx,
-                         token_z=token_z,
-                         pairwise_head_width=pairwise_head_width,
-                         pairwise_num_heads=pairwise_num_heads,
-                         **kwargs)
+        super().__init__(
+            layer_idx=layer_idx,
+            token_z=token_z,
+            pairwise_head_width=pairwise_head_width,
+            pairwise_num_heads=pairwise_num_heads,
+            **kwargs,
+        )
 
     def forward(
-            self,
-            z: torch.Tensor,
-            pair_mask: torch.Tensor,
-            attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-            precomputed_masks: Optional[PrecomputedPairMasks] = None,
-            precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
-            buffers: Optional[PreallocatedBuffers] = None,
-            **kwargs) -> torch.Tensor:
+        self,
+        z: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadatas: dict[str, AttentionMetadata] | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
+        precomputed_single_masks: PrecomputedSingleMasks | None = None,
+        buffers: PreallocatedBuffers | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
         _, update_z = super().forward(
             s=None,
             z=z,
@@ -286,33 +292,42 @@ class PairformerNoSeqLayer(PairformerLayerV1):
             attn_metadatas=attn_metadatas,
             precomputed_masks=precomputed_masks,
             precomputed_single_masks=precomputed_single_masks,
-            buffers=buffers)
+            buffers=buffers,
+        )
         return update_z
 
 
 class PairformerNoSeqModule(nn.Module):
-
-    def __init__(self,
-                 num_blocks: int = 8,
-                 token_z: int = 128,
-                 pairwise_head_width: int = 32,
-                 pairwise_num_heads: int = 4,
-                 **kwargs):
+    def __init__(
+        self,
+        num_blocks: int = 8,
+        token_z: int = 128,
+        pairwise_head_width: int = 32,
+        pairwise_num_heads: int = 4,
+        **kwargs,
+    ):
         super().__init__()
-        self.layers = nn.ModuleList([
-            PairformerNoSeqLayer(layer_idx=i,
-                                 token_z=token_z,
-                                 pairwise_head_width=pairwise_head_width,
-                                 pairwise_num_heads=pairwise_num_heads,
-                                 **kwargs) for i in range(num_blocks)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                PairformerNoSeqLayer(
+                    layer_idx=i,
+                    token_z=token_z,
+                    pairwise_head_width=pairwise_head_width,
+                    pairwise_num_heads=pairwise_num_heads,
+                    **kwargs,
+                )
+                for i in range(num_blocks)
+            ]
+        )
 
-    def forward(self,
-                z: torch.Tensor,
-                pair_mask: torch.Tensor,
-                attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-                buffers: Optional[PreallocatedBuffers] = None,
-                **kwargs) -> torch.Tensor:
+    def forward(
+        self,
+        z: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadatas: dict[str, AttentionMetadata] | None = None,
+        buffers: PreallocatedBuffers | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
         first_layer = self.layers[0]
         precomputed = precompute_pair_masks(
             first_layer.triangle_attn_backend,
@@ -323,24 +338,18 @@ class PairformerNoSeqModule(nn.Module):
         if buffers is None and first_layer.triangle_attn_backend == "CuTeDSL":
             buffers = {}
         for layer in self.layers:
-            z = layer(z,
-                      pair_mask,
-                      attn_metadatas,
-                      precomputed_masks=precomputed,
-                      buffers=buffers)
+            z = layer(z, pair_mask, attn_metadatas, precomputed_masks=precomputed, buffers=buffers)
         return z
 
 
 class PairformerLayerV2(PairformerLayerV1):
-
     def __init__(self, post_layer_norm: bool = False, **kwargs):
         super().__init__(**kwargs)
         self.post_layer_norm = post_layer_norm
         self.pre_norm_s = nn.LayerNorm(self.token_s, dtype=self.s_path_dtype)
         self.post_norm_s = None
         if self.post_layer_norm:
-            self.post_norm_s = nn.LayerNorm(self.token_s,
-                                            dtype=self.s_path_dtype)
+            self.post_norm_s = nn.LayerNorm(self.token_s, dtype=self.s_path_dtype)
 
     def forward(
         self,
@@ -348,16 +357,12 @@ class PairformerLayerV2(PairformerLayerV1):
         z: torch.Tensor,
         mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        attn_metadatas: Optional[dict[str, AttentionMetadata]] = None,
-        precomputed_masks: Optional[PrecomputedPairMasks] = None,
-        precomputed_single_masks: Optional[PrecomputedSingleMasks] = None,
-        buffers: Optional[PreallocatedBuffers] = None,
+        attn_metadatas: dict[str, AttentionMetadata] | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
+        precomputed_single_masks: PrecomputedSingleMasks | None = None,
+        buffers: PreallocatedBuffers | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self._transform_z(z,
-                              pair_mask,
-                              attn_metadatas,
-                              precomputed_masks=precomputed_masks,
-                              buffers=buffers)
+        z = self._transform_z(z, pair_mask, attn_metadatas, precomputed_masks=precomputed_masks, buffers=buffers)
         original_s_dtype = s.dtype
         original_z_dtype = z.dtype
 
@@ -366,13 +371,14 @@ class PairformerLayerV2(PairformerLayerV1):
         s = s.to(self.s_path_dtype)
         s_normed = self.pre_norm_s(s)
         mask_bias = precomputed_single_masks.mask_bias if precomputed_single_masks else None
-        s = s + self.attention(s_normed,
-                               z,
-                               mask,
-                               attn_metadata=(attn_metadatas
-                                              or {}).get("pairwise_attn"),
-                               mask_bias=mask_bias,
-                               buffers=buffers)
+        s = s + self.attention(
+            s_normed,
+            z,
+            mask,
+            attn_metadata=(attn_metadatas or {}).get("pairwise_attn"),
+            mask_bias=mask_bias,
+            buffers=buffers,
+        )
         s = s + self.transition_s(s)
         if self.post_layer_norm:
             s = self.post_norm_s(s)
@@ -416,10 +422,9 @@ class PairformerLayerV2(PairformerLayerV1):
         num_intervals=8,
         multiple_of=128,
         spacing_method=SpacingMethod.LINEAR,
-    )
+    ),
 )
 class PairformerModule(nn.Module):
-
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -450,28 +455,28 @@ class PairformerModule(nn.Module):
                     post_layer_norm=config.post_layer_norm,
                     attention_initial_norm=config.attention_initial_norm,
                     trimul_high_precision=config.trimul_high_precision,
-                    trimul_mean_normalization=getattr(
-                        config, 'trimul_mean_normalization', False),
+                    trimul_mean_normalization=getattr(config, "trimul_mean_normalization", False),
                     s_path_dtype=config.s_path_dtype,
-                ))
+                )
+            )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
-    def forward(self,
-                s: torch.Tensor,
-                z: torch.Tensor,
-                mask: torch.Tensor,
-                pair_mask: torch.Tensor,
-                attn_metadatas: Optional[dict[str,
-                                              AttentionMetadata]] = dict(),
-                buffers: Optional[PreallocatedBuffers] = None,
-                **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadatas: dict[str, AttentionMetadata] | None = {},
+        buffers: PreallocatedBuffers | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         precomputed = precompute_pair_masks(
             self.config.triangle_attention_backend,
             pair_mask,
@@ -483,17 +488,18 @@ class PairformerModule(nn.Module):
             mask,
             inf=self.config.mask_inf,
         )
-        _uses_cute = ("CuTeDSL" in (self.config.triangle_attention_backend,
-                                    self.config.pairwise_attention_backend))
+        _uses_cute = "CuTeDSL" in (self.config.triangle_attention_backend, self.config.pairwise_attention_backend)
         if buffers is None and _uses_cute:
             buffers = {}
         for layer in self.layers:
-            s, z = layer(s,
-                         z,
-                         mask,
-                         pair_mask,
-                         attn_metadatas,
-                         precomputed_masks=precomputed,
-                         precomputed_single_masks=precomputed_single,
-                         buffers=buffers)
+            s, z = layer(
+                s,
+                z,
+                mask,
+                pair_mask,
+                attn_metadatas,
+                precomputed_masks=precomputed,
+                precomputed_single_masks=precomputed_single,
+                buffers=buffers,
+            )
         return s, z

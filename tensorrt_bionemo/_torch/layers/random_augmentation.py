@@ -1,5 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
-from typing import Optional, Tuple
 
 import torch
 
@@ -8,10 +22,10 @@ def compute_random_augmentation(
     batch_size: int = 1,
     multiplicity: int = 1,
     s_trans: float = 1.0,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
-    generator: Optional[torch.Generator] = None
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    generator: torch.Generator | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Compute random augmentation for the coordinates.
     Args:
@@ -29,17 +43,14 @@ def compute_random_augmentation(
     TODO: For the multiple gpus, need a distributed version of this function.
     """
     # Using quaternion to create random rotation matrix shape [*, 3, 3]
-    R = random_rotations(multiplicity * batch_size,
-                         dtype=dtype,
-                         device=device,
-                         generator=generator).view(batch_size, multiplicity, 3,
-                                                   3)
+    R = random_rotations(multiplicity * batch_size, dtype=dtype, device=device, generator=generator).view(
+        batch_size, multiplicity, 3, 3
+    )
 
     # Using randn to create random translation matrix shape [*, 1, 3]
-    random_trans = (torch.randn((batch_size, multiplicity, 1, 3),
-                                dtype=dtype,
-                                device=device,
-                                generator=generator) * s_trans)
+    random_trans = (
+        torch.randn((batch_size, multiplicity, 1, 3), dtype=dtype, device=device, generator=generator) * s_trans
+    )
     return R, random_trans
 
 
@@ -96,10 +107,11 @@ def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
 
 
 def random_quaternions(
-        n: int,
-        dtype: Optional[torch.dtype] = None,
-        device: Optional[torch.device] = None,
-        generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    n: int,
+    dtype: torch.dtype | None = None,
+    device: torch.device | None = None,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
     """
     Generate random quaternions representing rotations,
     i.e. versors with nonnegative real part.
@@ -126,10 +138,11 @@ def random_quaternions(
 
 
 def random_rotations(
-        n: int,
-        dtype: Optional[torch.dtype] = None,
-        device: Optional[torch.device] = None,
-        generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    n: int,
+    dtype: torch.dtype | None = None,
+    device: torch.device | None = None,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
     """
     Generate random rotations as 3x3 rotation matrices.
 
@@ -143,28 +156,21 @@ def random_rotations(
     Returns:
         Rotation matrices as tensor of shape (n, 3, 3).
     """
-    quaternions = random_quaternions(n,
-                                     dtype=dtype,
-                                     device=device,
-                                     generator=generator)
+    quaternions = random_quaternions(n, dtype=dtype, device=device, generator=generator)
     return quaternion_to_matrix(quaternions)
 
 
-def centre_random_augmentation(x: torch.Tensor,
-                               mask: Optional[torch.Tensor] = None,
-                               s_trans: float = 1.0) -> torch.Tensor:
+def centre_random_augmentation(x: torch.Tensor, mask: torch.Tensor | None = None, s_trans: float = 1.0) -> torch.Tensor:
     """Center, rotate, and translate ``[..., N_atom, 3]`` coordinates."""
     lead = x.shape[:-2]
     n = math.prod(lead) if lead else 1
-    rots = random_rotations(n, dtype=x.dtype,
-                            device=x.device).reshape(*lead, 3, 3)
+    rots = random_rotations(n, dtype=x.dtype, device=x.device).reshape(*lead, 3, 3)
     trans = s_trans * torch.randn((*lead, 3), dtype=x.dtype, device=x.device)
     if mask is None:
         centre = x.mean(dim=-2, keepdim=True)
     else:
         m = mask.unsqueeze(-1).to(x.dtype)
-        centre = (x * m).sum(dim=-2, keepdim=True) / m.sum(
-            dim=-2, keepdim=True).clamp(min=1e-7)
+        centre = (x * m).sum(dim=-2, keepdim=True) / m.sum(dim=-2, keepdim=True).clamp(min=1e-7)
     x = (x - centre) @ rots.transpose(-1, -2) + trans[..., None, :]
     if mask is not None:
         x = x * mask.unsqueeze(-1).to(x.dtype)

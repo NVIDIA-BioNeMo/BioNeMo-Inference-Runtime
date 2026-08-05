@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Persistent .o cache for CuTe DSL compiled kernels.
 
 Compiled kernels are exported as object files (.o) via ``export_to_c``.
@@ -36,7 +49,7 @@ import pickle
 import sys
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import cutlass
 import cutlass.cute as cute
@@ -74,7 +87,7 @@ def get_cache_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _hash_source_dir(h: "hashlib._Hash", root: Path) -> None:
+def _hash_source_dir(h: hashlib._Hash, root: Path) -> None:
     """Hash all Python sources under *root* into *h*."""
     for src in sorted(root.rglob("*.py")):
         if not src.is_file():
@@ -90,8 +103,7 @@ def _compute_source_fingerprint() -> str:
     """Hash kernel source dirs plus runtime ABI stamps into a fingerprint."""
     h = hashlib.sha256()
     h.update(f"py{sys.version_info.major}.{sys.version_info.minor}".encode())
-    h.update(f"cutlass={cutlass.__version__}".encode(
-    ) if hasattr(cutlass, "__version__") else b"cutlass=unknown")
+    h.update(f"cutlass={cutlass.__version__}".encode() if hasattr(cutlass, "__version__") else b"cutlass=unknown")
     # Separate SKUs that share a compute capability but differ in SM count
     # (H20's 78 vs H100/H200's 114-144) — see _device_sm_count.
     h.update(f"sm_count={_device_sm_count()}".encode())
@@ -117,8 +129,8 @@ def _device_sm_count() -> int:
     """
     try:
         import torch
-        return torch.cuda.get_device_properties(
-            torch.cuda.current_device()).multi_processor_count
+
+        return torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
     except Exception:
         return 0
 
@@ -142,11 +154,9 @@ class CuteKernelCache(KernelCacheBase):
     * :meth:`load_from_cache` — loads the ``.o`` via ``cute.runtime.load_module``.
     """
 
-    def compile(self,
-                kernel_callable: Any,
-                *fake_tensors: Any,
-                options: str = "--enable-tvm-ffi",
-                **kwargs: Any) -> TVMFFIJitCompiledFunction:
+    def compile(
+        self, kernel_callable: Any, *fake_tensors: Any, options: str = "--enable-tvm-ffi", **kwargs: Any
+    ) -> TVMFFIJitCompiledFunction:
         """Compile a CuTe DSL kernel with fake tensors.
 
         Args:
@@ -157,10 +167,7 @@ class CuteKernelCache(KernelCacheBase):
         Returns:
             The compiled ``TVMFFIJitCompiledFunction``.
         """
-        return cute.compile(kernel_callable,
-                            *fake_tensors,
-                            options=options,
-                            **kwargs)
+        return cute.compile(kernel_callable, *fake_tensors, options=options, **kwargs)
 
     def save_to_cache(self, key: tuple, artifact: Any) -> None:
         """Export compiled kernel as ``.o`` to disk cache.
@@ -196,9 +203,7 @@ class CuteKernelCache(KernelCacheBase):
                 # Same directory as o_path so os.replace() is a same-filesystem
                 # atomic rename (a cross-fs rename would fall back to a
                 # non-atomic copy, reopening the torn-write window).
-                fd, tmp_name = tempfile.mkstemp(dir=str(cache_path),
-                                                prefix=f"{sha}.",
-                                                suffix=".o.tmp")
+                fd, tmp_name = tempfile.mkstemp(dir=str(cache_path), prefix=f"{sha}.", suffix=".o.tmp")
                 os.close(fd)
                 try:
                     artifact.export_to_c(
@@ -212,10 +217,10 @@ class CuteKernelCache(KernelCacheBase):
                     Path(tmp_name).unlink(missing_ok=True)
         except Exception as e:
             from tensorrt_bionemo.logger import logger
-            logger.warning(f"bionemo kernel cache: export failed for key "
-                           f"{sha}: {e}")
 
-    def load_from_cache(self, key: tuple) -> Optional[Any]:
+            logger.warning(f"bionemo kernel cache: export failed for key {sha}: {e}")
+
+    def load_from_cache(self, key: tuple) -> Any | None:
         """Load a compiled CuTe DSL kernel from the disk cache.
 
         Args:
@@ -237,8 +242,7 @@ class CuteKernelCache(KernelCacheBase):
                 if not o_path.exists():
                     return None
                 try:
-                    m = cute.runtime.load_module(str(o_path),
-                                                 enable_tvm_ffi=True)
+                    m = cute.runtime.load_module(str(o_path), enable_tvm_ffi=True)
                 except Exception:
                     # A .o that fails to load is corrupt (e.g. a truncated
                     # artifact left by an older build predating the atomic-write

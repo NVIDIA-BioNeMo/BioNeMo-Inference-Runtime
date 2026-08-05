@@ -42,15 +42,15 @@ from functools import partial
 
 import pytest
 import torch
-from test_utils.openfold3.atom_attention_block_utils import \
-    convert_trunk_pair_rep_to_blocks
+from test_utils.openfold3.atom_attention_block_utils import convert_trunk_pair_rep_to_blocks
 
-from tensorrt_bionemo._torch.attention_backend.interface import \
-    AttentionMetadata
+from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_gather_indices, pad_to_multiple_and_divide, query_to_keys_optimized)
-from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import \
-    convert_pair_atom_to_blocks
+    create_gather_indices,
+    pad_to_multiple_and_divide,
+    query_to_keys_optimized,
+)
+from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import convert_pair_atom_to_blocks
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -65,19 +65,15 @@ class Scenario:
     full_mask: bool = False
 
 
-def _build_attn_metadata(atom_mask_2d: torch.Tensor, n_query: int, n_key: int,
-                         device: torch.device) -> AttentionMetadata:
+def _build_attn_metadata(
+    atom_mask_2d: torch.Tensor, n_query: int, n_key: int, device: torch.device
+) -> AttentionMetadata:
     """Match ``OpenFold3.generate_attn_metadata`` so we exercise the production
     code path."""
-    mask_blocked, _ = pad_to_multiple_and_divide(atom_mask_2d,
-                                                 multiple=n_query,
-                                                 dim=1)
+    mask_blocked, _ = pad_to_multiple_and_divide(atom_mask_2d, multiple=n_query, dim=1)
     K = mask_blocked.shape[1]
     gather_indices, _ = create_gather_indices(K, n_query, n_key, device)
-    query_to_keys_func = partial(query_to_keys_optimized,
-                                 gather_indices=gather_indices,
-                                 W=n_query,
-                                 H=n_key)
+    query_to_keys_func = partial(query_to_keys_optimized, gather_indices=gather_indices, W=n_query, H=n_key)
     return AttentionMetadata(query_to_keys=query_to_keys_func, bias_cache={})
 
 
@@ -89,29 +85,16 @@ def _make_inputs(sc: Scenario, device: torch.device):
     atoms_per_tok = max(1, sc.n_atoms // sc.n_tokens)
     a2t = torch.repeat_interleave(torch.arange(sc.n_tokens), atoms_per_tok)
     if a2t.numel() < sc.n_atoms:
-        tail = torch.full((sc.n_atoms - a2t.numel(), ),
-                          sc.n_tokens - 1,
-                          dtype=a2t.dtype)
+        tail = torch.full((sc.n_atoms - a2t.numel(),), sc.n_tokens - 1, dtype=a2t.dtype)
         a2t = torch.cat([a2t, tail])
-    a2t = a2t[:sc.n_atoms].to(device).unsqueeze(0)
+    a2t = a2t[: sc.n_atoms].to(device).unsqueeze(0)
 
     if sc.full_mask:
-        atom_mask = torch.ones(1,
-                               sc.n_atoms,
-                               device=device,
-                               dtype=torch.float32)
+        atom_mask = torch.ones(1, sc.n_atoms, device=device, dtype=torch.float32)
     else:
-        atom_mask = torch.randint(0,
-                                  2, (1, sc.n_atoms),
-                                  dtype=torch.float32,
-                                  device=device)
+        atom_mask = torch.randint(0, 2, (1, sc.n_atoms), dtype=torch.float32, device=device)
 
-    zij_trunk = torch.randn(1,
-                            sc.n_tokens,
-                            sc.n_tokens,
-                            sc.n_dims,
-                            dtype=sc.torch_dtype,
-                            device=device)
+    zij_trunk = torch.randn(1, sc.n_tokens, sc.n_tokens, sc.n_dims, dtype=sc.torch_dtype, device=device)
 
     if sc.has_sample_dim:
         a2t = a2t.unsqueeze(1)
@@ -130,8 +113,7 @@ _SCENARIOS = [
     Scenario(n_tokens=400, n_atoms=3201),
     # The previously-broken regression: n_tokens in TF32 unit-resolution range.
     Scenario(n_tokens=2552, n_atoms=19955, full_mask=True),
-    Scenario(n_tokens=2552, n_atoms=19955, has_sample_dim=True,
-             full_mask=True),
+    Scenario(n_tokens=2552, n_atoms=19955, has_sample_dim=True, full_mask=True),
 ]
 _SCENARIO_IDS = [
     "small-float32",
@@ -151,17 +133,12 @@ def test_matches_oss_reference(sc: Scenario):
     zij_trunk, a2t, atom_mask = _make_inputs(sc, device)
 
     flat_mask = atom_mask.reshape(-1, sc.n_atoms)
-    attn_metadata = _build_attn_metadata(flat_mask,
-                                         sc.n_queries,
-                                         sc.n_keys,
-                                         device=device)
+    attn_metadata = _build_attn_metadata(flat_mask, sc.n_queries, sc.n_keys, device=device)
 
     batch = {"atom_to_token_index": a2t, "atom_mask": atom_mask}
-    output = convert_pair_atom_to_blocks(batch=batch,
-                                         zij_trunk=zij_trunk,
-                                         n_query=sc.n_queries,
-                                         n_key=sc.n_keys,
-                                         attn_metadata=attn_metadata)
+    output = convert_pair_atom_to_blocks(
+        batch=batch, zij_trunk=zij_trunk, n_query=sc.n_queries, n_key=sc.n_keys, attn_metadata=attn_metadata
+    )
     torch.cuda.synchronize()
 
     # Reference path expects no sample dim; squeeze and re-insert for compare.
@@ -176,10 +153,9 @@ def test_matches_oss_reference(sc: Scenario):
             n_key=sc.n_keys,
         ).unsqueeze(1)
     else:
-        ref_output = convert_trunk_pair_rep_to_blocks(batch=batch,
-                                                      zij_trunk=zij_trunk,
-                                                      n_query=sc.n_queries,
-                                                      n_key=sc.n_keys)
+        ref_output = convert_trunk_pair_rep_to_blocks(
+            batch=batch, zij_trunk=zij_trunk, n_query=sc.n_queries, n_key=sc.n_keys
+        )
 
     assert output.shape == ref_output.shape, (output.shape, ref_output.shape)
     assert torch.isfinite(output).all()
@@ -189,10 +165,7 @@ def test_matches_oss_reference(sc: Scenario):
     # ``bfloat16 * float_mask`` multiply, while production explicitly casts
     # back to plm.dtype. Compare in a common (bfloat16) dtype with tolerance.
     if sc.torch_dtype == torch.bfloat16:
-        torch.testing.assert_close(output,
-                                   ref_output.to(torch.bfloat16),
-                                   atol=1e-2,
-                                   rtol=1e-2)
+        torch.testing.assert_close(output, ref_output.to(torch.bfloat16), atol=1e-2, rtol=1e-2)
     else:
         torch.testing.assert_close(output, ref_output, atol=0.0, rtol=0.0)
 
@@ -207,19 +180,15 @@ def test_no_oob_sweep(seq_len: int):
         n_tokens=seq_len,
         n_atoms=seq_len * 8 - 5,  # not divisible by n_query
         full_mask=True,
-        n_dims=8)
+        n_dims=8,
+    )
     zij_trunk, a2t, atom_mask = _make_inputs(sc, device)
 
     flat_mask = atom_mask.reshape(-1, sc.n_atoms)
-    attn_metadata = _build_attn_metadata(flat_mask,
-                                         sc.n_queries,
-                                         sc.n_keys,
-                                         device=device)
+    attn_metadata = _build_attn_metadata(flat_mask, sc.n_queries, sc.n_keys, device=device)
     batch = {"atom_to_token_index": a2t, "atom_mask": atom_mask}
-    output = convert_pair_atom_to_blocks(batch=batch,
-                                         zij_trunk=zij_trunk,
-                                         n_query=sc.n_queries,
-                                         n_key=sc.n_keys,
-                                         attn_metadata=attn_metadata)
+    output = convert_pair_atom_to_blocks(
+        batch=batch, zij_trunk=zij_trunk, n_query=sc.n_queries, n_key=sc.n_keys, attn_metadata=attn_metadata
+    )
     torch.cuda.synchronize()
     assert torch.isfinite(output).all()

@@ -24,23 +24,20 @@ Constructs OpenFold3 without weights (cheap, no GPU) and asserts the
 * unconfigured modules are never selected, and a qualified-path key works
   directly.
 """
+
 import pytest
 
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
+from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
 from tensorrt_bionemo.configs import AcceleratedConfig, BackendType
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    OpenFold3DiffusionTransformer
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerModule
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import \
-    DiffusionModule as OF3DiffusionModule
 from tensorrt_bionemo.registry import get_model_class
 
 
 @pytest.fixture(scope="module")
 def of3_model():
     cls = get_model_class("openfold3")
-    return cls(config=cls.get_pretrained_config("openfold3"),
-               include_load_weights=False)
+    return cls(config=cls.get_pretrained_config("openfold3"), include_load_weights=False)
 
 
 def _torch_cfg():
@@ -52,11 +49,8 @@ def test_role_aliases_resolve_to_expected_modules(of3_model):
     reg.get_accelerated_modules()  # populates name->path
     expected = {
         "structure_pairformer": ("pairformer_stack", PairformerModule),
-        "token_transformer": (
-            "sample_diffusion.diffusion_module.diffusion_transformer",
-            OpenFold3DiffusionTransformer),
-        "diffusion_module": ("sample_diffusion.diffusion_module",
-                             OF3DiffusionModule),
+        "token_transformer": ("sample_diffusion.diffusion_module.diffusion_transformer", OpenFold3DiffusionTransformer),
+        "diffusion_module": ("sample_diffusion.diffusion_module", OF3DiffusionModule),
     }
     for role, (path, cls) in expected.items():
         assert reg._name_to_path[role] == path
@@ -64,10 +58,12 @@ def test_role_aliases_resolve_to_expected_modules(of3_model):
 
 
 def test_parent_child_conflict_drops_child(of3_model):
-    reg = of3_model.get_optimized_modules({
-        "diffusion_module": _torch_cfg(),   # parent
-        "token_transformer": _torch_cfg(),  # child (nested inside it)
-    })
+    reg = of3_model.get_optimized_modules(
+        {
+            "diffusion_module": _torch_cfg(),  # parent
+            "token_transformer": _torch_cfg(),  # child (nested inside it)
+        }
+    )
     names = reg.get_module_names()
     assert "diffusion_module" in names
     assert "token_transformer" not in names
@@ -88,10 +84,12 @@ def test_alias_and_canonical_path_deduplicated(of3_model):
     """Configuring both a role alias and its canonical qualified path
     targets the same submodule twice; the duplicate is dropped so it is not
     wrapped twice."""
-    reg = of3_model.get_optimized_modules({
-        "structure_pairformer": _torch_cfg(),  # alias -> pairformer_stack
-        "pairformer_stack": _torch_cfg(),       # canonical path (same module)
-    })
+    reg = of3_model.get_optimized_modules(
+        {
+            "structure_pairformer": _torch_cfg(),  # alias -> pairformer_stack
+            "pairformer_stack": _torch_cfg(),  # canonical path (same module)
+        }
+    )
     names = reg.get_module_names()
     assert len(names) == 1
     assert reg._name_to_path[names[0]] == "pairformer_stack"
@@ -101,8 +99,7 @@ def test_missing_configured_path_is_config_error(of3_model):
     """A configured key with no decorated target raises, not silently
     skips."""
     with pytest.raises(ValueError, match="no decorated, discoverable target"):
-        of3_model.get_optimized_modules(
-            {"not.a.real.module": _torch_cfg()})
+        of3_model.get_optimized_modules({"not.a.real.module": _torch_cfg()})
     # A real but *undecorated* path is likewise rejected (it is not a candidate).
     with pytest.raises(ValueError, match="no decorated, discoverable target"):
         of3_model.get_optimized_modules({"input_embedder": _torch_cfg()})
@@ -115,12 +112,10 @@ def test_optimize_falls_back_to_decorator_default():
 
     Uses a fresh model because ``optimize`` swaps submodules in place.
     """
-    from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
-        CUDAGraphOptimizationTracker
+    from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
     cls = get_model_class("openfold3")
-    model = cls(config=cls.get_pretrained_config("openfold3"),
-                include_load_weights=False)
+    model = cls(config=cls.get_pretrained_config("openfold3"), include_load_weights=False)
     # AcceleratedConfig(backend=TORCH).default is None -> no explicit config.
     model.optimize({"structure_pairformer": _torch_cfg()})
 

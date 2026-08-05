@@ -30,23 +30,15 @@ The shared residue-name remap and chain-classification logic lives in
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
-from tensorrt_bionemo.data.schemas.basic import (AtomType, FoldingOutput,
-                                                 ResType)
-from tensorrt_bionemo.data.writers.base_writer import (_IHM_REMAP,
-                                                       _MOL_TYPE_TO_KIND,
-                                                       BaseWriter,
-                                                       _classify_chain)
+from tensorrt_bionemo.data.schemas.basic import AtomType, FoldingOutput, ResType
+from tensorrt_bionemo.data.writers.base_writer import _IHM_REMAP, _MOL_TYPE_TO_KIND, BaseWriter, _classify_chain
 
 # PDB single-character chain IDs (cf. spec — column 22 is a single byte).
 # 62 unique chains max; beyond that PDB format breaks and callers should
 # use the CIF writer instead.
-PDB_CHAIN_IDS = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                 "abcdefghijklmnopqrstuvwxyz"
-                 "0123456789")
+PDB_CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 PDB_MAX_CHAINS = len(PDB_CHAIN_IDS)
 
 
@@ -93,7 +85,7 @@ class PDBWriter(BaseWriter):
         templates were used. The OpenFold/AlphaFold2 export pipelines
         emit one ``PARENT`` per template; we have none.
         """
-        return [f"PARENT {' '.join(['N/A'])}"]
+        return ["PARENT N/A"]
 
     @staticmethod
     def _chain_end(
@@ -113,8 +105,7 @@ class PDBWriter(BaseWriter):
         * 23-26 residue sequence number (right-justified)
         """
         chain_end = "TER"
-        return (f"{chain_end:<6}{atom_index:>5}      {end_resname:>3} "
-                f"{chain_name:>1}{residue_index:>4}")
+        return f"{chain_end:<6}{atom_index:>5}      {end_resname:>3} {chain_name:>1}{residue_index:>4}"
 
     # ------------------------------------------------------------------
     # Atom-line formatting
@@ -147,12 +138,14 @@ class PDBWriter(BaseWriter):
         alt_loc = ""
         insertion_code = ""
         charge = ""
-        return (f"{record_type:<6}{atom_index:>5} {name:<4}{alt_loc:>1}"
-                f"{res_name_3:>3} {chain_tag:>1}"
-                f"{residue_index:>4}{insertion_code:>1}   "
-                f"{pos[0]:>8.3f}{pos[1]:>8.3f}{pos[2]:>8.3f}"
-                f"{occupancy:>6.2f}{b_factor:>6.2f}          "
-                f"{element:>2}{charge:>2}")
+        return (
+            f"{record_type:<6}{atom_index:>5} {name:<4}{alt_loc:>1}"
+            f"{res_name_3:>3} {chain_tag:>1}"
+            f"{residue_index:>4}{insertion_code:>1}   "
+            f"{pos[0]:>8.3f}{pos[1]:>8.3f}{pos[2]:>8.3f}"
+            f"{occupancy:>6.2f}{b_factor:>6.2f}          "
+            f"{element:>2}{charge:>2}"
+        )
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -189,9 +182,8 @@ class PDBWriter(BaseWriter):
         # rows and classify chains by an explicit mol-type rather than
         # the all-X heuristic. Producers that don't carry CCD identity
         # leave both ``None`` and fall back to the legacy paths.
-        residue_names: Optional[list[str]] = folding_output.get(
-            "residue_names")
-        mol_types: Optional[np.ndarray] = folding_output.get("mol_types")
+        residue_names: list[str] | None = folding_output.get("residue_names")
+        mol_types: np.ndarray | None = folding_output.get("mol_types")
 
         n = residue_types.shape[0]
 
@@ -200,12 +192,9 @@ class PDBWriter(BaseWriter):
         # of silently misclassifying residues via wrong indices. Mirrors the
         # equivalent check in CIFWriter so the two writers stay aligned.
         if residue_names is not None and len(residue_names) != n:
-            raise ValueError(
-                f"PDBWriter: residue_names length ({len(residue_names)}) "
-                f"must equal n_res ({n})")
+            raise ValueError(f"PDBWriter: residue_names length ({len(residue_names)}) must equal n_res ({n})")
         if mol_types is not None and len(mol_types) != n:
-            raise ValueError(f"PDBWriter: mol_types length ({len(mol_types)}) "
-                             f"must equal n_res ({n})")
+            raise ValueError(f"PDBWriter: mol_types length ({len(mol_types)}) must equal n_res ({n})")
 
         # ── normalise chain_indices to a numpy array ──────────────────
         if chain_indices is None:
@@ -216,7 +205,8 @@ class PDBWriter(BaseWriter):
             raise ValueError(
                 f"The PDB format supports at most {PDB_MAX_CHAINS} chains; "
                 f"chain index {int(unique_chains.max())} exceeds the limit. "
-                "Use CIFWriter for systems with more chains.")
+                "Use CIFWriter for systems with more chains."
+            )
 
         # ── Fail fast if nothing renders ──────────────────────────────
         # If every atom is masked out (e.g. a single-chain K⁺ ion whose
@@ -226,13 +216,12 @@ class PDBWriter(BaseWriter):
         if n > 0 and not bool(np.any(atom_mask >= 0.5)):
             raise ValueError(
                 "PDBWriter: no renderable atoms (atom_mask is all zero). "
-                "All atom names fell outside the AtomTypes universe.")
+                "All atom names fell outside the AtomTypes universe."
+            )
 
         # ── ResType-name and atom-name tables (per-index lookups) ─────
         restypes: list[str] = [x.name for x in self.res_types]
-        pdb_restypes: list[str] = [
-            _IHM_REMAP.get(x.name, x.canonical_name) for x in self.res_types
-        ]
+        pdb_restypes: list[str] = [_IHM_REMAP.get(x.name, x.canonical_name) for x in self.res_types]
         atom_types: list[str] = [x.name for x in self.atom_types]
 
         # ── Group residues by chain, preserving encounter order ───────
@@ -253,8 +242,7 @@ class PDBWriter(BaseWriter):
             if residue_names is not None and i < len(residue_names):
                 chain_to_pdb.setdefault(c, []).append(residue_names[i])
             else:
-                chain_to_pdb.setdefault(c, []).append(
-                    pdb_restypes[residue_types[i]])
+                chain_to_pdb.setdefault(c, []).append(pdb_restypes[residue_types[i]])
             chain_to_token_idx.setdefault(c, []).append(i)
 
         # ── Classify each chain once: polymer kind or non-polymer ─────
@@ -265,14 +253,11 @@ class PDBWriter(BaseWriter):
                 # else is a producer bug we want surfaced, not silently
                 # masked by picking the first residue's value. Mirrors the
                 # equivalent check in CIFWriter.
-                chain_mol_types = {
-                    int(mol_types[i])
-                    for i in chain_to_token_idx[c]
-                }
+                chain_mol_types = {int(mol_types[i]) for i in chain_to_token_idx[c]}
                 if len(chain_mol_types) != 1:
                     raise ValueError(
-                        f"PDBWriter: mixed mol_types in chain "
-                        f"{PDB_CHAIN_IDS[c]}: {sorted(chain_mol_types)}")
+                        f"PDBWriter: mixed mol_types in chain {PDB_CHAIN_IDS[c]}: {sorted(chain_mol_types)}"
+                    )
                 mt = next(iter(chain_mol_types))
                 chain_kind[c] = _MOL_TYPE_TO_KIND.get(mt, "protein")
             else:
@@ -280,14 +265,8 @@ class PDBWriter(BaseWriter):
 
         # Per-token chain ID lookup (encounter order doesn't matter for
         # PDB — column 22 is always the literal chain letter).
-        chain_tag_of: dict[int, str] = {
-            c: PDB_CHAIN_IDS[c]
-            for c in unique_chains.tolist()
-        }
-        chain_is_het: dict[int, bool] = {
-            c: chain_kind[c] == "nonpoly"
-            for c in chain_kind
-        }
+        chain_tag_of: dict[int, str] = {c: PDB_CHAIN_IDS[c] for c in unique_chains.tolist()}
+        chain_is_het: dict[int, bool] = {c: chain_kind[c] == "nonpoly" for c in chain_kind}
 
         # ── Emit lines ────────────────────────────────────────────────
         pdb_lines: list[str] = []
@@ -295,10 +274,10 @@ class PDBWriter(BaseWriter):
         pdb_lines.append("MODEL     1")
 
         atom_index = 1
-        last_chain_index: Optional[int] = None
-        last_res_pdb_name: Optional[str] = None
-        last_res_index: Optional[int] = None
-        last_chain_tag: Optional[str] = None
+        last_chain_index: int | None = None
+        last_res_pdb_name: str | None = None
+        last_res_index: int | None = None
+        last_chain_tag: str | None = None
 
         for i in range(n):
             c = int(chain_indices[i])
@@ -320,7 +299,8 @@ class PDBWriter(BaseWriter):
                             last_res_pdb_name or "UNK",
                             last_chain_tag or "A",
                             last_res_index or 0,
-                        ))
+                        )
+                    )
                     atom_index += 1  # Atom serial advances at TER
 
             # Resolve the 3-char PDB residue name for this token.
@@ -331,10 +311,11 @@ class PDBWriter(BaseWriter):
 
             # Emit ATOM/HETATM rows for the masked-in atoms.
             for atom_name, pos, mask, b_factor in zip(
-                    atom_types,
-                    atom_positions[i],
-                    atom_mask[i],
-                    b_factors[i],
+                atom_types,
+                atom_positions[i],
+                atom_mask[i],
+                b_factors[i],
+                strict=False,
             ):
                 if mask < 0.5:
                     continue
@@ -356,7 +337,8 @@ class PDBWriter(BaseWriter):
                         pos=pos,
                         b_factor=float(b_factor),
                         element=element,
-                    ))
+                    )
+                )
                 atom_index += 1
 
             last_chain_index = c
@@ -372,7 +354,8 @@ class PDBWriter(BaseWriter):
                     last_res_pdb_name or "UNK",
                     last_chain_tag or "A",
                     last_res_index or 0,
-                ))
+                )
+            )
             atom_index += 1
 
         pdb_lines.append("ENDMDL")

@@ -1,11 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Boltz2 feature computation from Structure + Tokens (no OSS imports)."""
 
 from __future__ import annotations
 
 import random
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -14,10 +27,21 @@ from torch.nn.functional import one_hot
 from tensorrt_bionemo._torch.layers.random_augmentation import random_rotations
 from tensorrt_bionemo._torch.tensor_utils import pad_dim
 
-from .const import (Structure, Token, TokenBond, chain_type_ids,
-                    contact_conditioning_info, method_types_ids,
-                    nucleic_backbone_atom_index, num_elements, num_tokens,
-                    protein_backbone_atom_index, ref_atoms, token_ids, tokens)
+from .const import (
+    Structure,
+    Token,
+    TokenBond,
+    chain_type_ids,
+    contact_conditioning_info,
+    method_types_ids,
+    nucleic_backbone_atom_index,
+    num_elements,
+    num_tokens,
+    protein_backbone_atom_index,
+    ref_atoms,
+    token_ids,
+    tokens,
+)
 
 
 def _center_random_augmentation(
@@ -29,9 +53,9 @@ def _center_random_augmentation(
 ) -> torch.Tensor:
     """OSS Algorithm 19: center (optional) then random rotation + translation. Deterministic under seed."""
     if centering:
-        atom_mean = (
-            (atom_coords * atom_mask[:, :, None]).sum(dim=1, keepdim=True) /
-            (atom_mask[:, :, None].sum(dim=1, keepdim=True).clamp(min=1e-8)))
+        atom_mean = (atom_coords * atom_mask[:, :, None]).sum(dim=1, keepdim=True) / (
+            atom_mask[:, :, None].sum(dim=1, keepdim=True).clamp(min=1e-8)
+        )
         atom_coords = atom_coords - atom_mean
     if augmentation:
         R = random_rotations(
@@ -68,14 +92,13 @@ def _fill_nonpolymer_frames(
     for chain in structure.chains:
         if chain.mol_type != chain_type_ids["NONPOLYMER"]:
             continue
-        chain_tokens = (asym_id_token == chain.asym_id)
+        chain_tokens = asym_id_token == chain.asym_id
         n_tok = int(chain_tokens.sum())
         if n_tok < 3:
             continue
         # For NONPOLYMER chains, num_atoms == num_tokens (per-atom tokenization).
         chain_token_idxs = np.where(chain_tokens)[0]
-        atom_idxs = np.array([tokens[i].atom_idx for i in chain_token_idxs],
-                             dtype=np.int64)
+        atom_idxs = np.array([tokens[i].atom_idx for i in chain_token_idxs], dtype=np.int64)
         chain_coords = coords_flat[atom_idxs]
         resolved = np.array(
             [structure.atoms[int(ai)].is_present for ai in atom_idxs],
@@ -95,7 +118,8 @@ def _fill_nonpolymer_frames(
             resolved_frame_data[ti] = bool(
                 structure.atoms[int(triplet[0])].is_present
                 and structure.atoms[int(triplet[1])].is_present
-                and structure.atoms[int(triplet[2])].is_present)
+                and structure.atoms[int(triplet[2])].is_present
+            )
         token_idx += n_tok
 
 
@@ -123,8 +147,7 @@ def _frame_resolved_mask_oss(
             idx_b = ref.index("CA")
             idx_c = ref.index("C")
             if max(idx_a, idx_b, idx_c) < len(present):
-                return bool(present[idx_a] and present[idx_b]
-                            and present[idx_c])
+                return bool(present[idx_a] and present[idx_b] and present[idx_c])
         except (ValueError, KeyError):
             pass
         idx_n = next((i for i, n in enumerate(names) if n == "N"), -1)
@@ -133,24 +156,21 @@ def _frame_resolved_mask_oss(
         if idx_n >= 0 and idx_ca >= 0 and idx_c >= 0:
             return bool(present[idx_n] and present[idx_ca] and present[idx_c])
         return False
-    if mol_type in (chain_type_ids["DNA"],
-                    chain_type_ids["RNA"]) and res_name in ref_atoms:
+    if mol_type in (chain_type_ids["DNA"], chain_type_ids["RNA"]) and res_name in ref_atoms:
         try:
             ref = ref_atoms[res_name]
             idx_a = ref.index("C1'")
             idx_b = ref.index("C3'")
             idx_c = ref.index("C4'")
             if max(idx_a, idx_b, idx_c) < len(present):
-                return bool(present[idx_a] and present[idx_b]
-                            and present[idx_c])
+                return bool(present[idx_a] and present[idx_b] and present[idx_c])
         except (ValueError, KeyError):
             pass
         idx_c1 = next((i for i, n in enumerate(names) if n == "C1'"), -1)
         idx_c3 = next((i for i, n in enumerate(names) if n == "C3'"), -1)
         idx_c4 = next((i for i, n in enumerate(names) if n == "C4'"), -1)
         if idx_c1 >= 0 and idx_c3 >= 0 and idx_c4 >= 0:
-            return bool(present[idx_c1] and present[idx_c3]
-                        and present[idx_c4])
+            return bool(present[idx_c1] and present[idx_c3] and present[idx_c4])
         return False
     return False
 
@@ -178,8 +198,8 @@ def process_token_features(
     tokens: list[Token],
     token_bonds: list[TokenBond],
     structure: Structure,
-    override_method: Optional[str] = None,
-    max_tokens: Optional[int] = None,
+    override_method: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """Build token-level feature tensors."""
     n = len(tokens)
@@ -194,24 +214,18 @@ def process_token_features(
     mol_type = torch.tensor([t.mol_type for t in tokens], dtype=torch.long)
     res_type = torch.tensor([t.res_type for t in tokens], dtype=torch.long)
     res_type = one_hot(res_type, num_classes=num_tokens)
-    disto_center = torch.tensor([t.disto_coords for t in tokens],
-                                dtype=torch.float32)
+    disto_center = torch.tensor([t.disto_coords for t in tokens], dtype=torch.float32)
     modified = torch.tensor([t.modified for t in tokens], dtype=torch.long)
-    cyclic_period = torch.tensor([t.cyclic_period for t in tokens],
-                                 dtype=torch.long)
-    affinity_mask = torch.tensor([t.affinity_mask for t in tokens],
-                                 dtype=torch.float32)
+    cyclic_period = torch.tensor([t.cyclic_period for t in tokens], dtype=torch.long)
+    affinity_mask = torch.tensor([t.affinity_mask for t in tokens], dtype=torch.float32)
 
-    method_key = ("x-ray diffraction"
-                  if override_method is None else override_method.lower())
+    method_key = "x-ray diffraction" if override_method is None else override_method.lower()
     method_id = method_types_ids.get(method_key, method_types_ids["other"])
-    method_feature = torch.full((n, ), method_id, dtype=torch.long)
+    method_feature = torch.full((n,), method_id, dtype=torch.long)
 
     pad_mask = torch.ones(n, dtype=torch.float32)
-    resolved_mask = torch.tensor([t.resolved_mask for t in tokens],
-                                 dtype=torch.float32)
-    disto_mask = torch.tensor([t.disto_mask for t in tokens],
-                              dtype=torch.float32)
+    resolved_mask = torch.tensor([t.resolved_mask for t in tokens], dtype=torch.float32)
+    disto_mask = torch.tensor([t.disto_mask for t in tokens], dtype=torch.float32)
 
     tok_to_idx = {t.token_idx: i for i, t in enumerate(tokens)}
     bonds = torch.zeros(num_tok, num_tok, dtype=torch.float32)
@@ -226,41 +240,31 @@ def process_token_features(
             bonds_type[i2, i1] = tb.type
     bonds = bonds.unsqueeze(-1)
 
-    contact_conditioning_np = np.full((n, n),
-                                      contact_conditioning_info["UNSELECTED"],
-                                      dtype=np.int64)
+    contact_conditioning_np = np.full((n, n), contact_conditioning_info["UNSELECTED"], dtype=np.int64)
     contact_threshold = np.zeros((n, n), dtype=np.float32)
-    if np.all(contact_conditioning_np ==
-              contact_conditioning_info["UNSELECTED"]):
-        contact_conditioning_np = (contact_conditioning_np -
-                                   contact_conditioning_info["UNSELECTED"] +
-                                   contact_conditioning_info["UNSPECIFIED"])
+    if np.all(contact_conditioning_np == contact_conditioning_info["UNSELECTED"]):
+        contact_conditioning_np = (
+            contact_conditioning_np - contact_conditioning_info["UNSELECTED"] + contact_conditioning_info["UNSPECIFIED"]
+        )
     contact_conditioning = torch.from_numpy(contact_conditioning_np).long()
-    contact_conditioning = one_hot(contact_conditioning,
-                                   num_classes=len(contact_conditioning_info))
+    contact_conditioning = one_hot(contact_conditioning, num_classes=len(contact_conditioning_info))
     contact_threshold = torch.from_numpy(contact_threshold).float()
 
     if pad_len > 0:
         token_index = pad_dim(token_index.unsqueeze(0), 1, pad_len).squeeze(0)
-        residue_index = pad_dim(residue_index.unsqueeze(0), 1,
-                                pad_len).squeeze(0)
+        residue_index = pad_dim(residue_index.unsqueeze(0), 1, pad_len).squeeze(0)
         asym_id = pad_dim(asym_id.unsqueeze(0), 1, pad_len).squeeze(0)
         entity_id = pad_dim(entity_id.unsqueeze(0), 1, pad_len).squeeze(0)
         sym_id = pad_dim(sym_id.unsqueeze(0), 1, pad_len).squeeze(0)
         mol_type = pad_dim(mol_type.unsqueeze(0), 1, pad_len).squeeze(0)
         res_type = pad_dim(res_type.unsqueeze(0), 1, pad_len).squeeze(0)
-        disto_center = pad_dim(disto_center.unsqueeze(0), 1,
-                               pad_len).squeeze(0)
+        disto_center = pad_dim(disto_center.unsqueeze(0), 1, pad_len).squeeze(0)
         modified = pad_dim(modified.unsqueeze(0), 1, pad_len).squeeze(0)
-        cyclic_period = pad_dim(cyclic_period.unsqueeze(0), 1,
-                                pad_len).squeeze(0)
-        affinity_mask = pad_dim(affinity_mask.unsqueeze(0), 1,
-                                pad_len).squeeze(0)
-        method_feature = pad_dim(method_feature.unsqueeze(0), 1,
-                                 pad_len).squeeze(0)
+        cyclic_period = pad_dim(cyclic_period.unsqueeze(0), 1, pad_len).squeeze(0)
+        affinity_mask = pad_dim(affinity_mask.unsqueeze(0), 1, pad_len).squeeze(0)
+        method_feature = pad_dim(method_feature.unsqueeze(0), 1, pad_len).squeeze(0)
         pad_mask = pad_dim(pad_mask.unsqueeze(0), 1, pad_len).squeeze(0)
-        resolved_mask = pad_dim(resolved_mask.unsqueeze(0), 1,
-                                pad_len).squeeze(0)
+        resolved_mask = pad_dim(resolved_mask.unsqueeze(0), 1, pad_len).squeeze(0)
         disto_mask = pad_dim(disto_mask.unsqueeze(0), 1, pad_len).squeeze(0)
         contact_conditioning = pad_dim(contact_conditioning, 0, pad_len)
         contact_conditioning = pad_dim(contact_conditioning, 1, pad_len)
@@ -304,8 +308,8 @@ def process_atom_features(
     min_dist: float = 2.0,
     max_dist: float = 22.0,
     atoms_per_window_queries: int = 32,
-    max_atoms: Optional[int] = None,
-    max_tokens: Optional[int] = None,
+    max_atoms: int | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """Build atom-level feature tensors from structure and tokens."""
     from .const import chirality_type_ids, unk_chirality_type
@@ -313,10 +317,7 @@ def process_atom_features(
     unk_chirality = chirality_type_ids[unk_chirality_type]
     n_tokens = len(tokens)
     # OSS-aligned: use structure.coords + ensemble offsets (ensemble_ref_idxs)
-    ensemble_atom_starts = [
-        int(structure.ensemble[int(e)]["atom_coord_idx"])
-        for e in ensemble_ref_idxs
-    ]
+    ensemble_atom_starts = [int(structure.ensemble[int(e)]["atom_coord_idx"]) for e in ensemble_ref_idxs]
     atom_to_token = []
     token_to_rep_atom = []
     ref_space_uid = []
@@ -325,10 +326,8 @@ def process_atom_features(
     atom_charge_list = []
     atom_conformer_list = []
     atom_chirality_list = []
-    atom_bfactor_list = [
-    ]  # OSS-aligned: atom_data["bfactor"] built in token iteration order
-    atom_plddt_list = [
-    ]  # OSS-aligned: atom_data["plddt"] built in token iteration order
+    atom_bfactor_list = []  # OSS-aligned: atom_data["bfactor"] built in token iteration order
+    atom_plddt_list = []  # OSS-aligned: atom_data["plddt"] built in token iteration order
     backbone_feat_index = []
     frame_data = []
     resolved_frame_data = []
@@ -350,8 +349,7 @@ def process_atom_features(
         atom_name_to_ref = {a.GetProp("name"): a for a in mol.GetAtoms()}
         conf_ids = [int(c.GetId()) for c in mol.GetConformers()]
         if (chain_idx, res_id) not in res_index_to_conf_id:
-            res_index_to_conf_id[(chain_idx, res_id)] = int(
-                random.choice(conf_ids)) if conf_ids else 0
+            res_index_to_conf_id[(chain_idx, res_id)] = int(random.choice(conf_ids)) if conf_ids else 0
         conf_id = res_index_to_conf_id[(chain_idx, res_id)]
         conformer = mol.GetConformer(conf_id)
 
@@ -375,9 +373,7 @@ def process_atom_features(
                 atom_charge_list.append(ref_atom.GetFormalCharge())
                 pos = conformer.GetAtomPosition(ref_atom.GetIdx())
                 atom_conformer_list.append((pos.x, pos.y, pos.z))
-                atom_chirality_list.append(
-                    chirality_type_ids.get(str(ref_atom.GetChiralTag()),
-                                           unk_chirality))
+                atom_chirality_list.append(chirality_type_ids.get(str(ref_atom.GetChiralTag()), unk_chirality))
             else:
                 atom_element_list.append(a.element)
                 atom_charge_list.append(a.charge)
@@ -389,41 +385,38 @@ def process_atom_features(
 
         if chain.mol_type == chain_type_ids["PROTEIN"]:
             for a in token_atoms:
-                bi = (protein_backbone_atom_index.get(a.name, -1) +
-                      1 if a.name in protein_backbone_atom_index else 0)
+                bi = protein_backbone_atom_index.get(a.name, -1) + 1 if a.name in protein_backbone_atom_index else 0
                 backbone_feat_index.append(bi)
         elif chain.mol_type in (chain_type_ids["DNA"], chain_type_ids["RNA"]):
             for a in token_atoms:
-                bi = (nucleic_backbone_atom_index.get(a.name, -1) + 1 +
-                      len(protein_backbone_atom_index)
-                      if a.name in nucleic_backbone_atom_index else 0)
+                bi = (
+                    nucleic_backbone_atom_index.get(a.name, -1) + 1 + len(protein_backbone_atom_index)
+                    if a.name in nucleic_backbone_atom_index
+                    else 0
+                )
                 backbone_feat_index.append(bi)
         else:
             backbone_feat_index.extend([0] * token.atom_num)
 
         # OSS-aligned: coord_data and disto from structure.coords + ensemble offsets
         token_coords = np.array(
-            [
-                structure.coords[ea_start + start:ea_start + end]
-                for ea_start in ensemble_atom_starts
-            ],
+            [structure.coords[ea_start + start : ea_start + end] for ea_start in ensemble_atom_starts],
             dtype=np.float32,
         )
         coord_data_list.append(token_coords)
         disto_coords_list.append(
             np.array(
-                [
-                    structure.coords[ea_start + token.disto_idx]
-                    for ea_start in ensemble_atom_starts
-                ],
+                [structure.coords[ea_start + token.disto_idx] for ea_start in ensemble_atom_starts],
                 dtype=np.float32,
-            ))
-        if token.atom_num >= 3 and token.res_name in ref_atoms and ref_atoms[
-                token.res_name][:3] == ["N", "CA", "C"]:
+            )
+        )
+        if token.atom_num >= 3 and token.res_name in ref_atoms and ref_atoms[token.res_name][:3] == ["N", "CA", "C"]:
             frame_data.append([start, start + 1, start + 2])
-        elif (token.atom_num >= 3 and token.res_name in ref_atoms
-              and chain.mol_type
-              in (chain_type_ids["DNA"], chain_type_ids["RNA"])):
+        elif (
+            token.atom_num >= 3
+            and token.res_name in ref_atoms
+            and chain.mol_type in (chain_type_ids["DNA"], chain_type_ids["RNA"])
+        ):
             # Nucleic acid frame: C1' (idx_0), C3' (idx_2), C4' (idx_1)
             # matches OSS featurizerv2 compute_frames_polymer.
             try:
@@ -431,19 +424,15 @@ def process_atom_features(
                 idx_c1 = ref.index("C1'")
                 idx_c3 = ref.index("C3'")
                 idx_c4 = ref.index("C4'")
-                frame_data.append(
-                    [start + idx_c1, start + idx_c3, start + idx_c4])
+                frame_data.append([start + idx_c1, start + idx_c3, start + idx_c4])
             except ValueError:
-                frame_data.append(
-                    [token.center_idx, token.center_idx, token.center_idx])
+                frame_data.append([token.center_idx, token.center_idx, token.center_idx])
         else:
-            frame_data.append(
-                [token.center_idx, token.center_idx, token.center_idx])
+            frame_data.append([token.center_idx, token.center_idx, token.center_idx])
         # OSS-aligned: frame_resolved_mask from structure (featurizerv2 resolved_frame_data)
         resolved_frame_data.append(
-            _frame_resolved_mask_oss(token_atoms, chain.mol_type,
-                                     token.res_name, token.atom_num,
-                                     token.res_type))
+            _frame_resolved_mask_oss(token_atoms, chain.mol_type, token.res_name, token.atom_num, token.res_type)
+        )
         atom_idx += token.atom_num
 
     # Upstream compute_frames path:
@@ -467,8 +456,7 @@ def process_atom_features(
     v1 = frames_expanded[:, 1] - frames_expanded[:, 0]
     v2 = frames_expanded[:, 1] - frames_expanded[:, 2]
     mask_collinear = _compute_collinear_mask(v1, v2)
-    resolved_frame_data_np = np.array([float(x) for x in resolved_frame_data],
-                                      dtype=np.float32)
+    resolved_frame_data_np = np.array([float(x) for x in resolved_frame_data], dtype=np.float32)
     resolved_frame_data_np = resolved_frame_data_np * mask_collinear
 
     coord_data = np.concatenate(coord_data_list, axis=1)
@@ -526,16 +514,14 @@ def process_atom_features(
 
     backbone_feat_index_t = one_hot(
         backbone_feat_index_t,
-        num_classes=1 + len(protein_backbone_atom_index) +
-        len(nucleic_backbone_atom_index),
+        num_classes=1 + len(protein_backbone_atom_index) + len(nucleic_backbone_atom_index),
     )
     ref_atom_name_chars = one_hot(ref_atom_name_chars, num_classes=64)
     ref_element = one_hot(ref_element, num_classes=num_elements)
     atom_to_token_t = one_hot(atom_to_token_t, num_classes=n_tokens)
     token_to_rep_atom_t = one_hot(token_to_rep_atom_t, num_classes=atom_idx)
 
-    pad_len_atom = (((atom_idx - 1) // atoms_per_window_queries + 1) *
-                    atoms_per_window_queries - atom_idx)
+    pad_len_atom = ((atom_idx - 1) // atoms_per_window_queries + 1) * atoms_per_window_queries - atom_idx
     if max_atoms is not None:
         pad_len_atom = max_atoms - atom_idx
     if pad_len_atom > 0:
@@ -556,8 +542,7 @@ def process_atom_features(
         atom_idx += pad_len_atom
 
     frames_idx = torch.from_numpy(frame_data_arr).long().unsqueeze(0)
-    frame_resolved_mask = torch.from_numpy(
-        resolved_frame_data_np).float().unsqueeze(0)
+    frame_resolved_mask = torch.from_numpy(resolved_frame_data_np).float().unsqueeze(0)
     if max_tokens is not None and n_tokens < max_tokens:
         pl = max_tokens - n_tokens
         disto_coords_ensemble = pad_dim(disto_coords_ensemble, 1, pl)
@@ -586,11 +571,11 @@ def process_atom_features(
 
 
 def _msa_from_parsed(
-    msa_parsed: Optional[Any],
+    msa_parsed: Any | None,
     num_residues: int,
     prot_letter_to_token: dict,
-    default_query: Optional[list[int]] = None,
-    visited: Optional[set[str]] = None,
+    default_query: list[int] | None = None,
+    visited: set[str] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[str]]:
     """Build (msa, deletion, paired, keys) from MSAParsed.
 
@@ -609,9 +594,7 @@ def _msa_from_parsed(
 
     if default_query is not None:
         if len(default_query) != num_residues:
-            raise ValueError(
-                f"default_query length {len(default_query)} does not match "
-                f"num_residues {num_residues}")
+            raise ValueError(f"default_query length {len(default_query)} does not match num_residues {num_residues}")
         query_row = torch.tensor([default_query], dtype=torch.long)
     else:
         query_row = torch.zeros(1, num_residues, dtype=torch.long)
@@ -628,7 +611,7 @@ def _msa_from_parsed(
         return query_row, query_del, query_paired, [query_key]
 
     seqs = msa_parsed.get("sequences") if msa_parsed is not None else None
-    if seqs is None or (hasattr(seqs, '__len__') and len(seqs) == 0):
+    if seqs is None or (hasattr(seqs, "__len__") and len(seqs) == 0):
         return _empty()
     raw_val = msa_parsed.get("raw")
     raw_list = raw_val if raw_val is not None else msa_parsed["sequences"]
@@ -682,8 +665,8 @@ def _unkable_letter(token_id: int) -> str:
     if _TOKEN_TO_ONE is None:
         # Lazy build: invert prot/rna/dna letter→token maps; use the first
         # one-letter symbol that maps to each token id.
-        from .const import (dna_letter_to_token, prot_letter_to_token,
-                            rna_letter_to_token, token_ids)
+        from .const import dna_letter_to_token, prot_letter_to_token, rna_letter_to_token, token_ids
+
         candidates = {}
         for letter, three in prot_letter_to_token.items():
             tid = token_ids.get(three)
@@ -703,11 +686,11 @@ def _unkable_letter(token_id: int) -> str:
 
 def process_msa_features(
     tokens: list[Token],
-    msa_parsed_per_chain: Optional[list[Optional[Any]]] = None,
-    paired_msa_per_chain: Optional[list[Optional[Any]]] = None,
+    msa_parsed_per_chain: list[Any | None] | None = None,
+    paired_msa_per_chain: list[Any | None] | None = None,
     max_seqs: int = 16384,
     max_paired: int = 8192,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     pad_to_max_seqs: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Build MSA feature tensors with optional taxonomy-paired rows."""
@@ -716,19 +699,14 @@ def process_msa_features(
     num_residues = len(tokens)
     # Per-chain default query rows (used when a chain has no MSA): take the
     # chain's token res_types in order. Matches OSS ``dummy_msa``.
-    num_chains = (max((t.asym_id for t in tokens), default=-1) + 1)
+    num_chains = max((t.asym_id for t in tokens), default=-1) + 1
     chain_tokens: list[list[int]] = [[] for _ in range(num_chains)]
     for t in tokens:
         chain_tokens[t.asym_id].append(t.res_type)
 
-    if msa_parsed_per_chain is None or (hasattr(msa_parsed_per_chain,
-                                                '__len__')
-                                        and len(msa_parsed_per_chain) == 0):
-        default_q = ([t.res_type for t in tokens] if num_chains > 0 else None)
-        msa, deletion, paired, _ = _msa_from_parsed(None,
-                                                    num_residues,
-                                                    prot_letter_to_token,
-                                                    default_query=default_q)
+    if msa_parsed_per_chain is None or (hasattr(msa_parsed_per_chain, "__len__") and len(msa_parsed_per_chain) == 0):
+        default_q = [t.res_type for t in tokens] if num_chains > 0 else None
+        msa, deletion, paired, _ = _msa_from_parsed(None, num_residues, prot_letter_to_token, default_query=default_q)
     else:
         residues_per_chain = [len(c) for c in chain_tokens]
 
@@ -745,17 +723,13 @@ def process_msa_features(
         if paired_msa_per_chain is not None and len(paired_msa_per_chain) > 0:
             for i in range(num_chains):
                 Lc = residues_per_chain[i]
-                pp = (paired_msa_per_chain[i]
-                      if i < len(paired_msa_per_chain) else None)
-                pm, pd, _, _ = _msa_from_parsed(pp,
-                                                Lc,
-                                                prot_letter_to_token,
-                                                default_query=chain_tokens[i],
-                                                visited=chain_visited[i])
+                pp = paired_msa_per_chain[i] if i < len(paired_msa_per_chain) else None
+                pm, pd, _, _ = _msa_from_parsed(
+                    pp, Lc, prot_letter_to_token, default_query=chain_tokens[i], visited=chain_visited[i]
+                )
                 paired_parts_msa.append(pm)
                 paired_parts_del.append(pd)
-            n_taxonomy_pairs = max(
-                (pm.shape[0] - 1 for pm in paired_parts_msa), default=0)
+            n_taxonomy_pairs = max((pm.shape[0] - 1 for pm in paired_parts_msa), default=0)
             n_taxonomy_pairs = min(n_taxonomy_pairs, max_paired)
 
         # Parse unpaired MSA per chain; the shared dedup set already
@@ -763,13 +737,10 @@ def process_msa_features(
         parts_msa, parts_del, parts_paired = [], [], []
         for i in range(num_chains):
             Lc = residues_per_chain[i]
-            mp = msa_parsed_per_chain[i] if i < len(
-                msa_parsed_per_chain) else None
-            m, d, p, _ = _msa_from_parsed(mp,
-                                          Lc,
-                                          prot_letter_to_token,
-                                          default_query=chain_tokens[i],
-                                          visited=chain_visited[i])
+            mp = msa_parsed_per_chain[i] if i < len(msa_parsed_per_chain) else None
+            m, d, p, _ = _msa_from_parsed(
+                mp, Lc, prot_letter_to_token, default_query=chain_tokens[i], visited=chain_visited[i]
+            )
             parts_msa.append(m)
             parts_del.append(d)
             parts_paired.append(p)
@@ -810,11 +781,8 @@ def process_msa_features(
                 body_msa.append(torch.cat(parts, dim=0))
                 body_del.append(torch.cat(parts_d, dim=0))
             else:
-                body_msa.append(
-                    torch.zeros((0, residues_per_chain[i]), dtype=torch.long))
-                body_del.append(
-                    torch.zeros((0, residues_per_chain[i]),
-                                dtype=torch.float32))
+                body_msa.append(torch.zeros((0, residues_per_chain[i]), dtype=torch.long))
+                body_del.append(torch.zeros((0, residues_per_chain[i]), dtype=torch.float32))
         max_non_query = max((b.shape[0] for b in body_msa), default=0)
 
         n_header = 1 + (1 if has_query_self_pair else 0) + n_taxonomy_pairs
@@ -829,12 +797,18 @@ def process_msa_features(
         # Per-chain MSA presence flag (used in the self-pair row to mask out
         # ligand / no-MSA chains the way OSS does).
         chain_has_msa = [
-            (i < len(msa_parsed_per_chain)
-             and msa_parsed_per_chain[i] is not None
-             and msa_parsed_per_chain[i].get("raw")) or
-            (paired_msa_per_chain is not None and i < len(paired_msa_per_chain)
-             and paired_msa_per_chain[i] is not None
-             and paired_msa_per_chain[i].get("raw")) for i in range(num_chains)
+            (
+                i < len(msa_parsed_per_chain)
+                and msa_parsed_per_chain[i] is not None
+                and msa_parsed_per_chain[i].get("raw")
+            )
+            or (
+                paired_msa_per_chain is not None
+                and i < len(paired_msa_per_chain)
+                and paired_msa_per_chain[i] is not None
+                and paired_msa_per_chain[i].get("raw")
+            )
+            for i in range(num_chains)
         ]
 
         col = 0
@@ -842,9 +816,9 @@ def process_msa_features(
             Lc = residues_per_chain[i]
             # Row 0: canonical query (always — every chain contributes its
             # own residue tokens here, even ligand-only chains).
-            msa[0, col:col + Lc] = parts_msa[i][0]
-            deletion[0, col:col + Lc] = parts_del[i][0]
-            paired[0, col:col + Lc] = 1.0
+            msa[0, col : col + Lc] = parts_msa[i][0]
+            deletion[0, col : col + Lc] = parts_del[i][0]
+            paired[0, col : col + Lc] = 1.0
 
             r_off = 1
 
@@ -856,9 +830,9 @@ def process_msa_features(
             # taxonomy group.
             if has_query_self_pair:
                 if chain_has_msa[i]:
-                    msa[r_off, col:col + Lc] = parts_msa[i][0]
-                    deletion[r_off, col:col + Lc] = parts_del[i][0]
-                    paired[r_off, col:col + Lc] = 1.0
+                    msa[r_off, col : col + Lc] = parts_msa[i][0]
+                    deletion[r_off, col : col + Lc] = parts_del[i][0]
+                    paired[r_off, col : col + Lc] = 1.0
                 # else: leave gap (msa is gap-initialised) and paired=0.
                 r_off += 1
 
@@ -873,9 +847,9 @@ def process_msa_features(
                 n_avail = pm.shape[0] - 1
                 for j in range(n_taxonomy_pairs):
                     if j < n_avail:
-                        msa[r_off + j, col:col + Lc] = pm[1 + j]
-                        deletion[r_off + j, col:col + Lc] = pd[1 + j]
-                        paired[r_off + j, col:col + Lc] = 1.0
+                        msa[r_off + j, col : col + Lc] = pm[1 + j]
+                        deletion[r_off + j, col : col + Lc] = pd[1 + j]
+                        paired[r_off + j, col : col + Lc] = 1.0
                     # else: chain doesn't contribute to this taxonomy → leave
                     # msa as gap and paired as 0.
             r_off += n_taxonomy_pairs
@@ -885,9 +859,8 @@ def process_msa_features(
             # padded with gaps for the remaining columns.
             n_body = min(body_msa[i].shape[0], max_non_query)
             if n_body > 0:
-                msa[r_off:r_off + n_body, col:col + Lc] = body_msa[i][:n_body]
-                deletion[r_off:r_off + n_body,
-                         col:col + Lc] = body_del[i][:n_body]
+                msa[r_off : r_off + n_body, col : col + Lc] = body_msa[i][:n_body]
+                deletion[r_off : r_off + n_body, col : col + Lc] = body_del[i][:n_body]
             col += Lc
     # Keep layout (N_MSA, L) to match Boltz2 featurizerv2; do not transpose.
     msa_one_hot = one_hot(msa, num_classes=num_tokens)
@@ -949,8 +922,7 @@ def process_msa_features(
     }
 
 
-def load_dummy_templates_features(
-        tdim: int, num_tokens_val: int) -> dict[str, torch.Tensor]:
+def load_dummy_templates_features(tdim: int, num_tokens_val: int) -> dict[str, torch.Tensor]:
     """Dummy template features (no templates)."""
     res_type = torch.zeros(tdim, num_tokens_val, dtype=torch.long)
     res_type = one_hot(res_type, num_classes=num_tokens)
@@ -985,16 +957,15 @@ def _stack_idx(items: list[dict], expected_arity: int) -> torch.Tensor:
     for c in items:
         idxs = list(c["atom_idxs"])
         if len(idxs) != expected_arity:
-            raise ValueError(
-                f"constraint atom_idxs arity mismatch: expected {expected_arity}, "
-                f"got {len(idxs)} for {c}")
+            raise ValueError(f"constraint atom_idxs arity mismatch: expected {expected_arity}, got {len(idxs)} for {c}")
         rows.append(idxs)
     arr = np.asarray(rows, dtype=np.int64).T  # (arity, N)
     return torch.from_numpy(arr).long()
 
 
 def process_residue_constraint_features(
-    constraints: Optional[dict] = None, ) -> dict[str, torch.Tensor]:
+    constraints: dict | None = None,
+) -> dict[str, torch.Tensor]:
     """Build constraint feature tensors from per-residue RDKit constraints.
 
     ``constraints`` is a dict with optional keys ``rdkit_bounds``,
@@ -1014,16 +985,10 @@ def process_residue_constraint_features(
 
     rdkit_bounds_index = _stack_idx(rdkit_bounds, expected_arity=2)
     if rdkit_bounds:
-        rdkit_bounds_bond_mask = torch.tensor(
-            [bool(c["is_bond"]) for c in rdkit_bounds], dtype=torch.bool)
-        rdkit_bounds_angle_mask = torch.tensor(
-            [bool(c["is_angle"]) for c in rdkit_bounds], dtype=torch.bool)
-        rdkit_upper_bounds = torch.tensor(
-            [float(c["upper_bound"]) for c in rdkit_bounds],
-            dtype=torch.float32)
-        rdkit_lower_bounds = torch.tensor(
-            [float(c["lower_bound"]) for c in rdkit_bounds],
-            dtype=torch.float32)
+        rdkit_bounds_bond_mask = torch.tensor([bool(c["is_bond"]) for c in rdkit_bounds], dtype=torch.bool)
+        rdkit_bounds_angle_mask = torch.tensor([bool(c["is_angle"]) for c in rdkit_bounds], dtype=torch.bool)
+        rdkit_upper_bounds = torch.tensor([float(c["upper_bound"]) for c in rdkit_bounds], dtype=torch.float32)
+        rdkit_lower_bounds = torch.tensor([float(c["lower_bound"]) for c in rdkit_bounds], dtype=torch.float32)
     else:
         rdkit_bounds_bond_mask = torch.empty(0, dtype=torch.bool)
         rdkit_bounds_angle_mask = torch.empty(0, dtype=torch.bool)
@@ -1031,20 +996,28 @@ def process_residue_constraint_features(
         rdkit_lower_bounds = torch.empty(0, dtype=torch.float32)
 
     chiral_atom_index = _stack_idx(chiral_atoms, expected_arity=4)
-    chiral_reference_mask = torch.tensor(
-        [bool(c["is_reference"]) for c in chiral_atoms],
-        dtype=torch.bool) if chiral_atoms else torch.empty(0, dtype=torch.bool)
-    chiral_atom_orientations = torch.tensor(
-        [bool(c["is_r"]) for c in chiral_atoms],
-        dtype=torch.bool) if chiral_atoms else torch.empty(0, dtype=torch.bool)
+    chiral_reference_mask = (
+        torch.tensor([bool(c["is_reference"]) for c in chiral_atoms], dtype=torch.bool)
+        if chiral_atoms
+        else torch.empty(0, dtype=torch.bool)
+    )
+    chiral_atom_orientations = (
+        torch.tensor([bool(c["is_r"]) for c in chiral_atoms], dtype=torch.bool)
+        if chiral_atoms
+        else torch.empty(0, dtype=torch.bool)
+    )
 
     stereo_bond_index = _stack_idx(stereo_bonds, expected_arity=4)
-    stereo_reference_mask = torch.tensor(
-        [bool(c["is_reference"]) for c in stereo_bonds],
-        dtype=torch.bool) if stereo_bonds else torch.empty(0, dtype=torch.bool)
-    stereo_bond_orientations = torch.tensor(
-        [bool(c["is_e"]) for c in stereo_bonds],
-        dtype=torch.bool) if stereo_bonds else torch.empty(0, dtype=torch.bool)
+    stereo_reference_mask = (
+        torch.tensor([bool(c["is_reference"]) for c in stereo_bonds], dtype=torch.bool)
+        if stereo_bonds
+        else torch.empty(0, dtype=torch.bool)
+    )
+    stereo_bond_orientations = (
+        torch.tensor([bool(c["is_e"]) for c in stereo_bonds], dtype=torch.bool)
+        if stereo_bonds
+        else torch.empty(0, dtype=torch.bool)
+    )
 
     planar_bond_index = _stack_idx(planar_bonds, expected_arity=6)
     planar_ring_5_index = _stack_idx(planar_ring_5, expected_arity=5)
@@ -1069,7 +1042,8 @@ def process_residue_constraint_features(
 
 
 def process_chain_feature_constraints(
-    structure: Optional[Structure], ) -> dict[str, torch.Tensor]:
+    structure: Structure | None,
+) -> dict[str, torch.Tensor]:
     """Upstream-aligned: connected_chain/atom_index from bonds;
     symmetric_chain_index from entity_id. Mirrors
     ``process_chain_feature_constraints``
@@ -1090,10 +1064,8 @@ def process_chain_feature_constraints(
             connected_chain_index.append([bond.chain_1, bond.chain_2])
             connected_atom_index.append([bond.atom_1, bond.atom_2])
         if connected_chain_index:
-            connected_chain_index = torch.tensor(connected_chain_index,
-                                                 dtype=torch.long).T
-            connected_atom_index = torch.tensor(connected_atom_index,
-                                                dtype=torch.long).T
+            connected_chain_index = torch.tensor(connected_chain_index, dtype=torch.long).T
+            connected_atom_index = torch.tensor(connected_atom_index, dtype=torch.long).T
         else:
             connected_chain_index = torch.empty((2, 0), dtype=torch.long)
             connected_atom_index = torch.empty((2, 0), dtype=torch.long)
@@ -1108,8 +1080,7 @@ def process_chain_feature_constraints(
             if chains[i].entity_id == chains[j].entity_id:
                 symmetric_chain_index_list.append([i, j])
     if symmetric_chain_index_list:
-        symmetric_chain_index = torch.tensor(symmetric_chain_index_list,
-                                             dtype=torch.long).T
+        symmetric_chain_index = torch.tensor(symmetric_chain_index_list, dtype=torch.long).T
     else:
         symmetric_chain_index = torch.empty((2, 0), dtype=torch.long)
     return {

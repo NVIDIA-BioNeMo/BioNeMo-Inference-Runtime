@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,21 +14,23 @@
 # limitations under the License.
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 import pytest
 import torch
 from test_utils.boltz.create_and_load_weights import (
     create_pair_weighted_averaging_weights,
-    load_pair_weighted_averaging_weights_torch)
+    load_pair_weighted_averaging_weights_torch,
+)
 from test_utils.boltz.ref_layers import RefPairWeightedAveraging
 
 from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
-from tensorrt_bionemo._torch.custom_ops import \
-    pair_weighted_averaging as pwa_ops
+from tensorrt_bionemo._torch.custom_ops import pair_weighted_averaging as pwa_ops
 from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import (
-    PairWeightedAveragingCuTe, _select_pwa_config_bucket,
-    get_pair_weighted_averaging_op, select_pwa_config)
+    PairWeightedAveragingCuTe,
+    _select_pwa_config_bucket,
+    get_pair_weighted_averaging_op,
+    select_pwa_config,
+)
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, skip_if_no_cutedsl
@@ -41,7 +43,7 @@ class Scenario:
     torch_dtype: str = "float32"
     # Sequence(S)-rows per chunk via a registry-style ChunkPolicy (None -> dense path). Row-chunking
     # over S is numerically identical, so the chunked output must still match the golden ref.
-    chunk: Optional[int] = None
+    chunk: int | None = None
     n_seq: int = 32
     n_res: int = 64
 
@@ -61,17 +63,15 @@ class Scenario:
         Scenario(chunk=1),
         Scenario(chunk=3, n_seq=8),
     ],
-    ids=[
-        "float32", "bfloat16", "float16", "bfloat16_n128", "chunk1_fp32",
-        "chunk3_partial_fp32"
-    ])
+    ids=["float32", "bfloat16", "float16", "bfloat16_n128", "chunk1_fp32", "chunk3_partial_fp32"],
+)
 def test_pair_weighted_averaging(sc: Scenario):
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     ref_m = RefPairWeightedAveraging.load_weights()
     ref_m = ref_m.to(device)
@@ -80,17 +80,11 @@ def test_pair_weighted_averaging(sc: Scenario):
 
     # A low min_size makes the policy trip at the test's token count, so `chunk` scenarios exercise
     # the head-chunked accumulate path; `chunk=None` leaves the registry default (dense here).
-    chunk_policy = (ChunkPolicy(chunk_size=sc.chunk, min_size=1)
-                    if sc.chunk is not None else None)
-    pair_weighted_averaging = PairWeightedAveraging(c_m=ref_m.c_m,
-                                                    c_z=ref_m.c_z,
-                                                    c_h=ref_m.c_h,
-                                                    num_heads=ref_m.num_heads,
-                                                    dtype=dtype,
-                                                    chunk_policy=chunk_policy)
-    load_pair_weighted_averaging_weights_torch(pair_weighted_averaging,
-                                               weights_and_biases,
-                                               dtype=dtype)
+    chunk_policy = ChunkPolicy(chunk_size=sc.chunk, min_size=1) if sc.chunk is not None else None
+    pair_weighted_averaging = PairWeightedAveraging(
+        c_m=ref_m.c_m, c_z=ref_m.c_z, c_h=ref_m.c_h, num_heads=ref_m.num_heads, dtype=dtype, chunk_policy=chunk_policy
+    )
+    load_pair_weighted_averaging_weights_torch(pair_weighted_averaging, weights_and_biases, dtype=dtype)
     pair_weighted_averaging.to(device)
 
     # On a CuTeDSL-capable GPU the half-precision path (boltz-2 PWA is H=8,
@@ -98,18 +92,14 @@ def test_pair_weighted_averaging(sc: Scenario):
     # silent fall-back to eager.
     if dtype in (torch.float16, torch.bfloat16) and SM_VERSION in _CUTEDSL_SM:
         assert pair_weighted_averaging._pwa_op_eligible
-        assert isinstance(get_pair_weighted_averaging_op(dtype),
-                          PairWeightedAveragingCuTe)
+        assert isinstance(get_pair_weighted_averaging_op(dtype), PairWeightedAveragingCuTe)
 
-    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_m.c_m,
-                    dtype=torch.float32).cuda()
-    z = torch.randn(bs, sc.n_res, sc.n_res, ref_m.c_z,
-                    dtype=torch.float32).cuda()
+    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_m.c_m, dtype=torch.float32).cuda()
+    z = torch.randn(bs, sc.n_res, sc.n_res, ref_m.c_z, dtype=torch.float32).cuda()
     # 0/1 pair mask: the layer applies ``(1 - mask) * -inf`` with inf=1e9, so a
     # random *normal* mask overflows fp16 (-> +/-inf -> NaN softmax); a 0/1 mask
     # keeps the masked bias at 0 / -1e9 and is the realistic input anyway.
-    mask = torch.randint(0, 2, (bs, sc.n_res, sc.n_res),
-                         dtype=torch.float32).cuda()
+    mask = torch.randint(0, 2, (bs, sc.n_res, sc.n_res), dtype=torch.float32).cuda()
 
     with torch.inference_mode():
         ref_output_float = ref_m(m, z, mask)
@@ -129,16 +119,13 @@ def test_pair_weighted_averaging(sc: Scenario):
         diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
-        diff1_mean = torch.mean(
-            torch.abs(ref_output.float() - ref_output_float))
+        diff1_mean = torch.mean(torch.abs(ref_output.float() - ref_output_float))
 
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2
 
 
-@pytest.mark.parametrize("s_rows", [1, 2, 3, 5],
-                         ids=["s1", "s2", "s3_partial", "s5_all"])
+@pytest.mark.parametrize("s_rows", [1, 2, 3, 5], ids=["s1", "s2", "s3_partial", "s5_all"])
 def test_pair_weighted_averaging_chunk_matches_dense(s_rows: int):
     """Sequence(S)-row chunking (registry policy) matches the dense path.
 
@@ -146,15 +133,11 @@ def test_pair_weighted_averaging_chunk_matches_dense(s_rows: int):
     attention mixes only the token dims), so the concatenated result is numerically identical.
     """
     torch.manual_seed(0)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
-    pwa = PairWeightedAveraging(c_m=64,
-                                c_z=32,
-                                c_h=16,
-                                num_heads=8,
-                                dtype=torch.float32).to(device)
+    pwa = PairWeightedAveraging(c_m=64, c_z=32, c_h=16, num_heads=8, dtype=torch.float32).to(device)
     pwa.eval()
     # Constructed weights are zero-initialized (production loads them); give them real values so
     # the dense-vs-chunked comparison is meaningful rather than 0 == 0.
@@ -169,8 +152,7 @@ def test_pair_weighted_averaging_chunk_matches_dense(s_rows: int):
         # Registry default (memory-scaled min_size) does not trip at S=5 -> dense reference.
         dense = pwa(m, z, mask)
 
-        pwa.chunk_policy = ChunkPolicy(chunk_size=s_rows,
-                                       min_size=1)  # chunk over S
+        pwa.chunk_policy = ChunkPolicy(chunk_size=s_rows, min_size=1)  # chunk over S
         chunked = pwa(m, z, mask)
 
     torch.testing.assert_close(chunked, dense, atol=1e-4, rtol=1e-4)
@@ -185,36 +167,26 @@ def test_pair_weighted_averaging_chunk_matches_dense(s_rows: int):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16],
-                         ids=["bf16", "fp16"])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
 @pytest.mark.parametrize(
     "n_seq,n_res",
-    [(16, 128), (8, 100), (4, 256), (8, 130), (200, 128), (48, 33), (17, 127),
-     (31, 129)],
-    ids=[
-        "s16n128", "s8n100", "s4n256", "s8n130", "s200n128", "s48n33",
-        "s17n127", "s31n129"
-    ],
+    [(16, 128), (8, 100), (4, 256), (8, 130), (200, 128), (48, 33), (17, 127), (31, 129)],
+    ids=["s16n128", "s8n100", "s4n256", "s8n130", "s200n128", "s48n33", "s17n127", "s31n129"],
 )
 def test_pwa_cute_matches_eager(dtype, n_seq, n_res):
     skip_if_no_cutedsl()
     torch.manual_seed(0)
     c_m, c_z, c_h, num_heads = 64, 128, 32, 8
 
-    layer = PairWeightedAveraging(c_m=c_m,
-                                  c_z=c_z,
-                                  c_h=c_h,
-                                  num_heads=num_heads,
-                                  dtype=dtype).cuda()
+    layer = PairWeightedAveraging(c_m=c_m, c_z=c_z, c_h=c_h, num_heads=num_heads, dtype=dtype).cuda()
     with torch.no_grad():
         for lin in (layer.fused_proj_m_g, layer.proj_z, layer.proj_o):
-            lin.weight.normal_(0, 1.0 / lin.weight.shape[1]**0.5)
+            lin.weight.normal_(0, 1.0 / lin.weight.shape[1] ** 0.5)
 
     # Kernel-eligible (single-GPU, H==8, c_h==32, c_m==64) and the op resolves
     # to the CuTe backend on this GPU.
     assert layer._pwa_op_eligible
-    assert isinstance(get_pair_weighted_averaging_op(dtype),
-                      PairWeightedAveragingCuTe)
+    assert isinstance(get_pair_weighted_averaging_op(dtype), PairWeightedAveragingCuTe)
 
     m = torch.randn(1, n_seq, n_res, c_m, dtype=dtype, device="cuda") * 0.5
     z = torch.randn(1, n_res, n_res, c_z, dtype=dtype, device="cuda") * 0.5
@@ -228,9 +200,7 @@ def test_pwa_cute_matches_eager(dtype, n_seq, n_res):
     assert out_kernel.shape == out_eager.shape == (1, n_seq, n_res, c_m)
     diff = (out_kernel.float() - out_eager.float()).abs()
     rel_l2 = (diff.norm() / out_eager.float().norm().clamp_min(1e-6)).item()
-    assert rel_l2 < 2e-2, (
-        f"kernel vs eager rel_l2={rel_l2:.3e} (dtype={dtype}, "
-        f"S={n_seq}, N={n_res})")
+    assert rel_l2 < 2e-2, f"kernel vs eager rel_l2={rel_l2:.3e} (dtype={dtype}, S={n_seq}, N={n_res})"
 
 
 def test_pair_weighted_averaging_op_selector():
@@ -255,20 +225,12 @@ def test_pair_weighted_averaging_config_selects_n_bucket_before_s():
     """Changing S must not make a fixed N jump to another tuned N bucket."""
     # For N=1024, S=1600 is closer to the N=1024/S=2048 variant than S=1024.
     # A sqrt(N*S) selector would instead pick the N=1536/S=1024 anchor.
-    config = select_pwa_config(sm_version=80,
-                               I=1024,
-                               J=1024,
-                               S=1600,
-                               dtype_str="bf16")
+    config = select_pwa_config(sm_version=80, I=1024, J=1024, S=1600, dtype_str="bf16")
 
     assert config.KO_TILE == 32
     assert config.num_stages_w == 4
 
-    selected, variants = _select_pwa_config_bucket(sm_version=80,
-                                                   I=1024,
-                                                   J=1024,
-                                                   S=1600,
-                                                   dtype_str="bf16")
+    selected, variants = _select_pwa_config_bucket(sm_version=80, I=1024, J=1024, S=1600, dtype_str="bf16")
     assert selected.config_key() == config.config_key()
     # N=1024 has three S anchors but two unique kernel configs; duplicates do
     # not need a second compilation.
@@ -289,12 +251,7 @@ def test_pair_weighted_averaging_reuses_executable_across_s():
     executable_ids = []
 
     for S in (7, 11):
-        vg = torch.randn(B,
-                         S,
-                         N,
-                         2 * H * D,
-                         dtype=torch.bfloat16,
-                         device="cuda")
+        vg = torch.randn(B, S, N, 2 * H * D, dtype=torch.bfloat16, device="cuda")
         v, g = vg.chunk(2, dim=-1)
         out = op(w, v, g, Wo)
 
@@ -302,15 +259,10 @@ def test_pair_weighted_averaging_reuses_executable_across_s():
         o = torch.einsum("bhij,bsjhd->bhsid", w[..., :N].float(), v5.float())
         o = o.permute(0, 2, 3, 1, 4).reshape(B, S, N, H * D)
         ref = ((torch.sigmoid(g.float()) * o) @ Wo.float().t()).to(w.dtype)
-        rel_l2 = ((out.float() - ref.float()).norm() /
-                  ref.float().norm().clamp_min(1e-6)).item()
+        rel_l2 = ((out.float() - ref.float()).norm() / ref.float().norm().clamp_min(1e-6)).item()
         assert rel_l2 < 2e-2
 
-        config = select_pwa_config(sm_version=op._sm_version,
-                                   I=N,
-                                   J=N,
-                                   S=S,
-                                   dtype_str="bf16")
+        config = select_pwa_config(sm_version=op._sm_version, I=N, J=N, S=S, dtype_str="bf16")
         key = (config.config_key(), N, Jp, N)
         executable_ids.append(id(op._compiled_cache[key]))
 

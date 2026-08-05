@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable
-
 import contextlib
+from collections.abc import Callable
+
 import torch
 from torch import nn
 
@@ -43,8 +43,7 @@ def make_graph_safe_generator(device: torch.device) -> torch.Generator:
     return generator
 
 
-def commit_graph_safe_generator(generator: torch.Generator,
-                                device: torch.device) -> None:
+def commit_graph_safe_generator(generator: torch.Generator, device: torch.device) -> None:
     """Advance the default generator to match a private generator's state.
 
     Pairs with :func:`make_graph_safe_generator`: after drawing from the
@@ -81,9 +80,7 @@ def safe_generator(device: torch.device):
     commit_graph_safe_generator(generator, device)
 
 
-def recursive_calling_load_weights(module: nn.Module,
-                                   weights: dict,
-                                   filter_func: Callable = None) -> set[str]:
+def recursive_calling_load_weights(module: nn.Module, weights: dict, filter_func: Callable = None) -> set[str]:
     """
     DFS calling load_weights for the module.
     Args:
@@ -95,16 +92,16 @@ def recursive_calling_load_weights(module: nn.Module,
     """
     loaded_weight = set()
 
-    for name, module in module.named_modules():
-        if filter_func is not None and filter_func(name, module):
+    for name, submodule in module.named_modules():
+        if filter_func is not None and filter_func(name, submodule):
             continue
-        if len(module._parameters) > 0:
+        if len(submodule._parameters) > 0:
             try:
-                if hasattr(module, 'load_weights'):
-                    module.load_weights(weights=weights[name])
+                if hasattr(submodule, "load_weights"):
+                    submodule.load_weights(weights=weights[name])
                 else:
                     module_weights = weights[name][0]
-                    for n, p in module._parameters.items():
+                    for n, p in submodule._parameters.items():
                         if p is not None:
                             weight = module_weights[n][:]
                             if p.dtype != weight.dtype:
@@ -138,9 +135,8 @@ def _deterministic_algorithms():
     """
     prev_enabled = torch.are_deterministic_algorithms_enabled()
     prev_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
-    torch.use_deterministic_algorithms(True) # sets warn_only to False
+    torch.use_deterministic_algorithms(True)  # sets warn_only to False
     try:
         yield
     finally:
-        torch.use_deterministic_algorithms(prev_enabled,
-                                           warn_only=prev_warn_only)
+        torch.use_deterministic_algorithms(prev_enabled, warn_only=prev_warn_only)

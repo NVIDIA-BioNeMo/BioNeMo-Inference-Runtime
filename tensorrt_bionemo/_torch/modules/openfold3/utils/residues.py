@@ -116,10 +116,7 @@ STANDARD_PROTEIN_RESIDUES_1 = [
     "V",
     "X",
 ]
-STANDARD_PROTEIN_RESIDUES_ORDER = {
-    res: i
-    for i, res in enumerate(STANDARD_PROTEIN_RESIDUES_1)
-}
+STANDARD_PROTEIN_RESIDUES_ORDER = {res: i for i, res in enumerate(STANDARD_PROTEIN_RESIDUES_1)}
 STANDARD_RESIDUES_1 = STANDARD_PROTEIN_RESIDUES_1 + STANDARD_NUCLEIC_ACID_RESIDUES
 STANDARD_RESIDUES_WITH_GAP_1 = STANDARD_RESIDUES_1 + ["-"]
 
@@ -239,51 +236,49 @@ def get_mol_residue_index_mappings() -> tuple[dict, dict, dict, dict]:
     _dna_a_len = len(STANDARD_DNA_RESIDUES)
     _gap_pos = len(STANDARD_RESIDUES_WITH_GAP_1) - 1
     molecule_type_to_residues_pos = {
-        MoleculeType.PROTEIN:
-        np.concatenate([
-            np.arange(0, _prot_a_len),
-            np.array([_gap_pos]),
-        ]),
-        MoleculeType.RNA:
-        np.concatenate([
-            np.arange(
-                _prot_a_len,
-                _prot_a_len + _rna_a_len,
-            ),
-            np.array([_gap_pos]),
-        ]),
-        MoleculeType.DNA:
-        np.concatenate([
-            np.arange(
-                _prot_a_len + _rna_a_len,
-                _prot_a_len + _rna_a_len + _dna_a_len,
-            ),
-            np.array([_gap_pos]),
-        ]),
-        MoleculeType.LIGAND:
-        np.concatenate([
-            np.where(np.array(STANDARD_PROTEIN_RESIDUES_1) == "X")[0],
-            np.array([_gap_pos]),
-        ]),
+        MoleculeType.PROTEIN: np.concatenate(
+            [
+                np.arange(0, _prot_a_len),
+                np.array([_gap_pos]),
+            ]
+        ),
+        MoleculeType.RNA: np.concatenate(
+            [
+                np.arange(
+                    _prot_a_len,
+                    _prot_a_len + _rna_a_len,
+                ),
+                np.array([_gap_pos]),
+            ]
+        ),
+        MoleculeType.DNA: np.concatenate(
+            [
+                np.arange(
+                    _prot_a_len + _rna_a_len,
+                    _prot_a_len + _rna_a_len + _dna_a_len,
+                ),
+                np.array([_gap_pos]),
+            ]
+        ),
+        MoleculeType.LIGAND: np.concatenate(
+            [
+                np.where(np.array(STANDARD_PROTEIN_RESIDUES_1) == "X")[0],
+                np.array([_gap_pos]),
+            ]
+        ),
     }
     molecule_type_to_residues_pos_map = {}
     for moltype in MoleculeType:
         residue_pos_map = {}
         for residue, residue_idx in zip(
-                MOLECULE_TYPE_TO_RESIDUES_1[moltype],
-                molecule_type_to_residues_pos[moltype],
-                strict=False,
+            MOLECULE_TYPE_TO_RESIDUES_1[moltype],
+            molecule_type_to_residues_pos[moltype],
+            strict=False,
         ):
             residue_pos_map[residue] = residue_idx
         molecule_type_to_residues_pos_map[moltype] = residue_pos_map
-    molecule_type_to_argsort_residues_3 = {
-        k: np.argsort(v)
-        for k, v in MOLECULE_TYPE_TO_RESIDUES_3.items()
-    }
-    molecule_type_to_argsort_residues_1 = {
-        k: np.argsort(v)
-        for k, v in MOLECULE_TYPE_TO_RESIDUES_1.items()
-    }
+    molecule_type_to_argsort_residues_3 = {k: np.argsort(v) for k, v in MOLECULE_TYPE_TO_RESIDUES_3.items()}
+    molecule_type_to_argsort_residues_1 = {k: np.argsort(v) for k, v in MOLECULE_TYPE_TO_RESIDUES_1.items()}
 
     return (
         molecule_type_to_residues_pos,
@@ -331,8 +326,7 @@ def get_with_unknown_3_to_idx(key: str) -> int:
 # Note: the str/int MSA array pair below is passed as raw numpy arrays rather
 # than a dedicated MSA type, so callers must keep msa_array and molecule_type
 # consistent themselves.
-def map_str_array_to_idx_array(msa_array: np.ndarray[str],
-                               molecule_type: MoleculeType) -> np.ndarray[int]:
+def map_str_array_to_idx_array(msa_array: np.ndarray[str], molecule_type: MoleculeType) -> np.ndarray[int]:
     """Creates an integer MSA array from a 1-character string MSA array.
 
     The mapping is done onto the global molecule alphabet of all molecule types,
@@ -358,15 +352,14 @@ def map_str_array_to_idx_array(msa_array: np.ndarray[str],
     )
     # For each residue in the molecule type's alphabet, replace the corresponding
     # positions with their index
-    for residue, idx in MOLECULE_TYPE_TO_RESIDUES_POS_MAP[molecule_type].items(
-    ):
+    for residue, idx in MOLECULE_TYPE_TO_RESIDUES_POS_MAP[molecule_type].items():
         # Replace all but the gap positions
         if residue != "-":
             msa_idx[msa_array == residue] = idx
     # Replace positions not in the molecule type's alphabet with the unknown index
-    msa_idx[~np.isin(msa_array, MOLECULE_TYPE_TO_RESIDUES_1[molecule_type]
-                     )] = (MOLECULE_TYPE_TO_RESIDUES_POS_MAP[molecule_type][
-                         MOLECULE_TYPE_TO_UNKNOWN_RESIDUES_1[molecule_type]])
+    msa_idx[~np.isin(msa_array, MOLECULE_TYPE_TO_RESIDUES_1[molecule_type])] = MOLECULE_TYPE_TO_RESIDUES_POS_MAP[
+        molecule_type
+    ][MOLECULE_TYPE_TO_UNKNOWN_RESIDUES_1[molecule_type]]
 
     return msa_idx
 

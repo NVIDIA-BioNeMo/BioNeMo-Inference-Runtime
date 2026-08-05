@@ -17,23 +17,20 @@
 
 import math
 from functools import partial
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
-                                                   WeightsLoadingConfig)
-from tensorrt_bionemo._torch.modules.openfold2.template import \
-    TemplatePairStack
-from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import \
-    AtomAttentionEncoder
-from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import \
-    relpos_complex
-from tensorrt_bionemo._torch.utils import (commit_graph_safe_generator,
-                                           make_graph_safe_generator,
-                                           recursive_calling_load_weights)
+from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
+from tensorrt_bionemo._torch.modules.openfold2.template import TemplatePairStack
+from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import AtomAttentionEncoder
+from tensorrt_bionemo._torch.modules.openfold3.utils.relpos import relpos_complex
+from tensorrt_bionemo._torch.utils import (
+    commit_graph_safe_generator,
+    make_graph_safe_generator,
+    recursive_calling_load_weights,
+)
 from tensorrt_bionemo.configs.base import BaseConfig
 
 
@@ -67,51 +64,43 @@ class InputEmbedderAllAtom(nn.Module):
             eps=config.norm_epsilon,
             add_noisy_pos=config.add_noisy_pos,
             dtype=config.torch_dtype,
-            skip_create_weights=config.skip_create_weights)
+            skip_create_weights=config.skip_create_weights,
+        )
 
-        self.linear_s = Linear(config.c_s_input,
-                               config.c_s,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=self.skip_create_weights)
+        self.linear_s = Linear(
+            config.c_s_input, config.c_s, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
-        self.linear_z_ij = Linear(config.c_s_input,
-                                  2 * config.c_z,
-                                  bias=False,
-                                  dtype=self.dtype,
-                                  skip_create_weights=self.skip_create_weights,
-                                  weights_loading_config=WeightsLoadingConfig(
-                                      weight_mode=WeightMode.FUSED_KV_LINEAR))
+        self.linear_z_ij = Linear(
+            config.c_s_input,
+            2 * config.c_z,
+            bias=False,
+            dtype=self.dtype,
+            skip_create_weights=self.skip_create_weights,
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
+        )
 
         num_rel_pos_bins = 2 * self.max_relative_idx + 2
         num_rel_token_bins = 2 * self.max_relative_idx + 2
         num_rel_chain_bins = 2 * self.max_relative_chain + 2
         num_same_entity_features = 1
-        num_relpos_dims = (num_rel_pos_bins + num_rel_token_bins +
-                           num_rel_chain_bins + num_same_entity_features)
+        num_relpos_dims = num_rel_pos_bins + num_rel_token_bins + num_rel_chain_bins + num_same_entity_features
 
         self.linear_relpos = Linear(
-            num_relpos_dims,
-            config.c_z,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            num_relpos_dims, config.c_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
         # Expecting binary feature "token_bonds" of shape [*, N_token, N_token, 1]
         self.linear_token_bonds = Linear(
-            1,
-            config.c_z,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            1, config.c_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -130,12 +119,10 @@ class InputEmbedderAllAtom(nn.Module):
             z:
                 [*, N_token, N_token, C_z] Pair representation
         """
-        #TODO: Check if we need to cast the dtype to float32 here (if accuracy is not affected during inference)
+        # TODO: Check if we need to cast the dtype to float32 here (if accuracy is not affected during inference)
 
         with torch.amp.autocast(device_type="cuda", dtype=torch.float32):
-            a, _, _, _ = self.atom_attn_enc(batch=batch,
-                                            atom_mask=batch["atom_mask"],
-                                            attn_metadata=attn_metadata)
+            a, _, _, _ = self.atom_attn_enc(batch=batch, atom_mask=batch["atom_mask"], attn_metadata=attn_metadata)
 
         a = a.to(dtype=self.linear_s.weight.dtype)
 
@@ -155,8 +142,7 @@ class InputEmbedderAllAtom(nn.Module):
 
         s_input_emb_ij = self.linear_z_ij(s_input)
         s_input_emb_i, s_input_emb_j = s_input_emb_ij.chunk(2, dim=-1)
-        token_bonds_emb = self.linear_token_bonds(
-            batch["token_bonds"].unsqueeze(-1).to(dtype=s.dtype))
+        token_bonds_emb = self.linear_token_bonds(batch["token_bonds"].unsqueeze(-1).to(dtype=s.dtype))
 
         # [*, N_token, N_token, C_z]
         z = s_input_emb_i[..., None, :] + s_input_emb_j[..., None, :, :]
@@ -214,18 +200,13 @@ class MSAModuleEmbedder(nn.Module):
         self.skip_create_weights = config.skip_create_weights
         self.config = config
 
-        self.linear_m = Linear(config.c_m_feats,
-                               config.c_m,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=self.skip_create_weights)
+        self.linear_m = Linear(
+            config.c_m_feats, config.c_m, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
         self.linear_s_input = Linear(
-            config.c_s_input,
-            config.c_m,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=self.skip_create_weights)
+            config.c_s_input, config.c_m, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
     @staticmethod
     def _subsample_main_msa(
@@ -233,7 +214,7 @@ class MSAModuleEmbedder(nn.Module):
         msa_mask: torch.Tensor,
         num_paired_seqs: torch.Tensor,
         asym_id: torch.Tensor,
-        generator: Optional[torch.Generator] = None,
+        generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Subsample main MSA (unpaired MSA) features for a single sample in the batch.
         The subsampling is independent per each chain.
@@ -274,30 +255,21 @@ class MSAModuleEmbedder(nn.Module):
 
         split_sections = [num_paired_seqs, num_main_msa_seqs]
 
-        paired_msa_feat, main_msa_feat = torch.split(msa_feat,
-                                                     split_sections,
-                                                     dim=feat_seq_dim)
-        paired_msa_mask, main_msa_mask = torch.split(msa_mask,
-                                                     split_sections,
-                                                     dim=mask_seq_dim)
+        paired_msa_feat, main_msa_feat = torch.split(msa_feat, split_sections, dim=feat_seq_dim)
+        paired_msa_mask, main_msa_mask = torch.split(msa_mask, split_sections, dim=mask_seq_dim)
 
         # Get the length of each chain using consecutive unique asym_id
         _, chain_splits = torch.unique_consecutive(asym_id, return_counts=True)
 
         # Split the tensor obtaining separate tensors for each chain
-        per_chain_msa_feat = torch.split(main_msa_feat,
-                                         chain_splits.tolist(),
-                                         dim=feat_seq_dim + 1)
-        per_chain_msa_mask = torch.split(main_msa_mask,
-                                         chain_splits.tolist(),
-                                         dim=mask_seq_dim + 1)
+        per_chain_msa_feat = torch.split(main_msa_feat, chain_splits.tolist(), dim=feat_seq_dim + 1)
+        per_chain_msa_mask = torch.split(main_msa_mask, chain_splits.tolist(), dim=mask_seq_dim + 1)
 
         # Get the number of main msa seqs per chain
         # summing the ones in the seq dimension in the mask
         # Use float32 as bf16 precision is not enough to distinguish all 16384 integers
         per_chain_main_msa_dim = [
-            int(torch.sum(mask, dim=-2, dtype=torch.float32)[..., 0])
-            for mask in per_chain_msa_mask
+            int(torch.sum(mask, dim=-2, dtype=torch.float32)[..., 0]) for mask in per_chain_msa_mask
         ]
 
         # Max number of sequences across chains
@@ -307,7 +279,7 @@ class MSAModuleEmbedder(nn.Module):
         seq_subsample_dim = torch.randint(
             low=1,
             high=int(max_msa_seqs_across_chains + 1),
-            size=(1, ),
+            size=(1,),
             device=msa_feat.device,
             generator=generator,
         )
@@ -315,37 +287,30 @@ class MSAModuleEmbedder(nn.Module):
         # Get a random permutation of the sequence indexes for each chain
         # Pad it with padding row indexes until max_msa_seqs_across_chains
         chain_index_permutations = [
-            torch.cat([
-                torch.randperm(num_seqs,
-                               device=msa_feat.device,
-                               generator=generator),
-                torch.arange(num_seqs,
-                             max_msa_seqs_across_chains,
-                             device=msa_feat.device),
-            ])[:seq_subsample_dim] for num_seqs in per_chain_main_msa_dim
+            torch.cat(
+                [
+                    torch.randperm(num_seqs, device=msa_feat.device, generator=generator),
+                    torch.arange(num_seqs, max_msa_seqs_across_chains, device=msa_feat.device),
+                ]
+            )[:seq_subsample_dim]
+            for num_seqs in per_chain_main_msa_dim
         ]
 
         # Apply the permutation and keep seq_subsample_dim sequences
         sampled_chain_feats = [
-            feat[..., perm, :, :] for feat, perm in zip(
-                per_chain_msa_feat, chain_index_permutations, strict=False)
+            feat[..., perm, :, :] for feat, perm in zip(per_chain_msa_feat, chain_index_permutations, strict=False)
         ]
         sampled_chain_masks = [
-            mask[..., perm, :] for mask, perm in zip(
-                per_chain_msa_mask, chain_index_permutations, strict=False)
+            mask[..., perm, :] for mask, perm in zip(per_chain_msa_mask, chain_index_permutations, strict=False)
         ]
 
         # Concatenate the chains back together
-        sampled_main_msa_feat = torch.cat(sampled_chain_feats,
-                                          dim=feat_seq_dim + 1)
-        sampled_main_msa_mask = torch.cat(sampled_chain_masks,
-                                          dim=mask_seq_dim + 1)
+        sampled_main_msa_feat = torch.cat(sampled_chain_feats, dim=feat_seq_dim + 1)
+        sampled_main_msa_mask = torch.cat(sampled_chain_masks, dim=mask_seq_dim + 1)
 
         # Stack with the uniprot features and mask
-        sampled_msa_feat = torch.cat([paired_msa_feat, sampled_main_msa_feat],
-                                     dim=feat_seq_dim)
-        sampled_msa_mask = torch.cat([paired_msa_mask, sampled_main_msa_mask],
-                                     dim=mask_seq_dim)
+        sampled_msa_feat = torch.cat([paired_msa_feat, sampled_main_msa_feat], dim=feat_seq_dim)
+        sampled_msa_mask = torch.cat([paired_msa_mask, sampled_main_msa_mask], dim=mask_seq_dim)
 
         return sampled_msa_feat, sampled_msa_mask
 
@@ -354,7 +319,7 @@ class MSAModuleEmbedder(nn.Module):
         msa_feat: torch.Tensor,
         msa_mask: torch.Tensor,
         no_subsampled_all_msa: int,
-        generator: Optional[torch.Generator] = None
+        generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Subsample all MSA sequences (paired + main) to a fixed number of sequences,
@@ -387,8 +352,7 @@ class MSAModuleEmbedder(nn.Module):
             no_subsampled_all_msa = no_subsampled_all_msa.item()
 
         # Valid msa
-        valid_msa = (msa_mask.sum(dim=mask_seq_dim + 1)
-                     > 0).squeeze()  # [N_msa]
+        valid_msa = (msa_mask.sum(dim=mask_seq_dim + 1) > 0).squeeze()  # [N_msa]
 
         if valid_msa.ndim == 0:
             valid_msa = valid_msa.unsqueeze(0)
@@ -404,19 +368,14 @@ class MSAModuleEmbedder(nn.Module):
         device = msa_feat.device
         # Pick msa from the valid ones at random
         if valid_idx.numel() >= no_subsampled_all_msa:
-            permuted_idx = valid_idx[torch.randperm(valid_idx.numel(),
-                                                    device=device,
-                                                    generator=generator)]
+            permuted_idx = valid_idx[torch.randperm(valid_idx.numel(), device=device, generator=generator)]
             selected = permuted_idx[:no_subsampled_all_msa]
         else:
             # Take all valid, then fill with random invalid
             take_invalid = no_subsampled_all_msa - valid_idx.numel()
             if invalid_idx.numel() > 0:
-                permuted_idx = invalid_idx[torch.randperm(invalid_idx.numel(),
-                                                          device=device,
-                                                          generator=generator)]
-                selected = torch.cat([valid_idx, permuted_idx[:take_invalid]],
-                                     dim=0)
+                permuted_idx = invalid_idx[torch.randperm(invalid_idx.numel(), device=device, generator=generator)]
+                selected = torch.cat([valid_idx, permuted_idx[:take_invalid]], dim=0)
             else:
                 selected = valid_idx
 
@@ -424,8 +383,7 @@ class MSAModuleEmbedder(nn.Module):
         mask_sub = msa_mask.index_select(mask_seq_dim, selected)
         return feat_sub, mask_sub
 
-    def _apply_subsample_fn_batch(
-            self, fn: callable, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
+    def _apply_subsample_fn_batch(self, fn: callable, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Apply a MSA subsampling function `fn` independently across a batch.
         Contains extra logic to unbind the batch dim prior to sampling
@@ -447,10 +405,7 @@ class MSAModuleEmbedder(nn.Module):
         """
 
         batch_size = next(iter(kwargs.values())).shape[0]
-        per_sample_kwargs_list = [{
-            k: v[i]
-            for k, v in kwargs.items()
-        } for i in range(batch_size)]
+        per_sample_kwargs_list = [{k: v[i] for k, v in kwargs.items()} for i in range(batch_size)]
 
         per_sample_subsampled_msa = []
         per_sample_subsampled_msa_mask = []
@@ -461,8 +416,7 @@ class MSAModuleEmbedder(nn.Module):
             per_sample_subsampled_msa_mask.append(subsampled_mask)
 
         # Number of sequences to pad to for all the batch
-        max_msa_seqs_batch = max(
-            [m.shape[-3] for m in per_sample_subsampled_msa])
+        max_msa_seqs_batch = max([m.shape[-3] for m in per_sample_subsampled_msa])
 
         def pad_sequences_dim(m, max_seqs, seq_dim):
             """Pad the msa to max_seqs along seq_dim to stack them in a batch"""
@@ -477,17 +431,11 @@ class MSAModuleEmbedder(nn.Module):
 
         # Pad the sequences to same seq length and stack them in a batch
         sampled_msa = torch.stack(
-            [
-                pad_sequences_dim(m, max_msa_seqs_batch, seq_dim=-3)
-                for m in per_sample_subsampled_msa
-            ],
+            [pad_sequences_dim(m, max_msa_seqs_batch, seq_dim=-3) for m in per_sample_subsampled_msa],
             dim=0,
         )
         sampled_msa_mask = torch.stack(
-            [
-                pad_sequences_dim(m, max_msa_seqs_batch, seq_dim=-2)
-                for m in per_sample_subsampled_msa_mask
-            ],
+            [pad_sequences_dim(m, max_msa_seqs_batch, seq_dim=-2) for m in per_sample_subsampled_msa_mask],
             dim=0,
         )
 
@@ -498,11 +446,9 @@ class MSAModuleEmbedder(nn.Module):
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
-    def forward(self, batch: dict,
-                s_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, batch: dict, s_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             batch:
@@ -542,8 +488,7 @@ class MSAModuleEmbedder(nn.Module):
         # graph capture"). See make_graph_safe_generator; the default generator
         # is advanced to match afterward so numerics are unchanged.
         subsample = self.subsample_main_msa or self.subsample_all_msa
-        generator = (make_graph_safe_generator(msa_feat.device)
-                     if subsample else None)
+        generator = make_graph_safe_generator(msa_feat.device) if subsample else None
 
         if self.subsample_main_msa:
             if math.prod(batch_dims) > 1:
@@ -566,7 +511,7 @@ class MSAModuleEmbedder(nn.Module):
             no_subsampled_all_msa = torch.randint(
                 low=self.min_subsampled_all_msa,
                 high=int(self.max_subsampled_all_msa + 1),
-                size=(1, ),
+                size=(1,),
                 device=msa_feat.device,
                 generator=generator,
             ).item()
@@ -577,7 +522,7 @@ class MSAModuleEmbedder(nn.Module):
                     msa_feat=msa_feat,
                     msa_mask=msa_mask,
                     no_subsampled_all_msa=torch.full(
-                        (msa_feat.shape[0], ),
+                        (msa_feat.shape[0],),
                         no_subsampled_all_msa,
                         device=msa_feat.device,
                     ),
@@ -608,14 +553,16 @@ class TemplatePairEmbedderAllAtom(nn.Module):
     The resulting embedded template will go into the TemplatePairStack.
     """
 
-    def __init__(self,
-                 c_in: int,
-                 c_dgram: int,
-                 c_aatype: int,
-                 c_out: int,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False,
-                 eps: float = 1e-5):
+    def __init__(
+        self,
+        c_in: int,
+        c_dgram: int,
+        c_aatype: int,
+        c_out: int,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+        eps: float = 1e-5,
+    ):
         """
         Args:
             c_in:
@@ -639,7 +586,7 @@ class TemplatePairEmbedderAllAtom(nn.Module):
         self.eps = eps
         self.dtype = dtype
 
-        #This Feature contains the distogram, pseudo_beta_mask, aatype_1, aatype_2, x, y, z, and backbone mask
+        # This Feature contains the distogram, pseudo_beta_mask, aatype_1, aatype_2, x, y, z, and backbone mask
 
         self.template_pair_embedder_merge_feats = Linear(
             self.c_dgram + self.c_aatype * 2 + 5,
@@ -647,37 +594,30 @@ class TemplatePairEmbedderAllAtom(nn.Module):
             bias=False,
             dtype=self.dtype,
             skip_create_weights=self.skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_ALL_LINEAR_LAST_DIM))
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_ALL_LINEAR_LAST_DIM),
+        )
 
-        self.layer_norm_z = nn.LayerNorm(self.c_in,
-                                         eps=self.eps,
-                                         dtype=self.dtype)
-        self.linear_z = Linear(self.c_in,
-                               self.c_out,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=self.skip_create_weights)
+        self.layer_norm_z = nn.LayerNorm(self.c_in, eps=self.eps, dtype=self.dtype)
+        self.linear_z = Linear(
+            self.c_in, self.c_out, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
     def _embed_feats(self, batch: dict):
         dtype = batch["template_unit_vector"].dtype
 
         # [*, N_token, N_token]
-        multichain_pair_mask = (
-            batch["asym_id"][..., None] == batch["asym_id"][..., None, :])
+        multichain_pair_mask = batch["asym_id"][..., None] == batch["asym_id"][..., None, :]
         multichain_pair_mask = multichain_pair_mask[..., None, :, :, None]
 
         # [*, N_templ, N_token, N_token]
         pseudo_beta_pair_mask = (
-            batch["template_pseudo_beta_mask"][..., None] *
-            batch["template_pseudo_beta_mask"][..., None, :]
+            batch["template_pseudo_beta_mask"][..., None] * batch["template_pseudo_beta_mask"][..., None, :]
         )[..., None] * multichain_pair_mask
 
         template_distogram = batch["template_distogram"]
 
         backbone_frame_pair_mask = (
-            batch["template_backbone_frame_mask"][..., None] *
-            batch["template_backbone_frame_mask"][..., None, :]
+            batch["template_backbone_frame_mask"][..., None] * batch["template_backbone_frame_mask"][..., None, :]
         )[..., None] * multichain_pair_mask
 
         template_unit_vector = batch["template_unit_vector"]
@@ -686,18 +626,22 @@ class TemplatePairEmbedderAllAtom(nn.Module):
         # [*, N_templ, N_token, N_token, 32]
         template_restype = batch["template_restype"]
         n_token = batch["template_restype"].shape[-2]
-        template_restype_ti = template_restype[..., None, :].expand(
-            *template_restype.shape[:-2], -1, n_token, -1)
-        template_restype_tj = template_restype[..., None, :, :].expand(
-            *template_restype.shape[:-2], n_token, -1, -1)
+        template_restype_ti = template_restype[..., None, :].expand(*template_restype.shape[:-2], -1, n_token, -1)
+        template_restype_tj = template_restype[..., None, :, :].expand(*template_restype.shape[:-2], n_token, -1, -1)
 
-        a = torch.cat([
-            template_distogram, pseudo_beta_pair_mask,
-            template_restype_ti.to(dtype=dtype),
-            template_restype_tj.to(dtype=dtype), x[..., None], y[..., None],
-            z[..., None], backbone_frame_pair_mask
-        ],
-                      dim=-1)
+        a = torch.cat(
+            [
+                template_distogram,
+                pseudo_beta_pair_mask,
+                template_restype_ti.to(dtype=dtype),
+                template_restype_tj.to(dtype=dtype),
+                x[..., None],
+                y[..., None],
+                z[..., None],
+                backbone_frame_pair_mask,
+            ],
+            dim=-1,
+        )
         a = self.template_pair_embedder_merge_feats(a)
 
         return a
@@ -751,10 +695,10 @@ class TemplateEmbedderAllAtom(nn.Module):
         tri_mul_keys = ["p_in", "g_in", "p_out", "g_out"]
         tri_attn_keys = ["q", "k", "v", "g", "z", "o"]
 
-        tri_mul_out_bias = {k: False for k in tri_mul_keys}
-        tri_mul_in_bias = {k: False for k in tri_mul_keys}
-        tri_attn_start_bias = {k: False for k in tri_attn_keys}
-        tri_attn_end_bias = {k: False for k in tri_attn_keys}
+        tri_mul_out_bias = dict.fromkeys(tri_mul_keys, False)
+        tri_mul_in_bias = dict.fromkeys(tri_mul_keys, False)
+        tri_attn_start_bias = dict.fromkeys(tri_attn_keys, False)
+        tri_attn_end_bias = dict.fromkeys(tri_attn_keys, False)
 
         self.template_pair_stack = TemplatePairStack(
             c_t=config.template_pair_stack.c_t,
@@ -764,8 +708,7 @@ class TemplateEmbedderAllAtom(nn.Module):
             no_heads=config.template_pair_stack.no_heads,
             pair_transition_n=config.template_pair_stack.pair_transition_n,
             tri_mul_first=config.template_pair_stack.tri_mul_first,
-            trimul_high_precision=config.template_pair_stack.
-            trimul_high_precision,
+            trimul_high_precision=config.template_pair_stack.trimul_high_precision,
             triangle_attn_backend=config.triangle_attention_backend,
             transition_type=config.template_pair_stack.transition_type,
             tri_mul_out_bias=tri_mul_out_bias,
@@ -778,22 +721,22 @@ class TemplateEmbedderAllAtom(nn.Module):
             eps=self.eps,
         )
 
-        self.linear_t = Linear(config.template_pair_stack.c_t,
-                               config.c_z,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=self.skip_create_weights)
+        self.linear_t = Linear(
+            config.template_pair_stack.c_t,
+            config.c_z,
+            bias=False,
+            dtype=self.dtype,
+            skip_create_weights=self.skip_create_weights,
+        )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
-    def forward(self, batch: dict, z: torch.Tensor,
-                pair_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, batch: dict, z: torch.Tensor, pair_mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
             batch:
@@ -822,7 +765,7 @@ class TemplateEmbedderAllAtom(nn.Module):
         # the embedder output is wider (e.g. fp32), then cast back afterwards.
         embed_dtype = template_embeds.dtype
         stack_block = self.template_pair_stack.blocks[0]
-        stack_dtype = getattr(stack_block, 'dtype', embed_dtype)
+        stack_dtype = getattr(stack_block, "dtype", embed_dtype)
         if embed_dtype != stack_dtype:
             template_embeds = template_embeds.to(dtype=stack_dtype)
             pair_mask = pair_mask.to(dtype=stack_dtype)

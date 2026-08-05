@@ -19,7 +19,7 @@ Atom coordinates are remapped from OF3's variable per-token layout into
 the standard 37-atom-type scheme so downstream writers work correctly.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -31,14 +31,11 @@ from tensorrt_bionemo.pipeline.base import PostProcessorBase
 
 NUM_ATOM_TYPES = len(AtomTypes.all_types())  # 37
 
-_ATOM_NAME_TO_IDX: dict[str, int] = {
-    at.name: i for i, at in enumerate(AtomTypes.all_types())
-}
+_ATOM_NAME_TO_IDX: dict[str, int] = {at.name: i for i, at in enumerate(AtomTypes.all_types())}
 
 
 class PostProcessorConfig(BaseModel):
     """Configuration for the OpenFold3 postprocessor."""
-    pass
 
 
 class PostProcessor(PostProcessorBase):
@@ -52,7 +49,7 @@ class PostProcessor(PostProcessorBase):
     4. Populates standard FoldingOutput fields.
     """
 
-    def __init__(self, config: Optional[BaseModel] = None) -> None:
+    def __init__(self, config: BaseModel | None = None) -> None:
         super().__init__(config)
         if self.config is None:
             self.config = PostProcessorConfig()
@@ -83,8 +80,7 @@ class PostProcessor(PostProcessorBase):
             best_pos = raw_pos.numpy()
 
         # --- Atom-to-token mapping ---
-        atom_to_token = _cpu(
-            batch["atom_to_token_index"]).squeeze(0).numpy()  # (N_atoms,)
+        atom_to_token = _cpu(batch["atom_to_token_index"]).squeeze(0).numpy()  # (N_atoms,)
 
         # --- Decode atom names ---
         flat_atom_names = _decode_flat_atom_names(batch, atom_mask_bool)
@@ -97,10 +93,8 @@ class PostProcessor(PostProcessorBase):
         # writing each atom to its own (token, atom-name-slot) does not
         # collide with neighbouring tokens: there's no shared vocabulary
         # problem here because each ligand atom owns its own row.
-        atom_positions = np.zeros(
-            (n_tokens, NUM_ATOM_TYPES, 3), dtype=np.float32)
-        atom_mask_out = np.zeros(
-            (n_tokens, NUM_ATOM_TYPES), dtype=np.float32)
+        atom_positions = np.zeros((n_tokens, NUM_ATOM_TYPES, 3), dtype=np.float32)
+        atom_mask_out = np.zeros((n_tokens, NUM_ATOM_TYPES), dtype=np.float32)
 
         for ai in np.where(atom_mask_bool)[0]:
             t = atom_to_token[ai]
@@ -114,40 +108,32 @@ class PostProcessor(PostProcessorBase):
             atom_mask_out[t, slot] = 1.0
 
         # --- Residue metadata ---
-        restype_onehot = _cpu(
-            batch["restype"]).squeeze(0).numpy()  # (N_tokens, 32)
-        residue_types = restype_onehot[:n_tokens].argmax(axis=-1).astype(
-            np.int64)
-        residue_indices = _cpu(
-            batch["residue_index"]).squeeze(0).numpy()[:n_tokens].astype(
-            np.int64)
+        restype_onehot = _cpu(batch["restype"]).squeeze(0).numpy()  # (N_tokens, 32)
+        residue_types = restype_onehot[:n_tokens].argmax(axis=-1).astype(np.int64)
+        residue_indices = _cpu(batch["residue_index"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
         # OF3 asym_id is 1-indexed per the upstream contract (see
         # ``_renumber_chain_ids`` in feature_context.py → chains numbered
         # 1..N alphabetically). The FoldingOutput / CIF-writer chain_indices
         # contract expects 0-indexed chain IDs (chain_tags[0] == 'A').
         # Subtract 1 to convert so chain A writes as 'A' rather than 'B' in
         # the produced CIF.
-        chain_indices = _cpu(
-            batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
+        chain_indices = _cpu(batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
         chain_indices = chain_indices - 1
 
         # --- Confidence scores from logits ---
-        plddt = _compute_plddt(output, best_idx, n_tokens, atom_to_token,
-                                atom_mask_bool)
+        plddt = _compute_plddt(output, best_idx, n_tokens, atom_to_token, atom_mask_bool)
         ptm = _compute_ptm(output, best_idx, n_tokens)
         iptm = _compute_iptm(output, best_idx, n_tokens, chain_indices)
         pae = _compute_pae(output, best_idx, n_tokens)
         max_pae = float(np.max(pae)) if pae is not None else None
 
-        b_factors = np.repeat(
-            plddt[:, None], NUM_ATOM_TYPES, axis=-1) * atom_mask_out
+        b_factors = np.repeat(plddt[:, None], NUM_ATOM_TYPES, axis=-1) * atom_mask_out
 
         # Per-residue identity for the comprehensive CIF writer: 3-letter CCD
         # code per token and the canonical mol-type id. Surfaces ligand
         # ("SAH"/"TYR"/etc.) and nucleotide ("DA"/"A"/...) on HETATM rows
         # rather than the protein-letter heuristic.
-        struct = batch.get("_row", batch).get("structure") if isinstance(
-            batch, dict) else None
+        struct = batch.get("_row", batch).get("structure") if isinstance(batch, dict) else None
         residue_names: list[str] | None = None
         mol_types_out: np.ndarray | None = None
         if struct is not None:
@@ -205,9 +191,9 @@ def _select_best_sample(output: dict) -> int:
     return 0
 
 
-def _compute_plddt(output: dict, best_idx: int, n_tokens: int,
-                    atom_to_token: np.ndarray,
-                    atom_mask_bool: np.ndarray) -> np.ndarray:
+def _compute_plddt(
+    output: dict, best_idx: int, n_tokens: int, atom_to_token: np.ndarray, atom_mask_bool: np.ndarray
+) -> np.ndarray:
     """Compute per-token pLDDT from per-atom pLDDT logits."""
     logits = output.get("plddt_logits")
     if logits is None:
@@ -248,8 +234,7 @@ def _compute_ptm(output: dict, best_idx: int, n_tokens: int) -> float:
     return float(_tm_score_from_pae_logits(logits, n_tokens))
 
 
-def _compute_iptm(output: dict, best_idx: int, n_tokens: int,
-                   chain_indices: np.ndarray) -> float:
+def _compute_iptm(output: dict, best_idx: int, n_tokens: int, chain_indices: np.ndarray) -> float:
     """Compute interface pTM from PAE logits (inter-chain pairs only)."""
     logits = output.get("pae_logits")
     if logits is None:
@@ -296,8 +281,7 @@ def _tm_score_from_pae_logits(
     return tm_per_pair.mean()
 
 
-def _compute_pae(output: dict, best_idx: int,
-                  n_tokens: int) -> Optional[np.ndarray]:
+def _compute_pae(output: dict, best_idx: int, n_tokens: int) -> np.ndarray | None:
     """Compute PAE matrix from PAE logits."""
     logits = output.get("pae_logits")
     if logits is None:

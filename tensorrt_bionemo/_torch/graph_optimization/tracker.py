@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,25 +22,29 @@ walking nested dict/list/tuple containers. It also provides the shape-bucket
 (:class:`CUDAGraphOptimizationTracker`) and its per-key state live in
 :mod:`tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime`.
 """
+
 import abc
 import inspect
 from typing import Any
 
 import torch
 import torch.nn as nn
-from torch import Tensor
 import torch.nn.functional as F
+from torch import Tensor
 
-from tensorrt_bionemo.runtime.backend import BackendBase
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    GraphOptimizationConfig, acceptance_max_by_name, bucket_lengths_by_name,
-    input_acceptance_assignments, input_padded_assignments,
-    output_padded_assignments)
-
+    GraphOptimizationConfig,
+    acceptance_max_by_name,
+    bucket_lengths_by_name,
+    input_acceptance_assignments,
+    input_padded_assignments,
+    output_padded_assignments,
+)
+from tensorrt_bionemo.runtime.backend import BackendBase
 
 # A ``TensorContainer`` is what the wrapped module is called with: a tensor,
-# or a tuple/dict nesting tensors, non-tensor leaves, and further containers.  
+# or a tuple/dict nesting tensors, non-tensor leaves, and further containers.
 # Contains at least one Tensor
 TensorContainer = Tensor | tuple | dict
 
@@ -67,6 +71,7 @@ class GraphOptimizationTracker(BackendBase):
         GRAPH_INTERNAL_WORKSPACE_KWARGS: Names of keyword arguments that are
             graph-*internal scratch* rather than real inputs (see below).
     """
+
     SEP_FOR_ARGS = "|"
     SEP_BW_NAME_AND_SHAPE = "+"
     SEP_FOR_DIMS = "-"
@@ -129,15 +134,14 @@ class GraphOptimizationTracker(BackendBase):
                 try:
                     sig = inspect.signature(inner.forward)
                     names = [
-                        p.name for p in sig.parameters.values()
-                        if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                                      inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                        p.name
+                        for p in sig.parameters.values()
+                        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
                     ]
                 except (TypeError, ValueError):
                     names = []
             self._forward_positional_names = names
-        return [names[i] if i < len(names) else f"arg{i}"
-                for i in range(num_positional)]
+        return [names[i] if i < len(names) else f"arg{i}" for i in range(num_positional)]
 
     def _graph_input_kwargs(self, kwargs: dict) -> dict:
         """Return ``kwargs`` without the graph-internal workspace entries.
@@ -149,15 +153,11 @@ class GraphOptimizationTracker(BackendBase):
         workspace = self._effective_workspace_kwargs()
         if not workspace:
             return kwargs
-        return {
-            k: v
-            for k, v in kwargs.items()
-            if k not in workspace
-        }
+        return {k: v for k, v in kwargs.items() if k not in workspace}
 
-    def __init__(self,
-                 graph_optimization_config: GraphOptimizationConfig,
-                 inner_module: nn.Module | None = None) -> None:
+    def __init__(
+        self, graph_optimization_config: GraphOptimizationConfig, inner_module: nn.Module | None = None
+    ) -> None:
         """Store the optimization config and the wrapped (inner) module.
 
         Args:
@@ -179,7 +179,7 @@ class GraphOptimizationTracker(BackendBase):
     @property
     def graph_optimization_config(self) -> GraphOptimizationConfig:
         return self._config
-    
+
     def __getattr__(self, name: str) -> Any:
         """Delegate unknown attributes to the wrapped eager ``inner_module``.
 
@@ -240,8 +240,7 @@ class GraphOptimizationTracker(BackendBase):
                 return False
         return True
 
-    def validate_input_ties(
-            self, tensor_container_shapes: TensorContainerShapes) -> None:
+    def validate_input_ties(self, tensor_container_shapes: TensorContainerShapes) -> None:
         """Validate configured input tie points against the first call.
 
         Every ``(tensor_name, dim_idx)`` an :class:`InputRoutingConfig` ties to a
@@ -260,24 +259,23 @@ class GraphOptimizationTracker(BackendBase):
             return
         cfg = self.graph_optimization_config.input_routing_config
         if cfg is not None:
-            available = sorted(
-                name[:-len("_shape")] for name in tensor_container_shapes
-                if name.endswith("_shape"))
-            ties = (input_acceptance_assignments(cfg)
-                    + input_padded_assignments(cfg))
+            available = sorted(name[: -len("_shape")] for name in tensor_container_shapes if name.endswith("_shape"))
+            ties = input_acceptance_assignments(cfg) + input_padded_assignments(cfg)
             for tensor_name, dim_idx, dim_name in ties:
                 shape = tensor_container_shapes.get(f"{tensor_name}_shape")
                 if shape is None:
                     raise ValueError(
                         f"input routing ties dim {dim_name!r} to input "
                         f"{tensor_name!r} (axis {dim_idx}), but no such tensor is "
-                        f"present in the call; available inputs: {available}")
+                        f"present in the call; available inputs: {available}"
+                    )
                 ndim = int(shape.numel())
                 if not (-ndim <= dim_idx < ndim):
                     raise ValueError(
                         f"input routing ties dim {dim_name!r} to axis {dim_idx} "
                         f"of input {tensor_name!r}, but that tensor has only "
-                        f"{ndim} dimension(s)")
+                        f"{ndim} dimension(s)"
+                    )
         self._input_ties_validated = True
 
     def input_key_for_this_call(self, *args, **kwargs) -> str:
@@ -290,10 +288,9 @@ class GraphOptimizationTracker(BackendBase):
         and shape and whose non-tensor leaves share type map to one captured
         graph.
         """
-        key = self.SEP_FOR_ARGS.join(
-            self._extract_input_metadata(*args, **kwargs))
+        key = self.SEP_FOR_ARGS.join(self._extract_input_metadata(*args, **kwargs))
         return key
-    
+
     def _collect_subkeys(self, value: Any, path: str, subkeys: list[str]) -> None:
         """Recursively walk ``value``, appending a shape-encoded subkey to
         ``subkeys`` for every tensor found.
@@ -304,9 +301,7 @@ class GraphOptimizationTracker(BackendBase):
         """
         if isinstance(value, torch.Tensor):
             subkeys.append(
-                self.SEP_BW_NAME_AND_SHAPE.join(
-                    [path, self.SEP_FOR_DIMS.join([str(dim) for dim in value.shape])]
-                )
+                self.SEP_BW_NAME_AND_SHAPE.join([path, self.SEP_FOR_DIMS.join([str(dim) for dim in value.shape])])
             )
         elif isinstance(value, dict):
             for k, v in value.items():
@@ -368,8 +363,7 @@ class GraphOptimizationTracker(BackendBase):
 
     @staticmethod
     def _tensor_container_shapes_to_cpu(tensor_container_shapes: TensorContainerShapes):
-        return {
-            name: shape.cpu() for name, shape in tensor_container_shapes.items()}
+        return {name: shape.cpu() for name, shape in tensor_container_shapes.items()}
 
     def _extract_input_tensor_metadata(self, *args, **kwargs) -> str:
         """Deterministic string over every input tensor's path, dtype
@@ -379,9 +373,7 @@ class GraphOptimizationTracker(BackendBase):
         def on_leaf(path: str, leaf: Any) -> None:
             if isinstance(leaf, torch.Tensor):
                 dims = self.SEP_FOR_DIMS.join(str(d) for d in leaf.shape)
-                parts.append(
-                    f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf.dtype}"
-                    f"{self.SEP_BW_NAME_AND_SHAPE}{dims}")
+                parts.append(f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf.dtype}{self.SEP_BW_NAME_AND_SHAPE}{dims}")
 
         self._walk_call(args, kwargs, on_leaf)
         return self.SEP_FOR_ARGS.join(parts)
@@ -409,8 +401,7 @@ class GraphOptimizationTracker(BackendBase):
         and as *output-metadata* when applied to the forward output.
         """
         tensor_metadata = self._extract_input_tensor_metadata(*args, **kwargs)
-        nontensor_metadata = self._extract_input_nontensor_metadata(
-            *args, **kwargs)
+        nontensor_metadata = self._extract_input_nontensor_metadata(*args, **kwargs)
         return tensor_metadata, nontensor_metadata
 
     @abc.abstractmethod
@@ -444,14 +435,12 @@ class GraphOptimizationTracker(BackendBase):
             return fn(path, value)
         if isinstance(value, dict):
             return {
-                k: self._map_container_tensors(
-                    v, f"{path}{self.SEP_BW_ARG_AND_DIM}{k}" if path else str(k), fn)
+                k: self._map_container_tensors(v, f"{path}{self.SEP_BW_ARG_AND_DIM}{k}" if path else str(k), fn)
                 for k, v in value.items()
             }
         if isinstance(value, (list, tuple)):
             mapped = [
-                self._map_container_tensors(
-                    v, f"{path}{self.SEP_BW_ARG_AND_DIM}{i}" if path else str(i), fn)
+                self._map_container_tensors(v, f"{path}{self.SEP_BW_ARG_AND_DIM}{i}" if path else str(i), fn)
                 for i, v in enumerate(value)
             ]
             return tuple(mapped) if isinstance(value, tuple) else mapped
@@ -464,8 +453,8 @@ class GraphOptimizationTracker(BackendBase):
         candidates = [int(v) for v in dim_len_values if int(v) >= int(length)]
         if not candidates:
             raise ValueError(
-                f"dim length {int(length)} exceeds the largest configured "
-                f"bucket {max(int(v) for v in dim_len_values)}")
+                f"dim length {int(length)} exceeds the largest configured bucket {max(int(v) for v in dim_len_values)}"
+            )
         return min(candidates)
 
     def _pad_tensor_dims_to(self, t: Tensor, targets: dict) -> Tensor:
@@ -478,13 +467,10 @@ class GraphOptimizationTracker(BackendBase):
         for dim_idx, target in targets.items():
             axis = dim_idx + rank if dim_idx < 0 else dim_idx
             if not 0 <= axis < rank:
-                raise ValueError(
-                    f"padded dim {dim_idx} out of range for tensor of rank {rank}")
+                raise ValueError(f"padded dim {dim_idx} out of range for tensor of rank {rank}")
             extra = int(target) - t.shape[axis]
             if extra < 0:
-                raise ValueError(
-                    f"pad target {int(target)} < current length {t.shape[axis]} "
-                    f"on dim {dim_idx}")
+                raise ValueError(f"pad target {int(target)} < current length {t.shape[axis]} on dim {dim_idx}")
             if extra:
                 pad[2 * (rank - 1 - axis) + 1] = extra
                 changed = True
@@ -502,8 +488,7 @@ class GraphOptimizationTracker(BackendBase):
             targets.setdefault(tensor_name, {})[dim_idx] = bucket_lengths[dim_name]
         return targets
 
-    def _output_tied_live_lengths(
-            self, input_tensor_shapes: TensorContainerShapes) -> dict:
+    def _output_tied_live_lengths(self, input_tensor_shapes: TensorContainerShapes) -> dict:
         """``out_idx -> {out_dim_idx: (dim_name, live_len)}`` for output dims tied
         to a padded input dim, reading each tied dim's live length from
         ``input_tensor_shapes``. Used by :meth:`unpad_output` to truncate each
@@ -519,16 +504,15 @@ class GraphOptimizationTracker(BackendBase):
         targets: dict = {}
         for out_idx, out_dim_idx, dim_name in output_padded_assignments(cfg):
             if dim_name in live_len_by_dim_name:
-                targets.setdefault(out_idx, {})[out_dim_idx] = (
-                    dim_name, live_len_by_dim_name[dim_name])
+                targets.setdefault(out_idx, {})[out_dim_idx] = (dim_name, live_len_by_dim_name[dim_name])
         return targets
 
     def pad_input(
-        self, 
+        self,
         args: tuple,
         kwargs: dict,
         input_tensor_shapes: TensorContainerShapes,
-        ) -> TensorContainer:
+    ) -> TensorContainer:
         """Return ``(padded_args, padded_kwargs)`` with every input
         tensor 0-padded on the dims flagged in the shape-bucket config, up to the
         lowest bucket length >= the live length read from ``input_tensor_shapes``.
@@ -545,28 +529,19 @@ class GraphOptimizationTracker(BackendBase):
             shape = input_tensor_shapes.get(f"{path}_shape")
             pad_targets = {
                 dim_idx: self._bucket_length(
-                    dim_len_values,
-                    int(shape[dim_idx]) if shape is not None else t.shape[dim_idx])
+                    dim_len_values, int(shape[dim_idx]) if shape is not None else t.shape[dim_idx]
+                )
                 for dim_idx, dim_len_values in dims.items()
             }
             return self._pad_tensor_dims_to(t, pad_targets)
 
         roots = self._positional_param_names(len(args))
-        padded_args = tuple(
-            self._map_container_tensors(v, roots[i], fn)
-            for i, v in enumerate(args))
+        padded_args = tuple(self._map_container_tensors(v, roots[i], fn) for i, v in enumerate(args))
         workspace = self._effective_workspace_kwargs()
-        padded_kwargs = {
-            k: (v if k in workspace
-                else self._map_container_tensors(v, k, fn))
-            for k, v in kwargs.items()
-        }
+        padded_kwargs = {k: (v if k in workspace else self._map_container_tensors(v, k, fn)) for k, v in kwargs.items()}
         return padded_args, padded_kwargs
 
-    def unpad_output(
-        self, 
-        args: tuple,
-        input_tensor_shapes: TensorContainerShapes) -> TensorContainer:
+    def unpad_output(self, args: tuple, input_tensor_shapes: TensorContainerShapes) -> TensorContainer:
         """Truncate output tensors whose dims are tied to a padded
         input dim back to the live input length.
 
@@ -597,4 +572,3 @@ class GraphOptimizationTracker(BackendBase):
             mapped = [truncate_at(i, t) for i, t in enumerate(output)]
             return tuple(mapped) if isinstance(output, tuple) else mapped
         return output
-    

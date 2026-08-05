@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import triton
@@ -26,18 +25,13 @@ from .interface import AttentionBackend, AttentionMetadata
 
 
 class TrifastAttentionMetadata(AttentionMetadata):
-    closest_n: Optional[int] = 16
+    closest_n: int | None = 16
 
 
 class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
-
     Metadata = TrifastAttentionMetadata
 
-    def __init__(self,
-                 layer_idx: int,
-                 num_heads: int,
-                 head_dim: int,
-                 num_kv_heads: Optional[int] = None):
+    def __init__(self, layer_idx: int, num_heads: int, head_dim: int, num_kv_heads: int | None = None):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
         if num_kv_heads is None:
             num_kv_heads = num_heads
@@ -48,8 +42,8 @@ class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        biases: Optional[list[torch.Tensor]] = None,
-        metadata: Optional[AttentionMetadata] = None,
+        biases: list[torch.Tensor] | None = None,
+        metadata: AttentionMetadata | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Implementation of trifast attention."""
@@ -58,7 +52,6 @@ class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
         if metadata is None:
             metadata = TrifastAttentionMetadata()
         assert q.ndim == k.ndim == v.ndim, "q, k, v must have the same number of dimensions"
-        q.ndim
         if q.ndim == 3:
             q = q.unsqueeze(0)
             k = k.unsqueeze(0)
@@ -69,12 +62,9 @@ class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
             bias = bias.unsqueeze(0)
 
         bs, i, j, hd = q.shape
-        q = rearrange(q, "b i j (h d) -> (b h) i j d",
-                      h=self.num_heads).contiguous()
-        k = rearrange(k, "b i j (h d) -> (b h) i j d",
-                      h=self.num_heads).contiguous()
-        v = rearrange(v, "b i j (h d) -> (b h) i j d",
-                      h=self.num_heads).contiguous()
+        q = rearrange(q, "b i j (h d) -> (b h) i j d", h=self.num_heads).contiguous()
+        k = rearrange(k, "b i j (h d) -> (b h) i j d", h=self.num_heads).contiguous()
+        v = rearrange(v, "b i j (h d) -> (b h) i j d", h=self.num_heads).contiguous()
         bias = rearrange(bias, "b h i j -> (b h) i j").contiguous()
         mask = rearrange(mask, "b i () () j -> b i j").bool().contiguous()
 
@@ -90,48 +80,48 @@ class TrifastAttention(AttentionBackend[TrifastAttentionMetadata]):
         trifast_attention_kernel_fwd = create_autotuner()
 
         CLOSEST_N = metadata.closest_n
-        wrap_triton(trifast_attention_kernel_fwd)[grid](o,
-                                                        o.stride(0),
-                                                        o.stride(1),
-                                                        o.stride(2),
-                                                        o.stride(3),
-                                                        l,
-                                                        l.stride(0),
-                                                        l.stride(1),
-                                                        l.stride(2),
-                                                        q,
-                                                        q.stride(0),
-                                                        q.stride(1),
-                                                        q.stride(2),
-                                                        q.stride(3),
-                                                        k,
-                                                        k.stride(0),
-                                                        k.stride(1),
-                                                        k.stride(2),
-                                                        k.stride(3),
-                                                        v,
-                                                        v.stride(0),
-                                                        v.stride(1),
-                                                        v.stride(2),
-                                                        v.stride(3),
-                                                        bias,
-                                                        bias.stride(0),
-                                                        bias.stride(1),
-                                                        bias.stride(2),
-                                                        mask,
-                                                        mask.stride(0),
-                                                        mask.stride(1),
-                                                        mask.stride(2),
-                                                        neg_inf=torch.finfo(
-                                                            q.dtype).min,
-                                                        sm_scale=sm_scale,
-                                                        batch_size=bs,
-                                                        si=i,
-                                                        seq_len=j,
-                                                        heads=self.num_heads,
-                                                        DIM=self.head_dim,
-                                                        CLOSEST_N=CLOSEST_N)
+        wrap_triton(trifast_attention_kernel_fwd)[grid](
+            o,
+            o.stride(0),
+            o.stride(1),
+            o.stride(2),
+            o.stride(3),
+            l,
+            l.stride(0),
+            l.stride(1),
+            l.stride(2),
+            q,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),
+            k,
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            k.stride(3),
+            v,
+            v.stride(0),
+            v.stride(1),
+            v.stride(2),
+            v.stride(3),
+            bias,
+            bias.stride(0),
+            bias.stride(1),
+            bias.stride(2),
+            mask,
+            mask.stride(0),
+            mask.stride(1),
+            mask.stride(2),
+            neg_inf=torch.finfo(q.dtype).min,
+            sm_scale=sm_scale,
+            batch_size=bs,
+            si=i,
+            seq_len=j,
+            heads=self.num_heads,
+            DIM=self.head_dim,
+            CLOSEST_N=CLOSEST_N,
+        )
 
-        o = rearrange(o, "(b h) i j d -> b i j h d", h=self.num_heads,
-                      b=bs).contiguous()
+        o = rearrange(o, "(b h) i j d -> b i j h d", h=self.num_heads, b=bs).contiguous()
         return o

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any
 
 import biotite.structure as struc
 import biotite.structure.info as struc_info
@@ -36,10 +36,20 @@ from rdkit.Geometry import Point3D
 from tensorrt_bionemo.data.schemas.basic import InputParsed
 from tensorrt_bionemo.pipeline.base import ContextGeneratorBase
 
-from .const import (_PROTEIN_1TO3, DNA_RESTYPE_1TO3, GAP_IDX, MOL_TYPE_DNA,
-                    MOL_TYPE_LIGAND, MOL_TYPE_PROTEIN, MOL_TYPE_RNA,
-                    MSA_CHAR_TO_IDX, POLYMER_TYPE_TO_MOL_TYPE, RNA_1_TO_IDX,
-                    RNA_RESTYPE_1TO3, UNK_IDX)
+from .const import (
+    _PROTEIN_1TO3,
+    DNA_RESTYPE_1TO3,
+    GAP_IDX,
+    MOL_TYPE_DNA,
+    MOL_TYPE_LIGAND,
+    MOL_TYPE_PROTEIN,
+    MOL_TYPE_RNA,
+    MSA_CHAR_TO_IDX,
+    POLYMER_TYPE_TO_MOL_TYPE,
+    RNA_1_TO_IDX,
+    RNA_RESTYPE_1TO3,
+    UNK_IDX,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -87,8 +97,7 @@ def _resolve_msa_char(char: str, mol_type: int) -> int:
         key = (c_upper, mol_type)
         if key not in _seen_unknown_msa_chars:
             _seen_unknown_msa_chars.add(key)
-            _logger.warning("Unknown RNA MSA char %r; falling back to UNK_IDX",
-                            char)
+            _logger.warning("Unknown RNA MSA char %r; falling back to UNK_IDX", char)
         return UNK_IDX
 
     if mol_type in (MOL_TYPE_DNA, MOL_TYPE_LIGAND):
@@ -96,9 +105,7 @@ def _resolve_msa_char(char: str, mol_type: int) -> int:
         return GAP_IDX
 
     # Unknown mol_type — warn and return UNK_IDX
-    _logger.warning(
-        "Unknown mol_type %d in _resolve_msa_char; returning UNK_IDX",
-        mol_type)
+    _logger.warning("Unknown mol_type %d in _resolve_msa_char; returning UNK_IDX", mol_type)
     return UNK_IDX
 
 
@@ -187,7 +194,8 @@ def _embed_conformer_inplace(mol_h: Chem.Mol) -> int:
 
 
 def _build_nucleotide_rdkit_mol(
-    ccd_code: str, ) -> tuple[Optional[Chem.Mol], np.ndarray]:
+    ccd_code: str,
+) -> tuple[Chem.Mol | None, np.ndarray]:
     """Convert a CCD nucleotide residue to an RDKit Mol with 3D conformer.
 
     Matches OSS: keeps OP3/O3P in the mol for correct bond topology during
@@ -211,16 +219,11 @@ def _build_nucleotide_rdkit_mol(
         mol_h = Chem.RemoveHs(mol_h)
 
         # Build mask: exclude OP3 and O3P leaving atoms
-        in_crop_mask = np.array([
-            res_full.atom_name[i] not in ("OP3", "O3P")
-            for i in range(len(res_full))
-        ],
-                                dtype=bool)
+        in_crop_mask = np.array([res_full.atom_name[i] not in ("OP3", "O3P") for i in range(len(res_full))], dtype=bool)
 
         return mol_h, in_crop_mask
     except Exception as e:
-        _logger.debug("Failed to build RDKit mol for nucleotide %s: %s",
-                      ccd_code, e)
+        _logger.debug("Failed to build RDKit mol for nucleotide %s: %s", ccd_code, e)
         return None, np.array([], dtype=bool)
 
 
@@ -243,13 +246,13 @@ def _embed_smiles_mol(mol: Chem.Mol) -> Chem.Mol:
     mol_h = Chem.AddHs(mol)
     conf_id = _embed_conformer_inplace(mol_h)
     if conf_id == -1:
-        raise ValueError(
-            "ETKDGv3 conformer embedding failed for SMILES molecule")
+        raise ValueError("ETKDGv3 conformer embedding failed for SMILES molecule")
     return Chem.RemoveHs(mol_h)
 
 
 def _build_residue_rdkit_mol(
-    ccd_code: str, ) -> tuple[Optional[Chem.Mol], np.ndarray]:
+    ccd_code: str,
+) -> tuple[Chem.Mol | None, np.ndarray]:
     """Convert a CCD residue to an RDKit Mol with 3D conformer.
 
     Matches OSS: keeps OXT in the mol for correct bond topology during
@@ -276,9 +279,7 @@ def _build_residue_rdkit_mol(
         mol_h = Chem.RemoveHs(mol_h)
 
         # Build mask: exclude OXT
-        in_crop_mask = np.array(
-            [res_full.atom_name[i] != "OXT" for i in range(len(res_full))],
-            dtype=bool)
+        in_crop_mask = np.array([res_full.atom_name[i] != "OXT" for i in range(len(res_full))], dtype=bool)
 
         return mol_h, in_crop_mask
     except Exception as e:
@@ -291,7 +292,9 @@ def _build_residue_rdkit_mol(
 # ---------------------------------------------------------------------------
 
 
-def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
+def _build_structure_from_polymers(
+    polymers: list[dict],
+) -> dict[str, Any]:
     """Build atom-level and token-level structure data from polymer list
     using Biotite CCD for accurate atom arrays.
 
@@ -319,7 +322,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
     token_start_atoms: list[int] = []
 
     # Per-residue RDKit mols for conformer generation
-    residue_mols: list[Optional[Chem.Mol]] = []
+    residue_mols: list[Chem.Mol | None] = []
     residue_crop_masks: list[np.ndarray] = []
     residue_atom_charges: list[list[int]] = []
 
@@ -353,10 +356,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
         return poly.get("sequence", "") or ""
 
     all_entities = sorted({_entity_repr(p) for p in polymers})
-    entity_to_id: dict[str, int] = {
-        e: i + 1
-        for i, e in enumerate(all_entities)
-    }
+    entity_to_id: dict[str, int] = {e: i + 1 for i, e in enumerate(all_entities)}
 
     for poly in polymers:
         sequence = poly.get("sequence", "")
@@ -399,9 +399,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 # is no OXT, so _get_residue_from_ccd is safe.
                 ccd_code = sequence.strip()
                 if not ccd_code:
-                    raise ValueError(
-                        f"LIGAND_CCD chain {chain_ids} has empty sequence/ccd_code"
-                    )
+                    raise ValueError(f"LIGAND_CCD chain {chain_ids} has empty sequence/ccd_code")
                 resname_3 = ccd_code  # e.g. "ATP", "ZN"
 
                 # Get atom array (heavy atoms — keep ALL atoms including
@@ -416,9 +414,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                     res_atom_names = list(ccd_res.atom_name)
                     res_elements = list(ccd_res.element)
                 except Exception as e:
-                    raise ValueError(
-                        f"CCD lookup failed for ligand CCD code {ccd_code!r}: {e}"
-                    ) from e
+                    raise ValueError(f"CCD lookup failed for ligand CCD code {ccd_code!r}: {e}") from e
 
                 # Build RDKit mol with ETKDGv3 conformer. The RDKit mol-
                 # builder helper internally also retains OXT for conformer
@@ -455,8 +451,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 for cid in chain_ids:
                     chain_mol_idx = next_mol_idx
                     next_mol_idx += 1
-                    for ai_in_ligand, (aname, elem) in enumerate(
-                            zip(res_atom_names, res_elements, strict=True)):
+                    for ai_in_ligand, (aname, elem) in enumerate(zip(res_atom_names, res_elements, strict=True)):
                         token_resnames.append(resname_3)
                         token_chain_ids.append(cid)
                         token_entity_ids.append(entity_id)
@@ -479,13 +474,10 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                         # crop mask to select the right atom in
                         # ConformerFeatureGenerator.
                         per_atom_mask = np.zeros(len(in_crop_mask), dtype=bool)
-                        per_atom_mask[ai_in_ligand] = bool(
-                            in_crop_mask[ai_in_ligand])
+                        per_atom_mask[ai_in_ligand] = bool(in_crop_mask[ai_in_ligand])
                         residue_mols.append(mol)
                         residue_crop_masks.append(per_atom_mask)
-                        residue_atom_charges.append(
-                            [charges[ai_in_ligand]] if ai_in_ligand <
-                            len(charges) else [0])
+                        residue_atom_charges.append([charges[ai_in_ligand]] if ai_in_ligand < len(charges) else [0])
                         token_idx += 1
 
                 # Ligand case handled — skip the inner residue loop below
@@ -497,9 +489,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 # → per-element 1-indexed atom names.
                 smiles = sequence.strip()
                 if not smiles:
-                    raise ValueError(
-                        f"LIGAND_SMILES chain {chain_ids} has empty SMILES string"
-                    )
+                    raise ValueError(f"LIGAND_SMILES chain {chain_ids} has empty SMILES string")
 
                 mol_raw = Chem.MolFromSmiles(smiles)
                 if mol_raw is None:
@@ -512,9 +502,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 try:
                     mol_embedded = _embed_smiles_mol(mol_raw)
                 except ValueError as e:
-                    raise ValueError(
-                        f"SMILES conformer embedding failed for {smiles!r}: {e}"
-                    ) from e
+                    raise ValueError(f"SMILES conformer embedding failed for {smiles!r}: {e}") from e
 
                 # Build per-element 1-indexed atom names (C1, C2, O1, O2, ...)
                 element_counts: dict[str, int] = {}
@@ -549,8 +537,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                         atoms_per_token.append(1)
                         token_mol_idx.append(chain_mol_idx)
                         atom_names.append(smiles_atom_names[ai_in_ligand])
-                        atom_elements.append(
-                            smiles_atom_elements[ai_in_ligand])
+                        atom_elements.append(smiles_atom_elements[ai_in_ligand])
                         atom_token_idx.append(token_idx)
                         atom_idx += 1
 
@@ -561,8 +548,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                         per_atom_mask[ai_in_ligand] = True
                         residue_mols.append(mol_embedded)
                         residue_crop_masks.append(per_atom_mask)
-                        residue_atom_charges.append(
-                            [smiles_charges[ai_in_ligand]])
+                        residue_atom_charges.append([smiles_charges[ai_in_ligand]])
                         token_idx += 1
 
                 # Ligand case handled — skip the inner residue loop below
@@ -572,7 +558,8 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 raise ValueError(
                     f"Unsupported polymer_type for structure building: "
                     f"{polymer_type!r}. Supported types: "
-                    f"protein, rna, dna, ccd_ligand, smiles_ligand")
+                    f"protein, rna, dna, ccd_ligand, smiles_ligand"
+                )
 
         for cid in chain_ids:
             for res_idx, res_char in enumerate(sequence):
@@ -582,8 +569,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 else:
                     # Unknown residue → WARNING + placeholder
                     _logger.warning(
-                        "Unknown %s residue %r at chain %s position %d; "
-                        "using placeholder %r",
+                        "Unknown %s residue %r at chain %s position %d; using placeholder %r",
                         polymer_type,
                         res_char,
                         cid,
@@ -640,9 +626,7 @@ def _build_structure_from_polymers(polymers: list[dict], ) -> dict[str, Any]:
                 n_atoms_token = len(res_atom_names)
                 atoms_per_token.append(n_atoms_token)
 
-                for aname, elem in zip(res_atom_names,
-                                       res_elements,
-                                       strict=True):
+                for aname, elem in zip(res_atom_names, res_elements, strict=True):
                     atom_names.append(aname)
                     atom_elements.append(elem)
                     atom_token_idx.append(token_idx)
@@ -704,10 +688,7 @@ def _renumber_chain_ids(chain_ids: list[str]) -> list[int]:
     hemoglobin's [A, C, B, D]).
     """
     unique_sorted = sorted(set(chain_ids))
-    chain_to_num: dict[str, int] = {
-        cid: i + 1
-        for i, cid in enumerate(unique_sorted)
-    }
+    chain_to_num: dict[str, int] = {cid: i + 1 for i, cid in enumerate(unique_sorted)}
     return [chain_to_num[cid] for cid in chain_ids]
 
 
@@ -724,7 +705,7 @@ def _parse_msa_entry(msas: list | None) -> dict | None:
     if content is None and isinstance(first, dict) and first.get("path"):
         path = first["path"]
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 content = f.read()
         except (FileNotFoundError, PermissionError, OSError) as e:
             _logger.warning("Failed to read MSA file %s: %s", path, e)
@@ -733,6 +714,7 @@ def _parse_msa_entry(msas: list | None) -> dict | None:
         from io import StringIO
 
         from tensorrt_bionemo.data.parsers.a3m import parse_a3m_content
+
         return parse_a3m_content(StringIO(content))
     return None
 
@@ -742,8 +724,8 @@ class OpenFold3ContextGenerator(ContextGeneratorBase):
 
     def __init__(
         self,
-        config: Optional[Any] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        config: Any | None = None,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         super().__init__(config, metadata)
@@ -768,7 +750,7 @@ class OpenFold3ContextGenerator(ContextGeneratorBase):
         paired_msa_per_chain: list[dict | None] = []
         for poly in polymers:
             chain_id = poly.get("chain_id")
-            n_chains = (len(chain_id) if isinstance(chain_id, list) else 1)
+            n_chains = len(chain_id) if isinstance(chain_id, list) else 1
             msa_entry = _parse_msa_entry(poly.get("msas"))
             paired_entry = _parse_msa_entry(poly.get("paired_msas"))
             for _ in range(n_chains):
@@ -779,7 +761,7 @@ class OpenFold3ContextGenerator(ContextGeneratorBase):
         for poly in polymers:
             sequence = poly.get("sequence", "")
             chain_id = poly.get("chain_id")
-            n_chains = (len(chain_id) if isinstance(chain_id, list) else 1)
+            n_chains = len(chain_id) if isinstance(chain_id, list) else 1
             for _ in range(n_chains):
                 chain_sequences.append(sequence)
 

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,20 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.attention_backend.utils import (
-    PrecomputedPairMasks, precompute_pair_masks)
+from tensorrt_bionemo._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
 from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_TRANSITION
 from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
-from tensorrt_bionemo._torch.layers.transformers.pairformer import (
-    PairformerModule, PairformerNoSeqLayer)
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule, PairformerNoSeqLayer
 from tensorrt_bionemo._torch.layers.transition import Transition
 from tensorrt_bionemo._torch.modules.boltz.template import TemplateV2Module
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
@@ -35,19 +32,20 @@ from tensorrt_bionemo.pipeline.models.boltz2.const import pocket_contact_info
 
 
 class MSALayer(nn.Module):
-
-    def __init__(self,
-                 msa_s: int,
-                 token_z: int,
-                 pairwise_head_width: int = 32,
-                 pairwise_num_heads: int = 4,
-                 layer_idx: int = 0,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 triangle_attn_backend: str = "VANILLA",
-                 trimul_high_precision: bool = False) -> None:
+    def __init__(
+        self,
+        msa_s: int,
+        token_z: int,
+        pairwise_head_width: int = 32,
+        pairwise_num_heads: int = 4,
+        layer_idx: int = 0,
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        triangle_attn_backend: str = "VANILLA",
+        trimul_high_precision: bool = False,
+    ) -> None:
         super().__init__()
         self.msa_s = msa_s
         self.token_z = token_z
@@ -67,7 +65,8 @@ class MSALayer(nn.Module):
             # Row-chunk the MSA-transition FFN over the sequence dim S at large S (position-wise,
             # numerically identical) -- replaces the old chunk_heads_pwa-coupled chunk_size, now that
             # PWA auto-chunks via its own registry policy.
-            auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION))
+            auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION),
+        )
 
         self.pair_weighted_averaging = PairWeightedAveraging(
             c_m=msa_s,
@@ -77,7 +76,8 @@ class MSALayer(nn.Module):
             eps=eps,
             inf=inf,
             dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+        )
 
         self.pairformer_layer = PairformerNoSeqLayer(
             layer_idx=layer_idx,
@@ -89,14 +89,11 @@ class MSALayer(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             triangle_attn_backend=triangle_attn_backend,
-            trimul_high_precision=trimul_high_precision)
+            trimul_high_precision=trimul_high_precision,
+        )
         self.outer_product_mean = OuterProductMean(
-            c_in=msa_s,
-            c_hidden=32,
-            c_out=token_z,
-            eps=eps,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            c_in=msa_s, c_hidden=32, c_out=token_z, eps=eps, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
     def forward(
         self,
@@ -104,8 +101,8 @@ class MSALayer(nn.Module):
         m: torch.Tensor,
         token_mask: torch.Tensor,
         msa_mask: torch.Tensor,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        precomputed_masks: Optional[PrecomputedPairMasks] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        precomputed_masks: PrecomputedPairMasks | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -123,15 +120,12 @@ class MSALayer(nn.Module):
         z += self.outer_product_mean(m, msa_mask)
 
         z = self.pairformer_layer(
-            z,
-            token_mask,
-            attn_metadatas={"triangle_attn": attn_metadata},
-            precomputed_masks=precomputed_masks)
+            z, token_mask, attn_metadatas={"triangle_attn": attn_metadata}, precomputed_masks=precomputed_masks
+        )
         return z, m
 
 
 class MSAModule(nn.Module):
-
     def __init__(self, config: BaseConfig) -> None:
         """
         Boltz MSAModule
@@ -152,25 +146,22 @@ class MSAModule(nn.Module):
         # Propagate the config's trimul precision to the MSA-module pairformer. Without this the
         # MSALayer leaves PairformerNoSeqLayer at PairformerLayerV1's default (high_precision=True
         # -> fp32 -> the memory-heavy vanilla dual-GEMM); MSAModuleConfig sets it False.
-        self.trimul_high_precision = getattr(config, "trimul_high_precision",
-                                             False)
+        self.trimul_high_precision = getattr(config, "trimul_high_precision", False)
 
         if config.version == "v1":
-            s_input_dim = self.token_s + 2 * self.num_tokens + 1 + len(
-                pocket_contact_info)
+            s_input_dim = self.token_s + 2 * self.num_tokens + 1 + len(pocket_contact_info)
         else:
             s_input_dim = self.token_s
-        self.s_proj = Linear(s_input_dim,
-                             self.msa_s,
-                             bias=False,
-                             dtype=self.dtype,
-                             skip_create_weights=config.skip_create_weights)
-        self.msa_proj = Linear(self.num_tokens + 2 +
-                               int(self.use_paired_feature),
-                               self.msa_s,
-                               bias=False,
-                               dtype=self.dtype,
-                               skip_create_weights=config.skip_create_weights)
+        self.s_proj = Linear(
+            s_input_dim, self.msa_s, bias=False, dtype=self.dtype, skip_create_weights=config.skip_create_weights
+        )
+        self.msa_proj = Linear(
+            self.num_tokens + 2 + int(self.use_paired_feature),
+            self.msa_s,
+            bias=False,
+            dtype=self.dtype,
+            skip_create_weights=config.skip_create_weights,
+        )
 
         self.layers = nn.ModuleList()
         for layer_idx in range(self.msa_blocks):
@@ -186,27 +177,29 @@ class MSAModule(nn.Module):
                     dtype=self.dtype,
                     skip_create_weights=config.skip_create_weights,
                     triangle_attn_backend=config.triangle_attention_backend,
-                    trimul_high_precision=self.trimul_high_precision))
+                    trimul_high_precision=self.trimul_high_precision,
+                )
+            )
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
-            self,
-            z: torch.Tensor,
-            emb: torch.Tensor,
-            msa: torch.Tensor,
-            has_deletion: torch.Tensor,
-            deletion_value: torch.Tensor,
-            msa_paired: torch.Tensor,
-            msa_mask: torch.Tensor,
-            token_pad_mask: torch.Tensor,
-            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+        self,
+        z: torch.Tensor,
+        emb: torch.Tensor,
+        msa: torch.Tensor,
+        has_deletion: torch.Tensor,
+        deletion_value: torch.Tensor,
+        msa_paired: torch.Tensor,
+        msa_mask: torch.Tensor,
+        token_pad_mask: torch.Tensor,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             z(Tensor): The input tensor of shape (B, N, N, token_z).
@@ -232,8 +225,7 @@ class MSAModule(nn.Module):
 
         # Compute MSA embeddings
         if self.use_paired_feature:
-            m = torch.cat([msa, has_deletion, deletion_value, is_paired],
-                          dim=-1)
+            m = torch.cat([msa, has_deletion, deletion_value, is_paired], dim=-1)
         else:
             m = torch.cat([msa, has_deletion, deletion_value], dim=-1)
 
@@ -250,17 +242,12 @@ class MSAModule(nn.Module):
         )
 
         for i in range(self.msa_blocks):
-            z, m = self.layers[i](z,
-                                  m,
-                                  token_pad_mask,
-                                  msa_mask,
-                                  attn_metadata,
-                                  precomputed_masks=precomputed)
+            z, m = self.layers[i](z, m, token_pad_mask, msa_mask, attn_metadata, precomputed_masks=precomputed)
         return z
 
 
 class Trunk(nn.Module):
-    """ Trunk module for Boltz1-2 """
+    """Trunk module for Boltz1-2"""
 
     def __init__(self, config: BaseConfig) -> None:
         super().__init__()
@@ -272,37 +259,33 @@ class Trunk(nn.Module):
         token_z = config.pairformer.token_z
         self.dtype = config.torch_dtype
 
-        assert self.dtype == config.msa_module.torch_dtype, f"Trunk dtype: {self.dtype}, msa_module dtype: {config.msa_module.torch_dtype}"
-        assert self.dtype == config.pairformer.torch_dtype, f"Trunk dtype: {self.dtype}, pairformer dtype: {config.pairformer.torch_dtype}"
+        assert self.dtype == config.msa_module.torch_dtype, (
+            f"Trunk dtype: {self.dtype}, msa_module dtype: {config.msa_module.torch_dtype}"
+        )
+        assert self.dtype == config.pairformer.torch_dtype, (
+            f"Trunk dtype: {self.dtype}, pairformer dtype: {config.pairformer.torch_dtype}"
+        )
 
         # ``TrunkConfig.use_templates_v2`` (e.g. when loading a checkpoint
         # trained with ``use_templates_v2=True``).
         self.use_templates_v2 = getattr(config, "use_templates_v2", False)
-        self.template_module: Optional[TemplateV2Module] = None
+        self.template_module: TemplateV2Module | None = None
         if self.use_templates_v2:
             self.template_module = TemplateV2Module(config.template_module)
 
-        self.s_norm = nn.LayerNorm(token_s,
-                                   dtype=self.dtype,
-                                   eps=config.norm_epsilon)
-        self.z_norm = nn.LayerNorm(token_z,
-                                   dtype=self.dtype,
-                                   eps=config.norm_epsilon)
+        self.s_norm = nn.LayerNorm(token_s, dtype=self.dtype, eps=config.norm_epsilon)
+        self.z_norm = nn.LayerNorm(token_z, dtype=self.dtype, eps=config.norm_epsilon)
         self.skip_create_weights = config.skip_create_weights
 
-        self.s_recycle = Linear(token_s,
-                                token_s,
-                                bias=False,
-                                dtype=self.dtype,
-                                skip_create_weights=self.skip_create_weights)
-        self.z_recycle = Linear(token_z,
-                                token_z,
-                                bias=False,
-                                dtype=self.dtype,
-                                skip_create_weights=self.skip_create_weights)
+        self.s_recycle = Linear(
+            token_s, token_s, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
+        self.z_recycle = Linear(
+            token_z, token_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
+        )
 
     def load_weights(self, weights: dict):
-        """ Load weights for the Trunk module
+        """Load weights for the Trunk module
         Args:
             dict: {
                 "msa_module": dict,
@@ -319,21 +302,19 @@ class Trunk(nn.Module):
         template_module_weights = weights.pop("template_module", None)
         if template_module_weights is not None:
             assert self.template_module is not None, (
-                "Got template_module weights but the trunk was built without "
-                "use_templates_v2=True")
+                "Got template_module weights but the trunk was built without use_templates_v2=True"
+            )
             self.template_module.load_weights(weights=template_module_weights)
 
         # Skip loading the weights for the submodules already loaded above
-        filter_func = lambda name, _: (name.startswith(
-            "msa_module") or name.startswith("pairformer_module") or name.
-                                       startswith("template_module"))
-        loaded_weight = recursive_calling_load_weights(self, weights,
-                                                       filter_func)
+        def filter_func(name, _):
+            return name.startswith(("msa_module", "pairformer_module", "template_module"))
+
+        loaded_weight = recursive_calling_load_weights(self, weights, filter_func)
         # verify whether all the weights are loaded
         not_loaded_weights = set(weights.keys()) - loaded_weight
         if not_loaded_weights:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weights}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
     def forward(
         self,
@@ -347,10 +328,10 @@ class Trunk(nn.Module):
         msa_mask: torch.Tensor,
         token_pad_mask: torch.Tensor,
         recycling_steps: int = 3,
-        attn_metadata: Optional[AttentionMetadata] = None,
-        template_feats: Optional[dict[str, torch.Tensor]] = None,
+        attn_metadata: AttentionMetadata | None = None,
+        template_feats: dict[str, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """ Recycling forward pass for Boltz1-2
+        """Recycling forward pass for Boltz1-2
         Args:
             s_init(Tensor): The initial sequence embeddings of shape (B, N, token_s).
             z_init(Tensor): The initial pairwise embeddings of shape (B, N, N, token_z).
@@ -365,7 +346,9 @@ class Trunk(nn.Module):
             attn_metadata(Optional[AttentionMetadata]): The attention metadata.
             template_feats(Optional[dict]): Per-template features required by
                 :class:`TemplateV2Module` when ``use_templates_v2`` is enabled.
-                Ignored when the template module is not built.
+                Ignored when the template module is not built. Pass ``None``
+                (e.g. when the batch's ``has_templates`` flag is False) to
+                skip the template pairformer entirely.
         Returns:
             Tuple[Tensor, Tensor]: The output sequence and pairwise embeddings of shape (B, N, token_s), (B, N, N, token_z).
         """
@@ -380,31 +363,26 @@ class Trunk(nn.Module):
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
 
-        run_template = (self.template_module is not None
-                        and template_feats is not None)
+        run_template = self.template_module is not None and template_feats is not None
 
         for _ in range(1 + recycling_steps):
             s = s_init + self.s_recycle(self.s_norm(s))
             z = z_init + self.z_recycle(self.z_norm(z))
 
             if run_template:
-                z = z + self.template_module(
-                    z, template_feats, pair_mask,
-                    attn_metadata=attn_metadata).to(self.dtype)
+                z = z + self.template_module(z, template_feats, pair_mask, attn_metadata=attn_metadata).to(self.dtype)
 
-            z = z + self.msa_module(z,
-                                    s_inputs,
-                                    msa,
-                                    has_deletion,
-                                    deletion_value,
-                                    msa_paired,
-                                    msa_mask=msa_mask,
-                                    token_pad_mask=pair_mask,
-                                    attn_metadata=attn_metadata)
+            z = z + self.msa_module(
+                z,
+                s_inputs,
+                msa,
+                has_deletion,
+                deletion_value,
+                msa_paired,
+                msa_mask=msa_mask,
+                token_pad_mask=pair_mask,
+                attn_metadata=attn_metadata,
+            )
 
-            s, z = self.pairformer_module(s,
-                                          z,
-                                          mask=mask,
-                                          pair_mask=pair_mask,
-                                          attn_metadata=attn_metadata)
+            s, z = self.pairformer_module(s, z, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
         return s, z

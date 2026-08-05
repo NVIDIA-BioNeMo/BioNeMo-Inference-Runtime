@@ -29,13 +29,17 @@ from rdkit import Chem
 from tensorrt_bionemo.pipeline.base import FeatureGeneratorBase
 
 from .const import Structure, Token, TokenBond, max_msa_seqs, max_paired_seqs
+from .featurizer import (
+    load_dummy_templates_features,
+    process_atom_features,
+    process_chain_feature_constraints,
+    process_contact_feature_constraints,
+    process_ensemble_features,
+    process_msa_features,
+    process_residue_constraint_features,
+    process_token_features,
+)
 from .template_logic import build_template_features_from_row
-from .featurizer import (load_dummy_templates_features, process_atom_features,
-                         process_chain_feature_constraints,
-                         process_contact_feature_constraints,
-                         process_ensemble_features, process_msa_features,
-                         process_residue_constraint_features,
-                         process_token_features)
 
 
 def _row(context: dict[str, Any]) -> dict[str, Any]:
@@ -151,7 +155,8 @@ class Boltz2TemplateFeatureGenerator(FeatureGeneratorBase):
     template CIF/PDB, tokenize with real coordinates, align query<->template
     chains, and emit the T-stacked ``template_*`` tensors (matching OSS
     ``process_template_features``). With no templates, the no-template path is
-    byte-identical to ``load_dummy_templates_features(1, num_tok)``.
+    byte-identical to ``load_dummy_templates_features(1, num_tok)`` and sets
+    ``has_templates=False`` so the model can skip ``TemplateV2Module``.
     """
 
     def __call__(
@@ -163,7 +168,9 @@ class Boltz2TemplateFeatureGenerator(FeatureGeneratorBase):
         row = _row(context)
         templates_row = row.get("templates")
         if not templates_row:
-            return load_dummy_templates_features(1, num_tok)
+            feats = load_dummy_templates_features(1, num_tok)
+            feats["has_templates"] = torch.tensor(False)
+            return feats
 
         structure = row["structure"]
         tokens = row["tokens"]
@@ -180,7 +187,10 @@ class Boltz2TemplateFeatureGenerator(FeatureGeneratorBase):
             max_templates=getattr(self.config, "max_templates", None),
         )
         if feats is None:
-            return load_dummy_templates_features(1, num_tok)
+            feats = load_dummy_templates_features(1, num_tok)
+            feats["has_templates"] = torch.tensor(False)
+            return feats
+        feats["has_templates"] = torch.tensor(True)
         return feats
 
 

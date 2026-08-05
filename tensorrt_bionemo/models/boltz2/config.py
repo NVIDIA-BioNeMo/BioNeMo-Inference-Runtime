@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,9 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
-                                      MSAModuleConfig, PairformerConfig)
+
+from tensorrt_bionemo.configs import BaseConfig, DiffusionTransformerConfig, MSAModuleConfig, PairformerConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.pipeline.models.boltz2.const import num_tokens
 
@@ -68,12 +67,8 @@ class InputEmbedderConfig(BaseConfig):
 
 
 class TemplateV2ModuleConfig(BaseConfig):
-    """Configuration for the Boltz-2 TemplateV2 module.
+    """Boltz-2 TemplateV2 config. Inner pairformer is bf16 trimul by default."""
 
-    Mirrors the upstream ``TemplateV2Module`` signature in
-    ``boltz/model/modules/trunkv2.py``. The inner ``pairformer`` operates
-    on ``template_dim`` channels (not ``token_z``).
-    """
     token_z: int = _Default.token_z
     template_dim: int = _Default.template_dim
     template_blocks: int = _Default.template_blocks
@@ -91,6 +86,7 @@ class TemplateV2ModuleConfig(BaseConfig):
         num_blocks=_Default.template_blocks,
         num_heads=16,
         no_update_s=True,
+        dtype="bfloat16",
         trimul_high_precision=False,
         attention_initial_norm=False,
         version="v2",
@@ -250,7 +246,7 @@ class Boltz2Config(BaseConfig):
     # Optional cap on stacked templates (T dim). None (default) = no cap =
     # OSS-faithful. Set an int to bound the template module's T*N^2 pair memory
     # (memory-management deviation from OSS, which stacks all templates).
-    max_templates: Optional[int] = None
+    max_templates: int | None = None
     token_s: int = _Default.token_s
     token_z: int = _Default.token_z
     atom_s: int = _Default.atom_s
@@ -261,8 +257,8 @@ class Boltz2Config(BaseConfig):
     fix_sym_check: bool = _Default.fix_sym_check
     cyclic_pos_enc: bool = _Default.cyclic_pos_enc
     bond_type_feature: bool = _Default.bond_type_feature
-    min_dist: float = 2.0,
-    max_dist: float = 22.0,
+    min_dist: float = (2.0,)
+    max_dist: float = (22.0,)
     conditioning_cutoff_min: float = 4.0
     conditioning_cutoff_max: float = 20.0
     num_distograms: int = 1
@@ -277,7 +273,8 @@ class Boltz2Config(BaseConfig):
 
     # v2 template module OFF by default (most folding runs supply no template);
     # enable via TrunkConfig(use_templates_v2=True) when templates are provided.
-    # The pipeline always emits dummy template_* features (tmask=0) either way.
+    # The pipeline emits dummy template_* features plus ``has_templates=False``
+    # when none are supplied; the model then skips TemplateV2Module.
     trunk: TrunkConfig = TrunkConfig(use_templates_v2=False)
 
     structure_module: StructureModuleConfig = StructureModuleConfig()
@@ -296,10 +293,8 @@ class AffinityModuleConfig(BaseConfig):
 
 
 class AffinityEnsembleConfig(AffinityModuleConfig):
-    module1: AffinityModuleConfig = AffinityModuleConfig(
-        pairformer_num_blocks=8)
-    module2: AffinityModuleConfig = AffinityModuleConfig(
-        pairformer_num_blocks=4)
+    module1: AffinityModuleConfig = AffinityModuleConfig(pairformer_num_blocks=8)
+    module2: AffinityModuleConfig = AffinityModuleConfig(pairformer_num_blocks=4)
 
 
 class Boltz2AffinityConfig(Boltz2Config):

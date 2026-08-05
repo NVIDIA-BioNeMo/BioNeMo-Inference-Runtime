@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from functools import partial
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -24,58 +24,56 @@ from tensorrt_bionemo.utils import str_dtype_to_torch
 
 # isort: off
 from tensorrt_bionemo._torch.attention_backend import (
-    AttentionMetadata, auto_select_pairwise_attention_backend,
-    auto_select_triangle_attention_backend)
+    AttentionMetadata,
+    auto_select_pairwise_attention_backend,
+    auto_select_triangle_attention_backend,
+)
 from tensorrt_bionemo._torch.layers.conditioning import ContactConditioning
 from tensorrt_bionemo._torch.layers.distogram import DistogramModule
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.position_encoders import \
-    RelativePositionEncoder
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_gather_indices, query_to_keys_optimized)
+from tensorrt_bionemo._torch.layers.position_encoders import RelativePositionEncoder
+from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
 from tensorrt_bionemo._torch.modules.boltz.affinity import (
-    AffinityModule, compute_distogram, create_cross_pair_mask, get_best_coords)
-from tensorrt_bionemo._torch.modules.boltz.confidence import \
-    Boltz2ConfidenceModule
+    AffinityModule,
+    compute_distogram,
+    create_cross_pair_mask,
+    get_best_coords,
+)
+from tensorrt_bionemo._torch.modules.boltz.confidence import Boltz2ConfidenceModule
 from tensorrt_bionemo._torch.modules.boltz.embedders import Boltz2InputEmbedder
-from tensorrt_bionemo._torch.modules.boltz.physical.steering import \
-    BoltzSteeringParams
-from tensorrt_bionemo._torch.modules.boltz.structure import (
-    AtomDiffusion, DiffusionConditioning)
+from tensorrt_bionemo._torch.modules.boltz.physical.steering import BoltzSteeringParams
+from tensorrt_bionemo._torch.modules.boltz.structure import AtomDiffusion, DiffusionConditioning
 from tensorrt_bionemo._torch.modules.boltz.trunk import Trunk
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.pipeline.models.boltz2.const import (
-    contact_conditioning_info, num_bond_types)
+from tensorrt_bionemo.pipeline.models.boltz2.const import contact_conditioning_info, num_bond_types
 
-from ..optimize_module_setter import (AcceleratedConfig,
-                                      DiscoveredModuleRegistry,
-                                      OptimizedModuleSetterMixin)
+from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry, OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY, Boltz2AffinityConfig
 from .convert import (
-    convert_hf_affinity_module_torch, convert_hf_confidence_module_torch,
-    convert_hf_diffusion_conditioning_torch, convert_hf_input_embedder_torch,
-    convert_hf_msa_module_torch, convert_hf_pairformer_torch,
-    convert_hf_structure_module_torch, convert_hf_template_module_torch)
+    convert_hf_affinity_module_torch,
+    convert_hf_confidence_module_torch,
+    convert_hf_diffusion_conditioning_torch,
+    convert_hf_input_embedder_torch,
+    convert_hf_msa_module_torch,
+    convert_hf_pairformer_torch,
+    convert_hf_structure_module_torch,
+    convert_hf_template_module_torch,
+)
 # isort: on
 
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
-    CUDAGraphOptimizationTracker
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 
 class Boltz2(nn.Module, OptimizedModuleSetterMixin):
-
     # Whitelist gating modules discovered via ``@support_graph_optimization``.
     GRAPH_OPT_ENABLED_MODULES = {
         "token_transformer": "structure_module.score_model.token_transformer",
         "diffusion_module": "structure_module.score_model",
     }
 
-    def __init__(self,
-                 config: BaseConfig = None,
-                 model_name: Optional[str] = None,
-                 include_load_weights: bool = True):
+    def __init__(self, config: BaseConfig = None, model_name: str | None = None, include_load_weights: bool = True):
         super().__init__()
 
         self.model_name = model_name or SupMat.Boltz2
@@ -84,8 +82,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
         self.confidence_prediction = self.config.confidence_prediction
         self.skip_run_structure = self.config.skip_run_structure
-        self.recompute_rel_pos = getattr(self.config, "recompute_rel_pos",
-                                         False)
+        self.recompute_rel_pos = getattr(self.config, "recompute_rel_pos", False)
         # Setup for input embedder
         self.input_embedder_dtype = self.config.input_embedder.torch_dtype
         self.input_embedder_config = self.config.input_embedder
@@ -98,48 +95,53 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         self.structure_module_dtype = self.config.structure_module.torch_dtype
         self.structure_module_config = self.config.structure_module
 
-        #Setup for confidence module
+        # Setup for confidence module
         self.confidence_module_dtype = self.config.confidence_module.torch_dtype
 
         # Build up modules
         self.input_embedder = Boltz2InputEmbedder(self.input_embedder_config)
 
         ### Input projections ###
-        self.s_init = Linear(self.config.token_s,
-                             self.config.token_s,
-                             bias=False,
-                             dtype=self.input_embedder_dtype,
-                             skip_create_weights=False)
-        self.z_init_1 = Linear(self.config.token_s,
-                               self.config.token_z,
-                               bias=False,
-                               dtype=self.input_embedder_dtype,
-                               skip_create_weights=False)
-        self.z_init_2 = Linear(self.config.token_s,
-                               self.config.token_z,
-                               bias=False,
-                               dtype=self.input_embedder_dtype,
-                               skip_create_weights=False)
+        self.s_init = Linear(
+            self.config.token_s,
+            self.config.token_s,
+            bias=False,
+            dtype=self.input_embedder_dtype,
+            skip_create_weights=False,
+        )
+        self.z_init_1 = Linear(
+            self.config.token_s,
+            self.config.token_z,
+            bias=False,
+            dtype=self.input_embedder_dtype,
+            skip_create_weights=False,
+        )
+        self.z_init_2 = Linear(
+            self.config.token_s,
+            self.config.token_z,
+            bias=False,
+            dtype=self.input_embedder_dtype,
+            skip_create_weights=False,
+        )
         self.rel_pos = RelativePositionEncoder(
             token_z=self.config.token_z,
             fix_sym_check=self.config.fix_sym_check,
             cyclic_pos_enc=self.config.cyclic_pos_enc,
             period_broadcast=False,
             dtype=self.input_embedder_dtype,
-            skip_create_weights=False)
-        self.token_bonds = Linear(1,
-                                  self.config.token_z,
-                                  bias=False,
-                                  dtype=self.input_embedder_dtype,
-                                  skip_create_weights=False)
+            skip_create_weights=False,
+        )
+        self.token_bonds = Linear(
+            1, self.config.token_z, bias=False, dtype=self.input_embedder_dtype, skip_create_weights=False
+        )
         if self.config.bond_type_feature:
-            self.token_bonds_type = nn.Embedding(num_bond_types + 1,
-                                                 self.config.token_z)
+            self.token_bonds_type = nn.Embedding(num_bond_types + 1, self.config.token_z)
         self.contact_conditioning = ContactConditioning(
             token_z=self.config.token_z,
             cutoff_min=self.config.conditioning_cutoff_min,
             cutoff_max=self.config.conditioning_cutoff_max,
-            contact_conditioning_info=contact_conditioning_info)
+            contact_conditioning_info=contact_conditioning_info,
+        )
 
         ### Trunk ###
         self.trunk = Trunk(self.trunk_config)
@@ -151,7 +153,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             num_distograms=self.config.num_distograms,
             version="v2",
             dtype=self.structure_module_dtype,
-            skip_create_weights=False)
+            skip_create_weights=False,
+        )
 
         ### Atom diffusion ###
         score_model_config = self.structure_module_config.score_model
@@ -163,10 +166,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             token_z=self.config.token_z,
             atom_s=self.config.atom_s,
             atom_z=self.config.atom_z,
-            atoms_per_window_queries=self.input_embedder_config.
-            atoms_per_window_queries,
-            atoms_per_window_keys=self.input_embedder_config.
-            atoms_per_window_keys,
+            atoms_per_window_queries=self.input_embedder_config.atoms_per_window_queries,
+            atoms_per_window_keys=self.input_embedder_config.atoms_per_window_keys,
             atom_encoder_depth=atom_encoder_config.num_blocks,
             atom_encoder_heads=atom_encoder_config.num_heads,
             token_transformer_depth=token_transformer_config.num_blocks,
@@ -174,27 +175,21 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             atom_decoder_depth=atom_decoder_config.num_blocks,
             atom_decoder_heads=atom_decoder_config.num_heads,
             atom_feature_dim=self.input_embedder_config.atom_feature_dim,
-            conditioning_transition_layers=score_model_config.
-            conditioning_transition_layers,
+            conditioning_transition_layers=score_model_config.conditioning_transition_layers,
             use_no_atom_char=self.input_embedder_config.use_no_atom_char,
-            use_atom_backbone_feat=self.input_embedder_config.
-            use_atom_backbone_feat,
-            use_residue_feats_atoms=self.input_embedder_config.
-            use_residue_feats_atoms,
+            use_atom_backbone_feat=self.input_embedder_config.use_atom_backbone_feat,
+            use_residue_feats_atoms=self.input_embedder_config.use_residue_feats_atoms,
             version="v2",
             dtype=self.structure_module_dtype,
-            pairwise_conditioner_dtype=str_dtype_to_torch(
-                score_model_config.pairwise_conditioning_dtype),
-            token_trans_bias_dtype=str_dtype_to_torch(
-                score_model_config.token_trans_bias_dtype),
+            pairwise_conditioner_dtype=str_dtype_to_torch(score_model_config.pairwise_conditioning_dtype),
+            token_trans_bias_dtype=str_dtype_to_torch(score_model_config.token_trans_bias_dtype),
             skip_create_weights=False,
         )
         self.structure_module = AtomDiffusion(self.structure_module_config)
 
         self.confidence_module = Boltz2ConfidenceModule(
-            self.config.confidence_module,
-            dtype=self.confidence_module_dtype,
-            skip_create_weights=False)
+            self.config.confidence_module, dtype=self.confidence_module_dtype, skip_create_weights=False
+        )
 
         #### End of building up modules ####
 
@@ -203,22 +198,20 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
         self.eval()
 
-    def get_optimized_modules(
-        self, accelerated_configs: dict[str, AcceleratedConfig]
-    ) -> DiscoveredModuleRegistry:
+    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
         return DiscoveredModuleRegistry(
-            self, accelerated_configs,
+            self,
+            accelerated_configs,
             role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
-            graph_optimization_cls=CUDAGraphOptimizationTracker)
+            graph_optimization_cls=CUDAGraphOptimizationTracker,
+        )
 
     @staticmethod
     def get_pretrained_config(model_name: str = SupMat.Boltz2) -> BaseConfig:
         # Set default optimization configs
         config_class = PRETRAINED_CONFIG_REGISTRY.get(model_name)
         if config_class is None:
-            raise ValueError(
-                f"Boltz1 pretrained config not found for model name: {model_name}"
-            )
+            raise ValueError(f"Boltz1 pretrained config not found for model name: {model_name}")
         config = config_class()
         config.input_embedder.diffusion_transformer.set_dtype(torch.bfloat16)
         config.trunk.set_dtype(torch.bfloat16)
@@ -229,25 +222,21 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         config.trunk.set_triangle_attention_backend(tri_backend)
         config.trunk.set_pairwise_attention_backend(pair_backend)
 
-        if getattr(config.trunk, "use_templates_v2", False):
-            # The template module is off by default; when callers flip
-            # ``trunk.use_templates_v2`` on we still want its inner pairformer
-            # (which operates on ``template_dim`` channels) to run in bf16.
-            config.trunk.template_module.pairformer.set_dtype(torch.bfloat16)
-            config.trunk.template_module.pairformer.set_triangle_attention_backend(
-                tri_backend)
-            config.trunk.template_module.pairformer.set_pairwise_attention_backend(
-                pair_backend)
+        # Template inner pairformer (``template_dim`` channels) always stays
+        # bf16 with ``trimul_high_precision=False`` so tri-mul uses fused
+        # dual-GEMM kernels when ``use_templates_v2`` is later enabled.
+        config.trunk.template_module.pairformer.set_dtype(torch.bfloat16)
+        config.trunk.template_module.pairformer.trimul_high_precision = False
+        config.trunk.template_module.pairformer.set_triangle_attention_backend(tri_backend)
+        config.trunk.template_module.pairformer.set_pairwise_attention_backend(pair_backend)
 
         config.structure_module.score_model.set_dtype(torch.bfloat16)
-        config.structure_module.score_model.set_pairwise_attention_backend(
-            pair_backend)
+        config.structure_module.score_model.set_pairwise_attention_backend(pair_backend)
 
         config.confidence_module.set_triangle_attention_backend(tri_backend)
         config.confidence_module.pairformer.set_dtype(torch.bfloat16)
         config.confidence_module.pairformer.s_path_dtype = torch.bfloat16
-        config.confidence_module.pairformer.set_pairwise_attention_backend(
-            pair_backend)
+        config.confidence_module.pairformer.set_pairwise_attention_backend(pair_backend)
 
         return config
 
@@ -257,165 +246,160 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             weights: The weights of the model. State dict of the original model.
         """
         if weights is None:
-            logger.info(
-                f"Input weights is None, try to load weights from hubs")
+            logger.info("Input weights is None, try to load weights from hubs")
             weights = load_weights_from_hubs(name=self.model_name)
         # Load weights for input embedder
         input_embedder_weights = convert_hf_input_embedder_torch(
-            config=self.input_embedder_config,
-            weights=weights,
-            model_name=self.model_name)
+            config=self.input_embedder_config, weights=weights, model_name=self.model_name
+        )
         self.input_embedder.load_weights(input_embedder_weights)
 
         # Load weights for input projections
-        s_init_weights = [{
-            "weight": weights["s_init.weight"],
-            "bias": weights.get("s_init.bias", None)
-        }]
-        z_init_1_weights = [{
-            "weight": weights["z_init_1.weight"],
-            "bias": weights.get("z_init_1.bias", None)
-        }]
-        z_init_2_weights = [{
-            "weight": weights["z_init_2.weight"],
-            "bias": weights.get("z_init_2.bias", None)
-        }]
+        s_init_weights = [{"weight": weights["s_init.weight"], "bias": weights.get("s_init.bias", None)}]
+        z_init_1_weights = [{"weight": weights["z_init_1.weight"], "bias": weights.get("z_init_1.bias", None)}]
+        z_init_2_weights = [{"weight": weights["z_init_2.weight"], "bias": weights.get("z_init_2.bias", None)}]
         self.s_init.load_weights(s_init_weights)
         self.z_init_1.load_weights(z_init_1_weights)
         self.z_init_2.load_weights(z_init_2_weights)
 
-        self.rel_pos.linear.load_weights([{
-            "weight":
-            weights["rel_pos.linear_layer.weight"],
-            "bias":
-            weights.get("rel_pos.linear_layer.bias", None)
-        }])
-        self.token_bonds.load_weights([{
-            "weight":
-            weights["token_bonds.weight"],
-            "bias":
-            weights.get("token_bonds.bias", None)
-        }])
+        self.rel_pos.linear.load_weights(
+            [{"weight": weights["rel_pos.linear_layer.weight"], "bias": weights.get("rel_pos.linear_layer.bias", None)}]
+        )
+        self.token_bonds.load_weights(
+            [{"weight": weights["token_bonds.weight"], "bias": weights.get("token_bonds.bias", None)}]
+        )
         if self.config.bond_type_feature:
-            self.token_bonds_type.weight.data.copy_(
-                weights["token_bonds_type.weight"])
+            self.token_bonds_type.weight.data.copy_(weights["token_bonds_type.weight"])
 
-        self.contact_conditioning.encoding_unspecified.data.copy_(
-            weights["contact_conditioning.encoding_unspecified"])
-        self.contact_conditioning.encoding_unselected.data.copy_(
-            weights["contact_conditioning.encoding_unselected"])
-        self.contact_conditioning.encoder.load_weights([{
-            "weight":
-            weights["contact_conditioning.encoder.weight"],
-            "bias":
-            weights.get("contact_conditioning.encoder.bias", None)
-        }])
-        self.contact_conditioning.fourier_embedding.proj.load_weights([{
-            "weight":
-            weights["contact_conditioning.fourier_embedding.proj.weight"],
-            "bias":
-            weights.get("contact_conditioning.fourier_embedding.proj.bias",
-                        None)
-        }])
+        self.contact_conditioning.encoding_unspecified.data.copy_(weights["contact_conditioning.encoding_unspecified"])
+        self.contact_conditioning.encoding_unselected.data.copy_(weights["contact_conditioning.encoding_unselected"])
+        self.contact_conditioning.encoder.load_weights(
+            [
+                {
+                    "weight": weights["contact_conditioning.encoder.weight"],
+                    "bias": weights.get("contact_conditioning.encoder.bias", None),
+                }
+            ]
+        )
+        self.contact_conditioning.fourier_embedding.proj.load_weights(
+            [
+                {
+                    "weight": weights["contact_conditioning.fourier_embedding.proj.weight"],
+                    "bias": weights.get("contact_conditioning.fourier_embedding.proj.bias", None),
+                }
+            ]
+        )
 
         assert weights is not None, "Input weights is None"
         trunk_weights = {}
         # load the weights for the msa_module and pairformer_module
         trunk_weights["msa_module"] = convert_hf_msa_module_torch(
-            config=self.trunk_config.msa_module,
-            weights=weights,
-            model_name=self.model_name)
+            config=self.trunk_config.msa_module, weights=weights, model_name=self.model_name
+        )
         trunk_weights["pairformer_module"] = convert_hf_pairformer_torch(
-            config=self.trunk_config.pairformer,
-            weights=weights,
-            model_name=self.model_name)
+            config=self.trunk_config.pairformer, weights=weights, model_name=self.model_name
+        )
         if getattr(self.trunk_config, "use_templates_v2", False):
-            trunk_weights[
-                "template_module"] = convert_hf_template_module_torch(
-                    config=self.trunk_config.template_module,
-                    weights=weights,
-                    model_name=self.model_name)
+            trunk_weights["template_module"] = convert_hf_template_module_torch(
+                config=self.trunk_config.template_module, weights=weights, model_name=self.model_name
+            )
         # construct the remaining weights for the trunk module
         for subname in ["s_norm", "z_norm", "s_recycle", "z_recycle"]:
             if subname not in trunk_weights:
-                trunk_weights[subname] = [{
-                    "weight":
-                    weights[subname + ".weight"],
-                    "bias":
-                    weights.get(subname + ".bias", None)
-                }]
+                trunk_weights[subname] = [
+                    {"weight": weights[subname + ".weight"], "bias": weights.get(subname + ".bias", None)}
+                ]
         self.trunk.load_weights(trunk_weights)
 
         # Load weights for distogram
-        self.distogram_module.distogram.load_weights([{
-            "weight":
-            weights["distogram_module.distogram.weight"],
-            "bias":
-            weights.get("distogram_module.distogram.bias", None)
-        }])
+        self.distogram_module.distogram.load_weights(
+            [
+                {
+                    "weight": weights["distogram_module.distogram.weight"],
+                    "bias": weights.get("distogram_module.distogram.bias", None),
+                }
+            ]
+        )
 
         # Load weights for atom diffusion
         diffusion_conditioning_weights = convert_hf_diffusion_conditioning_torch(
-            config=self.structure_module_config.score_model,
-            weights=weights,
-            model_name=self.model_name)
-        self.diffusion_conditioning.load_weights(
-            diffusion_conditioning_weights)
+            config=self.structure_module_config.score_model, weights=weights, model_name=self.model_name
+        )
+        self.diffusion_conditioning.load_weights(diffusion_conditioning_weights)
 
         structure_module_weights = convert_hf_structure_module_torch(
-            config=self.structure_module_config,
-            weights=weights,
-            model_name=self.model_name)
+            config=self.structure_module_config, weights=weights, model_name=self.model_name
+        )
         self.structure_module.load_weights(structure_module_weights)
 
         confidence_module_weights = convert_hf_confidence_module_torch(
-            config=self.config.confidence_module,
-            weights=weights,
-            model_name=self.model_name)
+            config=self.config.confidence_module, weights=weights, model_name=self.model_name
+        )
         self.confidence_module.load_weights(confidence_module_weights)
 
-    def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor],
-                             module_name: str) -> dict[str, Any]:
+    def get_module_feed_dict(self, feed_dict: dict[str, torch.Tensor], module_name: str) -> dict[str, Any]:
         keys = []
         if module_name == "input_embedder":
             keys = [
-                "atom_to_token", "ref_pos", "atom_pad_mask", "ref_space_uid",
-                "ref_charge", "ref_element", "ref_atom_name_chars", "res_type",
-                "profile", "deletion_mean", "pocket_feature",
-                "atom_backbone_feat", "method_feature", "modified",
-                "cyclic_period", "mol_type"
+                "atom_to_token",
+                "ref_pos",
+                "atom_pad_mask",
+                "ref_space_uid",
+                "ref_charge",
+                "ref_element",
+                "ref_atom_name_chars",
+                "res_type",
+                "profile",
+                "deletion_mean",
+                "pocket_feature",
+                "atom_backbone_feat",
+                "method_feature",
+                "modified",
+                "cyclic_period",
+                "mol_type",
             ]
         elif module_name == "input_embedder_affinity":
             keys = [
-                "atom_to_token", "ref_pos", "atom_pad_mask", "ref_space_uid",
-                "ref_charge", "ref_element", "ref_atom_name_chars", "res_type",
-                "profile_affinity", "deletion_mean_affinity", "pocket_feature",
-                "atom_backbone_feat", "method_feature", "modified",
-                "cyclic_period", "mol_type"
+                "atom_to_token",
+                "ref_pos",
+                "atom_pad_mask",
+                "ref_space_uid",
+                "ref_charge",
+                "ref_element",
+                "ref_atom_name_chars",
+                "res_type",
+                "profile_affinity",
+                "deletion_mean_affinity",
+                "pocket_feature",
+                "atom_backbone_feat",
+                "method_feature",
+                "modified",
+                "cyclic_period",
+                "mol_type",
             ]
         elif module_name == "relative_position_encoding":
-            keys = [
-                "asym_id", "residue_index", "entity_id", "cyclic_period",
-                "token_index", "sym_id"
-            ]
+            keys = ["asym_id", "residue_index", "entity_id", "cyclic_period", "token_index", "sym_id"]
         elif module_name == "trunk":
-            keys = [
-                "msa", "has_deletion", "deletion_value", "msa_paired",
-                "msa_mask", "token_pad_mask"
-            ]
+            keys = ["msa", "has_deletion", "deletion_value", "msa_paired", "msa_mask", "token_pad_mask"]
         elif module_name == "template":
             keys = [
-                "template_restype", "template_frame_rot", "template_frame_t",
-                "template_mask_frame", "template_cb", "template_ca",
-                "template_mask_cb", "visibility_ids", "template_mask"
+                "template_restype",
+                "template_frame_rot",
+                "template_frame_t",
+                "template_mask_frame",
+                "template_cb",
+                "template_ca",
+                "template_mask_cb",
+                "visibility_ids",
+                "template_mask",
             ]
         else:
             raise ValueError(f"Module name {module_name} not supported")
         dict_ret = {key: feed_dict.get(key, None) for key in keys}
 
         if module_name == "input_embedder_affinity":
-            dict_ret['profile'] = dict_ret.pop('profile_affinity')
-            dict_ret['deletion_mean'] = dict_ret.pop('deletion_mean_affinity')
+            dict_ret["profile"] = dict_ret.pop("profile_affinity")
+            dict_ret["deletion_mean"] = dict_ret.pop("deletion_mean_affinity")
 
         return dict_ret
 
@@ -423,31 +407,25 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         W = self.input_embedder_config.atoms_per_window_queries
         H = self.input_embedder_config.atoms_per_window_keys
         K = n_atoms // W
-        gather_indices, _ = create_gather_indices(K,
-                                                  W,
-                                                  H,
-                                                  device=torch.device("cuda"))
-        query_to_keys_func = partial(query_to_keys_optimized,
-                                     gather_indices=gather_indices,
-                                     W=W,
-                                     H=H)
-        return AttentionMetadata(query_to_keys=query_to_keys_func,
-                                 bias_cache=None)
+        gather_indices, _ = create_gather_indices(K, W, H, device=torch.device("cuda"))
+        query_to_keys_func = partial(query_to_keys_optimized, gather_indices=gather_indices, W=W, H=H)
+        return AttentionMetadata(query_to_keys=query_to_keys_func, bias_cache=None)
 
-    def forward(self,
-                feed_dict: dict[str, torch.Tensor],
-                recycling_steps: int = 3,
-                num_sampling_steps: Optional[int] = 200,
-                diffusion_samples: int = 1,
-                max_parallel_samples: Optional[int] = None,
-                steering_args: BoltzSteeringParams = None,
-                affinity: bool = False) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        feed_dict: dict[str, torch.Tensor],
+        recycling_steps: int = 3,
+        num_sampling_steps: int | None = 200,
+        diffusion_samples: int = 1,
+        max_parallel_samples: int | None = None,
+        steering_args: BoltzSteeringParams = None,
+        affinity: bool = False,
+    ) -> dict[str, torch.Tensor]:
 
         # Training-only feats: never read in inference (forward + postprocessor). Drop them up front
         # so they don't sit on the GPU -- disto_target is ~7.9 GB, the atom-map feats ~1 GB each at
         # N~4000. Handles feed_dicts from the OSS data pipeline, which still emits these.
-        for _train_only_key in ("disto_target", "token_to_center_atom",
-                                "r_set_to_rep_atom"):
+        for _train_only_key in ("disto_target", "token_to_center_atom", "r_set_to_rep_atom"):
             feed_dict.pop(_train_only_key, None)
 
         if steering_args is None:
@@ -466,10 +444,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         s_init = self.s_init(s_inputs)
 
         # Initialize pairwise embeddings
-        z_init = (self.z_init_1(s_inputs)[:, :, None] +
-                  self.z_init_2(s_inputs)[:, None, :])
-        rel_pos_feats = self.get_module_feed_dict(
-            feed_dict, "relative_position_encoding")
+        z_init = self.z_init_1(s_inputs)[:, :, None] + self.z_init_2(s_inputs)[:, None, :]
+        rel_pos_feats = self.get_module_feed_dict(feed_dict, "relative_position_encoding")
         relative_position_encoding = self.rel_pos(**rel_pos_feats)
         # In-place accumulation: z_init is a freshly-owned [B,N,N,c_z] (from the broadcast add
         # above), so fold each term into it rather than allocating a new z_init per '+' (each of
@@ -485,19 +461,26 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
         if self.config.bond_type_feature:
             z_init += self.token_bonds_type(feed_dict["type_bonds"].long())
-        z_init += self.contact_conditioning(feed_dict["contact_conditioning"],
-                                            feed_dict["contact_threshold"])
+        z_init += self.contact_conditioning(feed_dict["contact_conditioning"], feed_dict["contact_threshold"])
 
-        # Do trunk
+        # Do trunk. Skip TemplateV2Module when the pipeline reports no real
+        # templates (dummy ``template_*`` tensors alone would still burn a
+        # full T·N² pairformer pass per recycle).
         template_feats = None
         if getattr(self.trunk_config, "use_templates_v2", False):
-            template_feats = self.get_module_feed_dict(feed_dict, "template")
-        s, z = self.trunk(s_init=s_init,
-                          z_init=z_init,
-                          s_inputs=s_inputs,
-                          **self.get_module_feed_dict(feed_dict, "trunk"),
-                          recycling_steps=recycling_steps,
-                          template_feats=template_feats)
+            has_templates = feed_dict.get("has_templates", True)
+            if isinstance(has_templates, torch.Tensor):
+                has_templates = bool(has_templates.reshape(-1)[0].item())
+            if has_templates:
+                template_feats = self.get_module_feed_dict(feed_dict, "template")
+        s, z = self.trunk(
+            s_init=s_init,
+            z_init=z_init,
+            s_inputs=s_inputs,
+            **self.get_module_feed_dict(feed_dict, "trunk"),
+            recycling_steps=recycling_steps,
+            template_feats=template_feats,
+        )
         # Run distogram module
         pair_distogram = self.distogram_module(z)
 
@@ -551,61 +534,38 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             pred_distogram_logits=pair_distogram[:, :, :, 0],
             multiplicity=diffusion_samples,
             run_sequentially=True,
-            max_parallel_samples=max_parallel_samples
-            if max_parallel_samples is not None else 1,
+            max_parallel_samples=max_parallel_samples if max_parallel_samples is not None else 1,
         )
 
         boltz2_output_dictionary = {
-            "confidence_score":
-            (4 * confidence_module_output["complex_plddt"] +
-             confidence_module_output["iptm"]) / 5,
-            "masks":
-            feed_dict["atom_pad_mask"],
-            "token_masks":
-            feed_dict["token_pad_mask"],
-            "coords":
-            x_pred,
-            "pde":
-            confidence_module_output["pde"],
-            "pae":
-            confidence_module_output["pae"],
-            "complex_plddt":
-            confidence_module_output["complex_plddt"],
-            "complex_iplddt":
-            confidence_module_output["complex_iplddt"],
-            "complex_pde":
-            confidence_module_output["complex_pde"],
-            "complex_ipde":
-            confidence_module_output["complex_ipde"],
-            "plddt":
-            confidence_module_output["plddt"],
-            "ptm":
-            confidence_module_output["ptm"],
-            "iptm":
-            confidence_module_output["iptm"],
-            "ligand_iptm":
-            confidence_module_output["ligand_iptm"],
-            "protein_iptm":
-            confidence_module_output["protein_iptm"],
-            "pair_chains_iptm":
-            confidence_module_output["pair_chains_iptm"],
+            "confidence_score": (4 * confidence_module_output["complex_plddt"] + confidence_module_output["iptm"]) / 5,
+            "masks": feed_dict["atom_pad_mask"],
+            "token_masks": feed_dict["token_pad_mask"],
+            "coords": x_pred,
+            "pde": confidence_module_output["pde"],
+            "pae": confidence_module_output["pae"],
+            "complex_plddt": confidence_module_output["complex_plddt"],
+            "complex_iplddt": confidence_module_output["complex_iplddt"],
+            "complex_pde": confidence_module_output["complex_pde"],
+            "complex_ipde": confidence_module_output["complex_ipde"],
+            "plddt": confidence_module_output["plddt"],
+            "ptm": confidence_module_output["ptm"],
+            "iptm": confidence_module_output["iptm"],
+            "ligand_iptm": confidence_module_output["ligand_iptm"],
+            "protein_iptm": confidence_module_output["protein_iptm"],
+            "pair_chains_iptm": confidence_module_output["pair_chains_iptm"],
         }
         if affinity:
-            affinity_output_dictionary = {
-                'z': z,
-                'attention_metadata': attn_metadata
-            }
+            affinity_output_dictionary = {"z": z, "attention_metadata": attn_metadata}
             return boltz2_output_dictionary, affinity_output_dictionary
 
         return boltz2_output_dictionary
 
 
 class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
-
-    def __init__(self,
-                 config: Boltz2AffinityConfig = None,
-                 model_name: Optional[str] = None,
-                 include_load_weights: bool = True):
+    def __init__(
+        self, config: Boltz2AffinityConfig = None, model_name: str | None = None, include_load_weights: bool = True
+    ):
 
         if config is None:
             config = Boltz2Affinity.get_pretrained_config()
@@ -618,20 +578,19 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
         self.affinity_module2 = AffinityModule(self.config.affinity.module2)
 
         boundaries = torch.linspace(
-            2, self.config.affinity.module1.max_dist,
-            self.config.affinity.module1.num_dist_bins - 1)
+            2, self.config.affinity.module1.max_dist, self.config.affinity.module1.num_dist_bins - 1
+        )
         self.register_buffer("boundaries_1", boundaries)
         boundaries = torch.linspace(
-            2, self.config.affinity.module2.max_dist,
-            self.config.affinity.module2.num_dist_bins - 1)
+            2, self.config.affinity.module2.max_dist, self.config.affinity.module2.num_dist_bins - 1
+        )
         self.register_buffer("boundaries_2", boundaries)
 
         if include_load_weights:
             self.load_weights()
 
     @staticmethod
-    def get_pretrained_config(
-            model_name: str = SupMat.Boltz2Affinity) -> Boltz2AffinityConfig:
+    def get_pretrained_config(model_name: str = SupMat.Boltz2Affinity) -> Boltz2AffinityConfig:
         # ``Boltz2.get_pretrained_config`` resolves ``model_name`` via
         # ``PRETRAINED_CONFIG_REGISTRY`` (returns ``Boltz2AffinityConfig``
         # for ``SupMat.Boltz2Affinity``) and configures the trunk,
@@ -642,8 +601,7 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
         config = Boltz2.get_pretrained_config(model_name)
         # Affinity cross_pair_mask is bipartite, not left-aligned; CuTeDSL rejects it.
         tri_backend = "CUEQUIV"
-        for affinity_module_config in (config.affinity.module1,
-                                       config.affinity.module2):
+        for affinity_module_config in (config.affinity.module1, config.affinity.module2):
             affinity_module_config.set_dtype(torch.bfloat16)
             affinity_module_config.set_triangle_attention_backend(tri_backend)
         return config
@@ -656,30 +614,31 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
 
     def load_affinity_weights(self, weights: dict = None) -> None:
         if weights is None:
-            logger.info(
-                f"Input weights is None, try to load weights from hubs")
+            logger.info("Input weights is None, try to load weights from hubs")
             weights = load_weights_from_hubs(name=self.model_name)
         affinity_weights_1 = convert_hf_affinity_module_torch(
             config=self.config.affinity.module1,
             weights=weights,
             model_name=self.model_name,
-            affinity_module_name="affinity_module1")
+            affinity_module_name="affinity_module1",
+        )
         affinity_weights_2 = convert_hf_affinity_module_torch(
             config=self.config.affinity.module2,
             weights=weights,
             model_name=self.model_name,
-            affinity_module_name="affinity_module2")
+            affinity_module_name="affinity_module2",
+        )
         self.affinity_module1.load_weights(affinity_weights_1)
         self.affinity_module2.load_weights(affinity_weights_2)
 
     def forward(
-            self,
-            feed_dict: dict[str, torch.Tensor],
-            recycling_steps: int = 3,
-            num_sampling_steps: Optional[int] = 200,
-            diffusion_samples: int = 1,
-            max_parallel_samples: Optional[int] = None,
-            steering_args: BoltzSteeringParams = None
+        self,
+        feed_dict: dict[str, torch.Tensor],
+        recycling_steps: int = 3,
+        num_sampling_steps: int | None = 200,
+        diffusion_samples: int = 1,
+        max_parallel_samples: int | None = None,
+        steering_args: BoltzSteeringParams = None,
     ) -> dict[str, torch.Tensor]:
 
         if steering_args is not None:
@@ -693,34 +652,34 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
             diffusion_samples,
             max_parallel_samples,
             steering_args,
-            affinity=True)
+            affinity=True,
+        )
 
         s_inputs_affinity = self.input_embedder(
             **self.get_module_feed_dict(feed_dict, "input_embedder_affinity"),
-            attn_metadata=affinity_output_dictionary['attention_metadata'],
+            attn_metadata=affinity_output_dictionary["attention_metadata"],
         )
 
         # Get the best coordinates to get the affinity prediction.
-        best_coords = get_best_coords(boltz2_output_dictionary['coords'],
-                                      boltz2_output_dictionary['iptm'])
-        distogram = compute_distogram(best_coords, self.boundaries_1,
-                                      feed_dict["token_to_rep_atom"])
+        best_coords = get_best_coords(boltz2_output_dictionary["coords"], boltz2_output_dictionary["iptm"])
+        distogram = compute_distogram(best_coords, self.boundaries_1, feed_dict["token_to_rep_atom"])
 
         cross_pair_mask_0, cross_pair_mask_1 = create_cross_pair_mask(
             feed_dict["token_pad_mask"],
             feed_dict["mol_type"],
             feed_dict["affinity_token_mask"],
-            include_mask_for_head=True)
+            include_mask_for_head=True,
+        )
 
         affinity_dtype = self.config.affinity.module1.torch_dtype
-        assert (self.config.affinity.module2.torch_dtype == affinity_dtype), (
+        assert self.config.affinity.module2.torch_dtype == affinity_dtype, (
             "Boltz2Affinity expects affinity.module1 and affinity.module2 to "
             "share the same dtype; got "
-            f"{affinity_dtype} vs {self.config.affinity.module2.torch_dtype}.")
+            f"{affinity_dtype} vs {self.config.affinity.module2.torch_dtype}."
+        )
         cross_pair_mask_0 = cross_pair_mask_0.to(affinity_dtype)
         cross_pair_mask_1 = cross_pair_mask_1.to(affinity_dtype)
-        z_affinity = (affinity_output_dictionary['z'].to(affinity_dtype) *
-                      cross_pair_mask_0.unsqueeze(-1))
+        z_affinity = affinity_output_dictionary["z"].to(affinity_dtype) * cross_pair_mask_0.unsqueeze(-1)
         s_inputs_affinity = s_inputs_affinity.to(affinity_dtype)
 
         affinity_probabilities = []
@@ -728,9 +687,10 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
         affinity_embeddings = []
         for boundaries, affinity_module in zip(
             [self.boundaries_1, self.boundaries_2],
-            [self.affinity_module1, self.affinity_module2]):
-            distogram = compute_distogram(best_coords, boundaries,
-                                          feed_dict["token_to_rep_atom"])
+            [self.affinity_module1, self.affinity_module2],
+            strict=True,
+        ):
+            distogram = compute_distogram(best_coords, boundaries, feed_dict["token_to_rep_atom"])
 
             pred_value, logits_binary, affinity_embedding = affinity_module(
                 s=s_inputs_affinity,
@@ -747,17 +707,14 @@ class Boltz2Affinity(Boltz2, OptimizedModuleSetterMixin):
 
         affinity_embedding_1 = affinity_embeddings[0]
         affinity_embedding_2 = affinity_embeddings[1]
-        boltz2_output_dictionary.update({
-            "affinity_pred_value":
-            torch.concat(affinity_pred_values).mean(),
-            "affinity_probability_binary":
-            torch.concat(affinity_probabilities).mean(),
-            "affinity_embedding":
-            (affinity_embedding_1 + affinity_embedding_2) / 2,
-            "affinity_embedding1":
-            affinity_embedding_1,
-            "affinity_embedding2":
-            affinity_embedding_2,
-        })
+        boltz2_output_dictionary.update(
+            {
+                "affinity_pred_value": torch.concat(affinity_pred_values).mean(),
+                "affinity_probability_binary": torch.concat(affinity_probabilities).mean(),
+                "affinity_embedding": (affinity_embedding_1 + affinity_embedding_2) / 2,
+                "affinity_embedding1": affinity_embedding_1,
+                "affinity_embedding2": affinity_embedding_2,
+            }
+        )
 
         return boltz2_output_dictionary

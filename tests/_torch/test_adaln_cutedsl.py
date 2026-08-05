@@ -133,9 +133,7 @@ def test_adaln_cutedsl_matches_torch(sc: Scenario):
     if dtype == torch.float32:
         torch.testing.assert_close(out_cute, out_ref, atol=1e-4, rtol=1e-4)
     else:
-        # bf16: compare both backends against an fp32 ground truth. We build a
-        # fresh fp32 AdaLN with the bf16 weights upcast so the bf16 modules
-        # remain untouched.
+        # bf16: compare both backends against an fp32 ground truth.
         adaln_fp32 = AdaLN(dim=sc.dim,
                            dim_single_cond=sc.dim_single_cond,
                            dtype=torch.float32).to(device)
@@ -195,8 +193,6 @@ def test_custom_op_matches_vanilla(dtype: torch.dtype, shape: tuple):
     assert out_fused.shape == out_ref.shape == x_orig.shape
     assert out_fused.dtype == out_ref.dtype == dtype
 
-    # Compare in fp32 against an fp32-promoted reference to isolate kernel vs
-    # PyTorch quantization differences.
     out_ref_fp32 = _torch_adaln_layernorm_sigmoid(
         x_orig.float(), s_scale.float(), s_bias.float(), eps=eps)
 
@@ -206,9 +202,7 @@ def test_custom_op_matches_vanilla(dtype: torch.dtype, shape: tuple):
     if dtype == torch.float32:
         torch.testing.assert_close(out_fused, out_ref, atol=1e-4, rtol=1e-4)
     else:
-        # bf16: the kernel does reductions in fp32, which can be slightly
-        # better than torch's bf16 path. Allow 2x the torch quantization
-        # error before flagging.
+        # Allow 2x the torch backend's quantization error.
         assert diff_fused < max(diff_torch * 2.0, 0.05), (
             f"fused err {diff_fused:.3e} too large vs torch err "
             f"{diff_torch:.3e}")
@@ -286,9 +280,7 @@ def test_adaln_default_backend_is_cutedsl():
 
 # ---------------------------------------------------------------------------
 # Multiplicity broadcast — s_scale / s_bias have size 1 on one leading dim
-# (e.g. AdaLN with multi-sample diffusion: x is [B, S, I, D] and s is
-# [B, 1, I, D]). Before the broadcast kernel variant existed, the wrapper
-# raised on shape mismatch and AdaLN silently fell back to torch.
+# (e.g. x is [B, S, I, D] and s is [B, 1, I, D]).
 # ---------------------------------------------------------------------------
 
 
@@ -296,45 +288,33 @@ def test_adaln_default_backend_is_cutedsl():
 @pytest.mark.parametrize(
     "x_shape, s_shape",
     [
-        # AdaLN multi-sample case: multiplicity dim is second from front.
+        # Multi-sample case: multiplicity dim is second from front.
         ((1, 5, 128, 768), (1, 1, 128, 768)),
         ((2, 8, 128, 384), (2, 1, 128, 384)),
         ((1, 10, 256, 768), (1, 1, 256, 768)),
         ((1, 4, 512, 768), (1, 1, 512, 768)),
         # Long seq, large multiplicity.
         ((1, 32, 128, 256), (1, 1, 128, 256)),
-        # Broadcast on the batch dim — inner = seq_len still satisfies
-        # ``tile_rows | inner``.
+        # Broadcast on the batch dim.
         ((4, 128, 768), (1, 128, 768)),
         ((4, 5, 64, 256), (1, 5, 64, 256)),
-        # 5-D layout: ``(B, S, I, J, D)`` with multiplicity at dim 1.
-        # ``inner = I*J = 28*32 = 896``, comfortably > tile_rows for any N.
+        # 5-D layout ``(B, S, I, J, D)`` with multiplicity at dim 1.
         ((1, 5, 28, 32, 128), (1, 1, 28, 32, 128)),
         # 5-D layout but broadcast on an interior dim (dim 2).
         ((2, 4, 7, 128, 384), (2, 4, 1, 128, 384)),
         ((2, 6, 8, 384), (2, 1, 8, 384)),
-        # --- Non-aligned ``inner`` cases. These violate the kernel's
-        # ``inner % tile_rows == 0 and inner >= tile_rows`` constraint for
-        # the default M-bucket — the wrapper detects this and falls back
-        # to the bigM config (tile_rows=1) which always satisfies it.
-        ((1, 4, 3, 768), (1, 1, 3, 768)),     # inner=3 (default tile_rows=4)
-        ((1, 5, 7, 384), (1, 1, 7, 384)),     # inner=7 (default tile_rows=4)
-        ((2, 4, 5, 128), (2, 1, 5, 128)),     # inner=5 (small-M tile_rows=16)
-        ((1, 8, 1, 768), (1, 1, 1, 768)),     # inner=1 (extreme)
-        ((1, 3, 6, 384), (1, 1, 6, 384)),     # inner=6 (default tile_rows=4)
+        # Small / odd ``inner = prod(x.shape[bcast_dim + 1:-1])``.
+        ((1, 4, 3, 768), (1, 1, 3, 768)),     # inner=3
+        ((1, 5, 7, 384), (1, 1, 7, 384)),     # inner=7
+        ((2, 4, 5, 128), (2, 1, 5, 128)),     # inner=5
+        ((1, 8, 1, 768), (1, 1, 1, 768)),     # inner=1
+        ((1, 3, 6, 384), (1, 1, 6, 384)),     # inner=6
     ],
 )
 def test_custom_op_broadcast(dtype: torch.dtype, x_shape: tuple,
                              s_shape: tuple):
     """Kernel must produce torch-equivalent output when s_scale / s_bias
-    broadcast against one leading dim of x.
-
-    Constraint exercised here: there is always at least one non-broadcast
-    dim *between* ``bcast_dim`` and the trailing N dim, so ``inner =
-    prod(x.shape[bcast_dim+1:-1]) >= seq_len``. The kernel's bidx_s formula
-    requires ``inner`` to be a multiple of (and at least as large as) the
-    bucket's ``tile_rows`` — true for AdaLN's real shapes where ``inner``
-    is the sequence length (128/256/512/1024)."""
+    broadcast against one leading dim of x."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
 
@@ -374,11 +354,7 @@ def test_custom_op_broadcast(dtype: torch.dtype, x_shape: tuple,
 
 def test_adaln_multisample_does_not_fall_back():
     """Regression: with x=[B,S,I,D] and s=[B,1,I,D], the CuTeDSL kernel must
-    actually run — not get disabled by the try/except in AdaLN.forward.
-
-    Before the kernel gained broadcast support, ``self._fused_op`` got set to
-    ``None`` on the first multi-sample forward and stayed None for the
-    lifetime of the module, silently degrading to the torch path."""
+    actually run rather than get disabled inside ``AdaLN.forward``."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
 

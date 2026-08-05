@@ -18,8 +18,7 @@ Verifies that wrapping the diffusion (token) transformer in the CUDA-graph
 optimizer produces the *same* predicted structures as the unoptimized
 ("original") model — for both **OpenFold3** and **boltz-2**.
 
-Both runs go through the public ``build_processor`` API (the same entry point
-used by ``docs/release_artifacts/scripts/run_pipeline.py``) on the in-process
+Both runs go through the public ``build_processor`` API on the in-process
 **serial** backend, over three bundled sample targets from
 ``examples/data/samples`` (the three smallest CASP14 monomers). The only
 difference between the two runs is the ``accelerated_configs`` passed to the

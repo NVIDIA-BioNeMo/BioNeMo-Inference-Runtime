@@ -126,7 +126,7 @@ _AVAILABILITY_EXC = _availability_exceptions()
 def _load_request(sample_id: str) -> InputRequest:
     """Build an ``InputRequest`` from ``monomers/<sample_id>.json``.
 
-    Mirrors the JSON schema consumed by ``run_pipeline.py``: a single protein
+    Mirrors the pipeline's request JSON schema: a single protein
     polymer with an ``msas`` path resolved relative to the monomers directory.
     Both OpenFold3 and boltz2 consume this same request schema.
     """
@@ -233,7 +233,7 @@ def _run_pipeline(config: EngineProcessorConfig,
     # No outer inference_mode: the folding engine's execute() already applies
     # @torch.inference_mode() for the model forward (this is what disables grad
     # so the tracker captures/replays), while the upstream CPU stages run in
-    # normal mode — matching run_pipeline.py's serial path.
+    # normal mode — matching the serial pipeline path.
     seed_everything(SEED)
     try:
         processor(records)

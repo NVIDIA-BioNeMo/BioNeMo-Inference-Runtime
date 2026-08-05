@@ -100,9 +100,8 @@ workdir/
 # the biggest build-context contributors.
 # ---------------------------------------------------------------------------
 
-# Release-bundle model checkpoints (~0.7 GB git-LFS). The pytest job NGC-downloads
-# its own checkpoints and no Dockerfile COPYs docs/ (the release-bundle assembly
-# runs on the CI checkout, not in the image), so none of this is needed here.
+# Documentation. Nothing in the dev/test image builds or runs docs/, and no
+# Dockerfile COPYs it, so keep it out of the build context.
 docs/
 
 # openfold-3: only the openfold3/ python package is imported by tests.

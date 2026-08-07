@@ -41,7 +41,7 @@ class Scenario:
     triangle_attn_backend: str = "VANILLA"
 
 
-def _create_evoformer_block(ref_module, sc, torch_dtype):
+def _create_evoformer_block(ref_module, sc, torch_dtype, pair_mask_left_aligned=True):
     """Helper to build an EvoformerBlock from a reference module + scenario."""
     return EvoformerBlock(
         local_layer_idx=0,
@@ -59,6 +59,7 @@ def _create_evoformer_block(ref_module, sc, torch_dtype):
         triangle_attn_backend=sc.triangle_attn_backend,
         support_batch=True,
         dtype=torch_dtype,
+        pair_mask_left_aligned=pair_mask_left_aligned,
         triangle_attn_node_chunk_size=0,
         eps=ref_module.eps,
         inf=ref_module.inf,
@@ -194,6 +195,23 @@ def test_evoformer_block_precomputed_masks(sc: Scenario):
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
 
 
+@pytest.mark.parametrize("pair_mask_left_aligned", [True, False])
+def test_evoformer_pair_mask_contract_propagates(pair_mask_left_aligned):
+    ref_module = RefEvoformerBlock.load_weights()
+    module = _create_evoformer_block(
+        ref_module,
+        Scenario(),
+        torch.float32,
+        pair_mask_left_aligned=pair_mask_left_aligned,
+    )
+
+    assert module.pair_mask_left_aligned is pair_mask_left_aligned
+    assert module.tri_mul_out.pair_mask_left_aligned is pair_mask_left_aligned
+    assert module.tri_mul_in.pair_mask_left_aligned is pair_mask_left_aligned
+    assert module.tri_attn_start.pair_mask_left_aligned is pair_mask_left_aligned
+    assert module.tri_attn_end.pair_mask_left_aligned is pair_mask_left_aligned
+
+
 # ---------------------------------------------------------------------------
 # Tests for dual_gemm_x_x ``actual_seqlen`` wiring in ``EvoformerBlock.forward``
 # ---------------------------------------------------------------------------
@@ -265,6 +283,18 @@ def test_evoformer_block_actual_seqlen_wiring():
     assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is mb_int32
     assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is mb_int32_t
 
+    module.pair_mask_left_aligned = False
+    module.tri_mul_out.reset_mock()
+    module.tri_mul_in.reset_mock()
+    module.tri_attn_start.reset_mock()
+    module.tri_attn_end.reset_mock()
+    module(m, z, msa_mask, pair_mask, precomputed_masks=pre_cutedsl)
+    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
+    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    assert module.tri_attn_start.call_args.kwargs["mask_bias"] is None
+    assert module.tri_attn_end.call_args.kwargs["mask_bias"] is None
+
+    module.pair_mask_left_aligned = True
     module.tri_mul_out.reset_mock()
     module.tri_mul_in.reset_mock()
     mb_float = torch.zeros(B, sc.n_res, 1, 1, sc.n_res, dtype=torch_dtype, device=device)

@@ -86,7 +86,7 @@ def _tiny_feats(device):
     }
 
 
-def _run(module, prob_contact, device, multiplicity=1):
+def _run(module, prob_contact, device, multiplicity=1, run_sequentially=True, max_parallel_samples=1):
     torch.manual_seed(0)
     return module(
         s_inputs=torch.randn(1, N_TOKENS, TOKEN_S, device=device),
@@ -96,6 +96,8 @@ def _run(module, prob_contact, device, multiplicity=1):
         feats=_tiny_feats(device),
         prob_contact=prob_contact,
         multiplicity=multiplicity,
+        run_sequentially=run_sequentially,
+        max_parallel_samples=max_parallel_samples,
     )
 
 
@@ -116,6 +118,31 @@ def test_forward_consumes_reduced_prob_contact(multiplicity):
         value = out[key]
         assert value.shape[:2] == (1, multiplicity), key
         assert torch.isfinite(value).all(), key
+
+
+@pytest.mark.parametrize(
+    ("run_sequentially", "max_parallel_samples", "expected_iterations"),
+    [(True, 1, 1), (True, 3, 1), (False, 1, 2)],
+)
+def test_run_sequentially_controls_iteration_count(run_sequentially, max_parallel_samples, expected_iterations):
+    device = torch.device("cuda")
+    module = _tiny_module(device)
+    iterations = []
+    hook = module.pairformer_stack.register_forward_pre_hook(lambda *_args: iterations.append(None))
+
+    try:
+        _run(
+            module,
+            torch.rand(1, N_TOKENS, N_TOKENS, device=device),
+            device,
+            multiplicity=2,
+            run_sequentially=run_sequentially,
+            max_parallel_samples=max_parallel_samples,
+        )
+    finally:
+        hook.remove()
+
+    assert len(iterations) == expected_iterations
 
 
 def test_prob_contact_weights_the_pde_aggregate():

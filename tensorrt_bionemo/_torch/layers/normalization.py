@@ -95,3 +95,86 @@ class AdaLN(nn.Module):
 
         a = self.a_norm(a)
         return F.sigmoid(s_scale) * a + s_bias
+
+
+class HighPrecisionLayerNorm(nn.Module):
+    """LayerNorm in fp32, result cast to ``out_dtype``.
+
+    Params keep ``nn.LayerNorm`` names so ``load_state_dict`` still works.
+    """
+
+    def __init__(
+        self,
+        normalized_shape: int | list[int] | tuple[int, ...] | torch.Size,
+        eps: float = 1e-5,
+        elementwise_affine: bool = True,
+        bias: bool = True,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+        out_dtype: torch.dtype = torch.bfloat16,
+    ):
+        del dtype  # params are always fp32; ``out_dtype`` controls the cast
+        super().__init__()
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = tuple(normalized_shape)
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+        self.out_dtype = out_dtype
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(self.normalized_shape, device=device, dtype=torch.float32))
+            if bias:
+                self.bias = nn.Parameter(torch.zeros(self.normalized_shape, device=device, dtype=torch.float32))
+            else:
+                self.register_parameter("bias", None)
+        else:
+            self.register_parameter("weight", None)
+            self.register_parameter("bias", None)
+
+    @classmethod
+    def from_layernorm(cls, ln: nn.LayerNorm, out_dtype: torch.dtype) -> "HighPrecisionLayerNorm":
+        """Clone an ``nn.LayerNorm`` with weights stored in fp32."""
+        has_affine = ln.weight is not None
+        has_bias = ln.bias is not None
+        module = cls(
+            ln.normalized_shape,
+            eps=ln.eps,
+            elementwise_affine=has_affine,
+            bias=has_bias,
+            device=ln.weight.device if has_affine else None,
+            out_dtype=out_dtype,
+        )
+        if has_affine:
+            module.weight.data.copy_(ln.weight.data.float())
+            if has_bias:
+                module.bias.data.copy_(ln.bias.data.float())
+        return module
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.layer_norm(x.float(), self.normalized_shape, self.weight, self.bias, self.eps)
+        return out.to(dtype=self.out_dtype)
+
+
+def replace_with_high_precision_layernorm(
+    module: nn.Module,
+    out_dtype: torch.dtype = torch.bfloat16,
+    *,
+    skip_types: tuple[type, ...] = (),
+) -> int:
+    """Replace ``nn.LayerNorm`` under ``module`` with :class:`HighPrecisionLayerNorm`.
+
+    Subtrees in ``skip_types`` are left alone. Returns replacement count;
+    no-op when ``out_dtype`` is fp32.
+    """
+    if out_dtype == torch.float32:
+        return 0
+    n = 0
+    for name, child in list(module.named_children()):
+        if skip_types and isinstance(child, skip_types):
+            continue
+        if type(child) is nn.LayerNorm:
+            setattr(module, name, HighPrecisionLayerNorm.from_layernorm(child, out_dtype=out_dtype))
+            n += 1
+        else:
+            n += replace_with_high_precision_layernorm(child, out_dtype=out_dtype, skip_types=skip_types)
+    return n

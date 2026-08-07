@@ -12,15 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Memory estimation and the pre-capture capacity gate for CUDA graphs.
+"""CUDA-graph memory estimates and pre-capture capacity checks.
 
-Capturing a ``torch.cuda.CUDAGraph`` pins a private memory pool sized to the
-module's working set (its static input/output buffers plus the graph's own
-bookkeeping). Before capturing, the tracker calls
-:func:`check_capacity_for_capture` to confirm there is enough free GPU (and
-host) memory; if not, it reverts to eager execution instead of risking an OOM
-mid-capture. The driver/host queries (:func:`gpu_free_bytes`,
-:func:`host_available_bytes`) are module-level so tests can monkeypatch them.
+Capture is rejected when its resident working set would exhaust GPU or host
+memory.
 """
 
 from typing import Any, NamedTuple
@@ -29,25 +24,21 @@ import torch
 
 MB = 1 << 20
 
-# Fixed overhead charged on top of the measured working set: the CUDA graph's
-# instantiated executable and per-node metadata that do not show up as input/
-# output tensor bytes.
+# Executable and node metadata omitted from tensor-byte accounting.
 GRAPH_METADATA_BYTES = 2 * MB
 
-# Always keep at least this much GPU headroom free after a capture, even for a
-# tiny working set, so other allocations (and the caching allocator's own
-# fragmentation) have room.
+# Minimum headroom for unrelated allocations and fragmentation.
 MIN_GPU_MARGIN_BYTES = 64 * MB
 
 
 class MemoryCheck(NamedTuple):
-    """Result of :func:`check_capacity_for_capture`.
+    """Capture-capacity result.
 
     Attributes:
-        ok: Whether there is enough memory to safely capture.
-        reason: Human-readable explanation (``"ok"`` when ``ok`` is ``True``).
-        needed_gpu_bytes: Estimated GPU bytes the capture would require.
-        free_gpu_bytes: GPU bytes free at the time of the check.
+        ok: Whether capture fits.
+        reason: Result explanation.
+        needed_gpu_bytes: Estimated requirement.
+        free_gpu_bytes: Available GPU memory.
     """
 
     ok: bool
@@ -57,10 +48,7 @@ class MemoryCheck(NamedTuple):
 
 
 def tensor_bytes(value: Any) -> int:
-    """Recursively sum the byte sizes of every tensor in ``value``.
-
-    Walks nested dicts / lists / tuples; non-tensor leaves contribute 0.
-    """
+    """Sum tensor bytes recursively; non-tensor leaves contribute zero."""
     if isinstance(value, torch.Tensor):
         return value.element_size() * value.numel()
     if isinstance(value, dict):
@@ -71,17 +59,10 @@ def tensor_bytes(value: Any) -> int:
 
 
 def estimate_capture_gpu_bytes(working_set_bytes: int) -> int:
-    """Estimate the GPU bytes a capture needs for a given working set.
+    """Estimate capture residency plus metadata and safety margin.
 
-    Adds the fixed graph metadata overhead and a safety margin (the larger of
-    :data:`MIN_GPU_MARGIN_BYTES` and 10% of the working set). Always strictly
-    larger than ``working_set_bytes``.
-
-    ``working_set_bytes`` should be the memory the capture holds resident: the
-    static input/output buffers plus the forward's intermediate activations. The
-    caller measures the latter during warmup (see the tracker's ``_warmup_call``)
-    since it is not derivable from the input/output shapes alone; when that
-    measurement is unavailable it degrades to an input/output-only estimate.
+    The working set includes static buffers and warmup-measured activations;
+    without a measurement it covers static buffers only.
     """
     margin = max(MIN_GPU_MARGIN_BYTES, int(0.10 * working_set_bytes))
     return working_set_bytes + GRAPH_METADATA_BYTES + margin
@@ -99,22 +80,15 @@ def host_available_bytes() -> int:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
-                    # value is in kB
                     return int(line.split()[1]) * 1024
     except OSError:
         pass
-    # Fallback: assume plenty so the gate does not block when we cannot measure.
+    # Do not block capture when host memory cannot be measured.
     return 1 << 62
 
 
 def container_device(value: Any) -> torch.device | None:
-    """Return the device of the first tensor found in ``value`` (recursively),
-    or ``None`` when it holds no tensor.
-
-    Walks nested dicts / lists / tuples like :func:`tensor_bytes`; used to pin the
-    GPU memory check (and the warmup activation measurement) to the device the
-    (static) inputs actually live on.
-    """
+    """Return the first tensor device found recursively, if any."""
     if isinstance(value, torch.Tensor):
         return value.device
     if isinstance(value, dict):
@@ -131,16 +105,9 @@ def container_device(value: Any) -> torch.device | None:
 
 
 def check_capacity_for_capture(working_set_bytes: int, input_container: Any = None) -> MemoryCheck:
-    """Decide whether a graph for ``working_set_bytes`` can be safely captured.
+    """Check GPU and host capacity for a capture.
 
-    The GPU free-memory check targets the device the inputs live on, taken from
-    the first tensor in ``input_container`` (e.g. a key's ``static_input_kwargs``);
-    when ``input_container`` holds no tensor the current CUDA device is used.
-
-    Blocks (``ok=False``) when the estimated GPU requirement exceeds free GPU
-    memory, or when host RAM is below the working set plus graph metadata
-    (capture also allocates host-side bookkeeping). The ``reason`` mentions
-    ``"GPU"`` or ``"host"`` so the caller can log which gate tripped.
+    The GPU check uses the first input tensor's device or the current device.
     """
     device = container_device(input_container)
     needed_gpu = estimate_capture_gpu_bytes(working_set_bytes)

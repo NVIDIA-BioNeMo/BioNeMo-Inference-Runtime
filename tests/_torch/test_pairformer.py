@@ -481,15 +481,16 @@ def test_get_dual_gemm_x_x_op_pair_mask_left_aligned_flag():
     del op_default
 
 
-def test_pairformer_pair_mask_left_aligned_propagates_to_trimul():
-    """The Pairformer ctor flag must reach both ``TriangleMultiplicationNode``
-    children and the underlying x_x dual GEMM ops they hold."""
+def test_pairformer_pair_mask_left_aligned_propagates_to_triangle_nodes():
+    """The Pairformer mask contract must reach all triangle nodes."""
     from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import _invoke_cute_dual_gemm_x_x
 
     layer_aligned = _make_minimal_pairformer_layer()
     assert layer_aligned.pair_mask_left_aligned is True
     assert layer_aligned.tri_mul_out.pair_mask_left_aligned is True
     assert layer_aligned.tri_mul_in.pair_mask_left_aligned is True
+    assert layer_aligned.tri_attn_start.pair_mask_left_aligned is True
+    assert layer_aligned.tri_attn_end.pair_mask_left_aligned is True
 
     layer_bipartite = PairformerLayerV1(
         layer_idx=0,
@@ -508,6 +509,8 @@ def test_pairformer_pair_mask_left_aligned_propagates_to_trimul():
     assert layer_bipartite.pair_mask_left_aligned is False
     assert layer_bipartite.tri_mul_out.pair_mask_left_aligned is False
     assert layer_bipartite.tri_mul_in.pair_mask_left_aligned is False
+    assert layer_bipartite.tri_attn_start.pair_mask_left_aligned is False
+    assert layer_bipartite.tri_attn_end.pair_mask_left_aligned is False
     assert layer_bipartite.tri_mul_out._dual_gemm_x_x_op is not _invoke_cute_dual_gemm_x_x
     assert layer_bipartite.tri_mul_in._dual_gemm_x_x_op is not _invoke_cute_dual_gemm_x_x
     assert layer_bipartite.tri_mul_out._dual_gemm_x_x_op_transpose is not _invoke_cute_dual_gemm_x_x
@@ -517,9 +520,10 @@ def test_pairformer_transform_z_skips_actual_seqlen_when_not_left_aligned():
     """When the Pairformer is told the pair_mask is bipartite
     (``pair_mask_left_aligned=False``), ``_transform_z`` must NOT
     forward the int32 ``mask_bias`` / ``mask_bias_transposed`` to
-    ``tri_mul_out`` / ``tri_mul_in`` as ``actual_seqlen`` -- the
-    per-row prefix count is incorrect for non-left-aligned masks and
-    would produce silently wrong outputs on the CuTe LM kernel."""
+    triangle mul as ``actual_seqlen`` or to triangle attn as
+    ``mask_bias`` -- the per-row prefix count is incorrect for
+    non-left-aligned masks and would produce silently wrong outputs
+    on the CuTe LM / kv_lengths path."""
     torch.manual_seed(0)
     device = torch.device("cuda")
     dtype = torch.bfloat16
@@ -555,6 +559,8 @@ def test_pairformer_transform_z_skips_actual_seqlen_when_not_left_aligned():
     layer._transform_z(z, pair_mask, precomputed_masks=pre)
     assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
     assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    assert layer.tri_attn_start.call_args.kwargs["mask_bias"] is None
+    assert layer.tri_attn_end.call_args.kwargs["mask_bias"] is None
 
 
 def test_pairformer_no_seq_module_forwards_pair_mask_left_aligned():
@@ -581,3 +587,5 @@ def test_pairformer_no_seq_module_forwards_pair_mask_left_aligned():
         assert layer.pair_mask_left_aligned is False
         assert layer.tri_mul_out.pair_mask_left_aligned is False
         assert layer.tri_mul_in.pair_mask_left_aligned is False
+        assert layer.tri_attn_start.pair_mask_left_aligned is False
+        assert layer.tri_attn_end.pair_mask_left_aligned is False

@@ -30,13 +30,25 @@ class TokenizerUDF(StatefulStageUDF):
         context_generators: dict[str, ContextGeneratorBase],
         context_merger_func: Callable | None = dict_context_merger,
         transform_funcs: list[TransformBase] | None = None,
+        pre_init: Callable | None = None,
+        init_context: dict[str, Any] | None = None,
     ):
         super().__init__(compute_by_rows, drop_keys, expected_input_keys, update_row)
         self.context_generators = context_generators
         self.context_merger_func = context_merger_func
         self.transform_funcs = transform_funcs or []
+        self.pre_init = pre_init
+        self.init_context = init_context
 
     async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
+        # Seed before context generation so RDKit ETKDG (OpenFold3) sees the
+        # same RNG state as FeatureFactory.pre_init documents.
+        if self.pre_init is not None:
+            from copy import deepcopy
+
+            ctx = deepcopy(self.init_context) if self.init_context is not None else {}
+            self.pre_init(context=ctx)
+
         context_dict = {}
         for name, generator in self.context_generators.items():
             required_kwargs = generator.required_kwargs

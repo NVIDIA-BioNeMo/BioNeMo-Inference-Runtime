@@ -147,9 +147,9 @@ def test_pad_input_pads_flagged_token_axis():
     tracker = _make_tracker(_make_bucketer().export_config())
     # Live token count 5 sits below the bucket boundary 7, so real padding happens.
     args, kwargs = _diffusion_transformer_inputs(n_tokens=5)
-    shapes = tracker._extract_tensor_container_shapes(args, kwargs)
+    _, shapes_host = tracker._extract_tensor_container_shape_maps(args, kwargs)
 
-    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes)
+    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes_host)
 
     # The token axis of every flagged tensor is padded 5 -> 7; feature dims and
     # the batch dim are untouched.
@@ -171,10 +171,10 @@ def test_pad_input_across_live_token_counts(n_tokens):
     is preserved exactly (both token axes of ``z``)."""
     tracker = _make_tracker(_make_bucketer().export_config())
     args, kwargs = _diffusion_transformer_inputs(n_tokens)
-    shapes = tracker._extract_tensor_container_shapes(args, kwargs)
+    _, shapes_host = tracker._extract_tensor_container_shape_maps(args, kwargs)
     bucket = _bucket_len(n_tokens)
 
-    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes)
+    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes_host)
 
     assert padded_args[0].shape == (BS, bucket, DIM)
     assert padded_args[1].shape == (BS, bucket, DIM_SINGLE_COND)
@@ -188,9 +188,9 @@ def test_pad_input_without_bucket_config_is_noop():
     """With no shape-bucket config pad_input returns the inputs untouched."""
     tracker = _make_tracker(input_routing_config=None)
     args, kwargs = _diffusion_transformer_inputs(n_tokens=5)
-    shapes = tracker._extract_tensor_container_shapes(args, kwargs)
+    _, shapes_host = tracker._extract_tensor_container_shape_maps(args, kwargs)
 
-    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes)
+    padded_args, padded_kwargs = tracker.pad_input(args, kwargs, input_tensor_shapes=shapes_host)
 
     _assert_container_identical(padded_args, args, "padded_args")
     _assert_container_identical(padded_kwargs, kwargs, "padded_kwargs")
@@ -219,10 +219,10 @@ def test_unpad_output_truncates_to_live_length(n_tokens):
     and between-bucket counts (5, 8, 11)."""
     tracker = _make_tracker(_make_bucketer().export_config())
     args, kwargs = _diffusion_transformer_inputs(n_tokens)
-    input_tensor_shapes = tracker._extract_tensor_container_shapes(args, kwargs)
+    _, input_tensor_shapes_host = tracker._extract_tensor_container_shape_maps(args, kwargs)
     output = _diffusion_transformer_output(n_tokens)  # [BS, n_tokens, DIM]
 
-    restored = tracker.unpad_output((_pad_token_axis_to_bucket(output),), input_tensor_shapes=input_tensor_shapes)
+    restored = tracker.unpad_output((_pad_token_axis_to_bucket(output),), input_tensor_shapes=input_tensor_shapes_host)
 
     assert restored.shape == (BS, n_tokens, DIM)
     _assert_container_identical(restored, output, "output")
@@ -232,9 +232,9 @@ def test_unpad_output_without_bucket_config_is_noop():
     """With no shape-bucket config ``unpad_output`` returns the output unchanged."""
     tracker = _make_tracker(input_routing_config=None)
     args, kwargs = _diffusion_transformer_inputs(n_tokens=5)
-    input_tensor_shapes = tracker._extract_tensor_container_shapes(args, kwargs)
+    _, input_tensor_shapes_host = tracker._extract_tensor_container_shape_maps(args, kwargs)
     output = _diffusion_transformer_output(n_tokens=5)
 
-    restored = tracker.unpad_output((output,), input_tensor_shapes=input_tensor_shapes)
+    restored = tracker.unpad_output((output,), input_tensor_shapes=input_tensor_shapes_host)
 
     _assert_container_identical(restored, output, "output")

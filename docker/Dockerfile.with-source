@@ -16,7 +16,7 @@
 #   - requirements change infrequently, slow download
 # -------------------------------------------------------------------------
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch
-ARG BASE_TAG=25.12-py3
+ARG BASE_TAG=26.05-py3
 FROM ${BASE_IMAGE}:${BASE_TAG} AS requirements_stage
 
 ENV CUDA_HOME=/usr/local/cuda

@@ -25,12 +25,18 @@ from tensorrt_bionemo._torch.attention_backend import (
 )
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.layers.linear import Linear
+from tensorrt_bionemo._torch.layers.normalization import (
+    HighPrecisionLayerNorm,
+    replace_with_high_precision_layernorm,
+)
+from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
 from tensorrt_bionemo._torch.layers.sequence_local_atom import (
     create_gather_indices,
     create_indexing_matrix,
     query_to_keys_optimized,
 )
 from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
+from tensorrt_bionemo._torch.layers.triangle_nodes import TriangleAttentionNode, TriangleMultiplicationNode
 from tensorrt_bionemo._torch.modules.openfold3.confidence import AuxiliaryHeadsAllAtom
 from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import (
     DiffusionModule,
@@ -91,25 +97,27 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
 
         self.noise_schedule = self.config.noise_schedule_config
 
+        trunk_dtype = self.config.trunk.pairformer.torch_dtype
+
         self.input_embedder = InputEmbedderAllAtom(config=self.config.input_embedder_config)
-        self.layer_norm_z = nn.LayerNorm(self.config.c_z, dtype=self.config.torch_dtype, eps=self.config.norm_epsilon)
+        self.layer_norm_z = nn.LayerNorm(self.config.c_z, dtype=trunk_dtype, eps=self.config.norm_epsilon)
         self.linear_z = Linear(
             self.config.c_z,
             self.config.c_z,
             bias=False,
-            dtype=self.config.torch_dtype,
+            dtype=trunk_dtype,
             skip_create_weights=self.config.skip_create_weights,
         )
 
         self.template_embedder = TemplateEmbedderAllAtom(config=self.config.template_embedder_config)
         self.msa_module_embedder = MSAModuleEmbedder(config=self.config.msa_module_embedder_config)
         self.msa_module = MSAModuleStack(config=self.config.msa_stack_module_config)
-        self.layer_norm_s = nn.LayerNorm(self.config.c_s, dtype=self.config.torch_dtype, eps=self.config.norm_epsilon)
+        self.layer_norm_s = nn.LayerNorm(self.config.c_s, dtype=trunk_dtype, eps=self.config.norm_epsilon)
         self.linear_s = Linear(
             self.config.c_s,
             self.config.c_s,
             bias=False,
-            dtype=self.config.torch_dtype,
+            dtype=trunk_dtype,
             skip_create_weights=self.config.skip_create_weights,
         )
 
@@ -119,6 +127,23 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             config=self.config.sample_diffusion_config, diffusion_module=self.diffusion_module
         )
         self.aux_heads = AuxiliaryHeadsAllAtom(config=self.config.auxiliary_heads_config)
+
+        # fp32 LayerNorm → cast to trunk dtype; leave fused triangle/PWA LNs as-is.
+        if self.config.trunk_ln_high_precision and trunk_dtype != torch.float32:
+            _skip = (TriangleAttentionNode, TriangleMultiplicationNode, PairWeightedAveraging)
+            for mod in (
+                self.template_embedder.template_pair_stack,
+                self.msa_module_embedder,
+                self.msa_module,
+                self.pairformer_stack,
+            ):
+                replace_with_high_precision_layernorm(mod, out_dtype=trunk_dtype, skip_types=_skip)
+            self.layer_norm_s = HighPrecisionLayerNorm.from_layernorm(self.layer_norm_s, out_dtype=trunk_dtype)
+            self.layer_norm_z = HighPrecisionLayerNorm.from_layernorm(self.layer_norm_z, out_dtype=trunk_dtype)
+            # Template pair embedder Linear is fp32; keep its LN output in fp32.
+            self.template_embedder.template_pair_embedder.layer_norm_z = HighPrecisionLayerNorm.from_layernorm(
+                self.template_embedder.template_pair_embedder.layer_norm_z, out_dtype=torch.float32
+            )
 
         if include_load_weights:
             self.load_weights()
@@ -211,6 +236,10 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         """
 
         s_input, s_init, z_init = self.input_embedder(batch=batch, attn_metadata=attn_metadata)
+        # Cast recycle state to trunk dtype once (input embedder is fp32).
+        pairformer_dtype = self.config.trunk.pairformer.torch_dtype
+        s_init = s_init.to(dtype=pairformer_dtype)
+        z_init = z_init.to(dtype=pairformer_dtype)
         # s: [*, N_token, C_s]
         # z: [*, N_token, N_token, C_z]
         s = torch.zeros_like(s_init)
@@ -225,7 +254,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             # [*, N_token, N_token, C_z]
             z = z_init + self.linear_z(self.layer_norm_z(z))
 
-            z = z + self.template_embedder(batch=batch, z=z, pair_mask=pair_mask)
+            z = z + self.template_embedder(batch=batch, z=z, pair_mask=pair_mask).to(dtype=z.dtype)
 
             m, msa_mask = self.msa_module_embedder(batch=batch, s_input=s_input)
 
@@ -237,17 +266,12 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
 
             s = s_init + self.linear_s(self.layer_norm_s(s))
 
-            pairformer_dtype = self.config.trunk.pairformer.torch_dtype
             s, z = self.pairformer_stack(
-                s=s.to(dtype=pairformer_dtype),
-                z=z.to(dtype=pairformer_dtype),
+                s=s,
+                z=z,
                 mask=token_mask.to(dtype=pairformer_dtype),
                 pair_mask=pair_mask.to(dtype=pairformer_dtype),
             )
-
-            if pairformer_dtype != torch.float32:
-                s = s.float()
-                z = z.float()
 
         return s_input, s, z
 

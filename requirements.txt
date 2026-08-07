@@ -1,7 +1,7 @@
 cuda-python>=13
-cuequivariance==0.10.0
-cuequivariance-ops-cu13==0.10.0
-cuequivariance-ops-torch-cu13==0.10.0
+cuequivariance==0.11.1
+cuequivariance-ops-cu13==0.11.1
+cuequivariance-ops-torch-cu13==0.11.1
 triton==3.6.0
 biopython>=1.87
 ray[serve,data]==2.56.1  # installs pandas, pyarrow

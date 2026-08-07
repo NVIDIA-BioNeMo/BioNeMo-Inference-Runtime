@@ -12,16 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Input-key derivation and shape-bucket padding shared by graph trackers.
-
-:class:`GraphOptimizationTracker` is the ``BackendBase`` subclass that wraps an
-eager module and derives a per-call *input key* from the input tensor shapes,
-walking nested dict/list/tuple containers. It also provides the shape-bucket
-``pad_input`` / ``unpad_output`` helpers used when the module runs at bucketed
-(padded) shapes so one captured graph can serve a range of live shapes. The concrete CUDA-graph warmup/capture/replay tracker
-(:class:`CUDAGraphOptimizationTracker`) and its per-key state live in
-:mod:`tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime`.
-"""
+"""Shared graph-cache keying, input routing, and shape-bucket padding."""
 
 import abc
 import inspect
@@ -43,34 +34,16 @@ from tensorrt_bionemo._torch.graph_optimization.config import (
 )
 from tensorrt_bionemo.runtime.backend import BackendBase
 
-# A ``TensorContainer`` is what the wrapped module is called with: a tensor,
-# or a tuple/dict nesting tensors, non-tensor leaves, and further containers.
-# Contains at least one Tensor
+# A call container with at least one tensor.
 TensorContainer = Tensor | tuple | dict
 
-# Maps a tensor's dotted path within a container to a 1-D int tensor of
-# its dim lengths, so a dim length is a direct index (no per-call shape logic).
+# Dotted tensor path to its 1-D shape tensor.
 TensorContainerShapes = dict[str, Tensor]
+TensorContainerHostShapes = dict[str, tuple[int, ...]]
 
 
 class GraphOptimizationTracker(BackendBase):
-    """Module wrapper that derives input keys and tracks graph state.
-
-    Inherits from :class:`tensorrt_bionemo.runtime.backend.BackendBase`
-    so the eager-fallback plumbing (``set_fallback_module`` / ``_fallback_module``)
-    and the backend config surface are in place for memory management and the
-    revert-to-eager strategy. Provides input-key derivation shared by concrete
-    trackers: a key is the join of a shape-encoded subkey per input tensor,
-    walked recursively through nested dicts/lists/tuples. The separators below
-    build that string; concrete subclasses implement the state-management policy.
-
-    Class attributes:
-        SEP_FOR_ARGS: Separator joining the per-tensor subkeys into one key.
-        SEP_BW_NAME_AND_SHAPE: Separator between a tensor's path and its shape.
-        SEP_FOR_DIMS: Separator between the dims within a tensor's shape.
-        GRAPH_INTERNAL_WORKSPACE_KWARGS: Names of keyword arguments that are
-            graph-*internal scratch* rather than real inputs (see below).
-    """
+    """Base wrapper for graph-cache keying, routing, and eager fallback."""
 
     SEP_FOR_ARGS = "|"
     SEP_BW_NAME_AND_SHAPE = "+"
@@ -78,54 +51,21 @@ class GraphOptimizationTracker(BackendBase):
     SEP_BW_ARG_AND_DIM = "."
     SEP_BW_ARG_AND_TYPE = ","
 
-    # Keyword arguments that carry a graph-internal *workspace*, not stable inputs.
-    #
-    # The Boltz-2 / OpenFold3 score model threads a single ``buffers``
-    # (``PreallocatedBuffers``) dict through the atom encoder -> token
-    # transformer -> atom decoder. ``ensure_buffer`` lazily (re)allocates entries
-    # in it *as a side effect* of each forward, and the encoder and token
-    # transformer reuse the same buffer names (e.g. ``pw_attn_output``) at
-    # different shapes. So at the wrapped module's entry the dict holds the
-    # caller's (encoder-shaped) scratch, but the captured forward mutates it to
-    # the module's own (token-shaped) scratch.
-    #
-    # That makes ``buffers`` unusable under the "clone the kwargs at capture,
-    # copy the live kwargs into the static buffers on every replay" contract:
-    # the live dict never matches the captured one (different shapes, or
-    # different keys), which ``_copy_tensors_into`` cannot reconcile.
-    #
-    # These kwargs are therefore excluded from the input key *and* from the
-    # per-replay static-buffer copy: the captured graph allocates and reuses this
-    # scratch internally (in the graph mempool), so there is nothing to key on or
-    # copy in. They are still passed through verbatim during warmup/capture so
-    # the wrapped module runs exactly as it does eagerly.
+    # ``buffers`` is mutable scratch shared across score-model stages. Capture
+    # changes its keys and shapes, so it cannot satisfy the static copy contract.
+    # Pass it during warmup/capture, but exclude it from keys and replay copies;
+    # the captured graph owns and reuses its workspace.
     GRAPH_INTERNAL_WORKSPACE_KWARGS: frozenset = frozenset({"buffers"})
 
     def _effective_workspace_kwargs(self) -> frozenset:
-        """Workspace kwargs to exclude from graph inputs.
-
-        Prefers the per-module ``internal_workspace_kwargs`` declared on the
-        :class:`InputRoutingConfig` (populated from the module's
-        ``@support_graph_optimization`` decorator); falls back to the built-in
-        :attr:`GRAPH_INTERNAL_WORKSPACE_KWARGS` when the config declares
-        none, so ``buffers`` is excluded either way.
-        """
+        """Return configured workspace kwargs or the built-in fallback."""
         cfg = self.graph_optimization_config.input_routing_config
         if cfg is not None and cfg.internal_workspace_kwargs:
             return frozenset(cfg.internal_workspace_kwargs)
         return self.GRAPH_INTERNAL_WORKSPACE_KWARGS
 
     def _positional_param_names(self, num_positional: int) -> list[str]:
-        """Root names for the first ``num_positional`` positional arguments.
-
-        Maps each positional argument to the corresponding ``forward``
-        parameter name (via :func:`inspect.signature`), so routing is
-        independent of whether a caller passed an argument positionally or by
-        keyword — e.g. boltz-2 passes the pairformer's ``s``/``z`` positionally
-        where OpenFold3 passes them by keyword, yet both key on ``s``/``z``.
-        Falls back to ``arg{i}`` when the signature is unavailable or a position
-        overflows the declared positional parameters (``*args``). Cached.
-        """
+        """Return cached parameter names, falling back to ``arg{i}``."""
         names = self._forward_positional_names
         if names is None:
             names = []
@@ -144,12 +84,7 @@ class GraphOptimizationTracker(BackendBase):
         return [names[i] if i < len(names) else f"arg{i}" for i in range(num_positional)]
 
     def _graph_input_kwargs(self, kwargs: dict) -> dict:
-        """Return ``kwargs`` without the graph-internal workspace entries.
-
-        Used for both input-key derivation and the per-replay copy so that
-        side-effect-populated workspace dicts (see
-        :meth:`_effective_workspace_kwargs`) are never treated as graph inputs.
-        """
+        """Remove graph-owned workspaces from key and replay inputs."""
         workspace = self._effective_workspace_kwargs()
         if not workspace:
             return kwargs
@@ -158,22 +93,17 @@ class GraphOptimizationTracker(BackendBase):
     def __init__(
         self, graph_optimization_config: GraphOptimizationConfig, inner_module: nn.Module | None = None
     ) -> None:
-        """Store the optimization config and the wrapped (inner) module.
+        """Initialize the wrapper.
 
         Args:
-            graph_optimization_config: The graph-optimization configuration. Also used as this
-                backend's ``config`` (it is a ``BaseConfig`` subclass), so the
-                wrapper exposes ``config.backend`` etc.
-            inner_module: The eager module being graph-optimized. This is the
-                module the tracker warms up, captures, and falls back to.
+            graph_optimization_config: Backend configuration.
+            inner_module: Wrapped eager module.
         """
         super().__init__(graph_optimization_config)
         self.inner_module = inner_module
-        # One-shot guard: input tie points are validated against the
-        # first representative call, then never again (hot path).
+        # Validate ties once, outside the hot path.
         self._input_ties_validated = False
-        # Cached positional-parameter names of the wrapped forward, used
-        # to normalize positional args to their parameter names (lazy).
+        # Lazily cached positional parameter names.
         self._forward_positional_names: list[str] | None = None
 
     @property
@@ -181,14 +111,7 @@ class GraphOptimizationTracker(BackendBase):
         return self._config
 
     def __getattr__(self, name: str) -> Any:
-        """Delegate unknown attributes to the wrapped eager ``inner_module``.
-
-        The wrapper replaces the eager module in the model tree, so callers that
-        read the original module's attributes (e.g. ``dtype``, ``version``) must
-        still find them. ``nn.Module.__getattr__`` is tried first (parameters /
-        buffers / submodules, including ``inner_module`` itself); only genuinely
-        missing names fall through to the wrapped module.
-        """
+        """Resolve module attributes before delegating to the wrapped module."""
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -198,30 +121,8 @@ class GraphOptimizationTracker(BackendBase):
                 return getattr(inner, name)
             raise
 
-    def input_accepted(self, tensor_container_shapes: TensorContainerShapes) -> bool:
-        """Whether this call's inputs are within the configured acceptance range.
-
-        Reads the rules off the module's :class:`InputRoutingConfig` snapshot:
-        for every ``(tensor_name, dim_idx) -> dim_name`` input assignment whose
-        ``dim_name`` carries an ``input_acceptance_dims`` limit, the length of
-        that tensor axis — looked up in ``tensor_container_shapes`` (the
-        ``path -> dim-lengths`` map from :meth:`_extract_tensor_container_shapes`)
-        under the key ``f"{tensor_name}_shape"`` — must not exceed that limit (an
-        inclusive maximum). Returns ``True`` when all such axes pass (and when no
-        config / no rule applies), ``False`` as soon as one exceeds its limit.
-
-        Because the axis is resolved by walk path, a tensor nested inside a
-        container input (e.g. a token-axis feature riding inside a ``batch`` dict,
-        keyed ``batch.residue_index``) is checked exactly like a top-level input:
-        ``_extract_tensor_container_shapes`` records both under their dotted
-        paths. Rebuilt from serializable data, so it survives a deserialized
-        config with no closure involved.
-
-        Args:
-            tensor_container_shapes: The ``path -> dim-lengths`` map for this call
-                (from :meth:`_extract_tensor_container_shapes`); acceptance is
-                decided purely from it, not from the live tensors.
-        """
+    def input_accepted(self, tensor_container_shapes: TensorContainerHostShapes) -> bool:
+        """Return whether all configured axes are within inclusive limits."""
         cfg = self.graph_optimization_config.input_routing_config
         if cfg is None:
             return True
@@ -229,32 +130,19 @@ class GraphOptimizationTracker(BackendBase):
         for tensor_name, dim_idx, dim_name in input_acceptance_assignments(cfg):
             dim_len_max = acceptance_max.get(dim_name)
             if dim_len_max is None:
-                continue  # this dim has no acceptance rule
+                continue
             shape = tensor_container_shapes.get(f"{tensor_name}_shape")
             if shape is None:
-                continue  # tensor absent from this call
-            ndim = int(shape.numel())
+                continue
+            ndim = len(shape)
             if not (-ndim <= dim_idx < ndim):
-                continue  # axis not present on this tensor
+                continue
             if int(shape[dim_idx]) > dim_len_max:
                 return False
         return True
 
-    def validate_input_ties(self, tensor_container_shapes: TensorContainerShapes) -> None:
-        """Validate configured input tie points against the first call.
-
-        Every ``(tensor_name, dim_idx)`` an :class:`InputRoutingConfig` ties to a
-        named dimension — for acceptance *and* for padding — must resolve to a
-        real input tensor axis on the first representative call. A tie to a
-        tensor that isn't present, or to an axis out of that tensor's range, is a
-        configuration error and is raised —
-        rather than being silently ignored, which would let a mis-tied routing
-        rule pass unenforced. Runs once (guarded by ``_input_ties_validated``).
-
-        Args:
-            tensor_container_shapes: the ``path -> dim-lengths`` map for this call
-                (from :meth:`_extract_tensor_container_shapes`).
-        """
+    def validate_input_ties(self, tensor_container_shapes: TensorContainerHostShapes) -> None:
+        """Validate that configured ties resolve on the first call."""
         if self._input_ties_validated:
             return
         cfg = self.graph_optimization_config.input_routing_config
@@ -269,7 +157,7 @@ class GraphOptimizationTracker(BackendBase):
                         f"{tensor_name!r} (axis {dim_idx}), but no such tensor is "
                         f"present in the call; available inputs: {available}"
                     )
-                ndim = int(shape.numel())
+                ndim = len(shape)
                 if not (-ndim <= dim_idx < ndim):
                     raise ValueError(
                         f"input routing ties dim {dim_name!r} to axis {dim_idx} "
@@ -279,26 +167,12 @@ class GraphOptimizationTracker(BackendBase):
         self._input_ties_validated = True
 
     def input_key_for_this_call(self, *args, **kwargs) -> str:
-        """Return the graph-cache key for this call's positional/keyword inputs.
-
-        The key joins the call's *input-metadata* — the tensor
-        metadata (path/dtype/shape of every input tensor) and the non-tensor
-        metadata (path/type of every non-tensor leaf), from
-        :meth:`_extract_input_metadata`. So calls whose tensors share dtype
-        and shape and whose non-tensor leaves share type map to one captured
-        graph.
-        """
+        """Return a cache key from tensor metadata and non-tensor values/types."""
         key = self.SEP_FOR_ARGS.join(self._extract_input_metadata(*args, **kwargs))
         return key
 
     def _collect_subkeys(self, value: Any, path: str, subkeys: list[str]) -> None:
-        """Recursively walk ``value``, appending a shape-encoded subkey to
-        ``subkeys`` for every tensor found.
-
-        ``path`` is the dotted name of the current position (e.g.
-        ``feature_dict.ref_pos`` or ``coords.0``) so tensors at different
-        nesting locations produce distinct keys.
-        """
+        """Append a path-and-shape subkey for every tensor."""
         if isinstance(value, torch.Tensor):
             subkeys.append(
                 self.SEP_BW_NAME_AND_SHAPE.join([path, self.SEP_FOR_DIMS.join([str(dim) for dim in value.shape])])
@@ -311,20 +185,9 @@ class GraphOptimizationTracker(BackendBase):
             for i, v in enumerate(value):
                 child = f"{path}.{i}" if path else str(i)
                 self._collect_subkeys(v, child, subkeys)
-        # Non-tensor leaves (None, scalars, callables, ...) are ignored.
 
-    # ------------------------------------------------------------------
-    # TensorContainer metadata extraction. Every derived string/shape map
-    # is produced by a single recursive walk over the call's args/kwargs,
-    # mirroring
-    # ``_collect_subkeys``: positional arg ``i`` roots at path ``arg{i}``,
-    # keyword ``k`` roots at ``k``, and nested dict/list/tuple children append
-    # their key/index with ``SEP_BW_ARG_AND_DIM``.
-    # ------------------------------------------------------------------
     def _walk_container_leaves(self, value: TensorContainer, path: str, on_leaf) -> None:
-        """Recurse a ``TensorContainer`` invoking ``on_leaf(path, leaf)`` for every
-        non-container leaf (both tensor and non-tensor); the caller keeps the
-        kind it cares about."""
+        """Call ``on_leaf(path, leaf)`` for each nested leaf."""
         if isinstance(value, torch.Tensor):
             on_leaf(path, value)
         elif isinstance(value, dict):
@@ -339,35 +202,37 @@ class GraphOptimizationTracker(BackendBase):
             on_leaf(path, value)
 
     def _walk_call(self, args: tuple, kwargs: dict, on_leaf) -> None:
-        """Walk every leaf of a call's positional args (rooted ``arg{i}``) then
-        keyword args (rooted ``k``), excluding graph-internal workspace kwargs
-        (see :attr:`GRAPH_INTERNAL_WORKSPACE_KWARGS`)."""
+        """Walk call leaves, excluding graph-owned workspace kwargs."""
         roots = self._positional_param_names(len(args))
         for i, v in enumerate(args):
             self._walk_container_leaves(v, roots[i], on_leaf)
         for k, v in self._graph_input_kwargs(kwargs).items():
             self._walk_container_leaves(v, k, on_leaf)
 
-    def _extract_tensor_container_shapes(self, args: tuple, kwargs: dict) -> TensorContainerShapes:
-        """Map each input tensor's path to a 1-D int tensor of its dim
-        lengths, so shape-bucket padding can read a dim length by direct index.
-        Output shape tensors on same device as input tensor."""
-        shapes: TensorContainerShapes = {}
+    def _extract_tensor_container_shape_maps(
+        self, args: tuple, kwargs: dict
+    ) -> tuple[TensorContainerShapes, TensorContainerHostShapes]:
+        """Map tensor paths to device tensors and zero-copy host metadata."""
+        shapes_device: TensorContainerShapes = {}
+        shapes_host: TensorContainerHostShapes = {}
 
         def on_leaf(path: str, leaf: Any) -> None:
             if isinstance(leaf, torch.Tensor):
-                shapes[f"{path}_shape"] = torch.tensor(tuple(leaf.shape), dtype=torch.int32, device=leaf.device)
+                key = f"{path}_shape"
+                shape = tuple(leaf.shape)
+                shapes_device[key] = torch.tensor(shape, dtype=torch.int32).to(leaf.device, non_blocking=True)
+                shapes_host[key] = shape
 
         self._walk_call(args, kwargs, on_leaf)
-        return shapes
+        return shapes_device, shapes_host
 
-    @staticmethod
-    def _tensor_container_shapes_to_cpu(tensor_container_shapes: TensorContainerShapes):
-        return {name: shape.cpu() for name, shape in tensor_container_shapes.items()}
+    def _extract_tensor_container_shapes(self, args: tuple, kwargs: dict) -> TensorContainerShapes:
+        """Map tensor paths to shape tensors on the input devices."""
+        shapes_device, _ = self._extract_tensor_container_shape_maps(args, kwargs)
+        return shapes_device
 
     def _extract_input_tensor_metadata(self, *args, **kwargs) -> str:
-        """Deterministic string over every input tensor's path, dtype
-        and shape, in walk order."""
+        """Serialize tensor paths, dtypes, and shapes in walk order."""
         parts: list[str] = []
 
         def on_leaf(path: str, leaf: Any) -> None:
@@ -379,8 +244,7 @@ class GraphOptimizationTracker(BackendBase):
         return self.SEP_FOR_ARGS.join(parts)
 
     def _extract_input_nontensor_metadata(self, *args, **kwargs) -> str:
-        """Deterministic string over every non-tensor input leaf's path
-        and type, in walk order."""
+        """Serialize non-tensor paths and values/types in walk order."""
         parts: list[str] = []
 
         def on_leaf(path: str, leaf: Any) -> None:
@@ -395,11 +259,7 @@ class GraphOptimizationTracker(BackendBase):
         return self.SEP_FOR_ARGS.join(parts)
 
     def _extract_input_metadata(self, *args, **kwargs) -> tuple[str, str]:
-        """The call's ``(tensor-metadata, non-tensor-metadata)`` pair.
-
-        Serves as *input-metadata* when applied to the forward inputs
-        and as *output-metadata* when applied to the forward output.
-        """
+        """Return tensor and non-tensor metadata strings."""
         tensor_metadata = self._extract_input_tensor_metadata(*args, **kwargs)
         nontensor_metadata = self._extract_input_nontensor_metadata(*args, **kwargs)
         return tensor_metadata, nontensor_metadata
@@ -409,28 +269,10 @@ class GraphOptimizationTracker(BackendBase):
         """Advance this call's per-key state for ``key``. Implemented by subclasses."""
         ...
 
-    # ------------------------------------------------------------------
-    # Shape-bucket padding. When ``input_key_method`` is
-    # BUCKETED_SHAPES the wrapped module always runs at bucketed
-    # (padded) shapes so one captured graph serves a range of live shapes:
-    # ``pad_input`` grows the flagged input dims up to their bucket length before
-    # capture/replay, and ``unpad_output`` truncates the tied output dims back to
-    # the live shapes afterwards. Both are no-ops without a shape-bucket config.
-    #
-    # The rules come from ``config.input_routing_config`` (a ``InputRoutingConfig``,
-    # produced by :class:`InputRoutingConfigFactory`), expanded from its named-dim
-    # tie points + per-dim specs by the ``config`` helpers:
-    #   - ``input_padded_assignments``   : (tensor_name, dim_idx, dim_name)
-    #   - ``output_padded_assignments``  : (out_idx, dim_idx, dim_name)
-    #   - ``bucket_lengths_by_name``     : dim_name -> sorted int bucket lengths
-    # ``tensor_name`` matches the walk path used by
-    # ``_extract_input_metadata`` / ``_extract_tensor_container_shapes``
-    # (positional arg ``i`` -> ``arg{i}``; keyword ``k`` -> ``k``).
-    # ------------------------------------------------------------------
+    # Bucketed mode pads tied inputs for capture and restores live output sizes.
+    # Routing assignments use the same dotted paths as metadata extraction.
     def _map_container_tensors(self, value: TensorContainer, path: str, fn) -> TensorContainer:
-        """Return a structural copy of ``value`` with ``fn(path, tensor)`` applied
-        to every tensor leaf; dict/list/tuple nesting and non-tensor leaves are
-        preserved. Paths are built exactly as in :meth:`_walk_container_leaves`."""
+        """Map tensor leaves while preserving paths and container structure."""
         if isinstance(value, torch.Tensor):
             return fn(path, value)
         if isinstance(value, dict):
@@ -448,8 +290,7 @@ class GraphOptimizationTracker(BackendBase):
 
     @staticmethod
     def _bucket_length(dim_len_values, length: int) -> int:
-        """Lowest bucket boundary >= ``length``. Raises if the live
-        length exceeds every configured boundary (no bucket can hold it)."""
+        """Return the smallest bucket that covers ``length``."""
         candidates = [int(v) for v in dim_len_values if int(v) >= int(length)]
         if not candidates:
             raise ValueError(
@@ -458,11 +299,9 @@ class GraphOptimizationTracker(BackendBase):
         return min(candidates)
 
     def _pad_tensor_dims_to(self, t: Tensor, targets: dict) -> Tensor:
-        """0-pad ``t`` so each ``dim_idx`` in ``targets`` reaches an explicit
-        target length. ``targets`` maps ``dim_idx -> target_len``; ``dim_idx``
-        may be negative, counting from the end (``-1`` is the last dimension)."""
+        """Right-pad selected dimensions to explicit lengths."""
         rank = t.dim()
-        pad = [0] * (2 * rank)  # F.pad order: (last_dim_L, last_dim_R, ...)
+        pad = [0] * (2 * rank)  # F.pad orders dimensions from last to first.
         changed = False
         for dim_idx, target in targets.items():
             axis = dim_idx + rank if dim_idx < 0 else dim_idx
@@ -477,8 +316,7 @@ class GraphOptimizationTracker(BackendBase):
         return F.pad(t, pad, mode="constant", value=0) if changed else t
 
     def _padded_input_targets(self) -> dict:
-        """``tensor_name -> {dim_idx: dim_len_values}`` from the bucket config,
-        or ``{}`` when no config / method is active."""
+        """Return bucket boundaries by input path and dimension."""
         cfg = self.graph_optimization_config.input_routing_config
         if cfg is None:
             return {}
@@ -488,11 +326,8 @@ class GraphOptimizationTracker(BackendBase):
             targets.setdefault(tensor_name, {})[dim_idx] = bucket_lengths[dim_name]
         return targets
 
-    def _output_tied_live_lengths(self, input_tensor_shapes: TensorContainerShapes) -> dict:
-        """``out_idx -> {out_dim_idx: (dim_name, live_len)}`` for output dims tied
-        to a padded input dim, reading each tied dim's live length from
-        ``input_tensor_shapes``. Used by :meth:`unpad_output` to truncate each
-        such output dim back to ``live_len``. ``{}`` when no config."""
+    def _output_tied_live_lengths(self, input_tensor_shapes: TensorContainerHostShapes) -> dict:
+        """Return live lengths for output dimensions tied to padded inputs."""
         cfg = self.graph_optimization_config.input_routing_config
         if cfg is None:
             return {}
@@ -511,13 +346,12 @@ class GraphOptimizationTracker(BackendBase):
         self,
         args: tuple,
         kwargs: dict,
-        input_tensor_shapes: TensorContainerShapes,
+        input_tensor_shapes: TensorContainerHostShapes,
     ) -> TensorContainer:
-        """Return ``(padded_args, padded_kwargs)`` with every input
-        tensor 0-padded on the dims flagged in the shape-bucket config, up to the
-        lowest bucket length >= the live length read from ``input_tensor_shapes``.
-        No-op (identity) without a config. Graph-internal workspace kwargs are
-        passed through untouched."""
+        """Pad configured input dimensions to their smallest covering buckets.
+
+        Graph-owned workspace kwargs pass through unchanged.
+        """
         targets_by_path = self._padded_input_targets()
         if not targets_by_path:
             return args, kwargs
@@ -541,15 +375,8 @@ class GraphOptimizationTracker(BackendBase):
         padded_kwargs = {k: (v if k in workspace else self._map_container_tensors(v, k, fn)) for k, v in kwargs.items()}
         return padded_args, padded_kwargs
 
-    def unpad_output(self, args: tuple, input_tensor_shapes: TensorContainerShapes) -> TensorContainer:
-        """Truncate output tensors whose dims are tied to a padded
-        input dim back to the live input length.
-
-        For each ``(out_idx, out_dim_idx, dim_name)`` from the config's padded
-        output ties (``output_padded_assignments``), the target length is the
-        live length of any input dim assigned the same ``dim_name`` (read from
-        ``input_tensor_shapes``). No-op without a config.
-        """
+    def unpad_output(self, args: tuple, input_tensor_shapes: TensorContainerHostShapes) -> TensorContainer:
+        """Restore tied output dimensions to their live input lengths."""
         if not isinstance(args, tuple):
             raise ValueError(f"expected args tuple, got {type(args)}")
         output = args[0] if len(args) == 1 else args

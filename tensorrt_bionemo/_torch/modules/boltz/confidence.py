@@ -425,7 +425,7 @@ class Boltz2ConfidenceModule(nn.Module):
         prob_contact,
         multiplicity=1,
         max_parallel_samples: int = 1,
-        run_sequentially=True,
+        run_sequentially: bool = True,
         attn_metadata: AttentionMetadata | None = None,
     ):
         """
@@ -481,12 +481,13 @@ class Boltz2ConfidenceModule(nn.Module):
         elif x_pred.ndim == 4:
             batch_size, multiplicity, _, _ = x_pred.shape
 
-        niter = (multiplicity + max_parallel_samples - 1) // max_parallel_samples
-
-        assert max_parallel_samples <= multiplicity, "max_parallel_samples must be less than or equal to multiplicity"
-
-        if not run_sequentially:
-            max_parallel_samples = multiplicity
+        if run_sequentially:
+            niter = 1
+        else:
+            assert max_parallel_samples <= multiplicity, (
+                "max_parallel_samples must be less than or equal to multiplicity"
+            )
+            niter = (multiplicity + max_parallel_samples - 1) // max_parallel_samples
 
         s_inputs = self.s_inputs_norm(s_inputs)
 
@@ -921,6 +922,7 @@ class Boltz1ConfidenceModule(nn.Module):
         multiplicity: int = 1,
         s_diffusion: torch.Tensor | None = None,
         max_parallel_samples: int | None = None,
+        run_sequentially: bool = True,
         attn_metadata: AttentionMetadata | None = None,
     ) -> dict[str, torch.Tensor]:
         """
@@ -943,6 +945,8 @@ class Boltz1ConfidenceModule(nn.Module):
                 s_diffusion from the diffusion conditioning module.
             max_parallel_samples: Optional[int]
                 max_parallel_samples from the structure module.
+            run_sequentially: bool
+                Whether to process all confidence samples in a single iteration.
         return: dict[str, torch.Tensor]
             Output dictionary containing the confidence heads.
         """
@@ -956,7 +960,13 @@ class Boltz1ConfidenceModule(nn.Module):
         else:
             B, multiplicity, _, _ = x_pred.shape
 
-        niter = (multiplicity + max_parallel_samples - 1) // max_parallel_samples
+        if run_sequentially:
+            niter = 1
+        else:
+            assert max_parallel_samples <= multiplicity, (
+                "max_parallel_samples must be less than or equal to multiplicity"
+            )
+            niter = (multiplicity + max_parallel_samples - 1) // max_parallel_samples
         x_chunks = x_pred.chunk(niter, dim=1)
         if s_diffusion is not None:
             if s_diffusion.ndim == 3:

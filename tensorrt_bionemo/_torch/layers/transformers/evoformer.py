@@ -53,6 +53,7 @@ class EvoformerBlock(nn.Module):
         support_batch: bool = True,
         dtype: torch.dtype | None = None,
         trimul_high_precision: bool = False,
+        pair_mask_left_aligned: bool = True,
         eps: float = 1e-5,
         inf: float = 1e9,
         skip_create_weights: bool = False,
@@ -71,6 +72,7 @@ class EvoformerBlock(nn.Module):
         self.no_column_attention = no_column_attention
         self.opm_first = opm_first
         self.triangle_attn_backend = triangle_attn_backend
+        self.pair_mask_left_aligned = pair_mask_left_aligned
         self.support_batch = support_batch
         self.dtype = dtype
         self.eps = eps
@@ -126,6 +128,7 @@ class EvoformerBlock(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             high_precision=trimul_high_precision,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
 
         self.tri_mul_in = TriangleMultiplicationNode(
@@ -139,6 +142,7 @@ class EvoformerBlock(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             high_precision=trimul_high_precision,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
 
         self.tri_attn_start = TriangleAttentionStartingNode(
@@ -153,6 +157,7 @@ class EvoformerBlock(nn.Module):
             attn_backend=triangle_attn_backend,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
         self.tri_attn_end = TriangleAttentionEndingNode(
             c_z,
@@ -166,6 +171,7 @@ class EvoformerBlock(nn.Module):
             attn_backend=triangle_attn_backend,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
 
         self.pair_transition = PairTransition(c_z=c_z, n=transition_n, dtype=dtype, eps=eps)
@@ -226,21 +232,22 @@ class EvoformerBlock(nn.Module):
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
-        # For the CuTeDSL triangle-attention backend, ``mask_bias`` /
-        # ``mask_bias_transposed`` ARE the per-row int32 valid-count
-        # tensors (``actual_s_kv`` / ``actual_s_kv_t``) the dual_gemm_x_x
-        # LM kernel wants for ``tri_mul_out`` / ``tri_mul_in`` -- reusing
-        # them lets every layer skip the in-wrapper ``mask.sum(-1)``
-        # reduction. Default backends use ``mask_bias`` as a float
-        # additive bias, so we gate on int32 dtype.
+        # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
+        # Otherwise, let the wrapper derive masking from ``pair_mask``.
         tri_out_actual_seqlen = tri_in_actual_seqlen = None
-        if precomputed_masks is not None and precomputed_masks.mask_bias.dtype == torch.int32:
+        if (
+            self.pair_mask_left_aligned
+            and precomputed_masks is not None
+            and precomputed_masks.mask_bias.dtype == torch.int32
+        ):
             tri_out_actual_seqlen = precomputed_masks.mask_bias
             tri_in_actual_seqlen = precomputed_masks.mask_bias_transposed
         z = z + self.tri_mul_out(z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen)
         z = z + self.tri_mul_in(z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen)
 
-        if precomputed_masks is not None:
+        # Same left-aligned gate as tri_mul: CuTeDSL int32 row lengths are
+        # invalid for bipartite / interior-zero masks.
+        if self.pair_mask_left_aligned and precomputed_masks is not None:
             mb_start = precomputed_masks.mask_bias
             mb_end = precomputed_masks.mask_bias_transposed
         else:

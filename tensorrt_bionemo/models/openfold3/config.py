@@ -255,6 +255,8 @@ class OpenFold3Config(BaseConfig):
     n_key: int = _Default.n_key
     no_rollout_steps: int = 200
     no_rollout_samples: int = 1
+    # fp32 LayerNorm → cast to trunk dtype (bf16-mixed without autocast).
+    trunk_ln_high_precision: bool = True
 
     input_embedder_config: BaseConfig = InputEmbedderAllAtomConfig()
     template_embedder_config: BaseConfig = TemplateEmbedderConfig()

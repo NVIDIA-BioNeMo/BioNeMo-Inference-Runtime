@@ -55,7 +55,14 @@ class ParserStageConfig(_StageConfigBase):
 
 
 class TokenizerStageConfig(_StageConfigBase):
-    pass
+    init_context: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional context passed to the tokenizer-stage pre_init hook. "
+            "For OpenFold3, set random_seed here (or on feature_generator_stage) "
+            "so RDKit ETKDG runs after RNG seeding."
+        ),
+    )
 
 
 class FeatureGeneratorStageConfig(_StageConfigBase):

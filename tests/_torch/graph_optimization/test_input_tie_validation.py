@@ -17,7 +17,6 @@ call — a tie to an absent tensor or out-of-range axis is a configuration
 error, not a silently-ignored rule."""
 
 import pytest
-import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.graph_optimization.config import (
@@ -47,8 +46,8 @@ def _acceptance_factory() -> InputRoutingConfigFactory:
     return f
 
 
-def _shape(*dims: int) -> torch.Tensor:
-    return torch.tensor(dims, dtype=torch.int32)
+def _shape(*dims: int) -> tuple[int, ...]:
+    return dims
 
 
 def test_valid_ties_pass_and_run_once():

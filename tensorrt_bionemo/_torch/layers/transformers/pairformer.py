@@ -77,14 +77,9 @@ class PairformerLayerV1(nn.Module):
         Args:
             pair_mask_left_aligned: Whether the runtime ``pair_mask`` is
                 guaranteed left-aligned (``1...1 0...0``) along both
-                masked axes. Threaded into the two ``TriangleMultiplicationNode``
-                ctors so they steer the x_x dual GEMM dispatcher away from
-                the CuTe LM kernel when ``False`` (e.g. Boltz-2 affinity
-                ``cross_pair_mask`` is bipartite). Also gates the
-                ``int32`` ``actual_seqlen`` fast-path in
-                :meth:`_transform_z` (it forwards
-                ``precomputed_masks.mask_bias`` as ``actual_seqlen`` only
-                when the pair_mask is trustworthy).
+                masked axes. Gates prefix-length fast paths in triangle
+                multiplication and cuEquivariance triangle attention. Set
+                ``False`` for bipartite masks with interior zeros.
         """
         super().__init__()
         self.dtype = dtype
@@ -146,6 +141,7 @@ class PairformerLayerV1(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             attn_backend=triangle_attn_backend,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
         self.tri_attn_end = TriangleAttentionEndingNode(
             token_z,
@@ -156,6 +152,7 @@ class PairformerLayerV1(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             attn_backend=triangle_attn_backend,
+            pair_mask_left_aligned=pair_mask_left_aligned,
         )
         if not self.no_update_s:
             self.transition_s = Transition(
@@ -173,10 +170,7 @@ class PairformerLayerV1(nn.Module):
             eps=eps,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            # Row-chunk the pair FFN at large N so its [N, N, 2*hidden] intermediate never
-            # materializes at full N (~26 GB -> a few GB). Position-wise => numerically identical,
-            # and only triggers above the policy threshold. Covers every Pairformer variant
-            # (trunk / confidence / MSA) since they all build transition_z through this base class.
+            # Row-chunk large pair FFNs to bound [N, N, 2*hidden] activations.
             auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION),
         )
 
@@ -188,18 +182,8 @@ class PairformerLayerV1(nn.Module):
         precomputed_masks: PrecomputedPairMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
-        # For the CuTeDSL triangle-attention backend, ``mask_bias`` /
-        # ``mask_bias_transposed`` ARE the per-row int32 valid-count
-        # tensors (``actual_s_kv`` / ``actual_s_kv_t``) the dual_gemm_x_x
-        # LM kernel wants for ``tri_mul_out`` / ``tri_mul_in`` -- reusing
-        # them lets every layer skip the in-wrapper ``mask.sum(-1)``
-        # reduction at zero extra cost. For default backends ``mask_bias``
-        # is a float additive bias instead, so we gate on int32 dtype and
-        # fall back to the wrapper-side reduction otherwise.
-        # Additionally gated on ``pair_mask_left_aligned``: the prefix
-        # encoding is only correct for left-aligned masks, so for
-        # bipartite cases (affinity ``cross_pair_mask``) we drop the
-        # fast-path even when an int32 tensor is present.
+        # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
+        # Otherwise, let the wrapper derive masking from ``pair_mask``.
         tri_out_actual_seqlen = tri_in_actual_seqlen = None
         if (
             self.pair_mask_left_aligned
@@ -213,7 +197,9 @@ class PairformerLayerV1(nn.Module):
         z = z.to(self.dtype)
 
         tri_attn_metadata = (attn_metadatas or {}).get("triangle_attn")
-        if precomputed_masks is not None:
+        # Same left-aligned gate as tri_mul: CuTeDSL int32 row lengths are
+        # invalid for bipartite / interior-zero masks.
+        if self.pair_mask_left_aligned and precomputed_masks is not None:
             mb_start = precomputed_masks.mask_bias
             mb_end = precomputed_masks.mask_bias_transposed
         else:

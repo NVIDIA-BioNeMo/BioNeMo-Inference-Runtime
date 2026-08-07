@@ -55,6 +55,7 @@ class TriangleAttentionNode(nn.Module):
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
         mha_bias_flags: dict[str, bool] | None = None,
+        pair_mask_left_aligned: bool = True,
     ):
         """
         Args:
@@ -68,6 +69,8 @@ class TriangleAttentionNode(nn.Module):
                 shared ``triangle_attention`` policy from ``CHUNK_REGISTRY``.
             skip_create_weights (bool): whether to skip creating weights
             attn_backend (str): attention backend
+            pair_mask_left_aligned: Whether the mask is prefix-shaped along
+                both pair axes.
         """
         super().__init__()
         if mha_bias_flags is None:
@@ -79,6 +82,7 @@ class TriangleAttentionNode(nn.Module):
         self.inf = inf
         self.dtype = dtype
         self.attn_backend = attn_backend
+        self.pair_mask_left_aligned = pair_mask_left_aligned
         # Query-row chunking policy (registry default unless overridden). Attention within each row
         # is independent, so row-chunking is numerically identical; bounds the [chunk, J, H, ...]
         # attention temporaries at large N.
@@ -161,7 +165,13 @@ class TriangleAttentionNode(nn.Module):
         buffers: PreallocatedBuffers | None = None,
     ) -> torch.Tensor:
         """Run MHA for a (possibly row-chunked) slice of ``x``; ``triangle_bias`` is shared."""
-        return self.mha(x, biases=[mask_bias, triangle_bias], attn_metadata=attn_metadata, buffers=buffers)
+        return self.mha(
+            x,
+            biases=[mask_bias, triangle_bias],
+            attn_metadata=attn_metadata,
+            buffers=buffers,
+            use_kv_lengths=self.pair_mask_left_aligned,
+        )
 
     def forward(
         self,

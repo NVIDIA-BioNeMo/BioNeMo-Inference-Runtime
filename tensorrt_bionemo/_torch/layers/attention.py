@@ -109,6 +109,7 @@ class TriangleAttention(nn.Module):
         biases: list[torch.Tensor] | None = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        use_kv_lengths: bool = False,
     ) -> torch.Tensor:
         """
         Args:
@@ -121,6 +122,8 @@ class TriangleAttention(nn.Module):
                 per-call allocation. The LSE buffer is consumed by the
                 left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper
                 SM90).
+            use_kv_lengths: Encode a left-aligned mask as per-row lengths for
+                the cuEquivariance SM100f fast path.
         """
         if not hidden_states.is_contiguous():
             hidden_states = hidden_states.contiguous()
@@ -153,7 +156,14 @@ class TriangleAttention(nn.Module):
             else None
         )
         mha_o = self.attn.forward(
-            q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf, output_lse=attn_lse_buf
+            q,
+            k,
+            v,
+            biases=biases,
+            metadata=attn_metadata,
+            output=attn_buf,
+            output_lse=attn_lse_buf,
+            use_kv_lengths=use_kv_lengths,
         )
         if self.g_proj is not None:
             mha_flat = mha_o.reshape(-1, self.num_heads * self.head_dim)

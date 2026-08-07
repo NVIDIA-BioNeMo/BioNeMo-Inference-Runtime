@@ -24,7 +24,12 @@ import torch
 import torch.nn as nn
 
 import tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime as trk
-from tensorrt_bionemo._torch.graph_optimization.config import CUDAGraphOptimizationConfig
+from tensorrt_bionemo._torch.graph_optimization.config import (
+    CUDAGraphOptimizationConfig,
+    InputKeyMethod,
+    InputRoutingConfigFactory,
+    NamedDimTies,
+)
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_mem
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
@@ -47,6 +52,18 @@ def _make():
     return tracker, raw
 
 
+def _make_bucketed_tracker():
+    factory = InputRoutingConfigFactory()
+    factory.set_named_dim_ties([NamedDimTies(name="tokens", input_dims=(("input", (1,)),), output_dims=((0, (1,)),))])
+    factory.set_input_acceptance_dim("tokens", 8)
+    factory.set_padded_dim("tokens", 4, 8, 1, multiple_of=1)
+    config = CUDAGraphOptimizationConfig(
+        input_key_method=InputKeyMethod.BUCKETED_SHAPES,
+        input_routing_config=factory.export_config(),
+    )
+    return CUDAGraphOptimizationTracker(config, inner_module=nn.ReLU().cuda()).eval()
+
+
 def _key(tracker, x):
     return tracker.input_key_for_this_call(x)
 
@@ -66,6 +83,97 @@ def test_capture_then_replay_matches_eager():
     assert _key(m, x) not in m.fallback_to_eager_by_key
     assert state.working_set_bytes > 0
     assert torch.allclose(out, ref, atol=1e-5)
+
+
+def test_exact_state_reuses_cached_shape_routing(monkeypatch):
+    tracker, raw = _make()
+    x = torch.randn(2, 8, device="cuda")
+    with torch.no_grad():
+        expected = raw(x)
+        tracker(x)
+
+    def unexpected_routing(*_args, **_kwargs):
+        pytest.fail("established exact key recomputed shape routing")
+
+    monkeypatch.setattr(tracker, "_extract_tensor_container_shape_maps", unexpected_routing)
+    monkeypatch.setattr(tracker, "validate_input_ties", unexpected_routing)
+    monkeypatch.setattr(tracker, "input_accepted", unexpected_routing)
+
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            output = tracker(x)
+
+    state = tracker.graph_state_by_key[_key(tracker, x)]
+    assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED
+    assert torch.allclose(output, expected, atol=1e-5)
+
+
+def test_bucketed_state_reuses_cached_shape_routing(monkeypatch):
+    tracker = _make_bucketed_tracker()
+    x = torch.randn(1, 5, 4, device="cuda")
+    with torch.no_grad():
+        expected = torch.relu(x)
+        tracker(x)
+
+    def unexpected_routing(*_args, **_kwargs):
+        pytest.fail("established bucket recomputed shape routing")
+
+    monkeypatch.setattr(tracker, "_extract_tensor_container_shape_maps", unexpected_routing)
+    monkeypatch.setattr(tracker, "validate_input_ties", unexpected_routing)
+    monkeypatch.setattr(tracker, "input_accepted", unexpected_routing)
+
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            output = tracker(x)
+
+    assert len(tracker.graph_state_by_key) == 1
+    state = next(iter(tracker.graph_state_by_key.values()))
+    assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED
+    assert torch.equal(output, expected)
+
+
+def test_bucketed_shape_cache_is_evicted_with_graph_state():
+    tracker = _make_bucketed_tracker()
+    x_large = torch.randn(1, 5, 4, device="cuda")
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            tracker(x_large)
+
+    ((old_graph_key, old_state),) = tracker.graph_state_by_key.items()
+    old_input_key = tracker.input_key_for_this_call(x_large)
+    assert old_state.cached_input_key == old_input_key
+    del old_state
+
+    x_small = torch.randn(1, 3, 4, device="cuda")
+    with torch.no_grad():
+        tracker(x_small)
+
+    assert old_graph_key not in tracker.graph_state_by_key
+    assert all(state.cached_input_key != old_input_key for state in tracker.graph_state_by_key.values())
+
+
+@pytest.mark.filterwarnings("ignore:Synchronization debug mode is a prototype feature")
+def test_bucketed_forward_avoids_host_device_synchronization():
+    tracker = _make_bucketed_tracker()
+    x = torch.randn(1, 5, 4, device="cuda")
+
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            tracker(x)
+
+    x_replay = torch.randn(1, 6, 4, device="cuda")
+    previous_sync_debug_mode = torch.cuda.get_sync_debug_mode()
+    try:
+        torch.cuda.set_sync_debug_mode("error")
+        with torch.no_grad():
+            output = tracker(x_replay)
+    finally:
+        torch.cuda.set_sync_debug_mode(previous_sync_debug_mode)
+
+    assert len(tracker.graph_state_by_key) == 1
+    state = next(iter(tracker.graph_state_by_key.values()))
+    assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED
+    assert output.shape == x_replay.shape
 
 
 def test_grad_or_training_falls_back_to_eager():

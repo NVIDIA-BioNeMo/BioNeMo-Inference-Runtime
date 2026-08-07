@@ -74,8 +74,8 @@ def _accepted(tracker: CUDAGraphOptimizationTracker, *args, **kwargs) -> bool:
     """Derive the ``tensor_container_shapes`` map the way ``forward`` does, then
     run the acceptance check on it (``input_accepted`` keys off shapes, not the
     live tensors)."""
-    shapes = tracker._extract_tensor_container_shapes(args, kwargs)
-    return tracker.input_accepted(shapes)
+    _, shapes_host = tracker._extract_tensor_container_shape_maps(args, kwargs)
+    return tracker.input_accepted(shapes_host)
 
 
 @pytest.mark.parametrize(

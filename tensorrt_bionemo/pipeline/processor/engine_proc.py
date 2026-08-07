@@ -181,7 +181,11 @@ def _build_parser_stage(config: EngineProcessorConfig, processor_defaults: dict[
 def _build_tokenizer_stage(config: EngineProcessorConfig, processor_defaults: dict[str, Any]) -> StatefulStage:
     model_pretrained_config = config.get_model_pretrained_config()
     tokenizer_stage_cfg = resolve_stage_config(config.tokenizer_stage, TokenizerStageConfig, processor_defaults)
+    feature_generator_stage_cfg = resolve_stage_config(
+        config.feature_generator_stage, FeatureGeneratorStageConfig, processor_defaults
+    )
     tokenizer = get_tokenizer(config.model_source)
+    feature_factory = get_feature_factory(config.model_source)
     context_generators = {}
     for k, generator_spec in tokenizer.context_generator_specs.items():
         context_generators[k] = generator_spec.generator(
@@ -195,11 +199,19 @@ def _build_tokenizer_stage(config: EngineProcessorConfig, processor_defaults: di
         transform_cls = transform_spec.transform
         transform_funcs.append(transform_cls(config=model_pretrained_config, **transform_spec.kwargs))
 
+    # Prefer tokenizer-stage init_context; fall back to feature-stage so a single
+    # random_seed seeds both ETKDG (tokenizer) and augmentation (feature stage).
+    init_context = tokenizer_stage_cfg.init_context
+    if init_context is None:
+        init_context = feature_generator_stage_cfg.init_context
+
     return TokenizerStage(
         fn_constructor_kwargs={
             "context_generators": context_generators,
             "context_merger_func": tokenizer.context_merger_func,
             "transform_funcs": transform_funcs,
+            "pre_init": feature_factory.pre_init,
+            "init_context": init_context,
         },
         map_batches_kwargs=build_cpu_stage_map_kwargs(tokenizer_stage_cfg),
         compute_by_rows=tokenizer_stage_cfg.compute_by_rows,

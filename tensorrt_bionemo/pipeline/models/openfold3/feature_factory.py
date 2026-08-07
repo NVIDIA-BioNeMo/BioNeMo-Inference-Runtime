@@ -40,10 +40,9 @@ from .feature_generators import (
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
     """Seed Python, NumPy, and Torch RNGs from context['random_seed'].
 
-    All three global RNGs are seeded so that
-    stochastic feature generators (ConformerFeatureGenerator's random
-    augmentation via torch.randn, RDKit ETKDGv3 seeds via stdlib random) are
-    fully reproducible given the same random_seed.
+    Must run *before* OpenFold3ContextGenerator / RDKit ETKDGv3 (tokenizer
+    stage). The processor wires this hook into both the tokenizer stage and
+    the feature stage so ETKDG and centre_random_augmentation stay aligned.
     """
     seed = context.get("random_seed", 0)
     if seed is None:

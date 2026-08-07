@@ -4,7 +4,7 @@ PROJECT_DIR ?= $(PWD)/..
 
 # PyTorch development base
 TORCH_BASE_IMAGE ?= nvcr.io/nvidia/pytorch
-TORCH_BASE_TAG ?= 25.12-py3
+TORCH_BASE_TAG ?= 26.05-py3
 
 # TRTBNM image parameters
 REGISTRY_IMAGE ?= tensorrt-bionemo

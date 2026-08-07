@@ -48,8 +48,8 @@ from __future__ import annotations
 
 import functools
 import math
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
-from typing import Callable, Iterator, Optional, TypeVar
 
 import torch
 
@@ -82,10 +82,8 @@ def default_autochunk_min(device=None) -> int:
             return DEFAULT_AUTOCHUNK_MIN_REF
         if device is None:
             device = torch.cuda.current_device()
-        total_gb = torch.cuda.get_device_properties(device).total_memory / (
-            1024**3)
-        scaled = DEFAULT_AUTOCHUNK_MIN_REF * math.sqrt(
-            total_gb / _REFERENCE_GPU_GB)
+        total_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
+        scaled = DEFAULT_AUTOCHUNK_MIN_REF * math.sqrt(total_gb / _REFERENCE_GPU_GB)
         return max(_AUTOCHUNK_MIN_FLOOR, int(round(scaled / 128) * 128))
     except Exception:
         return DEFAULT_AUTOCHUNK_MIN_REF
@@ -101,6 +99,7 @@ MSA_TRANSITION = "msa_transition"
 PAIR_WEIGHTED_AVERAGING = "pair_weighted_averaging"
 OUTER_PRODUCT_MEAN = "outer_product_mean"
 TRIANGLE_ATTENTION = "triangle_attention"
+CONTACT_PROB = "contact_prob"
 
 # OSS Protenix ``MSAStack.msa_chunk_size`` default: chunk MSA rows (dim S of
 # ``[B, S, N, C_m]``) so the SwiGLU ``[S, N, 2*hidden]`` transient stays bounded.
@@ -108,8 +107,6 @@ DEFAULT_MSA_CHUNK_ROWS = 2048
 # Engage MSA-row chunking once S exceeds this (independent of the N-residue
 # memory-scaled pair threshold — deep MSAs OOMs at modest N, e.g. H1185).
 DEFAULT_MSA_AUTOCHUNK_MIN = 2048
-
-T = TypeVar("T")
 
 
 def iter_chunks(total: int, chunk: int) -> Iterator[tuple[int, int]]:
@@ -147,23 +144,26 @@ class ChunkPolicy:
 
     def resolved_min_size(self, device=None) -> int:
         """Effective threshold: explicit ``min_size`` when set (``>= 0``), else the memory-scaled default."""
-        return self.min_size if self.min_size >= 0 else default_autochunk_min(
-            device)
+        return self.min_size if self.min_size >= 0 else default_autochunk_min(device)
 
     def should_chunk_size(self, n: int, device=None) -> bool:
         """True iff a problem of size ``n`` is large enough (and this policy is on) to chunk."""
-        return (self.enabled and self.chunk_size > 0
-                and n > self.resolved_min_size(device))
+        return self.enabled and self.chunk_size > 0 and n > self.resolved_min_size(device)
 
     def should_chunk(self, x: torch.Tensor) -> bool:
         """Tensor form of :meth:`should_chunk_size` for concat-style ops: gates on rank + ``dim`` extent."""
-        if not (self.enabled and self.chunk_size > 0 and torch.is_tensor(x)
-                and x.dim() >= self.min_rank and x.dim() > self.dim):
+        if not (
+            self.enabled
+            and self.chunk_size > 0
+            and torch.is_tensor(x)
+            and x.dim() >= self.min_rank
+            and x.dim() > self.dim
+        ):
             return False
         device = x.device if x.is_cuda else None
         return x.shape[self.dim] > self.resolved_min_size(device)
 
-    def replace(self, **changes) -> "ChunkPolicy":
+    def replace(self, **changes) -> ChunkPolicy:
         """Return a copy with selected fields overridden (e.g. ``policy.replace(enabled=False)``)."""
         return replace(self, **changes)
 
@@ -178,20 +178,14 @@ class ChunkRegistry:
     def __init__(self) -> None:
         self._policies: dict[str, ChunkPolicy] = {}
 
-    def register(self,
-                 name: str,
-                 policy: ChunkPolicy,
-                 *,
-                 overwrite: bool = True) -> ChunkPolicy:
+    def register(self, name: str, policy: ChunkPolicy, *, overwrite: bool = True) -> ChunkPolicy:
         """Register ``policy`` under ``name`` (default overwrites; pass ``overwrite=False`` to keep)."""
         if not overwrite and name in self._policies:
             return self._policies[name]
         self._policies[name] = policy
         return policy
 
-    def get(self,
-            name: str,
-            default: Optional[ChunkPolicy] = None) -> Optional[ChunkPolicy]:
+    def get(self, name: str, default: ChunkPolicy | None = None) -> ChunkPolicy | None:
         """Return the policy for ``name`` (or ``default`` if unregistered)."""
         return self._policies.get(name, default)
 
@@ -225,53 +219,45 @@ CHUNK_REGISTRY = ChunkRegistry()
 # GPU-memory-scaled threshold. ``chunk_size`` is rows-per-slice; ``min_rank=4`` keeps cheap rank-3
 # activations (e.g. single-rep transition_s) on the dense path.
 # transition_z: pair row dim (N).
-CHUNK_REGISTRY.register(
-    PAIR_TRANSITION,
-    ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
+CHUNK_REGISTRY.register(PAIR_TRANSITION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 # Diffusion pair-conditioning transition_z: same row-chunk semantics as trunk
 # transition_z ([B, N, N, C], dim=1), but a separate registry key so diffusion
 # thresholds can be tuned independently. Single-conditioning transition_s stays
 # dense (its dim=1 is the sample axis).
-CHUNK_REGISTRY.register(
-    DIFFUSION_PAIR_TRANSITION,
-    ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
+CHUNK_REGISTRY.register(DIFFUSION_PAIR_TRANSITION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 # MSA Transition (SwiGLU on ``[B, S, N, C_m]``): chunk the MSA-row dim S, matching
 # OSS ``MSAStack.inference_forward`` (msa_chunk_size=2048). Without this, deep
 # MSAs at moderate N (CASP15 H1185: S≈35k, N≈1332) allocate ~45 GB for the fused
 # ``2*hidden`` projection and OOM on 80 GB while OSS fits.
 CHUNK_REGISTRY.register(
     MSA_TRANSITION,
-    ChunkPolicy(chunk_size=DEFAULT_MSA_CHUNK_ROWS,
-                min_size=DEFAULT_MSA_AUTOCHUNK_MIN,
-                dim=1,
-                min_rank=4))
+    ChunkPolicy(chunk_size=DEFAULT_MSA_CHUNK_ROWS, min_size=DEFAULT_MSA_AUTOCHUNK_MIN, dim=1, min_rank=4),
+)
 # PairWeightedAveraging: sequence dim S (the einsum's non-token, row-safe axis).
-CHUNK_REGISTRY.register(
-    PAIR_WEIGHTED_AVERAGING,
-    ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
+CHUNK_REGISTRY.register(PAIR_WEIGHTED_AVERAGING, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 # OuterProductMean: output token-row dim. Fewer rows/chunk since its intermediate carries an extra
 # c_hidden**2 factor ([chunk, N, c_hidden**2]).
-CHUNK_REGISTRY.register(OUTER_PRODUCT_MEAN,
-                        ChunkPolicy(chunk_size=128, dim=1, min_rank=4))
+CHUNK_REGISTRY.register(OUTER_PRODUCT_MEAN, ChunkPolicy(chunk_size=128, dim=1, min_rank=4))
 # TriangleAttentionNode: query-row dim I (attention over the key dim J is independent per row).
 # Disabled by default -- the flash-attention triangle kernels already bound memory; enable via
 # ``CHUNK_REGISTRY.enable(TRIANGLE_ATTENTION)`` when falling back to a memory-heavy attention backend.
 CHUNK_REGISTRY.register(
-    TRIANGLE_ATTENTION,
-    ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS,
-                dim=1,
-                min_rank=4,
-                enabled=False))
+    TRIANGLE_ATTENTION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4, enabled=False)
+)
+# Distogram -> contact-probability reduction: pair row dim of ``[B, N, N, num_bins]``. The softmax is
+# per-row over the bin dim, so row-chunking bounds it to ``[chunk, N, num_bins]`` without changing
+# the result.
+CHUNK_REGISTRY.register(CONTACT_PROB, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 
 # Back-compat alias for the pair-transition default policy.
 DEFAULT_PAIR_TRANSITION_POLICY = CHUNK_REGISTRY.get(PAIR_TRANSITION)
 
 
-def chunk_apply(
+def chunk_apply[T](
     fn: Callable[..., T],
-    *chunked: Optional[torch.Tensor],
-    policy: Optional[ChunkPolicy] = None,
-    cat_dim: Optional[int] = None,
+    *chunked: torch.Tensor | None,
+    policy: ChunkPolicy | None = None,
+    cat_dim: int | None = None,
     **passthrough,
 ) -> T:
     """Evaluate ``fn(*chunked, **passthrough)`` in row-slices along ``policy.dim`` and concatenate.
@@ -302,24 +288,19 @@ def chunk_apply(
     out_dim = policy.dim if cat_dim is None else cat_dim
     n = primary.shape[dim]
 
-    def _slice(t: Optional[torch.Tensor], start: int, length: int):
+    def _slice(t: torch.Tensor | None, start: int, length: int):
         # Only slice tensors aligned to the primary along ``dim``; pass everything else
         # (None, scalars, already-reduced biases) through untouched.
-        if (t is None or not torch.is_tensor(t) or t.dim() <= dim
-                or t.shape[dim] != n):
+        if t is None or not torch.is_tensor(t) or t.dim() <= dim or t.shape[dim] != n:
             return t
         return t.narrow(dim, start, length)
 
     outs = []
     for start, length in iter_chunks(n, policy.chunk_size):
-        outs.append(
-            fn(*[_slice(t, start, length) for t in chunked], **passthrough))
+        outs.append(fn(*[_slice(t, start, length) for t in chunked], **passthrough))
 
     first = outs[0]
     if isinstance(first, (tuple, list)):
-        catted = [
-            torch.cat([o[i] for o in outs], dim=out_dim)
-            for i in range(len(first))
-        ]
+        catted = [torch.cat([o[i] for o in outs], dim=out_dim) for i in range(len(first))]
         return type(first)(catted)
     return torch.cat(outs, dim=out_dim)

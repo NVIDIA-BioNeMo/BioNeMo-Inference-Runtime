@@ -1,6 +1,6 @@
 ---
 name: scan-mem-opt-patterns
-description: Scan a pairwise-representation structure model (Boltz1/2, OpenFold2/3, Protenix, or a new port) for activation-memory patterns proven on Boltz2 (~4000 residues / 80 GB) and ProtenixV2. Four levers — precision (fp32→bf16 trimul / pair-cond / consumer-dtype cached pair_z), lifetime (in-place [N,N,*] accumulate, RAII / stream multi-sample confidence, drop dead features with real ownership, compact output), never-materialize (one-hot→embedding-gather for RPE/MSA/template, sample-independent DiT pair-bias broadcast over S, joint LN+Linear without cat), and chunking (pair-row ChunkPolicy; never chunk sample-axis transitions). Also covers expandable_segments and a per-submodule memory profiler. Reusable code is inlined. Use when reducing activation memory, fitting longer sequences, diagnosing large-N OOM, or porting these optimizations to another pairwise model.
+description: Scan a pairwise-representation structure model (Boltz1/2, OpenFold2/3, Protenix, or a new port) for activation-memory patterns proven on Boltz2 (~4000 residues / 80 GB) and ProtenixV2. Four levers — precision (fp32→bf16 trimul / pair-cond / consumer-dtype cached pair_z), lifetime (in-place [N,N,*] accumulate, RAII / stream multi-sample confidence, drop dead features with real ownership, compact output), never-materialize (one-hot→embedding-gather for RPE/MSA/template, sample-independent DiT pair-bias broadcast over S, joint LN+Linear without cat, reduce-at-producer when only a reduction crosses a stage boundary), and chunking (pair-row ChunkPolicy; never chunk sample-axis transitions). Also covers slice-aliasing that pins a parent storage, expandable_segments, and a per-submodule memory profiler. Reusable code is inlined. Use when reducing activation memory, fitting longer sequences, diagnosing large-N OOM, or porting these optimizations to another pairwise model.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
@@ -9,11 +9,11 @@ metadata:
 # Scan for Pairwise-Representation Memory-Optimization Patterns
 
 Protein-structure models (Boltz, OpenFold2/3, Protenix, and most
-AlphaFold-lineage ports) blow up on the
-**pairwise `[B, N, N, c]` representation** at large token count `N`. The peak is
-a *stack* of `[N,N,*]` activations, each `N²·c·sizeof(elem)` bytes (e.g.
-`[N,N,256]` fp32 ≈ 16 GB at N≈4000). Fitting a longer sequence is almost never
-one big win — it is removing that stack **one `[N,N,*]` tensor at a time**.
+AlphaFold-lineage ports) blow up on the **pairwise `[B, N, N, c]`
+representation** at large token count `N`. The peak is a *stack* of `[N,N,*]`
+activations, each `N²·c·sizeof(elem)` bytes (e.g. `[N,N,256]` fp32 ≈ 16 GB at
+N≈4000). Fitting a longer sequence is almost never one big win — it is removing
+that stack **one `[N,N,*]` tensor at a time**.
 
 This skill is the checklist proven on **Boltz2** (~4000 residues on 80 GB) and
 extended with patterns from **ProtenixV2** (multi-sample diffusion +
@@ -39,19 +39,20 @@ lever a given `[N,N,*]` tensor is missing:
 - **L1 — Precision.** Store/compute the `[N,N,*]` tensor in **bf16, not fp32**
   (½ the bytes). Especially when a fp32 producer feeds a bf16 consumer (the fp32
   tensor is cast down anyway).
-- **L2 — Lifetime.** A `[N,N,*]` tensor should be
-  **resident only while it is read**. Shorten its life: accumulate **in place**,
-  **recompute** a cheap tensor instead of holding it, build heavy temporaries in
-  a **helper scope** so they free on return, **drop** feed_dict tensors once
-  dead, **`del`** a stage's outputs before the next heavy stage.
-- **L3 — Never materialize.** Don't build the big intermediate at all:
-  **`one_hot@W → embedding` gather**,
-  **broadcast/python-loop → `bmm`/`einsum`**, **inline** a use-once tensor into
-  its consumer, feed a fused kernel a **strided** input instead of a
+- **L2 — Lifetime.** A `[N,N,*]` tensor should be **resident only while it is
+  read**. Shorten its life: accumulate **in place**, **recompute** a cheap
+  tensor instead of holding it, build heavy temporaries in a **helper scope** so
+  they free on return, **drop** feed_dict tensors once dead, **`del`** a stage's
+  outputs before the next heavy stage.
+- **L3 — Never materialize.** Don't build the big intermediate at all, and don't
+  carry it in a form wider than anyone reads: **`one_hot@W → embedding`
+  gather**, **broadcast/python-loop → `bmm`/`einsum`**, **inline** a use-once
+  tensor into its consumer, **reduce at the producer** when every consumer only
+  reads a reduction, feed a fused kernel a **strided** input instead of a
   padded/contiguous copy.
-- **L4 — Chunking.** A **position-wise** op over `[N,N,*]`
-  (`f(cat(a,b)) == cat(f(a),f(b))`) can run in **row slices** → peak transient ≈
-  `chunk/N` of dense, **bit-identical**. Use the chunk engine (below).
+- **L4 — Chunking.** A **position-wise** op over `[N,N,*]` (`f(cat(a,b)) ==
+  cat(f(a),f(b))`) can run in **row slices** → peak transient ≈ `chunk/N` of
+  dense, **bit-identical**. Use the chunk engine (below).
 
 Cross-cutting facts worth internalizing:
 
@@ -66,7 +67,8 @@ Cross-cutting facts worth internalizing:
   materializing `[B·S,N,N,*]`.
 - **Inference-only assumptions are allowed** here (no autograd), which unlocks
   in-place / `del` / `pop` that training could not do. Destructive feature
-  ownership must be **opt-in** when the caller may retain the input dict (P6).
+  ownership must be **opt-in** when the caller may retain the input dict (P6 /
+  P17).
 - **Do not hoist recycle-dependent modules** (template / MSA that read current
   `z`) outside the recycle loop for "memory" — holding their activations across
   cycles can *raise* the resident base. Only static feature-side projections are
@@ -77,15 +79,20 @@ Cross-cutting facts worth internalizing:
 Copy this checklist and track progress:
 
 ```text
-- [ ] 1. Map the target: the model forward; the trunk / MSA / pairformer stack; the
-         diffusion-conditioning + token DiT + confidence stages; the rel-pos encoder;
-         the featurizer. Note `N_sample` / `diffusion_samples`. Identify the pairwise
-         rep tensor(s) and which stage(s) drive the peak (profiler below).
-- [ ] 2. Grep the model package for each pattern's `Detect` markers below -> a candidate list.
-- [ ] 3. For each candidate: confirm it applies (read the hit + trace dtype/dataflow/lifetime),
-         estimate GB saved, note the fix and its lever. Do NOT edit yet.
-- [ ] 4. Write the report (template below), ranked by GB and by which stage's wall it moves.
-- [ ] 5. Apply top candidates one at a time; verify numerically, then re-profile (see below).
+- [ ] 1. Map the target: the model forward; the trunk / MSA / pairformer
+         stack; the diffusion-conditioning + token DiT + confidence stages;
+         the rel-pos encoder; the featurizer. Note `N_sample` /
+         `diffusion_samples`. Identify the pairwise rep tensor(s) and which
+         stage(s) drive the peak (profiler below).
+- [ ] 2. Grep the model package for each pattern's `Detect` markers below
+         -> a candidate list.
+- [ ] 3. For each candidate: confirm it applies (read the hit + trace
+         dtype/dataflow/lifetime), estimate GB saved, note the fix and its
+         lever. Do NOT edit yet.
+- [ ] 4. Write the report (template below), ranked by GB and by which
+         stage's wall it moves.
+- [ ] 5. Apply top candidates one at a time; verify numerically, then
+         re-profile (see below).
 ```
 
 The `Detect` markers are grep hints — every hit is a *candidate*. Confirm by
@@ -126,22 +133,27 @@ _LOG = []  # (phase, name, cur_gb, peak_gb)
 
 def _mem():
     torch.cuda.synchronize()
-    return torch.cuda.memory_allocated() * GB, torch.cuda.max_memory_allocated() * GB
+    return (torch.cuda.memory_allocated() * GB,
+            torch.cuda.max_memory_allocated() * GB)
 
 def _hooks(name):
     def pre(_m, _i):      _LOG.append(("enter", name, *_mem()))
     def post(_m, _i, _o): _LOG.append(("exit",  name, *_mem()))
     return pre, post
 
-def install(model, deep=()):  # deep = top-level stage names to also hook one level into
+# deep = top-level stage names to also hook one level into
+def install(model, deep=()):
     for name, child in model.named_children():
-        p, q = _hooks(name); child.register_forward_pre_hook(p); child.register_forward_hook(q)
+        p, q = _hooks(name)
+        child.register_forward_pre_hook(p)
+        child.register_forward_hook(q)
         if name in deep:
             for cn, gch in child.named_children():
                 a, b = _hooks(f"{name}.{cn}")
-                gch.register_forward_pre_hook(a); gch.register_forward_hook(b)
-    # A stage invoked as a *method* (not __call__), e.g. a `.sample()` sampler, is NOT caught by
-    # forward hooks -- wrap it instead:
+                gch.register_forward_pre_hook(a)
+                gch.register_forward_hook(b)
+    # A stage invoked as a *method* (not __call__), e.g. a `.sample()`
+    # sampler, is NOT caught by forward hooks -- wrap it instead:
     #   orig = sm.sample
     #   def w(*a, **k):
     #       _LOG.append(("enter", "sample", *_mem()))
@@ -149,24 +161,29 @@ def install(model, deep=()):  # deep = top-level stage names to also hook one le
     #       finally: _LOG.append(("exit", "sample", *_mem()))
     #   sm.sample = w
 
-def dump_cuda_tensors(tag, topn=30):  # attribute the resident set; call from a pre-hook at a boundary
+# attribute the resident set; call from a pre-hook at a boundary
+def dump_cuda_tensors(tag, topn=30):
     seen = {}
-    for o in gc.get_objects():                       # only finds Python-referenced tensors (ok in inference)
+    # gc only finds Python-referenced tensors (ok in inference)
+    for o in gc.get_objects():
         try:
-            if torch.is_tensor(o) and o.is_cuda:
-                st = o.untyped_storage()             # dedupe by storage so views count once
-                seen[st.data_ptr()] = (st.nbytes(), tuple(o.shape), str(o.dtype))
+            if not (torch.is_tensor(o) and o.is_cuda):
+                continue
+            st = o.untyped_storage()  # dedupe by storage: views count once
+            seen[st.data_ptr()] = (st.nbytes(), tuple(o.shape), str(o.dtype))
         except Exception:
             continue
     rows = sorted(seen.values(), reverse=True)
-    print(f"[cuda @ {tag}] {len(rows)} storages, {sum(r[0] for r in rows) * GB:.2f} GB")
+    total = sum(r[0] for r in rows) * GB
+    print(f"[cuda @ {tag}] {len(rows)} storages, {total:.2f} GB")
     for nb, shp, dt in rows[:topn]:
         print(f"  {nb * GB:7.3f} GB  {str(shp):28s} {dt}")
 
 def report(oom=None):
     peak = max(_LOG, key=lambda r: r[3], default=None)
     for ph, nm, cur, pk in _LOG:
-        star = "  <-- PEAK" if peak and (ph, nm, pk) == (peak[0], peak[1], peak[3]) else ""
+        hit = peak and (ph, nm, pk) == (peak[0], peak[1], peak[3])
+        star = "  <-- PEAK" if hit else ""
         print(f"{ph:>5} {nm:<32} cur {cur:6.1f}G  peak {pk:6.1f}G{star}")
     if peak:
         print(f"global peak {peak[3]:.1f} GB at {peak[1]} ({peak[0]})")
@@ -176,8 +193,10 @@ def report(oom=None):
 
 # install(model, deep=("trunk", "confidence_module"))
 # try:     model(feed_dict, **runtime_args)
-# except torch.OutOfMemoryError as e:  report(e)     # partial log + culprit stage
-# else:    report()                                  # full per-module peak table
+# except torch.OutOfMemoryError as e:
+#     report(e)   # partial log + culprit stage
+# else:
+#     report()    # full per-module peak table
 ```
 
 The `cur` where the running `peak` jumps to its max is the dominant consumer;
@@ -185,12 +204,17 @@ The `cur` where the running `peak` jumps to its max is the dominant consumer;
 resident base. Run under `expandable_segments` (below) so the peak reflects live
 tensors, not fragmentation.
 
+Because that dump reports **storage** bytes against the **view's** shape, a row
+whose byte count is far larger than its shape implies is a slice pinning a
+bigger parent (P15) — worth chasing, since the fix is usually a one-line
+reduce-at-producer rather than a code lever.
+
 ## Pattern catalog
 
-Grouped by lever. Each entry:
-**Symptom → Detect (grep markers) → Fix → Savings**. Sizes assume `[N,N,c]` at
-N≈4-5k on an 80 GB GPU. The names in `Detect` are example symbols from the
-Boltz/OpenFold lineage — adapt to your model's names.
+Grouped by lever. Each entry: **Symptom → Detect (grep markers) → Fix →
+Savings**. Sizes assume `[N,N,c]` at N≈4-5k on an 80 GB GPU. The names in
+`Detect` are example symbols from the Boltz/OpenFold lineage — adapt to your
+model's names.
 
 ### L1 — Precision (fp32 → bf16)
 
@@ -208,7 +232,7 @@ Boltz/OpenFold lineage — adapt to your model's names.
   give the intermediate layer a `False` default as a safety net.
 - **Savings:** ~½ the trimul transient + unblocks the fused path.
 
-#### P2 — fp32 pair conditioning / bias / accumulator / cache feeding a bf16 consumer
+#### P2 — fp32 pair cond / bias / accumulator / cache feeding a bf16 consumer
 
 - **Symptom:** a `[N,N,*]` producer, accumulator, or **long-lived cache** runs
   fp32 while its consumer is bf16, so the fp32 tensor is cast down anyway.
@@ -228,11 +252,11 @@ Boltz/OpenFold lineage — adapt to your model's names.
   paths, `dtype=`. Red flag: a `[N,N,*]` fp32 producer/accumulator/cache whose
   value is `.to(bf16)`'d downstream (or fed into a bf16 stack).
 - **Fix:** build/cast at the consumer dtype. Producer: cast inputs in at the
-  module boundary, expose the dtype as a config field. Accumulator:
-  `z = z.to(<pairformer dtype>)` right after the last `+=` — before it's
-  held/looped. Cache: **compute** pair conditioning in fp32 if quality requires
-  it, then **store** the cached tensor in the consumer dtype (bf16). Do **not**
-  blindly cast the conditioning transitions themselves to bf16 — that has caused
+  module boundary, expose the dtype as a config field. Accumulator: `z =
+  z.to(<pairformer dtype>)` right after the last `+=` — before it's held/looped.
+  Cache: **compute** pair conditioning in fp32 if quality requires it, then
+  **store** the cached tensor in the consumer dtype (bf16). Do **not** blindly
+  cast the conditioning transitions themselves to bf16 — that has caused
   measurable long-sequence lDDT regressions; keep compute fp32, cache bf16, and
   A/B before flipping persistent pair-*state* dtype (opt-in only).
 - **Savings:** ½ the tensor (e.g. a per-layer `token_trans_bias`
@@ -266,7 +290,7 @@ Boltz/OpenFold lineage — adapt to your model's names.
   `recompute_rel_pos` config flag. Deterministic → output unchanged.
 - **Savings:** one `[N,N,token_z]` (~15 GB fp32 at N≈5k).
 
-#### P5 — Heavy intermediate held in caller scope (RAII) / multi-sample
+#### P5 — Heavy intermediate held in the caller scope (RAII) / multi-sample
 
 - **Symptom:** a heavy `[N,N,*]` intermediate is created early and consumed late
   (or a small tensor is derived from it), so it stays resident across unrelated
@@ -311,10 +335,9 @@ Boltz/OpenFold lineage — adapt to your model's names.
     rep-atom maps ≈ 1 GB each).
   - **read-once-early feats:** raw pair feats folded into the z-init then dead
     (`contact_conditioning`, `contact_threshold`, `token_bonds`, `type_bonds`);
-    also MSA/template / restype/profile fields after input embed;
-    **`relp` / RPE one-hot** after its last consumer (diffusion pair
-    conditioning) — otherwise it rides through the whole denoise + confidence
-    wall.
+    also MSA/template / restype/profile fields after input embed; **`relp` / RPE
+    one-hot** after its last consumer (diffusion pair conditioning) — otherwise
+    it rides through the whole denoise + confidence wall.
 - **Detect:** for each large key, grep the forward + confidence + postprocessor
   for *reads* (not the featurizer construction). Never-read ⇒ pop up front;
   read-once ⇒ pop right after the last read.
@@ -364,21 +387,21 @@ Boltz/OpenFold lineage — adapt to your model's names.
 - **Detect:** `F.one_hot`, the rel-pos encoder, `relpos` / `relp`, MSA embedder,
   template embedder, `torch.cat` into a `Linear` whose first dim matches a
   one-hot width.
-- **Fix:** `one_hot(idx) @ W ≡ gather of W's rows` →
-  `F.embedding(idx, W.t()[slice])` (or `weight[:, :K].T`), accumulate geometric
-  / continuous columns by multiplying their weight columns in place. Weight-row
-  / column slices must match the **original concat column order** and leave
-  checkpoint keys unchanged (slice at runtime). Prefer this over retaining
-  compact bucket indices when recomputing pairwise integer differences is cheap.
+- **Fix:** `one_hot(idx) @ W ≡ gather of W's rows` → `F.embedding(idx,
+  W.t()[slice])` (or `weight[:, :K].T`), accumulate geometric / continuous
+  columns by multiplying their weight columns in place. Weight-row / column
+  slices must match the **original concat column order** and leave checkpoint
+  keys unchanged (slice at runtime). Prefer this over retaining compact bucket
+  indices when recomputing pairwise integer differences is cheap.
 - **Savings:** RPE int64 one-hots + fp32 concat (tens of GB); MSA at large `S`
   (e.g. S≈16k, N≈4k: int64 one-hot ~16 GB + bf16 copies); template
   `[B,N,N,C_feat]` per template (~7 GB at C≈108, N≈4k).
 
 #### P9 — Broadcast / python-loop materialization of `[N,N,*]`
 
-- **Symptom:** an `[N,N]`/`[N,N,*]` intermediate is built by broadcasting
-  (`a[:, :, None] * b[:, None, :]`) or a python loop, only to be
-  **reduced/contracted** afterwards.
+- **Symptom:** an `[N,N]`/`[N,N,*]` intermediate is built by broadcasting (`a[:,
+  :, None] * b[:, None, :]`) or a python loop, only to be **reduced/contracted**
+  afterwards.
 - **Detect:** `[:, :, None]`, `[:, None, :]`, `torch.bmm`, `einsum`; mask
   products / norm counts / pair sums built then summed.
 - **Fix:** fold into a single matmul / `einsum` / fused reduction that never
@@ -396,8 +419,8 @@ Boltz/OpenFold lineage — adapt to your model's names.
   `FourierEmbedding`, `fourier_embedding`, chained `* mask` / `+ enc` on the
   pair rep.
 - **Fix:** **inline** the expression into its single consumer so it frees
-  immediately after; do the final masking **in place**
-  (`x *= m; x += a; x += b`). Fuse elementwise (`.mul_().cos_()`).
+  immediately after; do the final masking **in place** (`x *= m; x += a; x +=
+  b`). Fuse elementwise (`.mul_().cos_()`).
 - **Savings:** the inlined tensor(s) (~15 GB fp32 fourier) + the mask
   temporaries.
 
@@ -435,7 +458,7 @@ Boltz/OpenFold lineage — adapt to your model's names.
 - **Savings:** ~`chunk/N` of the op's transient (e.g. a pair FFN ~10×; MSA
   `[N,N,4·c_z]` at N≈4k ~33 GB → ~chunk/N).
 
-### L2/L3 — Multi-sample diffusion & joint projection (Protenix-proven, transferable)
+### L2/L3 — Multi-sample diffusion & joint projection (Protenix-proven)
 
 #### P13 — Sample-replicated pairwise conditioning for multi-sample diffusion
 
@@ -478,6 +501,47 @@ Boltz/OpenFold lineage — adapt to your model's names.
 - **Savings:** the full concat (`[N,N,c_a+c_b]` fp32, e.g. ~33 GB) plus easier
   headroom for the following transition activation.
 
+### L2/L3 — Reduce at the producer (Boltz-proven)
+
+#### P15 — A wide tensor crosses stages, read only as a reduction
+
+- **Symptom:** an early stage produces `[N,N,K]` and the model threads it
+  through diffusion into a late stage, but every consumer immediately collapses
+  the trailing dim to `[N,N]` (masked softmax sum, expectation over bins,
+  argmax). The wide form is resident for the whole span while `1/K` of it is
+  read. Canonical case: Boltz's `pred_distogram_logits` `[B,N,N,64]`, which the
+  confidence heads read *only* as `(softmax(logits) * contact_mask).sum(-1)` — a
+  per-pair contact probability.
+- **Detect:** a producer output passed down a call chain (model forward → stage
+  → module → head) where the first thing each consumer does is reduce the last
+  dim; a head owning a bin-mask buffer (`contacts`, `boundaries`) that it
+  applies to an argument it did not create; any `[N,N,K]` parameter whose only
+  uses sit inside one reduction expression.
+- **Fix:** compute the reduction at the producer (a
+  `compute_contact_prob(logits)` next to `compute_distogram`), thread the
+  `[N,N]` result through the signatures in place of the wide tensor, and delete
+  the reduction plus its mask buffer from every consumer. Four details decide
+  whether this is safe and whether it actually pays off:
+  1. **Chunk the reduction** (L4) — a dense `softmax(logits.float())`
+     transiently allocates a full fp32 copy of the very tensor you are
+     eliminating. Softmax is independent per pair row, so row-chunk it and the
+     transient drops to `chunk/N`.
+  2. **Watch for slice aliasing** — when the producer returns
+     `[B,N,N,n_distograms,K]` and the code keeps `out[:, :, :, 0]`, that slice
+     is a **view** and pins the entire parent storage, so the real resident cost
+     is `n_distograms×` the apparent shape. Reduce the slice on the spot and
+     never bind the parent to a name.
+  3. **Reduce before the sample repeat** — the reduction commutes with the
+     multiplicity repeat, so reducing first turns an `S`× replication of
+     `[N,N,K]` into an `S`× replication of `[N,N]`.
+  4. **Keep the mask full width** — a `K`-long 0/1 vector, not a `[:k]` slice,
+     so the sum over the reduced dim stays bit-identical to the consumers'
+     original mask-then-sum.
+- **Savings:** `K`× on the resident tensor, held across every stage in between —
+  Boltz2 at N=3936, K=64 fp32: **3.97 GB → 62 MB**, freed across the whole
+  diffusion rollout and the confidence stack, with peak transient bounded by the
+  chunk.
+
 ## Chunk engine (inline, copy/adapt)
 
 The reusable core for **L4**. `chunk_apply` runs a *position-wise* op in
@@ -494,9 +558,11 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ChunkPolicy:
     chunk_size: int = 512   # rows per slice along `dim` (<= 0 disables)
-    min_size:   int = 2560  # only chunk when the sliced-dim extent exceeds this (see note)
+    # min_size: only chunk when the sliced-dim extent exceeds this (see note)
+    # min_rank: only chunk tensors with >= this rank (skips rank-3 reps)
+    min_size:   int = 2560
     dim:        int = 1     # slice inputs / concat outputs along this dim
-    min_rank:   int = 4     # only chunk tensors with >= this many dims (skips cheap rank-3 reps)
+    min_rank:   int = 4
     enabled:    bool = True
 
     def should_chunk(self, x):
@@ -505,7 +571,7 @@ class ChunkPolicy:
                 and x.shape[self.dim] > self.min_size)
 
 def chunk_apply(fn, *chunked, policy, cat_dim=None, **passthrough):
-    """Evaluate a POSITION-WISE fn in row-slices along policy.dim and concatenate."""
+    """Run a POSITION-WISE fn in row-slices along policy.dim, then concat."""
     primary = chunked[0] if chunked else None
     if primary is None or not policy.should_chunk(primary):
         return fn(*chunked, **passthrough)                     # dense fast path
@@ -514,14 +580,16 @@ def chunk_apply(fn, *chunked, policy, cat_dim=None, **passthrough):
     n = primary.shape[dim]
 
     def _slice(t, start, length):
+        # misaligned / scalar / None -> pass through untouched
         if (t is None or not torch.is_tensor(t) or t.dim() <= dim
-                or t.shape[dim] != n):                          # misaligned / scalar / None -> pass through
+                or t.shape[dim] != n):
             return t
         return t.narrow(dim, start, length)
 
-    outs = [fn(*[_slice(t, s, min(policy.chunk_size, n - s)) for t in chunked], **passthrough)
+    outs = [fn(*[_slice(t, s, min(policy.chunk_size, n - s))
+                 for t in chunked], **passthrough)
             for s in range(0, n, policy.chunk_size)]
-    if isinstance(outs[0], (tuple, list)):                      # concat element-wise for multi-output fns
+    if isinstance(outs[0], (tuple, list)):  # multi-output fn: concat per slot
         return type(outs[0])(torch.cat([o[i] for o in outs], dim=out_dim)
                              for i in range(len(outs[0])))
     return torch.cat(outs, dim=out_dim)
@@ -531,14 +599,8 @@ def chunk_apply(fn, *chunked, policy, cat_dim=None, **passthrough):
 
 1. Split the dense body into a pure `_forward_impl(self, x, ...)` that is
    position-wise along one output dim.
-1. In `forward`:
-
-   ```python
-   return chunk_apply(
-       self._forward_impl, x, policy=self.chunk_policy, cat_dim=..., **kw
-   )
-   ```
-
+1. In `forward`, `return chunk_apply(self._forward_impl, x,
+   policy=self.chunk_policy, cat_dim=..., **kw)`.
 1. Pick `dim`: the axis where output row `i` depends only on input row `i` (pair
    row `N`, sequence `S`, query row `I`). Verify `f(cat(a,b)) == cat(f(a),f(b))`
    before trusting it.
@@ -564,14 +626,14 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
 
 It lets the allocator grow/relocate segments instead of stranding them. In the
-Boltz2 4k run it reclaimed **~19 GB** (reserved-but-unallocated
-`19 GB → 0.1 GB`) and moved the OOM wall from the *first* confidence pairformer
-layer all the way into the confidence heads — turning a fragmentation failure
-into a true allocation ceiling. **Read the OOM message:** a large
-`"X GB reserved but unallocated"` ⇒ fragmentation (try this flag first); a small
-one ⇒ genuinely out of live memory (need a code lever from the catalog).
-Zero-code and a sensible runtime default here — keep it on while profiling so
-the per-stage peak reflects live tensors, not fragmentation.
+Boltz2 4k run it reclaimed **~19 GB** (reserved-but-unallocated `19 GB → 0.1
+GB`) and moved the OOM wall from the *first* confidence pairformer layer all the
+way into the confidence heads — turning a fragmentation failure into a true
+allocation ceiling. **Read the OOM message:** a large `"X GB reserved but
+unallocated"` ⇒ fragmentation (try this flag first); a small one ⇒ genuinely out
+of live memory (need a code lever from the catalog). Zero-code and a sensible
+runtime default here — keep it on while profiling so the per-stage peak reflects
+live tensors, not fragmentation.
 
 ## Reduce-then-verify (when applying a found fix)
 
@@ -580,13 +642,16 @@ the per-stage peak reflects live tensors, not fragmentation.
    `if`-gate, size threshold, or opt-in flag with safe default).
 1. **Verify numerically** on a small shape *before* profiling: a hermetic
    equivalence test comparing the new path to the original
-   (`torch.testing.assert_close`, fp32 `~1e-4`, bf16 `~3e-3`).
-   **Init random weights** — zero/default-initialized layers make equivalence
-   tests vacuously pass. If a module accumulates into its inputs in place,
-   **clone inputs per call** in the test. For P13, compare
-   broadcast-vs-explicit-expansion attention; for P14, compare joint LN+Linear
-   vs dense `Linear(LN(cat(...)))`; for P8, compare embedding-gather vs
-   one-hot+cat Linear with **unchanged checkpoint keys**.
+   (`torch.testing.assert_close`, fp32 `~1e-4`, bf16 `~3e-3`). **Init random
+   weights** — zero/default-initialized layers make equivalence tests vacuously
+   pass. If a module accumulates into its inputs in place, **clone inputs per
+   call** in the test. For P13, compare broadcast-vs-explicit-expansion
+   attention; for P14, compare joint LN+Linear vs dense `Linear(LN(cat(...)))`;
+   for P8, compare embedding-gather vs one-hot+cat Linear with **unchanged
+   checkpoint keys**. For P15, pin the reduction against the consumer code you
+   deleted with `torch.equal` (it should be bit-identical, not just close), and
+   separately assert chunked == dense and reduce-then-repeat ==
+   repeat-then-reduce.
 1. **Re-profile** per-stage peak (`torch.cuda.max_memory_allocated`) to record
    the GB delta and confirm the wall actually moved (with `expandable_segments`
    to isolate fragmentation).
@@ -598,31 +663,36 @@ the per-stage peak reflects live tensors, not fragmentation.
 
 ## Report template
 
-```text
-# <Model> memory-opt scan
+Title it `# <Model> memory-opt scan`, then the findings table:
 
-| #   | lever | pattern                              | location     | applies? | est. GB | fix (1 line)                     | risk |
-|-----|-------|--------------------------------------|--------------|----------|---------|----------------------------------|------|
-| P1  | L1    | fp32 trimul                          | <file:line>  | yes/no   | ~X      | thread high_precision flag       | low  |
-| P2  | L1    | fp32 pair cond / bias / accum / cache| ...          | ...      | ...     | build/cast bf16; cache consumer  | low  |
-| P3  | L2    | out-of-place [N,N,*] add             | ...          |          |         | z += X (freshly-owned)           | low  |
-| P4  | L2    | tensor held across trunk             | ...          |          |         | recompute flag                   | low  |
-| P5  | L2    | heavy intermediate / multi-sample    | ...          |          |         | RAII helper; stream per sample   | low  |
-| P6  | L2    | dead feed_dict / ownership           | ...          |          |         | pop + opt-in destructive/compact | low  |
-| P7  | L2    | stage outputs held                   | ...          |          |         | del before next stage            | low  |
-| P8  | L3    | one-hot+cat Linear (RPE/MSA/tmpl)    | ...          |          |         | embedding-gather; slice weights  | low  |
-| P9  | L3    | broadcast/loop [N,N,*]               | ...          |          |         | bmm / einsum                     | low  |
-| P10 | L3    | use-once big intermediate            | ...          |          |         | inline + in-place mask           | low  |
-| P11 | L3    | fused-op input copy                  | ...          |          |         | strided read + predicate         | med  |
-| P12 | L4    | unchunked [N,N,*] op                 | ...          |          |         | chunk_apply (pair-row only)      | low  |
-| P13 | L2/L3 | sample-replicated pair bias          | ...          |          |         | sample-indep bias; broadcast S   | med  |
-| P14 | L3    | joint LN+Linear via cat              | ...          |          |         | joint stats; dual GEMM; no cat   | med  |
+| #   | lever | pattern                                       | location    | applies? | est. GB | fix (1 line)                     | risk |
+| --- | ----- | --------------------------------------------- | ----------- | -------- | ------- | -------------------------------- | ---- |
+| P1  | L1    | fp32 trimul                                   | <file:line> | yes/no   | ~X      | thread high_precision flag       | low  |
+| P2  | L1    | fp32 pair cond / bias / accum / cache         | ...         | ...      | ...     | build/cast bf16; cache consumer  | low  |
+| P3  | L2    | out-of-place [N,N,*] add                      | ...         |          |         | z += X (freshly-owned)           | low  |
+| P4  | L2    | tensor held across trunk                      | ...         |          |         | recompute flag                   | low  |
+| P5  | L2    | heavy intermediate / multi-sample             | ...         |          |         | RAII helper; stream per sample   | low  |
+| P6  | L2    | dead feed_dict / ownership                    | ...         |          |         | pop + opt-in destructive/compact | low  |
+| P7  | L2    | stage outputs held                            | ...         |          |         | del before next stage            | low  |
+| P8  | L3    | one-hot+cat Linear (RPE/MSA/tmpl)             | ...         |          |         | embedding-gather; slice weights  | low  |
+| P9  | L3    | broadcast/loop [N,N,*]                        | ...         |          |         | bmm / einsum                     | low  |
+| P10 | L3    | use-once big intermediate                     | ...         |          |         | inline + in-place mask           | low  |
+| P11 | L3    | fused-op input copy                           | ...         |          |         | strided read + predicate         | med  |
+| P12 | L4    | unchunked [N,N,*] op                          | ...         |          |         | chunk_apply (pair-row only)      | low  |
+| P13 | L2/L3 | sample-replicated pair bias                   | ...         |          |         | sample-indep bias; broadcast S   | med  |
+| P14 | L3    | joint LN+Linear via cat                       | ...         |          |         | joint stats; dual GEMM; no cat   | med  |
+| P15 | L2/L3 | wide tensor crosses stages, read as reduction | ...         |          |         | reduce at producer; chunk it     | low  |
 
-## Notes
-- Pairwise rep tensor(s): <name/shape>. Peak-driving stage(s): <trunk MSA / diffusion cond / DiT / confidence>.
-- Multi-sample factor S: <N_sample>. Any [N,N,*] expanded over S?
-- Shared vs model-specific: which fixes land in shared layer/module code (cover multiple models)?
+Close with a `## Notes` section answering:
+
+- Pairwise rep tensor(s): `<name/shape>`. Peak-driving stage(s): `<trunk MSA /
+  diffusion cond / DiT / confidence>`.
+- Multi-sample factor S: `<N_sample>`. Any `[N,N,*]` expanded over S?
+- Cross-stage args: any `[N,N,K]` threaded between stages that every consumer
+  only reads reduced (P15)?
+- Shared vs model-specific: which fixes land in shared layer/module code (cover
+  multiple models)?
 - Ownership / compact-output flags: default-safe vs opt-in destructive?
-- Recommended order (biggest / earliest wall first): ...
-- Rejected: hoist recycle-dependent template/MSA; chunk sample-axis transitions; atom coords as main wall.
-```
+- Recommended order (biggest / earliest wall first).
+- Rejected, with the reason: hoist recycle-dependent template/MSA; chunk
+  sample-axis transitions; atom coords as the main wall.

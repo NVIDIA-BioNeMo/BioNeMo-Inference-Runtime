@@ -55,11 +55,6 @@ class Boltz2ConfidenceHeads(nn.Module):
         self.max_num_atoms_per_token: int = 23
         self.token_level_confidence = config.token_level_confidence
         self.use_separate_heads = config.use_separate_heads
-        contacts = torch.zeros((1, 1, 1, 1, 64), dtype=dtype)
-        contacts[:, :, :, :, :20] = 1.0
-
-        self.register_buffer("contacts", contacts, persistent=False)
-
         self.register_buffer(
             "arange_max_num_atoms", torch.arange(self.max_num_atoms_per_token).reshape(1, 1, -1), persistent=False
         )
@@ -182,7 +177,7 @@ class Boltz2ConfidenceHeads(nn.Module):
         x_pred: torch.Tensor,
         d: torch.Tensor,
         feats: dict[str, torch.Tensor] | None,
-        pred_distogram_logits: torch.Tensor,
+        prob_contact: torch.Tensor,
         multiplicity: int = 1,
     ):
         """
@@ -194,11 +189,13 @@ class Boltz2ConfidenceHeads(nn.Module):
             x_pred: torch.Tensor
                 x_pred from the confidence module. Shape, [B, mult, N_atoms, 3].
             d: torch.Tensor
-                d from the confidence module. Shape, [B, mult, N_atoms, N_atoms].
+                Pairwise distances between the tokens' representative atoms, from the confidence
+                module. Shape, [B, mult, N_tokens, N_tokens].
             feats: Dict[str, torch.Tensor]
-                feats from the confidence module. Shape, [B, mult, N_tokens, N_atoms].
-            pred_distogram_logits: torch.Tensor
-                pred_distogram_logits from the confidence module. Shape, [B, mult, N_atoms, N_atoms, num_dist_bins].
+                feats from the confidence module (see ``Boltz2ConfidenceModule.forward``).
+            prob_contact: torch.Tensor
+                Per-pair contact probability, already reduced from the predicted distogram logits by
+                ``compute_contact_prob``. Shape, [B, N_tokens, N_tokens].
             multiplicity: int
                 multiplicity from the confidence module.
         Returns:
@@ -255,11 +252,7 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         # Compute the gPDE and giPDE (pde was aggregated up front in _compute_pde)
 
-        pred_distogram_prob = repeat_with_multiplicity(
-            nn.functional.softmax(pred_distogram_logits, dim=-1), multiplicity
-        )
-
-        prob_contact = (pred_distogram_prob * self.contacts).sum(-1)
+        prob_contact = repeat_with_multiplicity(prob_contact, multiplicity)
         token_pad_mask = repeat_with_multiplicity(feats["token_pad_mask"], multiplicity)
 
         token_pad_pair_mask = (
@@ -429,7 +422,7 @@ class Boltz2ConfidenceModule(nn.Module):
         z,
         x_pred,
         feats,
-        pred_distogram_logits,
+        prob_contact,
         multiplicity=1,
         max_parallel_samples: int = 1,
         run_sequentially=True,
@@ -437,47 +430,47 @@ class Boltz2ConfidenceModule(nn.Module):
     ):
         """
         Inputs:
-        s_inputs: (Batch_size, N_atoms, token_s)
-        s: (Batch_size, N_atoms, token_s)
-        z: (Batch_size, N_atoms, N_atoms, token_z)
-        x_pred: (Batch_size * Diffusion_samples, N, 3) or (Batch_size, Diffusion_samples, N, 3)
+        s_inputs: (Batch_size, N_tokens, token_s)
+        s: (Batch_size, N_tokens, token_s)
+        z: (Batch_size, N_tokens, N_tokens, token_z)
+        x_pred: (Batch_size * Diffusion_samples, N_atoms, 3) or (Batch_size, Diffusion_samples, N_atoms, 3)
         feats: Dict[str, torch.Tensor]
-            - token_bonds:            (Batch_size, N_atoms, N_atoms, 1)
-            - token_to_rep_atom:      (Batch_size, N_atoms, N)
-            - token_pad_mask:         (Batch_size, N_atoms)
-            - residue_index:          (Batch_size, N_atoms)
-            - entity_id:              (Batch_size, N_atoms)
-            - cyclic_period:          (Batch_size, N_atoms)
-            - token_index:            (Batch_size, N_atoms)
-            - sym_id:                 (Batch_size, N_atoms)
-            - asym_id:                (Batch_size, N_atoms)
-            - type_bonds:             (Batch_size, N_atoms, N_atoms)
-            - contact_threshold:      (Batch_size, N_atoms, N_atoms)
-            - contact_conditioning:   (Batch_size, N_atoms, N_atoms, 5)
-            - mol_type:               (Batch_size, N_atoms)
-            - frames_idx:             (Batch_size, N_atoms, 3)
-            - atom_to_token:          (Batch_size, N, N_atoms)
-            - atom_pad_mask:          (Batch_size, N)
+            - token_bonds:            (Batch_size, N_tokens, N_tokens, 1)
+            - token_to_rep_atom:      (Batch_size, N_tokens, N_atoms)
+            - token_pad_mask:         (Batch_size, N_tokens)
+            - residue_index:          (Batch_size, N_tokens)
+            - entity_id:              (Batch_size, N_tokens)
+            - cyclic_period:          (Batch_size, N_tokens)
+            - token_index:            (Batch_size, N_tokens)
+            - sym_id:                 (Batch_size, N_tokens)
+            - asym_id:                (Batch_size, N_tokens)
+            - type_bonds:             (Batch_size, N_tokens, N_tokens)
+            - contact_threshold:      (Batch_size, N_tokens, N_tokens)
+            - contact_conditioning:   (Batch_size, N_tokens, N_tokens, len(contact_conditioning_info))
+            - mol_type:               (Batch_size, N_tokens)
+            - frames_idx:             (Batch_size, N_tokens, 3)
+            - atom_to_token:          (Batch_size, N_atoms, N_tokens)
+            - atom_pad_mask:          (Batch_size, N_atoms)
 
-        pred_distogram_logits: [Batch_size, N_atoms, N_atoms, num_dist_bins]
+        prob_contact: (Batch_size, N_tokens, N_tokens) -- per-pair contact probability, reduced from
+            the predicted distogram logits by ``compute_contact_prob`` at the producer.
 
         Returned Dict[str, torch.Tensor]:
-             - pde_logits:           (Batch_size, Diffusion_samples, N_atoms, N_atoms, num_pde_bins)
-             - plddt_logits:         (Batch_size, Diffusion_samples, N_atoms, num_plddt_bins)
-             - resolved_logits:      (Batch_size, Diffusion_samples, N_atoms, num_resolved_bins)
-             - pde:                  (Batch_size, Diffusion_samples, N_atoms, N_atoms)
-             - plddt:                (Batch_size, Diffusion_samples, N_atoms)
+             - pde:                  (Batch_size, Diffusion_samples, N_tokens, N_tokens)
+             - plddt:                (Batch_size, Diffusion_samples, N_tokens)
              - complex_plddt:        (Batch_size, Diffusion_samples)
              - complex_iplddt:       (Batch_size, Diffusion_samples)
              - complex_pde:          (Batch_size, Diffusion_samples)
              - complex_ipde:         (Batch_size, Diffusion_samples)
-             - pae_logits:           (Batch_size, Diffusion_samples, N_atoms, N_atoms, num_pae_bins)
-             - pae:                  (Batch_size, Diffusion_samples, N_atoms, N_atoms)
+             - pae:                  (Batch_size, Diffusion_samples, N_tokens, N_tokens)
              - ptm:                  (Batch_size, Diffusion_samples)
              - iptm:                 (Batch_size, Diffusion_samples)
              - ligand_iptm:          (Batch_size, Diffusion_samples)
              - protein_iptm:         (Batch_size, Diffusion_samples)
-             - pair_chains_iptm:     dict("0": (Batch_size, Diffusion_samples), "1": (Batch_size, Diffusion_samples), ...)
+             - pair_chains_iptm:     nested dict, asym_id -> asym_id -> (Batch_size, Diffusion_samples)
+             - s_conf, z_conf:       only when ``return_latent_feats``; the pairformer outputs,
+                                     (Batch_size, Diffusion_samples, N_tokens, token_s) and
+                                     (Batch_size, Diffusion_samples, N_tokens, N_tokens, token_z)
         """
         s = s.to(self.dtype)
         z = z.to(self.dtype)
@@ -567,7 +560,7 @@ class Boltz2ConfidenceModule(nn.Module):
                     d=d,
                     feats=feats,
                     multiplicity=current_multiplicity,
-                    pred_distogram_logits=pred_distogram_logits,
+                    prob_contact=prob_contact,
                 )
             )
             out_dicts_chunks.append(out_dict)
@@ -589,11 +582,6 @@ class Boltz1ConfidenceHeads(nn.Module):
         self.num_plddt_bins = config.num_plddt_bins
         self.num_pde_bins = config.num_pde_bins
         self.num_pae_bins = config.num_pae_bins
-
-        contacts = torch.zeros((1, 1, 1, 1, 64), dtype=self.config.torch_dtype)
-        contacts[:, :, :, :, :20] = 1.0
-
-        self.register_buffer("contacts", contacts, persistent=False)
 
         self.max_num_atoms_per_token = 23
         self.to_pde_logits = Linear(
@@ -654,7 +642,7 @@ class Boltz1ConfidenceHeads(nn.Module):
         z: torch.Tensor,
         x_pred: torch.Tensor,
         d: torch.Tensor,
-        pred_distogram_logits: torch.Tensor,
+        prob_contact: torch.Tensor,
         feature_dict: dict[str, torch.Tensor],
     ) -> dict[str, torch.Tensor]:
         """
@@ -663,8 +651,16 @@ class Boltz1ConfidenceHeads(nn.Module):
                 s from the confidence module. Shape, [B, mult, N_tokens, token_s].
             z: torch.Tensor
                 z from the confidence module. Shape, [B, mult, N_tokens, N_tokens, token_z].
-            pred_distogram_logits: torch.Tensor
-                pred_distogram_logits from the confidence module. Shape, [B, N_tokens, N_tokens, num_dist_bins].
+            x_pred: torch.Tensor
+                x_pred from the confidence module. Shape, [B, mult, N_atoms, 3].
+            d: torch.Tensor
+                Pairwise distances between the tokens' representative atoms, from the confidence
+                module. Shape, [B, mult, N_tokens, N_tokens].
+            prob_contact: torch.Tensor
+                Per-pair contact probability, already reduced from the predicted distogram logits by
+                ``compute_contact_prob``. Shape, [B, N_tokens, N_tokens].
+            feature_dict: dict[str, torch.Tensor]
+                feature_dict from the confidence module.
         Return:
             dict[str, torch.Tensor]
                 Output dictionary containing scores for the predicted structures.
@@ -703,9 +699,7 @@ class Boltz1ConfidenceHeads(nn.Module):
         )
 
         # Compute the aggregated PDE and iPDE (pde was aggregated up front in _compute_pde)
-        pred_distogram_prob = nn.functional.softmax(pred_distogram_logits, dim=-1)
-        pred_distogram_prob = repeat_with_multiplicity(pred_distogram_prob, multiplicity)
-        prob_contact = (pred_distogram_prob * self.contacts).sum(-1)
+        prob_contact = repeat_with_multiplicity(prob_contact, multiplicity)
         token_pad_pair_mask = (
             token_pad_mask.unsqueeze(-1)
             * token_pad_mask.unsqueeze(-2)
@@ -923,7 +917,7 @@ class Boltz1ConfidenceModule(nn.Module):
         z: torch.Tensor,
         x_pred: torch.Tensor,
         feature_dict: dict[str, torch.Tensor],
-        pred_distogram_logits: torch.Tensor,
+        prob_contact: torch.Tensor,
         multiplicity: int = 1,
         s_diffusion: torch.Tensor | None = None,
         max_parallel_samples: int | None = None,
@@ -938,12 +932,11 @@ class Boltz1ConfidenceModule(nn.Module):
                 z from the trunk module. Shape, [B, N_tokens, N_tokens, token_z].
             x_pred: torch.Tensor
                 x_pred from the structure module. Shape, [B, mult, N_atoms, 3] or [B*mult, N_atoms, 3].
-            d: torch.Tensor
-                d from the structure module.
             feature_dict: dict
                 feature_dict from the dataloader.
-            pred_distogram_logits: torch.Tensor
-                pred_distogram_logits from the distogram module.
+            prob_contact: torch.Tensor
+                Per-pair contact probability, reduced from the distogram module's logits by
+                ``compute_contact_prob``. Shape, [B, N_tokens, N_tokens].
             multiplicity: int
                 multiplicity from the structure module.
             s_diffusion: Optional[torch.Tensor]
@@ -1065,7 +1058,7 @@ class Boltz1ConfidenceModule(nn.Module):
                 x_pred=x_chunk,
                 d=d,
                 feature_dict=feature_dict,
-                pred_distogram_logits=pred_distogram_logits,
+                prob_contact=prob_contact,
             )
             out_dicts.append(out_dict)
 

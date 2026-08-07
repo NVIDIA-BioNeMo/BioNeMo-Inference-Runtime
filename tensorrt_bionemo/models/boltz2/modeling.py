@@ -40,6 +40,7 @@ from tensorrt_bionemo._torch.modules.boltz.affinity import (
     get_best_coords,
 )
 from tensorrt_bionemo._torch.modules.boltz.confidence import Boltz2ConfidenceModule
+from tensorrt_bionemo._torch.modules.boltz.confidence_utils import compute_contact_prob
 from tensorrt_bionemo._torch.modules.boltz.embedders import Boltz2InputEmbedder
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import BoltzSteeringParams
 from tensorrt_bionemo._torch.modules.boltz.structure import AtomDiffusion, DiffusionConditioning
@@ -481,8 +482,9 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             recycling_steps=recycling_steps,
             template_feats=template_feats,
         )
-        # Run distogram module
-        pair_distogram = self.distogram_module(z)
+        # Reducing here keeps the [N, N, num_bins] logits (3.97 GB at N=3936) from staying resident
+        # across diffusion and confidence. Left unnamed: the bin slice is a view of the distogram.
+        prob_contact = compute_contact_prob(self.distogram_module(z)[:, :, :, 0])
 
         # Run diffusion conditioning module
         if self.recompute_rel_pos:
@@ -531,7 +533,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             z=z,
             x_pred=x_pred,
             feats=feed_dict,
-            pred_distogram_logits=pair_distogram[:, :, :, 0],
+            prob_contact=prob_contact,
             multiplicity=diffusion_samples,
             run_sequentially=True,
             max_parallel_samples=max_parallel_samples if max_parallel_samples is not None else 1,

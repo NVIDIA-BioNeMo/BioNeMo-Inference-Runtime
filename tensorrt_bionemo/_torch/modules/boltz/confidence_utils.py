@@ -18,7 +18,11 @@ from typing import Any
 import torch
 from torch import nn
 
+from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, CONTACT_PROB, ChunkPolicy, chunk_apply
 from tensorrt_bionemo.pipeline.models.boltz2.const import chain_type_ids
+
+# Number of leading (nearest) distogram bins whose probability mass counts as a token-pair contact.
+NUM_CONTACT_BINS = 20
 
 
 def repeat_with_multiplicity(tensor: torch.Tensor, multiplicity: int) -> torch.Tensor:
@@ -32,7 +36,7 @@ def compute_distogram(
     token_to_rep_atom: torch.Tensor,
     multiplicity: int = 1,
     dtype: torch.dtype = torch.int32,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Compute the distogram from the predicted atom coordinates.
     Args:
@@ -41,7 +45,8 @@ def compute_distogram(
         token_to_rep_atom: (B, N_tokens, N_atoms)
         multiplicity: int
     Returns:
-        distogram: (B, mult, N_tokens, N_tokens)
+        d: (B, mult, N_tokens, N_tokens) distances between the tokens' representative atoms
+        distogram: (B, mult, N_tokens, N_tokens) index of the bin each distance falls in
     """
     if len(x_pred.shape) == 4:
         B, mult, N, _ = x_pred.shape
@@ -54,6 +59,39 @@ def compute_distogram(
     d = torch.cdist(x_pred_repr, x_pred_repr)  # [B, mult, N_tokens, N_tokens]
     distogram = (d.unsqueeze(-1) > boundaries).sum(dim=-1).to(dtype).long()  # [B, mult, N_tokens, N_tokens]
     return d, distogram
+
+
+def _contact_prob_dense(logits: torch.Tensor, contacts: torch.Tensor) -> torch.Tensor:
+    """Contact probability for one row-slice of ``logits`` (see :func:`compute_contact_prob`)."""
+    return (torch.softmax(logits.float(), dim=-1) * contacts).sum(-1)
+
+
+def compute_contact_prob(
+    logits: torch.Tensor,
+    num_contact_bins: int = NUM_CONTACT_BINS,
+    policy: ChunkPolicy | None = None,
+) -> torch.Tensor:
+    """Reduce predicted distogram logits to the probability mass within the contact cutoff.
+
+    This is the only form in which the confidence heads read the predicted distogram, so call it at
+    the producer and never hold the ``[B, N, N, num_bins]`` logits. Row-chunked because ``softmax``
+    is independent per pair row, so a dense call would transiently allocate what this saves.
+
+    Args:
+        logits: (B, N_tokens, N_tokens, num_bins) predicted distogram logits.
+        num_contact_bins: number of leading (nearest) distance bins that count as a contact.
+        policy: row-chunking policy; defaults to the ``contact_prob`` registry entry.
+
+    Returns:
+        (B, N_tokens, N_tokens) fp32 probability that a token pair is in contact.
+    """
+    if policy is None:
+        policy = CHUNK_REGISTRY.get(CONTACT_PROB)
+    # Full-width 0/1 mask rather than a slice, so the sum over the bin dim stays bit-identical to the
+    # heads' original mask-then-sum.
+    contacts = logits.new_zeros(logits.shape[-1], dtype=torch.float32)
+    contacts[:num_contact_bins] = 1.0
+    return chunk_apply(_contact_prob_dense, logits, policy=policy, contacts=contacts)
 
 
 def compute_aggregated_metric(logits: torch.Tensor, end: float = 1.0) -> torch.Tensor:
@@ -105,8 +143,11 @@ def tm_function(d, Nres):
 
 def compute_ptms(
     logits: torch.Tensor, x_preds: torch.Tensor, feats: dict[str, torch.Tensor]
-) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[int, dict[int, torch.Tensor]]]:
     """Compute pTM and ipTM scores.
+
+    Each score is reduced over both token dims (a masked mean over one, then a max over the other),
+    so all four are per-sample scalars.
 
     Args
         logits : torch.Tensor
@@ -118,14 +159,15 @@ def compute_ptms(
 
     Returns:
         pTM score: torch.Tensor
-            pTM score. Shape, [B, mult, N_tokens, N_tokens].
+            pTM score. Shape, [B, mult].
         ipTM score: torch.Tensor
-            ipTM score. Shape, [B, mult, N_tokens, N_tokens].
+            ipTM score. Shape, [B, mult].
         ligand ipTM score: torch.Tensor
-            ligand ipTM score. Shape, [B, mult, N_tokens, N_tokens].
+            ligand ipTM score. Shape, [B, mult].
         protein ipTM score: torch.Tensor
-            protein ipTM score. Shape, [B, mult, N_tokens, N_tokens].
-        pair chain ipTM score: dict[str, dict[str, torch.Tensor]]
+            protein ipTM score. Shape, [B, mult].
+        pair chain ipTM score: dict[int, dict[int, torch.Tensor]]
+            Per chain pair, keyed asym_id -> asym_id. Each entry has shape [B, mult].
 
     """
     B, multiplicity, _, _ = x_preds.shape

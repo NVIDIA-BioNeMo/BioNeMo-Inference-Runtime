@@ -29,6 +29,7 @@ from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.layers.position_encoders import RelativePositionEncoder
 from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
 from tensorrt_bionemo._torch.modules.boltz.confidence import Boltz1ConfidenceModule
+from tensorrt_bionemo._torch.modules.boltz.confidence_utils import compute_contact_prob
 from tensorrt_bionemo._torch.modules.boltz.embedders import Boltz1InputEmbedder
 from tensorrt_bionemo._torch.modules.boltz.physical.steering import BoltzSteeringParams
 from tensorrt_bionemo._torch.modules.boltz.structure import AtomDiffusion, DiffusionConditioning
@@ -353,8 +354,9 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             s_inputs=s_inputs,
             recycling_steps=recycling_steps,
         )
-        # Run distogram module
-        pair_distogram = self.distogram_module(z)
+        # Reducing here keeps the [N, N, num_bins] logits (3.97 GB at N=3936) from staying resident
+        # across diffusion and confidence.
+        prob_contact = compute_contact_prob(self.distogram_module(z))
 
         # Run diffusion conditioning module
         if self.recompute_rel_pos:
@@ -405,7 +407,7 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
             s_diffusion=s_diffusion,
             x_pred=x_pred,
             feature_dict=feed_dict,
-            pred_distogram_logits=pair_distogram.float(),
+            prob_contact=prob_contact,
             multiplicity=diffusion_samples,
             attn_metadata=attn_metadata,
         )

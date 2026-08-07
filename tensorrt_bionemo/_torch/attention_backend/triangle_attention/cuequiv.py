@@ -17,8 +17,8 @@
 import cuequivariance_ops_torch as _cueq_ops  # noqa: F401 – registers torch.ops.cuequivariance
 import torch
 
-from ..tensor_utils import permute_final_dims
-from .interface import AttentionBackend, AttentionMetadata
+from ...tensor_utils import permute_final_dims
+from ..interface import AttentionBackend, AttentionMetadata
 
 
 class CuEquivAttentionMetadata(AttentionMetadata):

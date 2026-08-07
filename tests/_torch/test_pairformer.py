@@ -57,6 +57,8 @@ class Scenario:
         Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
         Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="SDPA", pairwise_attn_backend="SDPA"),
+        Scenario(triangle_attn_backend="SDPA", pairwise_attn_backend="SDPA", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
@@ -181,7 +183,7 @@ def test_pairformer_layer(sc: Scenario):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("backend_name", ["VANILLA", "CUEQUIV", "TRIFAST"])
+@pytest.mark.parametrize("backend_name", ["VANILLA", "SDPA", "CUEQUIV"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_precompute_pair_masks(backend_name: str, dtype: torch.dtype):
     """Verify shapes, dtypes, and values of the default precomputed mask tensors."""
@@ -275,6 +277,8 @@ def test_precompute_pair_masks_cutedsl_rejects_non_left_aligned(seq_len: int):
         Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA"),
         Scenario(triangle_attn_backend="CUEQUIV", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(triangle_attn_backend="SDPA", pairwise_attn_backend="SDPA"),
+        Scenario(triangle_attn_backend="SDPA", pairwise_attn_backend="SDPA", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="VANILLA", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="VANILLA", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),
         Scenario(triangle_attn_backend="CuTeDSL", pairwise_attn_backend="CuTeDSL", torch_dtype="bfloat16"),

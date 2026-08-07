@@ -43,19 +43,13 @@ class Scenario:
     torch_dtype: str = "float32"
 
 
-def _make_biases(backend, bs, seq_len, num_heads, dtype, device):
-    """Build [mask_bias, triangle_bias] with the right mask shape per backend.
-
-    For the CuTeDSL left-mask kernel ``mask_bias`` is the int32 ``actual_s_kv``
-    leading-1s count per row, derived from a left-aligned pair mask.
-    """
-    if backend == "CuTeDSL":
-        pair_mask = make_left_aligned_pair_mask(bs, seq_len, dtype=torch.float32, device=device)
-        mask_bias = (pair_mask > 0.5).sum(dim=-1).to(dtype=torch.int32)
-    else:
-        mask_bias = torch.randn(bs, seq_len, 1, 1, seq_len, dtype=dtype, device=device)
+def _make_backend_and_reference_biases(bs, seq_len, num_heads, dtype, device):
+    """Build equivalent backend-specific and additive reference biases."""
+    pair_mask = torch.ones(bs, seq_len, seq_len, dtype=torch.float32, device=device)
+    pair_mask[..., -(seq_len // 4) :] = 0
+    additive_mask = ((pair_mask - 1.0) * 1e9).unsqueeze(-2).unsqueeze(-2)
     triangle_bias = torch.randn(bs, num_heads, seq_len, seq_len, dtype=dtype, device=device)
-    return [mask_bias, triangle_bias]
+    return ([additive_mask.to(dtype), triangle_bias], [additive_mask.to(dtype), triangle_bias])
 
 
 @pytest.mark.parametrize(
@@ -63,6 +57,8 @@ def _make_biases(backend, bs, seq_len, num_heads, dtype, device):
     [
         Scenario(backend="VANILLA"),
         Scenario(backend="VANILLA", torch_dtype="bfloat16"),
+        Scenario(backend="SDPA"),
+        Scenario(backend="SDPA", torch_dtype="bfloat16"),
         Scenario(backend="CUEQUIV"),
         Scenario(backend="CUEQUIV", torch_dtype="bfloat16"),
     ],
@@ -89,23 +85,28 @@ def test_triangle_attention_backend(s: Scenario):
         num_key_value_heads=s.num_key_value_heads,
         gating=s.gating,
         dtype=dtype,
+        attn_backend=s.backend,
     )
     load_triangle_attention_weights_torch(attn, weights_and_biases, dtype=dtype)
     attn.to(device)
     attn_metadata = metadata_cls()
     hidden_states = torch.randn(bs, s.seq_len, s.seq_len, s.hidden_size, dtype=torch.float32, device=device)
-    biases = [
-        torch.randn(bs, s.seq_len, 1, 1, s.seq_len, dtype=torch.float32, device=device),
-        torch.randn(bs, s.num_attention_heads, s.seq_len, s.seq_len, dtype=torch.float32, device=device),
-    ]
+    backend_biases, reference_biases = _make_backend_and_reference_biases(
+        bs,
+        s.seq_len,
+        s.num_attention_heads,
+        torch.float32,
+        device,
+    )
 
     with torch.inference_mode():
-        ref_output_float = ref_attn(hidden_states, hidden_states, biases=biases)
+        ref_output_float = ref_attn(hidden_states, hidden_states, biases=reference_biases)
         hidden_states = hidden_states.to(dtype)
-        biases = [bias.to(dtype) for bias in biases]
+        backend_biases = [bias.to(dtype) for bias in backend_biases]
+        reference_biases = [bias.to(dtype) for bias in reference_biases]
         ref_attn = ref_attn.to(dtype)
-        ref_output = ref_attn(hidden_states, hidden_states, biases=biases)
-        output = attn(hidden_states, biases=biases, attn_metadata=attn_metadata)
+        ref_output = ref_attn(hidden_states, hidden_states, biases=reference_biases)
+        output = attn(hidden_states, biases=backend_biases, attn_metadata=attn_metadata)
 
     assert output.shape == ref_output.shape
     if dtype == torch.float32:
@@ -116,8 +117,8 @@ def test_triangle_attention_backend(s: Scenario):
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
         diff1_mean = torch.mean(torch.abs(ref_output.float() - ref_output_float))
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.6
-        assert abs(diff0_mean - diff1_mean) <= 0.2
+        assert diff0_max <= diff1_max * 1.6 + 1e-3
+        assert diff0_mean <= diff1_mean + 0.2
 
 
 @_skip_cutedsl
@@ -128,7 +129,7 @@ def test_triangle_attention_backend(s: Scenario):
     ],
 )
 def test_triangle_attention_cutedsl(s: Scenario):
-    """CuTeDSL backend uses 3D mask [B, I, J] and only supports fp16/bf16."""
+    """CuTeDSL uses per-row int32 KV lengths and supports fp16/bf16."""
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"

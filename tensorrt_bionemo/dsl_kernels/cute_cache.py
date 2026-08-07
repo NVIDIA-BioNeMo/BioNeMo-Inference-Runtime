@@ -36,6 +36,8 @@ Usage::
 Controls:
   BIONEMO_KERNEL_CACHE_ENABLED=0  — disable persistent .o cache (default: enabled)
   BIONEMO_KERNEL_CACHE_DIR=path   — override default cache directory
+  CUTEDSL_FORCE_CUBIN=1           — resolve executables from the packaged CUBIN
+                                    library instead of compiling from source
 
 Adapted from quack.cache_utils (Copyright (c) 2025, Wentao Guo, Ted Zadouri, Tri Dao).
 """
@@ -64,12 +66,16 @@ __all__ = [
     "CACHE_ENABLED",
     "CACHE_DIR",
     "EXTRA_SOURCE_DIRS",
+    "FORCE_CUBIN_ENV",
     "get_cache_dir",
     "FileLock",
 ]
 
 CACHE_ENABLED: bool = DiskCache.ENABLED
 CACHE_DIR: str | None = DiskCache._CACHE_DIR
+
+FORCE_CUBIN_ENV = "CUTEDSL_FORCE_CUBIN"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 EXTRA_SOURCE_DIRS: list[Path] = []
 
@@ -153,6 +159,19 @@ class CuteKernelCache(KernelCacheBase):
     * :meth:`save_to_cache` — exports the compiled kernel via ``export_to_c``.
     * :meth:`load_from_cache` — loads the ``.o`` via ``cute.runtime.load_module``.
     """
+
+    @staticmethod
+    def force_cubin() -> bool:
+        """Whether ``CUTEDSL_FORCE_CUBIN`` demands the packaged CUBIN path.
+
+        Lets a private checkout exercise the CUBINs it ships even though the
+        kernel sources are importable, which is otherwise only reachable in a
+        source-free public build. Read per call rather than at import so a
+        process can flip it; only ops that have a CUBIN launcher honor it.
+
+        Accepts ``1``, ``true``, ``yes``, or ``on`` (case-insensitive).
+        """
+        return os.getenv(FORCE_CUBIN_ENV, "").strip().lower() in _TRUTHY
 
     def compile(
         self, kernel_callable: Any, *fake_tensors: Any, options: str = "--enable-tvm-ffi", **kwargs: Any

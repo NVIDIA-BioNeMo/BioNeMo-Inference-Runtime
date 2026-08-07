@@ -4,15 +4,17 @@
 #
 # See docs/coding.md for the rules these tools enforce.
 
-# Never touch vendored submodules or Git LFS content. The LFS patterns (see
-# .gitattributes) are binaries and MSA files that no hook here would lint
-# anyway, but in a checkout without the LFS objects they are pointer text, so
-# excluding them by path keeps the hooks off that pointer text instead of
-# relying on file-type detection.
+# Never touch vendored submodules, the private release bundle, the generated
+# embedded CUBIN headers (multi-MB byte arrays emitted by
+# cpp/tools/prepare_cubins.py; reformatting or license-stamping them would churn
+# the diff and fight the generator), or the CuTeDSL kernels (the DSL resolves
+# names through its own tracing machinery, so ruff reports them as undefined).
 exclude = '''(?x)^(
     3rdparty/.*
   | .*\.(a|lib|so|dll|a3m)
   | examples/data/samples/templates/templates/.*\.cif
+  | cpp/kernels/.*/cubins/embedded.*\.h
+  | tensorrt_bionemo/dsl_kernels/.*
 )$'''
 
 [[repos]]

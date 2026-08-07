@@ -17,7 +17,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.attention_backend.cuequiv import CuEquivAttention, CuEquivAttentionMetadata
+from tensorrt_bionemo._torch.attention_backend import CuEquivAttention, CuEquivAttentionMetadata
 from tensorrt_bionemo._torch.layers.triangle_nodes import TriangleAttentionNode
 from tests._torch import SM_VERSION
 

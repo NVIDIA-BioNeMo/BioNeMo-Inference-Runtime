@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
+import os
+
 import pytest
 import torch
 
-SM_VERSION: int = (torch.cuda.get_device_capability()[0] * 10 +
-                   torch.cuda.get_device_capability()[1]
-                   if torch.cuda.is_available() else 0)
+SM_VERSION: int = (
+    torch.cuda.get_device_capability()[0] * 10 + torch.cuda.get_device_capability()[1]
+    if torch.cuda.is_available()
+    else 0
+)
 
 # The generic CuTeDSL SM range (Ampere through Hopper). Most kernels run on
 # the whole range; ``skip_if_no_cutedsl`` / ``skip_if_cutedsl`` look up an
@@ -47,6 +52,38 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 # op-support fact.)
 _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {}
 
+CUTEDSL_TEST_MODES_ENV = "TRTBNM_TEST_CUTEDSL_MODES"
+_CUTEDSL_TEST_MODES = ("source", "cubin")
+
+
+def cutedsl_test_modes(source_module: str | None = None) -> tuple[str, ...]:
+    """Return the explicitly requested CuTeDSL implementation test modes.
+
+    A private checkout defaults to ``source`` when ``source_module`` exists.
+    A source-free public build defaults to ``cubin``. Private CI should set
+    ``TRTBNM_TEST_CUTEDSL_MODES=source,cubin`` to exercise both paths.
+    Requesting ``source`` is strict: tests must fail rather than silently
+    falling back to CUBINs when private sources are unavailable.
+    """
+    raw_modes = os.getenv(CUTEDSL_TEST_MODES_ENV)
+    if raw_modes is None:
+        try:
+            has_source = source_module is not None and importlib.util.find_spec(source_module) is not None
+        except (ImportError, ModuleNotFoundError):
+            has_source = False
+        return ("source",) if has_source else ("cubin",)
+
+    modes = tuple(dict.fromkeys(mode.strip().lower() for mode in raw_modes.split(",") if mode.strip()))
+    if not modes:
+        raise pytest.UsageError(f"{CUTEDSL_TEST_MODES_ENV} must select at least one of {_CUTEDSL_TEST_MODES}")
+
+    invalid = sorted(set(modes) - set(_CUTEDSL_TEST_MODES))
+    if invalid:
+        raise pytest.UsageError(
+            f"{CUTEDSL_TEST_MODES_ENV} contains unsupported modes {invalid}; choose from {_CUTEDSL_TEST_MODES}"
+        )
+    return modes
+
 
 def _cutedsl_supported_sm(op_name: str | None = None) -> tuple[int, ...]:
     """SM versions the CuTeDSL kernel for *op_name* supports.
@@ -57,8 +94,7 @@ def _cutedsl_supported_sm(op_name: str | None = None) -> tuple[int, ...]:
 
 
 def _cutedsl_skip_reason(supported: tuple[int, ...]) -> str:
-    return (f"CuTeDSL kernel requires SM{'/'.join(str(s) for s in supported)} "
-            f"(current SM{SM_VERSION})")
+    return f"CuTeDSL kernel requires SM{'/'.join(str(s) for s in supported)} (current SM{SM_VERSION})"
 
 
 SKIP_CUTEDSL_REASON = _cutedsl_skip_reason(_CUTEDSL_SUPPORTED_SM)
@@ -142,13 +178,9 @@ def make_left_aligned_mask(
     """
     assert len(shape) >= 1, "shape must have at least one dimension"
     last = shape[-1]
-    leading = shape[:-1] or (1, )
+    leading = shape[:-1] or (1,)
     if n_valid is None:
-        n_valid = torch.randint(low=min_valid,
-                                high=last + 1,
-                                size=leading,
-                                device=device,
-                                dtype=torch.int64)
+        n_valid = torch.randint(low=min_valid, high=last + 1, size=leading, device=device, dtype=torch.int64)
     else:
         n_valid = n_valid.to(device=device, dtype=torch.int64)
         assert tuple(n_valid.shape) == tuple(leading), (
@@ -175,10 +207,5 @@ def make_left_aligned_pair_mask(
     every row ``pair_mask[b, i, :]`` is left-aligned with the same number
     of leading 1s for all valid ``i``, and zero for padded ``i``.
     """
-    seq_mask = make_left_aligned_mask(bs,
-                                      n,
-                                      dtype=dtype,
-                                      device=device,
-                                      n_valid=n_valid,
-                                      min_valid=min_valid)
+    seq_mask = make_left_aligned_mask(bs, n, dtype=dtype, device=device, n_valid=n_valid, min_valid=min_valid)
     return seq_mask[..., None] * seq_mask[..., None, :]

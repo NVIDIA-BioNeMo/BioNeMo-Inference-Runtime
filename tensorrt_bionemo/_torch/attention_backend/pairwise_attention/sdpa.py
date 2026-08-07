@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,41 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange
 
-from .interface import AttentionBackend, AttentionMetadata
-
-
-class SDPAAttentionMetadata(AttentionMetadata):
-    pass
-
-
-def _prep_qkv(
-        q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, no_heads: int,
-        head_dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Reshape q/k/v from [*, seq, H*D] to [*, H, seq, D].
-
-    Unlike the vanilla variant, k is NOT transposed here because
-    ``scaled_dot_product_attention`` handles the transpose internally.
-    """
-    batch_dims = " ".join([f"b_{i}" for i in range(q.ndim - 2)])
-    q = rearrange(q,
-                  f"{batch_dims} j (h d) -> {batch_dims} h j d",
-                  h=no_heads,
-                  d=head_dim)
-    k = rearrange(k,
-                  f"{batch_dims} j (h d) -> {batch_dims} h j d",
-                  h=no_heads,
-                  d=head_dim)
-    v = rearrange(v,
-                  f"{batch_dims} j (h d) -> {batch_dims} h j d",
-                  h=no_heads,
-                  d=head_dim)
-    return q, k, v
+from .._common import SDPAAttentionMetadata, prep_qkv_for_sdpa
+from ..interface import AttentionBackend, AttentionMetadata
 
 
 class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
@@ -59,21 +30,19 @@ class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
     and up to 30% peak-memory reduction over the manual matmul path.
     """
 
-    def __init__(self,
-                 layer_idx: int,
-                 num_heads: int,
-                 head_dim: int,
-                 num_kv_heads: Optional[int] = None):
+    Metadata = SDPAAttentionMetadata
+
+    def __init__(self, layer_idx: int, num_heads: int, head_dim: int, num_kv_heads: int | None = None):
         super().__init__(layer_idx, num_heads, head_dim, num_kv_heads)
-        assert num_heads == num_kv_heads, "num_heads must be equal to num_kv_heads"
+        assert self.num_heads == self.num_kv_heads, "num_heads must be equal to num_kv_heads"
 
     def forward(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        biases: Optional[list[torch.Tensor]] = None,
-        metadata: Optional[AttentionMetadata] = None,
+        biases: list[torch.Tensor] | None = None,
+        metadata: AttentionMetadata | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Pairwise attention via ``F.scaled_dot_product_attention``.
@@ -91,7 +60,7 @@ class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
         Returns:
             Output tensor of shape ``[*, S_Q, H, D]``.
         """
-        q, k, v = _prep_qkv(q, k, v, self.num_heads, self.head_dim)
+        q, k, v = prep_qkv_for_sdpa(q, k, v, self.num_heads, self.head_dim)
 
         attn_mask = None
         if biases is not None:

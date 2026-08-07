@@ -1,7 +1,7 @@
 {
   "implementation": "tensorrt_bionemo.dsl_kernels.cute.sm90_attn_pb_left_mask.HopperFusedMultiHeadAttentionForward",
   "configs": {
-    "0": {
+    "S=0": {
       "mma_tiler_mn": [
         64,
         64
@@ -10,7 +10,7 @@
       "kv_stage": 7,
       "raster_factor": 1
     },
-    "512": {
+    "S=512": {
       "mma_tiler_mn": [
         64,
         128

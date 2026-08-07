@@ -27,13 +27,12 @@ One JSON file per (problem shape, SM) pair, named
     }
 
 ``implementation`` is the dotted import path of the CuTe kernel class to
-construct. The inner key format under ``configs`` is op-specific: a
-stringified M bucket for gated sigmoid and attention; a flat pipe-separated
-key for dual GEMM (e.g. ``"S=512|t=0"``) that maps directly to tile params
-(no nested table — the dual-GEMM loader filters by ``t=`` and picks the
-closest ``S=`` anchor).
-The loader treats all keys as raw strings and leaves parsing to the
-caller.
+construct. The loader treats config keys as raw strings and leaves parsing to
+the caller. Gated sigmoid uses stringified legacy bucket keys. Pairwise and
+triangle attention use ``"S=<anchor>"`` and select the nearest per-sample
+side-length anchor. Dual GEMM uses a flat pipe-separated key (for example
+``"S=512|t=0"``), filters its non-nearest axes, and likewise selects the
+closest ``S`` anchor.
 
 Override search path: set ``TRTBNM_TUNED_CONFIG_FOLDER`` to a directory
 containing the same filenames (checked before the package defaults).
@@ -83,7 +82,7 @@ class KernelConfigBundle:
     source_path: str
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def load_kernel_configs(
     configs_dir: str,
     file_name: str,
@@ -101,7 +100,7 @@ def load_kernel_configs(
     user_dir = os.environ.get(_TUNED_CONFIG_ENV)
     if user_dir:
         candidates.append(os.path.join(user_dir, file_name))
-    else:    
+    else:
         candidates.append(os.path.join(configs_dir, file_name))
 
     for path in candidates:
@@ -123,13 +122,11 @@ def load_kernel_configs(
     return None
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def resolve_implementation(dotted_path: str) -> type:
     """Import a class from its dotted path (cached)."""
     module_path, _, name = dotted_path.rpartition(".")
     if not module_path or not name:
-        raise ValueError(
-            f"Invalid implementation path {dotted_path!r}; expected "
-            f"'pkg.module.ClassName'.")
+        raise ValueError(f"Invalid implementation path {dotted_path!r}; expected 'pkg.module.ClassName'.")
     mod = importlib.import_module(module_path)
     return getattr(mod, name)

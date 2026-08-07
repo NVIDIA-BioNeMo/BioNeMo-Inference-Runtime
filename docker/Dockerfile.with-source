@@ -44,6 +44,19 @@ RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
 FROM requirements_stage AS copy_source_stage
 COPY . ${PROJECT_WORKDIR}/
 
+# Generate the embedded CUBIN headers required by the CMake build.
+# In CI the headers arrive as artifacts from prepare:cutedsl-cubins (a GPU
+# runner job) and this step is a no-op. For local docker builds without
+# pre-generated artifacts, fall back to the CUDA compile-time stub; note that
+# the sm_90a (Hopper) path needs a live CUDA driver, so pass --gpus all when
+# building locally against a Hopper host.
+RUN if [ ! -f cpp/kernels/cutedsl_triangle_attention/cubins/embedded_cubins.h ]; then \
+      ln -sf /usr/local/cuda/lib64/stubs/libcuda.so \
+             /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
+      LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+      python cpp/tools/prepare_cubins.py --kernel triangle_attention --jobs "$(nproc)"; \
+    fi
+
 # ------------------------------------------------------
 # install tensorrt-bionemo for prod
 # -----------------------------------------------------
@@ -60,5 +73,3 @@ FROM copy_source_stage AS dev_stage
 
 RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install --no-build-isolation -v -e .[dev]
-
-

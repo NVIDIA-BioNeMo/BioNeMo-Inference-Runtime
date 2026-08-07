@@ -34,34 +34,47 @@ from tests.common.test_utils.basic import path_for_package_in_repo
 # a blocking JIT CUDA-extension build on import.
 os.environ.setdefault("LAYERNORM_TYPE", "torch")
 
-# Optional deps that are not needed for the atom-transformer modules.
-MOCK_MODULES = ["gemmi"]
-for _mod_name in MOCK_MODULES:
-    sys.modules.setdefault(_mod_name, MagicMock())
-if isinstance(sys.modules.get("gemmi"), MagicMock):
-    sys.modules["gemmi"].__version__ = "0.7.3"
+# Protenix only checks gemmi while importing these model layers. Keep the stub
+# scoped to the OSS imports so later parser tests receive the real module.
+_MISSING_MODULE = object()
+_previous_gemmi = sys.modules.get("gemmi", _MISSING_MODULE)
+_gemmi_stub = MagicMock()
+_gemmi_stub.__version__ = "0.7.3"
+sys.modules["gemmi"] = _gemmi_stub
 
 sys.path.insert(0, str(path_for_package_in_repo(tests).parent / "3rdparty/protenix"))
 
-from protenix.model.modules.confidence import ConfidenceHead as ProtenixOSS_ConfidenceHead  # noqa: E402
-from protenix.model.modules.diffusion import DiffusionConditioning as ProtenixOSS_DiffusionConditioning  # noqa: E402
-from protenix.model.modules.diffusion import DiffusionModule as ProtenixOSS_DiffusionModule  # noqa: E402
-from protenix.model.modules.embedders import ConstraintEmbedder as ProtenixOSS_ConstraintEmbedder  # noqa: E402
-from protenix.model.modules.embedders import (  # noqa: E402 -- import after sys.path insert for the vendored 3rdparty/protenix package
-    RelativePositionEncoding as ProtenixOSS_RelativePositionEncoding,
-)
-from protenix.model.modules.head import DistogramHead as ProtenixOSS_DistogramHead  # noqa: E402
-from protenix.model.modules.pairformer import MSAModule as ProtenixOSS_MSAModule  # noqa: E402
-from protenix.model.modules.pairformer import PairformerStack as ProtenixOSS_PairformerStack  # noqa: E402
-from protenix.model.modules.pairformer import TemplateEmbedder as ProtenixOSS_TemplateEmbedder  # noqa: E402
-from protenix.model.modules.transformer import AtomAttentionDecoder as ProtenixOSS_AtomAttentionDecoder  # noqa: E402
-from protenix.model.modules.transformer import AtomAttentionEncoder as ProtenixOSS_AtomAttentionEncoder  # noqa: E402
-from protenix.model.modules.transformer import AtomTransformer as ProtenixOSS_AtomTransformer  # noqa: E402
-from protenix.model.protenix import update_input_feature_dict  # noqa: E402,F401
-from protenix.model.sample_confidence import compute_contact_prob as oss_compute_contact_prob  # noqa: E402,F401
-from protenix.model.sample_confidence import (  # noqa: E402 -- import after sys.path insert for the vendored 3rdparty/protenix package
-    compute_full_data_and_summary as oss_compute_full_data_and_summary,  # noqa: F401
-)
+try:
+    from protenix.model.modules.confidence import ConfidenceHead as ProtenixOSS_ConfidenceHead  # noqa: E402
+    from protenix.model.modules.diffusion import (  # noqa: E402
+        DiffusionConditioning as ProtenixOSS_DiffusionConditioning,
+    )
+    from protenix.model.modules.diffusion import DiffusionModule as ProtenixOSS_DiffusionModule  # noqa: E402
+    from protenix.model.modules.embedders import ConstraintEmbedder as ProtenixOSS_ConstraintEmbedder  # noqa: E402
+    from protenix.model.modules.embedders import (  # noqa: E402 -- import after sys.path insert for the vendored 3rdparty/protenix package
+        RelativePositionEncoding as ProtenixOSS_RelativePositionEncoding,
+    )
+    from protenix.model.modules.head import DistogramHead as ProtenixOSS_DistogramHead  # noqa: E402
+    from protenix.model.modules.pairformer import MSAModule as ProtenixOSS_MSAModule  # noqa: E402
+    from protenix.model.modules.pairformer import PairformerStack as ProtenixOSS_PairformerStack  # noqa: E402
+    from protenix.model.modules.pairformer import TemplateEmbedder as ProtenixOSS_TemplateEmbedder  # noqa: E402
+    from protenix.model.modules.transformer import (  # noqa: E402
+        AtomAttentionDecoder as ProtenixOSS_AtomAttentionDecoder,
+    )
+    from protenix.model.modules.transformer import (  # noqa: E402
+        AtomAttentionEncoder as ProtenixOSS_AtomAttentionEncoder,
+    )
+    from protenix.model.modules.transformer import AtomTransformer as ProtenixOSS_AtomTransformer  # noqa: E402
+    from protenix.model.protenix import update_input_feature_dict  # noqa: E402,F401
+    from protenix.model.sample_confidence import compute_contact_prob as oss_compute_contact_prob  # noqa: E402,F401
+    from protenix.model.sample_confidence import (  # noqa: E402 -- import after sys.path insert for the vendored 3rdparty/protenix package
+        compute_full_data_and_summary as oss_compute_full_data_and_summary,  # noqa: F401
+    )
+finally:
+    if _previous_gemmi is _MISSING_MODULE:
+        sys.modules.pop("gemmi", None)
+    else:
+        sys.modules["gemmi"] = _previous_gemmi
 
 
 class RefProtenixAtomTransformerFromOSS(ProtenixOSS_AtomTransformer):

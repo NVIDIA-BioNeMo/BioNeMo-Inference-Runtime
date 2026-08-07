@@ -14,35 +14,107 @@
 # limitations under the License.
 """Build-time packaging shim. pyproject.toml remains the metadata source of truth.
 
-This project has no compiled ``Extension`` of its own, but it is not portable:
-its dependencies are CUDA-toolkit-specific wheels (``cuda-python>=13``,
-``cuequivariance-ops-cu13``, ...) and its runtime kernels are JIT-compiled for the
-installed CUDA. So the wheel must advertise the CUDA target it was built for
-rather than presenting as pure Python. Two things setuptools cannot infer on its
-own are supplied here:
-
-1. A PEP 440 local version segment (e.g. ``0.4.0+cu131``) that records the CUDA
-   toolkit the wheel was built against — the same scheme PyTorch ships
-   (``2.7.0+cu128``). See https://peps.python.org/pep-0440/#local-version-identifiers.
-2. A platform wheel tag. With no ``Extension``, setuptools treats the project as
-   pure Python and tags the wheel ``py3-none-any``; ``_BinaryDistribution`` flips
-   that so the wheel carries interpreter + platform tags (e.g.
-   ``cp312-none-linux_x86_64``).
-
-Keeping both inside the produced wheel's METADATA/WHEEL (rather than renaming the
-file afterward) is what lets ``pip install`` accept it — a filename whose version
-or tags disagree with the archive's own metadata is rejected by pip >= 24.2.
+The wheel contains a nanobind extension under ``tensorrt_bionemo.libs`` with
+embedded, architecture-specific CuTeDSL CUBINs. ``build_ext`` delegates that
+extension to CMake while the local version segment (for example ``+cu131``)
+records the CUDA toolkit used by the wheel builder. Private development reads
+``build.env`` and skips this optional extension unless
+``TRTBNM_BUILD_CUTEDSL_KERNELS=1`` is explicitly set. Public source builds omit
+``build.env`` and therefore build the extension by default.
 """
+
 import os
 import re
 import subprocess
+import sys
+from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 
-from setuptools import setup
-from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
-from setuptools.dist import Distribution
+from setuptools import Extension, setup
+from setuptools.command.build_ext import build_ext
 
 ROOT_DIR = Path(__file__).parent.resolve()
+_BUILD_ENV_FILE = ROOT_DIR / "build.env"
+_BUILD_CUTEDSL_KERNELS_ENV = "TRTBNM_BUILD_CUTEDSL_KERNELS"
+_KERNEL_LIBRARY_STEM = "_cutedsl_kernels"
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def _read_build_env(path: Path) -> dict[str, str]:
+    """Read a small shell-compatible KEY=VALUE build environment file."""
+    if not path.is_file():
+        return {}
+
+    values: dict[str, str] = {}
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not separator or not key:
+            raise RuntimeError(f"{path}:{line_number}: expected a KEY=VALUE assignment")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _env_flag(name: str, *, env_file: Path, default: bool) -> bool:
+    """Resolve a boolean flag with process environment taking precedence."""
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        raw_value = _read_build_env(env_file).get(name)
+    if raw_value is None:
+        return default
+
+    normalized = raw_value.strip().lower()
+    if normalized in _TRUE_ENV_VALUES:
+        return True
+    if normalized in _FALSE_ENV_VALUES:
+        return False
+    raise RuntimeError(f"{name} must be one of {sorted(_TRUE_ENV_VALUES | _FALSE_ENV_VALUES)}, got {raw_value!r}")
+
+
+def _remove_stale_kernel_libraries(directories: set[Path]) -> None:
+    """Remove stale unified CuTeDSL extensions before rebuilding."""
+    for directory in directories:
+        for suffix in EXTENSION_SUFFIXES:
+            path = directory / f"{_KERNEL_LIBRARY_STEM}{suffix}"
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+
+
+def _prepare_cutedsl_kernel_payloads() -> None:
+    """Compile private CUBINs; public builds use committed payload headers."""
+    if not _BUILD_ENV_FILE.is_file():
+        return
+
+    command = [
+        sys.executable,
+        str(ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"),
+        "--kernel",
+        "triangle_attention",
+    ]
+    subprocess.run(command, cwd=ROOT_DIR, check=True)
+
+
+_BUILD_CUTEDSL_KERNELS = _env_flag(
+    _BUILD_CUTEDSL_KERNELS_ENV,
+    env_file=_BUILD_ENV_FILE,
+    default=not _BUILD_ENV_FILE.is_file(),
+)
+
+if not _BUILD_CUTEDSL_KERNELS:
+    package_dirs = {ROOT_DIR / "tensorrt_bionemo"}
+    build_root = ROOT_DIR / "build"
+    if build_root.is_dir():
+        package_dirs.update(build_root.glob("lib*/tensorrt_bionemo"))
+    _remove_stale_kernel_libraries(package_dirs | {path / "libs" for path in package_dirs})
 
 
 def _base_version() -> str:
@@ -92,38 +164,77 @@ def _cuda_local_version() -> str:
     raise RuntimeError(
         "Cannot determine the CUDA version for the wheel's local version segment: "
         "nvcc is unavailable and torch is not installed (or is CPU-only). Set "
-        "CUDA_TAG (e.g. CUDA_TAG=cu131) to override.")
+        "CUDA_TAG (e.g. CUDA_TAG=cu131) to override."
+    )
 
 
-class _BinaryDistribution(Distribution):
-    """Mark the distribution impure so a platform (not ``py3-none-any``) wheel is built.
+class CMakeExtension(Extension):
+    """A setuptools extension whose implementation is built by CMake."""
 
-    The project has no ``ext_modules``, so setuptools would otherwise tag the wheel
-    pure — but it targets a specific CUDA toolkit (see the module docstring).
-    Returning True here does not trigger any compilation — it only flips the wheel's
-    purity/tags.
-    """
-
-    def has_ext_modules(self) -> bool:  # noqa: D102 - see class docstring
-        return True
+    def __init__(self, name: str, source_dir: Path):
+        super().__init__(name, sources=[])
+        self.source_dir = source_dir.resolve()
 
 
-class bdist_wheel(_bdist_wheel):
-    """Emit an ABI-agnostic platform tag (e.g. ``cp312-none-linux_x86_64``).
+class CMakeBuild(build_ext):
+    """Configure and build the unified embedded-CUBIN nanobind module."""
 
-    ``_BinaryDistribution`` already makes the wheel platform-specific; this drops
-    the ABI tag to ``none`` because the package contains no CPython C-extension
-    linked against a specific interpreter ABI — only pure-Python modules that are
-    CUDA-toolkit-specific at runtime.
-    """
+    def build_extension(self, extension: Extension) -> None:
+        if not isinstance(extension, CMakeExtension):
+            super().build_extension(extension)
+            return
 
-    def get_tag(self):
-        python, _abi, platform = super().get_tag()
-        return python, "none", platform
+        _prepare_cutedsl_kernel_payloads()
+        extension_path = Path(self.get_ext_fullpath(extension.name)).resolve()
+        extension_dir = extension_path.parent
+        source_package_dir = ROOT_DIR / "tensorrt_bionemo"
+        build_package_dir = Path(self.build_lib).resolve() / "tensorrt_bionemo"
+        package_dirs = {
+            source_package_dir,
+            build_package_dir,
+            extension_dir.parent,
+        }
+        _remove_stale_kernel_libraries(package_dirs | {path / "libs" for path in package_dirs})
+        extension_dir.mkdir(parents=True, exist_ok=True)
+
+        configuration = "Debug" if self.debug else "Release"
+        build_dir = (Path(self.build_temp) / extension.name.replace(".", "_")).resolve()
+        build_dir.mkdir(parents=True, exist_ok=True)
+
+        configure_command = [
+            "cmake",
+            "-S",
+            str(extension.source_dir),
+            "-B",
+            str(build_dir),
+            f"-DCMAKE_BUILD_TYPE={configuration}",
+            f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extension_dir}",
+            f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{configuration.upper()}={extension_dir}",
+            f"-DPython_EXECUTABLE={sys.executable}",
+        ]
+        subprocess.run(configure_command, cwd=ROOT_DIR, check=True)
+
+        build_command = [
+            "cmake",
+            "--build",
+            str(build_dir),
+            "--config",
+            configuration,
+            "--target",
+            "_cutedsl_kernels",
+        ]
+        if self.parallel and "CMAKE_BUILD_PARALLEL_LEVEL" not in os.environ:
+            build_command.extend(["--parallel", str(self.parallel)])
+        subprocess.run(build_command, cwd=ROOT_DIR, check=True)
+
+        if not extension_path.is_file():
+            raise RuntimeError(f"CMake did not produce the expected extension: {extension_path}")
 
 
 setup(
     version=f"{_base_version()}+{_cuda_local_version()}",
-    distclass=_BinaryDistribution,
-    cmdclass={"bdist_wheel": bdist_wheel},
+    ext_modules=(
+        [CMakeExtension("tensorrt_bionemo.libs._cutedsl_kernels", ROOT_DIR / "cpp")] if _BUILD_CUTEDSL_KERNELS else []
+    ),
+    cmdclass={"build_ext": CMakeBuild},
 )

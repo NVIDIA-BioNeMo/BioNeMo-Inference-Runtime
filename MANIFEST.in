@@ -1,0 +1,6 @@
+recursive-include cpp CMakeLists.txt *.cmake *.cpp *.h *.py
+# recursive-include does not consult .gitignore, and local CMake trees vendor the
+# fetched nanobind sources.
+prune cpp/build*
+prune cpp/cmake-build-*
+exclude build.env

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,8 +16,7 @@
 import pytest
 
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.registry import (ModelRegistry, get_model_class,
-                                       register_all_factories)
+from tensorrt_bionemo.registry import ModelRegistry, get_model_class, register_all_factories
 
 
 class MockModel:
@@ -38,10 +37,12 @@ class TestModelRegistry:
 
     def test_register_and_retrieve_model(self):
         """Test basic model registration and retrieval."""
+
         class MockFactory:
             @classmethod
             def get_model_class(cls):
                 return MockModel
+
         ModelRegistry.register("test_model", MockFactory)
 
         assert "test_model" in ModelRegistry._factories
@@ -50,9 +51,7 @@ class TestModelRegistry:
 
     def test_get_model_class_raises_error_for_nonexistent_model(self):
         """Test that retrieving a non-existing model raises ValueError."""
-        with pytest.raises(
-                ValueError,
-                match="Model nonexistent_model not registered"):
+        with pytest.raises(ValueError, match="Model nonexistent_model not registered"):
             get_model_class("nonexistent_model")
 
     def test_register_default_models(self):

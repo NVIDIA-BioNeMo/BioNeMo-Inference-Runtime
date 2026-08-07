@@ -33,20 +33,18 @@ Usage inside a layer::
     mha_o = self.attn.forward(q, k, v, biases=biases, output=attn_buf)
 """
 
-from typing import Optional
-
 import torch
 
 PreallocatedBuffers = dict[str, torch.Tensor]
 
 
 def ensure_buffer(
-    buffers: Optional[PreallocatedBuffers],
+    buffers: PreallocatedBuffers | None,
     key: str,
     shape: tuple,
     dtype: torch.dtype,
     device: torch.device,
-) -> Optional[torch.Tensor]:
+) -> torch.Tensor | None:
     """Return a buffer for *key*, allocating only when shape/dtype change.
 
     When *buffers* is ``None`` the function returns ``None``, letting the

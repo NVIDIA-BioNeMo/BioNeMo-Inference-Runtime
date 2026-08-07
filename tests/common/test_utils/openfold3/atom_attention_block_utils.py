@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2025 AlQuraishi Laboratory
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
@@ -50,10 +65,7 @@ def convert_to_blocks_1d(
     if shift_interval == block_len:
         blocks = torch.chunk(x, num_blocks, dim=dim)
     else:
-        blocks = [
-            x.narrow(dim, shift_interval * i, block_len)
-            for i in range(num_blocks)
-        ]
+        blocks = [x.narrow(dim, shift_interval * i, block_len) for i in range(num_blocks)]
     return torch.stack(blocks, dim=dim - 1)
 
 
@@ -85,16 +97,13 @@ def convert_to_blocks_2d(
         at the specified dims.
     """
     blocks = [
-        x.narrow(dims[0], shift_interval * i,
-                 block_lens[0]).narrow(dims[1], shift_interval * i,
-                                       block_lens[1])
+        x.narrow(dims[0], shift_interval * i, block_lens[0]).narrow(dims[1], shift_interval * i, block_lens[1])
         for i in range(num_blocks)
     ]
     return torch.stack(blocks, dim=min(dims) - 1)
 
 
-def get_subset_center_padding(n_atom: int, n_query: int,
-                              n_key: int) -> tuple[int, int, int]:
+def get_subset_center_padding(n_atom: int, n_query: int, n_key: int) -> tuple[int, int, int]:
     """
     Calculate padding for a structure with n_atoms such that the block centers
     match the subset centers in Alg. 7 and the q/k dimensions are divisible by
@@ -151,16 +160,12 @@ def get_pair_atom_block_mask(
 ) -> torch.Tensor:
     # Pad and convert atom mask to blocks of width n_query
     # [*, N_atom] -> [*, N_blocks, N_query]
-    atom_mask_q = torch.nn.functional.pad(atom_mask, (0, pad_len_right_q),
-                                          value=0.0)
-    atom_mask_q = atom_mask_q.reshape(
-        (*atom_mask.shape[:-1], n_blocks, n_query))
+    atom_mask_q = torch.nn.functional.pad(atom_mask, (0, pad_len_right_q), value=0.0)
+    atom_mask_q = atom_mask_q.reshape((*atom_mask.shape[:-1], n_blocks, n_query))
 
     # Pad and convert atom mask to blocks of length n_key
     # [*, N_atom] -> [*, N_blocks, N_key]
-    atom_mask_k = torch.nn.functional.pad(atom_mask,
-                                          (pad_len_left_k, pad_len_right_k),
-                                          value=0.0)
+    atom_mask_k = torch.nn.functional.pad(atom_mask, (pad_len_left_k, pad_len_right_k), value=0.0)
     atom_mask_k = convert_to_blocks_1d(
         x=atom_mask_k,
         num_blocks=n_blocks,
@@ -198,13 +203,12 @@ def convert_pair_rep_to_blocks(
     n_atom = plm.shape[-2]
     num_blocks = math.ceil(n_atom / n_query)
     pad_len_right_q, pad_len_left_k, pad_len_right_k = get_subset_center_padding(
-        n_atom=n_atom, n_query=n_query, n_key=n_key)
+        n_atom=n_atom, n_query=n_query, n_key=n_key
+    )
 
     # Pad and convert plm to blocks of width n_query and length n_key
     # [*, N_atom, N_atom, c_atom_pair] -> [*, N_blocks, N_query, N_key, c_atom_pair]
-    plm = torch.nn.functional.pad(
-        plm, (0, 0, pad_len_left_k, pad_len_right_k, 0, pad_len_right_q),
-        value=0.0)
+    plm = torch.nn.functional.pad(plm, (0, 0, pad_len_left_k, pad_len_right_k, 0, pad_len_right_q), value=0.0)
     plm = convert_to_blocks_2d(
         x=plm,
         num_blocks=num_blocks,
@@ -250,19 +254,17 @@ def convert_single_rep_to_blocks(
 
     num_blocks = math.ceil(n_atom / n_query)
     pad_len_right_q, pad_len_left_k, pad_len_right_k = get_subset_center_padding(
-        n_atom=n_atom, n_query=n_query, n_key=n_key)
+        n_atom=n_atom, n_query=n_query, n_key=n_key
+    )
 
     # Pad and convert ql to blocks of width n_query
     # [*, N_atom, c_atom] -> [*, N_blocks, N_query, c_atom]
-    ql_query = torch.nn.functional.pad(ql, (0, 0, 0, pad_len_right_q),
-                                       value=0.0)
+    ql_query = torch.nn.functional.pad(ql, (0, 0, 0, pad_len_right_q), value=0.0)
     ql_query = ql_query.reshape((*batch_dims, num_blocks, n_query, n_dim))
 
     # Pad and convert ql to blocks of length n_key
     # [*, N_atom, c_atom] -> [*, N_blocks, N_key, c_atom]
-    ql_key = torch.nn.functional.pad(ql,
-                                     (0, 0, pad_len_left_k, pad_len_right_k),
-                                     value=0.0)
+    ql_key = torch.nn.functional.pad(ql, (0, 0, pad_len_left_k, pad_len_right_k), value=0.0)
     ql_key = convert_to_blocks_1d(
         x=ql_key,
         num_blocks=num_blocks,
@@ -317,34 +319,31 @@ def convert_trunk_pair_rep_to_blocks(
 
     num_blocks = math.ceil(n_atom / n_query)
     pad_len_right_q, pad_len_left_k, pad_len_right_k = get_subset_center_padding(
-        n_atom=n_atom, n_query=n_query, n_key=n_key)
+        n_atom=n_atom, n_query=n_query, n_key=n_key
+    )
 
     # Pad and convert atom_to_token_index to blocks of width n_query
-    atom_to_token_index_q = torch.nn.functional.pad(atom_to_token_index,
-                                                    (0, pad_len_right_q),
-                                                    value=0.0)
+    atom_to_token_index_q = torch.nn.functional.pad(atom_to_token_index, (0, pad_len_right_q), value=0.0)
 
     # [*, N_atom] -> [*, N_blocks, N_query]
-    atom_to_token_index_q = atom_to_token_index_q.reshape(
-        (*batch_dims, num_blocks, n_query))
+    atom_to_token_index_q = atom_to_token_index_q.reshape((*batch_dims, num_blocks, n_query))
 
     # Expand zij to the number of blocks needed for indexing without allocating mem
     # [*, N_blocks, N_token, N_token, c_atom_pair]
-    zij_trunk = zij_trunk.unsqueeze(-4).expand(
-        (*batch_dims, num_blocks, *zij_trunk.shape[-3:]))
+    zij_trunk = zij_trunk.unsqueeze(-4).expand((*batch_dims, num_blocks, *zij_trunk.shape[-3:]))
 
     # Aggregate blocked atom query dimension from tokens
     # [*, N_blocks, N_query, N_token, c_atom_pair]
     zij_trunk = torch.gather(
         zij_trunk,
         dim=-3,
-        index=atom_to_token_index_q[..., None, None].expand(
-            (*batch_dims, num_blocks, n_query, *zij_trunk.shape[-2:])).long(),
+        index=atom_to_token_index_q[..., None, None]
+        .expand((*batch_dims, num_blocks, n_query, *zij_trunk.shape[-2:]))
+        .long(),
     )
 
     # Pad and convert plm to blocks of length n_key
-    atom_to_token_index_k = torch.nn.functional.pad(
-        atom_to_token_index, (pad_len_left_k, pad_len_right_k), value=0.0)
+    atom_to_token_index_k = torch.nn.functional.pad(atom_to_token_index, (pad_len_left_k, pad_len_right_k), value=0.0)
 
     # [*, N_atom] -> [*, N_blocks, N_key]
     atom_to_token_index_k = convert_to_blocks_1d(
@@ -360,9 +359,9 @@ def convert_trunk_pair_rep_to_blocks(
     zij_trunk = torch.gather(
         zij_trunk,
         dim=-2,
-        index=atom_to_token_index_k[..., None, :, None].expand(
-            (*batch_dims, num_blocks, n_query, n_key,
-             zij_trunk.shape[-1])).long(),
+        index=atom_to_token_index_k[..., None, :, None]
+        .expand((*batch_dims, num_blocks, n_query, n_key, zij_trunk.shape[-1]))
+        .long(),
     )
 
     # Compute atom pair mask for masking out padding

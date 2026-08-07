@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +15,7 @@
 
 import numpy as np
 
-from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import (
-    PostProcessor, PostProcessorConfig)
+from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import PostProcessor, PostProcessorConfig
 
 
 class TestPostProcessorNormalizeResidueIndices:
@@ -111,7 +110,7 @@ class TestPostProcessorGetChainIndices:
 
         np_batch = {
             "aatype": np.array([1, 2, 3, 4]),
-            "asym_id": np.array([1, 1, 2, 2])  # 1-based asym_id
+            "asym_id": np.array([1, 1, 2, 2]),  # 1-based asym_id
         }
 
         chain_indices = postprocessor._get_chain_indices(np_batch)
@@ -140,7 +139,7 @@ class TestPostProcessorGetChainIndices:
 
         np_batch = {
             "aatype": np.array([1, 2, 3, 4, 5, 6]),
-            "asym_id": np.array([1, 1, 2, 2, 3, 3])  # 1-based asym_id
+            "asym_id": np.array([1, 1, 2, 2, 3, 3]),  # 1-based asym_id
         }
 
         chain_indices = postprocessor._get_chain_indices(np_batch)

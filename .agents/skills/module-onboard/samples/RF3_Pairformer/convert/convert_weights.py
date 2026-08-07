@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Weight conversion: BakerLab RF3 PairformerBlock -> TRT-BNM PairformerLayerV1.
 
@@ -124,20 +139,29 @@ def convert_pairformer_block_weights(state_dict, prefix="", tbm_prefix=""):
     tdot = "." if tbm_prefix else ""
 
     weights = {}
-    weights.update(convert_tri_mul_weights(
-        state_dict, f"{prefix}{dot}tri_mul_outgoing", f"{tbm_prefix}{tdot}tri_mul_out"))
-    weights.update(convert_tri_mul_weights(
-        state_dict, f"{prefix}{dot}tri_mul_incoming", f"{tbm_prefix}{tdot}tri_mul_in"))
-    weights.update(convert_tri_attn_weights(
-        state_dict, f"{prefix}{dot}tri_attn_start", f"{tbm_prefix}{tdot}tri_attn_start"))
-    weights.update(convert_tri_attn_weights(
-        state_dict, f"{prefix}{dot}tri_attn_end", f"{tbm_prefix}{tdot}tri_attn_end"))
-    weights.update(convert_transition_weights(
-        state_dict, f"{prefix}{dot}z_transition", f"{tbm_prefix}{tdot}transition_z"))
-    weights.update(convert_transition_weights(
-        state_dict, f"{prefix}{dot}s_transition", f"{tbm_prefix}{tdot}transition_s"))
-    weights.update(convert_attention_pair_bias_weights(
-        state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}attention"))
+    weights.update(
+        convert_tri_mul_weights(state_dict, f"{prefix}{dot}tri_mul_outgoing", f"{tbm_prefix}{tdot}tri_mul_out")
+    )
+    weights.update(
+        convert_tri_mul_weights(state_dict, f"{prefix}{dot}tri_mul_incoming", f"{tbm_prefix}{tdot}tri_mul_in")
+    )
+    weights.update(
+        convert_tri_attn_weights(state_dict, f"{prefix}{dot}tri_attn_start", f"{tbm_prefix}{tdot}tri_attn_start")
+    )
+    weights.update(
+        convert_tri_attn_weights(state_dict, f"{prefix}{dot}tri_attn_end", f"{tbm_prefix}{tdot}tri_attn_end")
+    )
+    weights.update(
+        convert_transition_weights(state_dict, f"{prefix}{dot}z_transition", f"{tbm_prefix}{tdot}transition_z")
+    )
+    weights.update(
+        convert_transition_weights(state_dict, f"{prefix}{dot}s_transition", f"{tbm_prefix}{tdot}transition_s")
+    )
+    weights.update(
+        convert_attention_pair_bias_weights(
+            state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}attention"
+        )
+    )
     return weights
 
 
@@ -155,6 +179,5 @@ def convert_pairformer_stack_weights(state_dict, num_blocks, prefix="pairformer_
     """
     weights = {}
     for i in range(num_blocks):
-        weights.update(convert_pairformer_block_weights(
-            state_dict, f"{prefix}.{i}", f"{tbm_prefix}.{i}"))
+        weights.update(convert_pairformer_block_weights(state_dict, f"{prefix}.{i}", f"{tbm_prefix}.{i}"))
     return weights

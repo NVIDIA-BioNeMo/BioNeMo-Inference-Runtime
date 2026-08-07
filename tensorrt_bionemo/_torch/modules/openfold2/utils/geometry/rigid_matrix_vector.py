@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2021 DeepMind Technologies Limited
 # Copyright 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,14 +31,12 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import List, Union
 
 import torch
 
-from tensorrt_bionemo._torch.modules.openfold2.utils.geometry import (
-    rotation_matrix, vector)
+from tensorrt_bionemo._torch.modules.openfold2.utils.geometry import rotation_matrix, vector
 
-Float = Union[float, torch.Tensor]
+Float = float | torch.Tensor
 
 
 @dataclasses.dataclass(frozen=True)
@@ -67,18 +80,15 @@ class Rigid3Array:
         return self.rotation.apply_to_point(point) + self.translation
 
     def apply(self, point: torch.Tensor) -> torch.Tensor:
-        return self.apply_to_point(
-            vector.Vec3Array.from_array(point)).to_tensor()
+        return self.apply_to_point(vector.Vec3Array.from_array(point)).to_tensor()
 
-    def apply_inverse_to_point(self,
-                               point: vector.Vec3Array) -> vector.Vec3Array:
+    def apply_inverse_to_point(self, point: vector.Vec3Array) -> vector.Vec3Array:
         """Apply inverse Rigid3Array transform to point."""
         new_point = point - self.translation
         return self.rotation.apply_inverse_to_point(new_point)
 
     def invert_apply(self, point: torch.Tensor) -> torch.Tensor:
-        return self.apply_inverse_to_point(
-            vector.Vec3Array.from_array(point)).to_tensor()
+        return self.apply_inverse_to_point(vector.Vec3Array.from_array(point)).to_tensor()
 
     def compose_rotation(self, other_rotation):
         rot = self.rotation @ other_rotation
@@ -108,14 +118,12 @@ class Rigid3Array:
     @classmethod
     def identity(cls, shape, device) -> Rigid3Array:
         """Return identity Rigid3Array of given shape."""
-        return cls(rotation_matrix.Rot3Array.identity(shape, device),
-                   vector.Vec3Array.zeros(shape, device))
+        return cls(rotation_matrix.Rot3Array.identity(shape, device), vector.Vec3Array.zeros(shape, device))
 
     @classmethod
-    def cat(cls, rigids: List[Rigid3Array], dim: int) -> Rigid3Array:
+    def cat(cls, rigids: list[Rigid3Array], dim: int) -> Rigid3Array:
         return cls(
-            rotation_matrix.Rot3Array.cat([r.rotation for r in rigids],
-                                          dim=dim),
+            rotation_matrix.Rot3Array.cat([r.rotation for r in rigids], dim=dim),
             vector.Vec3Array.cat([r.translation for r in rigids], dim=dim),
         )
 
@@ -126,12 +134,10 @@ class Rigid3Array:
     def to_tensor(self) -> torch.Tensor:
         rot_array = self.rotation.to_tensor()
         vec_array = self.translation.to_tensor()
-        array = torch.zeros(rot_array.shape[:-2] + (4, 4),
-                            device=rot_array.device,
-                            dtype=rot_array.dtype)
+        array = torch.zeros(rot_array.shape[:-2] + (4, 4), device=rot_array.device, dtype=rot_array.dtype)
         array[..., :3, :3] = rot_array
         array[..., :3, 3] = vec_array
-        array[..., 3, 3] = 1.
+        array[..., 3, 3] = 1.0
         return array
 
     def to_tensor_4x4(self) -> torch.Tensor:
@@ -150,7 +156,9 @@ class Rigid3Array:
 
     @classmethod
     def from_array(cls, array):
-        rot = rotation_matrix.Rot3Array.from_array(array[..., :3, :3], )
+        rot = rotation_matrix.Rot3Array.from_array(
+            array[..., :3, :3],
+        )
         vec = vector.Vec3Array.from_array(array[..., :3, 3])
         return cls(rot, vec)
 
@@ -161,15 +169,18 @@ class Rigid3Array:
     @classmethod
     def from_array4x4(cls, array: torch.tensor) -> Rigid3Array:
         """Construct Rigid3Array from homogeneous 4x4 array."""
-        rotation = rotation_matrix.Rot3Array(array[..., 0, 0], array[..., 0, 1],
-                                             array[..., 0, 2], array[..., 1, 0],
-                                             array[..., 1, 1], array[..., 1, 2],
-                                             array[..., 2,
-                                                   0], array[..., 2,
-                                                             1], array[..., 2,
-                                                                       2])
-        translation = vector.Vec3Array(array[..., 0, 3], array[..., 1, 3],
-                                       array[..., 2, 3])
+        rotation = rotation_matrix.Rot3Array(
+            array[..., 0, 0],
+            array[..., 0, 1],
+            array[..., 0, 2],
+            array[..., 1, 0],
+            array[..., 1, 1],
+            array[..., 1, 2],
+            array[..., 2, 0],
+            array[..., 2, 1],
+            array[..., 2, 2],
+        )
+        translation = vector.Vec3Array(array[..., 0, 3], array[..., 1, 3], array[..., 2, 3])
         return cls(rotation, translation)
 
     def cuda(self) -> Rigid3Array:

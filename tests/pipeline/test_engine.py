@@ -70,8 +70,10 @@ class TestFoldingEngine:
         """Test that FoldingEngine initializes model and postprocessor correctly."""
         config = MockEngineConfig()
 
-        with patch.object(FoldingEngine, 'create_model') as mock_create_model, \
-             patch.object(FoldingEngine, 'create_postprocessor') as mock_create_postprocessor:
+        with (
+            patch.object(FoldingEngine, "create_model") as mock_create_model,
+            patch.object(FoldingEngine, "create_postprocessor") as mock_create_postprocessor,
+        ):
             engine = FoldingEngine(config, MockModel, MockPostProcessor)
 
             assert engine.config == config
@@ -90,7 +92,7 @@ class TestFoldingEngine:
             "tensor_data": torch.randn(2, 3),
             "numpy_data": np.array([1, 2, 3]),
             "string_data": "test",
-            "int_data": 42
+            "int_data": 42,
         }
 
         device_batch = engine.transfer_batch_to_device(batch)

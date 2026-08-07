@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -25,9 +25,7 @@ from .common import atom37_to_torsion_angles, make_one_hot, pseudo_beta_fn
 
 
 class UseClampedFape(FeatureGeneratorBase):
-
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         feats = {}
         feats["use_clamped_fape"] = torch.full(
             size=[self.config.max_recycling_iters + 1],
@@ -38,78 +36,59 @@ class UseClampedFape(FeatureGeneratorBase):
 
 
 class MakeSequenceMask(FeatureGeneratorBase):
-
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         feats = {}
-        feats["seq_mask"] = torch.ones(batch["aatype"].shape,
-                                       dtype=torch.float32)
+        feats["seq_mask"] = torch.ones(batch["aatype"].shape, dtype=torch.float32)
         return feats
 
 
 class MakeMsaMask(FeatureGeneratorBase):
-
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         feats = {}
         feats["msa_mask"] = torch.ones(batch["msa"].shape, dtype=torch.float32)
-        feats["msa_row_mask"] = torch.ones((batch["msa"].shape[0]),
-                                           dtype=torch.float32)
+        feats["msa_row_mask"] = torch.ones((batch["msa"].shape[0]), dtype=torch.float32)
         return feats
 
 
 class MakeTemplateMask(FeatureGeneratorBase):
-
     def is_enabled(self) -> bool:
         return self.config.enable_template
 
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         feats = {}
-        feats["template_mask"] = torch.ones(batch["template_aatype"].shape[0],
-                                            dtype=torch.float32)
+        feats["template_mask"] = torch.ones(batch["template_aatype"].shape[0], dtype=torch.float32)
         return feats
 
 
 class MakeTemplatePseudoBeta(FeatureGeneratorBase):
-
     def is_enabled(self) -> bool:
         return self.config.enable_template
 
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Create pseudo-beta (alpha for glycine) position and mask."""
         feats = {}
-        feats["template_pseudo_beta"], feats[
-            "template_pseudo_beta_mask"] = pseudo_beta_fn(
-                batch["template_aatype"],
-                batch["template_all_atom_positions"],
-                batch["template_all_atom_mask"],
-            )
+        feats["template_pseudo_beta"], feats["template_pseudo_beta_mask"] = pseudo_beta_fn(
+            batch["template_aatype"],
+            batch["template_all_atom_positions"],
+            batch["template_all_atom_mask"],
+        )
         return feats
 
 
 class Atom37ToTorsionAngles(FeatureGeneratorBase):
-
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 prefix: str = "",
-                 **kwargs):
+    def __init__(self, config: BaseConfig | None = None, prefix: str = "", **kwargs):
         super().__init__(config, **kwargs)
         self.prefix = prefix
 
     def is_enabled(self) -> bool:
         return self.config.enable_template and self.config.use_template_torsion_angles
 
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         return atom37_to_torsion_angles(batch, prefix=self.prefix)
 
 
 class MakeAtom14Masks(FeatureGeneratorBase):
-
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Construct denser atom positions (14 dimensions instead of 37)."""
         feats = {}
         restype_atom14_to_atom37 = []
@@ -118,17 +97,13 @@ class MakeAtom14Masks(FeatureGeneratorBase):
 
         for rt in rc.restypes:
             atom_names = rc.restype_name_to_atom14_names[rc.restype_1to3[rt]]
-            restype_atom14_to_atom37.append([
-                (rc.atom_order[name] if name else 0) for name in atom_names
-            ])
+            restype_atom14_to_atom37.append([(rc.atom_order[name] if name else 0) for name in atom_names])
             atom_name_to_idx14 = {name: i for i, name in enumerate(atom_names)}
-            restype_atom37_to_atom14.append([
-                (atom_name_to_idx14[name] if name in atom_name_to_idx14 else 0)
-                for name in rc.atom_types
-            ])
+            restype_atom37_to_atom14.append(
+                [(atom_name_to_idx14[name] if name in atom_name_to_idx14 else 0) for name in rc.atom_types]
+            )
 
-            restype_atom14_mask.append([(1.0 if name else 0.0)
-                                        for name in atom_names])
+            restype_atom14_mask.append([(1.0 if name else 0.0) for name in atom_names])
 
         # Add dummy mapping for restype 'UNK'
         restype_atom14_to_atom37.append([0] * 14)
@@ -150,7 +125,7 @@ class MakeAtom14Masks(FeatureGeneratorBase):
             dtype=torch.float32,
             device=batch["aatype"].device,
         )
-        protein_aatype = batch['aatype'].to(torch.long)
+        protein_aatype = batch["aatype"].to(torch.long)
 
         # create the mapping for (residx, atom14) --> atom37, i.e. an array
         # with shape (num_res, 14) containing the atom37 indices for this protein
@@ -165,9 +140,7 @@ class MakeAtom14Masks(FeatureGeneratorBase):
         feats["residx_atom37_to_atom14"] = residx_atom37_to_atom14.long()
 
         # create the corresponding mask
-        restype_atom37_mask = torch.zeros([21, 37],
-                                          dtype=torch.float32,
-                                          device=batch["aatype"].device)
+        restype_atom37_mask = torch.zeros([21, 37], dtype=torch.float32, device=batch["aatype"].device)
         for restype, restype_letter in enumerate(rc.restypes):
             restype_name = rc.restype_1to3[restype_letter]
             atom_names = rc.residue_atoms[restype_name]
@@ -182,9 +155,7 @@ class MakeAtom14Masks(FeatureGeneratorBase):
 
 
 class MakeHhblitsProfile(FeatureGeneratorBase):
-
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Compute the HHblits MSA profile if not already present."""
         feats = {}
         if "hhblits_profile" in batch:
@@ -198,34 +169,24 @@ class MakeHhblitsProfile(FeatureGeneratorBase):
 
 
 class MultimerMakeMsaProfile(FeatureGeneratorBase):
-
-    def masked_mean(self,
-                    mask: torch.Tensor,
-                    value: torch.Tensor,
-                    dim: int,
-                    eps: float = 1e-4) -> torch.Tensor:
+    def masked_mean(self, mask: torch.Tensor, value: torch.Tensor, dim: int, eps: float = 1e-4) -> torch.Tensor:
         mask = mask.expand(*value.shape)
-        return torch.sum(mask * value,
-                         dim=dim) / (eps + torch.sum(mask, dim=dim))
+        return torch.sum(mask * value, dim=dim) / (eps + torch.sum(mask, dim=dim))
 
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Compute the MSA profile."""
         feats = {}
         feats["msa_profile"] = self.masked_mean(
-            batch['msa_mask'][..., None],
-            torch.nn.functional.one_hot(batch['msa'], 22),
+            batch["msa_mask"][..., None],
+            torch.nn.functional.one_hot(batch["msa"], 22),
             dim=-3,
         )
         return feats
 
 
 class MultimerCreateTargetFeatures(FeatureGeneratorBase):
-
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Create the target features."""
         feats = {}
-        feats["target_feat"] = torch.nn.functional.one_hot(
-            batch["aatype"], 21).to(torch.float32)
+        feats["target_feat"] = torch.nn.functional.one_hot(batch["aatype"], 21).to(torch.float32)
         return feats

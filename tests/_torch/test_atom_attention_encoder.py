@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,17 +20,14 @@ import pytest
 import torch
 from test_utils.boltz.create_and_load_weights import (
     create_atom_attention_encoder_weights,
-    load_atom_attention_encoder_weights_torch)
+    load_atom_attention_encoder_weights_torch,
+)
 from test_utils.boltz.ref_layers import RefAtomAttentionEncoder
 
-from tensorrt_bionemo._torch.attention_backend.interface import \
-    AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_indexing_matrix, query_to_keys)
-from tensorrt_bionemo._torch.layers.transformers.atom import \
-    AtomAttentionEncoder
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    BoltzDiffusionTransformer
+from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
+from tensorrt_bionemo._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
+from tensorrt_bionemo._torch.layers.transformers.atom import AtomAttentionEncoder
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import BoltzDiffusionTransformer
 from tensorrt_bionemo.configs import DiffusionTransformerConfig
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
@@ -49,17 +46,20 @@ class Scenario:
     batch_size: int = 1
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dtype="float32", multiplicity=1),
-    Scenario(dtype="float16", multiplicity=3),
-    Scenario(dtype="float16", multiplicity=5)
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dtype="float32", multiplicity=1),
+        Scenario(dtype="float16", multiplicity=3),
+        Scenario(dtype="float16", multiplicity=5),
+    ],
+)
 def test_atom_attention_encoder(sc: Scenario):
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = sc.batch_size
-    device = torch.device('cuda')
+    device = torch.device("cuda")
     ref_module = RefAtomAttentionEncoder.load_weights().to(device)
     ref_module.eval()
     K = sc.n_atoms // sc.atom_window_queries
@@ -72,18 +72,10 @@ def test_atom_attention_encoder(sc: Scenario):
     c = torch.randn(bs, sc.n_atoms, sc.dim, dtype=torch.float32).to(device)
     r = torch.randn(bs, sc.n_atoms, 3, dtype=torch.float32).to(device)
 
-    atom_enc_bias = torch.randn(bs,
-                                sc.n_atoms,
-                                H,
-                                sc.heads * sc.depth,
-                                dtype=torch.float32).to(device)
-    atom_mask = torch.randint(0,
-                              2, (bs, sc.n_atoms),
-                              device=device,
-                              dtype=torch.float32)
+    atom_enc_bias = torch.randn(bs, sc.n_atoms, H, sc.heads * sc.depth, dtype=torch.float32).to(device)
+    atom_mask = torch.randint(0, 2, (bs, sc.n_atoms), device=device, dtype=torch.float32)
 
-    atom_to_token = torch.randn(bs, sc.n_atoms, sc.n_res,
-                                dtype=torch.float32).to(device)
+    atom_to_token = torch.randn(bs, sc.n_atoms, sc.n_res, dtype=torch.float32).to(device)
     attn_metadata = AttentionMetadata(
         query_to_keys=to_keys,
         bias_cache={},
@@ -91,8 +83,7 @@ def test_atom_attention_encoder(sc: Scenario):
 
     dtype = str_dtype_to_torch(sc.dtype)
 
-    dim_single_cond = ref_module.atom_encoder.diffusion_transformer.layers[
-        0].adaln.dim_single_cond
+    dim_single_cond = ref_module.atom_encoder.diffusion_transformer.layers[0].adaln.dim_single_cond
 
     diffusion_transformer_config = DiffusionTransformerConfig(
         architecture="boltz_diffusion_transformer",
@@ -101,7 +92,8 @@ def test_atom_attention_encoder(sc: Scenario):
         num_heads=sc.heads,
         dim=sc.dim,
         dim_single_cond=dim_single_cond,
-        dtype=sc.dtype)
+        dtype=sc.dtype,
+    )
 
     token_s = ref_module.token_s
     atom_s = ref_module.atom_s
@@ -113,17 +105,17 @@ def test_atom_attention_encoder(sc: Scenario):
         diffusion_transformer_config=diffusion_transformer_config,
         diffusion_transformer_cls=BoltzDiffusionTransformer,
         dtype=dtype,
-        version="v2").to(device)
+        version="v2",
+    ).to(device)
     model.eval()
 
-    weights_and_biases = create_atom_attention_encoder_weights(
-        from_ref=ref_module)
+    weights_and_biases = create_atom_attention_encoder_weights(from_ref=ref_module)
     load_atom_attention_encoder_weights_torch(model, weights_and_biases)
 
     with torch.inference_mode():
-        ref_output_float, _, _ = ref_module(atom_to_token, atom_mask, q, c,
-                                            atom_enc_bias, r, sc.multiplicity,
-                                            attn_metadata)
+        ref_output_float, _, _ = ref_module(
+            atom_to_token, atom_mask, q, c, atom_enc_bias, r, sc.multiplicity, attn_metadata
+        )
 
         atom_to_token = atom_to_token.to(dtype)
         q = q.to(dtype)
@@ -132,37 +124,32 @@ def test_atom_attention_encoder(sc: Scenario):
         atom_enc_bias = atom_enc_bias.to(dtype)
 
         ref_module = ref_module.to(dtype)
-        ref_output, _, _ = ref_module(atom_to_token, atom_mask, q, c,
-                                      atom_enc_bias, r, sc.multiplicity,
-                                      attn_metadata)
+        ref_output, _, _ = ref_module(atom_to_token, atom_mask, q, c, atom_enc_bias, r, sc.multiplicity, attn_metadata)
         ref_output = ref_output.to(torch.float32)
 
         r = r.unsqueeze(1)
-        r = r.repeat_interleave(sc.multiplicity,
-                                1)  # [B, multiplicity, N_atoms, 3]
+        r = r.repeat_interleave(sc.multiplicity, 1)  # [B, multiplicity, N_atoms, 3]
 
-        output, _, _ = model(atom_to_token=atom_to_token,
-                             atom_pad_mask=atom_mask,
-                             q=q,
-                             c=c,
-                             bias=atom_enc_bias,
-                             r=r,
-                             attn_metadata=attn_metadata)
+        output, _, _ = model(
+            atom_to_token=atom_to_token,
+            atom_pad_mask=atom_mask,
+            q=q,
+            c=c,
+            bias=atom_enc_bias,
+            r=r,
+            attn_metadata=attn_metadata,
+        )
 
         output = output.view(bs * sc.multiplicity, sc.n_res, -1)
         output = output.to(torch.float32)
 
         if dtype == torch.float32:
-            torch.testing.assert_close(output,
-                                       ref_output_float,
-                                       atol=5e-2,
-                                       rtol=1e-2)
+            torch.testing.assert_close(output, ref_output_float, atol=5e-2, rtol=1e-2)
         else:
             diff0_max = torch.max(torch.abs(output - ref_output_float))
             diff0_mean = torch.mean(torch.abs(output - ref_output_float))
             diff1_max = torch.max(torch.abs(ref_output - ref_output_float))
             diff1_mean = torch.mean(torch.abs(ref_output - ref_output_float))
 
-            assert abs(diff0_max - diff1_max) / torch.min(
-                diff0_max, diff1_max) <= 0.5
+            assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5
             assert abs(diff0_mean - diff1_mean) <= 0.2

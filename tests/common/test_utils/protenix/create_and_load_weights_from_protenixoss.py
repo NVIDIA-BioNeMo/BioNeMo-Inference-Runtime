@@ -19,6 +19,7 @@ The TRT-BNM ``ProtenixDiffusionTransformer`` reuses fused primitives (``AdaLN``,
 name/shape mapping is required. This mirrors OF3's
 ``create_and_load_weights_from_of3oss.py``.
 """
+
 from __future__ import annotations
 
 import torch
@@ -33,15 +34,8 @@ def _convert_adaln(oss_adaln, trt_adaln) -> None:
     for the s_bias half.
     """
     trt_adaln.s_norm.weight.data.copy_(oss_adaln.layernorm_s.weight.data)
-    fused_w = torch.cat([
-        oss_adaln.linear_s.weight.data, oss_adaln.linear_nobias_s.weight.data
-    ],
-                        dim=0)
-    fused_b = torch.cat([
-        oss_adaln.linear_s.bias.data,
-        torch.zeros_like(oss_adaln.linear_s.bias.data)
-    ],
-                        dim=0)
+    fused_w = torch.cat([oss_adaln.linear_s.weight.data, oss_adaln.linear_nobias_s.weight.data], dim=0)
+    fused_b = torch.cat([oss_adaln.linear_s.bias.data, torch.zeros_like(oss_adaln.linear_s.bias.data)], dim=0)
     trt_adaln.fused_s_scale_s_bias.weight.data.copy_(fused_w)
     trt_adaln.fused_s_scale_s_bias.bias.data.copy_(fused_b)
 
@@ -62,11 +56,8 @@ def _convert_block(oss_block, trt_layer) -> None:
     ta.proj_q.bias.data.copy_(oa.attention.linear_q.bias.data)
     # Fused KV: [k; v].
     ta.proj_kv.weight.data.copy_(
-        torch.cat([
-            oa.attention.linear_k.weight.data,
-            oa.attention.linear_v.weight.data
-        ],
-                  dim=0))
+        torch.cat([oa.attention.linear_k.weight.data, oa.attention.linear_v.weight.data], dim=0)
+    )
     ta.proj_g.weight.data.copy_(oa.attention.linear_g.weight.data)
     ta.proj_o.weight.data.copy_(oa.attention.linear_o.weight.data)
     ta.proj_z[0].weight.data.copy_(oa.layernorm_z.weight.data)
@@ -81,21 +72,18 @@ def _convert_block(oss_block, trt_layer) -> None:
     # FusedSwiGLU 2-way packs z[:d]=value, z[d:2d]=gate; OSS computes
     # silu(a1)*a2 -> gate=a1, value=a2 -> pack [a2, a1].
     tc.fused_swl_a_to_b.weight.data.copy_(
-        torch.cat(
-            [oc.linear_nobias_a2.weight.data, oc.linear_nobias_a1.weight.data],
-            dim=0))
+        torch.cat([oc.linear_nobias_a2.weight.data, oc.linear_nobias_a1.weight.data], dim=0)
+    )
     tc.b_to_a.weight.data.copy_(oc.linear_nobias_b.weight.data)
     tc.output_projection.weight.data.copy_(oc.linear_s.weight.data)
     tc.output_projection.bias.data.copy_(oc.linear_s.bias.data)
 
 
-def convert_atom_transformer(oss_atom_transformer,
-                             trt_atom_transformer) -> None:
+def convert_atom_transformer(oss_atom_transformer, trt_atom_transformer) -> None:
     """Copy OSS ``AtomTransformer`` weights into ``ProtenixDiffusionTransformer``."""
     oss_blocks = oss_atom_transformer.diffusion_transformer.blocks
     trt_layers = trt_atom_transformer.layers
-    assert len(oss_blocks) == len(trt_layers), (
-        f"block count mismatch: {len(oss_blocks)} vs {len(trt_layers)}")
+    assert len(oss_blocks) == len(trt_layers), f"block count mismatch: {len(oss_blocks)} vs {len(trt_layers)}"
     for ob, tl in zip(oss_blocks, trt_layers, strict=True):
         _convert_block(ob, tl)
 
@@ -105,19 +93,25 @@ def convert_atom_attention_encoder(oss, trt) -> None:
     TRT-BNM ``ProtenixAtomAttentionEncoder``.
     """
     trt.linear_no_bias_ref.weight.data.copy_(
-        torch.cat([
-            oss.linear_no_bias_ref_pos.weight.data,
-            oss.linear_no_bias_ref_charge.weight.data,
-            oss.linear_no_bias_f.weight.data,
-        ],
-                  dim=-1))
+        torch.cat(
+            [
+                oss.linear_no_bias_ref_pos.weight.data,
+                oss.linear_no_bias_ref_charge.weight.data,
+                oss.linear_no_bias_f.weight.data,
+            ],
+            dim=-1,
+        )
+    )
     trt.linear_no_bias_pair.weight.data.copy_(
-        torch.cat([
-            oss.linear_no_bias_d.weight.data,
-            oss.linear_no_bias_invd.weight.data,
-            oss.linear_no_bias_v.weight.data,
-        ],
-                  dim=-1))
+        torch.cat(
+            [
+                oss.linear_no_bias_d.weight.data,
+                oss.linear_no_bias_invd.weight.data,
+                oss.linear_no_bias_v.weight.data,
+            ],
+            dim=-1,
+        )
+    )
     for name in ("linear_no_bias_cl", "linear_no_bias_cm", "linear_no_bias_q"):
         getattr(trt, name).weight.data.copy_(getattr(oss, name).weight.data)
     for i in (1, 3, 5):

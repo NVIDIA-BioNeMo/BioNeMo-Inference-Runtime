@@ -15,7 +15,7 @@
 """OpenFold3 tokenizer — wires context generator into TRT-BNM."""
 
 from collections import OrderedDict
-from typing import Callable
+from collections.abc import Callable
 
 from tensorrt_bionemo.pipeline.base import (
     ContextGeneratorSpec,
@@ -28,15 +28,15 @@ from .feature_context import OpenFold3ContextGenerator
 
 
 class Tokenizer(TokenizerBase):
-    context_generator_specs: OrderedDict[
-        str, ContextGeneratorSpec] = OrderedDict({
-            "primary":
-            ContextGeneratorSpec(
+    context_generator_specs: OrderedDict[str, ContextGeneratorSpec] = OrderedDict(
+        {
+            "primary": ContextGeneratorSpec(
                 name="primary",
                 generator=OpenFold3ContextGenerator,
                 required_kwargs=["parsed"],
             )
-        })
+        }
+    )
 
     context_merger_func: Callable = dict_context_merger
 

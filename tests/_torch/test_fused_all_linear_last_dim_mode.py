@@ -19,12 +19,10 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
-                                                   WeightsLoadingConfig)
+from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 
 
 class SampleModule(nn.Module):
-
     def __init__(self, dtype: torch.dtype = torch.float32):
         super().__init__()
         self.dtype = dtype
@@ -33,8 +31,7 @@ class SampleModule(nn.Module):
         self.linear3 = nn.Linear(in_features=30, out_features=10, dtype=dtype)
         self.linear4 = nn.Linear(in_features=40, out_features=10, dtype=dtype)
 
-    def forward(self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor,
-                x4: torch.Tensor) -> torch.Tensor:
+    def forward(self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor, x4: torch.Tensor) -> torch.Tensor:
 
         x = self.linear1(x1)
         x += self.linear2(x2)
@@ -44,7 +41,6 @@ class SampleModule(nn.Module):
 
 
 class MergeModule(nn.Module):
-
     def __init__(self, dtype: torch.dtype = torch.float32):
         super().__init__()
         self.linear = Linear(
@@ -53,21 +49,22 @@ class MergeModule(nn.Module):
             bias=True,
             dtype=dtype,
             skip_create_weights=False,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_ALL_LINEAR_LAST_DIM))
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_ALL_LINEAR_LAST_DIM),
+        )
 
     def load_weights(self, state_dict):
         merge_weights = []
         for i in range(len(state_dict.keys()) // 2):
-            merge_weights.append({
-                'weight': state_dict[f'linear{i+1}.weight'],
-                'bias': state_dict[f'linear{i+1}.bias'],
-            })
+            merge_weights.append(
+                {
+                    "weight": state_dict[f"linear{i + 1}.weight"],
+                    "bias": state_dict[f"linear{i + 1}.bias"],
+                }
+            )
 
         self.linear.load_weights(merge_weights)
 
-    def forward(self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor,
-                x4: torch.Tensor) -> torch.Tensor:
+    def forward(self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor, x4: torch.Tensor) -> torch.Tensor:
         x = torch.cat([x1, x2, x3, x4], dim=-1)
         x = self.linear(x)
         return x
@@ -79,10 +76,13 @@ class Scenario:
     dtype: torch.dtype = torch.float32
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dtype=torch.float32),
-    Scenario(dtype=torch.bfloat16),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dtype=torch.float32),
+        Scenario(dtype=torch.bfloat16),
+    ],
+)
 def test_fused_all_linear_last_dim_mode(sc: Scenario):
 
     model = SampleModule(dtype=sc.dtype).cuda().eval()

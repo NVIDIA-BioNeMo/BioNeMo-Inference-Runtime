@@ -14,7 +14,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -31,14 +31,12 @@ class PostProcessorConfig(BaseModel):
 
 
 class PostProcessor(PostProcessorBase):
-
-    def __init__(self, config: Optional[BaseModel] = None) -> None:
+    def __init__(self, config: BaseModel | None = None) -> None:
         super().__init__(config)
         if self.config is None:
             self.config = PostProcessorConfig()
 
-    def _normalize_residue_indices(self,
-                                   residue_index: np.ndarray) -> np.ndarray:
+    def _normalize_residue_indices(self, residue_index: np.ndarray) -> np.ndarray:
         """Normalize residue indices for multi-chain FASTAs.
 
         Converts global residue indices (with gaps between chains) to
@@ -58,17 +56,13 @@ class PostProcessor(PostProcessorBase):
 
         # Calculate which chain each residue belongs to
         position_in_sequence = np.arange(residue_index.shape[0])
-        chain_ids = ((residue_index - position_in_sequence) /
-                     self.config.multimer_ri_gap).astype(np.int64)
+        chain_ids = ((residue_index - position_in_sequence) / self.config.multimer_ri_gap).astype(np.int64)
 
         # Detect chain transitions
-        chain_changes = np.concatenate([[True], chain_ids[1:]
-                                        != chain_ids[:-1]])
+        chain_changes = np.concatenate([[True], chain_ids[1:] != chain_ids[:-1]])
 
         # Calculate offsets at chain boundaries: position + chain_id * multimer_ri_gap
-        chain_offsets_at_boundaries = (
-            position_in_sequence +
-            chain_ids * self.config.multimer_ri_gap) * chain_changes
+        chain_offsets_at_boundaries = (position_in_sequence + chain_ids * self.config.multimer_ri_gap) * chain_changes
 
         # Forward-fill: propagate each offset to all positions until the next change
         # Use cummax to get the most recent chain offset for each position
@@ -77,8 +71,7 @@ class PostProcessor(PostProcessorBase):
         # Normalize residue indices within each chain
         return residue_index - offsets
 
-    def _get_chain_indices(self, np_batch: dict[str,
-                                                np.ndarray]) -> np.ndarray:
+    def _get_chain_indices(self, np_batch: dict[str, np.ndarray]) -> np.ndarray:
         """Extract or infer chain indices from batch data.
 
         Args:
@@ -87,56 +80,42 @@ class PostProcessor(PostProcessorBase):
         Returns:
             Array of chain indices (0-based) for each residue
         """
-        if 'asym_id' in np_batch:
+        if "asym_id" in np_batch:
             # Use explicit asymmetric unit IDs if available (convert to 0-based)
             return np_batch["asym_id"] - 1
         else:
             # Default to single chain (all zeros)
             return np.zeros_like(np_batch["aatype"])
 
-    def __call__(self, batch: dict[str, Any],
-                 output: dict[str, Any]) -> FoldingOutput:
+    def __call__(self, batch: dict[str, Any], output: dict[str, Any]) -> FoldingOutput:
         np_batch = {}
         # Get only the last element of the tensor, we don't need all the recycling steps
-        for k in [
-                "residue_index", "aatype", "asym_id", "final_atom_positions",
-                "final_atom_mask"
-        ]:
+        for k in ["residue_index", "aatype", "asym_id", "final_atom_positions", "final_atom_mask"]:
             if k in batch:
                 np_batch[k] = batch[k][..., -1].cpu().numpy()
         plddt = output["plddt"].cpu().numpy()
-        plddt_b_factors = np.repeat(plddt[..., None],
-                                    rc.atom_type_num,
-                                    axis=-1)
+        plddt_b_factors = np.repeat(plddt[..., None], rc.atom_type_num, axis=-1)
 
         if self.config.subtract_plddt:
             plddt_b_factors = 100 - plddt_b_factors
 
         # Normalize residue indices for multi-chain sequences
-        normalized_residue_index = self._normalize_residue_indices(
-            np_batch["residue_index"])
+        normalized_residue_index = self._normalize_residue_indices(np_batch["residue_index"])
 
         # Extract chain indices from batch data
         chain_indices = self._get_chain_indices(np_batch)
 
         # Extract pTM and iPTM
-        ptm = float(
-            output.get('ptm',
-                       output.get('ptm_score',
-                                  torch.tensor(float('nan')))).cpu().numpy())
-        iptm = float(
-            output.get('iptm',
-                       output.get('iptm_score',
-                                  torch.tensor(float('nan')))).cpu().numpy())
+        ptm = float(output.get("ptm", output.get("ptm_score", torch.tensor(float("nan")))).cpu().numpy())
+        iptm = float(output.get("iptm", output.get("iptm_score", torch.tensor(float("nan")))).cpu().numpy())
 
         # Extract PAE (Predicted Aligned Error)
         pae = None
         max_pae = None
-        if 'predicted_aligned_error' in output:
-            pae = output['predicted_aligned_error'].cpu().numpy()
-            if 'max_predicted_aligned_error' in output:
-                max_pae = float(
-                    output['max_predicted_aligned_error'].cpu().numpy())
+        if "predicted_aligned_error" in output:
+            pae = output["predicted_aligned_error"].cpu().numpy()
+            if "max_predicted_aligned_error" in output:
+                max_pae = float(output["max_predicted_aligned_error"].cpu().numpy())
             else:
                 max_pae = float(np.max(pae))
             pae = np.round(pae, 3)
@@ -151,4 +130,5 @@ class PostProcessor(PostProcessorBase):
             ptm=ptm,
             iptm=iptm,
             pae=pae,
-            max_pae=max_pae)
+            max_pae=max_pae,
+        )

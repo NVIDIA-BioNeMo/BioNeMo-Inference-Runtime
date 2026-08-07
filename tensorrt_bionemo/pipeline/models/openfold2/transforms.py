@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import numpy as np
 import torch
@@ -24,9 +23,7 @@ from tensorrt_bionemo.pipeline.base import TransformBase
 
 
 class CastTo64BitInts(TransformBase):
-
-    def __call__(self, batch: dict[str,
-                                   torch.Tensor]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         # We keep all ints as int64
         for k, v in batch.items():
             if v.dtype == torch.int32:
@@ -36,9 +33,7 @@ class CastTo64BitInts(TransformBase):
 
 
 class CorrectMsaRestypes(TransformBase):
-
-    def __call__(self, batch: dict[str,
-                                   torch.Tensor]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Correct MSA restype to have the same order as rc."""
         new_order_list = rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE
         new_order = torch.tensor(
@@ -53,11 +48,11 @@ class CorrectMsaRestypes(TransformBase):
         for k in batch.keys():
             if "profile" in k:
                 num_dim = batch[k].shape[-1]
-                assert num_dim in (20, 21, 22), (
-                    f"num_dim for {k} out of expected range: {num_dim}")
+                assert num_dim in (20, 21, 22), f"num_dim for {k} out of expected range: {num_dim}"
 
                 perm = torch.from_numpy(perm_matrix[:num_dim, :num_dim]).to(
-                    device=batch[k].device, dtype=batch[k].dtype)
+                    device=batch[k].device, dtype=batch[k].dtype
+                )
 
                 batch[k] = torch.einsum("...i,ij->...j", batch[k], perm)
 
@@ -65,23 +60,21 @@ class CorrectMsaRestypes(TransformBase):
 
 
 class SqueezeFeatures(TransformBase):
-
-    def __call__(self, batch: dict[str,
-                                   torch.Tensor]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Remove singleton and repeated dimensions in features."""
         batch["aatype"] = torch.argmax(batch["aatype"], dim=-1)
         for k in [
-                "domain_name",
-                "msa",
-                "num_alignments",
-                "seq_length",
-                "sequence",
-                "superfamily",
-                "deletion_matrix",
-                "resolution",
-                "between_segment_residues",
-                "residue_index",
-                "template_all_atom_mask",
+            "domain_name",
+            "msa",
+            "num_alignments",
+            "seq_length",
+            "sequence",
+            "superfamily",
+            "deletion_matrix",
+            "resolution",
+            "between_segment_residues",
+            "residue_index",
+            "template_all_atom_mask",
         ]:
             if k in batch:
                 final_dim = batch[k].shape[-1]
@@ -99,25 +92,18 @@ class SqueezeFeatures(TransformBase):
 
 
 class RandomlyReplaceMsaWithUnknown(TransformBase):
-
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 replace_proportion: float = 0.):
+    def __init__(self, config: BaseConfig | None = None, replace_proportion: float = 0.0):
         super().__init__(config)
         self.replace_proportion = replace_proportion
 
-    def __call__(self, batch: dict[str,
-                                   torch.Tensor]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Replace a portion of the MSA with 'X'."""
         msa_mask = torch.rand(batch["msa"].shape) < self.replace_proportion
         x_idx = 20
         gap_idx = 21
         msa_mask = torch.logical_and(msa_mask, batch["msa"] != gap_idx)
-        batch["msa"] = torch.where(msa_mask,
-                                   torch.ones_like(batch["msa"]) * x_idx,
-                                   batch["msa"])
-        aatype_mask = torch.rand(
-            batch["aatype"].shape) < self.replace_proportion
+        batch["msa"] = torch.where(msa_mask, torch.ones_like(batch["msa"]) * x_idx, batch["msa"])
+        aatype_mask = torch.rand(batch["aatype"].shape) < self.replace_proportion
 
         batch["aatype"] = torch.where(
             aatype_mask,
@@ -128,17 +114,14 @@ class RandomlyReplaceMsaWithUnknown(TransformBase):
 
 
 class FixTemplatesAatype(TransformBase):
-
     def is_enabled(self) -> bool:
         return self.config.enable_template
 
-    def __call__(self, batch: dict[str,
-                                   torch.Tensor]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         "Call fix templates aa type"
         # Map one-hot to indices
         num_templates = batch["template_aatype"].shape[0]
-        batch["template_aatype"] = torch.argmax(batch["template_aatype"],
-                                                dim=-1)
+        batch["template_aatype"] = torch.argmax(batch["template_aatype"], dim=-1)
         # Map hhsearch-aatype to our aatype.
         new_order_list = rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE
         new_order = torch.tensor(
@@ -146,8 +129,6 @@ class FixTemplatesAatype(TransformBase):
             dtype=torch.int64,
             device=batch["template_aatype"].device,
         ).expand(num_templates, -1)
-        batch["template_aatype"] = torch.gather(new_order,
-                                                1,
-                                                index=batch["template_aatype"])
+        batch["template_aatype"] = torch.gather(new_order, 1, index=batch["template_aatype"])
 
         return batch

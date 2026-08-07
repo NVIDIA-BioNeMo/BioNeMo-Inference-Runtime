@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +19,7 @@ import tempfile
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.data.utils import (get_all_atom_types,
-                                         get_all_residue_types)
+from tensorrt_bionemo.data.utils import get_all_atom_types, get_all_residue_types
 from tensorrt_bionemo.data.writers.pdb_writer import PDBWriter
 from tests.common.test_utils.data import get_sample_folding_output
 
@@ -32,13 +31,13 @@ class TestPDBWriter:
     def res_type_mapping(self):
         """Fixture providing residue type mapping for openfold2."""
         res_types = get_all_residue_types("openfold2", include_gap=False)
-        return {i: res_type for i, res_type in enumerate(res_types)}
+        return dict(enumerate(res_types))
 
     @pytest.fixture
     def atom_type_mapping(self):
         """Fixture providing atom type mapping for openfold2."""
         atom_types = get_all_atom_types("openfold2")
-        return {i: atom_type for i, atom_type in enumerate(atom_types)}
+        return dict(enumerate(atom_types))
 
     @pytest.fixture
     def sample_folding_output(self):
@@ -55,13 +54,11 @@ class TestPDBWriter:
         if os.path.exists(path):
             os.remove(path)
 
-    def test_initialization_with_both_mappings(self, res_type_mapping,
-                                               atom_type_mapping,
-                                               temp_output_file):
+    def test_initialization_with_both_mappings(self, res_type_mapping, atom_type_mapping, temp_output_file):
         """Test PDBWriter initialization with both residue and atom type mappings."""
-        writer = PDBWriter(output_path=temp_output_file,
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path=temp_output_file, res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         assert writer.output_path == temp_output_file
         assert writer.res_type_mapping == res_type_mapping
@@ -71,9 +68,9 @@ class TestPDBWriter:
 
     def test_set_output_path(self, res_type_mapping, atom_type_mapping):
         """Test setting output path after initialization."""
-        writer = PDBWriter(output_path="initial.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="initial.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         new_path = "new_output.pdb"
         writer.set_output_path(new_path)
@@ -82,9 +79,9 @@ class TestPDBWriter:
 
     def test_get_pdb_headers(self, res_type_mapping, atom_type_mapping):
         """Test PDB header generation."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         headers = writer.get_pdb_headers()
 
@@ -94,14 +91,11 @@ class TestPDBWriter:
 
     def test_chain_end_formatting(self, res_type_mapping, atom_type_mapping):
         """Test chain end line formatting."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
-        chain_end_line = writer._chain_end(atom_index=100,
-                                           end_resname="ALA",
-                                           chain_name="A",
-                                           residue_index=50)
+        chain_end_line = writer._chain_end(atom_index=100, end_resname="ALA", chain_name="A", residue_index=50)
 
         assert chain_end_line.startswith("TER")
         assert "100" in chain_end_line
@@ -109,13 +103,11 @@ class TestPDBWriter:
         assert "A" in chain_end_line
         assert "50" in chain_end_line
 
-    def test_write_pdb_output_structure(self, res_type_mapping,
-                                        atom_type_mapping,
-                                        sample_folding_output):
+    def test_write_pdb_output_structure(self, res_type_mapping, atom_type_mapping, sample_folding_output):
         """Test that write() produces valid PDB structure."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         pdb_content = writer.write(sample_folding_output)
 
@@ -126,23 +118,19 @@ class TestPDBWriter:
         assert "END" in pdb_content
 
         # Split into lines and verify
-        lines = pdb_content.split('\n')
+        lines = pdb_content.split("\n")
         assert len(lines) > 0
 
-    def test_write_pdb_with_atom_records(self, res_type_mapping,
-                                         atom_type_mapping,
-                                         sample_folding_output):
+    def test_write_pdb_with_atom_records(self, res_type_mapping, atom_type_mapping, sample_folding_output):
         """Test that write() produces ATOM records."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         pdb_content = writer.write(sample_folding_output)
 
         # Check for ATOM records
-        atom_lines = [
-            line for line in pdb_content.split('\n') if line.startswith("ATOM")
-        ]
+        atom_lines = [line for line in pdb_content.split("\n") if line.startswith("ATOM")]
         assert len(atom_lines) > 0, "No ATOM records found in PDB output"
 
         # Verify ATOM record format (at least one should be properly formatted)
@@ -150,33 +138,27 @@ class TestPDBWriter:
             assert len(atom_line) == 80
             assert atom_line[:6].strip() == "ATOM"
 
-    def test_write_pdb_respects_atom_mask(self, res_type_mapping,
-                                          atom_type_mapping,
-                                          sample_folding_output):
+    def test_write_pdb_respects_atom_mask(self, res_type_mapping, atom_type_mapping, sample_folding_output):
         """Test that write() respects the atom mask."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         # Count non-zero atoms in mask
         atom_mask = sample_folding_output["atom_mask"]
         expected_atoms = np.sum(atom_mask > 0.5)
 
         pdb_content = writer.write(sample_folding_output)
-        atom_lines = [
-            line for line in pdb_content.split('\n') if line.startswith("ATOM")
-        ]
+        atom_lines = [line for line in pdb_content.split("\n") if line.startswith("ATOM")]
 
         # Number of ATOM lines should correspond to masked atoms
         assert len(atom_lines) <= expected_atoms
 
-    def test_write_pdb_has_correct_residue_count(self, res_type_mapping,
-                                                 atom_type_mapping,
-                                                 sample_folding_output):
+    def test_write_pdb_has_correct_residue_count(self, res_type_mapping, atom_type_mapping, sample_folding_output):
         """Test that the output contains information for all residues."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         pdb_content = writer.write(sample_folding_output)
 
@@ -184,18 +166,14 @@ class TestPDBWriter:
         assert len(pdb_content) > 0
         assert "ATOM" in pdb_content or "TER" in pdb_content
 
-    def test_write_pdb_coordinates_format(self, res_type_mapping,
-                                          atom_type_mapping,
-                                          sample_folding_output):
+    def test_write_pdb_coordinates_format(self, res_type_mapping, atom_type_mapping, sample_folding_output):
         """Test that coordinates are properly formatted in the output."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         pdb_content = writer.write(sample_folding_output)
-        atom_lines = [
-            line for line in pdb_content.split('\n') if line.startswith("ATOM")
-        ]
+        atom_lines = [line for line in pdb_content.split("\n") if line.startswith("ATOM")]
 
         if len(atom_lines) > 0:
             # Check first ATOM line has coordinate data
@@ -203,16 +181,13 @@ class TestPDBWriter:
             # Coordinates should be in columns 31-54 (0-indexed: 30-54)
             coord_section = first_atom[30:54]
             # Should contain numeric values
-            assert any(char.isdigit() or char == '.' or char == '-'
-                       for char in coord_section)
+            assert any(char.isdigit() or char == "." or char == "-" for char in coord_section)
 
-    def test_write_handles_multi_chain(self, res_type_mapping,
-                                       atom_type_mapping,
-                                       sample_folding_output):
+    def test_write_handles_multi_chain(self, res_type_mapping, atom_type_mapping, sample_folding_output):
         """Test that multi-chain structures are handled properly."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         chain_indices = sample_folding_output.get("chain_indices")
         pdb_content = writer.write(sample_folding_output)
@@ -221,19 +196,14 @@ class TestPDBWriter:
             unique_chains = len(np.unique(chain_indices))
             if unique_chains > 1:
                 # Should have TER records for chain terminations
-                ter_lines = [
-                    line for line in pdb_content.split('\n')
-                    if line.startswith("TER")
-                ]
+                ter_lines = [line for line in pdb_content.split("\n") if line.startswith("TER")]
                 assert len(ter_lines) >= unique_chains
 
-    def test_write_includes_parent_info(self, res_type_mapping,
-                                        atom_type_mapping,
-                                        sample_folding_output):
+    def test_write_includes_parent_info(self, res_type_mapping, atom_type_mapping, sample_folding_output):
         """Test that output includes parent information in headers."""
-        writer = PDBWriter(output_path="test.pdb",
-                           res_type_mapping=res_type_mapping,
-                           atom_type_mapping=atom_type_mapping)
+        writer = PDBWriter(
+            output_path="test.pdb", res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping
+        )
 
         pdb_content = writer.write(sample_folding_output)
 
@@ -245,7 +215,8 @@ class TestPDBWriter:
 # Multi-polymer test suite (RNA / DNA / non-polymer ligand chains)
 # ---------------------------------------------------------------------------
 
-from tests.common.test_utils.synthetic_folding_outputs import (
+from tensorrt_bionemo.data.writers.pdb_writer import PDB_MAX_CHAINS  # noqa: E402 (kept beside its suite)
+from tests.common.test_utils.synthetic_folding_outputs import (  # noqa: E402 -- fixtures imported beside the suite that uses them
     dna_only_folding,
     many_chains_folding,
     multi_polymer_folding,
@@ -253,7 +224,6 @@ from tests.common.test_utils.synthetic_folding_outputs import (
     of3_mappings,
     rna_only_folding,
 )
-from tensorrt_bionemo.data.writers.pdb_writer import PDB_MAX_CHAINS
 
 
 class TestPDBWriterMultiPolymer:
@@ -262,9 +232,7 @@ class TestPDBWriterMultiPolymer:
     @pytest.fixture
     def writer(self):
         res_map, atom_map = of3_mappings()
-        return PDBWriter(res_type_mapping=res_map,
-                         atom_type_mapping=atom_map,
-                         output_path="test.pdb")
+        return PDBWriter(res_type_mapping=res_map, atom_type_mapping=atom_map, output_path="test.pdb")
 
     # ----- RNA -------------------------------------------------------
 
@@ -274,9 +242,7 @@ class TestPDBWriterMultiPolymer:
         Residue name field is 3 chars right-justified; ``A`` renders as
         ``"  A"`` (two leading spaces).
         """
-        out = writer.write(rna_only_folding(sequence="AGCU",
-                                            with_residue_names=True,
-                                            with_mol_types=True))
+        out = writer.write(rna_only_folding(sequence="AGCU", with_residue_names=True, with_mol_types=True))
         atom_lines = [l for l in out.split("\n") if l.startswith("ATOM")]
         assert atom_lines, "RNA chain should produce ATOM rows"
         # PDB residue-name field is columns 18-20 (1-indexed; 17-19 0-indexed).
@@ -302,26 +268,24 @@ class TestPDBWriterMultiPolymer:
 
     def test_dna_only_emits_two_letter_residue_name(self, writer):
         """DNA residues use 2-letter codes (DA/DG/DC/DT) in the 3-char field."""
-        out = writer.write(dna_only_folding(sequence="ACGT",
-                                            with_residue_names=True,
-                                            with_mol_types=True))
+        out = writer.write(dna_only_folding(sequence="ACGT", with_residue_names=True, with_mol_types=True))
         atom_lines = [l for l in out.split("\n") if l.startswith("ATOM")]
         assert atom_lines, "DNA chain should produce ATOM rows"
         for line in atom_lines:
             res_name_field = line[17:20].strip()
-            assert res_name_field in {"DA", "DG", "DC", "DT"}, (
-                f"unexpected DNA res name {res_name_field!r}"
-            )
+            assert res_name_field in {"DA", "DG", "DC", "DT"}, f"unexpected DNA res name {res_name_field!r}"
 
     # ----- Non-polymer (ligand) --------------------------------------
 
     def test_nonpoly_emits_hetatm_record_type(self, writer):
         """Non-polymer chains emit ``HETATM`` (cols 1-6) not ``ATOM``."""
-        out = writer.write(nonpoly_ligand_folding(
-            atom_names=["C1", "C2", "N2"],
-            ccd_code="NAG",
-            with_mol_types=True,
-        ))
+        out = writer.write(
+            nonpoly_ligand_folding(
+                atom_names=["C1", "C2", "N2"],
+                ccd_code="NAG",
+                with_mol_types=True,
+            )
+        )
         hetatm_lines = [l for l in out.split("\n") if l.startswith("HETATM")]
         assert hetatm_lines, "non-polymer chain should produce HETATM rows"
         # Real CCD code surfaces in cols 18-20
@@ -330,19 +294,15 @@ class TestPDBWriterMultiPolymer:
 
     def test_no_ter_after_nonpoly_chain(self, writer):
         """Per PDB v3.3, ``TER`` does not follow a HETATM (non-polymer) group."""
-        out = writer.write(nonpoly_ligand_folding(
-            atom_names=["C1", "C2"], ccd_code="NAG", with_mol_types=True))
+        out = writer.write(nonpoly_ligand_folding(atom_names=["C1", "C2"], ccd_code="NAG", with_mol_types=True))
         # Single nonpoly chain: no TER lines should appear.
         ter_lines = [l for l in out.split("\n") if l.startswith("TER")]
-        assert not ter_lines, (
-            f"unexpected TER after nonpoly chain: {ter_lines}"
-        )
+        assert not ter_lines, f"unexpected TER after nonpoly chain: {ter_lines}"
 
     def test_nonpoly_heuristic_unk_fallback(self, writer):
         """Without residue_names or mol_types, all-X residues classify as
         nonpoly via the heuristic and HETATM rows use ``UNK``."""
-        out = writer.write(nonpoly_ligand_folding(
-            atom_names=["C1", "N2"], ccd_code=None, with_mol_types=False))
+        out = writer.write(nonpoly_ligand_folding(atom_names=["C1", "N2"], ccd_code=None, with_mol_types=False))
         hetatm_lines = [l for l in out.split("\n") if l.startswith("HETATM")]
         assert hetatm_lines, "heuristic should still flag chain as nonpoly"
         for line in hetatm_lines:
@@ -360,9 +320,7 @@ class TestPDBWriterMultiPolymer:
         assert atom_lines, "polymer chains should emit ATOM rows"
         assert hetatm_lines, "nonpoly chain should emit HETATM rows"
         # Three polymer chains (protein, RNA, DNA) → 3 TERs.
-        assert len(ter_lines) == 3, (
-            f"expected 3 TER lines (one per polymer chain), got {len(ter_lines)}"
-        )
+        assert len(ter_lines) == 3, f"expected 3 TER lines (one per polymer chain), got {len(ter_lines)}"
         # CCD codes surface
         assert "ALA" in out and "TYR" in out and "NAG" in out
 
@@ -370,12 +328,9 @@ class TestPDBWriterMultiPolymer:
         """Chains 0..3 should map to PDB chain IDs ``A``..``D``."""
         out = writer.write(multi_polymer_folding())
         # Each ATOM/HETATM line has chain ID at column 22 (1-indexed; 21 0-indexed)
-        atom_lines = [l for l in out.split("\n")
-                      if l.startswith(("ATOM", "HETATM"))]
+        atom_lines = [l for l in out.split("\n") if l.startswith(("ATOM", "HETATM"))]
         seen = {l[21] for l in atom_lines}
-        assert seen == {"A", "B", "C", "D"}, (
-            f"expected chains A-D, saw {sorted(seen)}"
-        )
+        assert seen == {"A", "B", "C", "D"}, f"expected chains A-D, saw {sorted(seen)}"
 
     # ----- Line width / column format --------------------------------
 
@@ -385,9 +340,7 @@ class TestPDBWriterMultiPolymer:
         for line in out.split("\n"):
             if line == "":
                 continue
-            assert len(line) == 80, (
-                f"line not padded to 80 chars (got {len(line)}): {line!r}"
-            )
+            assert len(line) == 80, f"line not padded to 80 chars (got {len(line)}): {line!r}"
 
     # ----- Chain limit -----------------------------------------------
 
@@ -401,8 +354,7 @@ class TestPDBWriterMultiPolymer:
         # Sample a few chain letters to confirm they made it into the file.
         for letter in "AZaz09":
             # Each letter should appear at column 22 somewhere.
-            atom_lines = [l for l in out.split("\n")
-                          if l.startswith("ATOM") and l[21] == letter]
+            atom_lines = [l for l in out.split("\n") if l.startswith("ATOM") and l[21] == letter]
             assert atom_lines, f"chain {letter} missing from output"
 
     def test_too_many_chains_raises(self, writer):
@@ -415,9 +367,7 @@ class TestPDBWriterMultiPolymer:
     def test_write_to_file_contains_hetatm_ccd_codes(self, tmp_path):
         res_map, atom_map = of3_mappings()
         out_path = tmp_path / "multi.pdb"
-        writer = PDBWriter(res_type_mapping=res_map,
-                           atom_type_mapping=atom_map,
-                           output_path=str(out_path))
+        writer = PDBWriter(res_type_mapping=res_map, atom_type_mapping=atom_map, output_path=str(out_path))
         writer.write(multi_polymer_folding())
         text = out_path.read_text()
         # Both ATOM and HETATM records persist to disk with correct codes

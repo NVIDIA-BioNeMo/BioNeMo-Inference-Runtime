@@ -1,0 +1,20 @@
+[global]
+flavor = "gfm"
+
+[MD013]
+# Line length applies to prose, not to fenced code blocks.
+code-blocks = false
+
+[MD060]
+# Align table cells and delimiter rows.
+enabled = true
+style = "aligned"
+
+[MD033]
+# GitHub markdown has no centering or collapse; inline HTML is the only
+# mechanism for the README banner and CONTRIBUTING's DCO block.
+allowed-elements = ["div", "details", "summary"]
+
+[MD041]
+# The README h1 sits inside the centered banner, not on line 1.
+allow-preamble = true

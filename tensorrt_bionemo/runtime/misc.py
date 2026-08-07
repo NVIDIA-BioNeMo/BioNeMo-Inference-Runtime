@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +14,7 @@
 # limitations under the License.
 import functools
 from contextlib import contextmanager
-from typing import Any, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -27,7 +27,7 @@ except ImportError:
 
 @torch.compiler.disable
 def get_closest_n(s):
-    return 2**int(np.ceil(np.log2(s)))
+    return 2 ** int(np.ceil(np.log2(s)))
 
 
 def CUASSERT(cuda_ret):
@@ -41,7 +41,7 @@ def CUASSERT(cuda_ret):
     return None
 
 
-def query_sm_count(device: Optional[int] = None, default: int = 132) -> int:
+def query_sm_count(device: int | None = None, default: int = 132) -> int:
     """Query the multiprocessor (SM) count of a CUDA device.
 
     Falls back to ``default`` if the query fails for any reason (e.g. no CUDA
@@ -54,8 +54,7 @@ def query_sm_count(device: Optional[int] = None, default: int = 132) -> int:
     try:
         if device is None:
             device = torch.cuda.current_device()
-        err, sm_count = cudart.cudaDeviceGetAttribute(
-            cudart.cudaDeviceAttr.cudaDevAttrMultiProcessorCount, device)
+        err, sm_count = cudart.cudaDeviceGetAttribute(cudart.cudaDeviceAttr.cudaDevAttrMultiProcessorCount, device)
         if err != cudart.cudaError_t.cudaSuccess:
             return default
         return sm_count
@@ -95,8 +94,8 @@ def ensure_contiguous(func):
 @contextmanager
 def dtype_context(
     expected_dtype: torch.dtype,
-    original_dtype: Optional[torch.dtype] = None,
-    skip_keys: Optional[Tuple[str]] = None,
+    original_dtype: torch.dtype | None = None,
+    skip_keys: tuple[str] | None = None,
 ):
     """
     Context manager to cast inputs to `expected_dtype` and restore outputs to `original_dtype`.

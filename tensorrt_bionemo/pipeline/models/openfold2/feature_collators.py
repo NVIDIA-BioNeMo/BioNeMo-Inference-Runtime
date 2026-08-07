@@ -17,7 +17,7 @@ import itertools
 import logging
 from functools import reduce
 from operator import add
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -25,8 +25,7 @@ import torch
 from tensorrt_bionemo.configs.base import BaseConfig
 from tensorrt_bionemo.pipeline.base import FeatureCollatorBase
 
-from .common import (gumbel_argsort_sample_idx, gumbel_max_sample,
-                     make_one_hot, shaped_categorical, unsorted_segment_sum)
+from .common import gumbel_argsort_sample_idx, gumbel_max_sample, make_one_hot, shaped_categorical, unsorted_segment_sum
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +40,11 @@ MSA_FEATURE_NAMES = [
 
 
 class SampleMsa(FeatureCollatorBase):
-
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 keep_extra: bool = True,
-                 **kwargs):
+    def __init__(self, config: BaseConfig | None = None, keep_extra: bool = True, **kwargs):
         super().__init__(config, **kwargs)
         self.keep_extra = keep_extra
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         seed = None
         if not self.config.resample_msa_in_recycling:
             seed = context.get("ensemble_seed", None)
@@ -63,31 +57,29 @@ class SampleMsa(FeatureCollatorBase):
             g.manual_seed(seed)
 
         shuffled = torch.randperm(num_seq - 1, generator=g) + 1
-        index_order = torch.cat(
-            (torch.tensor([0], device=shuffled.device), shuffled), dim=0)
+        index_order = torch.cat((torch.tensor([0], device=shuffled.device), shuffled), dim=0)
         num_sel = min(max_seq, num_seq)
-        sel_seq, not_sel_seq = torch.split(index_order,
-                                           [num_sel, num_seq - num_sel])
+        sel_seq, not_sel_seq = torch.split(index_order, [num_sel, num_seq - num_sel])
 
         for k in MSA_FEATURE_NAMES:
             if k in list(features.keys()):
                 if self.keep_extra:
-                    features["extra_" + k] = torch.index_select(
-                        features[k], 0, not_sel_seq)
+                    features["extra_" + k] = torch.index_select(features[k], 0, not_sel_seq)
                 features[k] = torch.index_select(features[k], 0, sel_seq)
 
         return features
 
 
 class MakeMaskedMsa(FeatureCollatorBase):
-
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 profile_prob: Optional[float] = 0.1,
-                 same_prob: Optional[float] = 0.1,
-                 uniform_prob: Optional[float] = 0.1,
-                 masked_msa_replace_fraction: Optional[float] = 0.15,
-                 **kwargs):
+    def __init__(
+        self,
+        config: BaseConfig | None = None,
+        profile_prob: float | None = 0.1,
+        same_prob: float | None = 0.1,
+        uniform_prob: float | None = 0.1,
+        masked_msa_replace_fraction: float | None = 0.15,
+        **kwargs,
+    ):
         super().__init__(config, **kwargs)
         self.profile_prob = profile_prob
         self.same_prob = same_prob
@@ -95,15 +87,16 @@ class MakeMaskedMsa(FeatureCollatorBase):
         self.masked_msa_replace_fraction = masked_msa_replace_fraction
 
     def is_enabled(self) -> bool:
-        if self.profile_prob is None or \
-           self.same_prob is None or \
-           self.uniform_prob is None or \
-           self.masked_msa_replace_fraction is None:
+        if (
+            self.profile_prob is None
+            or self.same_prob is None
+            or self.uniform_prob is None
+            or self.masked_msa_replace_fraction is None
+        ):
             return False
         return True
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Create data for BERT on raw MSA."""
         seed = None
         if not self.config.resample_msa_in_recycling:
@@ -113,21 +106,18 @@ class MakeMaskedMsa(FeatureCollatorBase):
         device = features["msa"].device
 
         # Add a random amino acid uniformly.
-        random_aa = torch.tensor([0.05] * 20 + [0.0, 0.0],
-                                 dtype=torch.float32,
-                                 device=device)
+        random_aa = torch.tensor([0.05] * 20 + [0.0, 0.0], dtype=torch.float32, device=device)
 
         categorical_probs = (
-            self.uniform_prob * random_aa +
-            self.profile_prob * features["hhblits_profile"] +
-            self.same_prob * make_one_hot(features["msa"], 22))
+            self.uniform_prob * random_aa
+            + self.profile_prob * features["hhblits_profile"]
+            + self.same_prob * make_one_hot(features["msa"], 22)
+        )
 
         # Put all remaining probability on [MASK] which is a new column
-        pad_shapes = list(
-            reduce(add, [(0, 0) for _ in range(len(categorical_probs.shape))]))
+        pad_shapes = list(reduce(add, [(0, 0) for _ in range(len(categorical_probs.shape))]))
         pad_shapes[1] = 1
-        mask_prob = (1.0 - self.profile_prob - self.same_prob -
-                     self.uniform_prob)
+        mask_prob = 1.0 - self.profile_prob - self.same_prob - self.uniform_prob
         assert mask_prob >= 0.0
 
         categorical_probs = torch.nn.functional.pad(
@@ -157,25 +147,19 @@ class MakeMaskedMsa(FeatureCollatorBase):
 
 
 class NearestNeighborClusters(FeatureCollatorBase):
-
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 gap_agreement_weight: float = 0.0,
-                 **kwargs):
+    def __init__(self, config: BaseConfig | None = None, gap_agreement_weight: float = 0.0, **kwargs):
         super().__init__(config, **kwargs)
         self.gap_agreement_weight = gap_agreement_weight
 
     def is_enabled(self) -> bool:
         return self.config.msa_cluster_features
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         weights = torch.cat(
             [
                 torch.ones(21, device=features["msa"].device),
-                self.gap_agreement_weight *
-                torch.ones(1, device=features["msa"].device),
-                torch.zeros(1, device=features["msa"].device)
+                self.gap_agreement_weight * torch.ones(1, device=features["msa"].device),
+                torch.zeros(1, device=features["msa"].device),
             ],
             0,
         )
@@ -184,8 +168,7 @@ class NearestNeighborClusters(FeatureCollatorBase):
         msa_one_hot = make_one_hot(features["msa"], 23)
         sample_one_hot = features["msa_mask"][:, :, None] * msa_one_hot
         extra_msa_one_hot = make_one_hot(features["extra_msa"], 23)
-        extra_one_hot = features["extra_msa_mask"][:, :,
-                                                   None] * extra_msa_one_hot
+        extra_one_hot = features["extra_msa_mask"][:, :, None] * extra_msa_one_hot
 
         num_seq, num_res, _ = sample_one_hot.shape
         extra_num_seq, _, _ = extra_one_hot.shape
@@ -194,41 +177,33 @@ class NearestNeighborClusters(FeatureCollatorBase):
         # in an optimized fashion to avoid possible memory or computation blowup.
         agreement = torch.matmul(
             torch.reshape(extra_one_hot, [extra_num_seq, num_res * 23]),
-            torch.reshape(sample_one_hot * weights,
-                          [num_seq, num_res * 23]).transpose(0, 1),
+            torch.reshape(sample_one_hot * weights, [num_seq, num_res * 23]).transpose(0, 1),
         )
 
         # Assign each sequence in the extra sequences to the closest MSA sample
-        features["extra_cluster_assignment"] = torch.argmax(
-            agreement, dim=1).to(torch.int64)
+        features["extra_cluster_assignment"] = torch.argmax(agreement, dim=1).to(torch.int64)
 
         return features
 
 
 class SummarizeClusters(FeatureCollatorBase):
-
-    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+    def __init__(self, config: BaseConfig | None = None, **kwargs):
         super().__init__(config, **kwargs)
 
     def is_enabled(self) -> bool:
         return self.config.msa_cluster_features
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Produce profile and deletion_matrix_mean within each cluster."""
         num_seq = features["msa"].shape[0]
 
         def csum(x):
-            return unsorted_segment_sum(x,
-                                        features["extra_cluster_assignment"],
-                                        num_seq)
+            return unsorted_segment_sum(x, features["extra_cluster_assignment"], num_seq)
 
         mask = features["extra_msa_mask"]
-        mask_counts = 1e-6 + features["msa_mask"] + csum(
-            mask)  # Include center
+        mask_counts = 1e-6 + features["msa_mask"] + csum(mask)  # Include center
 
-        msa_sum = csum(mask[:, :, None] *
-                       make_one_hot(features["extra_msa"], 23))
+        msa_sum = csum(mask[:, :, None] * make_one_hot(features["extra_msa"], 23))
         msa_sum += make_one_hot(features["msa"], 23)  # Original sequence
         features["cluster_profile"] = msa_sum / mask_counts[:, :, None]
         del msa_sum
@@ -242,37 +217,32 @@ class SummarizeClusters(FeatureCollatorBase):
 
 
 class CropExtraMsa(FeatureCollatorBase):
-
-    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+    def __init__(self, config: BaseConfig | None = None, **kwargs):
         super().__init__(config, **kwargs)
 
     def is_enabled(self) -> bool:
         max_extra = self.config.max_extra_msa
         return max_extra is not None and max_extra > 0
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         num_seq = features["extra_msa"].shape[0]
         num_sel = min(self.config.max_extra_msa, num_seq)
         select_indices = torch.randperm(num_seq)[:num_sel]
         for k in MSA_FEATURE_NAMES:
             if "extra_" + k in features:
-                features["extra_" + k] = torch.index_select(
-                    features["extra_" + k], 0, select_indices)
+                features["extra_" + k] = torch.index_select(features["extra_" + k], 0, select_indices)
 
         return features
 
 
 class DeleteExtraMsa(FeatureCollatorBase):
-
-    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+    def __init__(self, config: BaseConfig | None = None, **kwargs):
         super().__init__(config, **kwargs)
 
     def is_enabled(self) -> bool:
         return self.config.max_extra_msa is None
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         for k in MSA_FEATURE_NAMES:
             if "extra_" + k in features:
                 del features["extra_" + k]
@@ -280,14 +250,11 @@ class DeleteExtraMsa(FeatureCollatorBase):
 
 
 class MakeMsaFeat(FeatureCollatorBase):
-
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Create and concatenate MSA features."""
         # Whether there is a domain break. Always zero for chains, but keeping for
         # compatibility with domain datasets.
-        has_break = torch.clip(
-            features["between_segment_residues"].to(torch.float32), 0, 1)
+        has_break = torch.clip(features["between_segment_residues"].to(torch.float32), 0, 1)
         aatype_1hot = make_one_hot(features["aatype"], 21)
 
         target_feat = [
@@ -296,8 +263,7 @@ class MakeMsaFeat(FeatureCollatorBase):
         ]
         msa_1hot = make_one_hot(features["msa"], 23)
         has_deletion = torch.clip(features["deletion_matrix"], 0.0, 1.0)
-        deletion_value = torch.atan(
-            features["deletion_matrix"] / 3.0) * (2.0 / np.pi)
+        deletion_value = torch.atan(features["deletion_matrix"] / 3.0) * (2.0 / np.pi)
 
         msa_feat = [
             msa_1hot,
@@ -306,18 +272,17 @@ class MakeMsaFeat(FeatureCollatorBase):
         ]
 
         if "cluster_profile" in features:
-            deletion_mean_value = torch.atan(
-                features["cluster_deletion_mean"] / 3.0) * (2.0 / np.pi)
-            msa_feat.extend([
-                features["cluster_profile"],
-                torch.unsqueeze(deletion_mean_value, dim=-1),
-            ])
+            deletion_mean_value = torch.atan(features["cluster_deletion_mean"] / 3.0) * (2.0 / np.pi)
+            msa_feat.extend(
+                [
+                    features["cluster_profile"],
+                    torch.unsqueeze(deletion_mean_value, dim=-1),
+                ]
+            )
 
         if "extra_deletion_matrix" in features:
-            features["extra_has_deletion"] = torch.clip(
-                features["extra_deletion_matrix"], 0.0, 1.0)
-            features["extra_deletion_value"] = torch.atan(
-                features["extra_deletion_matrix"] / 3.0) * (2.0 / np.pi)
+            features["extra_has_deletion"] = torch.clip(features["extra_deletion_matrix"], 0.0, 1.0)
+            features["extra_deletion_value"] = torch.atan(features["extra_deletion_matrix"] / 3.0) * (2.0 / np.pi)
 
         features["msa_feat"] = torch.cat(msa_feat, dim=-1)
         features["target_feat"] = torch.cat(target_feat, dim=-1)
@@ -325,18 +290,18 @@ class MakeMsaFeat(FeatureCollatorBase):
 
 
 class SelectFeat(FeatureCollatorBase):
-
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 include_feats: Optional[list[str]] = None,
-                 exclude_feats: Optional[list[str]] = None,
-                 **kwargs):
+    def __init__(
+        self,
+        config: BaseConfig | None = None,
+        include_feats: list[str] | None = None,
+        exclude_feats: list[str] | None = None,
+        **kwargs,
+    ):
         super().__init__(config, **kwargs)
         self.include_feats = include_feats
         self.exclude_feats = exclude_feats
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         remove_keys = set()
 
         if self.include_feats is not None:
@@ -353,18 +318,14 @@ class SelectFeat(FeatureCollatorBase):
 
 
 class RandomCropToSize(FeatureCollatorBase):
-    """ Do only the templates cropping. Due to we consider only the inference phase """
+    """Do only the templates cropping. Due to we consider only the inference phase"""
 
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 subsample_templates: bool = False,
-                 **kwargs):
+    def __init__(self, config: BaseConfig | None = None, subsample_templates: bool = False, **kwargs):
         super().__init__(config, **kwargs)
         self.subsample_templates = subsample_templates
         self.max_templates = self.config.max_templates
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         seed = context.get("ensemble_seed", None)
         if seed is not None:
             seed = seed + 1
@@ -385,15 +346,14 @@ class RandomCropToSize(FeatureCollatorBase):
             # the populated rows a contiguous prefix; if that invariant ever
             # breaks, warn and fall back to the populated count rather than
             # crashing inference.
-            populated = features["template_all_atom_mask"].flatten(
-                start_dim=1).any(dim=-1)
+            populated = features["template_all_atom_mask"].flatten(start_dim=1).any(dim=-1)
             num_templates = int(torch.count_nonzero(populated).item())
-            expected = torch.arange(populated.shape[0],
-                                    device=populated.device) < num_templates
+            expected = torch.arange(populated.shape[0], device=populated.device) < num_templates
             if not torch.equal(populated, expected):
                 logger.warning(
-                    "Populated template rows are not a contiguous prefix; "
-                    "cropping to the populated count %d", num_templates)
+                    "Populated template rows are not a contiguous prefix; cropping to the populated count %d",
+                    num_templates,
+                )
         elif "template_aatype" in features:
             # Retain compatibility with callers that carry only template
             # residue types and no explicit template mask.
@@ -408,21 +368,19 @@ class RandomCropToSize(FeatureCollatorBase):
                 torch.randint(
                     lower,
                     upper + 1,
-                    (1, ),
+                    (1,),
                     device=seq_length.device,
                     generator=g,
-                )[0])
+                )[0]
+            )
 
         if subsample_templates:
             templates_crop_start = _randint(0, num_templates)
-            templates_select_indices = torch.randperm(num_templates,
-                                                      device=seq_length.device,
-                                                      generator=g)
+            templates_select_indices = torch.randperm(num_templates, device=seq_length.device, generator=g)
         else:
             templates_crop_start = 0
 
-        num_templates_crop_size = min(num_templates - templates_crop_start,
-                                      self.max_templates)
+        num_templates_crop_size = min(num_templates - templates_crop_start, self.max_templates)
 
         for k, v in features.items():
             if "template" not in k:
@@ -436,33 +394,31 @@ class RandomCropToSize(FeatureCollatorBase):
             crop_size = num_templates_crop_size
             crop_start = templates_crop_start
             # clone the tensor, because the original tensor may be unmutable
-            features[k] = v[crop_start:crop_start + crop_size].clone()
+            features[k] = v[crop_start : crop_start + crop_size].clone()
 
         return features
 
 
 class MakeFixedSize(FeatureCollatorBase):
-    """ Do only the templates padding and msa padding, ignore residues padding. Due to we consider only the inference phase """
+    """Do only the templates padding and msa padding, ignore residues padding. Due to we consider only the inference phase"""
+
     N_TEMPL = "n_templ"
     N_MSA_SEQ = "n_msa_seq"
     N_EXTRA_SEQ = "n_extra_seq"
     N_RES = "n_res"
 
-    def __init__(self, config: Optional[BaseConfig] = None, **kwargs):
+    def __init__(self, config: BaseConfig | None = None, **kwargs):
         super().__init__(config, **kwargs)
         _monomer_shape_schema = {
             "template_aatype": [self.N_TEMPL, self.N_RES],
             "template_all_atom_mask": [self.N_TEMPL, self.N_RES, None],
-            "template_all_atom_positions":
-            [self.N_TEMPL, self.N_RES, None, None],
+            "template_all_atom_positions": [self.N_TEMPL, self.N_RES, None, None],
             "template_sum_probs": [self.N_TEMPL, None],
             "template_mask": [self.N_TEMPL],
             "template_pseudo_beta": [self.N_TEMPL, self.N_RES, None],
             "template_pseudo_beta_mask": [self.N_TEMPL, self.N_RES],
-            "template_torsion_angles_sin_cos":
-            [self.N_TEMPL, self.N_RES, None, None],
-            "template_alt_torsion_angles_sin_cos":
-            [self.N_TEMPL, self.N_RES, None, None],
+            "template_torsion_angles_sin_cos": [self.N_TEMPL, self.N_RES, None, None],
+            "template_alt_torsion_angles_sin_cos": [self.N_TEMPL, self.N_RES, None, None],
             "template_torsion_angles_mask": [self.N_TEMPL, self.N_RES, None],
             "msa_mask": [self.N_MSA_SEQ, self.N_RES],
             "msa_row_mask": [self.N_MSA_SEQ],
@@ -495,7 +451,7 @@ class MakeFixedSize(FeatureCollatorBase):
                 None,
                 None,
             ],
-            "true_msa": [self.N_MSA_SEQ, self.N_RES]
+            "true_msa": [self.N_MSA_SEQ, self.N_RES],
         }
         self._shape_schema = _monomer_shape_schema
         if self.config.is_multimer:
@@ -507,8 +463,7 @@ class MakeFixedSize(FeatureCollatorBase):
             self.N_EXTRA_SEQ: self.config.max_extra_msa,
         }
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         for k, v in features.items():
             # Don't transfer this to the accelerator.
             if k == "extra_cluster_assignment":
@@ -519,10 +474,7 @@ class MakeFixedSize(FeatureCollatorBase):
                 continue
             msg = "Rank mismatch between shape and shape schema for"
             assert len(shape) == len(schema), f"{msg} {k}: {shape} vs {schema}"
-            pad_size = [
-                self._pad_size_map.get(s2, None) or s1
-                for (s1, s2) in zip(shape, schema)
-            ]
+            pad_size = [self._pad_size_map.get(s2, None) or s1 for (s1, s2) in zip(shape, schema, strict=False)]
 
             padding = [(0, p - v.shape[i]) for i, p in enumerate(pad_size)]
             padding.reverse()
@@ -535,13 +487,11 @@ class MakeFixedSize(FeatureCollatorBase):
 
 
 class MultimerSampleMsa(FeatureCollatorBase):
-
-    def __init__(self, config: Optional[BaseConfig] = None, inf=1e6, **kwargs):
+    def __init__(self, config: BaseConfig | None = None, inf=1e6, **kwargs):
         super().__init__(config, **kwargs)
         self.inf = inf
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         seed = None
         if not self.config.resample_msa_in_recycling:
             seed = context.get("ensemble_seed", None)
@@ -554,34 +504,30 @@ class MultimerSampleMsa(FeatureCollatorBase):
             g.manual_seed(seed)
 
         # Sample uniformly among sequences with at least one non-masked position.
-        logits = (torch.clamp(torch.sum(features['msa_mask'], dim=-1), 0., 1.)
-                  - 1.) * self.inf
+        logits = (torch.clamp(torch.sum(features["msa_mask"], dim=-1), 0.0, 1.0) - 1.0) * self.inf
         # The cluster_bias_mask can be used to preserve the first row (target
         # sequence) for each chain, for example.
-        if 'cluster_bias_mask' not in features:
+        if "cluster_bias_mask" not in features:
             cluster_bias_mask = torch.nn.functional.pad(
-                features['msa'].new_zeros(features['msa'].shape[0] - 1),
-                (1, 0),
-                value=1.)
+                features["msa"].new_zeros(features["msa"].shape[0] - 1), (1, 0), value=1.0
+            )
         else:
-            cluster_bias_mask = features['cluster_bias_mask']
+            cluster_bias_mask = features["cluster_bias_mask"]
 
         logits += cluster_bias_mask * self.inf
         index_order = gumbel_argsort_sample_idx(logits, generator=g)
         sel_idx = index_order[:max_seq]
         extra_idx = index_order[max_seq:][:max_extra_msa_seq]
 
-        for k in ['msa', 'deletion_matrix', 'msa_mask', 'bert_mask']:
+        for k in ["msa", "deletion_matrix", "msa_mask", "bert_mask"]:
             if k in features:
-                features['extra_' + k] = features[k][extra_idx]
+                features["extra_" + k] = features[k][extra_idx]
                 features[k] = features[k][sel_idx]
         return features
 
 
 class MultimerMakeMaskedMsa(MakeMaskedMsa):
-
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Create data for BERT on raw MSA."""
         eps = 1e-6
         seed = None
@@ -589,62 +535,52 @@ class MultimerMakeMaskedMsa(MakeMaskedMsa):
             seed = context.get("ensemble_seed", None)
             seed = (seed + 1) if seed else None
         # Add a random amino acid uniformly.
-        random_aa = torch.tensor([0.05] * 20 + [0., 0.],
-                                 dtype=torch.float32,
-                                 device=features['msa'].device)
+        random_aa = torch.tensor([0.05] * 20 + [0.0, 0.0], dtype=torch.float32, device=features["msa"].device)
 
         categorical_probs = (
-            self.uniform_prob * random_aa +
-            self.profile_prob * features['msa_profile'] +
-            self.same_prob * torch.nn.functional.one_hot(features['msa'], 22))
+            self.uniform_prob * random_aa
+            + self.profile_prob * features["msa_profile"]
+            + self.same_prob * torch.nn.functional.one_hot(features["msa"], 22)
+        )
 
         # Put all remaining probability on [MASK] which is a new column.
-        mask_prob = 1. - self.profile_prob - self.same_prob - self.uniform_prob
+        mask_prob = 1.0 - self.profile_prob - self.same_prob - self.uniform_prob
 
-        categorical_probs = torch.nn.functional.pad(categorical_probs, [0, 1],
-                                                    value=mask_prob)
+        categorical_probs = torch.nn.functional.pad(categorical_probs, [0, 1], value=mask_prob)
 
-        sh = features['msa'].shape
-        mask_position = torch.rand(
-            sh,
-            device=features['msa'].device) < self.masked_msa_replace_fraction
-        mask_position *= features['msa_mask'].to(mask_position.dtype)
+        sh = features["msa"].shape
+        mask_position = torch.rand(sh, device=features["msa"].device) < self.masked_msa_replace_fraction
+        mask_position *= features["msa_mask"].to(mask_position.dtype)
 
         logits = torch.log(categorical_probs + eps)
 
         g = None
         if seed is not None:
-            g = torch.Generator(device=features['msa'].device)
+            g = torch.Generator(device=features["msa"].device)
             g.manual_seed(seed)
 
         bert_msa = gumbel_max_sample(logits, generator=g)
 
-        bert_msa = torch.where(mask_position, torch.argmax(bert_msa, dim=-1),
-                               features['msa'])
-        bert_msa *= features['msa_mask'].to(bert_msa.dtype)
+        bert_msa = torch.where(mask_position, torch.argmax(bert_msa, dim=-1), features["msa"])
+        bert_msa *= features["msa_mask"].to(bert_msa.dtype)
 
         # Mix real and masked MSA.
-        if 'bert_mask' in features:
-            features['bert_mask'] *= mask_position.to(torch.float32)
+        if "bert_mask" in features:
+            features["bert_mask"] *= mask_position.to(torch.float32)
         else:
-            features['bert_mask'] = mask_position.to(torch.float32)
-        features['true_msa'] = features['msa']
-        features['msa'] = bert_msa
+            features["bert_mask"] = mask_position.to(torch.float32)
+        features["true_msa"] = features["msa"]
+        features["msa"] = bert_msa
 
         return features
 
 
 class MultimerNearestNeighborClusters(FeatureCollatorBase):
-
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 gap_agreement_weight: float = 0.0,
-                 **kwargs):
+    def __init__(self, config: BaseConfig | None = None, gap_agreement_weight: float = 0.0, **kwargs):
         super().__init__(config, **kwargs)
         self.gap_agreement_weight = gap_agreement_weight
 
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """Assign each extra MSA sequence to its nearest neighbor in sampled MSA."""
         device = features["msa_mask"].device
 
@@ -654,69 +590,57 @@ class MultimerNearestNeighborClusters(FeatureCollatorBase):
         # Never put weight on agreeing on BERT mask.
 
         weights = torch.tensor(
-            [1.] * 21 + [self.gap_agreement_weight] + [0.],
+            [1.0] * 21 + [self.gap_agreement_weight] + [0.0],
             dtype=torch.float32,
             device=device,
         )
 
-        msa_mask = features['msa_mask']
-        msa_one_hot = torch.nn.functional.one_hot(features['msa'], 23)
+        msa_mask = features["msa_mask"]
+        msa_one_hot = torch.nn.functional.one_hot(features["msa"], 23)
 
-        extra_mask = features['extra_msa_mask']
-        extra_one_hot = torch.nn.functional.one_hot(features['extra_msa'], 23)
+        extra_mask = features["extra_msa_mask"]
+        extra_one_hot = torch.nn.functional.one_hot(features["extra_msa"], 23)
 
         msa_one_hot_masked = msa_mask[:, :, None] * msa_one_hot
         extra_one_hot_masked = extra_mask[:, :, None] * extra_one_hot
 
-        agreement = torch.einsum('mrc, nrc->nm', extra_one_hot_masked,
-                                 weights * msa_one_hot_masked)
+        agreement = torch.einsum("mrc, nrc->nm", extra_one_hot_masked, weights * msa_one_hot_masked)
 
-        cluster_assignment = torch.nn.functional.softmax(1e3 * agreement,
-                                                         dim=0)
-        cluster_assignment *= torch.einsum('mr, nr->mn', msa_mask, extra_mask)
+        cluster_assignment = torch.nn.functional.softmax(1e3 * agreement, dim=0)
+        cluster_assignment *= torch.einsum("mr, nr->mn", msa_mask, extra_mask)
 
         cluster_count = torch.sum(cluster_assignment, dim=-1)
-        cluster_count += 1.  # We always include the sequence itself.
+        cluster_count += 1.0  # We always include the sequence itself.
 
-        msa_sum = torch.einsum('nm, mrc->nrc', cluster_assignment,
-                               extra_one_hot_masked)
+        msa_sum = torch.einsum("nm, mrc->nrc", cluster_assignment, extra_one_hot_masked)
         msa_sum += msa_one_hot_masked
 
         cluster_profile = msa_sum / cluster_count[:, None, None]
 
-        extra_deletion_matrix = features['extra_deletion_matrix']
-        deletion_matrix = features['deletion_matrix']
+        extra_deletion_matrix = features["extra_deletion_matrix"]
+        deletion_matrix = features["deletion_matrix"]
 
-        del_sum = torch.einsum('nm, mc->nc', cluster_assignment,
-                               extra_mask * extra_deletion_matrix)
+        del_sum = torch.einsum("nm, mc->nc", cluster_assignment, extra_mask * extra_deletion_matrix)
         del_sum += deletion_matrix  # Original sequence.
         cluster_deletion_mean = del_sum / cluster_count[:, None]
 
-        features['cluster_profile'] = cluster_profile
-        features['cluster_deletion_mean'] = cluster_deletion_mean
+        features["cluster_profile"] = cluster_profile
+        features["cluster_deletion_mean"] = cluster_deletion_mean
 
         return features
 
 
 class MultimerCreateMsaFeat(FeatureCollatorBase):
-
-    def __call__(self, features: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
-        msa_1hot = torch.nn.functional.one_hot(features['msa'], 23)
-        deletion_matrix = features['deletion_matrix']
-        has_deletion = torch.clamp(deletion_matrix, min=0., max=1.)[..., None]
+    def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
+        msa_1hot = torch.nn.functional.one_hot(features["msa"], 23)
+        deletion_matrix = features["deletion_matrix"]
+        has_deletion = torch.clamp(deletion_matrix, min=0.0, max=1.0)[..., None]
         pi = torch.acos(torch.zeros(1, device=deletion_matrix.device)) * 2
-        deletion_value = (torch.atan(deletion_matrix / 3.) * (2. / pi))[...,
-                                                                        None]
+        deletion_value = (torch.atan(deletion_matrix / 3.0) * (2.0 / pi))[..., None]
 
-        deletion_mean_value = (
-            torch.atan(features['cluster_deletion_mean'] / 3.) *
-            (2. / pi))[..., None]
+        deletion_mean_value = (torch.atan(features["cluster_deletion_mean"] / 3.0) * (2.0 / pi))[..., None]
         msa_feat = torch.cat(
-            [
-                msa_1hot, has_deletion, deletion_value,
-                features['cluster_profile'], deletion_mean_value
-            ],
+            [msa_1hot, has_deletion, deletion_value, features["cluster_profile"], deletion_mean_value],
             dim=-1,
         )
         features["msa_feat"] = msa_feat

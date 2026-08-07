@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Frozen direct-CIF feature parity against commit-pinned OpenFold output."""
 
 from __future__ import annotations
@@ -7,6 +20,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.abc
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -18,16 +32,13 @@ import torch
 OPENFOLD_COMMIT = "be2ec1841f16c966c65ae0e7599ebbadc725757d"
 INPUT_SHA256 = "c412665889d225f21c39e31609e44e1582bd51b9feac2e592bad996347ee4606"
 ARTIFACT_SHA256 = "0f1416894d6a6228f41868a7d57e2b3fdb0bb25d0be8caf1fa5a50d39d941638"
-QUERY_SEQUENCE = (
-    "GMEGPLNLAHQQSRRADRLLAAGKYEEAISCHKKAAAYLSEAMKLTQSEQAHLSLELQRDSH"
-    "MKQLLLIQERWKRAQREERLKA")
+QUERY_SEQUENCE = "GMEGPLNLAHQQSRRADRLLAAGKYEEAISCHKKAAAYLSEAMKLTQSEQAHLSLELQRDSHMKQLLLIQERWKRAQREERLKA"
 ATOL = 1e-4
 RTOL = 1e-4
 
 DATA_DIR = Path(__file__).with_name("data")
 REPO_ROOT = Path(__file__).resolve().parents[4]
-CIF_PATH = (REPO_ROOT / "examples" / "data" / "samples" / "monomers" /
-            "templates" / "4zey.cif")
+CIF_PATH = REPO_ROOT / "examples" / "data" / "samples" / "monomers" / "templates" / "4zey.cif"
 ARTIFACT_PATH = DATA_DIR / "template_l1_golden.npz"
 PROVENANCE_PATH = DATA_DIR / "template_l1_provenance.json"
 GENERATOR_PATH = Path(__file__).with_name("generate_template_l1.py")
@@ -52,10 +63,10 @@ EXPECTED_SHAPES = {
     "template_aatype": (1, 84, 22),
     "template_all_atom_mask": (1, 84, 37),
     "template_all_atom_positions": (1, 84, 37, 3),
-    "template_domain_names": (1, ),
+    "template_domain_names": (1,),
     "template_pseudo_beta": (1, 84, 3),
     "template_pseudo_beta_mask": (1, 84),
-    "template_sequence": (1, ),
+    "template_sequence": (1,),
     "template_sum_probs": (1, 1),
     "template_torsion_angles_sin_cos": (1, 84, 7, 2),
     "template_alt_torsion_angles_sin_cos": (1, 84, 7, 2),
@@ -80,14 +91,10 @@ EXPECTED_SOURCE_DTYPES = {
     "template_sequence": "object",
 }
 CRITICAL_SOURCE_HASHES = {
-    "openfold/data/data_transforms.py":
-    "000cc73fcd68603173af05dcbbcbd2663c97c467759d073783d20f38febf8311",
-    "openfold/data/mmcif_parsing.py":
-    "3728888533a46c689bd55b7002936a7b1b09f4c61fcc2274e7376c2b822ded14",
-    "openfold/data/templates.py":
-    "6c1f1534548543df6a26a3060ae25b9947d75cdf839e464f3415bb123f43f95e",
-    "openfold/np/residue_constants.py":
-    "19c94d0c104cf45ab303efb5b21fed36e746402163b742da0726bd2a8484a52b",
+    "openfold/data/data_transforms.py": "000cc73fcd68603173af05dcbbcbd2663c97c467759d073783d20f38febf8311",
+    "openfold/data/mmcif_parsing.py": "3728888533a46c689bd55b7002936a7b1b09f4c61fcc2274e7376c2b822ded14",
+    "openfold/data/templates.py": "6c1f1534548543df6a26a3060ae25b9947d75cdf839e464f3415bb123f43f95e",
+    "openfold/np/residue_constants.py": "19c94d0c104cf45ab303efb5b21fed36e746402163b742da0726bd2a8484a52b",
 }
 
 
@@ -97,8 +104,7 @@ class _BlockOpenFoldImports(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname: str, path: Any = None, target: Any = None):
         del path, target
         if fullname == "openfold" or fullname.startswith("openfold."):
-            raise AssertionError(
-                f"Parity test attempted a runtime OpenFold import: {fullname}")
+            raise AssertionError(f"Parity test attempted a runtime OpenFold import: {fullname}")
         return None
 
 
@@ -111,18 +117,32 @@ def _sha256(path: Path) -> str:
 
 
 def _canonical_json_hash(value: Any) -> str:
-    payload = json.dumps(value,
-                         sort_keys=True,
-                         separators=(",", ":"),
-                         ensure_ascii=True).encode("utf-8")
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _load_generator_module() -> Any:
+    """Import the by-path generator so its AST-hash helper is the single source of truth.
+
+    The generator is a script, not a packaged module, so it is loaded from its
+    path. Import is side-effect-free: it only pulls in stdlib + numpy at module
+    level, and the ``main()`` guard keeps file writes and the import blocker out
+    of the way. Reusing ``_sha256_ast`` from here keeps the pin's hashing
+    convention defined in exactly one place.
+    """
+    spec = importlib.util.spec_from_file_location("generate_template_l1", GENERATOR_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _require_real_file(path: Path) -> None:
     assert path.is_file(), f"Required frozen oracle file is missing: {path}"
     prefix = path.read_bytes()[:128]
     assert not prefix.startswith(b"version https://git-lfs.github.com/spec"), (
-        f"Frozen oracle is an unresolved Git LFS pointer: {path}")
+        f"Frozen oracle is an unresolved Git LFS pointer: {path}"
+    )
 
 
 def _load_provenance() -> dict[str, Any]:
@@ -162,27 +182,19 @@ def _assert_generator_has_no_trt_imports() -> None:
             imported_modules.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             imported_modules.append(node.module)
-    assert not [
-        name for name in imported_modules
-        if name == "tensorrt_bionemo" or name.startswith("tensorrt_bionemo.")
-    ]
+    assert not [name for name in imported_modules if name == "tensorrt_bionemo" or name.startswith("tensorrt_bionemo.")]
 
 
 def _derive_features(base: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     from tensorrt_bionemo.pipeline.models.openfold2 import common
     from tensorrt_bionemo.pipeline.models.openfold2 import const as rc
 
-    hhblits_aatype = torch.from_numpy(np.asarray(
-        base["template_aatype"])).argmax(dim=-1)
-    new_order = torch.tensor(rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE,
-                             dtype=torch.int64).expand(hhblits_aatype.shape[0],
-                                                       -1)
+    hhblits_aatype = torch.from_numpy(np.asarray(base["template_aatype"])).argmax(dim=-1)
+    new_order = torch.tensor(rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE, dtype=torch.int64).expand(hhblits_aatype.shape[0], -1)
     aatype = torch.gather(new_order, 1, hhblits_aatype)
-    positions = torch.from_numpy(
-        np.asarray(base["template_all_atom_positions"]))
+    positions = torch.from_numpy(np.asarray(base["template_all_atom_positions"]))
     mask = torch.from_numpy(np.asarray(base["template_all_atom_mask"]))
-    pseudo_beta, pseudo_beta_mask = common.pseudo_beta_fn(
-        aatype, positions, mask)
+    pseudo_beta, pseudo_beta_mask = common.pseudo_beta_fn(aatype, positions, mask)
     torsions = common.atom37_to_torsion_angles(
         {
             "template_aatype": aatype,
@@ -192,16 +204,11 @@ def _derive_features(base: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         prefix="template_",
     )
     return {
-        "template_pseudo_beta":
-        pseudo_beta.numpy(),
-        "template_pseudo_beta_mask":
-        pseudo_beta_mask.numpy(),
-        "template_torsion_angles_sin_cos":
-        torsions["template_torsion_angles_sin_cos"].numpy(),
-        "template_alt_torsion_angles_sin_cos":
-        torsions["template_alt_torsion_angles_sin_cos"].numpy(),
-        "template_torsion_angles_mask":
-        torsions["template_torsion_angles_mask"].numpy(),
+        "template_pseudo_beta": pseudo_beta.numpy(),
+        "template_pseudo_beta_mask": pseudo_beta_mask.numpy(),
+        "template_torsion_angles_sin_cos": torsions["template_torsion_angles_sin_cos"].numpy(),
+        "template_alt_torsion_angles_sin_cos": torsions["template_alt_torsion_angles_sin_cos"].numpy(),
+        "template_torsion_angles_mask": torsions["template_torsion_angles_mask"].numpy(),
     }
 
 
@@ -220,22 +227,23 @@ def test_template_l1_oracle_provenance_is_complete_and_pickle_free():
     assert provenance["checkpoint_identifier"] == "not_applicable_feature_only"
     assert provenance["checkpoint_sha256"] is None
     assert provenance["input_sha256"] == INPUT_SHA256 == _sha256(CIF_PATH)
-    assert provenance["artifact_sha256"] == ARTIFACT_SHA256 == _sha256(
-        ARTIFACT_PATH)
+    assert provenance["artifact_sha256"] == ARTIFACT_SHA256 == _sha256(ARTIFACT_PATH)
     assert provenance["sha256"] == provenance["artifact_sha256"]
-    assert provenance["generator_sha256"] == _sha256(GENERATOR_PATH)
+    # ast.dump output changes across Python minors, so the generator pin is only
+    # comparable on the minor that produced it. On any other minor the digest
+    # would differ for identical source; skip the cross-check rather than fail
+    # spuriously (CI is pinned to the recorded minor; regenerate to re-pin).
+    running_minor = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if provenance["generator_ast_python"] == running_minor:
+        assert provenance["generator_ast_sha256"] == _load_generator_module()._sha256_ast(GENERATOR_PATH)
     assert OPENFOLD_COMMIT in provenance["oss_source_url"]
     assert OPENFOLD_COMMIT in provenance["input_source_url"]
-    assert provenance["resolved_config_hash"] == _canonical_json_hash(
-        provenance["resolved_config"])
+    assert provenance["resolved_config_hash"] == _canonical_json_hash(provenance["resolved_config"])
     assert "generate_template_l1.py" in provenance["generation_command"]
     assert "--oss-root" in provenance["generation_command"]
-    assert provenance["artifact_path"] == (
-        "tests/pipeline/models/openfold2/data/template_l1_golden.npz")
-    assert provenance["input_path"] == (
-        "examples/data/samples/monomers/templates/4zey.cif")
-    assert provenance["generator_path"] == (
-        "tests/pipeline/models/openfold2/generate_template_l1.py")
+    assert provenance["artifact_path"] == ("tests/pipeline/models/openfold2/data/template_l1_golden.npz")
+    assert provenance["input_path"] == ("examples/data/samples/monomers/templates/4zey.cif")
+    assert provenance["generator_path"] == ("tests/pipeline/models/openfold2/generate_template_l1.py")
     assert provenance["input_source_path"] == "tests/test_data/mmcifs/4zey.cif"
     assert provenance["oss_source_path"] == "openfold/data/templates.py"
     assert provenance["oss_source_files"] == CRITICAL_SOURCE_HASHES
@@ -258,10 +266,8 @@ def test_template_l1_oracle_provenance_is_complete_and_pickle_free():
         assert str(value.dtype) == EXPECTED_ARCHIVE_DTYPES[name], name
         assert inventory[name]["shape"] == list(EXPECTED_SHAPES[name]), name
         assert inventory[name]["dtype"] == EXPECTED_ARCHIVE_DTYPES[name], name
-        assert source_inventory[name]["shape"] == list(
-            EXPECTED_SHAPES[name]), name
-        assert source_inventory[name]["dtype"] == EXPECTED_SOURCE_DTYPES[
-            name], name
+        assert source_inventory[name]["shape"] == list(EXPECTED_SHAPES[name]), name
+        assert source_inventory[name]["dtype"] == EXPECTED_SOURCE_DTYPES[name], name
         assert not value.dtype.hasobject, name
 
 
@@ -269,47 +275,39 @@ def test_template_l1_matches_pinned_openfold_features_without_runtime_oss():
     provenance = _load_provenance()
     reference = _load_reference()
     assert set(provenance["feature_inventory"]) == EXPECTED_FEATURES
-    loaded_openfold = sorted(
-        name for name in sys.modules
-        if name == "openfold" or name.startswith("openfold."))
-    assert not loaded_openfold, (
-        f"OpenFold was already loaded before the offline parity test: "
-        f"{loaded_openfold}")
+    loaded_openfold = sorted(name for name in sys.modules if name == "openfold" or name.startswith("openfold."))
+    assert not loaded_openfold, f"OpenFold was already loaded before the offline parity test: {loaded_openfold}"
 
     guard = _BlockOpenFoldImports()
     sys.meta_path.insert(0, guard)
     try:
-        from tensorrt_bionemo.pipeline.models.openfold2.template_logic import \
-            build_template_feats
+        from tensorrt_bionemo.pipeline.models.openfold2.template_logic import build_template_feats
 
         actual = build_template_feats(
             QUERY_SEQUENCE,
-            [{
-                "content": CIF_PATH.read_text(encoding="utf-8"),
-                "format": "cif",
-                "chain_id": "A",
-            }],
+            [
+                {
+                    "content": CIF_PATH.read_text(encoding="utf-8"),
+                    "format": "cif",
+                    "chain_id": "A",
+                }
+            ],
             max_templates=1,
         )
         actual.update(_derive_features(actual))
     finally:
         sys.meta_path.remove(guard)
-    loaded_openfold = sorted(
-        name for name in sys.modules
-        if name == "openfold" or name.startswith("openfold."))
-    assert not loaded_openfold, (
-        f"Production code loaded OpenFold at runtime: {loaded_openfold}")
+    loaded_openfold = sorted(name for name in sys.modules if name == "openfold" or name.startswith("openfold."))
+    assert not loaded_openfold, f"Production code loaded OpenFold at runtime: {loaded_openfold}"
 
     assert set(actual) == EXPECTED_FEATURES
     assert float(np.asarray(reference["template_all_atom_mask"]).sum()) > 5.0
-    assert float(np.asarray(
-        reference["template_pseudo_beta_mask"]).sum()) > 0.0
+    assert float(np.asarray(reference["template_pseudo_beta_mask"]).sum()) > 0.0
 
     for name in sorted(EXPECTED_FEATURES):
         expected = reference[name]
         raw_observed = np.asarray(actual[name])
-        observed = (_encode_string_array(raw_observed)
-                    if expected.dtype.kind == "S" else raw_observed)
+        observed = _encode_string_array(raw_observed) if expected.dtype.kind == "S" else raw_observed
         assert observed.shape == expected.shape, name
         assert observed.dtype == expected.dtype, name
         if observed.dtype.kind not in {"S", "U"}:
@@ -317,8 +315,4 @@ def test_template_l1_matches_pinned_openfold_features_without_runtime_oss():
         if name in EXACT_FEATURES:
             np.testing.assert_array_equal(observed, expected, err_msg=name)
         else:
-            np.testing.assert_allclose(observed,
-                                       expected,
-                                       atol=ATOL,
-                                       rtol=RTOL,
-                                       err_msg=name)
+            np.testing.assert_allclose(observed, expected, atol=ATOL, rtol=RTOL, err_msg=name)

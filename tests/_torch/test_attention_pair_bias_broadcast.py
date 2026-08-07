@@ -22,6 +22,7 @@ Regression: prior to the fix, ``unsqueeze(-4)`` inserted the broadcast-1
 at position 2 instead of position 1, causing a shape mismatch inside
 ``F.scaled_dot_product_attention``.
 """
+
 from dataclasses import dataclass
 
 import pytest
@@ -58,6 +59,7 @@ def _bounded_init(model: torch.nn.Module) -> None:
 @dataclass(kw_only=True, frozen=True)
 class Scenario:
     """Parameterised test shape descriptor."""
+
     name: str
     backend: str
     # s shape (token / atom embedding fed to the attention layer)
@@ -165,19 +167,22 @@ _SIMPLE_CUTEDSL = Scenario(
 )
 
 
-@pytest.mark.parametrize("sc", [
-    _SIMPLE,
-    _TOKEN_XFORMER_S1,
-    _TOKEN_XFORMER,
-    _ATOM_XFORMER,
-    _ATOM_XFORMER_K25,
-    _ATOM_XFORMER_DIFFUSION,
-    _ATOM_VANILLA,
-    _SIMPLE_CUTEDSL,
-    _TOKEN_CUTEDSL_S1,
-    _TOKEN_CUTEDSL_S5,
-],
-                         ids=lambda sc: sc.name)
+@pytest.mark.parametrize(
+    "sc",
+    [
+        _SIMPLE,
+        _TOKEN_XFORMER_S1,
+        _TOKEN_XFORMER,
+        _ATOM_XFORMER,
+        _ATOM_XFORMER_K25,
+        _ATOM_XFORMER_DIFFUSION,
+        _ATOM_VANILLA,
+        _SIMPLE_CUTEDSL,
+        _TOKEN_CUTEDSL_S1,
+        _TOKEN_CUTEDSL_S5,
+    ],
+    ids=lambda sc: sc.name,
+)
 def test_prep_mask_bias_shapes(sc: Scenario):
     """pair_bias and mask_bias must be broadcastable to q after _prep_qkv."""
     skip_if_cutedsl(sc.backend)
@@ -210,25 +215,25 @@ def test_prep_mask_bias_shapes(sc: Scenario):
         # After _prep_qkv, q has shape [*batch, H, S_Q, D] — one extra dim
         # relative to s.  pair_bias must have the same ndim as q.
         expected_ndim = s.ndim + 1
-        assert pair_bias.ndim == expected_ndim, (
-            f"pair_bias.ndim={pair_bias.ndim} != s.ndim+1={expected_ndim}")
-        assert mask_bias.ndim == pair_bias.ndim, (
-            f"mask_bias.ndim={mask_bias.ndim} != pair_bias.ndim={pair_bias.ndim}"
-        )
+        assert pair_bias.ndim == expected_ndim, f"pair_bias.ndim={pair_bias.ndim} != s.ndim+1={expected_ndim}"
+        assert mask_bias.ndim == pair_bias.ndim, f"mask_bias.ndim={mask_bias.ndim} != pair_bias.ndim={pair_bias.ndim}"
 
         # Verify the two biases can actually be added (no broadcast error)
         _ = mask_bias + pair_bias
 
 
-@pytest.mark.parametrize("sc", [
-    _SIMPLE,
-    _TOKEN_XFORMER_S1,
-    _TOKEN_XFORMER,
-    _ATOM_XFORMER,
-    _ATOM_XFORMER_DIFFUSION,
-    _ATOM_VANILLA,
-],
-                         ids=lambda sc: sc.name)
+@pytest.mark.parametrize(
+    "sc",
+    [
+        _SIMPLE,
+        _TOKEN_XFORMER_S1,
+        _TOKEN_XFORMER,
+        _ATOM_XFORMER,
+        _ATOM_XFORMER_DIFFUSION,
+        _ATOM_VANILLA,
+    ],
+    ids=lambda sc: sc.name,
+)
 def test_prep_mask_bias_with_precomputed(sc: Scenario):
     """When mask_bias is already precomputed, the same broadcast must hold."""
     device = torch.device("cuda")
@@ -262,12 +267,15 @@ def test_prep_mask_bias_with_precomputed(sc: Scenario):
     _ = mask_bias + pair_bias
 
 
-@pytest.mark.parametrize("sc", [
-    _ATOM_XFORMER,
-    _TOKEN_XFORMER,
-    _SIMPLE,
-],
-                         ids=lambda sc: sc.name)
+@pytest.mark.parametrize(
+    "sc",
+    [
+        _ATOM_XFORMER,
+        _TOKEN_XFORMER,
+        _SIMPLE,
+    ],
+    ids=lambda sc: sc.name,
+)
 def test_full_forward_sdpa(sc: Scenario):
     """Full AttentionPairBias.forward must succeed (no broadcast crash) for SDPA."""
     device = torch.device("cuda")
@@ -295,12 +303,15 @@ def test_full_forward_sdpa(sc: Scenario):
     assert torch.isfinite(out).all(), "output contains non-finite values"
 
 
-@pytest.mark.parametrize("sc", [
-    _SIMPLE_CUTEDSL,
-    _TOKEN_CUTEDSL_S1,
-    _TOKEN_CUTEDSL_S5,
-],
-                         ids=lambda sc: sc.name)
+@pytest.mark.parametrize(
+    "sc",
+    [
+        _SIMPLE_CUTEDSL,
+        _TOKEN_CUTEDSL_S1,
+        _TOKEN_CUTEDSL_S5,
+    ],
+    ids=lambda sc: sc.name,
+)
 def test_full_forward_cutedsl(sc: Scenario):
     """Full AttentionPairBias.forward must succeed with CuTeDSL backend."""
     skip_if_cutedsl(sc.backend)
@@ -330,12 +341,15 @@ def test_full_forward_cutedsl(sc: Scenario):
     assert torch.isfinite(out).all(), "output contains non-finite values"
 
 
-@pytest.mark.parametrize("sc", [
-    _SIMPLE_CUTEDSL,
-    _TOKEN_CUTEDSL_S1,
-    _TOKEN_CUTEDSL_S5,
-],
-                         ids=lambda sc: sc.name)
+@pytest.mark.parametrize(
+    "sc",
+    [
+        _SIMPLE_CUTEDSL,
+        _TOKEN_CUTEDSL_S1,
+        _TOKEN_CUTEDSL_S5,
+    ],
+    ids=lambda sc: sc.name,
+)
 def test_cutedsl_uses_fused_triton_kernel(sc: Scenario):
     """Verify the CuTeDSL path dispatches through the fused Triton
     ``LNProjMoveaxisPad._fused_kernel`` rather than the vanilla fallback.
@@ -359,8 +373,8 @@ def test_cutedsl_uses_fused_triton_kernel(sc: Scenario):
     ln_proj = attn._ln_proj_moveaxis_pad
     assert ln_proj is not None, "bias_proj=True should create _ln_proj_moveaxis_pad"
     assert ln_proj._fused_kernel is not None, (
-        "fused Triton kernel was not instantiated — CuTeDSL path would "
-        "silently fall back to vanilla PyTorch")
+        "fused Triton kernel was not instantiated — CuTeDSL path would silently fall back to vanilla PyTorch"
+    )
 
     original_kernel = ln_proj._fused_kernel
     call_count = 0
@@ -384,17 +398,18 @@ def test_cutedsl_uses_fused_triton_kernel(sc: Scenario):
     finally:
         ln_proj._fused_kernel = original_kernel
 
-    assert call_count > 0, (
-        "LNProjMoveaxisPad._fused_kernel was never called — "
-        "the fused Triton path was not exercised")
+    assert call_count > 0, "LNProjMoveaxisPad._fused_kernel was never called — the fused Triton path was not exercised"
     assert out.shape == s.shape
 
 
-@pytest.mark.parametrize("sc", [
-    _ATOM_XFORMER,
-    _ATOM_XFORMER_DIFFUSION,
-],
-                         ids=lambda sc: sc.name)
+@pytest.mark.parametrize(
+    "sc",
+    [
+        _ATOM_XFORMER,
+        _ATOM_XFORMER_DIFFUSION,
+    ],
+    ids=lambda sc: sc.name,
+)
 def test_atom_xformer_bias_alignment(sc: Scenario):
     """Specifically verify that the unsqueeze(1) dim in pair_bias aligns
     with the unsqueeze(1) dim in s — the root cause of the original bug.
@@ -425,11 +440,11 @@ def test_atom_xformer_bias_alignment(sc: Scenario):
 
     # s has 1 at dim-1; pair_bias must also have 1 at dim-1
     assert pair_bias.shape[1] == 1, (
-        f"pair_bias dim-1 should be 1 (broadcast), got {pair_bias.shape[1]} "
-        f"(shape={tuple(pair_bias.shape)})")
+        f"pair_bias dim-1 should be 1 (broadcast), got {pair_bias.shape[1]} (shape={tuple(pair_bias.shape)})"
+    )
     assert mask_bias.shape[1] == 1, (
-        f"mask_bias dim-1 should be 1 (broadcast), got {mask_bias.shape[1]} "
-        f"(shape={tuple(mask_bias.shape)})")
+        f"mask_bias dim-1 should be 1 (broadcast), got {mask_bias.shape[1]} (shape={tuple(mask_bias.shape)})"
+    )
 
 
 @pytest.mark.parametrize(
@@ -443,7 +458,8 @@ def test_atom_xformer_bias_alignment(sc: Scenario):
             mask_shape=(1, 8, 32),
         ),
     ],
-    ids=lambda sc: sc.name)
+    ids=lambda sc: sc.name,
+)
 def test_prep_mask_bias_no_bias_proj(sc: Scenario):
     """When bias_proj=False, z is passed through as-is; broadcast still works."""
     device = torch.device("cuda")

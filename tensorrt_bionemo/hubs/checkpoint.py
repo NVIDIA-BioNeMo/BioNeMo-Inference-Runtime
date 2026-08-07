@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from pathlib import Path
-from typing import Optional, Union
 
 from tensorrt_bionemo.logger import logger
 
@@ -22,30 +21,26 @@ from .hf import load_hf_weights
 from .local import load_local_weights
 
 
-def load_weights(name: str,
-                 return_raw: bool = False,
-                 local_files_only: bool = False,
-                 cache_path: Optional[Union[str, Path]] = None,
-                 repo_id: Optional[Union[str, Path]] = None,
-                 hub: str = None) -> Union[dict, str]:
+def load_weights(
+    name: str,
+    return_raw: bool = False,
+    local_files_only: bool = False,
+    cache_path: str | Path | None = None,
+    repo_id: str | Path | None = None,
+    hub: str = None,
+) -> dict | str:
 
     if hub is None:
-        logger.warning(
-            f"No hub specified, automatically trying local hub -> huggingface hub"
-        )
-        state_dict = load_local_weights(name, return_raw, local_files_only,
-                                        cache_path, repo_id)
+        logger.warning("No hub specified, automatically trying local hub -> huggingface hub")
+        state_dict = load_local_weights(name, return_raw, local_files_only, cache_path, repo_id)
         if state_dict is None:
-            state_dict = load_hf_weights(name, return_raw, local_files_only,
-                                         None, repo_id)
+            state_dict = load_hf_weights(name, return_raw, local_files_only, None, repo_id)
         return state_dict
     elif hub == "local":
-        state_dict = load_local_weights(name, return_raw, local_files_only,
-                                        cache_path, repo_id)
+        state_dict = load_local_weights(name, return_raw, local_files_only, cache_path, repo_id)
         return state_dict
     elif hub == "hf":
-        state_dict = load_hf_weights(name, return_raw, local_files_only, None,
-                                     repo_id)
+        state_dict = load_hf_weights(name, return_raw, local_files_only, None, repo_id)
         return state_dict
     else:
         raise ValueError(f"Invalid hub: {hub}")

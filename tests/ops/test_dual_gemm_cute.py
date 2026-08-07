@@ -22,17 +22,13 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import (
-    DualGemmX0X1CuTe, get_dual_gemm_x0_x1_op)
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import (
-    DualGemmXxCuTe, get_dual_gemm_x_x_op)
-from tests._torch import (SM_VERSION, make_left_aligned_mask,
-                          skip_if_no_cutedsl, skip_if_not_sm90)
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe, get_dual_gemm_x0_x1_op
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import DualGemmXxCuTe, get_dual_gemm_x_x_op
+from tests._torch import SM_VERSION, make_left_aligned_mask, skip_if_no_cutedsl, skip_if_not_sm90
 
 
 def _ref_x0_x1_dual_gemm(
@@ -40,16 +36,12 @@ def _ref_x0_x1_dual_gemm(
     X1: torch.Tensor,
     W0: torch.Tensor,
     W1: torch.Tensor,
-    bias0: Optional[torch.Tensor] = None,
-    bias1: Optional[torch.Tensor] = None,
+    bias0: torch.Tensor | None = None,
+    bias1: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Reference implementation in fp32 for tight tolerance checks."""
-    d0 = torch.nn.functional.linear(
-        X0.float(), W0.float(),
-        bias0.float() if bias0 is not None else None)
-    d1 = torch.nn.functional.linear(
-        X1.float(), W1.float(),
-        bias1.float() if bias1 is not None else None)
+    d0 = torch.nn.functional.linear(X0.float(), W0.float(), bias0.float() if bias0 is not None else None)
+    d1 = torch.nn.functional.linear(X1.float(), W1.float(), bias1.float() if bias1 is not None else None)
     return (d0.sigmoid() * d1).to(X0.dtype)
 
 
@@ -57,9 +49,9 @@ def _ref_x_x_dual_gemm(
     X: torch.Tensor,
     W0: torch.Tensor,
     W1: torch.Tensor,
-    bias0: Optional[torch.Tensor] = None,
-    bias1: Optional[torch.Tensor] = None,
-    mask: Optional[torch.Tensor] = None,
+    bias0: torch.Tensor | None = None,
+    bias1: torch.Tensor | None = None,
+    mask: torch.Tensor | None = None,
     transpose_out: bool = False,
 ) -> torch.Tensor:
     """Reference implementation in fp32 for tight tolerance checks.
@@ -67,12 +59,8 @@ def _ref_x_x_dual_gemm(
     Mirrors :func:`tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x._invoke_vanilla_dual_gemm_x_x`
     bit-for-bit (mask multiply, optional transpose) but in fp32.
     """
-    d0 = torch.nn.functional.linear(
-        X.float(), W0.float(),
-        bias0.float() if bias0 is not None else None)
-    d1 = torch.nn.functional.linear(
-        X.float(), W1.float(),
-        bias1.float() if bias1 is not None else None)
+    d0 = torch.nn.functional.linear(X.float(), W0.float(), bias0.float() if bias0 is not None else None)
+    d1 = torch.nn.functional.linear(X.float(), W1.float(), bias1.float() if bias1 is not None else None)
     ret = (d0.sigmoid() * d1).to(X.dtype)
     if mask is not None:
         ret = ret * mask.unsqueeze(-1)
@@ -85,8 +73,7 @@ def _ref_x_x_dual_gemm(
 class Scenario:
     K: int = 128
     N: int = 128
-    seq_lens: list[int] = field(
-        default_factory=lambda: [100, 123, 512, 1023, 1024])
+    seq_lens: list[int] = field(default_factory=lambda: [100, 123, 512, 1023, 1024])
     has_bias: bool = False
     has_mask: bool = False
     transpose_out: bool = False
@@ -105,11 +92,7 @@ class Scenario:
         # ProtenixV2 trimul out-proj (c_z=256) -- CuTeDSL on SM80/86/89/90.
         # ``|b=1`` reuses the tuned ``|b=0`` tiles (no separate bias tune).
         Scenario(N=256, K=256, seq_lens=[100, 256], dtype=torch.bfloat16),
-        Scenario(N=256,
-                 K=256,
-                 seq_lens=[100, 256],
-                 dtype=torch.bfloat16,
-                 has_bias=True),
+        Scenario(N=256, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, has_bias=True),
     ],
     ids=[
         "sc_N128_K128_b0_bf16",
@@ -118,30 +101,25 @@ class Scenario:
         "sc_N128_K128_b1_fp16",
         "sc_N256_K256_b0_bf16",
         "sc_N256_K256_b1_bf16",
-    ])
+    ],
+)
 def test_x0_x1_dual_gemm(sc: Scenario):
     """Test CuTe DSL dual GEMM x0_x1 against fp32 reference."""
     skip_if_no_cutedsl()
     if (sc.N, sc.K) == (256, 256) and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(
-            f"Protenix (N=256,K=256) x0_x1 CuTeDSL is SM80/86/89/90 only "
-            f"(current SM{SM_VERSION})")
+        pytest.skip(f"Protenix (N=256,K=256) x0_x1 CuTeDSL is SM80/86/89/90 only (current SM{SM_VERSION})")
     torch.manual_seed(42)
 
     cute_op = DualGemmX0X1CuTe()
 
     W0 = torch.randn(sc.N, sc.K, dtype=sc.dtype, device="cuda")
     W1 = torch.randn(sc.N, sc.K, dtype=sc.dtype, device="cuda")
-    bias0 = torch.randn(sc.N, dtype=sc.dtype,
-                        device="cuda") if sc.has_bias else None
-    bias1 = torch.randn(sc.N, dtype=sc.dtype,
-                        device="cuda") if sc.has_bias else None
+    bias0 = torch.randn(sc.N, dtype=sc.dtype, device="cuda") if sc.has_bias else None
+    bias1 = torch.randn(sc.N, dtype=sc.dtype, device="cuda") if sc.has_bias else None
 
     for seq_len in sc.seq_lens:
-        X0 = torch.randn(1, seq_len, seq_len, sc.K,
-                         device="cuda").contiguous().to(sc.dtype)
-        X1 = torch.randn(1, seq_len, seq_len, sc.K,
-                         device="cuda").contiguous().to(sc.dtype)
+        X0 = torch.randn(1, seq_len, seq_len, sc.K, device="cuda").contiguous().to(sc.dtype)
+        X1 = torch.randn(1, seq_len, seq_len, sc.K, device="cuda").contiguous().to(sc.dtype)
 
         ref = _ref_x0_x1_dual_gemm(X0, X1, W0, W1, bias0, bias1)
         out = cute_op(X0, X1, W0, W1, bias0, bias1)
@@ -151,7 +129,7 @@ def test_x0_x1_dual_gemm(sc: Scenario):
             ref,
             atol=sc.atol,
             rtol=sc.rtol,
-            msg=lambda m: f"seq_len={seq_len}, has_bias={sc.has_bias}: {m}",
+            msg=lambda m, seq_len=seq_len: f"seq_len={seq_len}, has_bias={sc.has_bias}: {m}",
         )
 
 
@@ -172,47 +150,20 @@ def test_x0_x1_dual_gemm(sc: Scenario):
         # `actual_seqlen[b] = mask.reshape(B, I*J).sum(-1)` predicate matches
         # the vanilla `ret * mask.unsqueeze(-1)` reference bit-for-bit).
         Scenario(N=128, K=128, dtype=torch.bfloat16, has_mask=True),
-        Scenario(
-            N=128, K=128, dtype=torch.bfloat16, has_bias=True, has_mask=True),
+        Scenario(N=128, K=128, dtype=torch.bfloat16, has_bias=True, has_mask=True),
         Scenario(N=128, K=128, dtype=torch.float16, has_mask=True),
         # Larger N path (most production trimul uses N=256).
         Scenario(N=256, K=128, seq_lens=[100, 512], dtype=torch.bfloat16),
-        Scenario(N=256,
-                 K=128,
-                 seq_lens=[100, 512],
-                 dtype=torch.bfloat16,
-                 has_bias=True,
-                 has_mask=True),
+        Scenario(N=256, K=128, seq_lens=[100, 512], dtype=torch.bfloat16, has_bias=True, has_mask=True),
         # ProtenixV2 trimul (c_z=256, hidden=256) -- CuTeDSL on SM80/86/89/90.
         Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16),
-        Scenario(N=512,
-                 K=256,
-                 seq_lens=[100, 256],
-                 dtype=torch.bfloat16,
-                 has_mask=True),
-        Scenario(N=512,
-                 K=256,
-                 seq_lens=[100, 256],
-                 dtype=torch.bfloat16,
-                 transpose_out=True),
-        Scenario(N=512,
-                 K=256,
-                 seq_lens=[100, 256],
-                 dtype=torch.bfloat16,
-                 has_mask=True,
-                 transpose_out=True),
+        Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, has_mask=True),
+        Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, transpose_out=True),
+        Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, has_mask=True, transpose_out=True),
         # transpose_out=True -- exercises the col-major output allocator.
-        Scenario(N=128,
-                 K=128,
-                 seq_lens=[100, 512],
-                 dtype=torch.bfloat16,
-                 transpose_out=True),
+        Scenario(N=128, K=128, seq_lens=[100, 512], dtype=torch.bfloat16, transpose_out=True),
         # M = B*I*J must be padded to a multiple of 8 for the CuTe epilogue.
-        Scenario(N=128,
-                 K=128,
-                 seq_lens=[123],
-                 dtype=torch.bfloat16,
-                 transpose_out=True),
+        Scenario(N=128, K=128, seq_lens=[123], dtype=torch.bfloat16, transpose_out=True),
     ],
     ids=[
         "sc_N128_K128_b0_m0_bf16",
@@ -230,7 +181,8 @@ def test_x0_x1_dual_gemm(sc: Scenario):
         "sc_N512_K256_b0_m1_bf16_t1",
         "sc_N128_K128_b0_m0_bf16_t1",
         "sc_N128_K128_b0_m0_bf16_t1_m_unaligned",
-    ])
+    ],
+)
 def test_x_x_dual_gemm(sc: Scenario):
     """Test CuTe DSL dual GEMM x_x against fp32 reference.
 
@@ -242,59 +194,40 @@ def test_x_x_dual_gemm(sc: Scenario):
     """
     skip_if_no_cutedsl()
     if (sc.N, sc.K) == (512, 256) and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(
-            f"Protenix (N=512,K=256) x_x CuTeDSL is SM80/86/89/90 only "
-            f"(current SM{SM_VERSION})")
+        pytest.skip(f"Protenix (N=512,K=256) x_x CuTeDSL is SM80/86/89/90 only (current SM{SM_VERSION})")
     torch.manual_seed(42)
 
     cute_op = DualGemmXxCuTe()
 
     W0 = torch.randn(sc.N, sc.K, dtype=sc.dtype, device="cuda")
     W1 = torch.randn(sc.N, sc.K, dtype=sc.dtype, device="cuda")
-    bias0 = torch.randn(sc.N, dtype=sc.dtype,
-                        device="cuda") if sc.has_bias else None
-    bias1 = torch.randn(sc.N, dtype=sc.dtype,
-                        device="cuda") if sc.has_bias else None
+    bias0 = torch.randn(sc.N, dtype=sc.dtype, device="cuda") if sc.has_bias else None
+    bias1 = torch.randn(sc.N, dtype=sc.dtype, device="cuda") if sc.has_bias else None
 
     for seq_len in sc.seq_lens:
-        X = torch.randn(1, seq_len, seq_len, sc.K,
-                        device="cuda").contiguous().to(sc.dtype)
+        X = torch.randn(1, seq_len, seq_len, sc.K, device="cuda").contiguous().to(sc.dtype)
         if sc.has_mask:
             # Left-aligned in the flat (B, I*J) view -- matches the kernel's
             # `actual_seqlen[b]` semantics so the masked rows zero out
             # identically in both reference and kernel.
-            flat = make_left_aligned_mask(1,
-                                          seq_len * seq_len,
-                                          dtype=sc.dtype,
-                                          device="cuda")
+            flat = make_left_aligned_mask(1, seq_len * seq_len, dtype=sc.dtype, device="cuda")
             mask = flat.reshape(1, seq_len, seq_len)
         else:
             mask = None
 
-        ref = _ref_x_x_dual_gemm(X,
-                                 W0,
-                                 W1,
-                                 bias0,
-                                 bias1,
-                                 mask=mask,
-                                 transpose_out=sc.transpose_out)
-        out = cute_op(X,
-                      W0,
-                      W1,
-                      bias0=bias0,
-                      bias1=bias1,
-                      mask=mask,
-                      transpose_out=sc.transpose_out)
+        ref = _ref_x_x_dual_gemm(X, W0, W1, bias0, bias1, mask=mask, transpose_out=sc.transpose_out)
+        out = cute_op(X, W0, W1, bias0=bias0, bias1=bias1, mask=mask, transpose_out=sc.transpose_out)
 
         torch.testing.assert_close(
             out,
             ref,
             atol=sc.atol,
             rtol=sc.rtol,
-            msg=lambda m:
-            (f"seq_len={seq_len}, has_bias={sc.has_bias}, "
-             f"has_mask={sc.has_mask}, transpose_out={sc.transpose_out}: "
-             f"{m}"),
+            msg=lambda m, seq_len=seq_len: (
+                f"seq_len={seq_len}, has_bias={sc.has_bias}, "
+                f"has_mask={sc.has_mask}, transpose_out={sc.transpose_out}: "
+                f"{m}"
+            ),
         )
 
 
@@ -329,16 +262,9 @@ def test_x_x_dual_gemm_actual_seqlen_overrides_mask():
     mask_wrong = torch.ones(B, I, J, dtype=dtype, device=device)
 
     out_with_mask = cute_op(X, W0, W1, mask=mask_correct)
-    out_with_seqlen = cute_op(X,
-                              W0,
-                              W1,
-                              mask=mask_wrong,
-                              actual_seqlen=actual_seqlen)
+    out_with_seqlen = cute_op(X, W0, W1, mask=mask_wrong, actual_seqlen=actual_seqlen)
 
-    torch.testing.assert_close(out_with_seqlen,
-                               out_with_mask,
-                               atol=0.0,
-                               rtol=0.0)
+    torch.testing.assert_close(out_with_seqlen, out_with_mask, atol=0.0, rtol=0.0)
 
 
 # ---------------------------------------------------------------------------

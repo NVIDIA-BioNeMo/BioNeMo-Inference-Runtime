@@ -13,11 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for :mod:`tests.common.test_utils.openfold3.batched_input_tools`."""
+
 import pytest
 import torch
 
 from tests.common.test_utils.openfold3.batched_input_tools import (
-    AVAILABILITY_EXC, harness_skip_reason, make_batched_diffusion_inputs)
+    AVAILABILITY_EXC,
+    harness_skip_reason,
+    make_batched_diffusion_inputs,
+)
 
 
 def test_make_batched_diffusion_inputs():
@@ -30,8 +34,7 @@ def test_make_batched_diffusion_inputs():
     try:
         module, batched = make_batched_diffusion_inputs(sample_ids)
     except AVAILABILITY_EXC as exc:
-        pytest.skip(f"openfold3 weights/metadata unavailable "
-                    f"({type(exc).__name__}: {exc})")
+        pytest.skip(f"openfold3 weights/metadata unavailable ({type(exc).__name__}: {exc})")
 
     assert batched["xl_noisy"].shape[0] == len(sample_ids)
     with torch.no_grad():

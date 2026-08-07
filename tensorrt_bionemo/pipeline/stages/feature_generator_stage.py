@@ -13,41 +13,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
 from copy import deepcopy
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any
 
 import numpy as np
 import torch
 
-from tensorrt_bionemo.pipeline.base import (FeatureCollatorBase,
-                                            FeatureGeneratorBase,
-                                            dict_context_merger)
-from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
-                                                   StatefulStageUDF)
+from tensorrt_bionemo.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase, dict_context_merger
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 
 class FeatureGeneratorUDF(StatefulStageUDF):
-
     def __init__(
-            self,
-            compute_by_rows: bool,
-            drop_keys: List[str],
-            expected_input_keys: List[str],
-            update_row: bool,
-            feature_generators: list[FeatureGeneratorBase],
-            features_merger_func: Optional[Callable] = dict_context_merger,
-            feature_collators: Optional[list[FeatureCollatorBase]] = None,
-            pre_init: Optional[Callable] = None,
-            init_context: Optional[dict[str, Any]] = None):
-        super().__init__(compute_by_rows, drop_keys, expected_input_keys,
-                         update_row)
+        self,
+        compute_by_rows: bool,
+        drop_keys: list[str],
+        expected_input_keys: list[str],
+        update_row: bool,
+        feature_generators: list[FeatureGeneratorBase],
+        features_merger_func: Callable | None = dict_context_merger,
+        feature_collators: list[FeatureCollatorBase] | None = None,
+        pre_init: Callable | None = None,
+        init_context: dict[str, Any] | None = None,
+    ):
+        super().__init__(compute_by_rows, drop_keys, expected_input_keys, update_row)
         self.feature_generators = feature_generators
         self.features_merger_func = features_merger_func
         self.feature_collators = feature_collators or []
         self.pre_init = pre_init
         self.init_context = init_context
 
-    def _extract_tensors(self, row: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+    def _extract_tensors(self, row: dict[str, Any]) -> dict[str, torch.Tensor]:
         row_with_tensors = {}
         for k, v in row.items():
             if isinstance(v, torch.Tensor):
@@ -64,11 +61,10 @@ class FeatureGeneratorUDF(StatefulStageUDF):
                 row_with_tensors[k] = torch.tensor(v.item())
         return row_with_tensors
 
-    async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
+    async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         row_with_tensors = self._extract_tensors(row)
         # Per-row copy of the initial context; default to an empty dict when None.
-        context = deepcopy(
-            self.init_context) if self.init_context is not None else {}
+        context = deepcopy(self.init_context) if self.init_context is not None else {}
         # Expose full row to generators (e.g. Boltz2 needs structure, tokens, molecules, MSA).
         context["_row"] = row
         features_dict = {}
@@ -84,14 +80,12 @@ class FeatureGeneratorUDF(StatefulStageUDF):
                         raise ValueError(
                             f"Feature generator '{generator.name}' conflicts "
                             f"with a previously generated feature in "
-                            f"features_dict.")
-                    features_dict[generator.name] = generator(
-                        merged_feats, context)
+                            f"features_dict."
+                        )
+                    features_dict[generator.name] = generator(merged_feats, context)
                     merged_feats = self.features_merger_func(
                         contexts=merged_feats,
-                        features={
-                            generator.name: features_dict[generator.name]
-                        },
+                        features={generator.name: features_dict[generator.name]},
                     )
             for collator in self.feature_collators:
                 if collator.is_enabled():
@@ -105,5 +99,5 @@ class FeatureGeneratorStage(StatefulStage):
     A stage that tokenizes the input.
     """
 
-    fn: Type[StatefulStageUDF] = FeatureGeneratorUDF
+    fn: type[StatefulStageUDF] = FeatureGeneratorUDF
     update_row: bool = False

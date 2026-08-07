@@ -28,20 +28,14 @@ class ProtenixDistogramHead(nn.Module):
     input-symmetrizing ``DistogramModule``). Runs in fp32.
     """
 
-    def __init__(self,
-                 c_z: int,
-                 no_bins: int = 64,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False) -> None:
+    def __init__(
+        self, c_z: int, no_bins: int = 64, dtype: torch.dtype = torch.float32, skip_create_weights: bool = False
+    ) -> None:
         super().__init__()
         self.c_z = c_z
         self.no_bins = no_bins
         self.dtype = dtype
-        self.linear = Linear(c_z,
-                             no_bins,
-                             bias=True,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(c_z, no_bins, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Symmetric distogram logits ``[*, N_token, N_token, no_bins]``.

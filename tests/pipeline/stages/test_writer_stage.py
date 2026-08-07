@@ -1,5 +1,17 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import asyncio
 import json
@@ -10,8 +22,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.pipeline.stages.writer_stage import (WriterStage,
-                                                           WriterUDF)
+from tensorrt_bionemo.pipeline.stages.writer_stage import WriterStage, WriterUDF
 
 
 @pytest.fixture
@@ -34,9 +45,7 @@ def writer_udf():
     return WriterUDF(
         compute_by_rows=True,
         drop_keys=[],
-        expected_input_keys=[
-            "atom_positions", "residue_types", "atom_mask", "residue_indices"
-        ],
+        expected_input_keys=["atom_positions", "residue_types", "atom_mask", "residue_indices"],
         update_row=False,
         mappings={},
         format="pdb",
@@ -45,7 +54,6 @@ def writer_udf():
 
 
 class TestWriterUDFInit:
-
     def test_init_with_defaults(self):
         udf = WriterUDF(
             compute_by_rows=True,
@@ -118,26 +126,20 @@ class TestWriterUDFInit:
 
 
 class TestWriterUDFCreateWriter:
-
     def test_create_writer_pdb_format(self):
         from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
         from tensorrt_bionemo.data.writers import PDBWriter
+
         basic_20 = ResTypes.basic_20_residue_types()
         res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}
         all_atom_types = AtomTypes.all_types()
-        atom_type_mapping = {
-            i: all_atom_types[i]
-            for i in range(len(all_atom_types))
-        }
+        atom_type_mapping = {i: all_atom_types[i] for i in range(len(all_atom_types))}
         udf = WriterUDF(
             compute_by_rows=True,
             drop_keys=[],
             expected_input_keys=[],
             update_row=False,
-            mappings={
-                "res_type_mapping": res_type_mapping,
-                "atom_type_mapping": atom_type_mapping
-            },
+            mappings={"res_type_mapping": res_type_mapping, "atom_type_mapping": atom_type_mapping},
             format="pdb",
         )
         writer = udf._create_writer("pdb")
@@ -149,12 +151,8 @@ class TestWriterUDFCreateWriter:
         from tensorrt_bionemo.data.writers import PDBWriter
 
         output = PDBWriter(
-            res_type_mapping={
-                0: ResTypes.A
-            },
-            atom_type_mapping={
-                0: AtomTypes.CA
-            },
+            res_type_mapping={0: ResTypes.A},
+            atom_type_mapping={0: AtomTypes.CA},
             output_path=None,
         ).write(
             FoldingOutput(
@@ -164,31 +162,26 @@ class TestWriterUDFCreateWriter:
                 residue_indices=np.array([1], dtype=np.int64),
                 b_factors=np.zeros((1, 1), dtype=np.float32),
                 chain_indices=np.array([0], dtype=np.int64),
-            ))
+            )
+        )
 
-        atom_line = next(line for line in output.splitlines()
-                         if line.startswith("ATOM"))
+        atom_line = next(line for line in output.splitlines() if line.startswith("ATOM"))
         assert atom_line[17:20] == "ALA"
 
     def test_create_writer_cif_format(self):
         from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
         from tensorrt_bionemo.data.writers import CIFWriter
+
         basic_20 = ResTypes.basic_20_residue_types()
         res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}
         all_atom_types = AtomTypes.all_types()
-        atom_type_mapping = {
-            i: all_atom_types[i]
-            for i in range(len(all_atom_types))
-        }
+        atom_type_mapping = {i: all_atom_types[i] for i in range(len(all_atom_types))}
         udf = WriterUDF(
             compute_by_rows=True,
             drop_keys=[],
             expected_input_keys=[],
             update_row=False,
-            mappings={
-                "res_type_mapping": res_type_mapping,
-                "atom_type_mapping": atom_type_mapping
-            },
+            mappings={"res_type_mapping": res_type_mapping, "atom_type_mapping": atom_type_mapping},
             format="cif",
         )
         writer = udf._create_writer("cif")
@@ -196,22 +189,17 @@ class TestWriterUDFCreateWriter:
 
     def test_create_writer_invalid_format_raises(self):
         from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
+
         basic_20 = ResTypes.basic_20_residue_types()
         res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}
         all_atom_types = AtomTypes.all_types()
-        atom_type_mapping = {
-            i: all_atom_types[i]
-            for i in range(len(all_atom_types))
-        }
+        atom_type_mapping = {i: all_atom_types[i] for i in range(len(all_atom_types))}
         udf = WriterUDF(
             compute_by_rows=True,
             drop_keys=[],
             expected_input_keys=[],
             update_row=False,
-            mappings={
-                "res_type_mapping": res_type_mapping,
-                "atom_type_mapping": atom_type_mapping
-            },
+            mappings={"res_type_mapping": res_type_mapping, "atom_type_mapping": atom_type_mapping},
             format="pdb",
         )
         with pytest.raises(ValueError, match=r"Invalid format.*"):
@@ -230,9 +218,8 @@ class TestWriterUDFCreateWriter:
 
 
 class TestWriterUDFProcessing:
-
     def test_udf_for_item_returns_output_dict(self, writer_udf, sample_row):
-        with patch.object(writer_udf, '_create_writer') as mock_create:
+        with patch.object(writer_udf, "_create_writer") as mock_create:
             mock_writer = MagicMock()
             mock_writer.write.return_value = "ATOM..."
             mock_create.return_value = mock_writer
@@ -246,7 +233,7 @@ class TestWriterUDFProcessing:
             assert "scores" in result
 
     def test_udf_for_item_format_in_output(self, writer_udf, sample_row):
-        with patch.object(writer_udf, '_create_writer') as mock_create:
+        with patch.object(writer_udf, "_create_writer") as mock_create:
             mock_writer = MagicMock()
             mock_writer.write.return_value = "ATOM..."
             mock_create.return_value = mock_writer
@@ -267,7 +254,7 @@ class TestWriterUDFProcessing:
                 output_path=tmpdir,
             )
 
-            with patch.object(udf, '_create_writer') as mock_create:
+            with patch.object(udf, "_create_writer") as mock_create:
                 mock_writer = MagicMock()
                 mock_writer.write.return_value = "ATOM..."
                 mock_create.return_value = mock_writer
@@ -291,7 +278,7 @@ class TestWriterUDFProcessing:
                 output_path=tmpdir,
             )
 
-            with patch.object(udf, '_create_writer') as mock_create:
+            with patch.object(udf, "_create_writer") as mock_create:
                 mock_writer = MagicMock()
                 mock_writer.write.return_value = "ATOM..."
                 mock_create.return_value = mock_writer
@@ -314,7 +301,7 @@ class TestWriterUDFProcessing:
                 output_path=tmpdir,
             )
 
-            with patch.object(udf, '_create_writer') as mock_create:
+            with patch.object(udf, "_create_writer") as mock_create:
                 mock_writer = MagicMock()
                 mock_writer.write.return_value = "data_structure\n#..."
                 mock_create.return_value = mock_writer
@@ -327,7 +314,6 @@ class TestWriterUDFProcessing:
 
 
 class TestWriterUDFErrorHandling:
-
     def test_on_row_error_returns_none_values(self, writer_udf, sample_row):
         error = ValueError("Test error")
         result = writer_udf.on_row_error(sample_row, error)
@@ -339,7 +325,6 @@ class TestWriterUDFErrorHandling:
 
 
 class TestWriterStage:
-
     def test_stage_fn_is_writer_udf(self):
         stage = WriterStage()
         assert stage.fn == WriterUDF

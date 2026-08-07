@@ -1,8 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Module swap: replace BakerLab Recycler's pairformer_stack with TRT-BNM PairformerModule.
 """
-
-import torch
 
 from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
 
@@ -35,20 +48,24 @@ def swap_pairformer_stack(
         triangle_attention_backend: Triangle attention backend for Torch path.
         pairwise_attention_backend: Pairwise attention backend for Torch path.
     """
-    import sys, os
+    import os
+    import sys
+
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from convert.convert_weights import convert_pairformer_stack_weights
 
     config = make_bakerlab_pairformer_config(
-        num_blocks=num_blocks, c_s=c_s, c_z=c_z, dtype=dtype,
+        num_blocks=num_blocks,
+        c_s=c_s,
+        c_z=c_z,
+        dtype=dtype,
         triangle_attention_backend=triangle_attention_backend,
         pairwise_attention_backend=pairwise_attention_backend,
     )
     trtbnm_module = PairformerModule(config)
 
     if customer_state_dict is not None:
-        converted = convert_pairformer_stack_weights(
-            customer_state_dict, num_blocks=num_blocks)
+        converted = convert_pairformer_stack_weights(customer_state_dict, num_blocks=num_blocks)
         trtbnm_module.load_weights(converted)
 
     trtbnm_module = trtbnm_module.to(device)

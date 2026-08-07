@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Unified compilation and caching infrastructure for DSL kernels.
@@ -34,7 +49,7 @@ import tempfile
 import time
 from getpass import getuser
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from cuda.bindings import driver as _drv
+
     _HAS_CUDA_BINDINGS = True
 except ImportError:
     _drv = None  # type: ignore[assignment]
@@ -56,7 +72,7 @@ def _ensure_cuda_init():
     global _cuda_initialized
     if _cuda_initialized or not _HAS_CUDA_BINDINGS:
         return
-    (err, ) = _drv.cuInit(0)
+    (err,) = _drv.cuInit(0)
     if err == _drv.CUresult.CUDA_SUCCESS:
         _cuda_initialized = True
 
@@ -93,8 +109,7 @@ class FileLock:
         self._fd: int = -1
 
     def __enter__(self) -> FileLock:
-        flags = (os.O_WRONLY | os.O_CREAT if self.exclusive else os.O_RDONLY
-                 | os.O_CREAT)
+        flags = os.O_WRONLY | os.O_CREAT if self.exclusive else os.O_RDONLY | os.O_CREAT
         lock_type = fcntl.LOCK_EX if self.exclusive else fcntl.LOCK_SH
         self._fd = os.open(str(self.lock_path), flags)
         deadline = time.monotonic() + self.timeout
@@ -141,8 +156,7 @@ class DiskCache:
         if DiskCache._CACHE_DIR is not None:
             d = Path(DiskCache._CACHE_DIR)
         else:
-            d = (Path(tempfile.gettempdir()) / getuser() /
-                 "bionemo_kernel_cache")
+            d = Path(tempfile.gettempdir()) / getuser() / "bionemo_kernel_cache"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -189,7 +203,7 @@ class KernelCacheBase(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def load_from_cache(self, key: tuple) -> Optional[Any]:
+    def load_from_cache(self, key: tuple) -> Any | None:
         """Load artifact for *key* from disk cache, or ``None`` on miss."""
         ...
 
@@ -211,7 +225,7 @@ class KernelCacheBase(abc.ABC):
 # PTX param introspection
 # ---------------------------------------------------------------------------
 
-_PTX_PARAM_RE = re.compile(r'\.param\s+\.(\w+)')
+_PTX_PARAM_RE = re.compile(r"\.param\s+\.(\w+)")
 
 
 def parse_ptx_params(ptx: str, kernel_name: str) -> list[str]:
@@ -228,12 +242,12 @@ def parse_ptx_params(ptx: str, kernel_name: str) -> list[str]:
     escaped = re.escape(kernel_name)
 
     for pattern in [
-            # Exact match
-            rf'\.entry\s+{escaped}\s*\((.*?)\)',
-            # Triton adds specialization suffixes like _0d1d2d3d4c5c6c
-            rf'\.entry\s+{escaped}\w*\s*\((.*?)\)',
-            # Broad fallback: any entry containing the kernel name
-            rf'\.entry\s+\w*{escaped}\w*\s*\((.*?)\)',
+        # Exact match
+        rf"\.entry\s+{escaped}\s*\((.*?)\)",
+        # Triton adds specialization suffixes like _0d1d2d3d4c5c6c
+        rf"\.entry\s+{escaped}\w*\s*\((.*?)\)",
+        # Broad fallback: any entry containing the kernel name
+        rf"\.entry\s+\w*{escaped}\w*\s*\((.*?)\)",
     ]:
         match = re.search(pattern, ptx, re.DOTALL)
         if match:
@@ -243,7 +257,7 @@ def parse_ptx_params(ptx: str, kernel_name: str) -> list[str]:
 
     params_block = match.group(1)
     types = []
-    for line in params_block.split('\n'):
+    for line in params_block.split("\n"):
         m = _PTX_PARAM_RE.search(line)
         if m:
             types.append(m.group(1))
@@ -255,16 +269,16 @@ def parse_ptx_params(ptx: str, kernel_name: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _CTYPES_MAP = {
-    'u64': ctypes.c_uint64,
-    'u32': ctypes.c_uint32,
-    'u16': ctypes.c_uint16,
-    'u8': ctypes.c_uint8,
-    'i64': ctypes.c_int64,
-    'i32': ctypes.c_int32,
-    'f32': ctypes.c_float,
-    'f64': ctypes.c_double,
-    'b64': ctypes.c_uint64,
-    'b32': ctypes.c_uint32,
+    "u64": ctypes.c_uint64,
+    "u32": ctypes.c_uint32,
+    "u16": ctypes.c_uint16,
+    "u8": ctypes.c_uint8,
+    "i64": ctypes.c_int64,
+    "i32": ctypes.c_int32,
+    "f32": ctypes.c_float,
+    "f64": ctypes.c_double,
+    "b64": ctypes.c_uint64,
+    "b32": ctypes.c_uint32,
 }
 
 
@@ -286,8 +300,7 @@ class DriverLauncher:
     Requires ``pip install cuda-python`` (the ``cuda.bindings`` package).
     """
 
-    __slots__ = ('_func', '_module', '_block_x', '_shmem', '_stream',
-                 '_stream_handle', 'params', '_kp', '_n_params')
+    __slots__ = ("_func", "_module", "_block_x", "_shmem", "_stream", "_stream_handle", "params", "_kp", "_n_params")
 
     def __init__(
         self,
@@ -299,8 +312,7 @@ class DriverLauncher:
         cu_module: Any = None,
     ):
         if not _HAS_CUDA_BINDINGS:
-            raise ImportError("cuda.bindings required for DriverLauncher "
-                              "(pip install cuda-python)")
+            raise ImportError("cuda.bindings required for DriverLauncher (pip install cuda-python)")
 
         self._func = cu_function
         self._module = cu_module
@@ -308,17 +320,18 @@ class DriverLauncher:
         self._shmem = shared_mem
 
         if shared_mem > 48 * 1024:
-            attr = (_drv.CUfunction_attribute.
-                    CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES)
-            (err, ) = _drv.cuFuncSetAttribute(cu_function, attr, shared_mem)
+            attr = _drv.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
+            (err,) = _drv.cuFuncSetAttribute(cu_function, attr, shared_mem)
             if err != _drv.CUresult.CUDA_SUCCESS:
                 raise RuntimeError(
                     f"cuFuncSetAttribute({attr.name}, {shared_mem}) "
                     f"failed for CUfunction {cu_function}: {err.name} "
-                    f"({int(err)})")
+                    f"({int(err)})"
+                )
 
         if cu_stream is None:
             import torch
+
             cu_stream = _drv.CUstream(torch.cuda.current_stream().cuda_stream)
         self._stream = cu_stream
         # Raw handle backing self._stream. launch() compares the current
@@ -336,8 +349,7 @@ class DriverLauncher:
             self.params.append(ct(0))
 
         self._n_params = len(self.params)
-        self._kp = (ctypes.c_void_p * self._n_params)(*(ctypes.addressof(p)
-                                                        for p in self.params))
+        self._kp = (ctypes.c_void_p * self._n_params)(*(ctypes.addressof(p) for p in self.params))
 
     def launch(self, grid_x: int, grid_y: int = 1, grid_z: int = 1) -> None:
         """Launch the kernel.  Caller must set ``params[i].value`` first."""
@@ -346,11 +358,12 @@ class DriverLauncher:
         # single-stream case stays cheap while side/capture streams (CUDA-graph
         # warmup/capture) are still respected.
         import torch
+
         cur = torch.cuda.current_stream().cuda_stream
         if cur != self._stream_handle:
             self._stream = _drv.CUstream(cur)
             self._stream_handle = cur
-        (err, ) = _drv.cuLaunchKernel(
+        (err,) = _drv.cuLaunchKernel(
             self._func,
             grid_x,
             grid_y,
@@ -403,8 +416,7 @@ def make_driver_launcher(
         logger.warning("cuModuleLoadData failed for %s: %s", name, err)
         return None
 
-    err, cu_function = _drv.cuModuleGetFunction(cu_module,
-                                                name.encode("utf-8"))
+    err, cu_function = _drv.cuModuleGetFunction(cu_module, name.encode("utf-8"))
     if err != _drv.CUresult.CUDA_SUCCESS:
         logger.warning("cuModuleGetFunction failed for %s: %s", name, err)
         _drv.cuModuleUnload(cu_module)
@@ -419,10 +431,10 @@ def make_driver_launcher(
             _drv.cuModuleUnload(cu_module)
             return None
 
-    logger.debug("DriverLauncher for %s: %d params %s", name, len(param_types),
-                 param_types)
+    logger.debug("DriverLauncher for %s: %d params %s", name, len(param_types), param_types)
 
     import torch
+
     if cu_stream is None:
         cu_stream = _drv.CUstream(torch.cuda.current_stream().cuda_stream)
 

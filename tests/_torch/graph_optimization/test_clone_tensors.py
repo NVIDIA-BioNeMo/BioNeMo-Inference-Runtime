@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,17 +24,19 @@ unchanged. These tests assert that for every cloned tensor the clone:
   * has the *same* dtype, and
   * is on the *same* device.
 """
+
 import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import \
-    CUDAGraphOptimizationTracker
+from tensorrt_bionemo._torch.graph_optimization.config import CUDAGraphOptimizationConfig
+from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 from tensorrt_bionemo._torch.graph_optimization.tensor_copy_utils import (
-    _clone_tensors, _copy_tensors_into, _delete_tensors_in_container,
-    _tensor_containers_are_byte_equal)
-from tensorrt_bionemo._torch.graph_optimization.config import \
-    CUDAGraphOptimizationConfig
+    _clone_tensors,
+    _copy_tensors_into,
+    _delete_tensors_in_container,
+    _tensor_containers_are_byte_equal,
+)
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 
@@ -67,7 +69,7 @@ def _assert_is_independent_clone(original, clone) -> None:
     elif isinstance(original, (list, tuple)):
         assert type(clone) is type(original)
         assert len(clone) == len(original)
-        for o, c in zip(original, clone):
+        for o, c in zip(original, clone, strict=True):
             _assert_is_independent_clone(o, c)
     else:
         # Non-tensor leaves are passed through unchanged (same object).
@@ -83,8 +85,7 @@ def test_clone_single_tensor(tracker: CUDAGraphOptimizationTracker, device: str)
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.int64])
-def test_clone_preserves_dtype(tracker: CUDAGraphOptimizationTracker, device: str,
-                               dtype: torch.dtype):
+def test_clone_preserves_dtype(tracker: CUDAGraphOptimizationTracker, device: str, dtype: torch.dtype):
     original = torch.ones(4, 5, dtype=dtype, device=device)
     clone = _clone_tensors(original)
     _assert_is_independent_clone(original, clone)
@@ -99,8 +100,7 @@ def test_clone_nested_structure(tracker: CUDAGraphOptimizationTracker, device: s
             "ref_pos": torch.randn(1, 5, 3, device=device),
             "mol_type": torch.zeros(1, 5, dtype=torch.int64, device=device),
         },
-        "coords": [torch.arange(4, device=device),
-                   (torch.ones(2, device=device), torch.zeros(3, device=device))],
+        "coords": [torch.arange(4, device=device), (torch.ones(2, device=device), torch.zeros(3, device=device))],
     }
     clone = _clone_tensors(original)
     _assert_is_independent_clone(original, clone)
@@ -109,8 +109,7 @@ def test_clone_nested_structure(tracker: CUDAGraphOptimizationTracker, device: s
 @pytest.mark.parametrize("device", DEVICES)
 def test_clone_args_tuple(tracker: CUDAGraphOptimizationTracker, device: str):
     # Mirrors how forward() clones the positional ``args`` tuple.
-    args = (torch.randn(2, 3, device=device),
-            [torch.randn(4, device=device)])
+    args = (torch.randn(2, 3, device=device), [torch.randn(4, device=device)])
     clone = _clone_tensors(args)
     _assert_is_independent_clone(args, clone)
 
@@ -122,8 +121,7 @@ def test_clone_passes_through_non_tensors(tracker: CUDAGraphOptimizationTracker)
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_clone_mutation_does_not_affect_original(
-        tracker: CUDAGraphOptimizationTracker, device: str):
+def test_clone_mutation_does_not_affect_original(tracker: CUDAGraphOptimizationTracker, device: str):
     original = torch.zeros(3, 4, device=device)
     clone = _clone_tensors(original)
     clone.add_(1.0)
@@ -133,8 +131,7 @@ def test_clone_mutation_does_not_affect_original(
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_clone_preserves_container_type(tracker: CUDAGraphOptimizationTracker,
-                                        device: str):
+def test_clone_preserves_container_type(tracker: CUDAGraphOptimizationTracker, device: str):
     list_in = [torch.randn(2, device=device)]
     tuple_in = (torch.randn(2, device=device),)
     assert isinstance(_clone_tensors(list_in), list)
@@ -172,7 +169,7 @@ def _assert_copied_in_place(dest, src) -> None:
             _assert_copied_in_place(dest[k], src[k])
     elif isinstance(dest, (list, tuple)):
         assert len(dest) == len(src)
-        for d, s in zip(dest, src):
+        for d, s in zip(dest, src, strict=True):
             _assert_copied_in_place(d, s)
 
 
@@ -185,8 +182,7 @@ def test_copy_single_tensor(tracker: CUDAGraphOptimizationTracker, device: str):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_copy_preserves_dest_address(tracker: CUDAGraphOptimizationTracker,
-                                     device: str):
+def test_copy_preserves_dest_address(tracker: CUDAGraphOptimizationTracker, device: str):
     # The whole point of the in-place copy: dest's storage address is the same
     # before and after (so a captured CUDA graph keeps reading from it).
     dest = torch.zeros(4, 5, device=device)
@@ -204,11 +200,9 @@ def test_copy_nested_structure(tracker: CUDAGraphOptimizationTracker, device: st
             "s_trunk": torch.full((1, 5), fill, device=device),
             "feature_dict": {
                 "ref_pos": torch.full((1, 5, 3), fill, device=device),
-                "mol_type": torch.full((1, 5), int(fill),
-                                       dtype=torch.int64, device=device),
+                "mol_type": torch.full((1, 5), int(fill), dtype=torch.int64, device=device),
             },
-            "coords": [torch.full((4,), fill, device=device),
-                       (torch.full((2,), fill, device=device),)],
+            "coords": [torch.full((4,), fill, device=device), (torch.full((2,), fill, device=device),)],
         }
 
     dest = _make(0.0)
@@ -221,13 +215,10 @@ def test_copy_nested_structure(tracker: CUDAGraphOptimizationTracker, device: st
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_copy_args_and_kwargs_shapes(tracker: CUDAGraphOptimizationTracker,
-                                     device: str):
+def test_copy_args_and_kwargs_shapes(tracker: CUDAGraphOptimizationTracker, device: str):
     # Mirrors how copy_args_into_static feeds args (tuple) / kwargs (dict).
-    dest_args = (torch.zeros(2, 3, device=device),
-                 [torch.zeros(4, device=device)])
-    src_args = (torch.randn(2, 3, device=device),
-                [torch.randn(4, device=device)])
+    dest_args = (torch.zeros(2, 3, device=device), [torch.zeros(4, device=device)])
+    src_args = (torch.randn(2, 3, device=device), [torch.randn(4, device=device)])
     _copy_tensors_into(dest_args, src_args)
     _assert_copied_in_place(dest_args, src_args)
 
@@ -238,8 +229,7 @@ def test_copy_args_and_kwargs_shapes(tracker: CUDAGraphOptimizationTracker,
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_copy_does_not_alias_source(tracker: CUDAGraphOptimizationTracker,
-                                    device: str):
+def test_copy_does_not_alias_source(tracker: CUDAGraphOptimizationTracker, device: str):
     # After copying, mutating src must NOT change dest (independent storage).
     dest = torch.zeros(3, 4, device=device)
     src = torch.ones(3, 4, device=device)
@@ -260,8 +250,7 @@ def test_copy_does_not_alias_source(tracker: CUDAGraphOptimizationTracker,
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_delete_clears_dict(device: str):
-    container = {"a": torch.randn(2, 3, device=device),
-                 "b": torch.randn(4, device=device)}
+    container = {"a": torch.randn(2, 3, device=device), "b": torch.randn(4, device=device)}
     _delete_tensors_in_container(container)
     assert container == {}
 
@@ -296,8 +285,8 @@ def test_delete_tuple_not_cleared_but_inner_mutables_are(device: str):
     inner_dict = {"x": torch.randn(2, device=device)}
     container = (torch.randn(2, device=device), inner_dict)
     _delete_tensors_in_container(container)
-    assert len(container) == 2          # tuple itself is untouched
-    assert inner_dict == {}             # nested dict is cleared
+    assert len(container) == 2  # tuple itself is untouched
+    assert inner_dict == {}  # nested dict is cleared
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -395,9 +384,9 @@ def test_byte_equal_matching_nan_bit_patterns_is_true(device: str):
 @pytest.mark.parametrize("device", DEVICES)
 def test_byte_equal_signed_zero_is_false(device: str):
     # +0.0 and -0.0 are value-equal but have different bit patterns.
-    a = torch.zeros(3, device=device)            # +0.0
-    b = torch.full((3,), -0.0, device=device)    # -0.0
-    assert torch.equal(a, b)                      # value-equal ...
+    a = torch.zeros(3, device=device)  # +0.0
+    b = torch.full((3,), -0.0, device=device)  # -0.0
+    assert torch.equal(a, b)  # value-equal ...
     assert not _tensor_containers_are_byte_equal(a, b)  # ... but byte-unequal
 
 
@@ -410,8 +399,7 @@ def test_byte_equal_matching_nested_structure_is_true(device: str):
                 "ref_pos": torch.arange(15, device=device).reshape(1, 5, 3).float(),
                 "mol_type": torch.zeros(1, 5, dtype=torch.int64, device=device),
             },
-            "coords": [torch.arange(4, device=device),
-                       (torch.ones(2, device=device),)],
+            "coords": [torch.arange(4, device=device), (torch.ones(2, device=device),)],
         }
 
     assert _tensor_containers_are_byte_equal(_make(), _make())
@@ -419,10 +407,8 @@ def test_byte_equal_matching_nested_structure_is_true(device: str):
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_byte_equal_one_differing_leaf_is_false(device: str):
-    left = {"a": torch.ones(2, device=device),
-            "b": [torch.zeros(3, device=device)]}
-    right = {"a": torch.ones(2, device=device),
-             "b": [torch.zeros(3, device=device)]}
+    left = {"a": torch.ones(2, device=device), "b": [torch.zeros(3, device=device)]}
+    right = {"a": torch.ones(2, device=device), "b": [torch.zeros(3, device=device)]}
     right["b"][0][1] = 9.0  # perturb a single nested leaf
     assert not _tensor_containers_are_byte_equal(left, right)
 

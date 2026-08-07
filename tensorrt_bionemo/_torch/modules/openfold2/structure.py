@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,28 +13,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.modules.openfold2.point_attention import \
-    InvariantPointAttention
+from tensorrt_bionemo._torch.modules.openfold2.point_attention import InvariantPointAttention
 from tensorrt_bionemo._torch.modules.openfold2.utils.feats import (
-    frames_and_literature_positions_to_atom14_pos, torsion_angles_to_frames)
-from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.quat_rigid import \
-    QuatRigid
-from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rigid_matrix_vector import \
-    Rigid3Array
-from tensorrt_bionemo._torch.modules.openfold2.utils.rigid_utils import (
-    Rigid, Rotation)
+    frames_and_literature_positions_to_atom14_pos,
+    torsion_angles_to_frames,
+)
+from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.quat_rigid import QuatRigid
+from tensorrt_bionemo._torch.modules.openfold2.utils.geometry.rigid_matrix_vector import Rigid3Array
+from tensorrt_bionemo._torch.modules.openfold2.utils.rigid_utils import Rigid, Rotation
 from tensorrt_bionemo._torch.tensor_utils import dict_multimap
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs.base import BaseConfig
 from tensorrt_bionemo.pipeline.models.openfold2.const import (
-    restype_atom14_mask, restype_atom14_rigid_group_positions,
-    restype_atom14_to_rigid_group, restype_rigid_group_default_frame)
+    restype_atom14_mask,
+    restype_atom14_rigid_group_positions,
+    restype_atom14_to_rigid_group,
+    restype_rigid_group_default_frame,
+)
 
 
 class BackboneUpdate(nn.Module):
@@ -42,26 +42,19 @@ class BackboneUpdate(nn.Module):
     Implements part of Algorithm 23.
     """
 
-    def __init__(self,
-                 c_s: int,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(self, c_s: int, dtype: torch.dtype = torch.float32, skip_create_weights: bool = False):
         """
         Args:
             c_s:
                 Single representation channel dimension
         """
-        super(BackboneUpdate, self).__init__()
+        super().__init__()
 
         self.c_s = c_s
 
-        self.linear = Linear(self.c_s,
-                             6,
-                             bias=True,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_s, 6, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
-    def forward(self, s: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, s: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             [*, N_res, C_s] single representation
@@ -74,30 +67,22 @@ class BackboneUpdate(nn.Module):
 
 
 class AngleResnetBlock(nn.Module):
-
-    def __init__(self,
-                 c_hidden,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(self, c_hidden, dtype: torch.dtype = torch.float32, skip_create_weights: bool = False):
         """
         Args:
             c_hidden:
                 Hidden channel dimension
         """
-        super(AngleResnetBlock, self).__init__()
+        super().__init__()
 
         self.c_hidden = c_hidden
 
-        self.linear_1 = Linear(self.c_hidden,
-                               self.c_hidden,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
-        self.linear_2 = Linear(self.c_hidden,
-                               self.c_hidden,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.linear_1 = Linear(
+            self.c_hidden, self.c_hidden, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
+        self.linear_2 = Linear(
+            self.c_hidden, self.c_hidden, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.relu = nn.ReLU()
 
@@ -118,14 +103,16 @@ class AngleResnet(nn.Module):
     Implements Algorithm 20, lines 11-14
     """
 
-    def __init__(self,
-                 c_in,
-                 c_hidden,
-                 no_blocks,
-                 no_angles,
-                 epsilon,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_in,
+        c_hidden,
+        no_blocks,
+        no_angles,
+        epsilon,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             c_in:
@@ -139,7 +126,7 @@ class AngleResnet(nn.Module):
             epsilon:
                 Small constant for normalization
         """
-        super(AngleResnet, self).__init__()
+        super().__init__()
 
         self.c_in = c_in
         self.c_hidden = c_hidden
@@ -147,35 +134,26 @@ class AngleResnet(nn.Module):
         self.no_angles = no_angles
         self.eps = epsilon
 
-        self.linear_in = Linear(self.c_in,
-                                self.c_hidden,
-                                bias=True,
-                                dtype=dtype,
-                                skip_create_weights=skip_create_weights)
+        self.linear_in = Linear(
+            self.c_in, self.c_hidden, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
-        self.linear_initial = Linear(self.c_in,
-                                     self.c_hidden,
-                                     bias=True,
-                                     dtype=dtype,
-                                     skip_create_weights=skip_create_weights)
+        self.linear_initial = Linear(
+            self.c_in, self.c_hidden, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.layers = nn.ModuleList()
         for _ in range(self.no_blocks):
-            layer = AngleResnetBlock(c_hidden=self.c_hidden,
-                                     dtype=dtype,
-                                     skip_create_weights=skip_create_weights)
+            layer = AngleResnetBlock(c_hidden=self.c_hidden, dtype=dtype, skip_create_weights=skip_create_weights)
             self.layers.append(layer)
 
-        self.linear_out = Linear(self.c_hidden,
-                                 self.no_angles * 2,
-                                 bias=True,
-                                 dtype=dtype,
-                                 skip_create_weights=skip_create_weights)
+        self.linear_out = Linear(
+            self.c_hidden, self.no_angles * 2, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.relu = nn.ReLU()
 
-    def forward(self, s: torch.Tensor,
-                s_initial: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, s: torch.Tensor, s_initial: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             s:
@@ -206,39 +184,24 @@ class AngleResnet(nn.Module):
             torch.clamp(
                 torch.sum(s**2, dim=-1, keepdim=True),
                 min=self.eps,
-            ))
+            )
+        )
         s = s / norm_denom
 
         return unnormalized_s, s
 
 
 class StructureModuleTransitionLayer(nn.Module):
-
-    def __init__(self,
-                 c,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
-        super(StructureModuleTransitionLayer, self).__init__()
+    def __init__(self, c, dtype: torch.dtype = torch.float32, skip_create_weights: bool = False):
+        super().__init__()
 
         self.c = c
 
-        self.linear_1 = Linear(self.c,
-                               self.c,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.linear_1 = Linear(self.c, self.c, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
-        self.linear_2 = Linear(self.c,
-                               self.c,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.linear_2 = Linear(self.c, self.c, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
-        self.linear_3 = Linear(self.c,
-                               self.c,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.linear_3 = Linear(self.c, self.c, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
         self.relu = nn.ReLU()
 
@@ -256,22 +219,22 @@ class StructureModuleTransitionLayer(nn.Module):
 
 
 class StructureModuleTransition(nn.Module):
-
-    def __init__(self,
-                 c: int,
-                 num_layers: int,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False,
-                 eps: float = 1e-5):
-        super(StructureModuleTransition, self).__init__()
+    def __init__(
+        self,
+        c: int,
+        num_layers: int,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+        eps: float = 1e-5,
+    ):
+        super().__init__()
 
         self.c = c
         self.num_layers = num_layers
 
         self.layers = nn.ModuleList()
         for _ in range(self.num_layers):
-            l = StructureModuleTransitionLayer(
-                self.c, dtype=dtype, skip_create_weights=skip_create_weights)
+            l = StructureModuleTransitionLayer(self.c, dtype=dtype, skip_create_weights=skip_create_weights)
             self.layers.append(l)
 
         self.layer_norm = nn.LayerNorm(self.c, dtype=dtype, eps=eps)
@@ -287,7 +250,6 @@ class StructureModuleTransition(nn.Module):
 
 
 class StructureModule(nn.Module):
-
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -321,7 +283,7 @@ class StructureModule(nn.Module):
             inf:
                 Large number used for attention masking
         """
-        super(StructureModule, self).__init__()
+        super().__init__()
         self.config = config
 
         self.c_s = config.c_s
@@ -340,18 +302,12 @@ class StructureModule(nn.Module):
         self.inf = config.inf
         self.is_multimer = config.is_multimer
 
-        self.layer_norm_s = nn.LayerNorm(self.c_s,
-                                         dtype=config.torch_dtype,
-                                         eps=self.epsilon)
-        self.layer_norm_z = nn.LayerNorm(self.c_z,
-                                         dtype=config.torch_dtype,
-                                         eps=self.epsilon)
+        self.layer_norm_s = nn.LayerNorm(self.c_s, dtype=config.torch_dtype, eps=self.epsilon)
+        self.layer_norm_z = nn.LayerNorm(self.c_z, dtype=config.torch_dtype, eps=self.epsilon)
 
-        self.linear_in = Linear(self.c_s,
-                                self.c_s,
-                                bias=True,
-                                dtype=config.torch_dtype,
-                                skip_create_weights=config.skip_create_weights)
+        self.linear_in = Linear(
+            self.c_s, self.c_s, bias=True, dtype=config.torch_dtype, skip_create_weights=config.skip_create_weights
+        )
 
         self.ipa = InvariantPointAttention(
             c_s=self.c_s,
@@ -367,9 +323,7 @@ class StructureModule(nn.Module):
             skip_create_weights=config.skip_create_weights,
         )
 
-        self.layer_norm_ipa = nn.LayerNorm(self.c_s,
-                                           dtype=config.torch_dtype,
-                                           eps=self.epsilon)
+        self.layer_norm_ipa = nn.LayerNorm(self.c_s, dtype=config.torch_dtype, eps=self.epsilon)
 
         self.transition = StructureModuleTransition(
             c=self.c_s,
@@ -380,14 +334,12 @@ class StructureModule(nn.Module):
 
         if self.is_multimer:
             self.bb_update = QuatRigid(
-                c_hidden=self.c_s,
-                dtype=config.torch_dtype,
-                skip_create_weights=config.skip_create_weights)
+                c_hidden=self.c_s, dtype=config.torch_dtype, skip_create_weights=config.skip_create_weights
+            )
         else:
             self.bb_update = BackboneUpdate(
-                c_s=self.c_s,
-                dtype=config.torch_dtype,
-                skip_create_weights=config.skip_create_weights)
+                c_s=self.c_s, dtype=config.torch_dtype, skip_create_weights=config.skip_create_weights
+            )
 
         self.angle_resnet = AngleResnet(
             c_in=self.c_s,
@@ -406,19 +358,17 @@ class StructureModule(nn.Module):
         self.ipa.head_weights.data.copy_(weights["ipa.head_weights"])
         weights.pop("ipa.head_weights")
         filter_func = lambda name, _: name == "ipa"
-        loaded_weight = recursive_calling_load_weights(self, weights,
-                                                       filter_func)
+        loaded_weight = recursive_calling_load_weights(self, weights, filter_func)
         not_loaded_weight = set(weights.keys()) - loaded_weight
         if not_loaded_weight:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weight}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weight}")
 
     def forward(
         self,
         s: torch.Tensor,
         z: torch.Tensor,
         aatype: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Args:
@@ -439,7 +389,7 @@ class StructureModule(nn.Module):
         if mask is not None:
             mask = mask.to(dtype=self.config.torch_dtype)
 
-        if (self.is_multimer):
+        if self.is_multimer:
             outputs = self._forward_multimer(s, z, aatype, mask)
         else:
             outputs = self._forward_monomer(s, z, aatype, mask)
@@ -481,7 +431,7 @@ class StructureModule(nn.Module):
             fmt="quat",
         )
         outputs = []
-        for i in range(self.no_blocks):
+        for _ in range(self.no_blocks):
             s = s + self.ipa(s, z, rigids, mask)
             s = self.layer_norm_ipa(s)
             s = self.transition(s)
@@ -492,22 +442,19 @@ class StructureModule(nn.Module):
             # quaternion-based transformations to rotation-matrix ones
             # here
             backb_to_global = Rigid(
-                Rotation(rot_mats=rigids.get_rots().get_rot_mats(),
-                         quats=None),
+                Rotation(rot_mats=rigids.get_rots().get_rot_mats(), quats=None),
                 rigids.get_trans(),
             )
 
-            backb_to_global = backb_to_global.scale_translation(
-                self.trans_scale_factor)
+            backb_to_global = backb_to_global.scale_translation(self.trans_scale_factor)
 
             unnormalized_angles, angles = self.angle_resnet(s, s_initial)
 
-            all_frames_to_global = torsion_angles_to_frames(
-                backb_to_global, angles, aatype, self.default_frames)
+            all_frames_to_global = torsion_angles_to_frames(backb_to_global, angles, aatype, self.default_frames)
 
             pred_xyz = frames_and_literature_positions_to_atom14_pos(
-                all_frames_to_global, aatype, self.default_frames,
-                self.group_idx, self.atom_mask, self.lit_positions)
+                all_frames_to_global, aatype, self.default_frames, self.group_idx, self.atom_mask, self.lit_positions
+            )
 
             scaled_rigids = rigids.scale_translation(self.trans_scale_factor)
 
@@ -544,7 +491,7 @@ class StructureModule(nn.Module):
             s.device,
         )
         outputs = []
-        for i in range(self.no_blocks):
+        for _ in range(self.no_blocks):
             s = s + self.ipa(s, z, rigids, mask)
             s = self.layer_norm_ipa(s)
             s = self.transition(s)
@@ -555,24 +502,19 @@ class StructureModule(nn.Module):
             unnormalized_angles, angles = self.angle_resnet(s, s_initial)
 
             all_frames_to_global = torsion_angles_to_frames(
-                rigids.scale_translation(self.trans_scale_factor), angles,
-                aatype, self.default_frames)
+                rigids.scale_translation(self.trans_scale_factor), angles, aatype, self.default_frames
+            )
 
             pred_xyz = frames_and_literature_positions_to_atom14_pos(
-                all_frames_to_global, aatype, self.default_frames,
-                self.group_idx, self.atom_mask, self.lit_positions)
+                all_frames_to_global, aatype, self.default_frames, self.group_idx, self.atom_mask, self.lit_positions
+            )
 
             preds = {
-                "frames":
-                rigids.scale_translation(self.trans_scale_factor).to_tensor(),
-                "sidechain_frames":
-                all_frames_to_global.to_tensor_4x4(),
-                "unnormalized_angles":
-                unnormalized_angles,
-                "angles":
-                angles,
-                "positions":
-                pred_xyz
+                "frames": rigids.scale_translation(self.trans_scale_factor).to_tensor(),
+                "sidechain_frames": all_frames_to_global.to_tensor_4x4(),
+                "unnormalized_angles": unnormalized_angles,
+                "angles": angles,
+                "positions": pred_xyz,
             }
 
             preds = {k: v.to(dtype=s.dtype) for k, v in preds.items()}
@@ -592,25 +534,29 @@ class StructureModule(nn.Module):
                 restype_rigid_group_default_frame,
                 dtype=dtype,
                 requires_grad=False,
-            ))
+            ),
+        )
 
         self.register_buffer(
             "group_idx",
             torch.tensor(
                 restype_atom14_to_rigid_group,
                 requires_grad=False,
-            ))
+            ),
+        )
         self.register_buffer(
             "atom_mask",
             torch.tensor(
                 restype_atom14_mask,
                 dtype=dtype,
                 requires_grad=False,
-            ))
+            ),
+        )
         self.register_buffer(
             "lit_positions",
             torch.tensor(
                 restype_atom14_rigid_group_positions,
                 dtype=dtype,
                 requires_grad=False,
-            ))
+            ),
+        )

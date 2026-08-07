@@ -1,23 +1,31 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from io import StringIO
 from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.data.parsers import (SequenceParsed, parse_fasta_content,
-                                           read_fasta)
+from tensorrt_bionemo.data.parsers import SequenceParsed, parse_fasta_content, read_fasta
 from tensorrt_bionemo.data.parsers.fasta import _generate_chain_id
 from tensorrt_bionemo.data.schemas import PolymerType
 
-SAMPLES_DIR = Path(
-    __file__
-).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
+SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 
 
 class TestReadFasta:
-
     def test_read_single_molecule(self):
         result = read_fasta(SAMPLES_DIR / "T1031.fasta")
         assert isinstance(result, SequenceParsed)
@@ -26,20 +34,21 @@ class TestReadFasta:
 
     def test_read_returns_protein_type(self):
         result = read_fasta(SAMPLES_DIR / "T1033.fasta")
-        assert result["sequences"][0][
-            "polymer_type"] == PolymerType.PROTEIN.value
+        assert result["sequences"][0]["polymer_type"] == PolymerType.PROTEIN.value
 
-    @pytest.mark.parametrize("filename,expected_len", [
-        ("T1031.fasta", 95),
-        ("T1033.fasta", 100),
-    ])
+    @pytest.mark.parametrize(
+        "filename,expected_len",
+        [
+            ("T1031.fasta", 95),
+            ("T1033.fasta", 100),
+        ],
+    )
     def test_sequence_lengths(self, filename, expected_len):
         result = read_fasta(SAMPLES_DIR / filename)
         assert len(result["sequences"][0]["sequence"]) == expected_len
 
 
 class TestParseFastaContent:
-
     def test_parse_from_string(self):
         content = StringIO(">test_seq\nACDEFGHIKLMNPQRSTVWY")
         result = parse_fasta_content(content)
@@ -135,14 +144,10 @@ class TestChainIdGeneration:
 
     def test_generate_chain_id_max_length(self):
         """Test that all generated IDs are at most 4 characters."""
-        test_indices = [
-            0, 25, 26, 701, 702, 18277, 18278, 50000, 100000, 475253
-        ]
+        test_indices = [0, 25, 26, 701, 702, 18277, 18278, 50000, 100000, 475253]
         for idx in test_indices:
             chain_id = _generate_chain_id(idx)
-            assert len(
-                chain_id
-            ) <= 4, f"Chain ID '{chain_id}' for index {idx} exceeds 4 characters"
+            assert len(chain_id) <= 4, f"Chain ID '{chain_id}' for index {idx} exceeds 4 characters"
             assert len(chain_id) >= 1, f"Chain ID for index {idx} is empty"
 
     def test_generate_chain_id_exceeds_max(self):
@@ -159,28 +164,25 @@ class TestChainIdGeneration:
     def test_generate_chain_id_uniqueness(self):
         """Test that generated chain IDs are unique for different indices."""
         chain_ids = [_generate_chain_id(i) for i in range(10000)]
-        assert len(chain_ids) == len(
-            set(chain_ids)), "Generated chain IDs are not unique"
+        assert len(chain_ids) == len(set(chain_ids)), "Generated chain IDs are not unique"
 
     def test_chain_id_matches_validation_pattern(self):
         """Test that generated chain IDs match Polymer._validate_chain_id pattern."""
         import re
-        pattern = re.compile(r'^[A-Za-z0-9]{1,4}$')
+
+        pattern = re.compile(r"^[A-Za-z0-9]{1,4}$")
 
         # Test various indices across different ranges
-        test_indices = [
-            0, 10, 25, 26, 100, 701, 702, 5000, 18277, 18278, 50000, 475253
-        ]
+        test_indices = [0, 10, 25, 26, 100, 701, 702, 5000, 18277, 18278, 50000, 475253]
         for idx in test_indices:
             chain_id = _generate_chain_id(idx)
-            assert pattern.match(chain_id), \
-                f"Chain ID '{chain_id}' for index {idx} does not match validation pattern"
+            assert pattern.match(chain_id), f"Chain ID '{chain_id}' for index {idx} does not match validation pattern"
 
     def test_mmcif_style_alphabetical_order(self):
         """Test that chain IDs follow alphabetical order (mmCIF convention)."""
         # First 26 should be A-Z
         for i in range(26):
-            assert _generate_chain_id(i) == chr(ord('A') + i)
+            assert _generate_chain_id(i) == chr(ord("A") + i)
 
         # Next should be AA, AB, AC...
         assert _generate_chain_id(26) == "AA"
@@ -212,8 +214,7 @@ class TestFastaWithManySequences:
         # Verify all chain IDs are valid (1-4 chars)
         for seq in result["sequences"]:
             chain_id = seq["chain_id"]
-            assert len(
-                chain_id) <= 4, f"Chain ID '{chain_id}' exceeds 4 characters"
+            assert len(chain_id) <= 4, f"Chain ID '{chain_id}' exceeds 4 characters"
             assert len(chain_id) >= 1
 
     def test_parse_sequences_across_boundaries(self):
@@ -282,7 +283,7 @@ class TestFastaWithManySequences:
         result = parse_fasta_content(content)
 
         # Should be A through Z
-        expected_chain_ids = [chr(ord('A') + i) for i in range(26)]
+        expected_chain_ids = [chr(ord("A") + i) for i in range(26)]
         actual_chain_ids = [seq["chain_id"] for seq in result["sequences"]]
         assert actual_chain_ids == expected_chain_ids
 

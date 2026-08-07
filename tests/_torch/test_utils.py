@@ -89,7 +89,7 @@ def test_commit_advances_default_generator_on_clean_exit(device):
     as if the wrapped draws had used the default generator directly.
     """
     torch.manual_seed(SEED)
-    inside = torch.randn(4, device=device)   # what the wrapped draw consumes
+    inside = torch.randn(4, device=device)  # what the wrapped draw consumes
     ref_after = torch.randn(4, device=device)  # downstream default draw
 
     torch.manual_seed(SEED)

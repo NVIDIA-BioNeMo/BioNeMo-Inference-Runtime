@@ -15,7 +15,7 @@
 
 from io import StringIO
 from pathlib import Path
-from typing import Optional, TextIO, Union
+from typing import TextIO
 
 from Bio import SeqIO
 
@@ -81,29 +81,23 @@ def _generate_chain_id(index: int) -> str:
         result.append(_alphabetical_order[num % 26])
         num //= 26
 
-    return ''.join(reversed(result))
+    return "".join(reversed(result))
 
 
 class SequenceParsed(dict):
-
-    def __init__(self,
-                 sequences: list[Polymer],
-                 descriptions: Optional[list[str]] = None):
+    def __init__(self, sequences: list[Polymer], descriptions: list[str] | None = None):
         super().__init__(sequences=sequences, descriptions=descriptions or [])
 
 
 def parse_fasta_content(
-    content: StringIO | TextIO,
-    return_as_list: bool = False
-) -> Union[SequenceParsed, tuple[list[str], list[str]]]:
+    content: StringIO | TextIO, return_as_list: bool = False
+) -> SequenceParsed | tuple[list[str], list[str]]:
     """Parse a FASTA file into a SequenceParsed object for protein entity"""
     if isinstance(content, str):
         content = StringIO(content)
 
     # Filter out comment lines starting with "#"
-    filtered_lines = [
-        line for line in content if not line.lstrip().startswith("#")
-    ]
+    filtered_lines = [line for line in content if not line.lstrip().startswith("#")]
     content = StringIO("".join(filtered_lines))
 
     fasta_sequences = SeqIO.parse(content, "fasta")
@@ -127,22 +121,18 @@ def parse_fasta_content(
         try:
             chain_id = _generate_chain_id(i)
         except ValueError as e:
-            raise ValueError(
-                f"Cannot generate valid chain ID for sequence at index {i}. {str(e)}"
-            ) from e
+            raise ValueError(f"Cannot generate valid chain ID for sequence at index {i}. {str(e)}") from e
 
         if seq in seen_sequences:
             p = seen_sequences[seq]
-            chain_ids = p['chain_id']
+            chain_ids = p["chain_id"]
             if isinstance(chain_ids, str):
                 chain_ids = [chain_ids]
             chain_ids.append(chain_id)
             seen_sequences[seq]["chain_id"] = chain_ids
             continue
 
-        molecule = Polymer(polymer_type=PolymerType.PROTEIN,
-                           chain_id=chain_id,
-                           sequence=seq)
+        molecule = Polymer(polymer_type=PolymerType.PROTEIN, chain_id=chain_id, sequence=seq)
         sequences.append(molecule)
         descriptions.append(desp)
         seen_sequences[seq] = molecule
@@ -150,7 +140,6 @@ def parse_fasta_content(
     return SequenceParsed(sequences=sequences, descriptions=descriptions)
 
 
-def read_fasta(file_path: str | Path,
-               return_as_list: bool = False) -> SequenceParsed:
+def read_fasta(file_path: str | Path, return_as_list: bool = False) -> SequenceParsed:
     with open(file_path) as source:
         return parse_fasta_content(source, return_as_list=return_as_list)

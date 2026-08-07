@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """OSS equivalence tests for the coordinate-conditioned atom encoder."""
+
 import os
 from dataclasses import dataclass
 
@@ -22,16 +23,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.layers.linear import WeightMode
-from tensorrt_bionemo._torch.modules.protenix import \
-    ProtenixAtomAttentionEncoder
+from tensorrt_bionemo._torch.modules.protenix import ProtenixAtomAttentionEncoder
 from tensorrt_bionemo.configs import DiffusionTransformerConfig
-from tensorrt_bionemo.models.protenix.config import \
-    DiffusionAtomAttentionEncoderConfig
-from tensorrt_bionemo.models.protenix.convert import \
-    convert_diffusion_atom_encoder_torch
+from tensorrt_bionemo.models.protenix.config import DiffusionAtomAttentionEncoderConfig
+from tensorrt_bionemo.models.protenix.convert import convert_diffusion_atom_encoder_torch
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.ref_layers_from_oss import (
-    RefProtenixAtomAttentionEncoderFromOSS, update_input_feature_dict)
+    RefProtenixAtomAttentionEncoderFromOSS,
+    update_input_feature_dict,
+)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -53,35 +53,35 @@ class Scenario:
 
 def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
     a, b = a.float(), b.float()
-    return (torch.sqrt(torch.mean(
-        (a - b)**2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
+    return (torch.sqrt(torch.mean((a - b) ** 2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
 
 
 def _atom_transformer_config(sc: "Scenario") -> DiffusionTransformerConfig:
     """The Protenix local/atom DiffusionTransformer variant flags."""
-    return DiffusionTransformerConfig(num_blocks=sc.n_blocks,
-                                      num_heads=sc.n_heads,
-                                      dim=sc.c_atom,
-                                      dim_single_cond=sc.c_atom,
-                                      dim_pairwise=sc.c_atompair,
-                                      bias_proj=True,
-                                      pair_norm=True,
-                                      initial_norm=False,
-                                      attention_initial_norm=False,
-                                      use_ada_layer_norm=True,
-                                      use_separate_layer_norm=True,
-                                      chain_kv_norm=True,
-                                      attn_output_gate=True,
-                                      conditioned_transition_using_silu=True,
-                                      transition_expansion_factor=2,
-                                      pairwise_attention_backend="SDPA")
+    return DiffusionTransformerConfig(
+        num_blocks=sc.n_blocks,
+        num_heads=sc.n_heads,
+        dim=sc.c_atom,
+        dim_single_cond=sc.c_atom,
+        dim_pairwise=sc.c_atompair,
+        bias_proj=True,
+        pair_norm=True,
+        initial_norm=False,
+        attention_initial_norm=False,
+        use_ada_layer_norm=True,
+        use_separate_layer_norm=True,
+        chain_kv_norm=True,
+        attn_output_gate=True,
+        conditioned_transition_using_silu=True,
+        transition_expansion_factor=2,
+        pairwise_attention_backend="SDPA",
+    )
 
 
 def _make_features(device: torch.device, n_atom: int, n_token: int) -> dict:
     torch.manual_seed(11)
-    atom_to_token_idx = (torch.arange(n_atom, device=device) //
-                         (n_atom // n_token)).long()
-    element_idx = torch.randint(0, 128, (n_atom, ), device=device)
+    atom_to_token_idx = (torch.arange(n_atom, device=device) // (n_atom // n_token)).long()
+    element_idx = torch.randint(0, 128, (n_atom,), device=device)
     name_chars_idx = torch.randint(0, 64, (n_atom, 4), device=device)
     features = {
         "atom_to_token_idx": atom_to_token_idx,
@@ -95,11 +95,14 @@ def _make_features(device: torch.device, n_atom: int, n_token: int) -> dict:
     return update_input_feature_dict(features)
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dtype="float32"),
-    Scenario(dtype="bfloat16"),
-],
-                         ids=["fp32", "bf16"])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dtype="float32"),
+        Scenario(dtype="bfloat16"),
+    ],
+    ids=["fp32", "bf16"],
+)
 def test_protenix_diffusion_atom_encoder(sc: Scenario):
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
@@ -108,17 +111,22 @@ def test_protenix_diffusion_atom_encoder(sc: Scenario):
     torch_dtype = str_dtype_to_torch(sc.dtype)
     S = sc.n_sample
 
-    ref = RefProtenixAtomAttentionEncoderFromOSS.build(
-        has_coords=True,
-        c_token=sc.c_token,
-        c_atom=sc.c_atom,
-        c_atompair=sc.c_atompair,
-        c_s=sc.c_s,
-        c_z=sc.c_z,
-        n_blocks=sc.n_blocks,
-        n_heads=sc.n_heads,
-        n_queries=sc.n_queries,
-        n_keys=sc.n_keys).to(device=device, dtype=torch.float32).eval()
+    ref = (
+        RefProtenixAtomAttentionEncoderFromOSS.build(
+            has_coords=True,
+            c_token=sc.c_token,
+            c_atom=sc.c_atom,
+            c_atompair=sc.c_atompair,
+            c_s=sc.c_s,
+            c_z=sc.c_z,
+            n_blocks=sc.n_blocks,
+            n_heads=sc.n_heads,
+            n_queries=sc.n_queries,
+            n_keys=sc.n_keys,
+        )
+        .to(device=device, dtype=torch.float32)
+        .eval()
+    )
     with torch.no_grad():
         for m in ref.modules():
             if isinstance(m, nn.Linear):
@@ -133,24 +141,19 @@ def test_protenix_diffusion_atom_encoder(sc: Scenario):
         n_queries=sc.n_queries,
         n_keys=sc.n_keys,
         atom_transformer_config=_atom_transformer_config(sc),
-        dtype=sc.dtype)
+        dtype=sc.dtype,
+    )
     model = ProtenixAtomAttentionEncoder(config).to(device).eval()
-    converted = convert_diffusion_atom_encoder_torch(config,
-                                                     ref.state_dict(),
-                                                     prefix="")
-    assert model.linear_no_bias_ref.weights_loading_config.weight_mode == \
-        WeightMode.FUSED_ALL_LINEAR_LAST_DIM
-    assert model.linear_no_bias_pair.weights_loading_config.weight_mode == \
-        WeightMode.FUSED_ALL_LINEAR_LAST_DIM
+    converted = convert_diffusion_atom_encoder_torch(config, ref.state_dict(), prefix="")
+    assert model.linear_no_bias_ref.weights_loading_config.weight_mode == WeightMode.FUSED_ALL_LINEAR_LAST_DIM
+    assert model.linear_no_bias_pair.weights_loading_config.weight_mode == WeightMode.FUSED_ALL_LINEAR_LAST_DIM
     for target, sources in {
-            "linear_no_bias_ref.weight": ("ref_pos", "ref_charge", "f"),
-            "linear_no_bias_pair.weight": ("d", "invd", "v"),
+        "linear_no_bias_ref.weight": ("ref_pos", "ref_charge", "f"),
+        "linear_no_bias_pair.weight": ("d", "invd", "v"),
     }.items():
-        expected = torch.cat([
-            ref.state_dict()[f"linear_no_bias_{source}.weight"]
-            for source in sources
-        ],
-                             dim=-1).to(torch_dtype)
+        expected = torch.cat([ref.state_dict()[f"linear_no_bias_{source}.weight"] for source in sources], dim=-1).to(
+            torch_dtype
+        )
         torch.testing.assert_close(converted[target], expected)
     missing, unexpected = model.load_state_dict(converted, strict=False)
     assert not missing and not unexpected, (missing, unexpected)
@@ -161,34 +164,37 @@ def test_protenix_diffusion_atom_encoder(sc: Scenario):
     z = torch.randn(S, sc.n_token, sc.n_token, sc.c_z, device=device)
 
     def _oss_args():
-        return dict(atom_to_token_idx=feats["atom_to_token_idx"],
-                    ref_pos=feats["ref_pos"],
-                    ref_charge=feats["ref_charge"],
-                    ref_mask=feats["ref_mask"],
-                    ref_atom_name_chars=feats["ref_atom_name_chars"],
-                    ref_element=feats["ref_element"],
-                    d_lm=feats["d_lm"],
-                    v_lm=feats["v_lm"],
-                    pad_info=feats["pad_info"])
+        return {
+            "atom_to_token_idx": feats["atom_to_token_idx"],
+            "ref_pos": feats["ref_pos"],
+            "ref_charge": feats["ref_charge"],
+            "ref_mask": feats["ref_mask"],
+            "ref_atom_name_chars": feats["ref_atom_name_chars"],
+            "ref_element": feats["ref_element"],
+            "d_lm": feats["d_lm"],
+            "v_lm": feats["v_lm"],
+            "pad_info": feats["pad_info"],
+        }
 
     def _batched(t):
-        return t.unsqueeze(0).to(torch_dtype) if t.is_floating_point() \
-            else t.unsqueeze(0)
+        return t.unsqueeze(0).to(torch_dtype) if t.is_floating_point() else t.unsqueeze(0)
 
     with torch.inference_mode():
         exp = ref(**_oss_args(), r_l=r_l, s=s, z=z)  # unbatched over N_sample
-        act = model(atom_to_token_idx=feats["atom_to_token_idx"].unsqueeze(0),
-                    ref_pos=_batched(feats["ref_pos"]),
-                    ref_charge=_batched(feats["ref_charge"]),
-                    ref_mask=_batched(feats["ref_mask"]),
-                    ref_atom_name_chars=_batched(feats["ref_atom_name_chars"]),
-                    ref_element=_batched(feats["ref_element"]),
-                    d_lm=_batched(feats["d_lm"]),
-                    v_lm=_batched(feats["v_lm"]),
-                    pad_info=feats["pad_info"],
-                    r_l=r_l.unsqueeze(0).to(torch_dtype),
-                    s=s.unsqueeze(0).to(torch_dtype),
-                    z=z.unsqueeze(0).to(torch_dtype))
+        act = model(
+            atom_to_token_idx=feats["atom_to_token_idx"].unsqueeze(0),
+            ref_pos=_batched(feats["ref_pos"]),
+            ref_charge=_batched(feats["ref_charge"]),
+            ref_mask=_batched(feats["ref_mask"]),
+            ref_atom_name_chars=_batched(feats["ref_atom_name_chars"]),
+            ref_element=_batched(feats["ref_element"]),
+            d_lm=_batched(feats["d_lm"]),
+            v_lm=_batched(feats["v_lm"]),
+            pad_info=feats["pad_info"],
+            r_l=r_l.unsqueeze(0).to(torch_dtype),
+            s=s.unsqueeze(0).to(torch_dtype),
+            z=z.unsqueeze(0).to(torch_dtype),
+        )
     act = tuple(t.squeeze(0) for t in act)
 
     tol = 3e-3 if torch_dtype == torch.float32 else 6e-2

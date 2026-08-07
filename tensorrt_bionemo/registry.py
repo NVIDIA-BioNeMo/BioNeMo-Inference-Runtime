@@ -15,7 +15,7 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch.nn as nn
 
@@ -23,16 +23,13 @@ from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.logger import logger
 
 if TYPE_CHECKING:
-    from tensorrt_bionemo.pipeline.base import (FeatureFactoryBase,
-                                                PostProcessorBase,
-                                                TokenizerBase)
+    from tensorrt_bionemo.pipeline.base import FeatureFactoryBase, PostProcessorBase, TokenizerBase
 
 
 class ModelComponentsFactory(ABC):
-
     @classmethod
     @abstractmethod
-    def get_model_class(cls) -> Type[nn.Module]:
+    def get_model_class(cls) -> type[nn.Module]:
         pass
 
     @classmethod
@@ -47,11 +44,11 @@ class ModelComponentsFactory(ABC):
 
     @classmethod
     @abstractmethod
-    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
+    def get_postprocessor(cls) -> type["PostProcessorBase"]:
         pass
 
     @classmethod
-    def get_default_runtime_args(cls) -> Dict[str, Any]:
+    def get_default_runtime_args(cls) -> dict[str, Any]:
         return {}
 
     @classmethod
@@ -60,31 +57,27 @@ class ModelComponentsFactory(ABC):
 
 
 class ModelRegistry:
-    _factories: ClassVar[Dict[str, Type[ModelComponentsFactory]]] = {}
+    _factories: ClassVar[dict[str, type[ModelComponentsFactory]]] = {}
 
     @classmethod
-    def register(cls, model_name: str, factory: Type[ModelComponentsFactory]):
+    def register(cls, model_name: str, factory: type[ModelComponentsFactory]):
         if model_name in cls._factories:
-            logger.warning(
-                f"Factory for model {model_name} already registered, overriding"
-            )
+            logger.warning(f"Factory for model {model_name} already registered, overriding")
         cls._factories[model_name] = factory
 
     @classmethod
-    def register_factory(cls, factory: Type[ModelComponentsFactory]):
+    def register_factory(cls, factory: type[ModelComponentsFactory]):
         for model_name in factory.get_supported_model_names():
             cls.register(model_name, factory)
 
     @classmethod
-    def get_factory(cls, model_name: str) -> Type[ModelComponentsFactory]:
+    def get_factory(cls, model_name: str) -> type[ModelComponentsFactory]:
         if model_name not in cls._factories:
-            raise ValueError(
-                f"Model {model_name} not registered. "
-                f"Available models: {list(cls._factories.keys())}")
+            raise ValueError(f"Model {model_name} not registered. Available models: {list(cls._factories.keys())}")
         return cls._factories[model_name]
 
     @classmethod
-    def get_model_class(cls, model_name: str) -> Type[nn.Module]:
+    def get_model_class(cls, model_name: str) -> type[nn.Module]:
         return cls.get_factory(model_name).get_model_class()
 
     @classmethod
@@ -96,46 +89,47 @@ class ModelRegistry:
         return cls.get_factory(model_name).get_feature_factory()
 
     @classmethod
-    def get_postprocessor(cls, model_name: str) -> Type["PostProcessorBase"]:
+    def get_postprocessor(cls, model_name: str) -> type["PostProcessorBase"]:
         return cls.get_factory(model_name).get_postprocessor()
 
     @classmethod
-    def get_default_runtime_args(cls, model_name: str) -> Dict[str, Any]:
+    def get_default_runtime_args(cls, model_name: str) -> dict[str, Any]:
         return cls.get_factory(model_name).get_default_runtime_args()
 
     @classmethod
     def load_metadata(
         cls,
         model_name: str,
-        cache_dir: Optional[Union[str, Path]] = None,
-    ) -> Dict[str, Any]:
+        cache_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
         from tensorrt_bionemo.hubs.metadata import load_metadata
+
         return load_metadata(model_name, cache_dir)
 
 
 class OpenFold2Factory(ModelComponentsFactory):
-
     @classmethod
-    def get_model_class(cls) -> Type[nn.Module]:
+    def get_model_class(cls) -> type[nn.Module]:
         from tensorrt_bionemo.models.openfold2 import OpenFold2
+
         return OpenFold2
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import \
-            Tokenizer
+        from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import Tokenizer
+
         return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import \
-            FeatureFactory
+        from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import FeatureFactory
+
         return FeatureFactory()
 
     @classmethod
-    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import \
-            PostProcessor
+    def get_postprocessor(cls) -> type["PostProcessorBase"]:
+        from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import PostProcessor
+
         return PostProcessor
 
     @classmethod
@@ -159,28 +153,28 @@ class OpenFold2Factory(ModelComponentsFactory):
 
 
 class OpenFold2MultimerFactory(ModelComponentsFactory):
-
     @classmethod
-    def get_model_class(cls) -> Type[nn.Module]:
+    def get_model_class(cls) -> type[nn.Module]:
         from tensorrt_bionemo.models.openfold2 import OpenFold2
+
         return OpenFold2
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import \
-            MultimerTokenizer
+        from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import MultimerTokenizer
+
         return MultimerTokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import \
-            MultimerFeatureFactory
+        from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import MultimerFeatureFactory
+
         return MultimerFeatureFactory()
 
     @classmethod
-    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import \
-            PostProcessor
+    def get_postprocessor(cls) -> type["PostProcessorBase"]:
+        from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import PostProcessor
+
         return PostProcessor
 
     @classmethod
@@ -195,9 +189,8 @@ class OpenFold2MultimerFactory(ModelComponentsFactory):
 
 
 class Boltz1Factory(ModelComponentsFactory):
-
     @classmethod
-    def get_default_runtime_args(cls) -> Dict[str, Any]:
+    def get_default_runtime_args(cls) -> dict[str, Any]:
         return {
             "recycling_steps": 3,
             "num_sampling_steps": 200,
@@ -205,25 +198,27 @@ class Boltz1Factory(ModelComponentsFactory):
         }
 
     @classmethod
-    def get_model_class(cls) -> Type[nn.Module]:
+    def get_model_class(cls) -> type[nn.Module]:
         from tensorrt_bionemo.models.boltz1 import Boltz1
+
         return Boltz1
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
         from tensorrt_bionemo.pipeline.models.boltz1.tokenizer import Tokenizer
+
         return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        from tensorrt_bionemo.pipeline.models.boltz1.feature_factory import \
-            FeatureFactory
+        from tensorrt_bionemo.pipeline.models.boltz1.feature_factory import FeatureFactory
+
         return FeatureFactory()
 
     @classmethod
-    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        from tensorrt_bionemo.pipeline.models.boltz2.postprocessor import \
-            PostProcessor
+    def get_postprocessor(cls) -> type["PostProcessorBase"]:
+        from tensorrt_bionemo.pipeline.models.boltz2.postprocessor import PostProcessor
+
         return PostProcessor
 
     @classmethod
@@ -232,9 +227,8 @@ class Boltz1Factory(ModelComponentsFactory):
 
 
 class Boltz2Factory(ModelComponentsFactory):
-
     @classmethod
-    def get_default_runtime_args(cls) -> Dict[str, Any]:
+    def get_default_runtime_args(cls) -> dict[str, Any]:
         return {
             "recycling_steps": 3,
             "num_sampling_steps": 200,
@@ -242,25 +236,27 @@ class Boltz2Factory(ModelComponentsFactory):
         }
 
     @classmethod
-    def get_model_class(cls) -> Type[nn.Module]:
+    def get_model_class(cls) -> type[nn.Module]:
         from tensorrt_bionemo.models.boltz2 import Boltz2
+
         return Boltz2
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
         from tensorrt_bionemo.pipeline.models.boltz2.tokenizer import Tokenizer
+
         return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        from tensorrt_bionemo.pipeline.models.boltz2.feature_factory import \
-            FeatureFactory
+        from tensorrt_bionemo.pipeline.models.boltz2.feature_factory import FeatureFactory
+
         return FeatureFactory()
 
     @classmethod
-    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        from tensorrt_bionemo.pipeline.models.boltz2.postprocessor import \
-            PostProcessor
+    def get_postprocessor(cls) -> type["PostProcessorBase"]:
+        from tensorrt_bionemo.pipeline.models.boltz2.postprocessor import PostProcessor
+
         return PostProcessor
 
     @classmethod
@@ -269,9 +265,8 @@ class Boltz2Factory(ModelComponentsFactory):
 
 
 class Boltz2AffinityFactory(ModelComponentsFactory):
-
     @classmethod
-    def get_default_runtime_args(cls) -> Dict[str, Any]:
+    def get_default_runtime_args(cls) -> dict[str, Any]:
         return {
             "recycling_steps": 3,
             "num_sampling_steps": 200,
@@ -279,24 +274,22 @@ class Boltz2AffinityFactory(ModelComponentsFactory):
         }
 
     @classmethod
-    def get_model_class(cls) -> Type[nn.Module]:
+    def get_model_class(cls) -> type[nn.Module]:
         from tensorrt_bionemo.models.boltz2 import Boltz2Affinity
+
         return Boltz2Affinity
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError(
-            "Boltz2Affinity tokenizer not implemented in pipeline")
+        raise NotImplementedError("Boltz2Affinity tokenizer not implemented in pipeline")
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError(
-            "Boltz2Affinity feature factory not implemented in pipeline")
+        raise NotImplementedError("Boltz2Affinity feature factory not implemented in pipeline")
 
     @classmethod
-    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        raise NotImplementedError(
-            "Boltz2Affinity postprocessor not implemented in pipeline")
+    def get_postprocessor(cls) -> type["PostProcessorBase"]:
+        raise NotImplementedError("Boltz2Affinity postprocessor not implemented in pipeline")
 
     @classmethod
     def get_supported_model_names(cls) -> list[str]:
@@ -304,9 +297,8 @@ class Boltz2AffinityFactory(ModelComponentsFactory):
 
 
 class OpenFold3Factory(ModelComponentsFactory):
-
     @classmethod
-    def get_default_runtime_args(cls) -> Dict[str, Any]:
+    def get_default_runtime_args(cls) -> dict[str, Any]:
         # Boltz-style kwarg names so the generic ``FoldingEngine`` can forward
         # the same ``runtime_args`` dict to either model. Mapping to OF3
         # internals (see ``OpenFold3.forward``):
@@ -320,26 +312,27 @@ class OpenFold3Factory(ModelComponentsFactory):
         }
 
     @classmethod
-    def get_model_class(cls) -> Type[nn.Module]:
+    def get_model_class(cls) -> type[nn.Module]:
         from tensorrt_bionemo.models.openfold3 import OpenFold3
+
         return OpenFold3
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        from tensorrt_bionemo.pipeline.models.openfold3.tokenizer import \
-            Tokenizer
+        from tensorrt_bionemo.pipeline.models.openfold3.tokenizer import Tokenizer
+
         return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        from tensorrt_bionemo.pipeline.models.openfold3.feature_factory import \
-            FeatureFactory
+        from tensorrt_bionemo.pipeline.models.openfold3.feature_factory import FeatureFactory
+
         return FeatureFactory()
 
     @classmethod
-    def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        from tensorrt_bionemo.pipeline.models.openfold3.postprocessor import \
-            PostProcessor
+    def get_postprocessor(cls) -> type["PostProcessorBase"]:
+        from tensorrt_bionemo.pipeline.models.openfold3.postprocessor import PostProcessor
+
         return PostProcessor
 
     @classmethod
@@ -362,7 +355,7 @@ def register_all_factories():
     logger.info(f"Registered {len(factories)} model factories")
 
 
-def get_model_class(model_name: str) -> Type[nn.Module]:
+def get_model_class(model_name: str) -> type[nn.Module]:
     return ModelRegistry.get_model_class(model_name)
 
 
@@ -374,16 +367,16 @@ def get_feature_factory(model_name: str) -> "FeatureFactoryBase":
     return ModelRegistry.get_feature_factory(model_name)
 
 
-def get_postprocessor(model_name: str) -> Type["PostProcessorBase"]:
+def get_postprocessor(model_name: str) -> type["PostProcessorBase"]:
     return ModelRegistry.get_postprocessor(model_name)
 
 
-def get_default_runtime_args(model_name: str) -> Dict[str, Any]:
+def get_default_runtime_args(model_name: str) -> dict[str, Any]:
     return ModelRegistry.get_default_runtime_args(model_name)
 
 
 def load_metadata(
     model_name: str,
-    cache_dir: Optional[Union[str, Path]] = None,
-) -> Dict[str, Any]:
+    cache_dir: str | Path | None = None,
+) -> dict[str, Any]:
     return ModelRegistry.load_metadata(model_name, cache_dir)

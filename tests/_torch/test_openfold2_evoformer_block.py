@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,13 +20,13 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 from test_utils.openfold.create_and_load_weights import (
-    create_evoformer_block_weights, load_evoformer_block_weights_torch)
+    create_evoformer_block_weights,
+    load_evoformer_block_weights_torch,
+)
 from test_utils.openfold.ref_layers import RefEvoformerBlock
 
-from tensorrt_bionemo._torch.attention_backend.utils import (
-    PrecomputedPairMasks, precompute_pair_masks)
-from tensorrt_bionemo._torch.layers.transformers.evoformer import \
-    EvoformerBlock
+from tensorrt_bionemo._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
+from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
@@ -65,49 +65,36 @@ def _create_evoformer_block(ref_module, sc, torch_dtype):
     )
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(triangle_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(triangle_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV"),
+        Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
+    ],
+)
 def test_evoformer_block(sc: Scenario):
     _skip_if_cutedsl(sc.triangle_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     torch_dtype = str_dtype_to_torch(sc.dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     ref_module = RefEvoformerBlock.load_weights()
     ref_module = ref_module.to(device)
 
     weights_and_biases = create_evoformer_block_weights(from_ref=ref_module)
-    m = torch.randn(bs,
-                    sc.n_seq,
-                    sc.n_res,
-                    ref_module.c_m,
-                    dtype=torch.float32).cuda()
-    z = torch.randn(bs,
-                    sc.n_res,
-                    sc.n_res,
-                    ref_module.c_z,
-                    dtype=torch.float32).cuda()
+    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_module.c_m, dtype=torch.float32).cuda()
+    z = torch.randn(bs, sc.n_res, sc.n_res, ref_module.c_z, dtype=torch.float32).cuda()
     # In production, both ``seq_mask`` and ``msa_row_mask`` are
     # left-aligned (``ones`` + right-only zero padding in the collator),
     # and ``msa_mask[b, s, n] = msa_row_mask[b, s] * seq_mask[b, n]``.
     # Build the same structure here so the CuTeDSL MSA-row attention's
     # left-mask kernel sees the production padding pattern.
-    seq_mask = make_left_aligned_mask(bs,
-                                      sc.n_res,
-                                      dtype=torch.float32,
-                                      device="cuda",
-                                      min_valid=sc.n_res // 2)
-    msa_row_mask = make_left_aligned_mask(bs,
-                                          sc.n_seq,
-                                          dtype=torch.float32,
-                                          device="cuda",
-                                          min_valid=sc.n_seq // 2)
+    seq_mask = make_left_aligned_mask(bs, sc.n_res, dtype=torch.float32, device="cuda", min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs, sc.n_seq, dtype=torch.float32, device="cuda", min_valid=sc.n_seq // 2)
     msa_mask = msa_row_mask[..., None] * seq_mask[..., None, :]
     pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
 
@@ -133,39 +120,27 @@ def test_evoformer_block(sc: Scenario):
     # the CuTeDSL MSA-row attention emits early-exit (garbage) tiles for
     # MSA rows where ``msa_row_mask = 0``.  Both implementations agree on
     # the *valid* sub-block; only compare there.
-    m_keep = (msa_row_mask[..., None] *
-              seq_mask[..., None, :]).unsqueeze(-1).float()  # [B, S, N, 1]
+    m_keep = (msa_row_mask[..., None] * seq_mask[..., None, :]).unsqueeze(-1).float()  # [B, S, N, 1]
     z_keep = pair_mask.unsqueeze(-1).float()  # [B, N, N, 1]
 
     def _masked(x: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
-        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0,
-                                neginf=0.0) * keep
+        return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0) * keep
 
     if torch_dtype == torch.float32:
-        torch.testing.assert_close(_masked(output_m, m_keep),
-                                   _masked(ref_m_f32, m_keep),
-                                   atol=1e-3,
-                                   rtol=1e-4)
-        torch.testing.assert_close(_masked(output_z, z_keep),
-                                   _masked(ref_z_f32, z_keep),
-                                   atol=1e-3,
-                                   rtol=1e-4)
+        torch.testing.assert_close(_masked(output_m, m_keep), _masked(ref_m_f32, m_keep), atol=1e-3, rtol=1e-4)
+        torch.testing.assert_close(_masked(output_z, z_keep), _masked(ref_z_f32, z_keep), atol=1e-3, rtol=1e-4)
     else:
         ref_module_typed = ref_module.to(torch_dtype)
         with torch.no_grad():
-            ref_m_typed, ref_z_typed = ref_module_typed(
-                m_t, z_t, msa_mask_t, pair_mask_t)
+            ref_m_typed, ref_z_typed = ref_module_typed(m_t, z_t, msa_mask_t, pair_mask_t)
 
         for name, out, ref_typed, ref_f32, keep in [
             ("MSA", output_m, ref_m_typed, ref_m_f32, m_keep),
             ("Pair", output_z, ref_z_typed, ref_z_f32, z_keep),
         ]:
-            diff_ours = torch.max(
-                torch.abs(_masked(out, keep) - _masked(ref_f32, keep)))
-            diff_ref = torch.max(
-                torch.abs(_masked(ref_typed, keep) - _masked(ref_f32, keep)))
-            assert diff_ours <= 2.0 * diff_ref + 1e-3, (
-                f"{name}: ours_diff={diff_ours}, ref_diff={diff_ref}")
+            diff_ours = torch.max(torch.abs(_masked(out, keep) - _masked(ref_f32, keep)))
+            diff_ref = torch.max(torch.abs(_masked(ref_typed, keep) - _masked(ref_f32, keep)))
+            assert diff_ours <= 2.0 * diff_ref + 1e-3, f"{name}: ours_diff={diff_ours}, ref_diff={diff_ref}"
 
 
 # ---------------------------------------------------------------------------
@@ -173,18 +148,21 @@ def test_evoformer_block(sc: Scenario):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(triangle_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="VANILLA", dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CUEQUIV", dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(triangle_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV"),
+        Scenario(triangle_attn_backend="VANILLA", dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CUEQUIV", dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
+    ],
+)
 def test_evoformer_block_precomputed_masks(sc: Scenario):
     """Outputs with precomputed masks must exactly match the original path."""
     _skip_if_cutedsl(sc.triangle_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     torch_dtype = str_dtype_to_torch(sc.dtype)
@@ -199,44 +177,18 @@ def test_evoformer_block_precomputed_masks(sc: Scenario):
     module = module.to(device)
     module.eval()
 
-    m = torch.randn(bs,
-                    sc.n_seq,
-                    sc.n_res,
-                    ref_module.c_m,
-                    dtype=torch_dtype,
-                    device=device)
-    z = torch.randn(bs,
-                    sc.n_res,
-                    sc.n_res,
-                    ref_module.c_z,
-                    dtype=torch_dtype,
-                    device=device)
-    seq_mask = make_left_aligned_mask(bs,
-                                      sc.n_res,
-                                      dtype=torch.float32,
-                                      device=device,
-                                      min_valid=sc.n_res // 2)
-    msa_row_mask = make_left_aligned_mask(bs,
-                                          sc.n_seq,
-                                          dtype=torch.float32,
-                                          device=device,
-                                          min_valid=sc.n_seq // 2)
-    msa_mask = (msa_row_mask[..., None] *
-                seq_mask[..., None, :]).to(torch_dtype)
+    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_module.c_m, dtype=torch_dtype, device=device)
+    z = torch.randn(bs, sc.n_res, sc.n_res, ref_module.c_z, dtype=torch_dtype, device=device)
+    seq_mask = make_left_aligned_mask(bs, sc.n_res, dtype=torch.float32, device=device, min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs, sc.n_seq, dtype=torch.float32, device=device, min_valid=sc.n_seq // 2)
+    msa_mask = (msa_row_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
     pair_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
 
-    precomputed = precompute_pair_masks(sc.triangle_attn_backend,
-                                        pair_mask,
-                                        inf=ref_module.inf,
-                                        dtype=torch_dtype)
+    precomputed = precompute_pair_masks(sc.triangle_attn_backend, pair_mask, inf=ref_module.inf, dtype=torch_dtype)
 
     with torch.inference_mode():
         out_m, out_z = module(m, z, msa_mask, pair_mask)
-        out_m_pre, out_z_pre = module(m,
-                                      z,
-                                      msa_mask,
-                                      pair_mask,
-                                      precomputed_masks=precomputed)
+        out_m_pre, out_z_pre = module(m, z, msa_mask, pair_mask, precomputed_masks=precomputed)
 
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
@@ -286,28 +238,10 @@ def test_evoformer_block_actual_seqlen_wiring():
     module = _create_evoformer_block(ref_module, sc, torch_dtype).to(device)
 
     B = 1
-    m = torch.randn(B,
-                    sc.n_seq,
-                    sc.n_res,
-                    ref_module.c_m,
-                    dtype=torch_dtype,
-                    device=device)
-    z = torch.randn(B,
-                    sc.n_res,
-                    sc.n_res,
-                    ref_module.c_z,
-                    dtype=torch_dtype,
-                    device=device)
-    msa_mask = torch.ones(B,
-                          sc.n_seq,
-                          sc.n_res,
-                          dtype=torch_dtype,
-                          device=device)
-    pair_mask = torch.ones(B,
-                           sc.n_res,
-                           sc.n_res,
-                           dtype=torch_dtype,
-                           device=device)
+    m = torch.randn(B, sc.n_seq, sc.n_res, ref_module.c_m, dtype=torch_dtype, device=device)
+    z = torch.randn(B, sc.n_res, sc.n_res, ref_module.c_z, dtype=torch_dtype, device=device)
+    msa_mask = torch.ones(B, sc.n_seq, sc.n_res, dtype=torch_dtype, device=device)
+    pair_mask = torch.ones(B, sc.n_res, sc.n_res, dtype=torch_dtype, device=device)
 
     module.outer_product_mean = _SpyModule(z)
     module.msa_att_row = _SpyModule(m)
@@ -333,20 +267,8 @@ def test_evoformer_block_actual_seqlen_wiring():
 
     module.tri_mul_out.reset_mock()
     module.tri_mul_in.reset_mock()
-    mb_float = torch.zeros(B,
-                           sc.n_res,
-                           1,
-                           1,
-                           sc.n_res,
-                           dtype=torch_dtype,
-                           device=device)
-    mb_float_t = torch.zeros(B,
-                             sc.n_res,
-                             1,
-                             1,
-                             sc.n_res,
-                             dtype=torch_dtype,
-                             device=device)
+    mb_float = torch.zeros(B, sc.n_res, 1, 1, sc.n_res, dtype=torch_dtype, device=device)
+    mb_float_t = torch.zeros(B, sc.n_res, 1, 1, sc.n_res, dtype=torch_dtype, device=device)
     pre_default = PrecomputedPairMasks(
         pair_mask=pair_mask,
         mask_bias=mb_float,

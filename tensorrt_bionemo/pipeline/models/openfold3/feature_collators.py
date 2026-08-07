@@ -18,7 +18,7 @@ Produces the final feature set: adds batch dimension and optionally
 filters feature keys.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -35,16 +35,18 @@ class OpenFold3FinalFeatureCollator(FeatureCollatorBase):
 
     def __init__(
         self,
-        config: Optional[BaseConfig] = None,
-        include_feats: Optional[list[str]] = None,
-        exclude_feats: Optional[list[str]] = None,
+        config: BaseConfig | None = None,
+        include_feats: list[str] | None = None,
+        exclude_feats: list[str] | None = None,
         add_batch_dim: bool = True,
         **kwargs: Any,
     ):
         super().__init__(config, **kwargs)
         self.include_feats = include_feats
         self.exclude_feats = exclude_feats or [
-            "structure", "msa_per_chain", "paired_msa_per_chain",
+            "structure",
+            "msa_per_chain",
+            "paired_msa_per_chain",
             "chain_sequences",
         ]
         self.add_batch_dim = add_batch_dim
@@ -65,9 +67,6 @@ class OpenFold3FinalFeatureCollator(FeatureCollatorBase):
             out = {k: v for k, v in out.items() if k in self.include_feats}
 
         if self.add_batch_dim:
-            out = {
-                k: v.unsqueeze(0) if isinstance(v, torch.Tensor) else v
-                for k, v in out.items()
-            }
+            out = {k: v.unsqueeze(0) if isinstance(v, torch.Tensor) else v for k, v in out.items()}
 
         return out

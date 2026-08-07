@@ -17,20 +17,29 @@
 Metadata (e.g. ccd_path, mol_dir) is not used here; it is only used by the
 Tokenizer stage (see Boltz2ContextGenerator in feature_context.py).
 """
-from typing import Any, Callable
+
+from collections.abc import Callable
+from typing import Any
 
 # isort: off
-from tensorrt_bionemo.pipeline.base import (FeatureCollatorSpec,
-                                            FeatureFactoryBase,
-                                            FeatureGeneratorSpec,
-                                            default_context_and_feature_merger)
+from tensorrt_bionemo.pipeline.base import (
+    FeatureCollatorSpec,
+    FeatureFactoryBase,
+    FeatureGeneratorSpec,
+    default_context_and_feature_merger,
+)
 
 from .feature_collators import Boltz2FinalFeatureCollator
 from .feature_generators import (
-    Boltz2AtomFeatureGenerator, Boltz2ChainConstraintFeatureGenerator,
-    Boltz2ContactConstraintFeatureGenerator, Boltz2EnsembleFeatureGenerator,
-    Boltz2MsaFeatureGenerator, Boltz2ResidueConstraintFeatureGenerator,
-    Boltz2TemplateFeatureGenerator, Boltz2TokenFeatureGenerator)
+    Boltz2AtomFeatureGenerator,
+    Boltz2ChainConstraintFeatureGenerator,
+    Boltz2ContactConstraintFeatureGenerator,
+    Boltz2EnsembleFeatureGenerator,
+    Boltz2MsaFeatureGenerator,
+    Boltz2ResidueConstraintFeatureGenerator,
+    Boltz2TemplateFeatureGenerator,
+    Boltz2TokenFeatureGenerator,
+)
 # isort: on
 
 
@@ -42,21 +51,11 @@ def pre_init(context: dict[str, Any]) -> dict[str, Any]:
 class FeatureFactory(FeatureFactoryBase):
     pre_init: Callable = pre_init
     feature_generator_specs: list[FeatureGeneratorSpec] = [
-        FeatureGeneratorSpec(name="token",
-                             functor=Boltz2TokenFeatureGenerator,
-                             kwargs={}),
-        FeatureGeneratorSpec(name="ensemble",
-                             functor=Boltz2EnsembleFeatureGenerator,
-                             kwargs={}),
-        FeatureGeneratorSpec(name="atom",
-                             functor=Boltz2AtomFeatureGenerator,
-                             kwargs={}),
-        FeatureGeneratorSpec(name="msa",
-                             functor=Boltz2MsaFeatureGenerator,
-                             kwargs={}),
-        FeatureGeneratorSpec(name="template",
-                             functor=Boltz2TemplateFeatureGenerator,
-                             kwargs={}),
+        FeatureGeneratorSpec(name="token", functor=Boltz2TokenFeatureGenerator, kwargs={}),
+        FeatureGeneratorSpec(name="ensemble", functor=Boltz2EnsembleFeatureGenerator, kwargs={}),
+        FeatureGeneratorSpec(name="atom", functor=Boltz2AtomFeatureGenerator, kwargs={}),
+        FeatureGeneratorSpec(name="msa", functor=Boltz2MsaFeatureGenerator, kwargs={}),
+        FeatureGeneratorSpec(name="template", functor=Boltz2TemplateFeatureGenerator, kwargs={}),
         FeatureGeneratorSpec(
             name="residue_constraint",
             functor=Boltz2ResidueConstraintFeatureGenerator,

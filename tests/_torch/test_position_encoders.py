@@ -16,8 +16,7 @@
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.layers.position_encoders import \
-    RelativePositionEncoder
+from tensorrt_bionemo._torch.layers.position_encoders import RelativePositionEncoder
 
 # Boltz2's real RelativePositionEncoder configuration
 # (models/boltz2/modeling.py builds it; models/boltz2/config.py supplies the flags).
@@ -29,16 +28,19 @@ _BOLTZ2_S_MAX = 2
 def _boltz2_rpe(seed: int = 0) -> RelativePositionEncoder:
     """A Boltz2-configured RPE (embedding-gather path) with non-zero ("real") weights."""
     torch.manual_seed(seed)
-    rpe = RelativePositionEncoder(
-        token_z=_BOLTZ2_TOKEN_Z,
-        r_max=_BOLTZ2_R_MAX,
-        s_max=_BOLTZ2_S_MAX,
-        fix_sym_check=True,  # Boltz2 config default
-        cyclic_pos_enc=True,  # Boltz2 config default
-        period_broadcast=False,  # hardcoded False for Boltz2
-        dtype=torch.float32,
-        skip_create_weights=False,
-    ).to("cpu").eval(
+    rpe = (
+        RelativePositionEncoder(
+            token_z=_BOLTZ2_TOKEN_Z,
+            r_max=_BOLTZ2_R_MAX,
+            s_max=_BOLTZ2_S_MAX,
+            fix_sym_check=True,  # Boltz2 config default
+            cyclic_pos_enc=True,  # Boltz2 config default
+            period_broadcast=False,  # hardcoded False for Boltz2
+            dtype=torch.float32,
+            skip_create_weights=False,
+        )
+        .to("cpu")
+        .eval()
     )  # CPU: the gather vs one-hot GEMM are bit-identical there
     # The Linear default-inits to zero, which would make the equivalence vacuous (0 == 0). Fill with
     # a realistic small-normal weight, standing in for the model's trained rel_pos.linear.
@@ -64,33 +66,30 @@ def _boltz2_inputs(cyclic: bool) -> dict:
     residue = list(range(15)) + list(range(15)) + list(range(10))
     token = list(range(40))
     cyclic_period = ([15] * 15 + [0] * 25) if cyclic else [0] * 40
-    return dict(
-        asym_id=_long(asym),
-        residue_index=_long(residue),
-        entity_id=_long(entity),
-        cyclic_period=_long(cyclic_period),
-        token_index=_long(token),
-        sym_id=_long(sym),
-    )
+    return {
+        "asym_id": _long(asym),
+        "residue_index": _long(residue),
+        "entity_id": _long(entity),
+        "cyclic_period": _long(cyclic_period),
+        "token_index": _long(token),
+        "sym_id": _long(sym),
+    }
 
 
 def _random_inputs(seed: int, n: int = 64) -> dict:
     """Random (but valid) rel-pos indices, single batch, to fuzz the slice/concat mapping."""
     g = torch.Generator().manual_seed(seed)
-    randint = lambda hi: torch.randint(
-        0, hi, (1, n), generator=g, dtype=torch.long)
+    randint = lambda hi: torch.randint(0, hi, (1, n), generator=g, dtype=torch.long)
     # ~half the tokens get a real cyclic period, the rest 0 (acyclic).
-    cyclic_period = torch.where(
-        randint(2).bool(),
-        randint(19) + 1, torch.zeros(1, n, dtype=torch.long))
-    return dict(
-        asym_id=randint(4),
-        residue_index=randint(50),
-        entity_id=randint(3),
-        cyclic_period=cyclic_period,
-        token_index=randint(n),
-        sym_id=randint(3),
-    )
+    cyclic_period = torch.where(randint(2).bool(), randint(19) + 1, torch.zeros(1, n, dtype=torch.long))
+    return {
+        "asym_id": randint(4),
+        "residue_index": randint(50),
+        "entity_id": randint(3),
+        "cyclic_period": cyclic_period,
+        "token_index": randint(n),
+        "sym_id": randint(3),
+    }
 
 
 def _gather_vs_onehot(rpe: RelativePositionEncoder, inputs: dict):
@@ -135,7 +134,6 @@ def test_rpe_slice_order_matters():
         # in this wrong order it would produce exactly this (different) result.
         n_pos = 2 * _BOLTZ2_R_MAX + 2
         w = rpe.linear.weight  # [token_z, K], columns are the concat blocks
-        w[:, 0:n_pos], w[:, n_pos:2 * n_pos] = (w[:, n_pos:2 * n_pos].clone(),
-                                                w[:, 0:n_pos].clone())
+        w[:, 0:n_pos], w[:, n_pos : 2 * n_pos] = (w[:, n_pos : 2 * n_pos].clone(), w[:, 0:n_pos].clone())
         permuted = rpe(**inputs)
     assert not torch.allclose(ref, permuted)

@@ -28,13 +28,11 @@ from __future__ import annotations
 import io
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
 from tensorrt_bionemo.data.tools.kalign import run_kalign
-from tensorrt_bionemo.data.tools.template_alignment import (
-    calculate_ids_hit, seq_identity_and_coverage)
+from tensorrt_bionemo.data.tools.template_alignment import calculate_ids_hit, seq_identity_and_coverage
 
 from .const import _PROTEIN_1TO3, TEMPLATE_CIF_DIRECT_MIN_SCORE
 
@@ -117,8 +115,7 @@ def align_query_to_template_chain(
 # ---------------------------------------------------------------------------
 
 
-def _canonical_seq_from_poly_scheme(
-        block) -> Optional[dict[str, tuple[str, dict[int, str]]]]:
+def _canonical_seq_from_poly_scheme(block) -> dict[str, tuple[str, dict[int, str]]] | None:
     """Per-asym canonical sequence + residue names for a template CIF.
 
     Returns dict[label_asym_id -> (canonical_seq, {seq_id: res_name_3})] or
@@ -140,7 +137,7 @@ def _canonical_seq_from_poly_scheme(
     entity_seqs = _entity_canonical_seqs(block)
 
     out: dict[str, tuple[list, dict[int, str]]] = {}
-    for a, m, s in zip(asym, mon, seq_id):
+    for a, m, s in zip(asym, mon, seq_id, strict=False):
         chars, names = out.setdefault(a, ([], {}))
         chars.append((int(s), _PROTEIN_3TO1.get(m, "X")))
         names[int(s)] = m
@@ -165,9 +162,8 @@ def _entity_canonical_seqs(block) -> dict[str, str]:
     if "pdbx_seq_one_letter_code_can" not in ep or "entity_id" not in ep:
         return {}
     ent_ids = ep["entity_id"].as_array(int)
-    seqs = [s.replace("\n", "")
-            for s in ep["pdbx_seq_one_letter_code_can"].as_array(str)]
-    ent2seq = {int(e): s for e, s in zip(ent_ids.tolist(), seqs)}
+    seqs = [s.replace("\n", "") for s in ep["pdbx_seq_one_letter_code_can"].as_array(str)]
+    ent2seq = {int(e): s for e, s in zip(ent_ids.tolist(), seqs, strict=False)}
 
     scheme = block["pdbx_poly_seq_scheme"]
     if "entity_id" not in scheme:
@@ -175,14 +171,13 @@ def _entity_canonical_seqs(block) -> dict[str, str]:
     asym = scheme["asym_id"].as_array(str)
     ent = scheme["entity_id"].as_array(int)
     out: dict[str, str] = {}
-    for a, e in zip(asym.tolist(), ent.tolist()):
+    for a, e in zip(asym.tolist(), ent.tolist(), strict=False):
         if a not in out and int(e) in ent2seq:
             out[a] = ent2seq[int(e)]
     return out
 
 
-def extract_template_chains(content: str,
-                            fmt: str = "cif") -> dict[str, ChainTemplateData]:
+def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTemplateData]:
     """Parse a template CIF into per-chain sequence + backbone/pseudo-beta coords.
 
     Uses biotite with ``use_author_fields=False`` so that ``chain_id`` is the
@@ -192,8 +187,7 @@ def extract_template_chains(content: str,
     from biotite.structure.io.pdbx import CIFFile, get_structure
 
     if fmt != "cif":
-        raise ValueError(
-            f"Only 'cif' template format is supported, got {fmt!r}")
+        raise ValueError(f"Only 'cif' template format is supported, got {fmt!r}")
 
     cif = CIFFile.read(io.StringIO(content))
     block = cif.block
@@ -201,8 +195,7 @@ def extract_template_chains(content: str,
 
     # altloc="occupancy" picks the highest-occupancy conformer, matching OSS.
     # Biotite's default ("first") picks altloc 'A' regardless and diverges.
-    arr = get_structure(cif, model=1, use_author_fields=False,
-                        altloc="occupancy")
+    arr = get_structure(cif, model=1, use_author_fields=False, altloc="occupancy")
     # Heavy atoms of amino acids only.
     arr = arr[arr.element != "H"]
 
@@ -230,8 +223,7 @@ def extract_template_chains(content: str,
                 # Only backbone frame + pseudo-beta atoms are needed.
                 resname_by_pos.setdefault(pos, str(chain_atoms.res_name[i]))
                 continue
-            coords_by_pos.setdefault(pos, {})[aname] = np.asarray(
-                chain_atoms.coord[i], dtype=np.float64)
+            coords_by_pos.setdefault(pos, {})[aname] = np.asarray(chain_atoms.coord[i], dtype=np.float64)
             resname_by_pos.setdefault(pos, str(chain_atoms.res_name[i]))
 
         if poly is not None and chain_id in poly:
@@ -243,8 +235,7 @@ def extract_template_chains(content: str,
             # No pdbx_poly_seq_scheme: fall back to resolved-residue order
             # (deviation: unresolved residues absent, can shift numbering).
             positions = sorted(resname_by_pos)
-            canonical_seq = "".join(
-                _PROTEIN_3TO1.get(resname_by_pos[p], "X") for p in positions)
+            canonical_seq = "".join(_PROTEIN_3TO1.get(resname_by_pos[p], "X") for p in positions)
 
         chains[str(chain_id)] = ChainTemplateData(
             canonical_seq=canonical_seq,
@@ -263,9 +254,9 @@ def select_template_for_cif(
     query_seq: str,
     content: str,
     fmt: str,
-    specified_chain_id: Optional[str],
+    specified_chain_id: str | None,
     min_score: float = TEMPLATE_CIF_DIRECT_MIN_SCORE,
-) -> Optional[SelectedTemplate]:
+) -> SelectedTemplate | None:
     """Pick the best-aligning chain of one template CIF for a query sequence.
 
     Mirrors OSS ``CifDirectParser``: align each candidate chain to the query,
@@ -274,28 +265,22 @@ def select_template_for_cif(
     """
     chains = extract_template_chains(content, fmt)
     if specified_chain_id is not None:
-        candidates = ({
-            specified_chain_id: chains[specified_chain_id]
-        } if specified_chain_id in chains else {})
+        candidates = {specified_chain_id: chains[specified_chain_id]} if specified_chain_id in chains else {}
         if not candidates:
             logger.warning(
-                "Template chain_id %r not found in CIF (chains present: %s)",
-                specified_chain_id, sorted(chains))
+                "Template chain_id %r not found in CIF (chains present: %s)", specified_chain_id, sorted(chains)
+            )
     else:
         candidates = chains
 
-    best: Optional[SelectedTemplate] = None
+    best: SelectedTemplate | None = None
     for chain_id, chain_data in candidates.items():
-        idx_map, seq_id, q_cov = align_query_to_template_chain(
-            query_seq, chain_data)
+        idx_map, seq_id, q_cov = align_query_to_template_chain(query_seq, chain_data)
         score = seq_id * q_cov
         if score < min_score or idx_map.shape[0] == 0:
             continue
         if best is None or score > best.score:
-            best = SelectedTemplate(chain_id=chain_id,
-                                    idx_map=idx_map,
-                                    score=score,
-                                    chain_data=chain_data)
+            best = SelectedTemplate(chain_id=chain_id, idx_map=idx_map, score=score, chain_data=chain_data)
     return best
 
 
@@ -304,8 +289,7 @@ def select_template_for_cif(
 # ---------------------------------------------------------------------------
 
 
-def resolve_template_idx_map(template: SelectedTemplate,
-                             chain_len: int) -> Optional[np.ndarray]:
+def resolve_template_idx_map(template: SelectedTemplate, chain_len: int) -> np.ndarray | None:
     """Replicate the OSS ``map_token_pos_to_template_residues`` keep/drop.
 
     Returns the effective ``idx_map`` (rows ``[query_res, template_pos]`` to
@@ -325,9 +309,7 @@ def resolve_template_idx_map(template: SelectedTemplate,
     """
     idx_map = template.idx_map  # rows aligned on both sides (real template res)
     chain_data = template.chain_data
-    aligned_res_names = (
-        chain_data.res_name_by_pos.get(int(t), "UNK")
-        for t in np.unique(idx_map[:, 1]))
+    aligned_res_names = (chain_data.res_name_by_pos.get(int(t), "UNK") for t in np.unique(idx_map[:, 1]))
     nonstd = any(rn not in _STANDARD_PROTEIN_3 for rn in aligned_res_names)
 
     if not nonstd:

@@ -1,8 +1,19 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from dataclasses import dataclass
-from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -51,7 +62,6 @@ def context():
 
 
 class TestUseClampedFape:
-
     def test_generates_use_clamped_fape(self, mock_config, sample_batch, context):
         generator = UseClampedFape(config=mock_config)
         result = generator(sample_batch, context)
@@ -73,7 +83,6 @@ class TestUseClampedFape:
 
 
 class TestMakeSequenceMask:
-
     def test_generates_seq_mask(self, mock_config, sample_batch, context):
         generator = MakeSequenceMask(config=mock_config)
         result = generator(sample_batch, context)
@@ -95,7 +104,6 @@ class TestMakeSequenceMask:
 
 
 class TestMakeMsaMask:
-
     def test_generates_msa_mask(self, mock_config, sample_batch, context):
         generator = MakeMsaMask(config=mock_config)
         result = generator(sample_batch, context)
@@ -119,7 +127,6 @@ class TestMakeMsaMask:
 
 
 class TestMakeTemplateMask:
-
     def test_generates_template_mask(self, mock_config, sample_batch, context):
         generator = MakeTemplateMask(config=mock_config)
         result = generator(sample_batch, context)
@@ -144,7 +151,6 @@ class TestMakeTemplateMask:
 
 
 class TestMakeTemplatePseudoBeta:
-
     def test_generates_pseudo_beta(self, mock_config, sample_batch, context):
         generator = MakeTemplatePseudoBeta(config=mock_config)
         result = generator(sample_batch, context)
@@ -166,7 +172,6 @@ class TestMakeTemplatePseudoBeta:
 
 
 class TestMakeHhblitsProfile:
-
     def test_generates_hhblits_profile(self, mock_config, sample_batch, context):
         generator = MakeHhblitsProfile(config=mock_config)
         result = generator(sample_batch, context)
@@ -196,7 +201,6 @@ class TestMakeHhblitsProfile:
 
 
 class TestMakeAtom14Masks:
-
     def test_generates_atom14_masks(self, mock_config, sample_batch, context):
         generator = MakeAtom14Masks(config=mock_config)
         result = generator(sample_batch, context)
@@ -236,7 +240,6 @@ class TestMakeAtom14Masks:
 
 
 class TestAtom37ToTorsionAngles:
-
     def test_is_enabled_check(self, mock_config):
         generator = Atom37ToTorsionAngles(config=mock_config, prefix="template_")
         assert generator.is_enabled() is True

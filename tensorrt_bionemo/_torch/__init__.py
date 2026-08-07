@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,13 +22,12 @@ def _load_cuequivariance_lib():
     CUEQUIV_PKG_LIB = None
     handle = None
     if CUEQUIV_PKG is not None:
-        CUEQUIV_PKG_LIB = Path(
-            CUEQUIV_PKG.origin).parent.absolute() / "lib" / "libcue_ops.so"
+        CUEQUIV_PKG_LIB = Path(CUEQUIV_PKG.origin).parent.absolute() / "lib" / "libcue_ops.so"
         if CUEQUIV_PKG_LIB.exists():
             handle = ctypes.CDLL(CUEQUIV_PKG_LIB.as_posix())
 
     if handle is None:
-        raise ImportError('CuEquivariance Ops library is unavailable')
+        raise ImportError("CuEquivariance Ops library is unavailable")
 
 
 __all__ = [

@@ -15,20 +15,22 @@
 
 # isort: off
 import asyncio
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any
+from collections.abc import AsyncIterator
 from unittest.mock import Mock, patch
 
 import pytest
 import ray
 
 from tensorrt_bionemo.pipeline.processor.utils import get_available_gpu_count
-from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
-                                                   StatefulStageUDF,
-                                                   unpack_pipeline_row)
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF, unpack_pipeline_row
 from tensorrt_bionemo.pipeline.stages.configs import ParallelismMode
 from tensorrt_bionemo.pipeline.stages.engine_stage import (
-    FoldingEngineStage, FoldingEngineUDF, FoldingEngineWrapper,
-    FoldingPredictionError)
+    FoldingEngineStage,
+    FoldingEngineUDF,
+    FoldingEngineWrapper,
+    FoldingPredictionError,
+)
 # isort: on
 
 # Minimum GPUs required for multi-GPU replica tests
@@ -38,15 +40,19 @@ MIN_GPUS_FOR_MULTI_GPU_REPLICA = 2
 class TestFoldingEngineWrapper:
     """Test suite for FoldingEngineWrapper class."""
 
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.DeviceConfig')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.EngineConfig')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.get_model_class')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.get_postprocessor')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngine')
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.DeviceConfig")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.EngineConfig")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_model_class")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_postprocessor")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngine")
     def test_initialization_creates_engine_with_correct_config(
-            self, mock_folding_engine, mock_get_postprocessor,
-            mock_get_model_class, mock_engine_config_cls,
-            mock_device_config_cls):
+        self,
+        mock_folding_engine,
+        mock_get_postprocessor,
+        mock_get_model_class,
+        mock_engine_config_cls,
+        mock_device_config_cls,
+    ):
         """Test that FoldingEngineWrapper initializes with correct configuration.
 
         This test verifies that:
@@ -68,25 +74,15 @@ class TestFoldingEngineWrapper:
         mock_engine_config_cls.return_value = mock_engine_config
 
         # Create wrapper
-        engine_kwargs = {
-            "accelerated_configs": {
-                "enable_opt": True
-            },
-            "postprocessor_config": {
-                "param": "value"
-            }
-        }
-        wrapper = FoldingEngineWrapper(model="test_model",
-                                       engine_kwargs=engine_kwargs,
-                                       max_pending_requests=10)
+        engine_kwargs = {"accelerated_configs": {"enable_opt": True}, "postprocessor_config": {"param": "value"}}
+        wrapper = FoldingEngineWrapper(model="test_model", engine_kwargs=engine_kwargs, max_pending_requests=10)
 
         # Verify model class and postprocessor were retrieved
         mock_get_model_class.assert_called_once_with("test_model")
         mock_get_postprocessor.assert_called_once_with("test_model")
 
         # Verify pretrained config was loaded
-        mock_model_class.get_pretrained_config.assert_called_once_with(
-            "test_model")
+        mock_model_class.get_pretrained_config.assert_called_once_with("test_model")
 
         # Verify EngineConfig was created with correct parameters
         mock_engine_config_cls.assert_called_once_with(
@@ -95,28 +91,31 @@ class TestFoldingEngineWrapper:
             device=mock_device_config,
             accelerated={"enable_opt": True},
             postprocessor={"param": "value"},
-            profile_inference=False)
+            profile_inference=False,
+        )
 
         # Verify FoldingEngine was created
-        mock_folding_engine.assert_called_once_with(mock_engine_config,
-                                                    mock_model_class,
-                                                    mock_postprocessor_class,
-                                                    runtime_args=None)
+        mock_folding_engine.assert_called_once_with(
+            mock_engine_config, mock_model_class, mock_postprocessor_class, runtime_args=None
+        )
 
         # Verify max_pending_requests and model_config are set
         assert wrapper.max_pending_requests == 10
         assert wrapper.model_config == mock_model_config
 
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.DeviceConfig')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.EngineConfig')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.get_model_class')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.get_postprocessor')
-    @patch('tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngine')
-    def test_predict_async_executes_single_row(self, mock_folding_engine,
-                                               mock_get_postprocessor,
-                                               mock_get_model_class,
-                                               mock_engine_config_cls,
-                                               mock_device_config_cls):
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.DeviceConfig")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.EngineConfig")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_model_class")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_postprocessor")
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngine")
+    def test_predict_async_executes_single_row(
+        self,
+        mock_folding_engine,
+        mock_get_postprocessor,
+        mock_get_model_class,
+        mock_engine_config_cls,
+        mock_device_config_cls,
+    ):
         """Test that predict_async executes prediction for a single row.
 
         This test verifies that:
@@ -150,8 +149,7 @@ class TestFoldingEngineWrapper:
             outputs, time_takens = await wrapper.predict_async(rows)
 
             # Verify engine.execute was called with correct input
-            mock_engine_instance.execute.assert_called_once_with(
-                {"sequence": "ACGT"})
+            mock_engine_instance.execute.assert_called_once_with({"sequence": "ACGT"})
 
             # Verify output structure
             assert len(outputs) == 1
@@ -166,10 +164,8 @@ class TestFoldingEngineWrapper:
 class TestFoldingEngineUDF:
     """Test suite for FoldingEngineUDF class."""
 
-    @patch(
-        'tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper')
-    def test_successful_prediction_returns_correct_output_structure(
-            self, mock_wrapper_class):
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    def test_successful_prediction_returns_correct_output_structure(self, mock_wrapper_class):
         """Test that successful prediction returns correct output structure.
 
         This test verifies that:
@@ -195,25 +191,21 @@ class TestFoldingEngineUDF:
         mock_wrapper.predict_async = mock_predict_async
 
         # Create UDF
-        udf = FoldingEngineUDF(compute_by_rows=True,
-                               drop_keys=[],
-                               expected_input_keys=["sequence"],
-                               update_row=False,
-                               model="test_model",
-                               engine_kwargs={},
-                               should_continue_on_error=False)
+        udf = FoldingEngineUDF(
+            compute_by_rows=True,
+            drop_keys=[],
+            expected_input_keys=["sequence"],
+            update_row=False,
+            model="test_model",
+            engine_kwargs={},
+            should_continue_on_error=False,
+        )
 
         # Execute prediction
         async def run_test():
             batch = [
-                {
-                    "sequence": "ACGT",
-                    "__idx_in_batch": 0
-                },
-                {
-                    "sequence": "TGCA",
-                    "__idx_in_batch": 1
-                },
+                {"sequence": "ACGT", "__idx_in_batch": 0},
+                {"sequence": "TGCA", "__idx_in_batch": 1},
             ]
 
             results = []
@@ -237,10 +229,8 @@ class TestFoldingEngineUDF:
 
         asyncio.run(run_test())
 
-    @patch(
-        'tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper')
-    def test_error_handling_raises_when_should_continue_on_error_false(
-            self, mock_wrapper_class):
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    def test_error_handling_raises_when_should_continue_on_error_false(self, mock_wrapper_class):
         """Test that errors raise ValueError when should_continue_on_error is False.
 
         This test verifies that:
@@ -259,13 +249,15 @@ class TestFoldingEngineUDF:
         mock_wrapper.predict_async = mock_predict_async_with_error
 
         # Create UDF with should_continue_on_error=False
-        udf = FoldingEngineUDF(compute_by_rows=True,
-                               drop_keys=[],
-                               expected_input_keys=["sequence"],
-                               update_row=False,
-                               model="test_model",
-                               engine_kwargs={},
-                               should_continue_on_error=False)
+        udf = FoldingEngineUDF(
+            compute_by_rows=True,
+            drop_keys=[],
+            expected_input_keys=["sequence"],
+            update_row=False,
+            model="test_model",
+            engine_kwargs={},
+            should_continue_on_error=False,
+        )
 
         # Execute prediction and expect error
         async def run_test():
@@ -281,10 +273,8 @@ class TestFoldingEngineUDF:
 
         asyncio.run(run_test())
 
-    @patch(
-        'tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper')
-    def test_error_handling_continues_when_should_continue_on_error_true(
-            self, mock_wrapper_class):
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    def test_error_handling_continues_when_should_continue_on_error_true(self, mock_wrapper_class):
         """Test that errors are captured but processing continues when should_continue_on_error is True.
 
         This test verifies that:
@@ -304,25 +294,21 @@ class TestFoldingEngineUDF:
         mock_wrapper.predict_async = mock_predict_async_with_error
 
         # Create UDF with should_continue_on_error=True
-        udf = FoldingEngineUDF(compute_by_rows=True,
-                               drop_keys=[],
-                               expected_input_keys=["sequence"],
-                               update_row=False,
-                               model="test_model",
-                               engine_kwargs={},
-                               should_continue_on_error=True)
+        udf = FoldingEngineUDF(
+            compute_by_rows=True,
+            drop_keys=[],
+            expected_input_keys=["sequence"],
+            update_row=False,
+            model="test_model",
+            engine_kwargs={},
+            should_continue_on_error=True,
+        )
 
         # Execute prediction
         async def run_test():
             batch = [
-                {
-                    "sequence": "ACGT",
-                    "__idx_in_batch": 0
-                },
-                {
-                    "sequence": "TGCA",
-                    "__idx_in_batch": 1
-                },
+                {"sequence": "ACGT", "__idx_in_batch": 0},
+                {"sequence": "TGCA", "__idx_in_batch": 1},
             ]
 
             results = []
@@ -334,11 +320,9 @@ class TestFoldingEngineUDF:
 
             # Verify error information is captured
             assert "__inference_error__" in results[0]
-            assert results[0]["__inference_error__"][
-                "error_msg"] == "RuntimeError: Model inference failed"
+            assert results[0]["__inference_error__"]["error_msg"] == "RuntimeError: Model inference failed"
             assert results[0]["__inference_error__"]["traceback"] is not None
-            assert "RuntimeError" in results[0]["__inference_error__"][
-                "traceback"]
+            assert "RuntimeError" in results[0]["__inference_error__"]["traceback"]
 
             # Verify index is preserved
             assert results[0]["__idx_in_batch"] == 0
@@ -346,10 +330,8 @@ class TestFoldingEngineUDF:
 
         asyncio.run(run_test())
 
-    @patch(
-        'tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper')
-    def test_batching_splits_large_batches_into_sub_batches(
-            self, mock_wrapper_class):
+    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    def test_batching_splits_large_batches_into_sub_batches(self, mock_wrapper_class):
         """Test that large batches are split into sub-batches based on max_batch_size.
 
         This test verifies that:
@@ -378,20 +360,19 @@ class TestFoldingEngineUDF:
         mock_wrapper.predict_async = mock_predict_async
 
         # Create UDF
-        udf = FoldingEngineUDF(compute_by_rows=True,
-                               drop_keys=[],
-                               expected_input_keys=["sequence"],
-                               update_row=False,
-                               model="test_model",
-                               engine_kwargs={},
-                               should_continue_on_error=False)
+        udf = FoldingEngineUDF(
+            compute_by_rows=True,
+            drop_keys=[],
+            expected_input_keys=["sequence"],
+            update_row=False,
+            model="test_model",
+            engine_kwargs={},
+            should_continue_on_error=False,
+        )
 
         # Execute prediction with 5 rows (should split into 3 batches: 2, 2, 1)
         async def run_test():
-            batch = [{
-                "sequence": f"SEQ{i}",
-                "__idx_in_batch": i
-            } for i in range(5)]
+            batch = [{"sequence": f"SEQ{i}", "__idx_in_batch": i} for i in range(5)]
 
             results = []
             async for output in udf.udf_for_rows(batch):
@@ -427,14 +408,8 @@ class TestFoldingEngineStage:
         # Test with accelerator_type
         stage_values = {
             "fn": FoldingEngineUDF,
-            "map_batches_kwargs": {
-                "accelerator_type": "cuda",
-                "concurrency": 2
-            },
-            "fn_constructor_kwargs": {
-                "model": "test_model",
-                "engine_kwargs": {}
-            }
+            "map_batches_kwargs": {"accelerator_type": "cuda", "concurrency": 2},
+            "fn_constructor_kwargs": {"model": "test_model", "engine_kwargs": {}},
         }
 
         # Call the validator
@@ -450,13 +425,8 @@ class TestFoldingEngineStage:
         """Test that FoldingEngineStage works without accelerator_type specified."""
         stage_values = {
             "fn": FoldingEngineUDF,
-            "map_batches_kwargs": {
-                "concurrency": 1
-            },
-            "fn_constructor_kwargs": {
-                "model": "test_model",
-                "engine_kwargs": {}
-            }
+            "map_batches_kwargs": {"concurrency": 1},
+            "fn_constructor_kwargs": {"model": "test_model", "engine_kwargs": {}},
         }
 
         # Call the validator
@@ -467,9 +437,10 @@ class TestFoldingEngineStage:
         assert result["map_batches_kwargs"]["num_gpus"] == 1
 
         # Verify accelerator_type is not added if not present
-        assert "accelerator_type" not in result[
-            "map_batches_kwargs"] or result["map_batches_kwargs"].get(
-                "accelerator_type") == ""
+        assert (
+            "accelerator_type" not in result["map_batches_kwargs"]
+            or result["map_batches_kwargs"].get("accelerator_type") == ""
+        )
 
 
 def _get_nvml_gpu_id(torch_gpu_id):
@@ -482,9 +453,7 @@ def _get_nvml_gpu_id(torch_gpu_id):
 
     # if CUDA_VISIBLE_DEVICES is used automagically remap the id since pynvml ignores this env var
     if "CUDA_VISIBLE_DEVICES" in os.environ:
-        ids = list(
-            map(int,
-                os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")))
+        ids = list(map(int, os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")))
         return ids[torch_gpu_id]  # remap
     else:
         return torch_gpu_id
@@ -494,12 +463,14 @@ def _get_device_uuid(device_id: int):
     """Return GPU UUID for device_id if pynvml is available and initialized; else fallback."""
     try:
         import torch
+
         if not torch.cuda.is_available():
             return None
     except ImportError:
         return None
     try:
         import pynvml
+
         device_id = _get_nvml_gpu_id(device_id)
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(device_id)
@@ -513,6 +484,7 @@ def _get_current_device_id() -> int:
     """Return current GPU device id for the calling process (e.g. Ray worker)."""
     try:
         import torch
+
         if torch.cuda.is_available():
             return int(torch.cuda.current_device())
     except ImportError:
@@ -528,17 +500,19 @@ class MockFoldingEngineUDF(StatefulStageUDF):
     Includes device_id so tests can verify the number of GPUs used.
     """
 
-    def __init__(self,
-                 compute_by_rows: bool,
-                 drop_keys: List[str],
-                 expected_input_keys: List[str],
-                 update_row: bool,
-                 model: str,
-                 engine_kwargs: Dict[str, Any],
-                 max_pending_requests: Any = None,
-                 should_continue_on_error: bool = False,
-                 parallelism_mode: Any = ParallelismMode.REPLICA,
-                 **kwargs: Any) -> None:
+    def __init__(
+        self,
+        compute_by_rows: bool,
+        drop_keys: list[str],
+        expected_input_keys: list[str],
+        update_row: bool,
+        model: str,
+        engine_kwargs: dict[str, Any],
+        max_pending_requests: Any = None,
+        should_continue_on_error: bool = False,
+        parallelism_mode: Any = ParallelismMode.REPLICA,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(
             compute_by_rows=compute_by_rows,
             drop_keys=drop_keys or [],
@@ -548,12 +522,9 @@ class MockFoldingEngineUDF(StatefulStageUDF):
         self._model = model
         self._max_batch_size = 2
 
-    async def udf_for_rows(
-            self, batch: List[Dict[str,
-                                   Any]]) -> AsyncIterator[Dict[str, Any]]:
+    async def udf_for_rows(self, batch: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         device_id = _get_current_device_id()
-        n_iters = (len(batch) + self._max_batch_size -
-                   1) // self._max_batch_size
+        n_iters = (len(batch) + self._max_batch_size - 1) // self._max_batch_size
         for i in range(n_iters):
             start = i * self._max_batch_size
             end = min(start + self._max_batch_size, len(batch))
@@ -567,10 +538,7 @@ class MockFoldingEngineUDF(StatefulStageUDF):
                     "time_taken": 0.01,
                     "device_id": device_id,
                     "device_uuid": device_uuid,
-                    "__inference_error__": {
-                        "error_msg": None,
-                        "traceback": None
-                    },
+                    "__inference_error__": {"error_msg": None, "traceback": None},
                     "__idx_in_batch": idx,
                 }
 
@@ -607,16 +575,13 @@ class TestFoldingEngineStageReplicaMapBatches:
         )
         kwargs = stage.get_dataset_map_batches_kwargs(batch_size=batch_size)
 
-        ds = ray.data.from_items([{
-            "key": f"row_{i}",
-            "__record_id": f"id_{i}"
-        } for i in range(num_rows)])
+        ds = ray.data.from_items([{"key": f"row_{i}", "__record_id": f"id_{i}"} for i in range(num_rows)])
         result = ds.map_batches(stage.fn, **kwargs)
         result = result.materialize()
         out = [unpack_pipeline_row(r) for r in result.take_all()]
 
         assert len(out) == num_rows
-        for i, row in enumerate(out):
+        for row in out:
             assert "structure" in row
             assert row["structure"] == "MOCK_ATOM"
             assert "time_taken" in row
@@ -644,20 +609,13 @@ class TestFoldingEngineStageReplicaMapBatches:
         )
         kwargs = stage.get_dataset_map_batches_kwargs(batch_size=2)
 
-        ds = ray.data.from_items([
-            {
-                "key": "a",
-                "__record_id": "id_a"
-            },
-            {
-                "key": "b",
-                "__record_id": "id_b"
-            },
-        ])
-        out = [
-            unpack_pipeline_row(r) for r in ds.map_batches(
-                stage.fn, **kwargs).materialize().take_all()
-        ]
+        ds = ray.data.from_items(
+            [
+                {"key": "a", "__record_id": "id_a"},
+                {"key": "b", "__record_id": "id_b"},
+            ]
+        )
+        out = [unpack_pipeline_row(r) for r in ds.map_batches(stage.fn, **kwargs).materialize().take_all()]
 
         assert len(out) == 2
         for row in out:
@@ -692,14 +650,12 @@ class TestFoldingEngineStageReplicaMapBatches:
         )
         kwargs = stage.get_dataset_map_batches_kwargs(batch_size=1)
         assert stage.fn is FoldingEngineUDF
-        assert kwargs["fn_constructor_kwargs"][
-            "parallelism_mode"] == ParallelismMode.REPLICA
+        assert kwargs["fn_constructor_kwargs"]["parallelism_mode"] == ParallelismMode.REPLICA
         assert kwargs.get("num_gpus") == 0 or kwargs.get("num_gpus") == 1
 
     @pytest.mark.skipif(
         get_available_gpu_count() < MIN_GPUS_FOR_MULTI_GPU_REPLICA,
-        reason=
-        f"Need at least {MIN_GPUS_FOR_MULTI_GPU_REPLICA} GPUs for multi-GPU replica test",
+        reason=f"Need at least {MIN_GPUS_FOR_MULTI_GPU_REPLICA} GPUs for multi-GPU replica test",
     )
     def test_replica_mode_map_batches_multiple_gpus(self, ray_local):
         """Replica mode with multiple GPUs: 2 replicas (1 GPU each) under map_batches."""
@@ -715,12 +671,9 @@ class TestFoldingEngineStageReplicaMapBatches:
                 "parallelism_mode": ParallelismMode.REPLICA,
             },
             map_batches_kwargs={
-                "num_gpus":
-                1,
-                "batch_size":
-                2,
-                "compute":
-                ray.data.ActorPoolStrategy(
+                "num_gpus": 1,
+                "batch_size": 2,
+                "compute": ray.data.ActorPoolStrategy(
                     min_size=num_replicas,
                     max_size=num_replicas,
                 ),
@@ -732,10 +685,7 @@ class TestFoldingEngineStageReplicaMapBatches:
         kwargs = stage.get_dataset_map_batches_kwargs(batch_size=2)
 
         num_rows = 4
-        ds = ray.data.from_items([{
-            "key": f"row_{i}",
-            "__record_id": f"id_{i}"
-        } for i in range(num_rows)])
+        ds = ray.data.from_items([{"key": f"row_{i}", "__record_id": f"id_{i}"} for i in range(num_rows)])
         result = ds.map_batches(stage.fn, **kwargs)
         result = result.materialize()
         out = [unpack_pipeline_row(r) for r in result.take_all()]
@@ -744,12 +694,11 @@ class TestFoldingEngineStageReplicaMapBatches:
         device_ids = {row["device_id"] for row in out}
         # When Ray pins each actor to a different GPU, we see num_replicas distinct device_ids.
         # When Ray does not (e.g. same CUDA_VISIBLE_DEVICES per worker), all rows may have the same device_id.
-        assert len(device_ids
-                   ) >= 1, f"Expected at least one device_id, got {device_ids}"
+        assert len(device_ids) >= 1, f"Expected at least one device_id, got {device_ids}"
         device_uuids = {row["device_uuid"] for row in out}
-        assert len(
-            device_uuids
-        ) == num_replicas, f"Expected {num_replicas} distinct device_uuids, got {len(device_uuids)}: {device_uuids}"
+        assert len(device_uuids) == num_replicas, (
+            f"Expected {num_replicas} distinct device_uuids, got {len(device_uuids)}: {device_uuids}"
+        )
         for row in out:
             assert "structure" in row
             assert row["structure"] == "MOCK_ATOM"

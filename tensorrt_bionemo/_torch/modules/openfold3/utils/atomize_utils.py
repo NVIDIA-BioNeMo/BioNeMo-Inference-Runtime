@@ -15,18 +15,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from typing import Literal
 
-import contextlib
-import math
 import torch
 
-from tensorrt_bionemo._torch.utils import _deterministic_algorithms
 from tensorrt_bionemo._torch.modules.openfold3.utils.residues import STANDARD_PROTEIN_RESIDUES_ORDER
 from tensorrt_bionemo._torch.modules.openfold3.utils.token_atom_constants import (
     TOKEN_TYPES_WITH_GAP,
     atom_name_to_index_by_restype,
 )
+from tensorrt_bionemo._torch.utils import _deterministic_algorithms
 
 
 def compute_atom_broadcast_index(
@@ -50,13 +49,16 @@ def compute_atom_broadcast_index(
     values point into the flattened ``[*, n_token + 1, ...]`` padded token
     features (the final row per batch element is the zero padding row).
     """
-    n_token = token_mask.shape[-1]
     counts = num_atoms_per_token * token_mask.int()
     max_num_atoms = torch.max(torch.sum(counts, dim=-1)).int()
-    padded_counts = torch.concat(
-        [counts, max_num_atoms - torch.sum(counts, dim=-1, keepdim=True)],
-        dim=-1,
-    ).reshape(-1).int()
+    padded_counts = (
+        torch.concat(
+            [counts, max_num_atoms - torch.sum(counts, dim=-1, keepdim=True)],
+            dim=-1,
+        )
+        .reshape(-1)
+        .int()
+    )
     row_ids = torch.arange(padded_counts.numel(), device=token_mask.device)
     return torch.repeat_interleave(row_ids, padded_counts)
 
@@ -95,9 +97,7 @@ def broadcast_token_feat_to_atoms(
 
     # Apply token mask
     num_atoms_per_token = num_atoms_per_token * token_mask.int()
-    token_feat = token_feat * token_mask.reshape(
-        (*batch_dims, n_token, *((1,) * len(feat_dims)))
-    )
+    token_feat = token_feat * token_mask.reshape((*batch_dims, n_token, *((1,) * len(feat_dims))))
 
     # Pad atoms at token level
     if max_num_atoms_per_token is not None:
@@ -108,9 +108,7 @@ def broadcast_token_feat_to_atoms(
         token_feat = token_feat.unsqueeze(normalized_token_dim + 1)
         pad = [0, 0] * token_feat.ndim
         pad[2 * (token_feat.ndim - normalized_token_dim - 2) + 1] = 1
-        token_feat = torch.nn.functional.pad(token_feat, pad).reshape(
-            (*batch_dims, 2 * n_token, *feat_dims)
-        )
+        token_feat = torch.nn.functional.pad(token_feat, pad).reshape((*batch_dims, 2 * n_token, *feat_dims))
 
     # Pad token features with a trailing zero row (absorbs leftover atom slots),
     # then flatten batch and token dimensions.
@@ -153,14 +151,9 @@ def broadcast_token_feat_to_atoms(
         if n_feat_batch != n_batch:
             n_groups = n_feat_batch // n_batch
             # Batch id of each ``expand_index`` entry (batch-major layout).
-            batch_of = (torch.arange(expand_index.numel(),
-                                     device=expand_index.device) //
-                        max_num_atoms)
-            base = (expand_index +
-                    batch_of * (n_groups - 1) * (n_token + 1)).reshape(
-                        n_batch, max_num_atoms)
-            group_off = (torch.arange(n_groups, device=expand_index.device) *
-                         (n_token + 1)).reshape(1, n_groups, 1)
+            batch_of = torch.arange(expand_index.numel(), device=expand_index.device) // max_num_atoms
+            base = (expand_index + batch_of * (n_groups - 1) * (n_token + 1)).reshape(n_batch, max_num_atoms)
+            group_off = (torch.arange(n_groups, device=expand_index.device) * (n_token + 1)).reshape(1, n_groups, 1)
             full_index = (base.unsqueeze(1) + group_off).reshape(-1)
         else:
             full_index = expand_index
@@ -187,9 +180,7 @@ def broadcast_token_feat_to_atoms(
     padded_num_atoms_per_token = padded_num_atoms_per_token.reshape(-1).int()
 
     # Create atom-level features
-    atom_feat = torch.repeat_interleave(
-        input=padded_token_feat, repeats=padded_num_atoms_per_token, dim=0
-    )
+    atom_feat = torch.repeat_interleave(input=padded_token_feat, repeats=padded_num_atoms_per_token, dim=0)
 
     # Unflatten batch and token dimensions
     atom_feat = atom_feat.reshape((*feat_batch_dims, max_num_atoms, *feat_dims))
@@ -245,7 +236,7 @@ def aggregate_atom_feat_to_tokens(
     # non-deterministic run-to-run, and that per-call noise amplifies over the
     # diffusion rollout into divergent structures.
     atom_feat = atom_feat * atom_mask.reshape(atom_mask.shape + (1,) * len(feat_dims))
-    
+
     # Mask out atoms that are not part of the structure
     # Padding value must be greater than the largest index so that it
     # is properly excluded from the aggregation
@@ -272,12 +263,10 @@ def aggregate_atom_feat_to_tokens(
         dtype=atom_feat.dtype,
     )
     with _deterministic_algorithms():
-        token_feat.scatter_add_(
-            index=repeated_atom_to_token_index.long(), src=atom_feat, dim=atom_dim
-        )
-    token_feat = token_feat.reshape((*feat_batch_dims, n_token + 1, -1))[
-        ..., :n_token, :
-    ].reshape((*feat_batch_dims, n_token, *feat_dims))
+        token_feat.scatter_add_(index=repeated_atom_to_token_index.long(), src=atom_feat, dim=atom_dim)
+    token_feat = token_feat.reshape((*feat_batch_dims, n_token + 1, -1))[..., :n_token, :].reshape(
+        (*feat_batch_dims, n_token, *feat_dims)
+    )
 
     # Compute mean token-level feature
     if aggregate_fn == "mean":
@@ -293,11 +282,10 @@ def aggregate_atom_feat_to_tokens(
         )
         token_num_atoms = token_num_atoms[..., :n_token]
 
-        token_feat = token_feat / (
-            token_num_atoms.reshape(token_num_atoms.shape + (1,) * len(feat_dims)) + eps
-        )
+        token_feat = token_feat / (token_num_atoms.reshape(token_num_atoms.shape + (1,) * len(feat_dims)) + eps)
 
     return token_feat
+
 
 def max_atom_per_token_masked_select(
     atom_feat: torch.Tensor,
@@ -327,9 +315,7 @@ def max_atom_per_token_masked_select(
         Add padding to max number of atoms in the batch.
         """
         out = torch.masked_select(l, mask[..., None].bool()).reshape(-1, c_out)
-        out_padded = torch.nn.functional.pad(
-            out, (0, 0, 0, max_atoms_in_batch - out.shape[-2])
-        )
+        out_padded = torch.nn.functional.pad(out, (0, 0, 0, max_atoms_in_batch - out.shape[-2]))
         return out_padded
 
     # Unbind batch dim if it exists, and select atom feats per batch
@@ -338,10 +324,7 @@ def max_atom_per_token_masked_select(
         per_batch_mask = torch.unbind(max_atom_per_token_mask, dim=0)
 
         atom_feat = torch.stack(
-            [
-                select_atoms(l, m)
-                for l, m in zip(per_batch_logits, per_batch_mask, strict=False)
-            ],
+            [select_atoms(l, m) for l, m in zip(per_batch_logits, per_batch_mask, strict=False)],
             dim=0,
         )
     else:
@@ -351,9 +334,8 @@ def max_atom_per_token_masked_select(
     atom_feat = atom_feat.reshape(*batch_dims, -1, c_out)
     return atom_feat
 
-def get_token_representative_atoms(
-    batch: dict, x: torch.Tensor, atom_mask: torch.Tensor
-):
+
+def get_token_representative_atoms(batch: dict, x: torch.Tensor, atom_mask: torch.Tensor):
     """
     Extract representative atoms per token, which returns
         -   Cb for standard amino acid residues (Ca for glycines)
@@ -377,10 +359,7 @@ def get_token_representative_atoms(
     """
     # Create masks for standard amino acid residues
     is_standard_protein = batch["is_protein"] * (1 - batch["is_atomized"])
-    is_standard_glycine = (
-        is_standard_protein
-        * batch["restype"][..., STANDARD_PROTEIN_RESIDUES_ORDER["G"]]
-    )
+    is_standard_glycine = is_standard_protein * batch["restype"][..., STANDARD_PROTEIN_RESIDUES_ORDER["G"]]
 
     # Create masks for purines and pyrimadines
     is_standard_dna = batch["is_dna"] * (1 - batch["is_atomized"])
@@ -389,38 +368,24 @@ def get_token_representative_atoms(
         batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("DA")]
         + batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("DG")]
     ) + is_standard_rna * (
-        batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("A")]
-        + batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("G")]
+        batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("A")] + batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("G")]
     )
     is_standard_pyrimidine = is_standard_dna * (
         batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("DC")]
         + batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("DT")]
     ) + is_standard_rna * (
-        batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("C")]
-        + batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("U")]
+        batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("C")] + batch["restype"][..., TOKEN_TYPES_WITH_GAP.index("U")]
     )
 
     # Get index of representative atoms
     restype = batch["restype"].float()
     start_atom_index = batch["start_atom_index"].long()
-    cb_atom_index_offset, cb_atom_mask = get_token_atom_index_offset(
-        atom_name="CB", restype=restype
-    )
-    ca_atom_index_offset, ca_atom_mask = get_token_atom_index_offset(
-        atom_name="CA", restype=restype
-    )
-    c4_atom_index_offset, c4_atom_mask = get_token_atom_index_offset(
-        atom_name="C4", restype=restype
-    )
-    c2_atom_index_offset, c2_atom_mask = get_token_atom_index_offset(
-        atom_name="C2", restype=restype
-    )
+    cb_atom_index_offset, cb_atom_mask = get_token_atom_index_offset(atom_name="CB", restype=restype)
+    ca_atom_index_offset, ca_atom_mask = get_token_atom_index_offset(atom_name="CA", restype=restype)
+    c4_atom_index_offset, c4_atom_mask = get_token_atom_index_offset(atom_name="C4", restype=restype)
+    c2_atom_index_offset, c2_atom_mask = get_token_atom_index_offset(atom_name="C2", restype=restype)
     rep_index = (
-        (
-            (start_atom_index + cb_atom_index_offset)
-            * is_standard_protein
-            * (1 - is_standard_glycine)
-        )
+        ((start_atom_index + cb_atom_index_offset) * is_standard_protein * (1 - is_standard_glycine))
         + (start_atom_index + ca_atom_index_offset) * is_standard_glycine
         + (start_atom_index + c4_atom_index_offset) * is_standard_purine
         + (start_atom_index + c2_atom_index_offset) * is_standard_pyrimidine
@@ -439,9 +404,7 @@ def get_token_representative_atoms(
     rep_x = torch.gather(
         x,
         dim=-2,
-        index=rep_index.unsqueeze(-1)
-        .expand(*(x.shape[:-2] + (rep_index.shape[-1], 3)))
-        .long(),
+        index=rep_index.unsqueeze(-1).expand(*(x.shape[:-2] + (rep_index.shape[-1], 3))).long(),
     )
 
     # Get representative atom mask
@@ -450,14 +413,13 @@ def get_token_representative_atoms(
         torch.gather(
             atom_mask,
             dim=-1,
-            index=rep_index.expand(
-                *(atom_mask.shape[:-1] + (rep_index.shape[-1],))
-            ).long(),
+            index=rep_index.expand(*(atom_mask.shape[:-1] + (rep_index.shape[-1],))).long(),
         )
         * batch["token_mask"]
     ) * token_atom_mask
 
     return rep_x, rep_atom_mask
+
 
 def get_token_atom_index_offset(atom_name: str, restype: torch.Tensor):
     """
@@ -491,6 +453,7 @@ def get_token_atom_index_offset(atom_name: str, restype: torch.Tensor):
         ).float(),
     ).long()
     return token_atom_index_offset, token_atom_mask
+
 
 def get_token_frame_atoms(
     batch: dict,
@@ -548,9 +511,7 @@ def get_token_frame_atoms(
     # Find indices of two closest atoms for start atoms
     # [*, N_token]
     start_atom_index = batch["start_atom_index"].long()
-    start_atom_index = start_atom_index.expand(
-        *x.shape[:-2], start_atom_index.shape[-1]
-    )
+    start_atom_index = start_atom_index.expand(*x.shape[:-2], start_atom_index.shape[-1])
     _, closest_atom_index = torch.topk(d, k=3, dim=-1, largest=False)
     a_index = torch.gather(closest_atom_index[..., 1], dim=-1, index=start_atom_index)
     c_index = torch.gather(closest_atom_index[..., 2], dim=-1, index=start_atom_index)
@@ -558,29 +519,15 @@ def get_token_frame_atoms(
     # Construct indices of atoms used for frame construction
     # [*, N_token]
     is_standard_protein = batch["is_protein"] * (1 - batch["is_atomized"])
-    is_standard_nucleotide = (batch["is_dna"] + batch["is_rna"]) * (
-        1 - batch["is_atomized"]
-    )
+    is_standard_nucleotide = (batch["is_dna"] + batch["is_rna"]) * (1 - batch["is_atomized"])
 
     restype = batch["restype"].float()
-    n_atom_index_offset, n_atom_mask = get_token_atom_index_offset(
-        atom_name="N", restype=restype
-    )
-    ca_atom_index_offset, ca_atom_mask = get_token_atom_index_offset(
-        atom_name="CA", restype=restype
-    )
-    c_atom_index_offset, c_atom_mask = get_token_atom_index_offset(
-        atom_name="C", restype=restype
-    )
-    c3p_atom_index_offset, c3p_atom_mask = get_token_atom_index_offset(
-        atom_name="C3'", restype=restype
-    )
-    c1p_atom_index_offset, c1p_atom_mask = get_token_atom_index_offset(
-        atom_name="C1'", restype=restype
-    )
-    c4p_atom_index_offset, c4p_atom_mask = get_token_atom_index_offset(
-        atom_name="C4'", restype=restype
-    )
+    n_atom_index_offset, n_atom_mask = get_token_atom_index_offset(atom_name="N", restype=restype)
+    ca_atom_index_offset, ca_atom_mask = get_token_atom_index_offset(atom_name="CA", restype=restype)
+    c_atom_index_offset, c_atom_mask = get_token_atom_index_offset(atom_name="C", restype=restype)
+    c3p_atom_index_offset, c3p_atom_mask = get_token_atom_index_offset(atom_name="C3'", restype=restype)
+    c1p_atom_index_offset, c1p_atom_mask = get_token_atom_index_offset(atom_name="C1'", restype=restype)
+    c4p_atom_index_offset, c4p_atom_mask = get_token_atom_index_offset(atom_name="C4'", restype=restype)
     frame_atoms = {
         "a": {
             "index": (
@@ -589,9 +536,7 @@ def get_token_frame_atoms(
                 + (start_atom_index + c3p_atom_index_offset) * is_standard_nucleotide
             ),
             "token_atom_mask": (
-                batch["is_atomized"]
-                + n_atom_mask * is_standard_protein
-                + c3p_atom_mask * is_standard_nucleotide
+                batch["is_atomized"] + n_atom_mask * is_standard_protein + c3p_atom_mask * is_standard_nucleotide
             ),
         },
         "b": {
@@ -601,9 +546,7 @@ def get_token_frame_atoms(
                 + (start_atom_index + c1p_atom_index_offset) * is_standard_nucleotide
             ),
             "token_atom_mask": (
-                batch["is_atomized"]
-                + ca_atom_mask * is_standard_protein
-                + c1p_atom_mask * is_standard_nucleotide
+                batch["is_atomized"] + ca_atom_mask * is_standard_protein + c1p_atom_mask * is_standard_nucleotide
             ),
         },
         "c": {
@@ -613,9 +556,7 @@ def get_token_frame_atoms(
                 + (start_atom_index + c4p_atom_index_offset) * is_standard_nucleotide
             ),
             "token_atom_mask": (
-                batch["is_atomized"]
-                + c_atom_mask * is_standard_protein
-                + c4p_atom_mask * is_standard_nucleotide
+                batch["is_atomized"] + c_atom_mask * is_standard_protein + c4p_atom_mask * is_standard_nucleotide
             ),
         },
     }
@@ -659,9 +600,7 @@ def get_token_frame_atoms(
     # (for ligand and non-standard residues)
     cos_angle_min_bound = math.cos((180 - angle_threshold) * math.pi / 180)
     cos_angle_max_bound = math.cos(angle_threshold * math.pi / 180)
-    valid_frame_mask_angle = (cos_angle < cos_angle_max_bound) * (
-        cos_angle > cos_angle_min_bound
-    )
+    valid_frame_mask_angle = (cos_angle < cos_angle_max_bound) * (cos_angle > cos_angle_min_bound)
     valid_frame_mask_angle = (
         valid_frame_mask_angle * batch["is_atomized"]
         + torch.ones_like(valid_frame_mask_angle) * (1 - batch["is_atomized"])
@@ -669,20 +608,16 @@ def get_token_frame_atoms(
 
     # Compute valid frame mask from atom mask constraints
     valid_frame_mask_atom = (
-        frame_atoms["a"]["atom_mask"]
-        * frame_atoms["b"]["atom_mask"]
-        * frame_atoms["c"]["atom_mask"]
+        frame_atoms["a"]["atom_mask"] * frame_atoms["b"]["atom_mask"] * frame_atoms["c"]["atom_mask"]
     )
 
     # Compute valid frame mask from chain constraints
-    valid_frame_mask_asym_id = (
-        frame_atoms["a"]["asym_id"] == frame_atoms["b"]["asym_id"]
-    ) * (frame_atoms["b"]["asym_id"] == frame_atoms["c"]["asym_id"])
+    valid_frame_mask_asym_id = (frame_atoms["a"]["asym_id"] == frame_atoms["b"]["asym_id"]) * (
+        frame_atoms["b"]["asym_id"] == frame_atoms["c"]["asym_id"]
+    )
 
     # Compute final valid frame mask
-    valid_frame_mask = (
-        valid_frame_mask_angle * valid_frame_mask_atom * valid_frame_mask_asym_id
-    )
+    valid_frame_mask = valid_frame_mask_angle * valid_frame_mask_atom * valid_frame_mask_asym_id
     phi = (
         frame_atoms["a"]["atom_positions"],
         frame_atoms["b"]["atom_positions"],

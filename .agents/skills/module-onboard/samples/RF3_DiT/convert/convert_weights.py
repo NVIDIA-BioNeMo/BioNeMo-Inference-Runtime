@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Weight conversion: BakerLab RF3 DiffusionTransformerBlock (real checkpoint) -> TRT-BNM DiffusionTransformerLayer.
 
@@ -116,41 +131,55 @@ def convert_dit_block_weights(state_dict, prefix="", tbm_prefix="", dim=768, n_h
     adaln_prefix = f"{prefix}{dot}attention_pair_bias.ada_ln_1"
     if f"{adaln_prefix}.ln_s.weight" not in state_dict:
         adaln_prefix = f"{prefix}{dot}attention_pair_bias.ln_1"
-    weights.update(convert_adaln_weights(
-        state_dict, adaln_prefix, f"{tbm_prefix}{tdot}adaln"))
+    weights.update(convert_adaln_weights(state_dict, adaln_prefix, f"{tbm_prefix}{tdot}adaln"))
 
     # Attention projections
-    weights.update(convert_attention_weights(
-        state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}pair_bias_attn", dim))
+    weights.update(
+        convert_attention_weights(
+            state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}pair_bias_attn", dim
+        )
+    )
 
     # Pair bias norm
-    weights.update(convert_pair_bias_norm_weights(
-        state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}pair_bias_attn.proj_z",
-        for_trt=for_trt))
+    weights.update(
+        convert_pair_bias_norm_weights(
+            state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}pair_bias_attn.proj_z", for_trt=for_trt
+        )
+    )
 
     # Attention output gate — only present in real checkpoint variant
     output_gate_key = f"{prefix}{dot}attention_pair_bias.linear_output_project.0.weight"
     if output_gate_key in state_dict:
-        weights.update(convert_output_gate_weights(
-            state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}output_projection"))
+        weights.update(
+            convert_output_gate_weights(
+                state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}output_projection"
+            )
+        )
 
     # Conditioned transition block — AdaLN
-    weights.update(convert_adaln_weights(
-        state_dict, f"{prefix}{dot}conditioned_transition_block.ada_ln",
-        f"{tbm_prefix}{tdot}transition.adaln"))
+    weights.update(
+        convert_adaln_weights(
+            state_dict, f"{prefix}{dot}conditioned_transition_block.ada_ln", f"{tbm_prefix}{tdot}transition.adaln"
+        )
+    )
 
     # Conditioned transition block — linear layers
-    weights.update(convert_conditioned_transition_weights(
-        state_dict, f"{prefix}{dot}conditioned_transition_block",
-        f"{tbm_prefix}{tdot}transition"))
+    weights.update(
+        convert_conditioned_transition_weights(
+            state_dict, f"{prefix}{dot}conditioned_transition_block", f"{tbm_prefix}{tdot}transition"
+        )
+    )
 
     return weights
 
 
-def convert_dit_stack_weights(state_dict, num_blocks, prefix="blocks", tbm_prefix="layers", dim=768, n_head=16, for_trt=False):
+def convert_dit_stack_weights(
+    state_dict, num_blocks, prefix="blocks", tbm_prefix="layers", dim=768, n_head=16, for_trt=False
+):
     """Convert a full stack of DiffusionTransformerBlocks from real checkpoint."""
     weights = {}
     for i in range(num_blocks):
-        weights.update(convert_dit_block_weights(
-            state_dict, f"{prefix}.{i}", f"{tbm_prefix}.{i}", dim, n_head, for_trt=for_trt))
+        weights.update(
+            convert_dit_block_weights(state_dict, f"{prefix}.{i}", f"{tbm_prefix}.{i}", dim, n_head, for_trt=for_trt)
+        )
     return weights

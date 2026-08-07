@@ -1,9 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Adapted from https://github.com/ray-project/ray/blob/ray-2.53.0/python/ray/llm/_internal/batch/stages/base.py
 # All per-row data is packed into a single pickled DATA_COLUMN between stages
 # so that PyArrow never has to infer schemas for complex/heterogeneous nested dicts.
 import pickle
 import traceback
-from typing import Any, AsyncIterator, Dict, List, Optional, Type
+from collections.abc import AsyncIterator
+from typing import Any
 
 import pyarrow
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tensorrt_bionemo.logger import logger
 
 
-def unpack_pipeline_row(row: Dict[str, Any]) -> Dict[str, Any]:
+def unpack_pipeline_row(row: dict[str, Any]) -> dict[str, Any]:
     """Unpack a row from the pipeline's packed data-column format.
 
     After pipeline execution, each row has a pickled ``__data__`` column
@@ -51,11 +67,13 @@ class StatefulStageUDF:
 
     pack_output: bool = True
 
-    def __init__(self,
-                 compute_by_rows: bool = True,
-                 drop_keys: Optional[List[str]] = None,
-                 expected_input_keys: Optional[List[str]] = None,
-                 update_row: bool = True):
+    def __init__(
+        self,
+        compute_by_rows: bool = True,
+        drop_keys: list[str] | None = None,
+        expected_input_keys: list[str] | None = None,
+        update_row: bool = True,
+    ):
         self.expected_input_keys = set(expected_input_keys or [])
         self.compute_by_rows = compute_by_rows
         self.drop_keys = drop_keys
@@ -65,8 +83,7 @@ class StatefulStageUDF:
     # Row unpacking helpers
     # ------------------------------------------------------------------
 
-    def _unpack_rows_from_batch(self,
-                                batch: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _unpack_rows_from_batch(self, batch: dict[str, Any]) -> list[dict[str, Any]]:
         """Convert a columnar batch into a list of row dicts.
 
         If the batch contains DATA_COLUMN (packed format from a previous
@@ -92,41 +109,35 @@ class StatefulStageUDF:
             elif hasattr(record_col, "tolist"):
                 record_col = record_col.tolist()
 
-            rows: List[Dict[str, Any]] = []
+            rows: list[dict[str, Any]] = []
             for i in range(n_rows):
-                row = pickle.loads(packed[i]) if isinstance(
-                    packed[i], bytes) else packed[i]
+                row = pickle.loads(packed[i]) if isinstance(packed[i], bytes) else packed[i]
                 row["__inference_error__"] = error_col[i]
                 row[self.RECORD_ID_IN_BATCH_COLUMN] = record_col[i]
                 rows.append(row)
             return rows
 
         # Flat columns (first stage from ray.data.from_items)
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for column, values in batch.items():
             if hasattr(values, "tolist"):
                 values = values.tolist()
             if len(rows) == 0:
                 rows = [{} for _ in range(len(values))]
-            for row, value in zip(rows, values):
+            for row, value in zip(rows, values, strict=False):
                 row[column] = value
         return rows
 
-    def _pack_rows_to_output(self, rows: List[Dict[str,
-                                                   Any]]) -> Dict[str, Any]:
+    def _pack_rows_to_output(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         """Pack processed rows back into columnar format.
 
         All per-row data (except top-level keys) is pickled into
         DATA_COLUMN so Arrow only sees uniform ``bytes`` columns.
         """
-        output: Dict[str, Any] = {}
+        output: dict[str, Any] = {}
 
-        output["__inference_error__"] = [
-            row.pop("__inference_error__", None) for row in rows
-        ]
-        record_ids = [
-            row.pop(self.RECORD_ID_IN_BATCH_COLUMN, None) for row in rows
-        ]
+        output["__inference_error__"] = [row.pop("__inference_error__", None) for row in rows]
+        record_ids = [row.pop(self.RECORD_ID_IN_BATCH_COLUMN, None) for row in rows]
         output[self.RECORD_ID_IN_BATCH_COLUMN] = record_ids
 
         if self.drop_keys:
@@ -137,8 +148,7 @@ class StatefulStageUDF:
         output[self.DATA_COLUMN] = [pickle.dumps(row) for row in rows]
         return output
 
-    def _flatten_rows_to_output(self, rows: List[Dict[str,
-                                                      Any]]) -> Dict[str, Any]:
+    def _flatten_rows_to_output(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         """Convert processed rows back to flat columnar format.
 
         Used by terminal stages (e.g. writer) whose output schema is simple
@@ -149,7 +159,7 @@ class StatefulStageUDF:
                 for row in rows:
                     row.pop(key, None)
 
-        output: Dict[str, Any] = {}
+        output: dict[str, Any] = {}
         if not rows:
             return output
 
@@ -163,8 +173,7 @@ class StatefulStageUDF:
 
     # ------------------------------------------------------------------
 
-    async def __call__(self,
-                       batch: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+    async def __call__(self, batch: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         """Process a batch of data through the stage UDF.
 
         Supports two processing modes:
@@ -185,10 +194,7 @@ class StatefulStageUDF:
             normal_rows = []
             error_row_indices = set()
             for idx, row in enumerate(rows):
-                infer_err = row.get("__inference_error__", {
-                    "error_msg": None,
-                    "traceback": None
-                })
+                infer_err = row.get("__inference_error__", {"error_msg": None, "traceback": None})
                 if infer_err["error_msg"] is not None:
                     error_row_indices.add(idx)
                 else:
@@ -197,14 +203,13 @@ class StatefulStageUDF:
             if normal_rows:
                 async for output in self.udf_for_rows(normal_rows):
                     if self.IDX_IN_BATCH_COLUMN not in output:
-                        raise ValueError(
-                            "The output of the UDF must contain the column "
-                            f"{self.IDX_IN_BATCH_COLUMN}.")
+                        raise ValueError(f"The output of the UDF must contain the column {self.IDX_IN_BATCH_COLUMN}.")
                     idx_in_batch = output.pop(self.IDX_IN_BATCH_COLUMN)
                     if idx_in_batch not in not_outputed_rows:
                         raise ValueError(
                             f"The row {idx_in_batch} is outputted twice. "
-                            "This is likely due to the UDF is not one-to-one.")
+                            "This is likely due to the UDF is not one-to-one."
+                        )
                     not_outputed_rows.remove(idx_in_batch)
 
                     if id(rows[idx_in_batch]) != id(output):
@@ -215,11 +220,9 @@ class StatefulStageUDF:
                     else:
                         rows[idx_in_batch] = output
                     if _id is not None:
-                        rows[idx_in_batch][
-                            self.RECORD_ID_IN_BATCH_COLUMN] = _id
+                        rows[idx_in_batch][self.RECORD_ID_IN_BATCH_COLUMN] = _id
             if not_outputed_rows:
-                raise ValueError(
-                    f"The rows {not_outputed_rows} are not outputted.")
+                raise ValueError(f"The rows {not_outputed_rows} are not outputted.")
             for idx in error_row_indices:
                 rows[idx].pop(self.IDX_IN_BATCH_COLUMN, None)
 
@@ -238,17 +241,17 @@ class StatefulStageUDF:
                 output[self.RECORD_ID_IN_BATCH_COLUMN] = _ids
             yield output
 
-    def validate_batch_input(self, batch: Dict[str, Any]):
-        """Validate the batch to make sure the required keys are present.
-        """
+    def validate_batch_input(self, batch: dict[str, Any]):
+        """Validate the batch to make sure the required keys are present."""
         input_keys = set(batch.keys())
         missing_required = self.expected_input_keys - input_keys
         if missing_required:
             raise ValueError(
                 f"Required input keys {missing_required} not found at the input of "
-                f"{self.__class__.__name__}. Input keys: {input_keys}")
+                f"{self.__class__.__name__}. Input keys: {input_keys}"
+            )
 
-    def validate_rows_input(self, inputs: List[Dict[str, Any]]):
+    def validate_rows_input(self, inputs: list[dict[str, Any]]):
         """Validate the inputs to make sure the required keys are present.
 
         Args:
@@ -258,18 +261,13 @@ class StatefulStageUDF:
             ValueError: If the required keys are not found.
         """
         for inp in inputs:
-            infer_err = inp.get("__inference_error__", {
-                "error_msg": None,
-                "traceback": None
-            })
+            infer_err = inp.get("__inference_error__", {"error_msg": None, "traceback": None})
             if infer_err["error_msg"] is not None:
                 continue
             input_keys = set(inp.keys())
 
             if self.IDX_IN_BATCH_COLUMN in input_keys:
-                raise ValueError(
-                    f"The input column {self.IDX_IN_BATCH_COLUMN} is reserved "
-                    "for internal use.")
+                raise ValueError(f"The input column {self.IDX_IN_BATCH_COLUMN} is reserved for internal use.")
 
             if not self.expected_input_keys:
                 continue
@@ -278,16 +276,15 @@ class StatefulStageUDF:
             if missing_required:
                 raise ValueError(
                     f"Required input keys {missing_required} not found at the input of "
-                    f"{self.__class__.__name__}. Input keys: {input_keys}")
+                    f"{self.__class__.__name__}. Input keys: {input_keys}"
+                )
 
-    async def udf_for_batch(
-            self, batch: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
-        raise NotImplementedError(
-            "StageUDF must implement the udf_for_batch method")
+    async def udf_for_batch(self, batch: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        raise NotImplementedError("StageUDF must implement the udf_for_batch method")
 
-    async def udf_for_rows(
-            self, rows: List[Dict[str, Any]]) -> AsyncIterator[Dict[str, Any]]:
+    async def udf_for_rows(self, rows: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         import time as _time
+
         for row in rows:
             idx = row[self.IDX_IN_BATCH_COLUMN]
             try:
@@ -298,24 +295,20 @@ class StatefulStageUDF:
                 _timing = dict(row.get("stage_timing_s") or {})
                 _timing[self.__class__.__name__] = _time.perf_counter() - _t0
                 result["stage_timing_s"] = _timing
-                result["__inference_error__"] = {
-                    "error_msg": None,
-                    "traceback": None
-                }
+                result["__inference_error__"] = {"error_msg": None, "traceback": None}
             except Exception as e:
                 result = self.on_row_error(row, e)
                 result["__inference_error__"] = {
                     "error_msg": f"{type(e).__name__}: {str(e)}",
-                    "traceback": traceback.format_exc()
+                    "traceback": traceback.format_exc(),
                 }
             result[self.IDX_IN_BATCH_COLUMN] = idx
             yield result
 
-    def on_row_error(self, row: Dict[str, Any],
-                     error: Exception) -> Dict[str, Any]:
+    def on_row_error(self, row: dict[str, Any], error: Exception) -> dict[str, Any]:
         return {}
 
-    async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
+    async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError(
             f"{self.__class__.__name__} inherits from StatefulStageUDF must implement the udf_for_item method"
         )
@@ -392,33 +385,30 @@ class StatefulStage(BaseModel):
           to document their data requirements.
     """
 
-    fn: Type[StatefulStageUDF] = Field(
-        description="The well-optimized stateful UDF for this stage.")
-    fn_constructor_kwargs: Dict[str, Any] = Field(
+    fn: type[StatefulStageUDF] = Field(description="The well-optimized stateful UDF for this stage.")
+    fn_constructor_kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description="The keyword arguments of the UDF constructor.",
     )
-    map_batches_kwargs: Dict[str, Any] = Field(
+    map_batches_kwargs: dict[str, Any] = Field(
         default_factory=lambda: {"concurrency": 1},
-        description=
-        "The arguments of .map_batches(). Default {'concurrency': 1}.",
+        description="The arguments of .map_batches(). Default {'concurrency': 1}.",
     )
 
     compute_by_rows: bool = Field(
         default=True,
         description="Convert to rows mode and compute.",
     )
-    drop_keys: Optional[List[str]] = Field(
+    drop_keys: list[str] | None = Field(
         default=None,
         description="The keys to drop from the output.",
     )
     update_row: bool = Field(
         default=True,
-        description=
-        "Whether to update the input with the output, else replace the input with the output.",
+        description="Whether to update the input with the output, else replace the input with the output.",
     )
 
-    def get_required_input_keys(self) -> Dict[str, str]:
+    def get_required_input_keys(self) -> dict[str, str]:
         """Get the required input keys for this stage and their descriptions.
 
         Subclasses should override this method to declare which input columns
@@ -441,7 +431,7 @@ class StatefulStage(BaseModel):
         """
         return {}
 
-    def get_optional_input_keys(self) -> Dict[str, str]:
+    def get_optional_input_keys(self) -> dict[str, str]:
         """Get the optional input keys for this stage and their descriptions.
 
         Subclasses should override this method to document which input columns
@@ -464,8 +454,7 @@ class StatefulStage(BaseModel):
         """
         return {}
 
-    def get_dataset_map_batches_kwargs(self,
-                                       batch_size: int) -> Dict[str, Any]:
+    def get_dataset_map_batches_kwargs(self, batch_size: int) -> dict[str, Any]:
         """Construct the complete kwargs dictionary for Ray Data's map_batches call.
 
         This method combines the stage configuration into a single dictionary suitable
@@ -529,20 +518,14 @@ class StatefulStage(BaseModel):
             )
         kwargs["batch_size"] = batch_size
 
-        kwargs.update(
-            {"fn_constructor_kwargs": self.fn_constructor_kwargs.copy()})
+        kwargs.update({"fn_constructor_kwargs": self.fn_constructor_kwargs.copy()})
         if "compute_by_rows" in kwargs["fn_constructor_kwargs"]:
-            raise ValueError(
-                "'compute_by_rows' cannot be used as in fn_constructor_kwargs."
-            )
+            raise ValueError("'compute_by_rows' cannot be used as in fn_constructor_kwargs.")
 
-        kwargs["fn_constructor_kwargs"][
-            "compute_by_rows"] = self.compute_by_rows
+        kwargs["fn_constructor_kwargs"]["compute_by_rows"] = self.compute_by_rows
         kwargs["fn_constructor_kwargs"]["drop_keys"] = self.drop_keys
-        kwargs["fn_constructor_kwargs"]["expected_input_keys"] = list(
-            self.get_required_input_keys().keys())
+        kwargs["fn_constructor_kwargs"]["expected_input_keys"] = list(self.get_required_input_keys().keys())
         kwargs["fn_constructor_kwargs"]["update_row"] = self.update_row
         return kwargs
 
-    model_config = ConfigDict(arbitrary_types_allowed=True,
-                              validate_assignment=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)

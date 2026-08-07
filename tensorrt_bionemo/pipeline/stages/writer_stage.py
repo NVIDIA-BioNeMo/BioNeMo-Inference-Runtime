@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,14 +15,13 @@
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any
 
 import numpy as np
 
 from tensorrt_bionemo.data.schemas import FoldingOutput
 from tensorrt_bionemo.data.writers import CIFWriter, PDBWriter
-from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
-                                                   StatefulStageUDF)
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 _SUPPORTED_FORMATS = {"pdb", "cif"}
 _EXT_MAP = {"pdb": ".pdb", "cif": ".cif"}
@@ -66,22 +65,22 @@ class WriterUDF(StatefulStageUDF):
 
     pack_output = False
 
-    def __init__(self,
-                 compute_by_rows: bool,
-                 drop_keys: List[str],
-                 expected_input_keys: List[str],
-                 update_row: bool,
-                 mappings: dict[str, Any],
-                 format: Optional[Union[str, List[str]]] = "pdb",
-                 output_path: Optional[str] = None):
-        super().__init__(compute_by_rows, drop_keys, expected_input_keys,
-                         update_row)
+    def __init__(
+        self,
+        compute_by_rows: bool,
+        drop_keys: list[str],
+        expected_input_keys: list[str],
+        update_row: bool,
+        mappings: dict[str, Any],
+        format: str | list[str] | None = "pdb",
+        output_path: str | None = None,
+    ):
+        super().__init__(compute_by_rows, drop_keys, expected_input_keys, update_row)
         raw = format or "pdb"
-        self.formats: List[str] = [raw] if isinstance(raw, str) else list(raw)
+        self.formats: list[str] = [raw] if isinstance(raw, str) else list(raw)
         for fmt in self.formats:
             if fmt not in _SUPPORTED_FORMATS:
-                raise ValueError(f"Unsupported writer format '{fmt}'. "
-                                 f"Supported: {sorted(_SUPPORTED_FORMATS)}")
+                raise ValueError(f"Unsupported writer format '{fmt}'. Supported: {sorted(_SUPPORTED_FORMATS)}")
         self.mappings = mappings
         self.output_path = output_path
 
@@ -106,26 +105,24 @@ class WriterUDF(StatefulStageUDF):
             raise ValueError(
                 "WriterUDF requires both 'res_type_mapping' and "
                 "'atom_type_mapping' to write PDB or CIF. "
-                "Ensure WriterStage is configured with proper mappings.")
+                "Ensure WriterStage is configured with proper mappings."
+            )
         if fmt == "pdb":
-            return PDBWriter(res_type_mapping=res_type_mapping,
-                             atom_type_mapping=atom_type_mapping)
+            return PDBWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping)
         if fmt == "cif":
-            return CIFWriter(res_type_mapping=res_type_mapping,
-                             atom_type_mapping=atom_type_mapping)
+            return CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping)
         raise ValueError(f"Invalid format: {fmt}")
 
-    def _resolve_paths(self, row: Dict[str, Any], row_id, ext: str):
+    def _resolve_paths(self, row: dict[str, Any], row_id, ext: str):
         if self.output_path and row_id:
             out = os.path.join(self.output_path, f"{row_id}{ext}")
         elif self.output_path:
-            out = os.path.join(self.output_path,
-                               f"{row[self.IDX_IN_BATCH_COLUMN]}{ext}")
+            out = os.path.join(self.output_path, f"{row[self.IDX_IN_BATCH_COLUMN]}{ext}")
         else:
             out = None
         return out
 
-    async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
+    async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         chain_indices = row.get("chain_indices")
         if chain_indices is None:
             residue_indices = row.get("residue_indices")
@@ -138,24 +135,25 @@ class WriterUDF(StatefulStageUDF):
             if atom_mask is not None:
                 b_factors = np.zeros_like(atom_mask, dtype=np.float32)
 
-        record = FoldingOutput(atom_positions=row.get("atom_positions", None),
-                               residue_types=row.get("residue_types", None),
-                               atom_mask=row.get("atom_mask", None),
-                               residue_indices=row.get("residue_indices",
-                                                       None),
-                               b_factors=b_factors,
-                               chain_indices=chain_indices,
-                               plddt=row.get("plddt", None),
-                               ptm=row.get("ptm", None),
-                               iptm=row.get("iptm", None),
-                               pae=row.get("pae", None),
-                               max_pae=row.get("max_pae", None),
-                               residue_names=row.get("residue_names", None),
-                               mol_types=row.get("mol_types", None))
+        record = FoldingOutput(
+            atom_positions=row.get("atom_positions", None),
+            residue_types=row.get("residue_types", None),
+            atom_mask=row.get("atom_mask", None),
+            residue_indices=row.get("residue_indices", None),
+            b_factors=b_factors,
+            chain_indices=chain_indices,
+            plddt=row.get("plddt", None),
+            ptm=row.get("ptm", None),
+            iptm=row.get("iptm", None),
+            pae=row.get("pae", None),
+            max_pae=row.get("max_pae", None),
+            residue_names=row.get("residue_names", None),
+            mol_types=row.get("mol_types", None),
+        )
         row_id = row.get(self.RECORD_ID_IN_BATCH_COLUMN)
 
-        output_paths: Dict[str, Optional[str]] = {}
-        primary_raw: Optional[str] = None
+        output_paths: dict[str, str | None] = {}
+        primary_raw: str | None = None
 
         for fmt in self.formats:
             ext = _EXT_MAP[fmt]
@@ -174,12 +172,9 @@ class WriterUDF(StatefulStageUDF):
         scores = self.round_floats(record.get_scores())
 
         if self.output_path and row_id:
-            score_path = os.path.join(self.output_path,
-                                      f"{row_id}_scores.json")
+            score_path = os.path.join(self.output_path, f"{row_id}_scores.json")
         elif self.output_path:
-            score_path = os.path.join(
-                self.output_path,
-                f"{row[self.IDX_IN_BATCH_COLUMN]}_scores.json")
+            score_path = os.path.join(self.output_path, f"{row[self.IDX_IN_BATCH_COLUMN]}_scores.json")
         else:
             score_path = None
 
@@ -196,14 +191,12 @@ class WriterUDF(StatefulStageUDF):
             "scores": json.dumps(scores),
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
-        for timing_key in ("time_taken", "model_inference_time",
-                           "model_inference_time_samples", "stage_timing_s"):
+        for timing_key in ("time_taken", "model_inference_time", "model_inference_time_samples", "stage_timing_s"):
             if timing_key in row:
                 result[timing_key] = row[timing_key]
         return result
 
-    def on_row_error(self, row: Dict[str, Any],
-                     error: Exception) -> Dict[str, Any]:
+    def on_row_error(self, row: dict[str, Any], error: Exception) -> dict[str, Any]:
         return {
             "output_path": None,
             "output_paths": json.dumps({}),
@@ -226,10 +219,10 @@ class WriterStage(StatefulStage):
        score structures.
     """
 
-    fn: Type[StatefulStageUDF] = WriterUDF
+    fn: type[StatefulStageUDF] = WriterUDF
     update_row: bool = False
 
-    def get_required_input_keys(self) -> Dict[str, str]:
+    def get_required_input_keys(self) -> dict[str, str]:
         return {
             "atom_positions": "The atom positions of the output. ",
             "residue_types": "The residue types of the output. ",

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,18 +19,17 @@ from pathlib import Path
 
 _log_level = os.environ.get("TENSORRT_BIONEMO_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=getattr(logging, _log_level, logging.INFO),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    level=getattr(logging, _log_level, logging.INFO), format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
-CACHE_DIR = Path(
-    os.getenv("TENSORRT_BIONEMO_CACHE",
-              str(Path.home() / ".cache" / "tensorrt_bionemo")))
+CACHE_DIR = Path(os.getenv("TENSORRT_BIONEMO_CACHE", str(Path.home() / ".cache" / "tensorrt_bionemo")))
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
-from ._torch import _load_cuequivariance_lib
-from .registry import register_all_factories
-from .version import __version__
+# Imports intentionally follow the logging/env setup above so submodule loggers inherit the config.
+from ._torch import _load_cuequivariance_lib  # noqa: E402
+from .registry import register_all_factories  # noqa: E402
+from .version import __version__  # noqa: E402
 
 _inited = False
 

@@ -1,10 +1,19 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-import sys
 from unittest.mock import MagicMock
-
-import pytest
 
 from tensorrt_bionemo.pipeline.stages.configs import FeatureGeneratorStageConfig
 from tensorrt_bionemo.pipeline.stages.feature_generator_stage import (
@@ -14,26 +23,34 @@ from tensorrt_bionemo.pipeline.stages.feature_generator_stage import (
 
 
 class TestFeatureGeneratorStageConfiguration:
-
     def test_stage_has_correct_fn_class(self):
-        stage = FeatureGeneratorStage(fn=FeatureGeneratorUDF, fn_constructor_kwargs={
-            "feature_generators": [],
-        })
+        stage = FeatureGeneratorStage(
+            fn=FeatureGeneratorUDF,
+            fn_constructor_kwargs={
+                "feature_generators": [],
+            },
+        )
         assert stage.fn == FeatureGeneratorUDF
 
     def test_stage_initialization_with_defaults(self):
-        stage = FeatureGeneratorStage(fn=FeatureGeneratorUDF, fn_constructor_kwargs={
-            "feature_generators": [],
-        })
+        stage = FeatureGeneratorStage(
+            fn=FeatureGeneratorUDF,
+            fn_constructor_kwargs={
+                "feature_generators": [],
+            },
+        )
 
         assert stage.fn == FeatureGeneratorUDF
         assert stage.compute_by_rows is True
         assert stage.update_row is False
 
     def test_stage_update_row_default_false(self):
-        stage = FeatureGeneratorStage(fn=FeatureGeneratorUDF, fn_constructor_kwargs={
-            "feature_generators": [],
-        })
+        stage = FeatureGeneratorStage(
+            fn=FeatureGeneratorUDF,
+            fn_constructor_kwargs={
+                "feature_generators": [],
+            },
+        )
 
         assert stage.update_row is False
 
@@ -48,7 +65,6 @@ class TestFeatureGeneratorStageConfiguration:
 
 
 class TestFeatureGeneratorStageConfig:
-
     def test_default_config(self):
         config = FeatureGeneratorStageConfig()
 
@@ -83,7 +99,6 @@ class TestFeatureGeneratorStageConfig:
 
 
 class TestFeatureGeneratorStageGetDatasetKwargs:
-
     def test_get_dataset_map_batches_kwargs(self):
         stage = FeatureGeneratorStage(
             fn=FeatureGeneratorUDF,
@@ -165,7 +180,6 @@ class TestFeatureGeneratorStageGetDatasetKwargs:
 
 
 class TestFeatureGeneratorStageWithMockComponents:
-
     def test_stage_with_mock_feature_generators(self):
         mock_gen1 = MagicMock()
         mock_gen1.name = "generator1"
@@ -203,7 +217,6 @@ class TestFeatureGeneratorStageWithMockComponents:
 
 
 class TestFeatureGeneratorStageUpdateRowBehavior:
-
     def test_update_row_false_means_replace_mode(self):
         stage = FeatureGeneratorStage(
             fn=FeatureGeneratorUDF,

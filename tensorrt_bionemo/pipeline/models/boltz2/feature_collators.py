@@ -20,7 +20,7 @@ modify features." Boltz2 uses a single collator that produces the final batch
 (e.g. optional key filtering / ordering for reproducibility).
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -39,9 +39,9 @@ class Boltz2FinalFeatureCollator(FeatureCollatorBase):
 
     def __init__(
         self,
-        config: Optional[BaseConfig] = None,
-        include_feats: Optional[list[str]] = None,
-        exclude_feats: Optional[list[str]] = None,
+        config: BaseConfig | None = None,
+        include_feats: list[str] | None = None,
+        exclude_feats: list[str] | None = None,
         add_batch_dim: bool = True,
         **kwargs: Any,
     ):
@@ -63,8 +63,5 @@ class Boltz2FinalFeatureCollator(FeatureCollatorBase):
             for k in self.exclude_feats:
                 features.pop(k, None)
         if self.add_batch_dim:
-            features = {
-                k: v.unsqueeze(0) if isinstance(v, torch.Tensor) else v
-                for k, v in features.items()
-            }
+            features = {k: v.unsqueeze(0) if isinstance(v, torch.Tensor) else v for k, v in features.items()}
         return features

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,12 +42,12 @@ class FoldingSupportMatrix:
 
     @staticmethod
     def is_supported(model_name: str) -> bool:
-        return model_name in FoldingSupportMatrix.get_all_supported_model_names(
-        )
+        return model_name in FoldingSupportMatrix.get_all_supported_model_names()
 
     @staticmethod
     def get_all_supported_model_names() -> list[str]:
         return [
-            value for key, value in FoldingSupportMatrix.__dict__.items()
+            value
+            for key, value in FoldingSupportMatrix.__dict__.items()
             if not key.startswith("_") and isinstance(value, str)
         ]

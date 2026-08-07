@@ -117,20 +117,23 @@ class TestMolTypeToKind:
 class TestChainIdFromIndex:
     """CIF asym_id base-N scheme: A-Z, a-z, then AA, AB, ...; unbounded."""
 
-    @pytest.mark.parametrize("idx,expected", [
-        (0, "A"),
-        (1, "B"),
-        (25, "Z"),
-        (26, "a"),
-        (51, "z"),
-        (52, "AA"),
-        (53, "AB"),
-        (52 + 25, "AZ"),
-        (52 + 26, "Aa"),
-        # Spot-check a far value just to confirm there's no hardcoded cap
-        # (the function is supposed to grow as needed).
-        (52 + 52, "BA"),
-    ])
+    @pytest.mark.parametrize(
+        "idx,expected",
+        [
+            (0, "A"),
+            (1, "B"),
+            (25, "Z"),
+            (26, "a"),
+            (51, "z"),
+            (52, "AA"),
+            (53, "AB"),
+            (52 + 25, "AZ"),
+            (52 + 26, "Aa"),
+            # Spot-check a far value just to confirm there's no hardcoded cap
+            # (the function is supposed to grow as needed).
+            (52 + 52, "BA"),
+        ],
+    )
     def test_index_to_asym_id(self, idx, expected):
         assert _chain_id_from_index(idx) == expected
 

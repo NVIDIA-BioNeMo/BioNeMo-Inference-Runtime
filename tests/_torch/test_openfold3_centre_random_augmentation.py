@@ -24,11 +24,11 @@ Regression: before ``broadcast_atom_mask`` a bare ``atom_mask[..., None]``
 right-aligned the mask's batch dim with ``xl``'s samples dim, which crashed for
 ``B != S`` (and silently misaligned when ``B == S``).
 """
+
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import (
-    broadcast_atom_mask, centre_random_augmentation)
+from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import broadcast_atom_mask, centre_random_augmentation
 
 
 def test_broadcast_atom_mask_matches_legacy_when_dims_align():
@@ -43,8 +43,7 @@ def test_broadcast_atom_mask_matches_legacy_when_dims_align():
     # B=1 with a samples dim broadcasts exactly like the legacy expression too
     pos_s = torch.randn(1, 4, 5, 3)
     mask_1 = (torch.rand(1, 5) > 0.3).float()
-    assert torch.equal(pos_s * broadcast_atom_mask(pos_s, mask_1),
-                       pos_s * mask_1[..., None])
+    assert torch.equal(pos_s * broadcast_atom_mask(pos_s, mask_1), pos_s * mask_1[..., None])
 
 
 def test_broadcast_atom_mask_inserts_samples_axis():
@@ -59,11 +58,8 @@ def test_centre_random_augmentation_shapes_and_masks(B, S, N):
     """Runs for ``B >= 1`` with a samples axis (incl. ``B != S``), preserves the
     ``[B, S, N, 3]`` shape, and zeroes masked-out atoms."""
     gen = torch.Generator().manual_seed(1)
-    xl = torch.randn(B, S, N, 3, dtype=torch.float64,
-                     generator=torch.Generator().manual_seed(2))
-    atom_mask = (torch.rand(B, N,
-                            generator=torch.Generator().manual_seed(3)) > 0.3
-                 ).double()
+    xl = torch.randn(B, S, N, 3, dtype=torch.float64, generator=torch.Generator().manual_seed(2))
+    atom_mask = (torch.rand(B, N, generator=torch.Generator().manual_seed(3)) > 0.3).double()
 
     out = centre_random_augmentation(xl, atom_mask, generator=gen)
 
@@ -83,16 +79,12 @@ def test_centre_random_augmentation_centers_per_batch_sample(B, S, N):
     the batch/samples axes would not.
     """
     gen = torch.Generator().manual_seed(7)
-    xl = torch.randn(B, S, N, 3, dtype=torch.float64,
-                     generator=torch.Generator().manual_seed(8))
+    xl = torch.randn(B, S, N, 3, dtype=torch.float64, generator=torch.Generator().manual_seed(8))
     # ensure every (b) has at least one live atom so the centroid is defined
-    atom_mask = (torch.rand(B, N,
-                            generator=torch.Generator().manual_seed(9)) > 0.3
-                 ).double()
+    atom_mask = (torch.rand(B, N, generator=torch.Generator().manual_seed(9)) > 0.3).double()
     atom_mask[:, 0] = 1.0
 
-    out = centre_random_augmentation(xl, atom_mask, scale_trans=0.0,
-                                     generator=gen)
+    out = centre_random_augmentation(xl, atom_mask, scale_trans=0.0, generator=gen)
 
     mask = atom_mask[:, None, :, None]  # [B, 1, N, 1]
     centroid = (out * mask).sum(dim=-2) / mask.sum(dim=-2).clamp(min=1e-12)

@@ -7,6 +7,7 @@ chore:). Add "BREAKING CHANGE:" to the title for API-breaking changes. The title
 becomes the changelog line. NVIDIA developers: include the JIRA key / NVBug ID.
 -->
 
+<!-- rumdl-disable-next-line MD041 -->
 ## Description
 
 <!-- What does this PR change and why? Reference issues with "closes #NNNN".
@@ -32,8 +33,10 @@ becomes the changelog line. NVIDIA developers: include the JIRA key / NVBug ID.
 
 ## Checklist
 
-- [ ] My commits are signed off (DCO): `git commit -s` (see [CONTRIBUTING.md](../CONTRIBUTING.md))
+- [ ] My commits are signed off (DCO): `git commit -s` (see
+      [CONTRIBUTING.md](../CONTRIBUTING.md))
 - [ ] I have read the [Contributing Guidelines](../CONTRIBUTING.md)
-- [ ] For a new feature or breaking change, an issue was filed and approved first
+- [ ] For a new feature or breaking change, an issue was filed and approved
+      first
 - [ ] I added or updated tests, and they pass locally
 - [ ] I updated documentation as needed

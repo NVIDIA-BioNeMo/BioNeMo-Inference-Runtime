@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2025 AlQuraishi Laboratory
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +28,11 @@
 # limitations under the License.
 
 import torch
-import torch.nn as nn
+
 from tensorrt_bionemo._torch.tensor_utils import dist_one_hot as binned_one_hot
 
-def relpos_complex(
-    batch: dict, max_relative_idx: int, max_relative_chain: int
-) -> torch.Tensor:
+
+def relpos_complex(batch: dict, max_relative_idx: int, max_relative_chain: int) -> torch.Tensor:
     """
     Args:
         batch:
@@ -38,9 +52,7 @@ def relpos_complex(
     same_res = res_idx[..., None] == res_idx[..., None, :]
     same_entity = entity_id[..., None] == entity_id[..., None, :]
 
-    def relpos(
-        pos: torch.Tensor, condition: torch.BoolTensor, rel_clip_idx: int
-    ) -> torch.Tensor:
+    def relpos(pos: torch.Tensor, condition: torch.BoolTensor, rel_clip_idx: int) -> torch.Tensor:
         """
         Args:
             pos:
@@ -60,9 +72,7 @@ def relpos_complex(
             clipped_offset,
             torch.full_like(clipped_offset, 2 * rel_clip_idx + 1),
         )
-        boundaries = torch.arange(
-            start=0, end=2 * rel_clip_idx + 2, device=final_offset.device
-        )
+        boundaries = torch.arange(start=0, end=2 * rel_clip_idx + 2, device=final_offset.device)
         rel_pos = binned_one_hot(
             final_offset,
             boundaries,

@@ -16,15 +16,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerNoSeqModule
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerNoSeqModule
 from tensorrt_bionemo.configs import BaseConfig
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
@@ -55,12 +54,9 @@ class ProtenixTemplateEmbedder(nn.Module):
     # Checkpoint layout of linear_no_bias_a weight columns (split-projection path).
     _DGRAM_END: int = input_feature1["template_distogram"]
     _PSEUDO_BETA_COL: int = _DGRAM_END
-    _RESTYPE_I: slice = slice(_PSEUDO_BETA_COL + 1,
-                              _PSEUDO_BETA_COL + 1 + n_restypes)
+    _RESTYPE_I: slice = slice(_PSEUDO_BETA_COL + 1, _PSEUDO_BETA_COL + 1 + n_restypes)
     _RESTYPE_J: slice = slice(_RESTYPE_I.stop, _RESTYPE_I.stop + n_restypes)
-    _UNIT_VECTOR: slice = slice(
-        _RESTYPE_J.stop,
-        _RESTYPE_J.stop + input_feature1["template_unit_vector"])
+    _UNIT_VECTOR: slice = slice(_RESTYPE_J.stop, _RESTYPE_J.stop + input_feature1["template_unit_vector"])
     _BACKBONE_COL: int = _UNIT_VECTOR.stop
 
     def __init__(self, config: BaseConfig) -> None:
@@ -71,24 +67,15 @@ class ProtenixTemplateEmbedder(nn.Module):
         self.c_z = config.c_z
         self.dtype = config.torch_dtype
         self.pairformer_dtype = str_dtype_to_torch(config.pairformer_dtype)
-        a_in = sum(self.input_feature1.values()) + sum(
-            self.input_feature2.values())
+        a_in = sum(self.input_feature1.values()) + sum(self.input_feature2.values())
 
-        self.layernorm_z = nn.LayerNorm(self.c_z,
-                                        eps=config.norm_epsilon,
-                                        dtype=self.dtype)
+        self.layernorm_z = nn.LayerNorm(self.c_z, eps=config.norm_epsilon, dtype=self.dtype)
         self.linear_no_bias_z = Linear(
-            self.c_z,
-            self.c,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=config.skip_create_weights)
+            self.c_z, self.c, bias=False, dtype=self.dtype, skip_create_weights=config.skip_create_weights
+        )
         self.linear_no_bias_a = Linear(
-            a_in,
-            self.c,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=config.skip_create_weights)
+            a_in, self.c, bias=False, dtype=self.dtype, skip_create_weights=config.skip_create_weights
+        )
         self.pairformer_stack = PairformerNoSeqModule(
             num_blocks=self.n_blocks,
             token_z=self.c,
@@ -102,19 +89,14 @@ class ProtenixTemplateEmbedder(nn.Module):
             trimul_high_precision=config.trimul_high_precision,
             skip_create_weights=config.skip_create_weights,
         )
-        self.layernorm_v = nn.LayerNorm(self.c,
-                                        eps=config.norm_epsilon,
-                                        dtype=self.dtype)
+        self.layernorm_v = nn.LayerNorm(self.c, eps=config.norm_epsilon, dtype=self.dtype)
         self.linear_no_bias_u = Linear(
-            self.c,
-            self.c_z,
-            bias=False,
-            dtype=self.dtype,
-            skip_create_weights=config.skip_create_weights)
+            self.c, self.c_z, bias=False, dtype=self.dtype, skip_create_weights=config.skip_create_weights
+        )
 
     def _project_single_template_features(
-            self, input_feature_dict: dict[str, Any], template_id: int,
-            masked_by: torch.Tensor) -> torch.Tensor:
+        self, input_feature_dict: dict[str, Any], template_id: int, masked_by: torch.Tensor
+    ) -> torch.Tensor:
         """Project one template without materializing ``[B, N, N, 108]``.
 
         ``linear_no_bias_a`` layout: ``[dgram, pseudo_beta, restype_i,
@@ -132,7 +114,7 @@ class ProtenixTemplateEmbedder(nn.Module):
         # These four feature groups all carry masked_by — project, sum, mask once.
         projected = linear.apply_linear(
             feat("template_distogram").to(dtype),
-            weight[:, :self._DGRAM_END],
+            weight[:, : self._DGRAM_END],
             None,
         )
         projected.addcmul_(
@@ -152,17 +134,14 @@ class ProtenixTemplateEmbedder(nn.Module):
         # one_hot(restype) @ W == embedding(restype, W.T). restype_i varies on
         # the second pair axis, restype_j on the first.
         aatype = feat("template_aatype").long()
-        projected.add_(
-            F.embedding(aatype, weight[:, self._RESTYPE_I].t()).unsqueeze(1))
-        projected.add_(
-            F.embedding(aatype, weight[:, self._RESTYPE_J].t()).unsqueeze(2))
+        projected.add_(F.embedding(aatype, weight[:, self._RESTYPE_I].t()).unsqueeze(1))
+        projected.add_(F.embedding(aatype, weight[:, self._RESTYPE_J].t()).unsqueeze(2))
 
         return projected
 
-    def forward(self,
-                input_feature_dict: dict[str, Any],
-                z: torch.Tensor,
-                pair_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, input_feature_dict: dict[str, Any], z: torch.Tensor, pair_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """Template pair update from ``N_templ`` features.
 
         Args:
@@ -181,8 +160,7 @@ class ProtenixTemplateEmbedder(nn.Module):
             return z.new_zeros(z.shape)
 
         asym_id = input_feature_dict["asym_id"]
-        multichain_mask = (asym_id[..., :, None] == asym_id[..., None, :]).to(
-            z.dtype)  # [B, N, N]
+        multichain_mask = (asym_id[..., :, None] == asym_id[..., None, :]).to(z.dtype)  # [B, N, N]
         if pair_mask is None:
             pair_mask = z.new_ones(z.shape[:-1])
         masked_by = multichain_mask * pair_mask
@@ -193,11 +171,9 @@ class ProtenixTemplateEmbedder(nn.Module):
 
         u = z.new_zeros((*z.shape[:-1], self.c))
         for template_id in range(num_templates):
-            v = self._project_single_template_features(input_feature_dict,
-                                                       template_id, masked_by)
+            v = self._project_single_template_features(input_feature_dict, template_id, masked_by)
             v.add_(z_proj)
-            v = self.pairformer_stack(z=v.to(self.pairformer_dtype),
-                                      pair_mask=pair_mask)
+            v = self.pairformer_stack(z=v.to(self.pairformer_dtype), pair_mask=pair_mask)
             u = u + self.layernorm_v(v.to(self.dtype))
         u = u / (1e-7 + num_templates)
         return self.linear_no_bias_u(F.relu(u))

@@ -31,13 +31,10 @@ Tests can opt into ``residue_names`` / ``mol_types`` to exercise the
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 from tensorrt_bionemo.data.schemas.basic import FoldingOutput
 from tensorrt_bionemo.data.utils import get_all_atom_types, get_all_residue_types
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,8 +56,8 @@ def of3_mappings() -> tuple[dict[int, object], dict[int, object]]:
     res_types = get_all_residue_types("openfold3")
     atom_types = get_all_atom_types("openfold3")
     return (
-        {i: r for i, r in enumerate(res_types)},
-        {i: a for i, a in enumerate(atom_types)},
+        dict(enumerate(res_types)),
+        dict(enumerate(atom_types)),
     )
 
 
@@ -75,8 +72,8 @@ def _build_folding(
     residue_indices: list[int],
     chain_indices: list[int],
     per_residue_atom_names: list[list[str]],
-    residue_names: Optional[list[str]] = None,
-    mol_types: Optional[list[int]] = None,
+    residue_names: list[str] | None = None,
+    mol_types: list[int] | None = None,
     coord_offset: float = 0.0,
 ) -> FoldingOutput:
     """Low-level synthetic FoldingOutput constructor.
@@ -102,14 +99,14 @@ def _build_folding(
             atom_mask[i, slot] = 1.0
             b_factors[i, slot] = 50.0 + i + j
 
-    kwargs = dict(
-        atom_positions=atom_positions,
-        residue_types=np.asarray(res_indices, dtype=np.int64),
-        atom_mask=atom_mask,
-        residue_indices=np.asarray(residue_indices, dtype=np.int64),
-        b_factors=b_factors,
-        chain_indices=np.asarray(chain_indices, dtype=np.int64),
-    )
+    kwargs = {
+        "atom_positions": atom_positions,
+        "residue_types": np.asarray(res_indices, dtype=np.int64),
+        "atom_mask": atom_mask,
+        "residue_indices": np.asarray(residue_indices, dtype=np.int64),
+        "b_factors": b_factors,
+        "chain_indices": np.asarray(chain_indices, dtype=np.int64),
+    }
     if residue_names is not None:
         kwargs["residue_names"] = residue_names
     if mol_types is not None:
@@ -169,9 +166,7 @@ def dna_only_folding(
     short_to_index = {"A": "DA", "G": "DG", "C": "DC", "T": "DT"}
     res_indices = [res_idx_map[short_to_index[s]] for s in sequence]
     per_res_atoms = [["P", "C5'", "C4'", "C3'", "O3'", "C1'"]] * len(sequence)
-    residue_names = (
-        [short_to_index[s] for s in sequence] if with_residue_names else None
-    )
+    residue_names = [short_to_index[s] for s in sequence] if with_residue_names else None
     mol_types = [2] * len(sequence) if with_mol_types else None
     return _build_folding(
         res_indices=res_indices,
@@ -187,7 +182,7 @@ def nonpoly_ligand_folding(
     *,
     atom_names: list[str] = ("C1", "C2", "N2"),
     chain_index: int = 0,
-    ccd_code: Optional[str] = None,
+    ccd_code: str | None = None,
     with_mol_types: bool = False,
 ) -> FoldingOutput:
     """Per-atom-tokenised non-polymer chain. Every residue is ``X`` (idx 20).

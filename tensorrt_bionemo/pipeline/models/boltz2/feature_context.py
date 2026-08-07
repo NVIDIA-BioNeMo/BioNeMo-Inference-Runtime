@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Boltz2 ContextGenerator.
 
 Builds the per-row context for the downstream feature pipeline:
@@ -18,7 +31,7 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from rdkit import Chem
@@ -58,10 +71,10 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
 
     def __init__(
         self,
-        config: Optional[Any] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        ccd_path: Optional[str | Path] = None,
-        mol_dir: Optional[str | Path] = None,
+        config: Any | None = None,
+        metadata: dict[str, Any] | None = None,
+        ccd_path: str | Path | None = None,
+        mol_dir: str | Path | None = None,
         **kwargs: Any,
     ):
         super().__init__(config)
@@ -96,10 +109,7 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
             self._molecules_cache.update(loaded)
             for k, v in loaded.items():
                 self._molecules_binary_cache[k] = self._serialize_mol(v)
-        return {
-            k: self._molecules_binary_cache[k]
-            for k in names if k in self._molecules_binary_cache
-        }
+        return {k: self._molecules_binary_cache[k] for k in names if k in self._molecules_binary_cache}
 
     @staticmethod
     def _serialize_mol(mol) -> bytes:
@@ -114,8 +124,7 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
             raise ValueError("mol_dir must be set and exist")
 
         ccd = self._get_ccd()
-        structure, extra_mols, constraints = build_structure_from_input(
-            parsed, ccd)
+        structure, extra_mols, constraints = build_structure_from_input(parsed, ccd)
         tokens, token_bonds = tokenize_structure(structure)
 
         # CCD-backed mol names (canonical tokens + per-residue ligand codes).
@@ -140,11 +149,9 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
         # lists line up positionally with the reordered chains that
         # process_msa_features indexes — otherwise interleaved homo-oligomers
         # (e.g. 1a3n A,C,B,D) would pick up the wrong MSA rows.
-        for poly in sorted(parsed.get("polymers") or [],
-                           key=lambda p: p.get("_entity_id", 0)):
+        for poly in sorted(parsed.get("polymers") or [], key=lambda p: p.get("_entity_id", 0)):
             chain_ids = poly.get("chain_id") or ["_"]
-            n_chains_in_poly = (len(chain_ids)
-                                if isinstance(chain_ids, list) else 1)
+            n_chains_in_poly = len(chain_ids) if isinstance(chain_ids, list) else 1
             ptype = (poly.get("polymer_type") or "protein").lower()
             # Only protein chains carry MSAs in Boltz2; for nucleic acids /
             # ligands fall through to the gap-only "single-sequence" path.
@@ -180,11 +187,13 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
                 chain_ids = ["A"]  # matches build_structure_from_input default
             if isinstance(chain_ids, str):
                 chain_ids = [chain_ids]
-            templates_row.append({
-                "chain_ids": list(chain_ids),
-                "sequence": poly.get("sequence") or "",
-                "templates": list(tmpls),
-            })
+            templates_row.append(
+                {
+                    "chain_ids": list(chain_ids),
+                    "sequence": poly.get("sequence") or "",
+                    "templates": list(tmpls),
+                }
+            )
 
         row = {
             "structure": structure.to_dict(),
@@ -215,11 +224,12 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
             return first
         content = first.get("content") if isinstance(first, dict) else None
         if content is None and isinstance(first, dict) and first.get("path"):
-            with open(first["path"], "r") as f:
+            with open(first["path"]) as f:
                 content = f.read()
         if content:
             from io import StringIO
 
             from tensorrt_bionemo.data.parsers.a3m import parse_a3m_content
+
             return parse_a3m_content(StringIO(content))
         return None

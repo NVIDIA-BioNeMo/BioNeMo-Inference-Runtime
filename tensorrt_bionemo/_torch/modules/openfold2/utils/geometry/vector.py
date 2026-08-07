@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2021 DeepMind Technologies Limited
 # Copyright 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,25 +31,24 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import List, Union
 
 import torch
 
-Float = Union[float, torch.Tensor]
+Float = float | torch.Tensor
 
 
 @dataclasses.dataclass(frozen=True)
 class Vec3Array:
-    x: torch.Tensor = dataclasses.field(metadata={'dtype': torch.float32})
+    x: torch.Tensor = dataclasses.field(metadata={"dtype": torch.float32})
     y: torch.Tensor
     z: torch.Tensor
 
     def __post_init__(self):
-        if hasattr(self.x, 'dtype'):
+        if hasattr(self.x, "dtype"):
             assert self.x.dtype == self.y.dtype
             assert self.x.dtype == self.z.dtype
-            assert all([x == y for x, y in zip(self.x.shape, self.y.shape)])
-            assert all([x == z for x, z in zip(self.x.shape, self.z.shape)])
+            assert all(x == y for x, y in zip(self.x.shape, self.y.shape, strict=False))
+            assert all(x == z for x, z in zip(self.x.shape, self.z.shape, strict=False))
 
     def __add__(self, other: Vec3Array) -> Vec3Array:
         return Vec3Array(
@@ -151,9 +165,11 @@ class Vec3Array:
     @classmethod
     def zeros(cls, shape, device="cpu"):
         """Return Vec3Array corresponding to zeros of given shape."""
-        return cls(torch.zeros(shape, dtype=torch.float32, device=device),
-                   torch.zeros(shape, dtype=torch.float32, device=device),
-                   torch.zeros(shape, dtype=torch.float32, device=device))
+        return cls(
+            torch.zeros(shape, dtype=torch.float32, device=device),
+            torch.zeros(shape, dtype=torch.float32, device=device),
+            torch.zeros(shape, dtype=torch.float32, device=device),
+        )
 
     def to_tensor(self) -> torch.Tensor:
         return torch.stack([self.x, self.y, self.z], dim=-1)
@@ -163,7 +179,7 @@ class Vec3Array:
         return cls(*torch.unbind(tensor, dim=-1))
 
     @classmethod
-    def cat(cls, vecs: List[Vec3Array], dim: int) -> Vec3Array:
+    def cat(cls, vecs: list[Vec3Array], dim: int) -> Vec3Array:
         return cls(
             torch.cat([v.x for v in vecs], dim=dim),
             torch.cat([v.y for v in vecs], dim=dim),
@@ -171,9 +187,7 @@ class Vec3Array:
         )
 
 
-def square_euclidean_distance(vec1: Vec3Array,
-                              vec2: Vec3Array,
-                              epsilon: float = 1e-6) -> Float:
+def square_euclidean_distance(vec1: Vec3Array, vec2: Vec3Array, epsilon: float = 1e-6) -> Float:
     """Computes square of euclidean distance between 'vec1' and 'vec2'.
 
     Args:
@@ -209,9 +223,7 @@ def normalized(vector: Vec3Array, epsilon: float = 1e-6) -> Vec3Array:
     return vector.normalized(epsilon)
 
 
-def euclidean_distance(vec1: Vec3Array,
-                       vec2: Vec3Array,
-                       epsilon: float = 1e-6) -> Float:
+def euclidean_distance(vec1: Vec3Array, vec2: Vec3Array, epsilon: float = 1e-6) -> Float:
     """Computes euclidean distance between 'vec1' and 'vec2'.
 
     Args:
@@ -229,8 +241,7 @@ def euclidean_distance(vec1: Vec3Array,
     return distance
 
 
-def dihedral_angle(a: Vec3Array, b: Vec3Array, c: Vec3Array,
-                   d: Vec3Array) -> Float:
+def dihedral_angle(a: Vec3Array, b: Vec3Array, c: Vec3Array, d: Vec3Array) -> Float:
     """Computes torsion angle for a quadruple of points.
 
     For points (a, b, c, d), this is the angle between the planes defined by

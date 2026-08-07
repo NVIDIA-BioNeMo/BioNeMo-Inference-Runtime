@@ -7,7 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 
 Replace `<model>` with the model name (e.g., `boltz1`, `openfold3`, `protenix`).
 
-Templates are shown for **Pattern A** (OpenFold-style, flat tensor dict) unless noted. Where **Pattern B** (Boltz2-style, mixed context row) differs, an alternative is shown.
+Templates are shown for **Pattern A** (OpenFold-style, flat tensor dict) unless
+noted. Where **Pattern B** (Boltz2-style, mixed context row) differs, an
+alternative is shown.
+
+Templates carry no SPDX license header — the `insert-license` hook adds it
+from [`.license-header.txt`][hdr] when the file is first committed, so a
+hand-copied header only risks drifting from it.
 
 ## 1. `__init__.py`
 
@@ -24,9 +30,6 @@ Copy domain-specific constants from the OSS code. These are typically:
 - Physical/chemical constants
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 # Copy or import constants from OSS residue_constants.py / chemical.py
 # Examples:
 # - restypes, restype_order, restype_1to3, restype_3to1
@@ -42,9 +45,6 @@ Copy domain-specific constants from the OSS code. These are typically:
 Shared helper functions used by multiple files.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 import torch
 import numpy as np
 
@@ -71,9 +71,6 @@ def pseudo_beta_fn(
 The context generator creates the initial numpy feature dict from parsed input.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 from typing import Optional
 
 import numpy as np
@@ -135,9 +132,6 @@ class FeatureContextGenerator(ContextGeneratorBase):
 For models with multi-step featurization and non-tensor intermediate data:
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 from typing import Any, Optional
 
 import numpy as np
@@ -175,9 +169,6 @@ class ModelContextGenerator(ContextGeneratorBase):
 Non-ensembled transforms that modify the tensor dict.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 from typing import Optional
 
 import torch
@@ -227,9 +218,6 @@ class ExampleParameterizedTransform(TransformBase):
 Wires context generators and transforms into a declarative pipeline.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 from collections import OrderedDict
 from typing import Callable
 
@@ -279,13 +267,11 @@ class MultimerTokenizer(TokenizerBase):
 
 Classes that produce NEW feature tensors from the batch.
 
-**Pattern A:** generators read from `batch` (tensor dict) and optionally `context` (seeds, metadata).
-**Pattern B:** generators also read `context["_row"]` to access non-tensor data from the context generator.
+**Pattern A:** generators read from `batch` (tensor dict) and optionally
+`context` (seeds, metadata). **Pattern B:** generators also read
+`context["_row"]` to access non-tensor data from the context generator.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 from typing import Any, Optional
 
 import torch
@@ -346,12 +332,10 @@ class ContextRowGenerator(FeatureGeneratorBase):
 
 ## 8. `feature_collators.py`
 
-Classes that modify/sample/crop/pad the feature dict. Run per ensemble iteration.
+Classes that modify/sample/crop/pad the feature dict. Run per ensemble
+iteration.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 from typing import Any, Optional
 
 import torch
@@ -440,9 +424,6 @@ class MakeFixedSize(FeatureCollatorBase):
 Wires generators and collators into the complete feature pipeline.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 import random
 from typing import Any, Callable
 
@@ -514,9 +495,6 @@ class FeatureFactory(FeatureFactoryBase):
 Converts model output to structured result.
 
 ```python
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 from typing import Any, Optional
 
 import numpy as np
@@ -576,3 +554,5 @@ Create files in dependency order:
 1. `tokenizer.py` (depends on feature_context, transforms)
 1. `feature_factory.py` (depends on feature_generators, feature_collators)
 1. `postprocessor.py` (depends on const, base)
+
+[hdr]: ../../../.license-header.txt

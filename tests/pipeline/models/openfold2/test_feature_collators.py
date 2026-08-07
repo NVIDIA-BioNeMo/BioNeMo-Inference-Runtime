@@ -1,5 +1,17 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import logging
 from dataclasses import dataclass
@@ -8,9 +20,17 @@ import pytest
 import torch
 
 from tensorrt_bionemo.pipeline.models.openfold2.feature_collators import (
-    CropExtraMsa, DeleteExtraMsa, MakeFixedSize, MakeMaskedMsa, MakeMsaFeat,
-    NearestNeighborClusters, RandomCropToSize, SampleMsa, SelectFeat,
-    SummarizeClusters)
+    CropExtraMsa,
+    DeleteExtraMsa,
+    MakeFixedSize,
+    MakeMaskedMsa,
+    MakeMsaFeat,
+    NearestNeighborClusters,
+    RandomCropToSize,
+    SampleMsa,
+    SelectFeat,
+    SummarizeClusters,
+)
 
 
 @dataclass
@@ -38,7 +58,7 @@ def sample_features():
         "deletion_matrix": torch.rand(n_msa, n_res),
         "msa_mask": torch.ones(n_msa, n_res),
         "msa_row_mask": torch.ones(n_msa),
-        "aatype": torch.randint(0, 21, (n_res, )),
+        "aatype": torch.randint(0, 21, (n_res,)),
         "between_segment_residues": torch.zeros(n_res),
         "hhblits_profile": torch.rand(n_res, 22),
         "seq_length": torch.tensor(n_res),
@@ -55,9 +75,7 @@ def context():
 
 
 class TestSampleMsa:
-
-    def test_samples_msa_to_max_clusters(self, mock_config, sample_features,
-                                         context):
+    def test_samples_msa_to_max_clusters(self, mock_config, sample_features, context):
         collator = SampleMsa(config=mock_config, keep_extra=True)
         result = collator(sample_features, context)
 
@@ -71,16 +89,13 @@ class TestSampleMsa:
         expected_extra = original_msa_count - mock_config.max_msa_clusters
         assert result["extra_msa"].shape[0] == expected_extra
 
-    def test_discards_extra_msa_when_keep_extra_false(self, mock_config,
-                                                      sample_features,
-                                                      context):
+    def test_discards_extra_msa_when_keep_extra_false(self, mock_config, sample_features, context):
         collator = SampleMsa(config=mock_config, keep_extra=False)
         result = collator(sample_features, context)
 
         assert "extra_msa" not in result
 
-    def test_preserves_first_sequence(self, mock_config, sample_features,
-                                      context):
+    def test_preserves_first_sequence(self, mock_config, sample_features, context):
         first_seq = sample_features["msa"][0].clone()
         collator = SampleMsa(config=mock_config, keep_extra=True)
         result = collator(sample_features, context)
@@ -89,7 +104,6 @@ class TestSampleMsa:
 
 
 class TestMakeMaskedMsa:
-
     def test_creates_bert_mask(self, mock_config, sample_features, context):
         collator = MakeMaskedMsa(config=mock_config)
         result = collator(sample_features, context)
@@ -122,9 +136,7 @@ class TestMakeMaskedMsa:
 
 
 class TestNearestNeighborClusters:
-
-    def test_creates_cluster_assignment(self, mock_config, sample_features,
-                                        context):
+    def test_creates_cluster_assignment(self, mock_config, sample_features, context):
         sample_features["extra_msa"] = torch.randint(0, 22, (512, 64))
         sample_features["extra_msa_mask"] = torch.ones(512, 64)
 
@@ -133,8 +145,7 @@ class TestNearestNeighborClusters:
 
         assert "extra_cluster_assignment" in result
 
-    def test_cluster_assignment_shape(self, mock_config, sample_features,
-                                      context):
+    def test_cluster_assignment_shape(self, mock_config, sample_features, context):
         n_extra = 512
         sample_features["extra_msa"] = torch.randint(0, 22, (n_extra, 64))
         sample_features["extra_msa_mask"] = torch.ones(n_extra, 64)
@@ -155,9 +166,7 @@ class TestNearestNeighborClusters:
 
 
 class TestSummarizeClusters:
-
-    def test_creates_cluster_profile(self, mock_config, sample_features,
-                                     context):
+    def test_creates_cluster_profile(self, mock_config, sample_features, context):
         n_msa = 128
         n_extra = 512
         n_res = 64
@@ -167,8 +176,7 @@ class TestSummarizeClusters:
         sample_features["extra_msa"] = torch.randint(0, 22, (n_extra, n_res))
         sample_features["extra_msa_mask"] = torch.ones(n_extra, n_res)
         sample_features["extra_deletion_matrix"] = torch.rand(n_extra, n_res)
-        sample_features["extra_cluster_assignment"] = torch.randint(
-            0, n_msa, (n_extra, ))
+        sample_features["extra_cluster_assignment"] = torch.randint(0, n_msa, (n_extra,))
 
         collator = SummarizeClusters(config=mock_config)
         result = collator(sample_features, context)
@@ -176,8 +184,7 @@ class TestSummarizeClusters:
         assert "cluster_profile" in result
         assert "cluster_deletion_mean" in result
 
-    def test_cluster_profile_shape(self, mock_config, sample_features,
-                                   context):
+    def test_cluster_profile_shape(self, mock_config, sample_features, context):
         n_msa = 128
         n_extra = 512
         n_res = 64
@@ -187,8 +194,7 @@ class TestSummarizeClusters:
         sample_features["extra_msa"] = torch.randint(0, 22, (n_extra, n_res))
         sample_features["extra_msa_mask"] = torch.ones(n_extra, n_res)
         sample_features["extra_deletion_matrix"] = torch.rand(n_extra, n_res)
-        sample_features["extra_cluster_assignment"] = torch.randint(
-            0, n_msa, (n_extra, ))
+        sample_features["extra_cluster_assignment"] = torch.randint(0, n_msa, (n_extra,))
 
         collator = SummarizeClusters(config=mock_config)
         result = collator(sample_features, context)
@@ -198,7 +204,6 @@ class TestSummarizeClusters:
 
 
 class TestCropExtraMsa:
-
     def test_crops_extra_msa(self, mock_config, sample_features, context):
         n_extra = 2048
         sample_features["extra_msa"] = torch.randint(0, 22, (n_extra, 64))
@@ -219,9 +224,7 @@ class TestCropExtraMsa:
 
 
 class TestDeleteExtraMsa:
-
-    def test_deletes_extra_msa_features(self, mock_config, sample_features,
-                                        context):
+    def test_deletes_extra_msa_features(self, mock_config, sample_features, context):
         sample_features["extra_msa"] = torch.randint(0, 22, (512, 64))
         sample_features["extra_deletion_matrix"] = torch.rand(512, 64)
         sample_features["extra_msa_mask"] = torch.ones(512, 64)
@@ -245,7 +248,6 @@ class TestDeleteExtraMsa:
 
 
 class TestMakeMsaFeat:
-
     def test_creates_msa_feat(self, mock_config, sample_features, context):
         collator = MakeMsaFeat(config=mock_config)
         result = collator(sample_features, context)
@@ -274,9 +276,7 @@ class TestMakeMsaFeat:
 
 
 class TestSelectFeat:
-
-    def test_excludes_specified_features(self, mock_config, sample_features,
-                                         context):
+    def test_excludes_specified_features(self, mock_config, sample_features, context):
         exclude = ["msa", "deletion_matrix"]
         collator = SelectFeat(config=mock_config, exclude_feats=exclude)
         result = collator(sample_features, context)
@@ -284,8 +284,7 @@ class TestSelectFeat:
         for key in exclude:
             assert key not in result
 
-    def test_includes_only_specified_features(self, mock_config,
-                                              sample_features, context):
+    def test_includes_only_specified_features(self, mock_config, sample_features, context):
         include = ["aatype", "seq_length"]
         collator = SelectFeat(config=mock_config, include_feats=include)
         result = collator(sample_features, context)
@@ -294,22 +293,17 @@ class TestSelectFeat:
 
 
 class TestRandomCropToSize:
-
     def test_crops_templates(self, mock_config, sample_features, context):
         n_templ = 8
-        sample_features["template_aatype"] = torch.randint(
-            0, 21, (n_templ, 64))
+        sample_features["template_aatype"] = torch.randint(0, 21, (n_templ, 64))
         sample_features["template_mask"] = torch.ones(n_templ)
 
-        collator = RandomCropToSize(config=mock_config,
-                                    subsample_templates=False)
+        collator = RandomCropToSize(config=mock_config, subsample_templates=False)
         result = collator(sample_features, context)
 
-        assert result["template_aatype"].shape[0] == min(
-            n_templ, mock_config.max_templates)
+        assert result["template_aatype"].shape[0] == min(n_templ, mock_config.max_templates)
 
-    def test_subsample_templates_is_seeded_and_deterministic(
-            self, mock_config, context):
+    def test_subsample_templates_is_seeded_and_deterministic(self, mock_config, context):
         n_templ = 8
         n_res = 64
         features = {
@@ -320,39 +314,27 @@ class TestRandomCropToSize:
             "template_mask": torch.ones(n_templ),
         }
 
-        collator = RandomCropToSize(config=mock_config,
-                                    subsample_templates=True)
-        first = collator({
-            k: v.clone()
-            for k, v in features.items()
-        }, dict(context))
-        second = collator({
-            k: v.clone()
-            for k, v in features.items()
-        }, dict(context))
+        collator = RandomCropToSize(config=mock_config, subsample_templates=True)
+        first = collator({k: v.clone() for k, v in features.items()}, dict(context))
+        second = collator({k: v.clone() for k, v in features.items()}, dict(context))
 
         # The subsample branch crops within the template limit and is
         # deterministic for a fixed ensemble_seed.
         assert first["template_aatype"].shape[0] <= mock_config.max_templates
         assert torch.equal(first["template_aatype"], second["template_aatype"])
-        assert torch.equal(first["template_all_atom_mask"],
-                           second["template_all_atom_mask"])
+        assert torch.equal(first["template_all_atom_mask"], second["template_all_atom_mask"])
 
-    def test_crops_multimer_templates_without_standalone_mask(
-            self, mock_config, sample_features, context):
+    def test_crops_multimer_templates_without_standalone_mask(self, mock_config, sample_features, context):
         mock_config.max_templates = 1
         sample_features.pop("template_mask")
-        expected_atom_mask = sample_features["template_all_atom_mask"][
-            0].clone()
+        expected_atom_mask = sample_features["template_all_atom_mask"][0].clone()
 
         result = RandomCropToSize(config=mock_config)(sample_features, context)
 
         assert result["template_aatype"].shape[0] == 1
-        assert torch.equal(result["template_all_atom_mask"][0],
-                           expected_atom_mask)
+        assert torch.equal(result["template_all_atom_mask"][0], expected_atom_mask)
 
-    @pytest.mark.parametrize("with_template_mask", [True, False],
-                             ids=["monomer", "multimer"])
+    @pytest.mark.parametrize("with_template_mask", [True, False], ids=["monomer", "multimer"])
     def test_handles_zero_template_rows(self, with_template_mask, context):
         n_res = 2
         features = {
@@ -362,16 +344,13 @@ class TestRandomCropToSize:
             "template_all_atom_positions": torch.empty((0, n_res, 37, 3)),
         }
         if with_template_mask:
-            features["template_mask"] = torch.empty((0, ))
+            features["template_mask"] = torch.empty((0,))
 
-        result = RandomCropToSize(config=MockConfig(max_templates=0))(features,
-                                                                      context)
+        result = RandomCropToSize(config=MockConfig(max_templates=0))(features, context)
 
-        assert all(value.shape[0] == 0 for key, value in result.items()
-                   if "template" in key)
+        assert all(value.shape[0] == 0 for key, value in result.items() if "template" in key)
 
-    def test_warns_when_populated_multimer_rows_not_a_prefix(
-            self, context, caplog):
+    def test_warns_when_populated_multimer_rows_not_a_prefix(self, context, caplog):
         n_res = 2
         atom_mask = torch.zeros((4, n_res, 37))
         atom_mask[0, 0, 0] = 1
@@ -406,15 +385,13 @@ class TestRandomCropToSize:
             "template_all_atom_positions": torch.zeros((4, n_res, 37, 3)),
         }
 
-        result = RandomCropToSize(config=MockConfig(max_templates=4))(features,
-                                                                      context)
+        result = RandomCropToSize(config=MockConfig(max_templates=4))(features, context)
 
         assert result["template_aatype"].shape[0] == 2
         assert result["template_all_atom_mask"].shape[0] == 2
 
 
 class TestMakeFixedSize:
-
     def test_pads_msa_features(self, mock_config, sample_features, context):
         n_msa = 64
         sample_features["msa_mask"] = torch.ones(n_msa, 64)
@@ -426,8 +403,7 @@ class TestMakeFixedSize:
         assert result["msa_mask"].shape[0] == mock_config.max_msa_clusters
         assert result["msa_row_mask"].shape[0] == mock_config.max_msa_clusters
 
-    def test_pads_template_features(self, mock_config, sample_features,
-                                    context):
+    def test_pads_template_features(self, mock_config, sample_features, context):
         n_templ = 2
         sample_features["template_mask"] = torch.ones(n_templ)
 

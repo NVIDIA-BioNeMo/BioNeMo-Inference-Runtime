@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Triton kernel: fused moveaxis(-1, -3) + zero-pad J to multiple of 8.
@@ -12,7 +27,7 @@ The custom attention kernel wants:
 
     pair_bias : [B, H, I, J_padded]   (contiguous)
 
-where J_padded = ceil(J / 8) * 8. or J_padded = J if multiple < 0.
+where J_padded = ceil(J / 8) * 8. or J_padded = J if multiple <= 0.
 
 The naive PyTorch sequence:
     pair_bias = torch.moveaxis(pair_bias, -1, -3)   # non-contiguous view
@@ -64,24 +79,25 @@ import torch
 import triton
 import triton.language as tl
 
-from tensorrt_bionemo.dsl_kernels.triton_cache import (CachedKernel,
-                                                       TritonKernelCache)
+from tensorrt_bionemo.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
 
 # ---------------------------------------------------------------------------
 # Triton kernel
 # ---------------------------------------------------------------------------
 
 
-@triton.jit(do_not_specialize=[
-    'J',
-    'J_padded',
-    'inp_stride_b',
-    'inp_stride_i',
-    'inp_stride_j',
-    'out_stride_b',
-    'out_stride_h',
-    'out_stride_i',
-])
+@triton.jit(
+    do_not_specialize=[
+        "J",
+        "J_padded",
+        "inp_stride_b",
+        "inp_stride_i",
+        "inp_stride_j",
+        "out_stride_b",
+        "out_stride_h",
+        "out_stride_i",
+    ]
+)
 def _moveaxis_pad_kernel(
     inp_ptr,  # [B, I, J, H]  contiguous
     out_ptr,  # [B, H, I, J_padded]  contiguous (pre-allocated)
@@ -150,10 +166,7 @@ class MoveaxisPad(TritonKernelCache):
 
     _global_cache: dict[tuple, dict] = {}
 
-    def __init__(self,
-                 H: int,
-                 block_j: int = _BLOCK_J_DEFAULT,
-                 dtype: torch.dtype = torch.bfloat16):
+    def __init__(self, H: int, block_j: int = _BLOCK_J_DEFAULT, dtype: torch.dtype = torch.bfloat16):
         self._block_h = triton.next_power_of_2(H)
         self._block_j = block_j
         self._kernels: dict[torch.dtype, CachedKernel] = {}
@@ -207,7 +220,7 @@ class MoveaxisPad(TritonKernelCache):
 
         Args:
             x: contiguous tensor ``[..., I, J, H]``
-            multiple: pad J to next multiple (negative = no padding).
+            multiple: pad J to next multiple (non-positive = no padding).
 
         Returns:
             contiguous tensor ``[..., H, I, J_padded]``
@@ -216,8 +229,7 @@ class MoveaxisPad(TritonKernelCache):
         B = math.prod(lead) if lead else 1
         x3 = x.reshape(B, I, J, H)
 
-        J_padded = J if multiple < 0 else (
-            (J + multiple - 1) // multiple) * multiple
+        J_padded = J if multiple <= 0 else ((J + multiple - 1) // multiple) * multiple
 
         out = torch.empty(B, H, I, J_padded, device=x.device, dtype=x.dtype)
 
@@ -263,29 +275,26 @@ class MoveaxisPad(TritonKernelCache):
 # ---------------------------------------------------------------------------
 
 
-def moveaxis_pad(x: torch.Tensor,
-                 multiple: int = -1,
-                 BLOCK_J: int = _BLOCK_J_DEFAULT) -> torch.Tensor:
+def moveaxis_pad(x: torch.Tensor, multiple: int = -1, BLOCK_J: int = _BLOCK_J_DEFAULT) -> torch.Tensor:
     """Fused moveaxis(-1, -3) + optional zero-pad last dim to a multiple.
 
     Args:
         x: contiguous tensor of shape [..., I, J, H]
         multiple: pad J to the next multiple of this value.
-                  If multiple < 0, no padding is applied (J_padded = J).
+                  If multiple <= 0, no padding is applied (J_padded = J).
         BLOCK_J: tile size along J (must be power-of-two, default 128)
 
     Returns:
         contiguous tensor of shape [..., H, I, J_padded]  where:
-          multiple >= 0 -> J_padded = ceil(J / multiple) * multiple
-          multiple <  0 -> J_padded = J  (no padding)
+          multiple >  0 -> J_padded = ceil(J / multiple) * multiple
+          multiple <= 0 -> J_padded = J  (no padding)
     """
     assert x.is_contiguous(), "input must be contiguous"
     *lead, I, J, H = x.shape
     B = math.prod(lead) if lead else 1
     x3 = x.reshape(B, I, J, H)
 
-    J_padded = J if multiple < 0 else (
-        (J + multiple - 1) // multiple) * multiple
+    J_padded = J if multiple <= 0 else ((J + multiple - 1) // multiple) * multiple
     BLOCK_H = triton.next_power_of_2(H)
 
     out = torch.empty(B, H, I, J_padded, device=x.device, dtype=x.dtype)

@@ -1,5 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Regression guards for Protenix public APIs, converter keys, and config policy."""
 
 from __future__ import annotations
@@ -14,12 +29,12 @@ import torch.nn as nn
 import tensorrt_bionemo._torch.modules.protenix as protenix_modules
 import tensorrt_bionemo.models.protenix as protenix_models
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.models.protenix.config import (DiffusionModuleConfig,
-                                                     ProtenixConfig,
-                                                     TemplateEmbedderConfig)
+from tensorrt_bionemo.models.protenix.config import DiffusionModuleConfig, ProtenixConfig, TemplateEmbedderConfig
 from tensorrt_bionemo.models.protenix.convert import (
-    _convert_protenix_atom_dit_block, _convert_protenix_token_dit_block,
-    convert_template_embedder_torch)
+    _convert_protenix_atom_dit_block,
+    _convert_protenix_token_dit_block,
+    convert_template_embedder_torch,
+)
 from tensorrt_bionemo.models.protenix.modeling import Protenix
 
 # Cache-only features owned by destructive inference.
@@ -99,10 +114,7 @@ def test_protenix_forward_signature_stable():
         "return_full_data",
         "consume_input_features",
     ]
-    defaults = {
-        name: param.default
-        for name, param in sig.parameters.items() if name != "self"
-    }
+    defaults = {name: param.default for name, param in sig.parameters.items() if name != "self"}
     assert defaults["recycling_steps"] == 3
     assert defaults["num_sampling_steps"] == 200
     assert defaults["diffusion_samples"] == 1
@@ -116,8 +128,7 @@ def test_protenix_load_weight_attribute_names():
     for name in _LOAD_ATTRS:
         assert hasattr(model, name), name
     assert hasattr(model.diffusion_sampler, "diffusion_module")
-    assert hasattr(model.diffusion_sampler.diffusion_module,
-                   "diffusion_transformer")
+    assert hasattr(model.diffusion_sampler.diffusion_module, "diffusion_transformer")
     registry = model.get_optimized_modules({})
     assert "token_transformer" in registry.get_accelerated_modules()
 
@@ -138,8 +149,7 @@ def test_protenix_inference_precision_defaults():
     assert cfg.trunk_config.pairformer_config.dtype == "bfloat16"
 
 
-def _synthetic_dit_block_weights(c: int = 8,
-                                 c_z: int = 4) -> dict[str, torch.Tensor]:
+def _synthetic_dit_block_weights(c: int = 8, c_z: int = 4) -> dict[str, torch.Tensor]:
     """Minimal OSS-shaped DiT block weights for converter key/layout checks."""
     w: dict[str, torch.Tensor] = {}
 
@@ -182,10 +192,13 @@ def _synthetic_dit_block_weights(c: int = 8,
     return w
 
 
-@pytest.mark.parametrize("converter,tgt,has_kv_adaln", [
-    (_convert_protenix_atom_dit_block, "layers.0", True),
-    (_convert_protenix_token_dit_block, "layers.0", False),
-])
+@pytest.mark.parametrize(
+    "converter,tgt,has_kv_adaln",
+    [
+        (_convert_protenix_atom_dit_block, "layers.0", True),
+        (_convert_protenix_token_dit_block, "layers.0", False),
+    ],
+)
 def test_protenix_dit_converter_fusion_layout(converter, tgt, has_kv_adaln):
     c = 8
     src = {f"blk.{k}": v for k, v in _synthetic_dit_block_weights(c).items()}
@@ -195,18 +208,12 @@ def test_protenix_dit_converter_fusion_layout(converter, tgt, has_kv_adaln):
     # Fused layouts preserve source order.
     kv = out[f"{tgt}.pair_bias_attn.proj_kv.weight"]
     assert kv.shape[0] == 2 * c
-    torch.testing.assert_close(
-        kv[:c], src["blk.attention_pair_bias.attention.linear_k.weight"])
-    torch.testing.assert_close(
-        kv[c:], src["blk.attention_pair_bias.attention.linear_v.weight"])
+    torch.testing.assert_close(kv[:c], src["blk.attention_pair_bias.attention.linear_k.weight"])
+    torch.testing.assert_close(kv[c:], src["blk.attention_pair_bias.attention.linear_v.weight"])
 
     sw = out[f"{tgt}.transition.fused_swl_a_to_b.weight"]
-    torch.testing.assert_close(
-        sw[:c],
-        src["blk.conditioned_transition_block.linear_nobias_a2.weight"])
-    torch.testing.assert_close(
-        sw[c:],
-        src["blk.conditioned_transition_block.linear_nobias_a1.weight"])
+    torch.testing.assert_close(sw[:c], src["blk.conditioned_transition_block.linear_nobias_a2.weight"])
+    torch.testing.assert_close(sw[c:], src["blk.conditioned_transition_block.linear_nobias_a1.weight"])
 
     if has_kv_adaln:
         assert f"{tgt}.pair_bias_attn.layer_norm_a_q.s_norm.weight" in out
@@ -224,9 +231,7 @@ def test_protenix_template_pair_path_keys():
     for ln in ("layernorm_z", "layernorm_v"):
         w[f"{ln}.weight"] = torch.ones(8)
         w[f"{ln}.bias"] = torch.zeros(8)
-    for lin, in_f, out_f in (("linear_no_bias_z", 8, 8),
-                             ("linear_no_bias_a", 108, 8), ("linear_no_bias_u",
-                                                            8, 8)):
+    for lin, in_f, out_f in (("linear_no_bias_z", 8, 8), ("linear_no_bias_a", 108, 8), ("linear_no_bias_u", 8, 8)):
         w[f"{lin}.weight"] = torch.randn(out_f, in_f)
 
     blk = "pairformer_stack.blocks.0"
@@ -259,20 +264,19 @@ def test_protenix_template_pair_path_keys():
     out = convert_template_embedder_torch(config, w, prefix="")
     layer = "pairformer_stack.layers.0"
     for key in (
-            f"{layer}.tri_mul_out.p_in.weight",
-            f"{layer}.tri_mul_in.p_in.weight",
-            f"{layer}.tri_attn_start.mha.qkv_proj.weight",
-            f"{layer}.tri_attn_end.mha.qkv_proj.weight",
-            f"{layer}.transition_z.fused_fc2_fc1.weight",
-            f"{layer}.transition_z.fc3.weight",
-            "linear_no_bias_a.weight",
-            "layernorm_z.weight",
+        f"{layer}.tri_mul_out.p_in.weight",
+        f"{layer}.tri_mul_in.p_in.weight",
+        f"{layer}.tri_attn_start.mha.qkv_proj.weight",
+        f"{layer}.tri_attn_end.mha.qkv_proj.weight",
+        f"{layer}.transition_z.fused_fc2_fc1.weight",
+        f"{layer}.transition_z.fc3.weight",
+        "linear_no_bias_a.weight",
+        "layernorm_z.weight",
     ):
         assert key in out, key
 
 
 class _StubTrunk(nn.Module):
-
     def __init__(self, pair_state_dtype=torch.float32):
         super().__init__()
         self.pair_state_dtype = pair_state_dtype
@@ -282,14 +286,12 @@ class _StubTrunk(nn.Module):
 
 
 class _StubEmbedder(nn.Module):
-
     def forward(self, batch, attn_metadata=None):
         n = batch["restype"].shape[-2]
         return torch.zeros(1, n, 449)
 
 
 class _StubRPE(nn.Module):
-
     def generate_relp(self, **kwargs):
         n = kwargs["asym_id"].shape[-1]
         return torch.zeros(1, n, n, 195)
@@ -299,19 +301,16 @@ class _StubRPE(nn.Module):
 
 
 class _StubConstraint(nn.Module):
-
     def forward(self, _):
         return None
 
 
 class _StubDistogram(nn.Module):
-
     def forward(self, z):
         return torch.zeros(*z.shape[:-1], 64)
 
 
 class _StubSampler(nn.Module):
-
     def __init__(self):
         super().__init__()
         self.last_kwargs: dict[str, Any] = {}
@@ -353,25 +352,27 @@ def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch):
 
     batch = _tiny_batch()
     owned = set(batch.keys())
-    full = model.forward(batch,
-                         recycling_steps=0,
-                         num_sampling_steps=1,
-                         diffusion_samples=1,
-                         compact_output=False,
-                         consume_input_features=False)
-    assert set(full) >= {
-        "s_inputs", "s", "z", "coordinate", "distogram_logits"
-    }
+    full = model.forward(
+        batch,
+        recycling_steps=0,
+        num_sampling_steps=1,
+        diffusion_samples=1,
+        compact_output=False,
+        consume_input_features=False,
+    )
+    assert set(full) >= {"s_inputs", "s", "z", "coordinate", "distogram_logits"}
     assert set(batch.keys()) == owned
     assert stub_sampler.last_kwargs["drop_consumed_features"] is False
 
     batch2 = _tiny_batch()
-    compact = model.forward(batch2,
-                            recycling_steps=0,
-                            num_sampling_steps=1,
-                            diffusion_samples=1,
-                            compact_output=True,
-                            consume_input_features=True)
+    compact = model.forward(
+        batch2,
+        recycling_steps=0,
+        num_sampling_steps=1,
+        diffusion_samples=1,
+        compact_output=True,
+        consume_input_features=True,
+    )
     assert set(compact) == {"coordinate"}
     assert batch2 == {}
     assert stub_sampler.last_kwargs["drop_consumed_features"] is True
@@ -381,8 +382,8 @@ def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch):
 def test_diffusion_consumed_feature_constant_locked():
     """Lock the feature-ownership tuple used by cache/destructive drop."""
     from tensorrt_bionemo._torch.modules.protenix import diffusion as diff_mod
-    from tensorrt_bionemo._torch.modules.protenix._common import \
-        DIFFUSION_CONSUMED_FEATURES
+    from tensorrt_bionemo._torch.modules.protenix._common import DIFFUSION_CONSUMED_FEATURES
+
     assert tuple(DIFFUSION_CONSUMED_FEATURES) == _DIFFUSION_CONSUMED_FEATURES
     src = inspect.getsource(diff_mod.ProtenixSampleDiffusion.sample_coords)
     assert "DIFFUSION_CONSUMED_FEATURES" in src

@@ -22,13 +22,13 @@ These tests verify that ``precompute_bias=True`` (mega-GEMM) produces the
 same output as ``precompute_bias=False`` (per-layer LN+Proj inside each
 layer's AttentionPairBias).
 """
+
 from dataclasses import dataclass
 
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    OpenFold3DiffusionTransformer
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
 from tensorrt_bionemo.configs.modules import DiffusionTransformerConfig
 from tests._torch import skip_if_cutedsl
 
@@ -56,25 +56,25 @@ class Scenario:
 def _build_models(sc: Scenario, device: torch.device):
     """Build two identical OF3 DiT models: one with mega-GEMM, one without."""
     dtype_str = sc.dtype
-    cfg_kwargs = dict(
-        num_blocks=sc.num_layers,
-        num_heads=sc.num_heads,
-        dim=sc.dim,
-        dim_single_cond=sc.dim_single_cond,
-        dim_pairwise=sc.dim_pairwise,
-        bias_proj=True,
-        attention_initial_norm=True,
-        post_layer_norm=False,
-        version="v1",
-        dtype=dtype_str,
-        conditioned_transition_using_silu=True,
-        pairwise_attention_backend=sc.backend,
-        initial_norm=True,
-        use_ada_layer_norm=True,
-        use_separate_layer_norm=False,
-        attn_output_gate=True,
-        transition_expansion_factor=2,
-    )
+    cfg_kwargs = {
+        "num_blocks": sc.num_layers,
+        "num_heads": sc.num_heads,
+        "dim": sc.dim,
+        "dim_single_cond": sc.dim_single_cond,
+        "dim_pairwise": sc.dim_pairwise,
+        "bias_proj": True,
+        "attention_initial_norm": True,
+        "post_layer_norm": False,
+        "version": "v1",
+        "dtype": dtype_str,
+        "conditioned_transition_using_silu": True,
+        "pairwise_attention_backend": sc.backend,
+        "initial_norm": True,
+        "use_ada_layer_norm": True,
+        "use_separate_layer_norm": False,
+        "attn_output_gate": True,
+        "transition_expansion_factor": 2,
+    }
 
     cfg_mega = DiffusionTransformerConfig(**cfg_kwargs, precompute_bias=True)
     cfg_base = DiffusionTransformerConfig(**cfg_kwargs, precompute_bias=False)
@@ -96,26 +96,29 @@ def _build_models(sc: Scenario, device: torch.device):
     return model_mega, model_base
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=32),
-    Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=33),
-    Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=64),
-    Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=127),
-    Scenario(backend="VANILLA", dtype="bfloat16", seq_len=32),
-    Scenario(backend="VANILLA", dtype="float32", seq_len=32),
-    Scenario(backend="SDPA", dtype="bfloat16", seq_len=32),
-    Scenario(backend="SDPA", dtype="bfloat16", seq_len=33),
-],
-                         ids=[
-                             "cutedsl-bf16-aligned",
-                             "cutedsl-bf16-odd",
-                             "cutedsl-bf16-64",
-                             "cutedsl-bf16-127",
-                             "vanilla-bf16",
-                             "vanilla-fp32",
-                             "sdpa-bf16-aligned",
-                             "sdpa-bf16-odd",
-                         ])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=32),
+        Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=33),
+        Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=64),
+        Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=127),
+        Scenario(backend="VANILLA", dtype="bfloat16", seq_len=32),
+        Scenario(backend="VANILLA", dtype="float32", seq_len=32),
+        Scenario(backend="SDPA", dtype="bfloat16", seq_len=32),
+        Scenario(backend="SDPA", dtype="bfloat16", seq_len=33),
+    ],
+    ids=[
+        "cutedsl-bf16-aligned",
+        "cutedsl-bf16-odd",
+        "cutedsl-bf16-64",
+        "cutedsl-bf16-127",
+        "vanilla-bf16",
+        "vanilla-fp32",
+        "sdpa-bf16-aligned",
+        "sdpa-bf16-odd",
+    ],
+)
 def test_mega_gemm_vs_per_layer(sc: Scenario):
     """Mega-GEMM precomputed bias must match per-layer bias projection."""
     skip_if_cutedsl(sc.backend)
@@ -127,25 +130,15 @@ def test_mega_gemm_vs_per_layer(sc: Scenario):
     torch.manual_seed(SEED + 1)
     B = 1
     a = torch.randn(B, sc.seq_len, sc.dim, device=device, dtype=dtype)
-    s = torch.randn(B,
-                    sc.seq_len,
-                    sc.dim_single_cond,
-                    device=device,
-                    dtype=dtype)
-    z = torch.randn(B,
-                    sc.seq_len,
-                    sc.seq_len,
-                    sc.dim_pairwise,
-                    device=device,
-                    dtype=dtype)
+    s = torch.randn(B, sc.seq_len, sc.dim_single_cond, device=device, dtype=dtype)
+    z = torch.randn(B, sc.seq_len, sc.seq_len, sc.dim_pairwise, device=device, dtype=dtype)
     mask = torch.ones(B, sc.seq_len, device=device, dtype=dtype)
 
     with torch.inference_mode():
         out_mega = model_mega(a=a.clone(), s=s, z=z, mask=mask)
         out_base = model_base(a=a.clone(), s=s, z=z, mask=mask)
 
-    assert out_mega.shape == out_base.shape, (
-        f"Shape mismatch: {out_mega.shape} vs {out_base.shape}")
+    assert out_mega.shape == out_base.shape, f"Shape mismatch: {out_mega.shape} vs {out_base.shape}"
 
     if dtype == torch.float32:
         torch.testing.assert_close(out_mega, out_base, atol=1e-4, rtol=1e-4)
@@ -153,14 +146,17 @@ def test_mega_gemm_vs_per_layer(sc: Scenario):
         torch.testing.assert_close(out_mega, out_base, atol=5e-3, rtol=5e-3)
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=32),
-    Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=33),
-],
-                         ids=[
-                             "cutedsl-aligned",
-                             "cutedsl-odd",
-                         ])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=32),
+        Scenario(backend="CuTeDSL", dtype="bfloat16", seq_len=33),
+    ],
+    ids=[
+        "cutedsl-aligned",
+        "cutedsl-odd",
+    ],
+)
 def test_mega_gemm_bias_correctness(sc: Scenario):
     """Verify the fused W_mega produces the same per-layer biases as the
     original LN + Linear projection."""
@@ -195,16 +191,11 @@ def test_mega_gemm_bias_correctness(sc: Scenario):
 
     B = 1
     torch.manual_seed(SEED + 1)
-    z = torch.randn(B,
-                    sc.seq_len,
-                    sc.seq_len,
-                    sc.dim_pairwise,
-                    device=device,
-                    dtype=dtype)
+    z = torch.randn(B, sc.seq_len, sc.seq_len, sc.dim_pairwise, device=device, dtype=dtype)
 
     with torch.inference_mode():
         # Mega-GEMM path
-        if hasattr(model, 'layer_norm_z'):
+        if hasattr(model, "layer_norm_z"):
             z_normed = model.layer_norm_z(z)
         else:
             z_normed = z
@@ -212,12 +203,11 @@ def test_mega_gemm_bias_correctness(sc: Scenario):
 
         # Per-layer reference path
         import torch.nn.functional as F
+
         D = sc.dim_pairwise
-        sc.num_heads
         pad_align = 8 if sc.backend == "CuTeDSL" else -1
         J = sc.seq_len
-        J_pad = ((J + pad_align - 1) //
-                 pad_align) * pad_align if pad_align > 0 else J
+        J_pad = ((J + pad_align - 1) // pad_align) * pad_align if pad_align > 0 else J
 
         ref_biases = []
         for layer in model.layers:
@@ -235,14 +225,9 @@ def test_mega_gemm_bias_correctness(sc: Scenario):
                 bias = F.pad(bias, (0, J_pad - J))
             ref_biases.append(bias)
 
-    for i, (mega_b, ref_b) in enumerate(zip(mega_biases, ref_biases)):
-        assert mega_b.shape == ref_b.shape, (
-            f"Layer {i}: shape {mega_b.shape} vs {ref_b.shape}")
-        torch.testing.assert_close(mega_b,
-                                   ref_b,
-                                   atol=1e-2,
-                                   rtol=1e-2,
-                                   msg=f"Layer {i} bias mismatch")
+    for i, (mega_b, ref_b) in enumerate(zip(mega_biases, ref_biases, strict=True)):
+        assert mega_b.shape == ref_b.shape, f"Layer {i}: shape {mega_b.shape} vs {ref_b.shape}"
+        torch.testing.assert_close(mega_b, ref_b, atol=1e-2, rtol=1e-2, msg=f"Layer {i} bias mismatch")
 
 
 def test_mega_gemm_weight_invalidation():
@@ -305,8 +290,7 @@ def test_mega_gemm_weight_invalidation():
         model.layers[0].pair_bias_attn.proj_z[-1].weight.fill_(0.0)
     model._W_mega = None
     model._build_mega_weight()
-    assert not torch.equal(model._W_mega, W_mega_before), \
-        "W_mega should differ after weight mutation"
+    assert not torch.equal(model._W_mega, W_mega_before), "W_mega should differ after weight mutation"
 
 
 def test_precompute_bias_disabled():

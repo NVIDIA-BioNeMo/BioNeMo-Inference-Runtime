@@ -21,21 +21,28 @@ with ``InputKeyMethod.EXACT``. Once the tracker has captured and verified a
 graph, its replayed output must be **byte-identical** to the eager output — the
 graph replays the exact same kernels on the same inputs, so parity is bitwise.
 """
+
 import pytest
 import torch
 
 from tensorrt_bionemo._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig, GraphOptimizationMode, InputKeyMethod)
+    CUDAGraphOptimizationConfig,
+    GraphOptimizationMode,
+    InputKeyMethod,
+)
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
-    CUDAGraphOptimizationTracker, CUDAGraphPreparationState)
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import \
-    DiffusionModule
+    CUDAGraphOptimizationTracker,
+    CUDAGraphPreparationState,
+)
+from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule
 from tests.common.test_utils.openfold3.batched_input_tools import (
-    AVAILABILITY_EXC, capture_and_assemble, harness_skip_reason,
-    make_batched_diffusion_inputs)
+    AVAILABILITY_EXC,
+    capture_and_assemble,
+    harness_skip_reason,
+    make_batched_diffusion_inputs,
+)
 
-
-# warmup are calls 1,2,3.  On call 4 is capture, verify, replay. Call 4 
+# warmup are calls 1,2,3.  On call 4 is capture, verify, replay. Call 4
 # output is used in production
 _NUM_DRIVE_CALLS = 4
 
@@ -71,8 +78,7 @@ def test_of3_diffusion_module_eager_batched_matches_separate():
     try:
         module, per_sample, batched = capture_and_assemble(sample_ids)
     except AVAILABILITY_EXC as exc:
-        pytest.skip(f"openfold3 weights/metadata unavailable "
-                    f"({type(exc).__name__}: {exc})")
+        pytest.skip(f"openfold3 weights/metadata unavailable ({type(exc).__name__}: {exc})")
 
     module = module.eval()
     with torch.no_grad():
@@ -85,55 +91,52 @@ def test_of3_diffusion_module_eager_batched_matches_separate():
     # must match the separate B=1 output.
     for i, single in enumerate(separate):
         n_atom = single.shape[-2]
-        got = out[i:i + 1, :, :n_atom, :].float()
+        got = out[i : i + 1, :, :n_atom, :].float()
         ref = single.float()
         rel = ((got - ref).abs().mean() / ref.abs().mean().clamp(min=1e-6)).item()
-        assert rel < 0.02, (
-            f"batched sample {i} differs from separate B=1 by "
-            f"mean-relative {rel:.2%} (> 2%)")
+        assert rel < 0.02, f"batched sample {i} differs from separate B=1 by mean-relative {rel:.2%} (> 2%)"
 
 
 def test_of3_diffusion_module_b1_cuda_graph_byte_identical(sample_id="T1038"):
-    reason = harness_skip_reason((sample_id, ))
+    reason = harness_skip_reason((sample_id,))
     if reason is not None:
         pytest.skip(reason)
     # A single-sample batch is a real B=1 DiffusionModule input (module + kwargs).
     try:
-        module, kwargs = make_batched_diffusion_inputs(sample_ids=(sample_id, ))
+        module, kwargs = make_batched_diffusion_inputs(sample_ids=(sample_id,))
     except AVAILABILITY_EXC as exc:
-        pytest.skip(f"openfold3 weights/metadata unavailable "
-                    f"({type(exc).__name__}: {exc})")
+        pytest.skip(f"openfold3 weights/metadata unavailable ({type(exc).__name__}: {exc})")
 
     module = module.eval()
-    assert kwargs["xl_noisy"].shape[0] == 1, (
-        f"expected a B=1 input, got {tuple(kwargs['xl_noisy'].shape)}")
+    assert kwargs["xl_noisy"].shape[0] == 1, f"expected a B=1 input, got {tuple(kwargs['xl_noisy'].shape)}"
 
     # --- Eager reference ------------------------------------------------------
     with torch.no_grad():
         eager_out = module(**kwargs).clone()
 
     # --- Drive the CUDA-graph tracker: warmup -> capture -> replay ------------
-    tracker = CUDAGraphOptimizationTracker(
-        _diffusion_graph_config(), inner_module=module).eval()
+    tracker = CUDAGraphOptimizationTracker(_diffusion_graph_config(), inner_module=module).eval()
     with torch.no_grad():
         for _ in range(_NUM_DRIVE_CALLS):
             graph_out = tracker(**kwargs)
 
     # Exactly one input shape -> exactly one captured graph, verified, no eager
     # fallback.
-    assert len(tracker.graph_state_by_key) == 1, (
-        f"expected one captured graph, got {len(tracker.graph_state_by_key)}")
-    (key, state), = tracker.graph_state_by_key.items()
+    assert len(tracker.graph_state_by_key) == 1, f"expected one captured graph, got {len(tracker.graph_state_by_key)}"
+    ((key, state),) = tracker.graph_state_by_key.items()
     assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED, (
-        f"graph did not verify: state={state.preparation_state.name}")
+        f"graph did not verify: state={state.preparation_state.name}"
+    )
     assert not tracker.fallback_to_eager_by_key.get(key, False), (
-        "diffusion module fell back to eager instead of replaying a graph")
+        "diffusion module fell back to eager instead of replaying a graph"
+    )
 
     # The captured graph replays the same kernels on the same inputs, so the
     # replayed output is byte-identical to eager.
     assert torch.equal(graph_out, eager_out), (
         "CUDA-graph replay is not byte-identical to eager "
-        f"(max|Δ|={ (graph_out.float() - eager_out.float()).abs().max().item():.3e})")
+        f"(max|Δ|={(graph_out.float() - eager_out.float()).abs().max().item():.3e})"
+    )
 
 
 def test_of3_diffusion_module_b2_cuda_graph_byte_identical():
@@ -148,36 +151,36 @@ def test_of3_diffusion_module_b2_cuda_graph_byte_identical():
     try:
         module, batched = make_batched_diffusion_inputs(sample_ids)
     except AVAILABILITY_EXC as exc:
-        pytest.skip(f"openfold3 weights/metadata unavailable "
-                    f"({type(exc).__name__}: {exc})")
+        pytest.skip(f"openfold3 weights/metadata unavailable ({type(exc).__name__}: {exc})")
 
     module = module.eval()
     assert batched["xl_noisy"].shape[0] == len(sample_ids), (
-        f"expected a B={len(sample_ids)} input, "
-        f"got {tuple(batched['xl_noisy'].shape)}")
+        f"expected a B={len(sample_ids)} input, got {tuple(batched['xl_noisy'].shape)}"
+    )
 
     # --- Eager reference ------------------------------------------------------
     with torch.no_grad():
         eager_out = module(**batched).clone()
 
     # --- Drive the CUDA-graph tracker: warmup -> capture -> replay ------------
-    tracker = CUDAGraphOptimizationTracker(
-        _diffusion_graph_config(), inner_module=module).eval()
+    tracker = CUDAGraphOptimizationTracker(_diffusion_graph_config(), inner_module=module).eval()
     with torch.no_grad():
         for _ in range(_NUM_DRIVE_CALLS):
             graph_out = tracker(**batched)
 
     # Exactly one input shape -> one captured graph, verified, no eager fallback.
-    assert len(tracker.graph_state_by_key) == 1, (
-        f"expected one captured graph, got {len(tracker.graph_state_by_key)}")
-    (key, state), = tracker.graph_state_by_key.items()
+    assert len(tracker.graph_state_by_key) == 1, f"expected one captured graph, got {len(tracker.graph_state_by_key)}"
+    ((key, state),) = tracker.graph_state_by_key.items()
     assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED, (
-        f"graph did not verify: state={state.preparation_state.name}")
+        f"graph did not verify: state={state.preparation_state.name}"
+    )
     assert not tracker.fallback_to_eager_by_key.get(key, False), (
-        "B=2 diffusion module fell back to eager instead of replaying a graph")
+        "B=2 diffusion module fell back to eager instead of replaying a graph"
+    )
 
     # The captured graph replays the same kernels on the same inputs, so the
     # replayed output is byte-identical to eager.
     assert torch.equal(graph_out, eager_out), (
         "CUDA-graph replay is not byte-identical to eager "
-        f"(max|Δ|={ (graph_out.float() - eager_out.float()).abs().max().item():.3e})")
+        f"(max|Δ|={(graph_out.float() - eager_out.float()).abs().max().item():.3e})"
+    )

@@ -1,5 +1,17 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import asyncio
 import pickle
@@ -8,12 +20,9 @@ import numpy as np
 import pytest
 import torch
 
-from tensorrt_bionemo.pipeline.base import (FeatureCollatorBase,
-                                            FeatureGeneratorBase,
-                                            default_context_and_feature_merger)
+from tensorrt_bionemo.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase, default_context_and_feature_merger
 from tensorrt_bionemo.pipeline.stages.base import StatefulStageUDF
-from tensorrt_bionemo.pipeline.stages.feature_generator_stage import \
-    FeatureGeneratorUDF
+from tensorrt_bionemo.pipeline.stages.feature_generator_stage import FeatureGeneratorUDF
 
 
 def _unpack_columnar(output):
@@ -24,10 +33,8 @@ def _unpack_columnar(output):
     rows = [pickle.loads(d) if isinstance(d, bytes) else d for d in data_col]
     n = len(rows)
     flat = {
-        "__inference_error__":
-        output.get("__inference_error__", [None] * n),
-        "__record_id":
-        output.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN, [None] * n),
+        "__inference_error__": output.get("__inference_error__", [None] * n),
+        "__record_id": output.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN, [None] * n),
     }
     all_keys: set = set()
     for row in rows:
@@ -38,11 +45,7 @@ def _unpack_columnar(output):
 
 
 class MockFeatureGenerator(FeatureGeneratorBase):
-
-    def __init__(self,
-                 output_tensors: dict = None,
-                 enabled: bool = True,
-                 name: str = "mock"):
+    def __init__(self, output_tensors: dict = None, enabled: bool = True, name: str = "mock"):
         super().__init__(config=None, name=name)
         self._output = output_tensors or {"generated_feature": torch.ones(10)}
         self._enabled = enabled
@@ -55,7 +58,6 @@ class MockFeatureGenerator(FeatureGeneratorBase):
 
 
 class MockFeatureCollator(FeatureCollatorBase):
-
     def __init__(self, enabled: bool = True, name: str = "collator"):
         super().__init__(config=None, name=name)
         self._enabled = enabled
@@ -69,7 +71,6 @@ class MockFeatureCollator(FeatureCollatorBase):
 
 
 class TestFeatureGeneratorUDFBasicProcessing:
-
     @pytest.fixture
     def feature_udf(self):
         return FeatureGeneratorUDF(
@@ -118,7 +119,6 @@ class TestFeatureGeneratorUDFBasicProcessing:
 
 
 class TestFeatureGeneratorUDFTensorExtraction:
-
     @pytest.fixture
     def udf(self):
         return FeatureGeneratorUDF(
@@ -155,9 +155,7 @@ class TestFeatureGeneratorUDFTensorExtraction:
             "tensor": torch.ones(3),
             "string": "hello",
             "list": [1, 2, 3],
-            "dict": {
-                "a": 1
-            },
+            "dict": {"a": 1},
         }
         result = udf._extract_tensors(row)
 
@@ -168,7 +166,6 @@ class TestFeatureGeneratorUDFTensorExtraction:
 
 
 class TestFeatureGeneratorUDFFeatureGeneration:
-
     def test_single_feature_generator(self):
         output = {"feature_x": torch.randn(5, 10)}
         generator = MockFeatureGenerator(output_tensors=output, name="gen1")
@@ -208,12 +205,8 @@ class TestFeatureGeneratorUDFFeatureGeneration:
         assert "feat2" in result
 
     def test_disabled_generator_skipped(self):
-        enabled_gen = MockFeatureGenerator({"enabled_feat": torch.ones(3)},
-                                           enabled=True,
-                                           name="enabled")
-        disabled_gen = MockFeatureGenerator({"disabled_feat": torch.zeros(3)},
-                                            enabled=False,
-                                            name="disabled")
+        enabled_gen = MockFeatureGenerator({"enabled_feat": torch.ones(3)}, enabled=True, name="enabled")
+        disabled_gen = MockFeatureGenerator({"disabled_feat": torch.zeros(3)}, enabled=False, name="disabled")
 
         udf = FeatureGeneratorUDF(
             compute_by_rows=True,
@@ -244,14 +237,11 @@ class TestFeatureGeneratorUDFFeatureGeneration:
         )
 
         row = {"__record_id": "test"}
-        with pytest.raises(
-                ValueError,
-                match="conflicts with a previously generated feature"):
+        with pytest.raises(ValueError, match="conflicts with a previously generated feature"):
             asyncio.run(udf.udf_for_item(row))
 
 
 class TestFeatureGeneratorUDFCollators:
-
     def test_collator_applied_when_enabled(self):
         generator = MockFeatureGenerator({"feat": torch.ones(3)}, name="gen")
         collator = MockFeatureCollator(enabled=True, name="collator")
@@ -293,7 +283,6 @@ class TestFeatureGeneratorUDFCollators:
     def test_multiple_collators_chained(self):
 
         class CollatorA(FeatureCollatorBase):
-
             def __init__(self):
                 super().__init__(config=None, name="collator_a")
 
@@ -305,7 +294,6 @@ class TestFeatureGeneratorUDFCollators:
                 return True
 
         class CollatorB(FeatureCollatorBase):
-
             def __init__(self):
                 super().__init__(config=None, name="collator_b")
 
@@ -336,7 +324,6 @@ class TestFeatureGeneratorUDFCollators:
 
 
 class TestFeatureGeneratorUDFPreInit:
-
     def test_pre_init_called(self):
 
         def mock_pre_init(context):
@@ -380,7 +367,6 @@ class TestFeatureGeneratorUDFPreInit:
 
 
 class TestFeatureGeneratorUDFBatchProcessing:
-
     def test_batch_processing_multiple_rows(self):
         generator = MockFeatureGenerator({"feat": torch.ones(5)}, name="gen")
 
@@ -395,8 +381,7 @@ class TestFeatureGeneratorUDFBatchProcessing:
 
         async def run_batch():
             batch = {
-                "input_data": [np.ones(3), np.ones(3),
-                               np.ones(3)],
+                "input_data": [np.ones(3), np.ones(3), np.ones(3)],
                 "__record_id": ["r1", "r2", "r3"],
             }
             results = []

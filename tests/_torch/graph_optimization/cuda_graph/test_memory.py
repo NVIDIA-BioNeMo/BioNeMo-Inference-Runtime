@@ -17,6 +17,7 @@
 These run on CPU: the driver/host queries are monkeypatched so the gate logic
 is tested deterministically without depending on actual free memory.
 """
+
 import torch
 
 from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_mem
@@ -24,9 +25,11 @@ from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_m
 
 def test_tensor_bytes_nested():
     container = {
-        "a": torch.zeros(4, dtype=torch.float32),        # 16 bytes
-        "b": [torch.zeros(2, dtype=torch.int64),          # 16 bytes
-              (torch.zeros(3, dtype=torch.float16),)],    # 6 bytes
+        "a": torch.zeros(4, dtype=torch.float32),  # 16 bytes
+        "b": [
+            torch.zeros(2, dtype=torch.int64),  # 16 bytes
+            (torch.zeros(3, dtype=torch.float16),),
+        ],  # 6 bytes
         "c": "not a tensor",
         "d": None,
     }
@@ -43,8 +46,7 @@ def test_estimate_includes_metadata_and_margin():
     ws = 100 * gc_mem.MB
     est = gc_mem.estimate_capture_gpu_bytes(ws)
     # working set + metadata + max(min_margin, 10%)
-    expected = ws + gc_mem.GRAPH_METADATA_BYTES + max(
-        gc_mem.MIN_GPU_MARGIN_BYTES, int(0.10 * ws))
+    expected = ws + gc_mem.GRAPH_METADATA_BYTES + max(gc_mem.MIN_GPU_MARGIN_BYTES, int(0.10 * ws))
     assert est == expected
     assert est > ws  # always strictly larger than the bare working set
 

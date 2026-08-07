@@ -16,7 +16,7 @@
 import string
 from io import StringIO
 from pathlib import Path
-from typing import TextIO, Union
+from typing import TextIO
 
 import numpy as np
 import torch
@@ -41,16 +41,13 @@ def generate_deletion_matrix(sequences: list[str]) -> torch.Tensor:
         if len_vec is None:
             len_vec = len(deletion_vec)
         elif len(deletion_vec) != len_vec:
-            logger.warning(
-                f"Length of deletion vector is not consistent: {len(deletion_vec)} != {len_vec}, {i}"
-            )
+            logger.warning(f"Length of deletion vector is not consistent: {len(deletion_vec)} != {len_vec}, {i}")
         deletion_matrix.append(deletion_vec)
     ret = np.array(deletion_matrix)
     return ret
 
 
-def parse_a3m_content(content: Union[StringIO, TextIO],
-                      preserve_comments: bool = False) -> MSAParsed:
+def parse_a3m_content(content: StringIO | TextIO, preserve_comments: bool = False) -> MSAParsed:
     """Parse A3M format MSA content.
 
     This parser filters out comment lines before parsing the FASTA-like content.
@@ -99,14 +96,10 @@ def parse_a3m_content(content: Union[StringIO, TextIO],
         descriptions.append(fasta.description)
     deletion_table = str.maketrans("", "", string.ascii_lowercase)
     aligned_sequences = [s.translate(deletion_table) for s in sequences]
-    return MSAParsed(sequences=aligned_sequences,
-                     raw=sequences,
-                     descriptions=descriptions,
-                     comments=comment_lines)
+    return MSAParsed(sequences=aligned_sequences, raw=sequences, descriptions=descriptions, comments=comment_lines)
 
 
-def read_a3m(file_path: Union[str, Path],
-             preserve_comments: bool = False) -> MSAParsed:
+def read_a3m(file_path: str | Path, preserve_comments: bool = False) -> MSAParsed:
     """Read and parse an A3M format MSA file.
 
     Args:
@@ -117,10 +110,8 @@ def read_a3m(file_path: Union[str, Path],
     Returns:
         MSAParsed: Parsed MSA data with sequences, descriptions, and optionally comments.
     """
-    with open(file_path, "r") as f:
+    with open(file_path) as f:
         return parse_a3m_content(f, preserve_comments=preserve_comments)
 
 
-__all__ = [
-    "MSAParsed", "generate_deletion_matrix", "parse_a3m_content", "read_a3m"
-]
+__all__ = ["MSAParsed", "generate_deletion_matrix", "parse_a3m_content", "read_a3m"]

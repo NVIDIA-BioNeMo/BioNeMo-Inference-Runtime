@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from math import pi
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -36,11 +35,7 @@ class FourierEmbedding(nn.Module):
                 The data type of the input features.
         """
         super().__init__()
-        self.proj = Linear(1,
-                           dim,
-                           bias=True,
-                           dtype=dtype,
-                           skip_create_weights=False)
+        self.proj = Linear(1, dim, bias=True, dtype=dtype, skip_create_weights=False)
 
     def forward(
         self,
@@ -67,15 +62,16 @@ class RelativePositionEncoder(nn.Module):
     """
 
     def __init__(
-            self,
-            token_z: int,
-            r_max: int = 32,
-            s_max: int = 2,
-            fix_sym_check: bool = False,
-            cyclic_pos_enc: bool = True,
-            period_broadcast: bool = True,  # Set False for Boltz2
-            dtype: torch.dtype = torch.float32,
-            skip_create_weights: bool = False):
+        self,
+        token_z: int,
+        r_max: int = 32,
+        s_max: int = 2,
+        fix_sym_check: bool = False,
+        cyclic_pos_enc: bool = True,
+        period_broadcast: bool = True,  # Set False for Boltz2
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         """Initialize the relative position encoder.
 
         Args:
@@ -99,11 +95,13 @@ class RelativePositionEncoder(nn.Module):
         super().__init__()
         self.r_max = r_max
         self.s_max = s_max
-        self.linear = Linear(4 * (r_max + 1) + 2 * (s_max + 1) + 1,
-                             token_z,
-                             bias=False,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(
+            4 * (r_max + 1) + 2 * (s_max + 1) + 1,
+            token_z,
+            bias=False,
+            dtype=dtype,
+            skip_create_weights=skip_create_weights,
+        )
         self.fix_sym_check = fix_sym_check
         self.cyclic_pos_enc = cyclic_pos_enc
         self.period_broadcast = period_broadcast
@@ -115,7 +113,7 @@ class RelativePositionEncoder(nn.Module):
         entity_id: torch.Tensor,
         token_index: torch.Tensor,
         sym_id: torch.Tensor,
-        cyclic_period: Optional[torch.Tensor] = None,
+        cyclic_period: torch.Tensor | None = None,
     ):
         """Bucket pairwise residue, token, and symmetry-chain offsets.
 
@@ -129,12 +127,10 @@ class RelativePositionEncoder(nn.Module):
             ``[B, N, N]``.
         """
         b_same_chain = torch.eq(asym_id[:, :, None], asym_id[:, None, :])
-        b_same_residue = torch.eq(residue_index[:, :, None],
-                                  residue_index[:, None, :])
+        b_same_residue = torch.eq(residue_index[:, :, None], residue_index[:, None, :])
         b_same_entity = torch.eq(entity_id[:, :, None], entity_id[:, None, :])
-        d_residue = (residue_index[:, :, None] - residue_index[:, None, :])
-        if (self.cyclic_pos_enc and cyclic_period is not None
-                and torch.any(cyclic_period > 0)):
+        d_residue = residue_index[:, :, None] - residue_index[:, None, :]
+        if self.cyclic_pos_enc and cyclic_period is not None and torch.any(cyclic_period > 0):
             period = torch.where(
                 cyclic_period > 0,
                 cyclic_period,
@@ -142,8 +138,7 @@ class RelativePositionEncoder(nn.Module):
             )
             if self.period_broadcast:
                 period = period.unsqueeze(1)
-            d_residue = (d_residue -
-                         period * torch.round(d_residue / period)).long()
+            d_residue = (d_residue - period * torch.round(d_residue / period)).long()
 
         d_residue = torch.clip(
             d_residue + self.r_max,
@@ -151,9 +146,7 @@ class RelativePositionEncoder(nn.Module):
             2 * self.r_max,
         )
 
-        d_residue = torch.where(
-            b_same_chain, d_residue,
-            torch.zeros_like(d_residue) + 2 * self.r_max + 1)
+        d_residue = torch.where(b_same_chain, d_residue, torch.zeros_like(d_residue) + 2 * self.r_max + 1)
 
         d_token = torch.clip(
             token_index[:, :, None] - token_index[:, None, :] + self.r_max,
@@ -173,19 +166,18 @@ class RelativePositionEncoder(nn.Module):
             2 * self.s_max,
         )
         b_same_chain = (~b_same_entity) if self.fix_sym_check else b_same_chain
-        d_chain = torch.where(b_same_chain,
-                              torch.zeros_like(d_chain) + 2 * self.s_max + 1,
-                              d_chain)
+        d_chain = torch.where(b_same_chain, torch.zeros_like(d_chain) + 2 * self.s_max + 1, d_chain)
         return d_residue, d_token, d_chain, b_same_entity
 
     def generate_relp(
-            self,
-            asym_id: torch.Tensor,
-            residue_index: torch.Tensor,
-            entity_id: torch.Tensor,
-            token_index: torch.Tensor,
-            sym_id: torch.Tensor,
-            cyclic_period: Optional[torch.Tensor] = None) -> torch.Tensor:
+        self,
+        asym_id: torch.Tensor,
+        residue_index: torch.Tensor,
+        entity_id: torch.Tensor,
+        token_index: torch.Tensor,
+        sym_id: torch.Tensor,
+        cyclic_period: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Materialize the relative-position one-hot feature.
 
         Args:
@@ -197,8 +189,8 @@ class RelativePositionEncoder(nn.Module):
             ``relp`` ``[B, N_token, N_token, 4 * r_max + 2 * s_max + 7]`` float.
         """
         d_residue, d_token, d_chain, b_same_entity = self._relp_buckets(
-            asym_id, residue_index, entity_id, token_index, sym_id,
-            cyclic_period)
+            asym_id, residue_index, entity_id, token_index, sym_id, cyclic_period
+        )
         n_pos = 2 * self.r_max + 2
         n_chain = 2 * self.s_max + 2
         a_rel_pos = F.one_hot(d_residue, n_pos)
@@ -214,14 +206,16 @@ class RelativePositionEncoder(nn.Module):
             dim=-1,
         )
 
-    def forward(self,
-                asym_id: Optional[torch.Tensor] = None,
-                residue_index: Optional[torch.Tensor] = None,
-                entity_id: Optional[torch.Tensor] = None,
-                cyclic_period: Optional[torch.Tensor] = None,
-                token_index: Optional[torch.Tensor] = None,
-                sym_id: Optional[torch.Tensor] = None,
-                relp: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        asym_id: torch.Tensor | None = None,
+        residue_index: torch.Tensor | None = None,
+        entity_id: torch.Tensor | None = None,
+        cyclic_period: torch.Tensor | None = None,
+        token_index: torch.Tensor | None = None,
+        sym_id: torch.Tensor | None = None,
+        relp: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Project raw or precomputed relative-position features.
 
         Args:
@@ -237,8 +231,8 @@ class RelativePositionEncoder(nn.Module):
             return self.linear(relp.to(self.linear.weight.dtype))
 
         d_residue, d_token, d_chain, b_same_entity = self._relp_buckets(
-            asym_id, residue_index, entity_id, token_index, sym_id,
-            cyclic_period)
+            asym_id, residue_index, entity_id, token_index, sym_id, cyclic_period
+        )
         n_pos = 2 * self.r_max + 2
         n_chain = 2 * self.s_max + 2
 
@@ -247,7 +241,7 @@ class RelativePositionEncoder(nn.Module):
         # [ d_residue (n_pos) | d_token (n_pos) | b_same_entity (1) | d_chain (n_chain) ].
         wt = self.linear.weight.t()
         p = F.embedding(d_residue, wt[0:n_pos])
-        p += F.embedding(d_token, wt[n_pos:2 * n_pos])
+        p += F.embedding(d_token, wt[n_pos : 2 * n_pos])
         p += b_same_entity[..., None].to(p.dtype) * wt[2 * n_pos]
-        p += F.embedding(d_chain, wt[2 * n_pos + 1:2 * n_pos + 1 + n_chain])
+        p += F.embedding(d_chain, wt[2 * n_pos + 1 : 2 * n_pos + 1 + n_chain])
         return p

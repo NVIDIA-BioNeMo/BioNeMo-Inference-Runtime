@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """OSS equivalence tests for the Protenix atom transformer (AF3 Algorithm 7)."""
+
 import math
 import os
 from dataclasses import dataclass
@@ -20,14 +21,11 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import \
-    ProtenixDiffusionTransformer
+from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
 from tensorrt_bionemo.configs import DiffusionTransformerConfig
 from tensorrt_bionemo.utils import str_dtype_to_torch
-from tests.common.test_utils.protenix.create_and_load_weights_from_protenixoss import \
-    convert_atom_transformer
-from tests.common.test_utils.protenix.ref_layers_from_oss import \
-    RefProtenixAtomTransformerFromOSS
+from tests.common.test_utils.protenix.create_and_load_weights_from_protenixoss import convert_atom_transformer
+from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixAtomTransformerFromOSS
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -46,22 +44,21 @@ class Scenario:
 
 def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
     a, b = a.float(), b.float()
-    return (torch.sqrt(torch.mean(
-        (a - b)**2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
+    return (torch.sqrt(torch.mean((a - b) ** 2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dtype="float32"),
-    Scenario(dtype="bfloat16"),
-    Scenario(dtype="float32", n_atoms=200),
-    Scenario(dtype="bfloat16", n_atoms=200),
-    Scenario(dtype="float32", precompute_bias=False),
-    Scenario(dtype="bfloat16", precompute_bias=False),
-],
-                         ids=[
-                             "fp32", "bf16", "fp32_ragged", "bf16_ragged",
-                             "fp32_no_precompute", "bf16_no_precompute"
-                         ])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dtype="float32"),
+        Scenario(dtype="bfloat16"),
+        Scenario(dtype="float32", n_atoms=200),
+        Scenario(dtype="bfloat16", n_atoms=200),
+        Scenario(dtype="float32", precompute_bias=False),
+        Scenario(dtype="bfloat16", precompute_bias=False),
+    ],
+    ids=["fp32", "bf16", "fp32_ragged", "bf16_ragged", "fp32_no_precompute", "bf16_no_precompute"],
+)
 def test_protenix_atom_transformer(sc: Scenario):
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
@@ -70,43 +67,51 @@ def test_protenix_atom_transformer(sc: Scenario):
     torch_dtype = str_dtype_to_torch(sc.dtype)
     bs = sc.batch_size
 
-    ref = RefProtenixAtomTransformerFromOSS.build(
-        c_atom=sc.c_atom,
-        c_atompair=sc.c_atompair,
-        n_blocks=sc.n_blocks,
-        n_heads=sc.n_heads,
-        n_queries=sc.n_queries,
-        n_keys=sc.n_keys).to(device=device, dtype=torch.float32).eval()
+    ref = (
+        RefProtenixAtomTransformerFromOSS.build(
+            c_atom=sc.c_atom,
+            c_atompair=sc.c_atompair,
+            n_blocks=sc.n_blocks,
+            n_heads=sc.n_heads,
+            n_queries=sc.n_queries,
+            n_keys=sc.n_keys,
+        )
+        .to(device=device, dtype=torch.float32)
+        .eval()
+    )
 
     # Defaults select the local atom variant.
-    dit_config = DiffusionTransformerConfig(num_blocks=sc.n_blocks,
-                                            num_heads=sc.n_heads,
-                                            dim=sc.c_atom,
-                                            dim_single_cond=sc.c_atom,
-                                            dim_pairwise=sc.c_atompair,
-                                            dtype=sc.dtype,
-                                            precompute_bias=sc.precompute_bias)
+    dit_config = DiffusionTransformerConfig(
+        num_blocks=sc.n_blocks,
+        num_heads=sc.n_heads,
+        dim=sc.c_atom,
+        dim_single_cond=sc.c_atom,
+        dim_pairwise=sc.c_atompair,
+        dtype=sc.dtype,
+        precompute_bias=sc.precompute_bias,
+    )
     model = ProtenixDiffusionTransformer(dit_config).to(device).eval()
     convert_atom_transformer(ref, model)
 
     n_blocks_win = math.ceil(sc.n_atoms / sc.n_queries)
     q = torch.randn(bs, sc.n_atoms, sc.c_atom, device=device)
     c = torch.randn(bs, sc.n_atoms, sc.c_atom, device=device)
-    p_lm = torch.randn(bs,
-                       n_blocks_win,
-                       sc.n_queries,
-                       sc.n_keys,
-                       sc.c_atompair,
-                       device=device)
+    p_lm = torch.randn(bs, n_blocks_win, sc.n_queries, sc.n_keys, sc.c_atompair, device=device)
     atom_mask = torch.ones(bs, sc.n_atoms, device=device)
 
-    attn_metadata = model.build_attn_metadata(n_blocks_win, sc.n_queries,
-                                              sc.n_keys, device)
+    attn_metadata = model.build_attn_metadata(n_blocks_win, sc.n_queries, sc.n_keys, device)
 
     with torch.inference_mode():
         ref_out = ref(q, c, p_lm)
-        out = model(q.to(torch_dtype), c.to(torch_dtype), p_lm.to(torch_dtype),
-                    atom_mask, sc.n_queries, sc.n_keys, attn_metadata)
+        out = model(
+            q.to(torch_dtype),
+            c.to(torch_dtype),
+            p_lm.to(torch_dtype),
+            atom_mask,
+            sc.n_queries,
+            sc.n_keys,
+            attn_metadata,
+        )
 
     r = _rmse_ratio(out, ref_out)
     tol = 2e-3 if torch_dtype == torch.float32 else 5e-2

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,22 +14,21 @@
 # limitations under the License.
 import torch
 import torch.nn as nn
-from test_utils.boltz.ref_attn import \
-    RefPairwiseSelfAttention as BoltzRefPairwiseSelfAttention
-from test_utils.boltz.ref_attn import \
-    RefTriangleAttention as BoltzRefTriangleAttention
+from test_utils.boltz.ref_attn import RefPairwiseSelfAttention as BoltzRefPairwiseSelfAttention
+from test_utils.boltz.ref_attn import RefTriangleAttention as BoltzRefTriangleAttention
 
 from tensorrt_bionemo.hubs import load_weights
 
 
 class RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
-
     @classmethod
-    def load_weights(cls,
-                     model: str = "openfold2_ptm_1",
-                     layer_path: str = "evoformer.blocks.0.msa_att_row.mha",
-                     state_dict: dict = None,
-                     num_heads: int = 8):
+    def load_weights(
+        cls,
+        model: str = "openfold2_ptm_1",
+        layer_path: str = "evoformer.blocks.0.msa_att_row.mha",
+        state_dict: dict = None,
+        num_heads: int = 8,
+    ):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
 
@@ -40,24 +39,19 @@ class RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
             (f"{layer_path}.linear_g.weight", f"{layer_path}.linear_g.bias"),
             (f"{layer_path}.linear_o.weight", f"{layer_path}.linear_o.bias"),
         ]
-        c_q = c_k = c_v = state_dict[f"{layer_path}.linear_q.weight"].shape[1]
+        c_q = state_dict[f"{layer_path}.linear_q.weight"].shape[1]
 
-        m = cls(c_s=c_q,
-                c_z=None,
-                num_heads=num_heads,
-                bias_flags={
-                    "q": False,
-                    "k": False,
-                    "v": False,
-                    "g": True,
-                    "o": True
-                },
-                compute_pair_bias=False,
-                initial_norm=False,
-                transform_mask=False)
+        m = cls(
+            c_s=c_q,
+            c_z=None,
+            num_heads=num_heads,
+            bias_flags={"q": False, "k": False, "v": False, "g": True, "o": True},
+            compute_pair_bias=False,
+            initial_norm=False,
+            transform_mask=False,
+        )
         layers = [m.proj_q, m.proj_k, m.proj_v, m.proj_g, m.proj_o]
-        for (weights_path, bias_path), layer in zip(weights_biases_path,
-                                                    layers):
+        for (weights_path, bias_path), layer in zip(weights_biases_path, layers, strict=False):
             if bias_path is not None:
                 layer.bias.data.copy_(state_dict[bias_path])
             layer.weight.data.copy_(state_dict[weights_path])
@@ -66,13 +60,14 @@ class RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):
 
 
 class RefTriangleAttention(BoltzRefTriangleAttention):
-
     @classmethod
-    def load_weights(cls,
-                     model: str = "openfold2_ptm_1",
-                     layer_path: str = "evoformer.blocks.0.msa_att_row.mha",
-                     state_dict: dict = None,
-                     num_heads: int = 8):
+    def load_weights(
+        cls,
+        model: str = "openfold2_ptm_1",
+        layer_path: str = "evoformer.blocks.0.msa_att_row.mha",
+        state_dict: dict = None,
+        num_heads: int = 8,
+    ):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
@@ -85,33 +80,25 @@ class RefTriangleAttention(BoltzRefTriangleAttention):
         c_q = state_dict[f"{layer_path}.linear_q.weight"].shape[1]
         c_k = state_dict[f"{layer_path}.linear_k.weight"].shape[1]
         c_v = state_dict[f"{layer_path}.linear_v.weight"].shape[1]
-        c_hidden = state_dict[f"{layer_path}.linear_q.weight"].shape[
-            0] // num_heads
+        c_hidden = state_dict[f"{layer_path}.linear_q.weight"].shape[0] // num_heads
         if state_dict.get(f"{layer_path}.linear_g.weight") is not None:
             gating = True
         else:
             gating = False
-        m = cls(c_q=c_q,
-                c_k=c_k,
-                c_v=c_v,
-                c_hidden=c_hidden,
-                no_heads=num_heads,
-                bias_flags={
-                    "q": False,
-                    "k": False,
-                    "v": False,
-                    "g": True,
-                    "o": True
-                },
-                gating=gating)
+        m = cls(
+            c_q=c_q,
+            c_k=c_k,
+            c_v=c_v,
+            c_hidden=c_hidden,
+            no_heads=num_heads,
+            bias_flags={"q": False, "k": False, "v": False, "g": True, "o": True},
+            gating=gating,
+        )
         if gating:
-            layers = [
-                m.linear_q, m.linear_k, m.linear_v, m.linear_g, m.linear_o
-            ]
+            layers = [m.linear_q, m.linear_k, m.linear_v, m.linear_g, m.linear_o]
         else:
             layers = [m.linear_q, m.linear_k, m.linear_v, None, m.linear_o]
-        for (weights_path, bias_path), layer in zip(weights_biases_path,
-                                                    layers):
+        for (weights_path, bias_path), layer in zip(weights_biases_path, layers, strict=False):
             if layer is None:
                 continue
             if bias_path is not None:
@@ -121,13 +108,7 @@ class RefTriangleAttention(BoltzRefTriangleAttention):
 
 
 class RefGlobalAttention(nn.Module):
-
-    def __init__(self,
-                 c_in: int,
-                 c_hidden: int,
-                 no_heads: int,
-                 inf: float = 1e9,
-                 eps: float = 1e-5):
+    def __init__(self, c_in: int, c_hidden: int, no_heads: int, inf: float = 1e9, eps: float = 1e-5):
         super().__init__()
 
         self.c_in = c_in
@@ -146,12 +127,12 @@ class RefGlobalAttention(nn.Module):
 
     @classmethod
     def load_weights(
-            cls,
-            model: str = "openfold2_ptm_1",
-            layer_path:
-        str = "extra_msa_stack.blocks.0.msa_att_col.global_attention",
-            state_dict: dict = None,
-            num_heads: int = 8):
+        cls,
+        model: str = "openfold2_ptm_1",
+        layer_path: str = "extra_msa_stack.blocks.0.msa_att_col.global_attention",
+        state_dict: dict = None,
+        num_heads: int = 8,
+    ):
         if state_dict is None:
             state_dict = load_weights(model, local_files_only=False)
         weights_biases_path = [
@@ -163,12 +144,10 @@ class RefGlobalAttention(nn.Module):
         ]
         c_in = state_dict[f"{layer_path}.linear_q.weight"].shape[1]
         c_hidden = state_dict[f"{layer_path}.linear_k.weight"].shape[0]
-        no_heads = state_dict[f"{layer_path}.linear_q.weight"].shape[
-            0] // c_hidden
+        no_heads = state_dict[f"{layer_path}.linear_q.weight"].shape[0] // c_hidden
         m = cls(c_in=c_in, c_hidden=c_hidden, no_heads=no_heads)
         layers = [m.linear_q, m.linear_k, m.linear_v, m.linear_g, m.linear_o]
-        for (weights_path, bias_path), layer in zip(weights_biases_path,
-                                                    layers):
+        for (weights_path, bias_path), layer in zip(weights_biases_path, layers, strict=False):
             if bias_path is not None:
                 layer.bias.data.copy_(state_dict[bias_path])
             layer.weight.data.copy_(state_dict[weights_path])
@@ -176,12 +155,11 @@ class RefGlobalAttention(nn.Module):
 
     def forward(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         # [*, N_res, C_in]
-        q = torch.sum(m * mask.unsqueeze(-1),
-                      dim=-2) / (torch.sum(mask, dim=-1)[..., None] + self.eps)
+        q = torch.sum(m * mask.unsqueeze(-1), dim=-2) / (torch.sum(mask, dim=-1)[..., None] + self.eps)
 
         # [*, N_res, H * C_hidden]
         q = self.linear_q(q)
-        q *= (self.c_hidden**(-0.5))
+        q *= self.c_hidden ** (-0.5)
 
         # [*, N_res, H, C_hidden]
         q = q.view(q.shape[:-1] + (self.no_heads, -1))
@@ -215,7 +193,7 @@ class RefGlobalAttention(nn.Module):
         o = o.unsqueeze(-3) * g
 
         # [*, N_res, N_seq, H * C_hidden]
-        o = o.reshape(o.shape[:-2] + (-1, ))
+        o = o.reshape(o.shape[:-2] + (-1,))
 
         # [*, N_res, N_seq, C_in]
         m = self.linear_o(o)

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,15 +18,17 @@ import torch.nn as nn
 
 from tensorrt_bionemo._torch.layers.linear import Linear
 from tensorrt_bionemo._torch.modules.openfold2.confidence_utils import (
-    compute_plddt, compute_predicted_aligned_error, compute_tm)
+    compute_plddt,
+    compute_predicted_aligned_error,
+    compute_tm,
+)
 from tensorrt_bionemo._torch.utils import recursive_calling_load_weights
 from tensorrt_bionemo.configs import BaseConfig
 
 
 class AuxiliaryHeads(nn.Module):
-
     def __init__(self, config: BaseConfig):
-        super(AuxiliaryHeads, self).__init__()
+        super().__init__()
 
         self.config = config
         self.dtype = config.torch_dtype
@@ -77,11 +79,9 @@ class AuxiliaryHeads(nn.Module):
 
         not_loaded_weight = set(weights.keys()) - loaded_weight
         if not_loaded_weight:
-            raise ValueError(
-                f"The following weights are not loaded: {not_loaded_weight}")
+            raise ValueError(f"The following weights are not loaded: {not_loaded_weight}")
 
-    def forward(self, outputs: dict[str,
-                                    torch.Tensor]) -> dict[str, torch.Tensor]:
+    def forward(self, outputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         # cast the tensors to the correct dtype
         for k, v in outputs.items():
             if v.is_floating_point():
@@ -99,36 +99,29 @@ class AuxiliaryHeads(nn.Module):
         masked_msa_logits = self.masked_msa(outputs["msa"])
         aux_out["masked_msa_logits"] = masked_msa_logits
 
-        experimentally_resolved_logits = self.experimentally_resolved(
-            outputs["single"])
-        aux_out[
-            "experimentally_resolved_logits"] = experimentally_resolved_logits
+        experimentally_resolved_logits = self.experimentally_resolved(outputs["single"])
+        aux_out["experimentally_resolved_logits"] = experimentally_resolved_logits
 
         if self.config.tm.enabled:
             tm_logits = self.tm(outputs["pair"])
             aux_out["tm_logits"] = tm_logits
-            aux_out["ptm_score"] = compute_tm(tm_logits,
-                                              no_bins=self.config.tm.no_bins)
+            aux_out["ptm_score"] = compute_tm(tm_logits, no_bins=self.config.tm.no_bins)
             asym_id = outputs.get("asym_id")
             if asym_id is not None:
                 aux_out["iptm_score"] = compute_tm(
-                    tm_logits,
-                    asym_id=asym_id,
-                    interface=True,
-                    no_bins=self.config.tm.no_bins)
+                    tm_logits, asym_id=asym_id, interface=True, no_bins=self.config.tm.no_bins
+                )
                 aux_out["weighted_ptm_score"] = (
-                    self.config.tm.iptm_weight * aux_out["iptm_score"] +
-                    self.config.tm.ptm_weight * aux_out["ptm_score"])
+                    self.config.tm.iptm_weight * aux_out["iptm_score"]
+                    + self.config.tm.ptm_weight * aux_out["ptm_score"]
+                )
 
-            aux_out.update(
-                compute_predicted_aligned_error(
-                    tm_logits, no_bins=self.config.tm.no_bins))
+            aux_out.update(compute_predicted_aligned_error(tm_logits, no_bins=self.config.tm.no_bins))
 
         return aux_out
 
 
 class PerResidueLDDTCaPredictor(nn.Module):
-
     def __init__(
         self,
         no_bins: int,
@@ -138,7 +131,7 @@ class PerResidueLDDTCaPredictor(nn.Module):
         skip_create_weights: bool = False,
         epsilon: float = 1e-5,
     ):
-        super(PerResidueLDDTCaPredictor, self).__init__()
+        super().__init__()
 
         self.no_bins = no_bins
         self.c_in = c_in
@@ -146,22 +139,16 @@ class PerResidueLDDTCaPredictor(nn.Module):
 
         self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype, eps=epsilon)
 
-        self.linear_1 = Linear(self.c_in,
-                               self.c_hidden,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.linear_1 = Linear(
+            self.c_in, self.c_hidden, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
-        self.linear_2 = Linear(self.c_hidden,
-                               self.c_hidden,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
-        self.linear_3 = Linear(self.c_hidden,
-                               self.no_bins,
-                               bias=True,
-                               dtype=dtype,
-                               skip_create_weights=skip_create_weights)
+        self.linear_2 = Linear(
+            self.c_hidden, self.c_hidden, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
+        self.linear_3 = Linear(
+            self.c_hidden, self.no_bins, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.relu = nn.ReLU()
 
@@ -197,16 +184,12 @@ class DistogramHead(nn.Module):
             no_bins:
                 Number of distogram bins
         """
-        super(DistogramHead, self).__init__()
+        super().__init__()
 
         self.c_z = c_z
         self.no_bins = no_bins
 
-        self.linear = Linear(self.c_z,
-                             self.no_bins,
-                             bias=True,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_z, self.no_bins, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def forward(self, z):
         """
@@ -240,16 +223,12 @@ class TMScoreHead(nn.Module):
             no_bins:
                 Number of bins
         """
-        super(TMScoreHead, self).__init__()
+        super().__init__()
 
         self.c_z = c_z
         self.no_bins = no_bins
 
-        self.linear = Linear(self.c_z,
-                             self.no_bins,
-                             bias=True,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_z, self.no_bins, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def forward(self, z):
         """
@@ -282,16 +261,12 @@ class MaskedMSAHead(nn.Module):
             c_out:
                 Output channel dimension
         """
-        super(MaskedMSAHead, self).__init__()
+        super().__init__()
 
         self.c_m = c_m
         self.c_out = c_out
 
-        self.linear = Linear(self.c_m,
-                             self.c_out,
-                             bias=True,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_m, self.c_out, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def forward(self, m):
         """
@@ -325,16 +300,12 @@ class ExperimentallyResolvedHead(nn.Module):
             c_out:
                 Number of distogram bins
         """
-        super(ExperimentallyResolvedHead, self).__init__()
+        super().__init__()
 
         self.c_s = c_s
         self.c_out = c_out
 
-        self.linear = Linear(self.c_s,
-                             self.c_out,
-                             bias=True,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.linear = Linear(self.c_s, self.c_out, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
 
     def forward(self, s):
         """

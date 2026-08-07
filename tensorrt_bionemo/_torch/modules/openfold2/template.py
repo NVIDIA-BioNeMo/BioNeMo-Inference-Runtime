@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2021 AlQuraishi Laboratory
 # Copyright 2021 DeepMind Technologies Limited
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -14,7 +29,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -23,30 +37,33 @@ from einops import rearrange
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.attention import CrossTriangleAttention
 from tensorrt_bionemo._torch.layers.transition import PairTransition
-from tensorrt_bionemo._torch.layers.transition import \
-    Transition as SwiGLUTransition
+from tensorrt_bionemo._torch.layers.transition import Transition as SwiGLUTransition
 from tensorrt_bionemo._torch.layers.triangle_nodes import (
-    TriangleAttentionEndingNode, TriangleAttentionStartingNode,
-    TriangleMultiplicationNode, TriangleMultiplicationNodeType)
+    TriangleAttentionEndingNode,
+    TriangleAttentionStartingNode,
+    TriangleMultiplicationNode,
+    TriangleMultiplicationNodeType,
+)
 
 
 class TemplatePairBlock(nn.Module):
-
-    def __init__(self,
-                 c_t: int,
-                 c_hidden_tri_att: int,
-                 c_hidden_tri_mul: int,
-                 no_heads: int,
-                 pair_transition_n: int,
-                 tri_mul_first: bool,
-                 trimul_high_precision: bool = False,
-                 dtype: torch.dtype = torch.float32,
-                 local_layer_idx: int = 0,
-                 eps: float = 1e-5,
-                 inf: float = 1e9,
-                 triangle_attn_backend: str = 'VANILLA',
-                 skip_create_weights: bool = False,
-                 **kwargs):
+    def __init__(
+        self,
+        c_t: int,
+        c_hidden_tri_att: int,
+        c_hidden_tri_mul: int,
+        no_heads: int,
+        pair_transition_n: int,
+        tri_mul_first: bool,
+        trimul_high_precision: bool = False,
+        dtype: torch.dtype = torch.float32,
+        local_layer_idx: int = 0,
+        eps: float = 1e-5,
+        inf: float = 1e9,
+        triangle_attn_backend: str = "VANILLA",
+        skip_create_weights: bool = False,
+        **kwargs,
+    ):
         super().__init__()
 
         self.c_t = c_t
@@ -60,38 +77,26 @@ class TemplatePairBlock(nn.Module):
         self.dtype = dtype
 
         transition_type = kwargs.get("transition_type", "relu")
-        tri_mul_out_bias = {
-            "p_in": True,
-            "g_in": True,
-            "p_out": True,
-            "g_out": True
-        } if kwargs.get("tri_mul_out_bias",
-                        None) is None else kwargs.get("tri_mul_out_bias")
-        tri_mul_in_bias = {
-            "p_in": True,
-            "g_in": True,
-            "p_out": True,
-            "g_out": True
-        } if kwargs.get("tri_mul_in_bias",
-                        None) is None else kwargs.get("tri_mul_in_bias")
-        tri_attn_start_bias = {
-            "q": False,
-            "k": False,
-            "v": False,
-            "g": True,
-            "z": False,
-            "o": True
-        } if kwargs.get("tri_attn_start_bias",
-                        None) is None else kwargs.get("tri_attn_start_bias")
-        tri_attn_end_bias = {
-            "q": False,
-            "k": False,
-            "v": False,
-            "g": True,
-            "z": False,
-            "o": True
-        } if kwargs.get("tri_attn_end_bias",
-                        None) is None else kwargs.get("tri_attn_end_bias")
+        tri_mul_out_bias = (
+            {"p_in": True, "g_in": True, "p_out": True, "g_out": True}
+            if kwargs.get("tri_mul_out_bias", None) is None
+            else kwargs.get("tri_mul_out_bias")
+        )
+        tri_mul_in_bias = (
+            {"p_in": True, "g_in": True, "p_out": True, "g_out": True}
+            if kwargs.get("tri_mul_in_bias", None) is None
+            else kwargs.get("tri_mul_in_bias")
+        )
+        tri_attn_start_bias = (
+            {"q": False, "k": False, "v": False, "g": True, "z": False, "o": True}
+            if kwargs.get("tri_attn_start_bias", None) is None
+            else kwargs.get("tri_attn_start_bias")
+        )
+        tri_attn_end_bias = (
+            {"q": False, "k": False, "v": False, "g": True, "z": False, "o": True}
+            if kwargs.get("tri_attn_end_bias", None) is None
+            else kwargs.get("tri_attn_end_bias")
+        )
 
         self.tri_mul_out = TriangleMultiplicationNode(
             layer_idx=local_layer_idx,
@@ -102,7 +107,8 @@ class TemplatePairBlock(nn.Module):
             bias_flags=tri_mul_out_bias,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            high_precision=trimul_high_precision)
+            high_precision=trimul_high_precision,
+        )
 
         self.tri_mul_in = TriangleMultiplicationNode(
             layer_idx=local_layer_idx,
@@ -113,7 +119,8 @@ class TemplatePairBlock(nn.Module):
             bias_flags=tri_mul_in_bias,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            high_precision=trimul_high_precision)
+            high_precision=trimul_high_precision,
+        )
 
         self.tri_attn_start = TriangleAttentionStartingNode(
             c_t,
@@ -124,7 +131,8 @@ class TemplatePairBlock(nn.Module):
             mha_bias_flags=tri_attn_start_bias,
             attn_backend=triangle_attn_backend,
             dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            skip_create_weights=skip_create_weights,
+        )
         self.tri_attn_end = TriangleAttentionEndingNode(
             c_t,
             c_hidden_tri_att,
@@ -138,22 +146,13 @@ class TemplatePairBlock(nn.Module):
         )
 
         if transition_type == "relu":
-            self.pair_transition = PairTransition(c_z=c_t,
-                                                  n=pair_transition_n,
-                                                  dtype=dtype,
-                                                  eps=eps)
+            self.pair_transition = PairTransition(c_z=c_t, n=pair_transition_n, dtype=dtype, eps=eps)
         elif transition_type == "swiglu":
-            self.pair_transition = SwiGLUTransition(dim=c_t,
-                                                    hidden=c_t *
-                                                    pair_transition_n,
-                                                    dtype=dtype,
-                                                    eps=eps)
+            self.pair_transition = SwiGLUTransition(dim=c_t, hidden=c_t * pair_transition_n, dtype=dtype, eps=eps)
         else:
-            raise ValueError(
-                f"Transition type {transition_type} is not available")
+            raise ValueError(f"Transition type {transition_type} is not available")
 
-    def trimul_update(self, single: torch.Tensor,
-                      single_mask: torch.Tensor) -> torch.Tensor:
+    def trimul_update(self, single: torch.Tensor, single_mask: torch.Tensor) -> torch.Tensor:
         """
         Update the single template with the triangle multiplication
         """
@@ -168,30 +167,22 @@ class TemplatePairBlock(nn.Module):
         return single
 
     def triattn_update(
-            self,
-            single: torch.Tensor,
-            single_mask: torch.Tensor,
-            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+        self, single: torch.Tensor, single_mask: torch.Tensor, attn_metadata: AttentionMetadata | None = None
+    ) -> torch.Tensor:
         """
         Update the single template with the triangle attention
         """
-        single = single + self.tri_attn_start(
-            single, single_mask, attn_metadata=attn_metadata)
+        single = single + self.tri_attn_start(single, single_mask, attn_metadata=attn_metadata)
 
-        single = single + self.tri_attn_end(
-            single, single_mask, attn_metadata=attn_metadata)
+        single = single + self.tri_attn_end(single, single_mask, attn_metadata=attn_metadata)
 
         return single
 
     def forward(
-            self,
-            z: torch.Tensor,
-            mask: torch.Tensor,
-            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+        self, z: torch.Tensor, mask: torch.Tensor, attn_metadata: AttentionMetadata | None = None
+    ) -> torch.Tensor:
         single_templates = [t.unsqueeze(-4) for t in torch.unbind(z, dim=-4)]
-        single_templates_masks = [
-            m.unsqueeze(-3) for m in torch.unbind(mask, dim=-3)
-        ]
+        single_templates_masks = [m.unsqueeze(-3) for m in torch.unbind(mask, dim=-3)]
 
         for i in range(len(single_templates)):
             single = single_templates[i].to(self.dtype)
@@ -207,13 +198,9 @@ class TemplatePairBlock(nn.Module):
                     single_mask = single_mask.flatten(0, 1)
 
                 single = self.trimul_update(single, single_mask)
-                single = self.triattn_update(single,
-                                             single_mask,
-                                             attn_metadata=attn_metadata)
+                single = self.triattn_update(single, single_mask, attn_metadata=attn_metadata)
             else:
-                single = self.triattn_update(single,
-                                             single_mask,
-                                             attn_metadata=attn_metadata)
+                single = self.triattn_update(single, single_mask, attn_metadata=attn_metadata)
                 single = self.trimul_update(single, single_mask)
 
             single = single + self.pair_transition(single, single_mask)
@@ -226,26 +213,27 @@ class TemplatePairBlock(nn.Module):
 
 
 class TemplatePairStack(nn.Module):
-
-    def __init__(self,
-                 c_t: int,
-                 c_hidden_tri_att: int,
-                 c_hidden_tri_mul: int,
-                 no_blocks: int,
-                 no_heads: int,
-                 pair_transition_n: int,
-                 tri_mul_first: bool = False,
-                 trimul_high_precision: bool = False,
-                 inf: float = 1e9,
-                 eps: float = 1e-5,
-                 triangle_attn_backend: str = 'VANILLA',
-                 transition_type: str = "relu",
-                 tri_mul_out_bias: Optional[dict] = None,
-                 tri_mul_in_bias: Optional[dict] = None,
-                 tri_attn_start_bias: Optional[dict] = None,
-                 tri_attn_end_bias: Optional[dict] = None,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_t: int,
+        c_hidden_tri_att: int,
+        c_hidden_tri_mul: int,
+        no_blocks: int,
+        no_heads: int,
+        pair_transition_n: int,
+        tri_mul_first: bool = False,
+        trimul_high_precision: bool = False,
+        inf: float = 1e9,
+        eps: float = 1e-5,
+        triangle_attn_backend: str = "VANILLA",
+        transition_type: str = "relu",
+        tri_mul_out_bias: dict | None = None,
+        tri_mul_in_bias: dict | None = None,
+        tri_attn_start_bias: dict | None = None,
+        tri_attn_end_bias: dict | None = None,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         """
         Args:
             c_t:
@@ -287,10 +275,7 @@ class TemplatePairStack(nn.Module):
 
         self.layer_norm = nn.LayerNorm(c_t, dtype=dtype, eps=eps)
 
-    def forward(self,
-                t: torch.tensor,
-                mask: torch.tensor,
-                skip_template_pair_stack: bool = False) -> torch.Tensor:
+    def forward(self, t: torch.tensor, mask: torch.tensor, skip_template_pair_stack: bool = False) -> torch.Tensor:
         """
         Args:
             t:
@@ -314,18 +299,19 @@ class TemplatePairStack(nn.Module):
 
 
 class TemplatePointwiseAttention(nn.Module):
-
-    def __init__(self,
-                 c_t: int,
-                 c_z: int,
-                 c_hidden: int,
-                 no_heads: int,
-                 inf: float = 1e9,
-                 eps: float = 1e-5,
-                 triangle_attn_backend: str = 'VANILLA',
-                 chunk_size: int = 256,
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self,
+        c_t: int,
+        c_z: int,
+        c_hidden: int,
+        no_heads: int,
+        inf: float = 1e9,
+        eps: float = 1e-5,
+        triangle_attn_backend: str = "VANILLA",
+        chunk_size: int = 256,
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ):
         super().__init__()
 
         self.c_t = c_t
@@ -342,23 +328,13 @@ class TemplatePointwiseAttention(nn.Module):
             num_attention_heads=self.no_heads,
             num_key_value_heads=self.no_heads,
             gating=False,
-            bias_flags={
-                "q": False,
-                "k": False,
-                "v": False,
-                "g": False,
-                "z": False,
-                "o": True
-            },
+            bias_flags={"q": False, "k": False, "v": False, "g": False, "z": False, "o": True},
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            attn_backend='VANILLA',
+            attn_backend=triangle_attn_backend,
         )
 
-    def forward(self,
-                t: torch.Tensor,
-                z: torch.Tensor,
-                template_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, t: torch.Tensor, z: torch.Tensor, template_mask: torch.Tensor | None = None) -> torch.Tensor:
         """
         Args:
             t:
@@ -398,7 +374,6 @@ class TemplatePointwiseAttention(nn.Module):
                 outputs.append(z_chunk)
             z = torch.cat(outputs, dim=1)
         else:
-
             z = self.mha(q_x=z, kv_x=t, biases=biases)
 
         # [*, N_res, N_res, C_z]

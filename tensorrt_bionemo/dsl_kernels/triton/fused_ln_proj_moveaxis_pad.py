@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Triton kernel: fused LayerNorm + Linear projection + moveaxis + pad.
@@ -50,8 +65,7 @@ import torch
 import triton
 import triton.language as tl
 
-from tensorrt_bionemo.dsl_kernels.triton_cache import (CachedKernel,
-                                                       TritonKernelCache)
+from tensorrt_bionemo.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
 
 # ---------------------------------------------------------------------------
 # Triton kernel
@@ -120,8 +134,7 @@ def _fused_ln_proj_moveaxis_pad_kernel(
     z_base = z_ptr + batch_idx * z_stride_b + pid_i * z_stride_i
     z_stat_ptrs = z_base + offs_j[:, None] * z_stride_j + offs_d[None, :]
 
-    z_full = tl.load(z_stat_ptrs, mask=mask_j[:, None],
-                     other=0.0).to(tl.float32)
+    z_full = tl.load(z_stat_ptrs, mask=mask_j[:, None], other=0.0).to(tl.float32)
 
     mean = tl.sum(z_full, axis=1) / DIM_D  # [TILE_J]
     var = z_full - mean[:, None]
@@ -144,8 +157,7 @@ def _fused_ln_proj_moveaxis_pad_kernel(
             z_full = z_full * w_ln_full + b_ln_full
 
         w_proj_ptrs = w_proj_ptr + offs_h[None, :] * DIM_D + offs_d[:, None]
-        w_tile = tl.load(w_proj_ptrs, mask=mask_h[None, :],
-                         other=0.0).to(tl.float32)
+        w_tile = tl.load(w_proj_ptrs, mask=mask_h[None, :], other=0.0).to(tl.float32)
 
         acc = tl.dot(z_full, w_tile, acc, input_precision="tf32")
     else:
@@ -155,10 +167,8 @@ def _fused_ln_proj_moveaxis_pad_kernel(
         for _tile in range(DIM_D // TILE_K):
             tile_k = tl.arange(0, TILE_K) + k_offset
 
-            z_tile_ptrs = z_base + offs_j[:,
-                                          None] * z_stride_j + tile_k[None, :]
-            z_tile = tl.load(z_tile_ptrs, mask=mask_j[:, None],
-                             other=0.0).to(tl.float32)
+            z_tile_ptrs = z_base + offs_j[:, None] * z_stride_j + tile_k[None, :]
+            z_tile = tl.load(z_tile_ptrs, mask=mask_j[:, None], other=0.0).to(tl.float32)
 
             z_tile = (z_tile - mean[:, None]) * rstd[:, None]
 
@@ -167,10 +177,8 @@ def _fused_ln_proj_moveaxis_pad_kernel(
                 b_ln_tile = tl.load(b_ln_ptr + tile_k).to(tl.float32)
                 z_tile = z_tile * w_ln_tile + b_ln_tile
 
-            w_proj_ptrs = w_proj_ptr + offs_h[None, :] * DIM_D + tile_k[:,
-                                                                        None]
-            w_tile = tl.load(w_proj_ptrs, mask=mask_h[None, :],
-                             other=0.0).to(tl.float32)
+            w_proj_ptrs = w_proj_ptr + offs_h[None, :] * DIM_D + tile_k[:, None]
+            w_tile = tl.load(w_proj_ptrs, mask=mask_h[None, :], other=0.0).to(tl.float32)
 
             acc = tl.dot(z_tile, w_tile, acc, input_precision="tf32")
 
@@ -215,11 +223,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
 
     _global_cache: dict[tuple, dict] = {}
 
-    def __init__(self,
-                 D: int,
-                 H: int,
-                 tile_j: int = _TILE_J_DEFAULT,
-                 dtype: torch.dtype = torch.bfloat16):
+    def __init__(self, D: int, H: int, tile_j: int = _TILE_J_DEFAULT, dtype: torch.dtype = torch.bfloat16):
         self._dim_d = D
         self._num_heads = H
         self._tile_j = tile_j
@@ -234,18 +238,17 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
     def _ensure_compiled(self):
         if self._kernels:
             return
-        base_key = (self._dim_d, self._num_heads, self._tile_j, self._tile_k,
-                    self._heads_per_blk)
+        base_key = (self._dim_d, self._num_heads, self._tile_j, self._tile_k, self._heads_per_blk)
         dtypes = [self._dtype, torch.bfloat16, torch.float32]
-        common_kwargs = dict(
-            TILE_J=self._tile_j,
-            TILE_K=self._tile_k,
-            DIM_D=self._dim_d,
-            NUM_HEADS=self._num_heads,
-            HEADS_PER_BLK=self._heads_per_blk,
-            EPS=1e-5,
-            ELEMENTWISE_AFFINE=True,
-        )
+        common_kwargs = {
+            "TILE_J": self._tile_j,
+            "TILE_K": self._tile_k,
+            "DIM_D": self._dim_d,
+            "NUM_HEADS": self._num_heads,
+            "HEADS_PER_BLK": self._heads_per_blk,
+            "EPS": 1e-5,
+            "ELEMENTWISE_AFFINE": True,
+        }
 
         cached = FusedLNProjMoveaxisPad._global_cache.get(base_key)
         if cached:
@@ -269,8 +272,21 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         b_ln = torch.empty(D, dtype=dtype, device="cuda")
         w_proj = torch.empty(H, D, dtype=dtype, device="cuda")
         out = torch.empty(1, H, 2, tj, dtype=dtype, device="cuda")
-        return (z, w_ln, b_ln, w_proj, out, tj, tj, z.stride(0), z.stride(1),
-                z.stride(2), out.stride(0), out.stride(1), out.stride(2))
+        return (
+            z,
+            w_ln,
+            b_ln,
+            w_proj,
+            out,
+            tj,
+            tj,
+            z.stride(0),
+            z.stride(1),
+            z.stride(2),
+            out.stride(0),
+            out.stride(1),
+            out.stride(2),
+        )
 
     def __call__(
         self,

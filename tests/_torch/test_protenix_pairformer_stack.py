@@ -13,21 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """OSS equivalence tests for the Protenix pairformer stack."""
+
 import os
 from dataclasses import dataclass
 
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.layers.transformers.pairformer import \
-    PairformerModule
+from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
 from tensorrt_bionemo.configs import PairformerConfig
-from tensorrt_bionemo.models.protenix.convert import \
-    convert_pairformer_stack_torch
+from tensorrt_bionemo.models.protenix.convert import convert_pairformer_stack_torch
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import skip_if_cutedsl
-from tests.common.test_utils.protenix.ref_layers_from_oss import \
-    RefProtenixPairformerStackFromOSS
+from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixPairformerStackFromOSS
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -47,16 +45,18 @@ class Scenario:
 
 def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
     a, b = a.float(), b.float()
-    return (torch.sqrt(torch.mean(
-        (a - b)**2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
+    return (torch.sqrt(torch.mean((a - b) ** 2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dtype="float32"),
-    Scenario(dtype="bfloat16"),
-    Scenario(dtype="bfloat16", tri_backend="CuTeDSL", pair_backend="CuTeDSL"),
-],
-                         ids=["fp32", "bf16", "cutedsl"])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dtype="float32"),
+        Scenario(dtype="bfloat16"),
+        Scenario(dtype="bfloat16", tri_backend="CuTeDSL", pair_backend="CuTeDSL"),
+    ],
+    ids=["fp32", "bf16", "cutedsl"],
+)
 def test_protenix_pairformer_stack(sc: Scenario):
     skip_if_cutedsl(sc.tri_backend)
     skip_if_cutedsl(sc.pair_backend)
@@ -66,9 +66,11 @@ def test_protenix_pairformer_stack(sc: Scenario):
     device = torch.device("cuda")
     torch_dtype = str_dtype_to_torch(sc.dtype)
 
-    ref = RefProtenixPairformerStackFromOSS.build(
-        n_blocks=sc.n_blocks, n_heads=sc.n_heads, c_z=sc.c_z,
-        c_s=sc.c_s).to(device=device, dtype=torch.float32).eval()
+    ref = (
+        RefProtenixPairformerStackFromOSS.build(n_blocks=sc.n_blocks, n_heads=sc.n_heads, c_z=sc.c_z, c_s=sc.c_s)
+        .to(device=device, dtype=torch.float32)
+        .eval()
+    )
 
     config = PairformerConfig(
         token_s=sc.c_s,
@@ -85,9 +87,7 @@ def test_protenix_pairformer_stack(sc: Scenario):
         pairwise_attention_backend=sc.pair_backend,
     )
     model = PairformerModule(config).to(device).eval()
-    converted = convert_pairformer_stack_torch(config,
-                                               ref.state_dict(),
-                                               prefix="")
+    converted = convert_pairformer_stack_torch(config, ref.state_dict(), prefix="")
     missing, unexpected = model.load_state_dict(converted, strict=False)
     assert not missing and not unexpected, (missing, unexpected)
 
@@ -99,8 +99,7 @@ def test_protenix_pairformer_stack(sc: Scenario):
 
     with torch.inference_mode():
         ref_s, ref_z = ref(s, z, pair_mask=None)
-        out_s, out_z = model(s.to(torch_dtype), z.to(torch_dtype),
-                             mask.to(torch_dtype), pair_mask.to(torch_dtype))
+        out_s, out_z = model(s.to(torch_dtype), z.to(torch_dtype), mask.to(torch_dtype), pair_mask.to(torch_dtype))
 
     tol = 5e-3 if torch_dtype == torch.float32 else 8e-2
     r_s, r_z = _rmse_ratio(out_s, ref_s), _rmse_ratio(out_z, ref_z)

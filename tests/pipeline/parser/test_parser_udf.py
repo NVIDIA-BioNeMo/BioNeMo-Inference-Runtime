@@ -1,20 +1,30 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import asyncio
-import sys
 from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer, Template
+from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
 from tensorrt_bionemo.pipeline.stages.parser_stage import ParserUDF
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 
 
 class TestParserUDFBasicParsing:
-
     @pytest.fixture
     def parser_udf(self):
         return ParserUDF(
@@ -29,10 +39,7 @@ class TestParserUDFBasicParsing:
         return "ACDEFGHIKLMNPQRSTVWY"
 
     def test_parse_single_polymer_with_sequence_only(self, parser_udf, sample_sequence):
-        request = InputRequest(
-            input_id="test_seq",
-            polymers=[Polymer(chain_id="A", sequence=sample_sequence)]
-        )
+        request = InputRequest(input_id="test_seq", polymers=[Polymer(chain_id="A", sequence=sample_sequence)])
         row = {"record": dict(request), "__record_id": "test"}
 
         result = asyncio.run(parser_udf.udf_for_item(row))
@@ -42,19 +49,12 @@ class TestParserUDFBasicParsing:
         assert len(result["parsed"]["polymers"]) == 1
         assert result["parsed"]["polymers"][0]["sequence"] == sample_sequence
 
-    @pytest.mark.skipif(
-        not (SAMPLES_DIR / "msas" / "T1031.a3m").exists(),
-        reason="Sample MSA file not found"
-    )
+    @pytest.mark.skipif(not (SAMPLES_DIR / "msas" / "T1031.a3m").exists(), reason="Sample MSA file not found")
     def test_parse_single_polymer_with_msa_file(self, parser_udf, sample_sequence):
         a3m_path = str(SAMPLES_DIR / "msas" / "T1031.a3m")
         request = InputRequest(
             input_id="test_msa",
-            polymers=[Polymer(
-                chain_id="A",
-                sequence=sample_sequence,
-                msas=[MSARecord(path=a3m_path)]
-            )]
+            polymers=[Polymer(chain_id="A", sequence=sample_sequence, msas=[MSARecord(path=a3m_path)])],
         )
         row = {"record": dict(request), "__record_id": "test"}
 
@@ -74,11 +74,7 @@ class TestParserUDFBasicParsing:
         a3m_content = f">query\n{sample_sequence}\n>hit1\n{sample_sequence}\n"
         request = InputRequest(
             input_id="test_msa_content",
-            polymers=[Polymer(
-                chain_id="A",
-                sequence=sample_sequence,
-                msas=[MSARecord(content=a3m_content)]
-            )]
+            polymers=[Polymer(chain_id="A", sequence=sample_sequence, msas=[MSARecord(content=a3m_content)])],
         )
         row = {"record": dict(request), "__record_id": "test"}
 
@@ -103,7 +99,7 @@ class TestParserUDFBasicParsing:
             polymers=[
                 Polymer(chain_id="A", sequence="ACDEFGHIKL"),
                 Polymer(chain_id="B", sequence="MNPQRSTVWY"),
-            ]
+            ],
         )
         row = {"record": dict(request), "__record_id": "test"}
 
@@ -121,7 +117,7 @@ class TestParserUDFBasicParsing:
                 Polymer(chain_id="X", sequence="ACDEF"),
                 Polymer(chain_id="Y", sequence="GHIKL"),
                 Polymer(chain_id="Z", sequence="MNPQR"),
-            ]
+            ],
         )
         row = {"record": dict(request), "__record_id": "test"}
 
@@ -133,7 +129,6 @@ class TestParserUDFBasicParsing:
 
 
 class TestParserUDFEdgeCases:
-
     @pytest.fixture
     def parser_udf(self):
         return ParserUDF(
@@ -153,10 +148,7 @@ class TestParserUDFEdgeCases:
         assert result["parsed"]["polymers"] == []
 
     def test_parse_polymer_without_msas(self, parser_udf):
-        request = InputRequest(
-            input_id="no_msa",
-            polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", msas=None)]
-        )
+        request = InputRequest(input_id="no_msa", polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", msas=None)])
         row = {"record": dict(request), "__record_id": "test"}
 
         result = asyncio.run(parser_udf.udf_for_item(row))
@@ -167,8 +159,7 @@ class TestParserUDFEdgeCases:
 
     def test_parse_polymer_without_templates(self, parser_udf):
         request = InputRequest(
-            input_id="no_template",
-            polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", templates=None)]
+            input_id="no_template", polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", templates=None)]
         )
         row = {"record": dict(request), "__record_id": "test"}
 
@@ -180,8 +171,7 @@ class TestParserUDFEdgeCases:
 
     def test_parse_polymer_with_empty_msas_list(self, parser_udf):
         request = InputRequest(
-            input_id="empty_msa_list",
-            polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", msas=[])]
+            input_id="empty_msa_list", polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", msas=[])]
         )
         row = {"record": dict(request), "__record_id": "test"}
 
@@ -193,7 +183,6 @@ class TestParserUDFEdgeCases:
 
 
 class TestParserUDFErrorHandling:
-
     @pytest.fixture
     def parser_udf(self):
         return ParserUDF(
@@ -214,11 +203,9 @@ class TestParserUDFErrorHandling:
     def test_invalid_msa_path_raises_error(self, parser_udf):
         request = InputRequest(
             input_id="bad_path",
-            polymers=[Polymer(
-                chain_id="A",
-                sequence="ACDEFGHIKL",
-                msas=[MSARecord(path="/nonexistent/path/to/file.a3m")]
-            )]
+            polymers=[
+                Polymer(chain_id="A", sequence="ACDEFGHIKL", msas=[MSARecord(path="/nonexistent/path/to/file.a3m")])
+            ],
         )
         row = {"record": dict(request), "__record_id": "test"}
 
@@ -227,7 +214,6 @@ class TestParserUDFErrorHandling:
 
 
 class TestParserUDFContentExtraction:
-
     @pytest.fixture
     def parser_udf(self):
         return ParserUDF(
@@ -241,17 +227,12 @@ class TestParserUDFContentExtraction:
         """Test that MSA content is correctly parsed into MSAParsed."""
         content = ">seq1\nACDEF\n>seq2\nGHIKL\n"
         request = InputRequest(
-            input_id="test",
-            polymers=[Polymer(
-                chain_id="A",
-                sequence="ACDEF",
-                msas=[MSARecord(content=content)]
-            )]
+            input_id="test", polymers=[Polymer(chain_id="A", sequence="ACDEF", msas=[MSARecord(content=content)])]
         )
         row = {"record": dict(request), "__record_id": "test"}
 
         result = asyncio.run(parser_udf.udf_for_item(row))
-        
+
         # MSAParsed is MSAParsed with sequences, raw, descriptions
         msa_parsed = result["parsed"]["polymers"][0]["msas"][0]
         assert isinstance(msa_parsed, dict)
@@ -269,16 +250,14 @@ class TestParserUDFContentExtraction:
         content = ">seq1\nACDEF\n"
         request = InputRequest(
             input_id="test",
-            polymers=[Polymer(
-                chain_id="A",
-                sequence="ACDEF",
-                msas=[{"content": content, "path": None, "format": "a3m"}]
-            )]
+            polymers=[
+                Polymer(chain_id="A", sequence="ACDEF", msas=[{"content": content, "path": None, "format": "a3m"}])
+            ],
         )
         row = {"record": dict(request), "__record_id": "test"}
 
         result = asyncio.run(parser_udf.udf_for_item(row))
-        
+
         # MSAParsed is MSAParsed with sequences, raw, descriptions
         msa_parsed = result["parsed"]["polymers"][0]["msas"][0]
         assert isinstance(msa_parsed, dict)
@@ -286,25 +265,17 @@ class TestParserUDFContentExtraction:
         assert msa_parsed["sequences"][0] == "ACDEF"
         assert msa_parsed["descriptions"][0] == "seq1"
 
-    @pytest.mark.skipif(
-        not (SAMPLES_DIR / "msas" / "T1031.a3m").exists(),
-        reason="Sample MSA file not found"
-    )
+    @pytest.mark.skipif(not (SAMPLES_DIR / "msas" / "T1031.a3m").exists(), reason="Sample MSA file not found")
     def test_parse_msa_content_from_file_path(self, parser_udf):
         """Test that MSA content is loaded and parsed from file path."""
         a3m_path = str(SAMPLES_DIR / "msas" / "T1031.a3m")
         request = InputRequest(
-            input_id="test",
-            polymers=[Polymer(
-                chain_id="A",
-                sequence="ACDEF",
-                msas=[MSARecord(path=a3m_path)]
-            )]
+            input_id="test", polymers=[Polymer(chain_id="A", sequence="ACDEF", msas=[MSARecord(path=a3m_path)])]
         )
         row = {"record": dict(request), "__record_id": "test"}
 
         result = asyncio.run(parser_udf.udf_for_item(row))
-        
+
         # MSAParsed is MSAParsed with sequences, raw, descriptions
         msa_parsed = result["parsed"]["polymers"][0]["msas"][0]
         assert isinstance(msa_parsed, dict)
@@ -312,5 +283,3 @@ class TestParserUDFContentExtraction:
         assert len(msa_parsed["sequences"]) > 0
         assert msa_parsed["sequences"][0] is not None
         assert len(msa_parsed["sequences"][0]) > 0
-
-

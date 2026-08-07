@@ -16,7 +16,8 @@ import asyncio
 import gc
 import time
 import traceback
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Type
+from collections.abc import AsyncIterator
+from typing import Any
 
 import torch
 from pydantic import model_validator
@@ -25,8 +26,7 @@ from tensorrt_bionemo.configs.base import DeviceConfig, EngineConfig
 from tensorrt_bionemo.data.schemas import FoldingOutput
 from tensorrt_bionemo.logger import logger
 from tensorrt_bionemo.pipeline.engine import FoldingEngine
-from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
-                                                   StatefulStageUDF)
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
 from tensorrt_bionemo.pipeline.stages.configs import ParallelismMode
 from tensorrt_bionemo.registry import get_model_class, get_postprocessor
 
@@ -34,18 +34,19 @@ from tensorrt_bionemo.registry import get_model_class, get_postprocessor
 class FoldingPredictionError(RuntimeError):
     """Raised when model prediction fails for a batch of records."""
 
-    def __init__(self, record_ids: List, cause: Exception):
+    def __init__(self, record_ids: list, cause: Exception):
         self.record_ids = record_ids
         super().__init__(f"Prediction failed for record_ids={record_ids}")
 
 
 class FoldingEngineWrapper:
-
-    def __init__(self,
-                 model: str,
-                 engine_kwargs: Dict[str, Any],
-                 max_pending_requests: int = -1,
-                 runtime_args: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        engine_kwargs: dict[str, Any],
+        max_pending_requests: int = -1,
+        runtime_args: dict[str, Any] | None = None,
+    ) -> None:
         model_class = get_model_class(model)
         model_config = engine_kwargs.get("config", None)
         if model_config is None:
@@ -56,16 +57,15 @@ class FoldingEngineWrapper:
         postprocessor_class = get_postprocessor(model)
         device_config = engine_kwargs.get("device", None) or DeviceConfig()
         profile_inference = engine_kwargs.get("profile_inference", False)
-        engine_config = EngineConfig(name=model,
-                                     model=model_config,
-                                     device=device_config,
-                                     accelerated=accelerated_configs,
-                                     postprocessor=postprocessor_config,
-                                     profile_inference=profile_inference)
-        self.engine = FoldingEngine(engine_config,
-                                    model_class,
-                                    postprocessor_class,
-                                    runtime_args=runtime_args)
+        engine_config = EngineConfig(
+            name=model,
+            model=model_config,
+            device=device_config,
+            accelerated=accelerated_configs,
+            postprocessor=postprocessor_config,
+            profile_inference=profile_inference,
+        )
+        self.engine = FoldingEngine(engine_config, model_class, postprocessor_class, runtime_args=runtime_args)
         self.model_config = model_config
         self.max_pending_requests = max_pending_requests
         self.is_cuda_device = device_config.device_type == "cuda"
@@ -78,10 +78,7 @@ class FoldingEngineWrapper:
         if self.is_cuda_device:
             torch.cuda.empty_cache()
 
-    async def predict_async(
-            self,
-            rows: List[Dict[str,
-                            Any]]) -> Tuple[List[FoldingOutput], List[float]]:
+    async def predict_async(self, rows: list[dict[str, Any]]) -> tuple[list[FoldingOutput], list[float]]:
         assert len(rows) == 1, "Currently, support len(rows) == 1."
         row = rows[0]
         t = time.perf_counter()
@@ -91,19 +88,18 @@ class FoldingEngineWrapper:
 
 
 class FoldingEngineUDF(StatefulStageUDF):
-
     def __init__(
         self,
         compute_by_rows: bool,
-        drop_keys: List[str],
-        expected_input_keys: List[str],
+        drop_keys: list[str],
+        expected_input_keys: list[str],
         update_row: bool,
         model: str,
-        engine_kwargs: Dict[str, Any],
-        max_pending_requests: Optional[int] = None,
+        engine_kwargs: dict[str, Any],
+        max_pending_requests: int | None = None,
         should_continue_on_error: bool = False,
         parallelism_mode: ParallelismMode = ParallelismMode.REPLICA,
-        runtime_args: Optional[Dict[str, Any]] = None,
+        runtime_args: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             compute_by_rows=compute_by_rows,
@@ -119,11 +115,12 @@ class FoldingEngineUDF(StatefulStageUDF):
             model=model,
             engine_kwargs=engine_kwargs,
             max_pending_requests=max_pending_requests,
-            runtime_args=runtime_args)
+            runtime_args=runtime_args,
+        )
 
-    def _create_success_response(self, row: Dict[str, Any], output: Dict[str,
-                                                                         Any],
-                                 time_taken: float) -> Dict[str, Any]:
+    def _create_success_response(
+        self, row: dict[str, Any], output: dict[str, Any], time_taken: float
+    ) -> dict[str, Any]:
         """Create a successful prediction response."""
         resp = {
             **output,
@@ -137,13 +134,11 @@ class FoldingEngineUDF(StatefulStageUDF):
         # This stage uses update_row=False (replaces the row), so explicitly carry
         # the upstream per-stage timing forward and tag the engine's own time (always on).
         _timing = dict(row.get("stage_timing_s") or {})
-        _timing["FoldingEngine"] = output.get("model_inference_time",
-                                              time_taken)
+        _timing["FoldingEngine"] = output.get("model_inference_time", time_taken)
         resp["stage_timing_s"] = _timing
         return resp
 
-    def _create_error_response(self, row: Dict[str, Any], error_msg: str,
-                               traceback_str: str) -> Dict[str, Any]:
+    def _create_error_response(self, row: dict[str, Any], error_msg: str, traceback_str: str) -> dict[str, Any]:
         """Create an error response for a failed prediction."""
         return {
             "__inference_error__": {
@@ -153,8 +148,7 @@ class FoldingEngineUDF(StatefulStageUDF):
             self.IDX_IN_BATCH_COLUMN: row[self.IDX_IN_BATCH_COLUMN],
         }
 
-    async def _predict_with_error_handling(
-            self, sub_batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def _predict_with_error_handling(self, sub_batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Generate output for a sub-batch, catching errors if should_continue_on_error is set.
 
         In the future the folding flow should be:
@@ -177,8 +171,8 @@ class FoldingEngineUDF(StatefulStageUDF):
         try:
             outputs, time_takens = await self.folding.predict_async(sub_batch)
             return [
-                self._create_success_response(row, output, time_taken) for row,
-                output, time_taken in zip(sub_batch, outputs, time_takens)
+                self._create_success_response(row, output, time_taken)
+                for row, output, time_taken in zip(sub_batch, outputs, time_takens, strict=False)
             ]
         except Exception as e:
             traceback_str = traceback.format_exc()
@@ -186,22 +180,14 @@ class FoldingEngineUDF(StatefulStageUDF):
             logger.error(traceback_str)
             logger.error("================================================")
             if not self.should_continue_on_error:
-                record_ids = [
-                    row.get(self.RECORD_ID_IN_BATCH_COLUMN)
-                    for row in sub_batch
-                ]
+                record_ids = [row.get(self.RECORD_ID_IN_BATCH_COLUMN) for row in sub_batch]
                 raise FoldingPredictionError(record_ids, e) from e
 
             self.folding.cleanup()
             error_msg = f"{type(e).__name__}: {str(e)}"
-            return [
-                self._create_error_response(row, error_msg, traceback_str)
-                for row in sub_batch
-            ]
+            return [self._create_error_response(row, error_msg, traceback_str) for row in sub_batch]
 
-    async def udf_for_rows(
-            self, batch: List[Dict[str,
-                                   Any]]) -> AsyncIterator[Dict[str, Any]]:
+    async def udf_for_rows(self, batch: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
         """
         For each row in the batch, predict the folding output.
         We don't use the udf_for_item function, the model will handle the batching.
@@ -215,12 +201,11 @@ class FoldingEngineUDF(StatefulStageUDF):
             start_idx = i * max_batch_size
             end_idx = min(start_idx + max_batch_size, len(batch))
             sub_batch = batch[start_idx:end_idx]
-            task = asyncio.create_task(
-                self._predict_with_error_handling(sub_batch))
+            task = asyncio.create_task(self._predict_with_error_handling(sub_batch))
             tasks.append(task)
 
         for task in asyncio.as_completed(tasks):
-            results: List[Dict[str, Any]] = await task
+            results: list[dict[str, Any]] = await task
             for item in results:
                 yield item
 
@@ -237,7 +222,7 @@ class FoldingEngineStage(StatefulStage):
     A stage that runs folding engine.
     """
 
-    fn: Type[StatefulStageUDF] = FoldingEngineUDF
+    fn: type[StatefulStageUDF] = FoldingEngineUDF
     update_row: bool = False
 
     @model_validator(mode="before")

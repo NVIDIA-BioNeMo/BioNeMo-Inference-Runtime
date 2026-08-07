@@ -16,11 +16,7 @@
 import torch
 
 
-def mismatch_percentage(a: torch.Tensor,
-                        b: torch.Tensor,
-                        *,
-                        atol: float = 1e-8,
-                        rtol: float = 1e-5) -> float:
+def mismatch_percentage(a: torch.Tensor, b: torch.Tensor, *, atol: float = 1e-8, rtol: float = 1e-5) -> float:
     if a.shape != b.shape:
         raise ValueError("Shape mismatch")
 

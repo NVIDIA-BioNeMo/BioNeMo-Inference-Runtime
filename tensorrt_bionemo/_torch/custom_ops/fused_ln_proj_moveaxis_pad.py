@@ -29,13 +29,10 @@ Usage sites:
     - ``TriangleAttentionNode`` (pair bias path in Pairformer / Evoformer)
 """
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import \
-    FusedLNProjMoveaxisPad as _TritonFusedLNProj
+from tensorrt_bionemo.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import FusedLNProjMoveaxisPad as _TritonFusedLNProj
 from tensorrt_bionemo.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
 
 
@@ -58,7 +55,7 @@ class LNProjMoveaxisPad(nn.Module):
     def __init__(self, D: int, H: int, dtype: torch.dtype = torch.bfloat16):
         super().__init__()
         self._moveaxis_pad = MoveaxisPad(H=H, dtype=dtype)
-        self._fused_kernel: Optional[_TritonFusedLNProj] = None
+        self._fused_kernel: _TritonFusedLNProj | None = None
         try:
             self._fused_kernel = _TritonFusedLNProj(D=D, H=H, dtype=dtype)
         except Exception:
@@ -68,10 +65,10 @@ class LNProjMoveaxisPad(nn.Module):
         self,
         z: torch.Tensor,
         ln_weight: torch.Tensor,
-        ln_bias: Optional[torch.Tensor],
+        ln_bias: torch.Tensor | None,
         proj_weight: torch.Tensor,
         pad_multiple: int = -1,
-        proj_z: Optional[nn.Module] = None,
+        proj_z: nn.Module | None = None,
     ) -> torch.Tensor:
         """Compute LN + Linear + moveaxis + pad.
 
@@ -89,21 +86,15 @@ class LNProjMoveaxisPad(nn.Module):
         Returns:
             ``[*, H, I, J_padded]`` contiguous tensor.
         """
-        use_fused = (self._fused_kernel is not None and z.is_contiguous()
-                     and ln_bias is not None and pad_multiple >= 0)
+        use_fused = self._fused_kernel is not None and z.is_contiguous() and ln_bias is not None and pad_multiple >= 0
 
         if use_fused:
-            return self._fused_kernel(z,
-                                      ln_weight,
-                                      ln_bias,
-                                      proj_weight,
-                                      multiple=pad_multiple)
+            return self._fused_kernel(z, ln_weight, ln_bias, proj_weight, multiple=pad_multiple)
 
         # Vanilla path
         if proj_z is not None:
             pair_bias = proj_z(z)
         else:
-            pair_bias = torch.nn.functional.layer_norm(z, [z.shape[-1]],
-                                                       ln_weight, ln_bias)
+            pair_bias = torch.nn.functional.layer_norm(z, [z.shape[-1]], ln_weight, ln_bias)
             pair_bias = torch.nn.functional.linear(pair_bias, proj_weight)
         return self._moveaxis_pad(pair_bias, multiple=pad_multiple)

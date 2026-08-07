@@ -14,12 +14,12 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class ParallelismMode(str, Enum):
+class ParallelismMode(str, Enum):  # noqa: UP042  # StrEnum changes str()/format() behavior; keep str+Enum
     """Engine stage parallelism mode."""
 
     REPLICA = "replica"
@@ -27,36 +27,27 @@ class ParallelismMode(str, Enum):
 
 
 class _StageConfigBase(BaseModel):
-    enabled: bool = Field(default=True,
-                          description="Whether this stage is enabled.")
+    enabled: bool = Field(default=True, description="Whether this stage is enabled.")
     # Optional overrides; processor-level defaults still apply
-    batch_size: Optional[int] = Field(default=None,
-                                      description="Rows per batch.")
-    compute: Optional[Union[int, Tuple[int, int]]] = Field(
-        default=None, description="Actor pool size or range for this stage.")
-    runtime_env: Optional[Dict[str, Any]] = Field(
-        default=None, description="Optional runtime env for this stage.")
-    num_cpus: Optional[float] = Field(
+    batch_size: int | None = Field(default=None, description="Rows per batch.")
+    compute: int | tuple[int, int] | None = Field(default=None, description="Actor pool size or range for this stage.")
+    runtime_env: dict[str, Any] | None = Field(default=None, description="Optional runtime env for this stage.")
+    num_cpus: float | None = Field(
         default=None,
-        description=
-        "Number of CPUs to reserve for each map worker in this stage.",
+        description="Number of CPUs to reserve for each map worker in this stage.",
     )
-    memory: Optional[float] = Field(
+    memory: float | None = Field(
         default=None,
-        description=
-        "Heap memory in bytes to reserve for each map worker in this stage.",
+        description="Heap memory in bytes to reserve for each map worker in this stage.",
     )
     compute_by_rows: bool = Field(
         default=True,
         description="Convert to rows mode and compute.",
     )
-    drop_keys: Optional[List[str]] = Field(
+    drop_keys: list[str] | None = Field(
         default=None,
         description="The keys to drop from the output.",
     )
-
-
-T = TypeVar("T", bound="_StageConfigBase")
 
 
 class ParserStageConfig(_StageConfigBase):
@@ -68,18 +59,18 @@ class TokenizerStageConfig(_StageConfigBase):
 
 
 class FeatureGeneratorStageConfig(_StageConfigBase):
-    init_context: Optional[dict[str, Any]] = Field(
+    init_context: dict[str, Any] | None = Field(
         default=None,
         description="The context to initialize the feature generator with.",
     )
 
 
 class WriterStageConfig(_StageConfigBase):
-    output_path: Optional[str] = Field(
+    output_path: str | None = Field(
         default=None,
         description="The path to write the output to.",
     )
-    format: Optional[Union[str, List[str]]] = Field(
+    format: str | list[str] | None = Field(
         default=None,
         description='Output format(s). A single string (e.g. "pdb") or a '
         'list of strings (e.g. ["pdb", "cif"]) to write multiple '
@@ -98,10 +89,10 @@ class EngineStageConfig(_StageConfigBase):
     )
 
 
-def resolve_stage_config(
-    stage_cfg_value: Union[bool, Dict[str, Any], _StageConfigBase],
-    stage_config_cls: Type[T],
-    processor_defaults: Optional[Dict[str, Any]] = None,
+def resolve_stage_config[T: _StageConfigBase](
+    stage_cfg_value: bool | dict[str, Any] | _StageConfigBase,
+    stage_config_cls: type[T],
+    processor_defaults: dict[str, Any] | None = None,
 ) -> T:
     """Resolve a stage config value (bool | dict | StageConfig) into a typed StageConfig.
 
@@ -118,8 +109,7 @@ def resolve_stage_config(
 
     # If already a typed config, create a copy to avoid mutating the input
     if isinstance(stage_cfg_value, stage_config_cls):
-        resolved = stage_config_cls.model_validate(
-            stage_cfg_value.model_dump())
+        resolved = stage_config_cls.model_validate(stage_cfg_value.model_dump())
     # If bool, create minimal config with enabled flag
     elif isinstance(stage_cfg_value, bool):
         resolved = stage_config_cls(enabled=stage_cfg_value)
@@ -130,7 +120,8 @@ def resolve_stage_config(
         raise TypeError(
             f"Unsupported type for stage config: {type(stage_cfg_value).__name__}. "
             f"Expected bool, dict, or {stage_config_cls.__name__} instance. "
-            f"Got: {stage_cfg_value}")
+            f"Got: {stage_cfg_value}"
+        )
 
     # Merge processor defaults for fields not explicitly set
     default_fields = ["batch_size", "compute", "runtime_env", "model_source"]
@@ -138,8 +129,7 @@ def resolve_stage_config(
         # Skip if field doesn't exist on this config class (e.g., model_source only on some stages)
         if not hasattr(resolved, field_name):
             continue
-        if (getattr(resolved, field_name, None) is None
-                and field_name in processor_defaults):
+        if getattr(resolved, field_name, None) is None and field_name in processor_defaults:
             setattr(resolved, field_name, processor_defaults[field_name])
 
     return resolved

@@ -14,53 +14,45 @@
 # limitations under the License.
 
 from collections import OrderedDict
-from typing import Callable
+from collections.abc import Callable
 
-from tensorrt_bionemo.pipeline.base import (ContextGeneratorSpec,
-                                            TokenizerBase, TransformSpec,
-                                            dict_context_merger)
+from tensorrt_bionemo.pipeline.base import ContextGeneratorSpec, TokenizerBase, TransformSpec, dict_context_merger
 
 from .feature_context import FeatureContextGenerator
-from .transforms import (CastTo64BitInts, CorrectMsaRestypes,
-                         FixTemplatesAatype, RandomlyReplaceMsaWithUnknown,
-                         SqueezeFeatures)
+from .transforms import (
+    CastTo64BitInts,
+    CorrectMsaRestypes,
+    FixTemplatesAatype,
+    RandomlyReplaceMsaWithUnknown,
+    SqueezeFeatures,
+)
 
 
 class Tokenizer(TokenizerBase):
-    context_generator_specs: OrderedDict[
-        str, ContextGeneratorSpec] = OrderedDict({
-            'primary':
-            ContextGeneratorSpec(name='primary',
-                                 generator=FeatureContextGenerator,
-                                 required_kwargs=['parsed'])
-        })
+    context_generator_specs: OrderedDict[str, ContextGeneratorSpec] = OrderedDict(
+        {"primary": ContextGeneratorSpec(name="primary", generator=FeatureContextGenerator, required_kwargs=["parsed"])}
+    )
 
     context_merger_func: Callable = dict_context_merger
 
     transform_specs: list[TransformSpec] = [
-        TransformSpec(name='cast_to_64_bit_ints', transform=CastTo64BitInts),
-        TransformSpec(name='correct_msa_restypes',
-                      transform=CorrectMsaRestypes),
-        TransformSpec(name='squeeze_features', transform=SqueezeFeatures),
-        TransformSpec(name='randomly_replace_msa_with_unknown',
-                      transform=RandomlyReplaceMsaWithUnknown,
-                      kwargs={'replace_proportion': 0.0}),
-        TransformSpec(name='fix_templates_aatype',
-                      transform=FixTemplatesAatype),
+        TransformSpec(name="cast_to_64_bit_ints", transform=CastTo64BitInts),
+        TransformSpec(name="correct_msa_restypes", transform=CorrectMsaRestypes),
+        TransformSpec(name="squeeze_features", transform=SqueezeFeatures),
+        TransformSpec(
+            name="randomly_replace_msa_with_unknown",
+            transform=RandomlyReplaceMsaWithUnknown,
+            kwargs={"replace_proportion": 0.0},
+        ),
+        TransformSpec(name="fix_templates_aatype", transform=FixTemplatesAatype),
     ]
 
 
 class MultimerTokenizer(TokenizerBase):
-    context_generator_specs: OrderedDict[
-        str, ContextGeneratorSpec] = OrderedDict({
-            'primary':
-            ContextGeneratorSpec(name='primary',
-                                 generator=FeatureContextGenerator,
-                                 required_kwargs=['parsed'])
-        })
+    context_generator_specs: OrderedDict[str, ContextGeneratorSpec] = OrderedDict(
+        {"primary": ContextGeneratorSpec(name="primary", generator=FeatureContextGenerator, required_kwargs=["parsed"])}
+    )
 
     context_merger_func: Callable = dict_context_merger
 
-    transform_specs: list[TransformSpec] = [
-        TransformSpec(name='cast_to_64_bit_ints', transform=CastTo64BitInts)
-    ]
+    transform_specs: list[TransformSpec] = [TransformSpec(name="cast_to_64_bit_ints", transform=CastTo64BitInts)]

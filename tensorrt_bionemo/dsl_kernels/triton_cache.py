@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Fast-launch utilities for pre-compiled Triton kernels.
@@ -81,10 +96,10 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-from typing import Any, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
-from .cache_base import (DiskCache, DriverLauncher, KernelCacheBase,
-                         make_driver_launcher)
+from .cache_base import DiskCache, DriverLauncher, KernelCacheBase, make_driver_launcher
 
 # ---------------------------------------------------------------------------
 # TRT-BioNemo Triton cache directory isolation
@@ -206,10 +221,7 @@ class CachedKernel:
 
     __slots__ = ("_kernel", "_stream", "_driver")
 
-    def __init__(self,
-                 compiled_kernel: Any,
-                 stream: torch.cuda.Stream | None = None,
-                 enable_driver: bool = True):
+    def __init__(self, compiled_kernel: Any, stream: torch.cuda.Stream | None = None, enable_driver: bool = True):
         self._kernel = compiled_kernel
         self._stream = stream or torch.cuda.current_stream()
         self._driver: DriverLauncher | None = None
@@ -223,11 +235,11 @@ class CachedKernel:
         if enable_driver:
             try:
                 from .cache_base import _HAS_CUDA_BINDINGS, _drv
+
                 cu_stream = None
                 if _HAS_CUDA_BINDINGS:
                     cu_stream = _drv.CUstream(self._stream.cuda_stream)
-                self._driver = make_driver_launcher(compiled_kernel,
-                                                    cu_stream=cu_stream)
+                self._driver = make_driver_launcher(compiled_kernel, cu_stream=cu_stream)
             except Exception:
                 self._driver = None
 
@@ -264,8 +276,7 @@ class CachedKernel:
         # and races with the surrounding torch ops.
         stream = torch.cuda.current_stream().cuda_stream
         lm = kernel.launch_metadata(grid, stream, *args)
-        kernel.run(gx, gy, gz, stream, kernel.function, kernel.packed_metadata,
-                   lm, ENTER_HOOK, EXIT_HOOK, *args)
+        kernel.run(gx, gy, gz, stream, kernel.function, kernel.packed_metadata, lm, ENTER_HOOK, EXIT_HOOK, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +307,8 @@ def _triton_cache_was_cold() -> bool:
             logger.info(
                 "Triton disk cache is cold (%s) — kernel compilations "
                 "will use subprocess to avoid in-process degradation",
-                cache_dir)
+                cache_dir,
+            )
     return _was_cold
 
 
@@ -304,7 +316,7 @@ def _triton_cache_was_cold() -> bool:
 # Subprocess compilation
 # ---------------------------------------------------------------------------
 
-_SUBPROCESS_SCRIPT = textwrap.dedent('''\
+_SUBPROCESS_SCRIPT = textwrap.dedent("""\
 import json, os, sys
 
 with open(sys.argv[1]) as _f:
@@ -333,7 +345,7 @@ for dtype_str in spec["dtypes"]:
     jit_fn[grid](*args, **ckw)
 
 torch.cuda.synchronize()
-''')
+""")
 
 
 def _compile_in_subprocess(
@@ -367,9 +379,7 @@ def _compile_in_subprocess(
 
     spec_path = None
     try:
-        with tempfile.NamedTemporaryFile(mode='w',
-                                         suffix='.json',
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(spec, f)
             spec_path = f.name
 
@@ -380,12 +390,14 @@ def _compile_in_subprocess(
             timeout=120,
         )
         if result.returncode != 0:
-            logger.warning("Subprocess compile failed for %s.%s: %s",
-                           jit_fn.fn.__module__, jit_fn.fn.__name__,
-                           result.stderr[-500:])
+            logger.warning(
+                "Subprocess compile failed for %s.%s: %s",
+                jit_fn.fn.__module__,
+                jit_fn.fn.__name__,
+                result.stderr[-500:],
+            )
     except Exception as e:
-        logger.warning("Subprocess compile error for %s: %s",
-                       jit_fn.fn.__name__, e)
+        logger.warning("Subprocess compile error for %s: %s", jit_fn.fn.__name__, e)
     finally:
         if spec_path:
             try:
@@ -406,8 +418,7 @@ def _looks_like_compiled_kernel(obj: Any) -> bool:
     ``.packed_metadata`` and call ``.run()``; if all three are present the
     object the launch returned is the compiled kernel we want.
     """
-    return (obj is not None and hasattr(obj, "function")
-            and hasattr(obj, "packed_metadata") and hasattr(obj, "run"))
+    return obj is not None and hasattr(obj, "function") and hasattr(obj, "packed_metadata") and hasattr(obj, "run")
 
 
 class TritonKernelCache(KernelCacheBase):
@@ -462,8 +473,7 @@ class TritonKernelCache(KernelCacheBase):
         torch.cuda.synchronize()
 
         if not _looks_like_compiled_kernel(compiled):
-            compiled = self._lookup_compiled(jit_fn, dummy_args,
-                                             constexpr_kwargs)
+            compiled = self._lookup_compiled(jit_fn, dummy_args, constexpr_kwargs)
         return CachedKernel(compiled, stream=stream)
 
     @staticmethod
@@ -489,10 +499,8 @@ class TritonKernelCache(KernelCacheBase):
             if getattr(_knobs.runtime, "debug", False):
                 runtime_kwargs["debug"] = True
             if hasattr(_knobs.compilation, "instrumentation_mode"):
-                runtime_kwargs["instrumentation_mode"] = (
-                    _knobs.compilation.instrumentation_mode)
-        ba, spec, opts = binder(*dummy_args, **constexpr_kwargs,
-                                **runtime_kwargs)
+                runtime_kwargs["instrumentation_mode"] = _knobs.compilation.instrumentation_mode
+        ba, spec, opts = binder(*dummy_args, **constexpr_kwargs, **runtime_kwargs)
         key = compute_cache_key(key_cache, spec, opts)
         return cache[key]
 
@@ -502,7 +510,7 @@ class TritonKernelCache(KernelCacheBase):
         dtypes: Sequence[torch.dtype],
         make_dummy_args,
         *,
-        grid: tuple[int, ...] = (1, ),
+        grid: tuple[int, ...] = (1,),
         **constexpr_kwargs: Any,
     ) -> dict[torch.dtype, CachedKernel]:
         """Compile a kernel for multiple dtypes with cold-cache safety.
@@ -525,24 +533,19 @@ class TritonKernelCache(KernelCacheBase):
 
         if _triton_cache_was_cold():
             first_args = make_dummy_args(unique_dtypes[0])
-            _compile_in_subprocess(jit_fn, first_args, unique_dtypes, grid,
-                                   constexpr_kwargs)
+            _compile_in_subprocess(jit_fn, first_args, unique_dtypes, grid, constexpr_kwargs)
 
         stream = torch.cuda.current_stream()
         kernels = {}
         for dt in unique_dtypes:
             dummy_args = make_dummy_args(dt)
-            kernels[dt] = self.compile(jit_fn,
-                                       dummy_args,
-                                       grid,
-                                       constexpr_kwargs,
-                                       stream=stream)
+            kernels[dt] = self.compile(jit_fn, dummy_args, grid, constexpr_kwargs, stream=stream)
         return kernels
 
     def save_to_cache(self, key: tuple, artifact: Any) -> None:
         """No-op — Triton manages its own disk cache."""
 
-    def load_from_cache(self, key: tuple) -> Optional[CachedKernel]:
+    def load_from_cache(self, key: tuple) -> CachedKernel | None:
         """Not applicable for Triton (uses Triton's internal cache).
 
         Returns ``None`` — Triton's cache is accessed implicitly during

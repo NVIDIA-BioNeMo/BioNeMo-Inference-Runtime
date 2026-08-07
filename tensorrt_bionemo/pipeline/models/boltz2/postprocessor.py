@@ -21,38 +21,29 @@ variable per-token layout into the standard 37-atom-type scheme
 ``CIFWriter``) work without modification.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
 from pydantic import BaseModel
 
 from tensorrt_bionemo.data.schemas import FoldingOutput
-from tensorrt_bionemo.data.schemas.basic import (AtomTypes, MOL_TYPE_DNA,
-                                                  MOL_TYPE_LIGAND,
-                                                  MOL_TYPE_PROTEIN,
-                                                  MOL_TYPE_RNA)
+from tensorrt_bionemo.data.schemas.basic import MOL_TYPE_DNA, MOL_TYPE_LIGAND, MOL_TYPE_PROTEIN, MOL_TYPE_RNA, AtomTypes
 from tensorrt_bionemo.pipeline.base import PostProcessorBase
-from tensorrt_bionemo.pipeline.models.boltz2.const import (chain_type_ids,
-                                                            tokens)
+from tensorrt_bionemo.pipeline.models.boltz2.const import chain_type_ids, tokens
 
 NUM_ATOM_TYPES = len(AtomTypes.all_types())  # 37
 
-_ATOM_NAME_TO_IDX: dict[str, int] = {
-    at.name: i
-    for i, at in enumerate(AtomTypes.all_types())
-}
+_ATOM_NAME_TO_IDX: dict[str, int] = {at.name: i for i, at in enumerate(AtomTypes.all_types())}
 
 # Remap Boltz2's internal chain_type_ids (PROTEIN=0, DNA=1, RNA=2, NONPOLYMER=3)
 # to FoldingOutput's canonical mol-type convention (PROTEIN=0, RNA=1, DNA=2,
 # LIGAND=3). The two encodings differ in the DNA / RNA slot ordering, plus
 # Boltz2 calls ligands ``NONPOLYMER``.
-_BOLTZ_TO_FOLDING_MOL_TYPE = np.full(
-    max(chain_type_ids.values()) + 1, MOL_TYPE_PROTEIN, dtype=np.int64
-)
-_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["PROTEIN"]]    = MOL_TYPE_PROTEIN
-_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["RNA"]]        = MOL_TYPE_RNA
-_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["DNA"]]        = MOL_TYPE_DNA
+_BOLTZ_TO_FOLDING_MOL_TYPE = np.full(max(chain_type_ids.values()) + 1, MOL_TYPE_PROTEIN, dtype=np.int64)
+_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["PROTEIN"]] = MOL_TYPE_PROTEIN
+_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["RNA"]] = MOL_TYPE_RNA
+_BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["DNA"]] = MOL_TYPE_DNA
 _BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["NONPOLYMER"]] = MOL_TYPE_LIGAND
 
 # Map Boltz2 ``res_type`` argmax index → 3-letter residue name. Index 0 is
@@ -80,7 +71,7 @@ class PostProcessor(PostProcessorBase):
        confidence metrics as extra dict keys.
     """
 
-    def __init__(self, config: Optional[BaseModel] = None) -> None:
+    def __init__(self, config: BaseModel | None = None) -> None:
         super().__init__(config)
         if self.config is None:
             self.config = PostProcessorConfig()
@@ -103,20 +94,17 @@ class PostProcessor(PostProcessorBase):
         n_samples = int(_cpu(output["coords"]).shape[1])
 
         # --- Coordinates (best sample, flat) ------------------------------------
-        best_coords_flat = _cpu(
-            output["coords"])[0, best_idx].numpy()  # (N_atoms_pad, 3)
+        best_coords_flat = _cpu(output["coords"])[0, best_idx].numpy()  # (N_atoms_pad, 3)
 
         # --- Atom-to-token mapping ----------------------------------------------
-        atom_to_token = _cpu(
-            batch["atom_to_token"])[0]  # (N_atoms_pad, N_tokens_pad)
+        atom_to_token = _cpu(batch["atom_to_token"])[0]  # (N_atoms_pad, N_tokens_pad)
         token_per_atom = atom_to_token.argmax(dim=-1).numpy()  # (N_atoms_pad,)
 
         # --- Decode atom names --------------------------------------------------
         flat_atom_names = _decode_flat_atom_names(batch, atom_mask_bool)
 
         # --- Remap into 37-atom-type layout -------------------------------------
-        atom_positions = np.zeros((n_tokens, NUM_ATOM_TYPES, 3),
-                                  dtype=np.float32)
+        atom_positions = np.zeros((n_tokens, NUM_ATOM_TYPES, 3), dtype=np.float32)
         atom_mask_out = np.zeros((n_tokens, NUM_ATOM_TYPES), dtype=np.float32)
 
         for ai in np.where(atom_mask_bool)[0]:
@@ -131,20 +119,16 @@ class PostProcessor(PostProcessorBase):
             atom_mask_out[t, slot] = 1.0
 
         # --- Residue metadata from batch ----------------------------------------
-        res_type_onehot = _cpu(
-            batch["res_type"])[0].numpy()  # (N_tokens_pad, C)
-        residue_types = res_type_onehot[:n_tokens].argmax(axis=-1).astype(
-            np.int64)
+        res_type_onehot = _cpu(batch["res_type"])[0].numpy()  # (N_tokens_pad, C)
+        residue_types = res_type_onehot[:n_tokens].argmax(axis=-1).astype(np.int64)
         # Boltz2's residue_types index into the full 33-entry token table
         # (PAD, GAP, 20 amino acids, X, RA..RX, DA..DX). Writers built from
         # ``get_all_residue_types("boltz-2")`` have the same 33-entry
         # ``self.res_types`` so they can recover RA/DA/etc. natively.
         residue_types_raw = residue_types
 
-        residue_indices = _cpu(
-            batch["residue_index"])[0].numpy()[:n_tokens].astype(np.int64) + 1
-        chain_indices = _cpu(batch["asym_id"])[0].numpy()[:n_tokens].astype(
-            np.int64)
+        residue_indices = _cpu(batch["residue_index"])[0].numpy()[:n_tokens].astype(np.int64) + 1
+        chain_indices = _cpu(batch["asym_id"])[0].numpy()[:n_tokens].astype(np.int64)
 
         # --- Per-residue CCD codes + mol-type (canonical encoding) --------------
         # ``residue_names`` carries the 3-letter CCD code per residue so the
@@ -153,26 +137,21 @@ class PostProcessor(PostProcessorBase):
         # classify chains explicitly (protein/RNA/DNA/ligand) without relying
         # on the all-X heuristic.
         residue_names: list[str] = [
-            _BOLTZ_RES_NAMES[i] if 0 <= i < len(_BOLTZ_RES_NAMES) else "UNK"
-            for i in residue_types_raw.tolist()
+            _BOLTZ_RES_NAMES[i] if 0 <= i < len(_BOLTZ_RES_NAMES) else "UNK" for i in residue_types_raw.tolist()
         ]
         if "mol_type" in batch:
-            boltz_mol_types = _cpu(
-                batch["mol_type"])[0].numpy()[:n_tokens].astype(np.int64)
+            boltz_mol_types = _cpu(batch["mol_type"])[0].numpy()[:n_tokens].astype(np.int64)
             # Clamp out-of-range values (defensive — should not happen) before
             # indexing the remap table.
-            boltz_mol_types = np.clip(
-                boltz_mol_types, 0, len(_BOLTZ_TO_FOLDING_MOL_TYPE) - 1)
-            mol_types_out = _BOLTZ_TO_FOLDING_MOL_TYPE[boltz_mol_types].astype(
-                np.int64)
+            boltz_mol_types = np.clip(boltz_mol_types, 0, len(_BOLTZ_TO_FOLDING_MOL_TYPE) - 1)
+            mol_types_out = _BOLTZ_TO_FOLDING_MOL_TYPE[boltz_mol_types].astype(np.int64)
         else:
             mol_types_out = None
 
         # --- Per-token confidence (best sample) ---------------------------------
         plddt = _cpu(output["plddt"])[0, best_idx].numpy()[:n_tokens]
 
-        b_factors = np.repeat(plddt[:, None], NUM_ATOM_TYPES,
-                              axis=-1) * atom_mask_out
+        b_factors = np.repeat(plddt[:, None], NUM_ATOM_TYPES, axis=-1) * atom_mask_out
 
         # --- PAE / PDE ----------------------------------------------------------
         pae = _extract_pair_matrix(output, "pae", best_idx, n_tokens)
@@ -200,8 +179,7 @@ class PostProcessor(PostProcessorBase):
         )
 
         # --- Boltz2-specific extras ---------------------------------------------
-        result["confidence_score"] = _scalar(output, "confidence_score",
-                                             best_idx)
+        result["confidence_score"] = _scalar(output, "confidence_score", best_idx)
         result["complex_plddt"] = _scalar(output, "complex_plddt", best_idx)
         result["complex_iplddt"] = _scalar(output, "complex_iplddt", best_idx)
         result["complex_pde"] = _scalar(output, "complex_pde", best_idx)
@@ -220,8 +198,7 @@ class PostProcessor(PostProcessorBase):
             for c2, val in inner.items():
                 if isinstance(val, torch.Tensor):
                     v = val.cpu().squeeze()
-                    pair_chains_iptm[k1][str(c2)] = float(
-                        v[best_idx] if v.dim() > 0 else v)
+                    pair_chains_iptm[k1][str(c2)] = float(v[best_idx] if v.dim() > 0 else v)
                 else:
                     pair_chains_iptm[k1][str(c2)] = float(val)
         result["pair_chains_iptm"] = pair_chains_iptm
@@ -261,7 +238,7 @@ def _extract_pair_matrix(
     key: str,
     best_idx: int,
     n_tokens: int,
-) -> Optional[np.ndarray]:
+) -> np.ndarray | None:
     """Extract a (N_tokens, N_tokens) pairwise matrix for the best sample."""
     raw = output.get(key)
     if raw is None:

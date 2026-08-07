@@ -1,9 +1,27 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from collections import OrderedDict
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from tensorrt_bionemo.pipeline.stages.base import StatefulStage
+
+if TYPE_CHECKING:
+    from ray.data import Dataset
 
 
 class ProcessorConfig(BaseModel):
@@ -11,19 +29,18 @@ class ProcessorConfig(BaseModel):
 
     batch_size: int = Field(
         default=1,
-        description=
-        "Large batch sizes are likely to saturate the compute resources "
+        description="Large batch sizes are likely to saturate the compute resources "
         "and could achieve higher throughput. On the other hand, small batch sizes "
         "are more fault-tolerant and could reduce bubbles in the data pipeline. "
         "You can tune the batch size to balance the throughput and fault-tolerance "
         "based on your use case. Defaults to 1.",
     )
-    accelerator_type: Optional[str] = Field(
+    accelerator_type: str | None = Field(
         default=None,
         description="The accelerator type used by the LLM stage in a processor. "
         "Default to None, meaning that only the CPU will be used.",
     )
-    concurrency: Union[int, Tuple[int, int]] = Field(
+    concurrency: int | tuple[int, int] = Field(
         default=1,
         description="The number of workers for data parallelism. Default to 1. "
         "If ``concurrency`` is a ``tuple`` ``(m, n)``, Ray creates an autoscaling "
@@ -34,13 +51,13 @@ class ProcessorConfig(BaseModel):
     )
 
     model_source: str = Field(
-        description="The model source to use for the offline processing.", )
-    runtime_env: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description=
-        "The runtime environment to use for the offline processing.",
+        description="The model source to use for the offline processing.",
     )
-    max_pending_requests: Optional[int] = Field(
+    runtime_env: dict[str, Any] | None = Field(
+        default=None,
+        description="The runtime environment to use for the offline processing.",
+    )
+    max_pending_requests: int | None = Field(
         default=None,
         description="The maximum number of pending requests. If not specified, "
         "will use the default value from the backend engine.",
@@ -55,14 +72,13 @@ class ProcessorConfig(BaseModel):
     )
     should_continue_on_error: bool = Field(
         default=False,
-        description=
-        "If True, continue processing when inference fails for a row "
+        description="If True, continue processing when inference fails for a row "
         "instead of raising an exception. Failed rows will have a non-null "
         "'__inference_error__' column containing the error message, and other "
         "output columns will be None. Error rows bypass postprocess. "
         "If False (default), any inference error will raise an exception.",
     )
-    executor_backend: Optional[Literal["ray"]] = Field(
+    executor_backend: Literal["ray"] | None = Field(
         default=None,
         description="Execution backend. None = serial (no Ray, stages run "
         "sequentially in-process — useful for debugging and testing). "
@@ -70,10 +86,7 @@ class ProcessorConfig(BaseModel):
     )
 
     @field_validator("concurrency")
-    def validate_concurrency(
-        cls, concurrency: Union[int,
-                                Tuple[int,
-                                      int]]) -> Union[int, Tuple[int, int]]:
+    def validate_concurrency(cls, concurrency: int | tuple[int, int]) -> int | tuple[int, int]:
         """Validate that `concurrency` is either:
         - a positive int, or
         - a 2-tuple `(min, max)` of positive ints with `min <= max`.
@@ -101,8 +114,7 @@ class ProcessorConfig(BaseModel):
             )
         return concurrency
 
-    def get_concurrency(self,
-                        autoscaling_enabled: bool = True) -> Tuple[int, int]:
+    def get_concurrency(self, autoscaling_enabled: bool = True) -> tuple[int, int]:
         """Return a normalized `(min, max)` worker range from `self.concurrency`.
 
         Behavior:
@@ -144,7 +156,7 @@ class ProcessorConfig(BaseModel):
 class _ProcessorBase:
     """Shared bookkeeping for both serial and Ray processors."""
 
-    def __init__(self, config: ProcessorConfig, stages: List[StatefulStage]):
+    def __init__(self, config: ProcessorConfig, stages: list[StatefulStage]):
         self.config = config
         self.stages: OrderedDict[str, StatefulStage] = OrderedDict()
         for stage in stages:
@@ -153,12 +165,11 @@ class _ProcessorBase:
     def _append_stage(self, stage: StatefulStage) -> None:
         stage_name = type(stage).__name__
         if stage_name in self.stages:
-            num_same_type_stage = sum(1 for s in self.stages.values()
-                                      if type(s) is type(stage))
+            num_same_type_stage = sum(1 for s in self.stages.values() if type(s) is type(stage))
             stage_name = f"{stage_name}_{num_same_type_stage}"
         self.stages[stage_name] = stage
 
-    def list_stage_names(self) -> List[str]:
+    def list_stage_names(self) -> list[str]:
         return list(self.stages.keys())
 
     def get_stage_by_name(self, name: str) -> StatefulStage:
@@ -170,7 +181,7 @@ class _ProcessorBase:
 class Processor(_ProcessorBase):
     """Ray-based distributed processor."""
 
-    def __init__(self, config: ProcessorConfig, stages: List[StatefulStage]):
+    def __init__(self, config: ProcessorConfig, stages: list[StatefulStage]):
         import ray as _ray
         from ray.data import Dataset  # noqa: F401
 
@@ -182,8 +193,7 @@ class Processor(_ProcessorBase):
 
     def __call__(self, dataset: "Dataset") -> "Dataset":
         for stage in self.stages.values():
-            kwargs = stage.get_dataset_map_batches_kwargs(
-                batch_size=self.config.batch_size)
+            kwargs = stage.get_dataset_map_batches_kwargs(batch_size=self.config.batch_size)
             dataset = dataset.map_batches(stage.fn, **kwargs)
         return dataset
 
@@ -195,7 +205,7 @@ class SerialProcessor(_ProcessorBase):
     testing, and environments where Ray is not available.
     """
 
-    def __init__(self, config: ProcessorConfig, stages: List[StatefulStage]):
+    def __init__(self, config: ProcessorConfig, stages: list[StatefulStage]):
         super().__init__(config, stages)
         self._udf_instances: OrderedDict[str, Any] = OrderedDict()
 
@@ -204,13 +214,12 @@ class SerialProcessor(_ProcessorBase):
             ctor_kwargs = stage.fn_constructor_kwargs.copy()
             ctor_kwargs["compute_by_rows"] = stage.compute_by_rows
             ctor_kwargs["drop_keys"] = stage.drop_keys
-            ctor_kwargs["expected_input_keys"] = list(
-                stage.get_required_input_keys().keys())
+            ctor_kwargs["expected_input_keys"] = list(stage.get_required_input_keys().keys())
             ctor_kwargs["update_row"] = stage.update_row
             self._udf_instances[name] = stage.fn(**ctor_kwargs)
         return self._udf_instances[name]
 
-    def __call__(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def __call__(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Run all stages serially on the given records.
 
         Args:
@@ -222,7 +231,7 @@ class SerialProcessor(_ProcessorBase):
         """
         import asyncio
 
-        batch: Dict[str, Any] = self._rows_to_columnar(records)
+        batch: dict[str, Any] = self._rows_to_columnar(records)
 
         for name, stage in self.stages.items():
             udf = self._get_or_create_udf(name, stage)
@@ -231,8 +240,8 @@ class SerialProcessor(_ProcessorBase):
         return self._columnar_to_rows(batch)
 
     @staticmethod
-    async def _run_udf(udf, batch: Dict[str, Any]) -> Dict[str, Any]:
-        merged: Dict[str, Any] = {}
+    async def _run_udf(udf, batch: dict[str, Any]) -> dict[str, Any]:
+        merged: dict[str, Any] = {}
         async for chunk in udf(batch):
             for k, v in chunk.items():
                 if k in merged:
@@ -245,7 +254,7 @@ class SerialProcessor(_ProcessorBase):
         return merged
 
     @staticmethod
-    def _rows_to_columnar(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _rows_to_columnar(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not rows:
             return {}
         all_keys: set = set()
@@ -254,12 +263,12 @@ class SerialProcessor(_ProcessorBase):
         return {k: [row.get(k) for row in rows] for k in all_keys}
 
     @staticmethod
-    def _columnar_to_rows(batch: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _columnar_to_rows(batch: dict[str, Any]) -> list[dict[str, Any]]:
         if not batch:
             return []
         first_col = next(iter(batch.values()))
         n = len(first_col) if isinstance(first_col, list) else 1
-        rows: List[Dict[str, Any]] = [{} for _ in range(n)]
+        rows: list[dict[str, Any]] = [{} for _ in range(n)]
         for k, vals in batch.items():
             if not isinstance(vals, list):
                 vals = [vals]

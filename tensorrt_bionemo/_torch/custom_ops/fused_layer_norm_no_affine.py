@@ -18,6 +18,7 @@ Used by the mega-GEMM precomputed bias path in OpenFold3DiffusionTransformer
 where per-layer LN γ is fused into the projection weight matrix, leaving only
 the normalization step: ``(x - mean) / sqrt(var + eps)``.
 """
+
 import torch
 import triton
 import triton.language as tl
@@ -59,8 +60,7 @@ _TORCH_TO_TL_DTYPE = {
 }
 
 
-def fused_layer_norm_no_affine(z: torch.Tensor,
-                               eps: float = 1e-5) -> torch.Tensor:
+def fused_layer_norm_no_affine(z: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
     """Single-kernel LayerNorm without γ/β.
 
     Reads input → computes stats in f32 → normalizes → writes back in the
@@ -77,8 +77,7 @@ def fused_layer_norm_no_affine(z: torch.Tensor,
     """
     tl_dtype = _TORCH_TO_TL_DTYPE.get(z.dtype)
     if tl_dtype is None:
-        raise ValueError(f"Unsupported dtype {z.dtype}; expected one of "
-                         f"{list(_TORCH_TO_TL_DTYPE.keys())}")
+        raise ValueError(f"Unsupported dtype {z.dtype}; expected one of {list(_TORCH_TO_TL_DTYPE.keys())}")
 
     z = z.contiguous()
     D = z.shape[-1]
@@ -87,7 +86,7 @@ def fused_layer_norm_no_affine(z: torch.Tensor,
     out = torch.empty_like(flat)
 
     BLOCK_D = triton.next_power_of_2(D)
-    _layer_norm_no_affine_kernel[(N_rows, )](
+    _layer_norm_no_affine_kernel[(N_rows,)](
         flat,
         out,
         D=D,

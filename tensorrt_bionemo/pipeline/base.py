@@ -15,7 +15,8 @@
 
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import Any, Callable, Optional, Type, Union
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -43,10 +44,7 @@ class FeatureGeneratorBase(ABC):
     Abstract base class for transform functions.
     """
 
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 metadata: Optional[dict[str, Any]] = None,
-                 **kwargs: Any):
+    def __init__(self, config: BaseConfig | None = None, metadata: dict[str, Any] | None = None, **kwargs: Any):
         self.config = config
         self._name = kwargs.get("name", self.__class__.__name__)
         self.metadata = metadata
@@ -60,8 +58,7 @@ class FeatureGeneratorBase(ABC):
         self._name = name
 
     @abstractmethod
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 context: dict[str, Any]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         """
         Apply the transform to the batch.
         """
@@ -79,14 +76,11 @@ class FeatureCollatorBase(FeatureGeneratorBase):
 
 
 class FeatureGeneratorSpec(BaseModel):
-    name: Optional[str] = Field(
-        description="The name of the feature generator/collator.",
-        default="generator")
-    functor: Type[FeatureGeneratorBase] = Field(
-        description="The feature generator/collator function.")
-    kwargs: Optional[dict[str, Any]] = Field(
-        default_factory=dict,
-        description="The kwargs for the feature generator/collator.")
+    name: str | None = Field(description="The name of the feature generator/collator.", default="generator")
+    functor: type[FeatureGeneratorBase] = Field(description="The feature generator/collator function.")
+    kwargs: dict[str, Any] | None = Field(
+        default_factory=dict, description="The kwargs for the feature generator/collator."
+    )
 
 
 class FeatureCollatorSpec(FeatureGeneratorSpec):
@@ -94,22 +88,21 @@ class FeatureCollatorSpec(FeatureGeneratorSpec):
 
 
 class FeatureFactoryBase(BaseModel):
-    """ Workflow: pre_init -> feature_generator -> features_merger -> feature_collator
+    """Workflow: pre_init -> feature_generator -> features_merger -> feature_collator
     pre_init: Setup some params for feature generator and collator.
     feature_generator: Generate the feature tensors.
     features_merger: Merge the feature tensors.
     feature_collator: Collate the feature tensors.
     """
+
     pre_init: Callable = Field(
-        default_factory=lambda: None,
-        description=
-        "The function to call before the feature generator is called.")
+        default_factory=lambda: None, description="The function to call before the feature generator is called."
+    )
     feature_generator_specs: list[FeatureGeneratorSpec] = Field(
-        description="The dictionary of feature generator specs.")
-    features_merger_func: Callable = Field(
-        description="The function to merge the feature tensors.")
-    feature_collator_specs: list[FeatureCollatorSpec] = Field(
-        description="The dictionary of feature collator specs.")
+        description="The dictionary of feature generator specs."
+    )
+    features_merger_func: Callable = Field(description="The function to merge the feature tensors.")
+    feature_collator_specs: list[FeatureCollatorSpec] = Field(description="The dictionary of feature collator specs.")
 
 
 class ContextGeneratorBase(ABC):
@@ -117,9 +110,7 @@ class ContextGeneratorBase(ABC):
     Abstract base class for structure context.
     """
 
-    def __init__(self,
-                 config: Optional[BaseConfig] = None,
-                 metadata: Optional[dict[str, Any]] = None):
+    def __init__(self, config: BaseConfig | None = None, metadata: dict[str, Any] | None = None):
         self.config = config
         self.metadata = metadata
         self._required_kwargs = []
@@ -141,22 +132,20 @@ class ContextGeneratorBase(ABC):
 
 
 class ContextGeneratorSpec(BaseModel):
-    """ Context generator spec is a specification for a context generator.
+    """Context generator spec is a specification for a context generator.
     Normally, the contexts include:
       - Polymers context: the context of the polymers.
       - MSA context: the context of the MSA for the polymers.
       - Template context: the context of the template for the polymers.
     """
+
     name: str = Field(description="The name of the context generator.")
-    generator: Type[ContextGeneratorBase] = Field(
-        description="The generator function for the context generator.")
-    required_kwargs: list[str] = Field(
-        description="The required kwargs for the context generator.")
+    generator: type[ContextGeneratorBase] = Field(description="The generator function for the context generator.")
+    required_kwargs: list[str] = Field(description="The required kwargs for the context generator.")
 
 
 def dict_context_merger(
-    contexts: Union[list[dict[str, torch.Tensor]],
-                    dict[str, dict[str, torch.Tensor]]]
+    contexts: list[dict[str, torch.Tensor]] | dict[str, dict[str, torch.Tensor]],
 ) -> dict[str, torch.Tensor]:
     """
     Merge a dictionary of context tensors into a single dictionary of context tensors.
@@ -176,9 +165,8 @@ def dict_context_merger(
 
 
 def default_context_and_feature_merger(
-        contexts: dict[str, torch.Tensor],
-        features: dict[str, dict[str,
-                                 torch.Tensor]]) -> dict[str, torch.Tensor]:
+    contexts: dict[str, torch.Tensor], features: dict[str, dict[str, torch.Tensor]]
+) -> dict[str, torch.Tensor]:
     """
     Merge the context tensors and generated feature tensors from multiple generators.
     """
@@ -192,12 +180,11 @@ class TransformBase(ABC):
     Abstract base class for transform functions.
     """
 
-    def __init__(self, config: Optional[BaseConfig] = None, **kwargs: Any):
+    def __init__(self, config: BaseConfig | None = None, **kwargs: Any):
         self.config = config
 
     @abstractmethod
-    def __call__(self, batch: dict[str,
-                                   torch.Tensor]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Apply the transform to the batch.
         """
@@ -211,23 +198,21 @@ class TransformBase(ABC):
 
 
 class TransformSpec(BaseModel):
-    name: Optional[str] = Field(description="The name of the transform.",
-                                default="transform")
-    transform: Type[TransformBase] = Field(
-        description="The transform function to apply to the batch.")
-    kwargs: Optional[dict[str, Any]] = Field(
-        default_factory=dict, description="The kwargs for the transform.")
+    name: str | None = Field(description="The name of the transform.", default="transform")
+    transform: type[TransformBase] = Field(description="The transform function to apply to the batch.")
+    kwargs: dict[str, Any] | None = Field(default_factory=dict, description="The kwargs for the transform.")
 
 
 class TokenizerBase(BaseModel):
-    """Workflow: context_generator -> context_merger -> context_transform """
+    """Workflow: context_generator -> context_merger -> context_transform"""
+
     context_generator_specs: OrderedDict[str, ContextGeneratorSpec] = Field(
-        description="The dictionary of context generator specs.")
-    context_merger_func: Callable = Field(
-        description="The function to merge the context tensors.")
+        description="The dictionary of context generator specs."
+    )
+    context_merger_func: Callable = Field(description="The function to merge the context tensors.")
     transform_specs: list[TransformSpec] = Field(
-        description=
-        "The list of transform specs to apply to the final context tensors.")
+        description="The list of transform specs to apply to the final context tensors."
+    )
 
 
 class PostProcessorBase:
@@ -235,12 +220,11 @@ class PostProcessorBase:
     Abstract base class for postprocessor functions.
     """
 
-    def __init__(self, config: Optional[BaseModel] = None, **kwargs: Any):
+    def __init__(self, config: BaseModel | None = None, **kwargs: Any):
         self.config = config
 
     @abstractmethod
-    def __call__(self, batch: dict[str, torch.Tensor],
-                 output: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch: dict[str, torch.Tensor], output: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Apply the postprocessor to the batch.
         """

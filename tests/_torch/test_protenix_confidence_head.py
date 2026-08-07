@@ -16,6 +16,7 @@
 
 Real-checkpoint tests skip when the checkpoint is unavailable.
 """
+
 import functools
 import os
 from dataclasses import dataclass
@@ -28,10 +29,8 @@ from tensorrt_bionemo.configs import PairformerConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
 from tensorrt_bionemo.models.protenix.config import ConfidenceHeadConfig
-from tensorrt_bionemo.models.protenix.convert import \
-    convert_confidence_head_torch
-from tests.common.test_utils.protenix.ref_layers_from_oss import \
-    RefProtenixConfidenceHeadFromOSS
+from tensorrt_bionemo.models.protenix.convert import convert_confidence_head_torch
+from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixConfidenceHeadFromOSS
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -44,16 +43,18 @@ class Scenario:
 
 
 # Full protenix-v2 confidence dimensions.
-_FULL = dict(n_blocks=4,
-             c_s=384,
-             c_z=256,
-             c_s_inputs=449,
-             max_atoms_per_token=24,
-             hidden_scale_up=True,
-             distance_bin_start=3.25,
-             distance_bin_end=52.0,
-             distance_bin_step=1.25,
-             stop_gradient=True)
+_FULL = {
+    "n_blocks": 4,
+    "c_s": 384,
+    "c_z": 256,
+    "c_s_inputs": 449,
+    "max_atoms_per_token": 24,
+    "hidden_scale_up": True,
+    "distance_bin_start": 3.25,
+    "distance_bin_end": 52.0,
+    "distance_bin_step": 1.25,
+    "stop_gradient": True,
+}
 
 
 @functools.lru_cache(maxsize=1)
@@ -64,29 +65,29 @@ def _weights() -> dict:
 
 def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
     a, b = a.float(), b.float()
-    return (torch.sqrt(torch.mean(
-        (a - b)**2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
+    return (torch.sqrt(torch.mean((a - b) ** 2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
 
 
 def _config(sc: Scenario) -> ConfidenceHeadConfig:
     """Build the full-size confidence config."""
-    pf = PairformerConfig(token_s=_FULL["c_s"],
-                          token_z=_FULL["c_z"],
-                          num_blocks=_FULL["n_blocks"],
-                          num_heads=16,
-                          pairwise_head_width=32,
-                          pairwise_num_heads=_FULL["c_z"] // 32,
-                          no_update_s=False,
-                          attention_initial_norm=True,
-                          version="v1",
-                          dtype=sc.pairformer_dtype,
-                          triangle_attention_backend="VANILLA",
-                          pairwise_attention_backend="SDPA")
+    pf = PairformerConfig(
+        token_s=_FULL["c_s"],
+        token_z=_FULL["c_z"],
+        num_blocks=_FULL["n_blocks"],
+        num_heads=16,
+        pairwise_head_width=32,
+        pairwise_num_heads=_FULL["c_z"] // 32,
+        no_update_s=False,
+        attention_initial_norm=True,
+        version="v1",
+        dtype=sc.pairformer_dtype,
+        triangle_attention_backend="VANILLA",
+        pairwise_attention_backend="SDPA",
+    )
     return ConfidenceHeadConfig(dtype=sc.dtype, pairformer_config=pf)
 
 
-def _features(device: torch.device, n_token: int,
-              atoms_per_token: int) -> dict:
+def _features(device: torch.device, n_token: int, atoms_per_token: int) -> dict:
     """Build contiguous atoms with one representative per token."""
     n_atom = n_token * atoms_per_token
     idx = torch.arange(n_atom, device=device)
@@ -111,14 +112,10 @@ def real_case():
         pytest.skip(f"protenix-v2 checkpoint unavailable: {exc}")
     device = torch.device("cuda")
 
-    ref = RefProtenixConfidenceHeadFromOSS.build(**_FULL).to(
-        device=device, dtype=torch.float32).eval()
+    ref = RefProtenixConfidenceHeadFromOSS.build(**_FULL).to(device=device, dtype=torch.float32).eval()
     ref.load_state_dict(
-        {
-            k[len("confidence_head."):]: v
-            for k, v in weights.items() if k.startswith("confidence_head.")
-        },
-        strict=True)
+        {k[len("confidence_head.") :]: v for k, v in weights.items() if k.startswith("confidence_head.")}, strict=True
+    )
 
     sc = Scenario()
     n_token, n_atom = sc.n_token, sc.n_token * sc.atoms_per_token
@@ -129,52 +126,55 @@ def real_case():
     x_pred = torch.randn(1, sc.n_sample, n_atom, 3, device=device)
     pair_mask = torch.ones(1, n_token, n_token, device=device)
     with torch.inference_mode():
-        plddt, pae, pde, resolved = ref(feats,
-                                        s_inputs,
-                                        s_trunk,
-                                        z_trunk,
-                                        pair_mask,
-                                        x_pred,
-                                        triangle_multiplicative="torch",
-                                        triangle_attention="torch")
-    return dict(weights=weights,
-                feats=feats,
-                s_inputs=s_inputs,
-                s_trunk=s_trunk,
-                z_trunk=z_trunk,
-                x_pred=x_pred,
-                pair_mask=pair_mask,
-                device=device,
-                exp=dict(plddt_logits=plddt,
-                         pae_logits=pae,
-                         pde_logits=pde,
-                         resolved_logits=resolved))
+        plddt, pae, pde, resolved = ref(
+            feats,
+            s_inputs,
+            s_trunk,
+            z_trunk,
+            pair_mask,
+            x_pred,
+            triangle_multiplicative="torch",
+            triangle_attention="torch",
+        )
+    return {
+        "weights": weights,
+        "feats": feats,
+        "s_inputs": s_inputs,
+        "s_trunk": s_trunk,
+        "z_trunk": z_trunk,
+        "x_pred": x_pred,
+        "pair_mask": pair_mask,
+        "device": device,
+        "exp": {"plddt_logits": plddt, "pae_logits": pae, "pde_logits": pde, "resolved_logits": resolved},
+    }
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dtype="float32", pairformer_dtype="float32"),
-    Scenario(dtype="float32", pairformer_dtype="bfloat16"),
-],
-                         ids=["fp32", "bf16_pairformer"])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dtype="float32", pairformer_dtype="float32"),
+        Scenario(dtype="float32", pairformer_dtype="bfloat16"),
+    ],
+    ids=["fp32", "bf16_pairformer"],
+)
 def test_protenix_confidence_head(sc: Scenario, real_case):
     device = real_case["device"]
 
     config = _config(sc)
     model = ProtenixConfidenceHead(config).to(device).eval()
-    converted = convert_confidence_head_torch(config,
-                                              real_case["weights"],
-                                              prefix="confidence_head")
+    converted = convert_confidence_head_torch(config, real_case["weights"], prefix="confidence_head")
     missing, unexpected = model.load_state_dict(converted, strict=False)
-    assert not missing and not unexpected, (list(missing)[:5],
-                                            list(unexpected)[:5])
+    assert not missing and not unexpected, (list(missing)[:5], list(unexpected)[:5])
 
     with torch.inference_mode():
-        act = model(real_case["feats"],
-                    real_case["s_inputs"],
-                    real_case["s_trunk"],
-                    real_case["z_trunk"],
-                    real_case["x_pred"],
-                    pair_mask=real_case["pair_mask"])
+        act = model(
+            real_case["feats"],
+            real_case["s_inputs"],
+            real_case["s_trunk"],
+            real_case["z_trunk"],
+            real_case["x_pred"],
+            pair_mask=real_case["pair_mask"],
+        )
 
     any_bf16 = "bfloat16" in (sc.dtype, sc.pairformer_dtype)
     tol = 1.5e-1 if any_bf16 else 5e-3

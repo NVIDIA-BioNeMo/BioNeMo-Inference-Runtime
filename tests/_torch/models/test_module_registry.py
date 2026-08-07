@@ -25,9 +25,7 @@ tests exercise both layers directly with lightweight specs — no model weights.
 import pytest
 
 from tensorrt_bionemo.configs import AcceleratedConfig
-from tensorrt_bionemo.models.optimize_module_setter import (ModuleRegistry,
-                                                            ModuleSpec,
-                                                            _module_path)
+from tensorrt_bionemo.models.optimize_module_setter import ModuleRegistry, ModuleSpec, _module_path
 
 
 def _spec(getter):
@@ -39,8 +37,7 @@ def _spec(getter):
 def test_module_path_traces_attribute_chain():
     """``_module_path`` recovers the attribute chain a getter walks."""
     assert _module_path(_spec(lambda mod: mod.a.b.c)) == ("a", "b", "c")
-    assert _module_path(_spec(lambda mod: mod.pairformer_stack)) == (
-        "pairformer_stack", )
+    assert _module_path(_spec(lambda mod: mod.pairformer_stack)) == ("pairformer_stack",)
 
 
 def test_non_attribute_getter_has_no_path():
@@ -55,11 +52,8 @@ def test_identifies_child_not_parent():
     specs = {
         # Mirrors the OpenFold3 registry: token_transformer lives *inside*
         # diffusion_module, so it is the child.
-        "diffusion_module":
-        _spec(lambda mod: mod.sample_diffusion.diffusion_module),
-        "token_transformer":
-        _spec(lambda mod: mod.sample_diffusion.diffusion_module.
-              diffusion_transformer),
+        "diffusion_module": _spec(lambda mod: mod.sample_diffusion.diffusion_module),
+        "token_transformer": _spec(lambda mod: mod.sample_diffusion.diffusion_module.diffusion_transformer),
     }
     assert ModuleRegistry._child_module_names(specs) == {"token_transformer"}
 
@@ -120,11 +114,8 @@ class _FakeRegistry(ModuleRegistry):
 
     def get_accelerated_modules(self):
         return {
-            "diffusion_module":
-            _spec(lambda mod: mod.sample_diffusion.diffusion_module),
-            "token_transformer":
-            _spec(lambda mod: mod.sample_diffusion.diffusion_module.
-                  diffusion_transformer),
+            "diffusion_module": _spec(lambda mod: mod.sample_diffusion.diffusion_module),
+            "token_transformer": _spec(lambda mod: mod.sample_diffusion.diffusion_module.diffusion_transformer),
             "pairformer": _spec(lambda mod: mod.pairformer_stack),
         }
 
@@ -147,19 +138,23 @@ def test_child_alone_is_kept():
 
 def test_child_dropped_when_parent_also_requested():
     """Requesting both parent and child drops the child in favour of parent."""
-    reg = _FakeRegistry({
-        "diffusion_module": _cfg(),
-        "token_transformer": _cfg(),
-    })
+    reg = _FakeRegistry(
+        {
+            "diffusion_module": _cfg(),
+            "token_transformer": _cfg(),
+        }
+    )
     assert reg.get_module_names() == ["diffusion_module"]
 
 
 def test_unrelated_module_unaffected():
     """A sibling requested alongside the child is untouched."""
-    reg = _FakeRegistry({
-        "token_transformer": _cfg(),
-        "pairformer": _cfg(),
-    })
+    reg = _FakeRegistry(
+        {
+            "token_transformer": _cfg(),
+            "pairformer": _cfg(),
+        }
+    )
     assert set(reg.get_module_names()) == {"token_transformer", "pairformer"}
 
 

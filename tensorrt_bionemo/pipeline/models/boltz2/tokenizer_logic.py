@@ -1,5 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tokenize a :class:`Structure` into :class:`Token`/:class:`TokenBond` lists.
 
 Polymer chains (protein/RNA/DNA) yield one token per residue. Non-polymer
@@ -59,8 +72,7 @@ def _get_unk_token_id(mol_type: int) -> int:
     return unk_token_ids["PROTEIN"]
 
 
-def tokenize_structure(
-        struct: Structure) -> tuple[list[Token], list[TokenBond]]:
+def tokenize_structure(struct: Structure) -> tuple[list[Token], list[TokenBond]]:
     """Tokenize a Structure into list of Token and list of TokenBond.
 
     Polymer (PROTEIN/RNA/DNA) chains produce one token per residue. Non-polymer
@@ -73,7 +85,7 @@ def tokenize_structure(
     coords = struct.coords
     offset = 0
 
-    chains = [c for c, m in zip(struct.chains, struct.mask) if m]
+    chains = [c for c, m in zip(struct.chains, struct.mask, strict=False) if m]
     for chain in chains:
         res_start = chain.res_idx
         res_end = chain.res_idx + chain.res_num
@@ -139,8 +151,7 @@ def tokenize_structure(
                 is_present = res.is_present
                 is_disto_present = res.is_present
 
-                frame_rot: tuple[tuple[float, float, float],
-                                 ...] = _IDENTITY_ROT
+                frame_rot: tuple[tuple[float, float, float], ...] = _IDENTITY_ROT
                 frame_t = _ZERO_T
                 frame_mask = False
 
@@ -148,13 +159,10 @@ def tokenize_structure(
                     a0 = struct.atoms[res.atom_idx]
                     a1 = struct.atoms[res.atom_idx + 1]
                     a2 = struct.atoms[res.atom_idx + 2]
-                    frame_mask = bool(a1.is_present and a2.is_present
-                                      and a0.is_present)
+                    frame_mask = bool(a1.is_present and a2.is_present and a0.is_present)
                     if frame_mask:
-                        frame_rot, frame_t = compute_frame(
-                            a0.conformer, a1.conformer, a2.conformer)
-                        frame_t = (float(frame_t[0]), float(frame_t[1]),
-                                   float(frame_t[2]))
+                        frame_rot, frame_t = compute_frame(a0.conformer, a1.conformer, a2.conformer)
+                        frame_t = (float(frame_t[0]), float(frame_t[1]), float(frame_t[2]))
 
                 token = Token(
                     token_idx=token_idx,
@@ -231,7 +239,6 @@ def tokenize_structure(
             continue
         t1 = atom_to_token[bond.atom_1]
         t2 = atom_to_token[bond.atom_2]
-        token_bonds.append(
-            TokenBond(token_1=t1, token_2=t2, type=bond.type + 1))
+        token_bonds.append(TokenBond(token_1=t1, token_2=t2, type=bond.type + 1))
 
     return tokens, token_bonds

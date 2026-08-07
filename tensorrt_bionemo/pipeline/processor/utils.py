@@ -1,5 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Shared utility functions for processor builders."""
-from typing import Any, Dict, Optional, Tuple, Union
+
+from typing import Any
 
 import ray
 
@@ -12,10 +28,10 @@ def get_value_or_fallback(value: Any, fallback: Any) -> Any:
 
 
 def extract_resource_kwargs(
-    runtime_env: Optional[Dict[str, Any]],
-    num_cpus: Optional[float],
-    memory: Optional[float],
-) -> Dict[str, Any]:
+    runtime_env: dict[str, Any] | None,
+    num_cpus: float | None,
+    memory: float | None,
+) -> dict[str, Any]:
     """Extract non-None resource kwargs for map_batches."""
     kwargs = {}
     if runtime_env is not None:
@@ -27,17 +43,16 @@ def extract_resource_kwargs(
     return kwargs
 
 
-def normalize_cpu_stage_concurrency(
-        concurrency: Optional[Union[int, Tuple[int, int]]]) -> ray.data.ActorPoolStrategy:
+def normalize_cpu_stage_concurrency(concurrency: int | tuple[int, int] | None) -> ray.data.ActorPoolStrategy:
     """
     Normalize concurrency specification to ActorPoolStrategy for CPU stages.
-    
+
     Args:
         concurrency: Concurrency specification:
             - None: Returns ActorPoolStrategy(1, 1) - single actor, no autoscaling
             - int n: Returns ActorPoolStrategy(1, n) - autoscale from 1 to n actors
             - tuple (min, max): Returns ActorPoolStrategy(min, max) - custom autoscaling range
-    
+
     Returns:
         ray.data.ActorPoolStrategy configured based on the input specification
     """
@@ -49,7 +64,8 @@ def normalize_cpu_stage_concurrency(
 
 
 def build_cpu_stage_map_kwargs(
-    stage_cfg: _StageConfigBase, ) -> Dict[str, Any]:
+    stage_cfg: _StageConfigBase,
+) -> dict[str, Any]:
     """Build map_batches_kwargs for CPU stages."""
     concurrency = normalize_cpu_stage_concurrency(stage_cfg.compute)
     return dict(
@@ -67,6 +83,7 @@ def build_cpu_stage_map_kwargs(
 def get_available_gpu_count() -> int:
     try:
         import torch
+
         if torch.cuda.is_available():
             return torch.cuda.device_count()
     except ImportError:

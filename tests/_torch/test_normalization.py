@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from test_utils.boltz.create_and_load_weights import (create_adaln_weights,
-                                                      load_adaln_weights_torch)
+from test_utils.boltz.create_and_load_weights import create_adaln_weights, load_adaln_weights_torch
 from test_utils.boltz.ref_layers import RefAdaLN
 
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
@@ -33,17 +32,20 @@ class Scenario:
     seq_len: int = 128
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dim=768, dim_single_cond=768),
-    Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16"),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dim=768, dim_single_cond=768),
+        Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16"),
+    ],
+)
 def test_adaln(sc: Scenario):
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     dtype = str_dtype_to_torch(sc.torch_dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     ref_adaln = RefAdaLN.load_weights()
     ref_adaln = ref_adaln.to(device)
@@ -55,8 +57,7 @@ def test_adaln(sc: Scenario):
     adaln.to(device)
 
     a = torch.randn(bs, sc.seq_len, sc.dim, dtype=torch.float32).cuda()
-    s = torch.randn(bs, sc.seq_len, sc.dim_single_cond,
-                    dtype=torch.float32).cuda()
+    s = torch.randn(bs, sc.seq_len, sc.dim_single_cond, dtype=torch.float32).cuda()
 
     with torch.inference_mode():
         ref_output_float = ref_adaln(a, s)
@@ -75,9 +76,7 @@ def test_adaln(sc: Scenario):
         diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
         diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
         diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
-        diff1_mean = torch.mean(
-            torch.abs(ref_output.float() - ref_output_float))
+        diff1_mean = torch.mean(torch.abs(ref_output.float() - ref_output_float))
 
-        assert abs(diff0_max - diff1_max) / torch.min(diff0_max,
-                                                      diff1_max) <= 0.5
+        assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2

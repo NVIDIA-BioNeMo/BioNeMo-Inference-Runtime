@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +15,7 @@
 
 from pydantic import model_validator
 
-from tensorrt_bionemo.configs import (BaseConfig, EvoformerStackConfig,
-                                      ExtraMSAStackConfig)
+from tensorrt_bionemo.configs import BaseConfig, EvoformerStackConfig, ExtraMSAStackConfig
 from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
 
 
@@ -114,13 +113,10 @@ class TemplateEmbedderConfig(BaseConfig):
     embed_angles: bool = True
     use_unit_vector: bool = False
     distogram: TemplateDistogramConfig = TemplateDistogramConfig()
-    template_single_embedder: TemplateSingleEmbedderConfig = TemplateSingleEmbedderConfig(
-    )
-    template_pair_embedder: TemplatePairEmbedderConfig = TemplatePairEmbedderConfig(
-    )
+    template_single_embedder: TemplateSingleEmbedderConfig = TemplateSingleEmbedderConfig()
+    template_pair_embedder: TemplatePairEmbedderConfig = TemplatePairEmbedderConfig()
     template_pair_stack: TemplatePairStackConfig = TemplatePairStackConfig()
-    template_pointwise_attention: TemplatePointwiseAttentionConfig = TemplatePointwiseAttentionConfig(
-    )
+    template_pointwise_attention: TemplatePointwiseAttentionConfig = TemplatePointwiseAttentionConfig()
 
 
 # multimer
@@ -142,10 +138,8 @@ class TemplateEmbedderMultimerConfig(BaseConfig):
     embed_angles: bool = True
     use_unit_vector: bool = True
     distogram: TemplateDistogramConfig = TemplateDistogramConfig()
-    template_single_embedder: TemplateSingleEmbedderMultimerConfig = TemplateSingleEmbedderMultimerConfig(
-    )
-    template_pair_embedder: TemplatePairEmbedderMultimerConfig = TemplatePairEmbedderMultimerConfig(
-    )
+    template_single_embedder: TemplateSingleEmbedderMultimerConfig = TemplateSingleEmbedderMultimerConfig()
+    template_pair_embedder: TemplatePairEmbedderMultimerConfig = TemplatePairEmbedderMultimerConfig()
     template_pair_stack: TemplatePairStackConfig = TemplatePairStackConfig()
 
 
@@ -165,7 +159,8 @@ class TrunkConfig(BaseConfig):
         no_column_attention=False,
         opm_first=False,
         n_seq=516,
-        trimul_high_precision=False)
+        trimul_high_precision=False,
+    )
     extra_msa_stack: ExtraMSAStackConfig = ExtraMSAStackConfig(
         c_m=_Default.c_e,
         c_z=_Default.c_z,
@@ -233,8 +228,7 @@ class ConfidenceModuleConfig(BaseConfig):
     per_residue_lddt: PerResidueLddtConfig = PerResidueLddtConfig()
     distogram: ConfidenceDistogramConfig = ConfidenceDistogramConfig()
     masked_msa: MaskedMsaConfig = MaskedMsaConfig()
-    experimentally_resolved: ExperimentallyResolvedConfig = ExperimentallyResolvedConfig(
-    )
+    experimentally_resolved: ExperimentallyResolvedConfig = ExperimentallyResolvedConfig()
     tm: TmConfig = TmConfig()
     epsilon: float = 1e-5
 
@@ -269,10 +263,8 @@ class OpenFold2Config(BaseConfig):
 
 
 class OpenFold2MultimerConfig(OpenFold2Config):
-
     input_embedder: InputEmbedderMultimerConfig = InputEmbedderMultimerConfig()
-    template_embedder: TemplateEmbedderMultimerConfig = TemplateEmbedderMultimerConfig(
-    )
+    template_embedder: TemplateEmbedderMultimerConfig = TemplateEmbedderMultimerConfig()
 
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2MultimerConfig":
@@ -310,7 +302,6 @@ Without template, with ptm      model_3_ptm            params_model_3_ptm.npz   
 
 
 class OpenFold2_FT2_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_FT2_Config":
         self.enable_template = True
@@ -319,7 +310,6 @@ class OpenFold2_FT2_Config(OpenFold2Config):
 
 
 class OpenFold2_FT3_Config(OpenFold2_FT2_Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_FT3_Config":
         self.confidence_module.tm.enabled = False
@@ -327,7 +317,6 @@ class OpenFold2_FT3_Config(OpenFold2_FT2_Config):
 
 
 class OpenFold2_FT4_Config(OpenFold2_FT2_Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_FT4_Config":
         self.confidence_module.tm.enabled = False
@@ -335,7 +324,6 @@ class OpenFold2_FT4_Config(OpenFold2_FT2_Config):
 
 
 class OpenFold2_FT5_Config(OpenFold2_FT2_Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_FT5_Config":
         self.confidence_module.tm.enabled = False
@@ -343,7 +331,6 @@ class OpenFold2_FT5_Config(OpenFold2_FT2_Config):
 
 
 class OpenFold2_PTM1_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_PTM1_Config":
         self.max_extra_msa = 5120
@@ -356,7 +343,6 @@ class OpenFold2_PTM2_Config(OpenFold2_PTM1_Config):
 
 
 class OpenFold2_NoTempl1_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_NoTempl1_Config":
         self.enable_template = False
@@ -369,7 +355,6 @@ class OpenFold2_NoTempl2_Config(OpenFold2_NoTempl1_Config):
 
 
 class OpenFold2_NoTempl_PTM1_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "OpenFold2_NoTempl_PTM1_Config":
         self.enable_template = False
@@ -377,7 +362,6 @@ class OpenFold2_NoTempl_PTM1_Config(OpenFold2Config):
 
 
 class AlphaFold2_1_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_1_Config":
         self.enable_template = True
@@ -389,7 +373,6 @@ class AlphaFold2_1_Config(OpenFold2Config):
 
 
 class AlphaFold2_2_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_2_Config":
         self.enable_template = True
@@ -400,7 +383,6 @@ class AlphaFold2_2_Config(OpenFold2Config):
 
 
 class AlphaFold2_3_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_3_Config":
         self.enable_template = False
@@ -410,7 +392,6 @@ class AlphaFold2_3_Config(OpenFold2Config):
 
 
 class AlphaFold2_4_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_4_Config":
         self.enable_template = False
@@ -420,7 +401,6 @@ class AlphaFold2_4_Config(OpenFold2Config):
 
 
 class AlphaFold2_5_Config(OpenFold2Config):
-
     @model_validator(mode="after")
     def fill_config(self) -> "AlphaFold2_5_Config":
         self.enable_template = False

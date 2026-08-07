@@ -1,5 +1,17 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from dataclasses import dataclass
 
@@ -44,7 +56,6 @@ def sample_batch():
 
 
 class TestCastTo64BitInts:
-
     def test_converts_int32_to_int64(self, mock_config):
         batch = {
             "int32_tensor": torch.tensor([1, 2, 3], dtype=torch.int32),
@@ -66,7 +77,6 @@ class TestCastTo64BitInts:
 
 
 class TestCorrectMsaRestypes:
-
     def test_reorders_msa(self, mock_config, sample_batch):
         transform = CorrectMsaRestypes(config=mock_config)
         result = transform(sample_batch)
@@ -84,7 +94,6 @@ class TestCorrectMsaRestypes:
 
 
 class TestSqueezeFeatures:
-
     def test_converts_aatype_from_onehot_to_indices(self, mock_config, sample_batch):
         transform = SqueezeFeatures(config=mock_config)
         result = transform(sample_batch)
@@ -108,7 +117,6 @@ class TestSqueezeFeatures:
 
 
 class TestRandomlyReplaceMsaWithUnknown:
-
     def test_no_replacement_when_proportion_zero(self, mock_config, sample_batch):
         original_msa = sample_batch["msa"].clone()
         transform = RandomlyReplaceMsaWithUnknown(config=mock_config, replace_proportion=0.0)
@@ -135,7 +143,6 @@ class TestRandomlyReplaceMsaWithUnknown:
 
 
 class TestFixTemplatesAatype:
-
     def test_converts_onehot_to_indices(self, mock_config, sample_batch):
         transform = FixTemplatesAatype(config=mock_config)
         result = transform(sample_batch)

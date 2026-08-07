@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,13 +19,13 @@ from dataclasses import dataclass
 import pytest
 import torch
 from test_utils.boltz.create_and_load_weights import (
-    create_diffusion_module_weights, load_diffusion_module_weights_torch)
+    create_diffusion_module_weights,
+    load_diffusion_module_weights_torch,
+)
 from test_utils.boltz.ref_layers import RefDiffusionModule
 
-from tensorrt_bionemo._torch.attention_backend.interface import \
-    AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_gather_indices, query_to_keys_optimized)
+from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
+from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
 from tensorrt_bionemo._torch.modules.boltz.structure import DiffusionModule
 from tensorrt_bionemo.configs import DiffusionTransformerConfig
 from tensorrt_bionemo.utils import str_dtype_to_torch
@@ -58,7 +58,8 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
         num_heads=sc.token_transformer_heads,
         dim=2 * ref_module.token_s,
         dim_single_cond=2 * ref_module.token_s,
-        dtype=sc.dtype)
+        dtype=sc.dtype,
+    )
 
     atom_attention_encoder_diff_transformer_config = DiffusionTransformerConfig(
         architecture="boltz_atom_attention_encoder_diffusion_transformer",
@@ -67,7 +68,8 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
         num_heads=sc.heads,
         dim=ref_module.atom_s,
         dim_single_cond=ref_module.atom_s,
-        dtype=sc.dtype)
+        dtype=sc.dtype,
+    )
 
     atom_attention_decoder_diff_transformer_config = DiffusionTransformerConfig(
         architecture="boltz_atom_attention_decoder_diffusion_transformer",
@@ -76,7 +78,8 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
         num_heads=sc.heads,
         dim=ref_module.atom_s,
         dim_single_cond=ref_module.atom_s,
-        dtype=sc.dtype)
+        dtype=sc.dtype,
+    )
 
     diffusion_module_config = DiffusionTransformerConfig(
         architecture="boltz_diffusion_module",
@@ -86,8 +89,7 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
         atoms_per_window_queries=sc.atom_window_queries,
         atoms_per_window_keys=sc.atom_window_keys,
         dim_fourier=ref_module.dim_fourier,
-        conditioning_transition_layers=ref_module.
-        conditioning_transition_layers,
+        conditioning_transition_layers=ref_module.conditioning_transition_layers,
         atom_encoder=atom_attention_encoder_diff_transformer_config,
         atom_decoder=atom_attention_decoder_diff_transformer_config,
         token_transformer=token_transformer_config,
@@ -95,39 +97,38 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
     )
 
     if sc.pairwise_attn_backend != "SDPA":
-        diffusion_module_config.set_pairwise_attention_backend(
-            sc.pairwise_attn_backend)
+        diffusion_module_config.set_pairwise_attention_backend(sc.pairwise_attn_backend)
 
     return diffusion_module_config
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dtype="float32", multiplicity=5),
-    Scenario(dtype="bfloat16", multiplicity=1),
-    Scenario(dtype="bfloat16", multiplicity=5),
-    Scenario(dtype="bfloat16", multiplicity=1,
-             pairwise_attn_backend="CuTeDSL"),
-    Scenario(dtype="bfloat16", multiplicity=5,
-             pairwise_attn_backend="CuTeDSL"),
-],
-                         ids=[
-                             "float32-mult5",
-                             "bfloat16-mult1",
-                             "bfloat16-mult5",
-                             "bfloat16-mult1-cutedsl",
-                             "bfloat16-mult5-cutedsl",
-                         ])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dtype="float32", multiplicity=5),
+        Scenario(dtype="bfloat16", multiplicity=1),
+        Scenario(dtype="bfloat16", multiplicity=5),
+        Scenario(dtype="bfloat16", multiplicity=1, pairwise_attn_backend="CuTeDSL"),
+        Scenario(dtype="bfloat16", multiplicity=5, pairwise_attn_backend="CuTeDSL"),
+    ],
+    ids=[
+        "float32-mult5",
+        "bfloat16-mult1",
+        "bfloat16-mult5",
+        "bfloat16-mult1-cutedsl",
+        "bfloat16-mult5-cutedsl",
+    ],
+)
 def test_diffusion_module(sc: Scenario):
     _skip_if_cutedsl(sc.pairwise_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = sc.batch_size
-    device = torch.device('cuda')
+    device = torch.device("cuda")
     ref_module = RefDiffusionModule.load_weights().to(device)
     tt_depth = sc.token_transformer_depth
-    ref_module.token_transformer.layers = \
-        ref_module.token_transformer.layers[:tt_depth]
+    ref_module.token_transformer.layers = ref_module.token_transformer.layers[:tt_depth]
     ref_module.token_transformer.num_blocks = tt_depth
     ref_module.eval()
 
@@ -145,38 +146,17 @@ def test_diffusion_module(sc: Scenario):
     c = torch.rand(bs, sc.n_atoms, sc.dim, dtype=torch.float32).to(device)
     r_noisy = torch.rand(bs, sc.n_atoms, 3, dtype=torch.float32).to(device)
 
-    atom_enc_bias = torch.rand(bs,
-                               sc.n_atoms,
-                               H,
-                               sc.heads * sc.depth,
-                               dtype=torch.float32).to(device)
-    atom_dec_bias = torch.rand(bs,
-                               sc.n_atoms,
-                               H,
-                               sc.heads * sc.depth,
-                               dtype=torch.float32).to(device)
-    atom_token_bias = torch.rand(bs,
-                                 sc.n_res,
-                                 sc.n_res,
-                                 token_trans_bias_dim,
-                                 dtype=torch.float32).to(device)
-    atom_pad_mask = torch.randint(0,
-                                  2, (bs, sc.n_atoms),
-                                  device=device,
-                                  dtype=torch.float32)
-    token_pad_mask = torch.randint(0,
-                                   2, (bs, sc.n_res),
-                                   device=device,
-                                   dtype=torch.float32)
+    atom_enc_bias = torch.rand(bs, sc.n_atoms, H, sc.heads * sc.depth, dtype=torch.float32).to(device)
+    atom_dec_bias = torch.rand(bs, sc.n_atoms, H, sc.heads * sc.depth, dtype=torch.float32).to(device)
+    atom_token_bias = torch.rand(bs, sc.n_res, sc.n_res, token_trans_bias_dim, dtype=torch.float32).to(device)
+    atom_pad_mask = torch.randint(0, 2, (bs, sc.n_atoms), device=device, dtype=torch.float32)
+    token_pad_mask = torch.randint(0, 2, (bs, sc.n_res), device=device, dtype=torch.float32)
 
-    s_inputs = torch.rand(bs, sc.n_res, sc.token_s,
-                          dtype=torch.float32).to(device)
-    s_trunk = torch.rand(bs, sc.n_res, sc.token_s,
-                         dtype=torch.float32).to(device)
+    s_inputs = torch.rand(bs, sc.n_res, sc.token_s, dtype=torch.float32).to(device)
+    s_trunk = torch.rand(bs, sc.n_res, sc.token_s, dtype=torch.float32).to(device)
     times = torch.tensor([1.4], dtype=torch.float32).cuda()
 
-    atom_to_token = torch.rand(bs, sc.n_atoms, sc.n_res,
-                               dtype=torch.float32).to(device) / 1000.0
+    atom_to_token = torch.rand(bs, sc.n_atoms, sc.n_res, dtype=torch.float32).to(device) / 1000.0
     attn_metadata = AttentionMetadata(
         query_to_keys=to_keys,
         bias_cache={},
@@ -189,11 +169,22 @@ def test_diffusion_module(sc: Scenario):
     model.eval()
 
     with torch.inference_mode():
-        ref_output_float = ref_module(atom_to_token, atom_pad_mask,
-                                      token_pad_mask, s_inputs, s_trunk,
-                                      r_noisy, times, q, c, atom_enc_bias,
-                                      atom_token_bias, atom_dec_bias,
-                                      sc.multiplicity, attn_metadata)
+        ref_output_float = ref_module(
+            atom_to_token,
+            atom_pad_mask,
+            token_pad_mask,
+            s_inputs,
+            s_trunk,
+            r_noisy,
+            times,
+            q,
+            c,
+            atom_enc_bias,
+            atom_token_bias,
+            atom_dec_bias,
+            sc.multiplicity,
+            attn_metadata,
+        )
 
         atom_to_token = atom_to_token.to(dtype)
         atom_pad_mask = atom_pad_mask.to(dtype)
@@ -209,11 +200,22 @@ def test_diffusion_module(sc: Scenario):
         s_trunk = s_trunk.to(dtype)
 
         ref_module = ref_module.to(dtype)
-        ref_output = ref_module(atom_to_token, atom_pad_mask,
-                                token_pad_mask, s_inputs, s_trunk, r_noisy,
-                                times.to(dtype), q, c, atom_enc_bias,
-                                atom_token_bias, atom_dec_bias,
-                                sc.multiplicity, attn_metadata)
+        ref_output = ref_module(
+            atom_to_token,
+            atom_pad_mask,
+            token_pad_mask,
+            s_inputs,
+            s_trunk,
+            r_noisy,
+            times.to(dtype),
+            q,
+            c,
+            atom_enc_bias,
+            atom_token_bias,
+            atom_dec_bias,
+            sc.multiplicity,
+            attn_metadata,
+        )
         r_noisy = r_noisy.unsqueeze(1)
         r_noisy = r_noisy.repeat_interleave(sc.multiplicity, 1)
         diffusion_conditioning_kwargs = {
@@ -233,24 +235,18 @@ def test_diffusion_module(sc: Scenario):
             r_noisy=r_noisy,
             times=times,
             diffusion_conditioning_kwargs=diffusion_conditioning_kwargs,
-            attn_metadata=attn_metadata)
+            attn_metadata=attn_metadata,
+        )
 
         output = output[0].flatten(0, 1)
 
         if dtype == torch.float32:
-            torch.testing.assert_close(output,
-                                       ref_output_float,
-                                       atol=1e-3,
-                                       rtol=1e-4)
+            torch.testing.assert_close(output, ref_output_float, atol=1e-3, rtol=1e-4)
         else:
             diff0_max = torch.max(torch.abs(output.float() - ref_output_float))
-            diff0_mean = torch.mean(
-                torch.abs(output.float() - ref_output_float))
-            diff1_max = torch.max(
-                torch.abs(ref_output.float() - ref_output_float))
-            diff1_mean = torch.mean(
-                torch.abs(ref_output.float() - ref_output_float))
+            diff0_mean = torch.mean(torch.abs(output.float() - ref_output_float))
+            diff1_max = torch.max(torch.abs(ref_output.float() - ref_output_float))
+            diff1_mean = torch.mean(torch.abs(ref_output.float() - ref_output_float))
 
-            assert abs(diff0_max - diff1_max) / torch.min(
-                diff0_max, diff1_max) <= 0.57
+            assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.57
             assert abs(diff0_mean - diff1_mean) <= 0.25

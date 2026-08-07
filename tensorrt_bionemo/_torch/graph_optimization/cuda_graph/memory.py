@@ -22,6 +22,7 @@ host) memory; if not, it reverts to eager execution instead of risking an OOM
 mid-capture. The driver/host queries (:func:`gpu_free_bytes`,
 :func:`host_available_bytes`) are module-level so tests can monkeypatch them.
 """
+
 from typing import Any, NamedTuple
 
 import torch
@@ -48,6 +49,7 @@ class MemoryCheck(NamedTuple):
         needed_gpu_bytes: Estimated GPU bytes the capture would require.
         free_gpu_bytes: GPU bytes free at the time of the check.
     """
+
     ok: bool
     reason: str
     needed_gpu_bytes: int
@@ -128,8 +130,7 @@ def container_device(value: Any) -> torch.device | None:
     return None
 
 
-def check_capacity_for_capture(working_set_bytes: int,
-                               input_container: Any = None) -> MemoryCheck:
+def check_capacity_for_capture(working_set_bytes: int, input_container: Any = None) -> MemoryCheck:
     """Decide whether a graph for ``working_set_bytes`` can be safely captured.
 
     The GPU free-memory check targets the device the inputs live on, taken from
@@ -146,16 +147,14 @@ def check_capacity_for_capture(working_set_bytes: int,
     free_gpu = gpu_free_bytes(device)
     if needed_gpu > free_gpu:
         return MemoryCheck(
-            False,
-            f"insufficient GPU memory: need {needed_gpu} B, free {free_gpu} B",
-            needed_gpu, free_gpu)
+            False, f"insufficient GPU memory: need {needed_gpu} B, free {free_gpu} B", needed_gpu, free_gpu
+        )
 
     needed_host = working_set_bytes + GRAPH_METADATA_BYTES
     host_free = host_available_bytes()
     if host_free < needed_host:
         return MemoryCheck(
-            False,
-            f"insufficient host memory: need {needed_host} B, free {host_free} B",
-            needed_gpu, free_gpu)
+            False, f"insufficient host memory: need {needed_host} B, free {host_free} B", needed_gpu, free_gpu
+        )
 
     return MemoryCheck(True, "ok", needed_gpu, free_gpu)

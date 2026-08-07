@@ -1,9 +1,17 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
-import sys
-
-import pytest
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from tensorrt_bionemo.pipeline.stages.configs import TokenizerStageConfig
 from tensorrt_bionemo.pipeline.stages.tokenizer_stage import (
@@ -13,26 +21,34 @@ from tensorrt_bionemo.pipeline.stages.tokenizer_stage import (
 
 
 class TestTokenizerStageConfiguration:
-
     def test_stage_has_correct_fn_class(self):
-        stage = TokenizerStage(fn=TokenizerUDF, fn_constructor_kwargs={
-            "context_generators": {},
-        })
+        stage = TokenizerStage(
+            fn=TokenizerUDF,
+            fn_constructor_kwargs={
+                "context_generators": {},
+            },
+        )
         assert stage.fn == TokenizerUDF
 
     def test_required_input_keys(self):
-        stage = TokenizerStage(fn=TokenizerUDF, fn_constructor_kwargs={
-            "context_generators": {},
-        })
+        stage = TokenizerStage(
+            fn=TokenizerUDF,
+            fn_constructor_kwargs={
+                "context_generators": {},
+            },
+        )
         required_keys = stage.get_required_input_keys()
 
         assert "parsed" in required_keys
         assert isinstance(required_keys["parsed"], str)
 
     def test_stage_initialization_with_defaults(self):
-        stage = TokenizerStage(fn=TokenizerUDF, fn_constructor_kwargs={
-            "context_generators": {},
-        })
+        stage = TokenizerStage(
+            fn=TokenizerUDF,
+            fn_constructor_kwargs={
+                "context_generators": {},
+            },
+        )
 
         assert stage.fn == TokenizerUDF
         assert stage.compute_by_rows is True
@@ -48,7 +64,6 @@ class TestTokenizerStageConfiguration:
 
 
 class TestTokenizerStageConfig:
-
     def test_default_config(self):
         config = TokenizerStageConfig()
 
@@ -78,7 +93,6 @@ class TestTokenizerStageConfig:
 
 
 class TestTokenizerStageGetDatasetKwargs:
-
     def test_get_dataset_map_batches_kwargs(self):
         stage = TokenizerStage(
             fn=TokenizerUDF,
@@ -106,6 +120,7 @@ class TestTokenizerStageGetDatasetKwargs:
 
     def test_kwargs_include_context_generators(self):
         from unittest.mock import MagicMock
+
         mock_generators = {"primary": MagicMock(), "msa": MagicMock()}
 
         stage = TokenizerStage(
@@ -123,7 +138,6 @@ class TestTokenizerStageGetDatasetKwargs:
 
 
 class TestTokenizerStageWithContextGenerators:
-
     def test_stage_with_mock_context_generators(self):
         from unittest.mock import MagicMock
 
@@ -143,4 +157,3 @@ class TestTokenizerStageWithContextGenerators:
         )
 
         assert stage.fn_constructor_kwargs["context_generators"] == generators
-

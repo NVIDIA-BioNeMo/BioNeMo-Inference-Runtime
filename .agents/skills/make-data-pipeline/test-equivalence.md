@@ -5,7 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Test Equivalence Script
 
-Create this script as `test_pipeline_equivalence.py` in the model's test directory (or `tmp/`) when validating a ported pipeline.
+Create this script as `test_pipeline_equivalence.py` in the model's test
+directory (or `tmp/`) when validating a ported pipeline.
 
 ## Usage
 
@@ -15,8 +16,10 @@ python test_pipeline_equivalence.py --reqs reqs.json --samples samples/ --model 
 
 ## Preparation
 
-1. **`reqs.json`**: JSON array of `InputRequest` dicts. Each has `"input_id"`, `"polymers"` (with `"sequence"`, `"chain_id"`, `"msas"`, etc.).
-1. **`samples/`**: Directory with reference feature dicts saved as `<input_id>.pt` via `torch.save()` from the OSS pipeline.
+1. **`reqs.json`**: JSON array of `InputRequest` dicts. Each has `"input_id"`,
+   `"polymers"` (with `"sequence"`, `"chain_id"`, `"msas"`, etc.).
+1. **`samples/`**: Directory with reference feature dicts saved as
+   `<input_id>.pt` via `torch.save()` from the OSS pipeline.
 1. **`--model`**: The registered model name (e.g., `"openfold2_ft2"`).
 
 ## Full Script
@@ -293,19 +296,25 @@ if __name__ == "__main__":
 
 ### `parse_input_request(input_request) -> InputParsed`
 
-Converts a raw JSON `InputRequest` dict into the `InputParsed` structure the pipeline expects. Handles:
+Converts a raw JSON `InputRequest` dict into the `InputParsed` structure the
+pipeline expects. Handles:
 
 - Parsing MSA content from A3M strings via `parse_a3m_content(StringIO(...))`
 - Parsing paired MSAs for multimer inputs
-- Constructing `PolymerParsed` with `polymer_type`, `chain_id`, `sequence`, `msas`, `paired_msas`
+- Constructing `PolymerParsed` with `polymer_type`, `chain_id`, `sequence`,
+  `msas`, `paired_msas`
 
 ### `generate_feature(model_name, parsed_req, config, init_env) -> dict`
 
-Runs the complete TRT-BNM feature pipeline manually (outside of Ray Data stages):
+Runs the complete TRT-BNM feature pipeline manually (outside of Ray Data
+stages):
 
-1. **Tokenizer stage**: instantiates `ContextGenerator` from the tokenizer spec, runs it on parsed input, then applies each `TransformSpec` in order
-1. **Feature generation stage**: calls `pre_init` to set up seeds, runs each `FeatureGeneratorSpec`, merges results with context
-1. **Feature collation stage**: runs each `FeatureCollatorSpec` (including `SampleRepeater` for recycling)
+1. **Tokenizer stage**: instantiates `ContextGenerator` from the tokenizer spec,
+   runs it on parsed input, then applies each `TransformSpec` in order
+1. **Feature generation stage**: calls `pre_init` to set up seeds, runs each
+   `FeatureGeneratorSpec`, merges results with context
+1. **Feature collation stage**: runs each `FeatureCollatorSpec` (including
+   `SampleRepeater` for recycling)
 
 ### `compare_features(batch, ref_batch, input_id, rtol, atol) -> list[str]`
 
@@ -319,23 +328,36 @@ Compares two feature dicts and returns error messages:
 
 ### Stochastic feature validation
 
-Some features are inherently random (e.g., `bert_mask`, random crops, MSA sampling masks, `ref_pos` with per-residue rotation). **Do NOT skip them.** Apply ALL of the following in order; the cheap mean/std test is mandatory, the multi-seed test is optional.
+Some features are inherently random (e.g., `bert_mask`, random crops, MSA
+sampling masks, `ref_pos` with per-residue rotation). **Do NOT skip them.**
+Apply ALL of the following in order; the cheap mean/std test is mandatory, the
+multi-seed test is optional.
 
-1. **Shape + dtype + value-range checks** — non-negotiable; same as for deterministic tensors.
-1. **Internal geometry test** (coordinate features only) — pairwise intra-residue distances must match within `atol=1e-4` because rotation/translation preserves them.
-1. **Per-tensor mean & std (single run)** — element-wise mean and std of the TRT-BNM tensor must be close to the OSS reference. Cast both to `float64` first to avoid precision drift.
-1. **Per-axis mean & std (single run)** — for tensors with a known "stochastic axis" (e.g. the MSA-row axis for masked-MSA), check the marginal statistics along that axis.
-1. **Multi-seed KS test (optional)** — only when iteration cost is low. Compare per-run mean distributions with `scipy.stats.ks_2samp`. Skip when the OSS reference requires GPU inference.
+1. **Shape + dtype + value-range checks** — non-negotiable; same as for
+   deterministic tensors.
+1. **Internal geometry test** (coordinate features only) — pairwise
+   intra-residue distances must match within `atol=1e-4` because
+   rotation/translation preserves them.
+1. **Per-tensor mean & std (single run)** — element-wise mean and std of the
+   TRT-BNM tensor must be close to the OSS reference. Cast both to `float64`
+   first to avoid precision drift.
+1. **Per-axis mean & std (single run)** — for tensors with a known "stochastic
+   axis" (e.g. the MSA-row axis for masked-MSA), check the marginal statistics
+   along that axis.
+1. **Multi-seed KS test (optional)** — only when iteration cost is low. Compare
+   per-run mean distributions with `scipy.stats.ks_2samp`. Skip when the OSS
+   reference requires GPU inference.
 
-Acceptance thresholds (must be frozen in the test file before debugging, NOT relaxed afterwards):
+Acceptance thresholds (must be frozen in the test file before debugging, NOT
+relaxed afterwards):
 
-| Statistic | Threshold |
-|---|---|
-| Shape, dtype | exact equality |
-| Intra-residue pdist (coordinate features) | `atol=1e-4`, `rtol=1e-4` |
-| `\|mean_trt - mean_oss\|` | ≤ `0.05 * \|mean_oss\| + 1e-3` |
-| `\|std_trt - std_oss\|` | ≤ `0.10 * std_oss + 1e-3` |
-| Multi-seed KS p-value (optional) | > 0.01 |
+| Statistic                                 | Threshold                      |
+| ----------------------------------------- | ------------------------------ |
+| Shape, dtype                              | exact equality                 |
+| Intra-residue pdist (coordinate features) | `atol=1e-4`, `rtol=1e-4`       |
+| `\|mean_trt - mean_oss\|`                 | ≤ `0.05 * \|mean_oss\| + 1e-3` |
+| `\|std_trt - std_oss\|`                   | ≤ `0.10 * std_oss + 1e-3`      |
+| Multi-seed KS p-value (optional)          | > 0.01                         |
 
 ```python
 def compare_stochastic_stats(
@@ -404,9 +426,10 @@ def compare_stochastic_feature_multiseed(
     return errors
 ```
 
-Print the mean/std numbers alongside the PASS/FAIL — silent boolean results hide regressions:
+Print the mean/std numbers alongside the PASS/FAIL — silent boolean results hide
+regressions:
 
-```
+```text
 ref_pos:    STOCHASTIC  PASS
   mean trt=+0.000142 oss=+0.000139 diff=+0.000003 [OK]
   std  trt=1.234567 oss=1.234521 diff=+0.000046 [OK]
@@ -460,10 +483,16 @@ bert_mask:  STOCHASTIC  FAIL
 
 For Pattern B pipelines (Boltz2-style), the test flow differs:
 
-1. **Tokenizer stage produces a row dict**, not a flat tensor dict. Compare the row's tensor values and verify non-tensor data shapes/types.
-1. **Feature generators read `context["_row"]`**. Set `context = {"_row": row}` before running generators.
-1. **No single `compute_features()`** to compare against. Instead, compare the output of each generator independently, then compare the final collated output.
-1. **Context caching**: For repeated test runs, save the row via `torch.save()` (tensor parts) and `pickle.dump()` (non-tensor parts). Load and inject as `context["_row"]` to skip the tokenizer stage.
+1. **Tokenizer stage produces a row dict**, not a flat tensor dict. Compare the
+   row's tensor values and verify non-tensor data shapes/types.
+1. **Feature generators read `context["_row"]`**. Set `context = {"_row": row}`
+   before running generators.
+1. **No single `compute_features()`** to compare against. Instead, compare the
+   output of each generator independently, then compare the final collated
+   output.
+1. **Context caching**: For repeated test runs, save the row via `torch.save()`
+   (tensor parts) and `pickle.dump()` (non-tensor parts). Load and inject as
+   `context["_row"]` to skip the tokenizer stage.
 
 ```python
 # Pattern B test flow

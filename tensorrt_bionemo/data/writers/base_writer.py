@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,11 +17,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from tensorrt_bionemo.data.schemas.basic import (AtomType, AtomTypes,
-                                                 FoldingOutput, ResType,
-                                                 ResTypes)
+from tensorrt_bionemo.data.schemas.basic import AtomType, FoldingOutput, ResType
 from tensorrt_bionemo.logger import logger
-
 
 # Shared helpers used by ``CIFWriter`` and ``PDBWriter`` to map residue
 # names + classify chains consistently. Centralised here so the two writers
@@ -132,14 +129,8 @@ class BaseWriter(ABC):
         self.atom_type_mapping = atom_type_mapping
 
         # Build lists from mappings
-        self.res_types = [
-            y for _, y in sorted(self.res_type_mapping.items(),
-                                 key=lambda pair: pair[0])
-        ]
-        self.atom_types = [
-            y for _, y in sorted(self.atom_type_mapping.items(),
-                                 key=lambda pair: pair[0])
-        ]
+        self.res_types = [y for _, y in sorted(self.res_type_mapping.items(), key=lambda pair: pair[0])]
+        self.atom_types = [y for _, y in sorted(self.atom_type_mapping.items(), key=lambda pair: pair[0])]
         logger.debug("BaseWriter.__init__() end")
 
     def set_output_path(self, output_path: str):

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,18 +16,13 @@
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import \
-    get_dual_gemm_x0_x1_op
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import \
-    get_dual_gemm_x_x_op
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 
 from . import make_left_aligned_pair_mask
 
 
-def create_linear_layers(K: int = 128,
-                         N: int = 256,
-                         dtype=torch.bfloat16,
-                         has_bias=False):
+def create_linear_layers(K: int = 128, N: int = 256, dtype=torch.bfloat16, has_bias=False):
     linear0 = nn.Linear(K, N, dtype=torch.float32, bias=has_bias).cuda()
     torch.nn.init.xavier_uniform_(linear0.weight)
     if has_bias:
@@ -47,12 +42,8 @@ def test_fused_sigmoid_gated_dual_gemm():
     dtype = torch.bfloat16
     K = 128
     N = 256
-    linear0, linear1 = create_linear_layers(K=K,
-                                            N=N,
-                                            dtype=dtype,
-                                            has_bias=False)
-    x = torch.randn(1, seq_len, seq_len, K,
-                    device="cuda").contiguous().to(dtype)
+    linear0, linear1 = create_linear_layers(K=K, N=N, dtype=dtype, has_bias=False)
+    x = torch.randn(1, seq_len, seq_len, K, device="cuda").contiguous().to(dtype)
     # The default ``get_dual_gemm_x_x_op`` dispatch (pair_mask_left_aligned=
     # True) routes to the CuTe LM kernel, which masks via a per-row prefix
     # count -- a random binary mask violates that contract, so use a
@@ -62,23 +53,17 @@ def test_fused_sigmoid_gated_dual_gemm():
     ref_x = ref_x * mask.unsqueeze(-1)
 
     op = get_dual_gemm_x_x_op(dtype, transpose_out=False, N=N, K=K)
-    out = op(x, linear0.weight, linear1.weight, linear0.bias, linear1.bias,
-             mask)
+    out = op(x, linear0.weight, linear1.weight, linear0.bias, linear1.bias, mask)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)
 
-    x = torch.randn(1, seq_len, seq_len, K,
-                    device="cuda").contiguous().to(dtype)
-    linear0, linear1 = create_linear_layers(K=K,
-                                            N=N,
-                                            dtype=dtype,
-                                            has_bias=True)
+    x = torch.randn(1, seq_len, seq_len, K, device="cuda").contiguous().to(dtype)
+    linear0, linear1 = create_linear_layers(K=K, N=N, dtype=dtype, has_bias=True)
 
     ref_x = linear0(x).sigmoid() * linear1(x)
     ref_x = ref_x * mask.unsqueeze(-1)
 
     op = get_dual_gemm_x_x_op(dtype, transpose_out=False, N=N, K=K)
-    out = op(x, linear0.weight, linear1.weight, linear0.bias, linear1.bias,
-             mask)
+    out = op(x, linear0.weight, linear1.weight, linear0.bias, linear1.bias, mask)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)
 
 
@@ -88,27 +73,17 @@ def test_fused_sigmoid_gated_dual_gemm_dual_x():
     dtype = torch.bfloat16
     K = 128
     N = 256
-    linear0, linear1 = create_linear_layers(K=K,
-                                            N=N,
-                                            dtype=dtype,
-                                            has_bias=False)
-    x0 = torch.randn(1, seq_len, seq_len, K,
-                     device="cuda").contiguous().to(dtype)
-    x1 = torch.randn(1, seq_len, seq_len, K,
-                     device="cuda").contiguous().to(dtype)
+    linear0, linear1 = create_linear_layers(K=K, N=N, dtype=dtype, has_bias=False)
+    x0 = torch.randn(1, seq_len, seq_len, K, device="cuda").contiguous().to(dtype)
+    x1 = torch.randn(1, seq_len, seq_len, K, device="cuda").contiguous().to(dtype)
     ref_x = linear0(x0).sigmoid() * linear1(x1)
 
     op = get_dual_gemm_x0_x1_op(dtype, transpose_out=False, N=N, K=K)
-    out = op(x0, x1, linear0.weight, linear1.weight, linear0.bias,
-             linear1.bias, None)
+    out = op(x0, x1, linear0.weight, linear1.weight, linear0.bias, linear1.bias, None)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)
 
-    linear0, linear1 = create_linear_layers(K=K,
-                                            N=N,
-                                            dtype=dtype,
-                                            has_bias=True)
+    linear0, linear1 = create_linear_layers(K=K, N=N, dtype=dtype, has_bias=True)
     ref_x = linear0(x0).sigmoid() * linear1(x1)
     op = get_dual_gemm_x0_x1_op(dtype, transpose_out=False, N=N, K=K)
-    out = op(x0, x1, linear0.weight, linear1.weight, linear0.bias,
-             linear1.bias, None)
+    out = op(x0, x1, linear0.weight, linear1.weight, linear0.bias, linear1.bias, None)
     torch.testing.assert_close(out, ref_x, atol=5e-1, rtol=1e-2)

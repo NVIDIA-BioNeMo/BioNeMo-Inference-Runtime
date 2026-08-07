@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2021 DeepMind Technologies Limited
 # Copyright 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,14 +31,13 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import List
 
 import torch
 
 from tensorrt_bionemo._torch.modules.openfold2.utils.geometry import vector
 from tensorrt_bionemo._torch.tensor_utils import tensor_tree_map
 
-COMPONENTS = ['xx', 'xy', 'xz', 'yx', 'yy', 'yz', 'zx', 'zy', 'zz']
+COMPONENTS = ["xx", "xy", "xz", "yx", "yy", "yz", "zx", "zy", "zz"]
 
 
 def get_field_names(cls):
@@ -35,7 +49,8 @@ def get_field_names(cls):
 @dataclasses.dataclass(frozen=True)
 class Rot3Array:
     """Rot3Array Matrix in 3 dimensional Space implemented as struct of arrays."""
-    xx: torch.Tensor = dataclasses.field(metadata={'dtype': torch.float32})
+
+    xx: torch.Tensor = dataclasses.field(metadata={"dtype": torch.float32})
     xy: torch.Tensor
     xz: torch.Tensor
     yx: torch.Tensor
@@ -49,15 +64,11 @@ class Rot3Array:
 
     def __getitem__(self, index):
         field_names = get_field_names(Rot3Array)
-        return Rot3Array(
-            **{name: getattr(self, name)[index]
-               for name in field_names})
+        return Rot3Array(**{name: getattr(self, name)[index] for name in field_names})
 
     def __mul__(self, other: torch.Tensor):
         field_names = get_field_names(Rot3Array)
-        return Rot3Array(
-            **{name: getattr(self, name) * other
-               for name in field_names})
+        return Rot3Array(**{name: getattr(self, name) * other for name in field_names})
 
     def __matmul__(self, other: Rot3Array) -> Rot3Array:
         """Composes two Rot3Arrays."""
@@ -68,30 +79,26 @@ class Rot3Array:
 
     def map_tensor_fn(self, fn) -> Rot3Array:
         field_names = get_field_names(Rot3Array)
-        return Rot3Array(
-            **{name: fn(getattr(self, name))
-               for name in field_names})
+        return Rot3Array(**{name: fn(getattr(self, name)) for name in field_names})
 
     def inverse(self) -> Rot3Array:
         """Returns inverse of Rot3Array."""
-        return Rot3Array(self.xx, self.yx, self.zx, self.xy, self.yy, self.zy,
-                         self.xz, self.yz, self.zz)
+        return Rot3Array(self.xx, self.yx, self.zx, self.xy, self.yy, self.zy, self.xz, self.yz, self.zz)
 
     def apply_to_point(self, point: vector.Vec3Array) -> vector.Vec3Array:
         """Applies Rot3Array to point."""
         return vector.Vec3Array(
             self.xx * point.x + self.xy * point.y + self.xz * point.z,
             self.yx * point.x + self.yy * point.y + self.yz * point.z,
-            self.zx * point.x + self.zy * point.y + self.zz * point.z)
+            self.zx * point.x + self.zy * point.y + self.zz * point.z,
+        )
 
-    def apply_inverse_to_point(self,
-                               point: vector.Vec3Array) -> vector.Vec3Array:
+    def apply_inverse_to_point(self, point: vector.Vec3Array) -> vector.Vec3Array:
         """Applies inverse Rot3Array to point."""
         return self.inverse().apply_to_point(point)
 
     def unsqueeze(self, dim: int):
-        return Rot3Array(*tensor_tree_map(
-            lambda t: t.unsqueeze(dim), [getattr(self, c) for c in COMPONENTS]))
+        return Rot3Array(*tensor_tree_map(lambda t: t.unsqueeze(dim), [getattr(self, c) for c in COMPONENTS]))
 
     def stop_gradient(self) -> Rot3Array:
         return Rot3Array(*[getattr(self, c).detach() for c in COMPONENTS])
@@ -104,8 +111,7 @@ class Rot3Array:
         return cls(ones, zeros, zeros, zeros, ones, zeros, zeros, zeros, ones)
 
     @classmethod
-    def from_two_vectors(cls, e0: vector.Vec3Array,
-                         e1: vector.Vec3Array) -> Rot3Array:
+    def from_two_vectors(cls, e0: vector.Vec3Array, e1: vector.Vec3Array) -> Rot3Array:
         """Construct Rot3Array from two Vectors.
 
         Rot3Array is constructed such that in the corresponding frame 'e0' lies on
@@ -135,25 +141,28 @@ class Rot3Array:
 
     def to_tensor(self) -> torch.Tensor:
         """Convert Rot3Array to array of shape [..., 3, 3]."""
-        return torch.stack([
-            torch.stack([self.xx, self.xy, self.xz], dim=-1),
-            torch.stack([self.yx, self.yy, self.yz], dim=-1),
-            torch.stack([self.zx, self.zy, self.zz], dim=-1)
-        ],
-                           dim=-2)
+        return torch.stack(
+            [
+                torch.stack([self.xx, self.xy, self.xz], dim=-1),
+                torch.stack([self.yx, self.yy, self.yz], dim=-1),
+                torch.stack([self.zx, self.zy, self.zz], dim=-1),
+            ],
+            dim=-2,
+        )
 
     @classmethod
-    def from_quaternion(cls,
-                        w: torch.Tensor,
-                        x: torch.Tensor,
-                        y: torch.Tensor,
-                        z: torch.Tensor,
-                        normalize: bool = True,
-                        eps: float = 1e-6) -> Rot3Array:
+    def from_quaternion(
+        cls,
+        w: torch.Tensor,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        z: torch.Tensor,
+        normalize: bool = True,
+        eps: float = 1e-6,
+    ) -> Rot3Array:
         """Construct Rot3Array from components of quaternion."""
         if normalize:
-            inv_norm = torch.rsqrt(
-                torch.clamp(w**2 + x**2 + y**2 + z**2, min=eps))
+            inv_norm = torch.rsqrt(torch.clamp(w**2 + x**2 + y**2 + z**2, min=eps))
             w = w * inv_norm
             x = x * inv_norm
             y = y * inv_norm
@@ -172,15 +181,10 @@ class Rot3Array:
     def reshape(self, new_shape):
         field_names = get_field_names(Rot3Array)
         reshape_fn = lambda t: t.reshape(new_shape)
-        return Rot3Array(
-            **{name: reshape_fn(getattr(self, name))
-               for name in field_names})
+        return Rot3Array(**{name: reshape_fn(getattr(self, name)) for name in field_names})
 
     @classmethod
-    def cat(cls, rots: List[Rot3Array], dim: int) -> Rot3Array:
+    def cat(cls, rots: list[Rot3Array], dim: int) -> Rot3Array:
         field_names = get_field_names(Rot3Array)
         cat_fn = lambda l: torch.cat(l, dim=dim)
-        return cls(**{
-            name: cat_fn([getattr(r, name) for r in rots])
-            for name in field_names
-        })
+        return cls(**{name: cat_fn([getattr(r, name) for r in rots]) for name in field_names})

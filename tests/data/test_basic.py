@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,19 +20,22 @@ import pytest
 
 from tensorrt_bionemo.data.parsers import read_a3m
 from tensorrt_bionemo.data.parsers.fasta import read_fasta
-from tensorrt_bionemo.data.schemas.basic import (AtomTypes, FoldingOutput,
-                                                 InputRequest, MSARecord,
-                                                 Polymer, PolymerType,
-                                                 ResTypes, Template)
+from tensorrt_bionemo.data.schemas.basic import (
+    AtomTypes,
+    FoldingOutput,
+    InputRequest,
+    MSARecord,
+    Polymer,
+    PolymerType,
+    ResTypes,
+    Template,
+)
 
-SAMPLES_DIR = Path(
-    __file__
-).parent.parent.parent / "examples" / "data" / "samples" / "monomers"
+SAMPLES_DIR = Path(__file__).parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 FASTA_FILES = ["T1031.fasta", "T1033.fasta", "T1047s1.fasta", "T1094.fasta"]
 
 
 class TestPolymer:
-
     def test_create_molecule_from_fasta(self):
         fasta_path = SAMPLES_DIR / "T1031.fasta"
         parsed = read_fasta(fasta_path)
@@ -59,9 +62,7 @@ class TestPolymer:
         assert len(molecule["sequence"]) == 100
 
     def test_manual_molecule_creation(self):
-        molecule = Polymer(polymer_type=PolymerType.PROTEIN,
-                           chain_id="B",
-                           sequence="ACDEFGHIKLMNPQRSTVWY")
+        molecule = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="B", sequence="ACDEFGHIKLMNPQRSTVWY")
         assert molecule["chain_id"] == "B"
         assert molecule["polymer_type"] == PolymerType.PROTEIN.value
         assert molecule["sequence"] == "ACDEFGHIKLMNPQRSTVWY"
@@ -79,58 +80,46 @@ class TestPolymer:
             Polymer(polymer_type=PolymerType.SMILES_LIGAND, chain_id="L")
 
     def test_ccd_ligand_create(self):
-        ligand = Polymer(polymer_type=PolymerType.CCD_LIGAND,
-                         chain_id="L",
-                         sequence="ATP")
+        ligand = Polymer(polymer_type=PolymerType.CCD_LIGAND, chain_id="L", sequence="ATP")
         assert ligand["polymer_type"] == PolymerType.CCD_LIGAND.value
         assert ligand["sequence"] == "ATP"
 
     def test_ccd_ligand_create_multi_component(self):
-        ligand = Polymer(polymer_type=PolymerType.CCD_LIGAND,
-                         chain_id="L",
-                         sequence="ATP_FAD")
+        ligand = Polymer(polymer_type=PolymerType.CCD_LIGAND, chain_id="L", sequence="ATP_FAD")
         assert ligand["sequence"] == "ATP_FAD"
         assert ligand["sequence"].split("_") == ["ATP", "FAD"]
 
-    @pytest.mark.parametrize("bad_sequence", [
-        "atp",
-        "ATP_",
-        "_ATP",
-        "ATP__FAD",
-        "ATP-FAD",
-        "ATP FAD",
-        "TOOLONG",
-        "",
-    ])
+    @pytest.mark.parametrize(
+        "bad_sequence",
+        [
+            "atp",
+            "ATP_",
+            "_ATP",
+            "ATP__FAD",
+            "ATP-FAD",
+            "ATP FAD",
+            "TOOLONG",
+            "",
+        ],
+    )
     def test_ccd_ligand_rejects_invalid_sequence(self, bad_sequence):
         with pytest.raises(ValueError):
-            Polymer(polymer_type=PolymerType.CCD_LIGAND,
-                    chain_id="L",
-                    sequence=bad_sequence)
+            Polymer(polymer_type=PolymerType.CCD_LIGAND, chain_id="L", sequence=bad_sequence)
 
     def test_smiles_ligand_create(self):
-        ligand = Polymer(polymer_type=PolymerType.SMILES_LIGAND,
-                         chain_id="L",
-                         sequence="CCO")
+        ligand = Polymer(polymer_type=PolymerType.SMILES_LIGAND, chain_id="L", sequence="CCO")
         assert ligand["polymer_type"] == PolymerType.SMILES_LIGAND.value
         assert ligand["sequence"] == "CCO"
 
     def test_ligand_types_reject_templates(self):
         tmpl = Template(content="data_x\n", format="cif")
         with pytest.raises(ValueError):
-            Polymer(polymer_type=PolymerType.CCD_LIGAND,
-                    chain_id="L",
-                    sequence="ATP",
-                    templates=[tmpl])
+            Polymer(polymer_type=PolymerType.CCD_LIGAND, chain_id="L", sequence="ATP", templates=[tmpl])
         with pytest.raises(ValueError):
-            Polymer(polymer_type=PolymerType.SMILES_LIGAND,
-                    chain_id="L",
-                    sequence="CCO",
-                    templates=[tmpl])
+            Polymer(polymer_type=PolymerType.SMILES_LIGAND, chain_id="L", sequence="CCO", templates=[tmpl])
 
 
 class TestResTypes:
-
     def test_parse_residues_from_sample(self):
         fasta_path = SAMPLES_DIR / "T1031.fasta"
         parsed = read_fasta(fasta_path)
@@ -164,7 +153,6 @@ class TestResTypes:
 
 
 class TestAtomTypes:
-
     def test_basic_atom_types(self):
         assert AtomTypes.N.name == "N"
         assert AtomTypes.CA.name == "CA"
@@ -181,7 +169,6 @@ class TestAtomTypes:
 
 
 class TestPolymerType:
-
     def test_polymer_types(self):
         assert PolymerType.PROTEIN.value == "protein"
         assert PolymerType.RNA.value == "rna"
@@ -200,69 +187,60 @@ class TestPolymerType:
         token-feature pipeline; otherwise a CCD or SMILES ligand would be
         silently routed to protein/RNA/DNA."""
         from tensorrt_bionemo.pipeline.models.openfold3.const import (
-            MOL_TYPE_DNA, MOL_TYPE_LIGAND, MOL_TYPE_PROTEIN, MOL_TYPE_RNA,
-            POLYMER_TYPE_TO_MOL_TYPE)
-        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.PROTEIN.value] == \
-            MOL_TYPE_PROTEIN
+            MOL_TYPE_DNA,
+            MOL_TYPE_LIGAND,
+            MOL_TYPE_PROTEIN,
+            MOL_TYPE_RNA,
+            POLYMER_TYPE_TO_MOL_TYPE,
+        )
+
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.PROTEIN.value] == MOL_TYPE_PROTEIN
         assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.RNA.value] == MOL_TYPE_RNA
         assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.DNA.value] == MOL_TYPE_DNA
-        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.CCD_LIGAND.value] == \
-            MOL_TYPE_LIGAND
-        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.SMILES_LIGAND.value] == \
-            MOL_TYPE_LIGAND
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.CCD_LIGAND.value] == MOL_TYPE_LIGAND
+        assert POLYMER_TYPE_TO_MOL_TYPE[PolymerType.SMILES_LIGAND.value] == MOL_TYPE_LIGAND
 
 
 class TestInputRequest:
-
     def test_create_input_request_with_polymers(self):
-        polymer = Polymer(polymer_type=PolymerType.PROTEIN,
-                          chain_id="A",
-                          sequence="ACDE")
+        polymer = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="ACDE")
         request = InputRequest(input_id="test", polymers=[polymer])
         assert len(request["polymers"]) == 1
         assert request["polymers"][0]["sequence"] == "ACDE"
 
 
 class TestFoldingOutput:
-
     def test_create_folding_output(self):
         num_res = 95
         num_atom_type = 37
-        atom_positions = np.random.randn(num_res, num_atom_type,
-                                         3).astype(np.float32)
-        residue_types = np.random.randint(0,
-                                          21,
-                                          size=(num_res, ),
-                                          dtype=np.int32)
+        atom_positions = np.random.randn(num_res, num_atom_type, 3).astype(np.float32)
+        residue_types = np.random.randint(0, 21, size=(num_res,), dtype=np.int32)
         atom_mask = np.ones((num_res, num_atom_type), dtype=np.float32)
         residue_indices = np.arange(num_res, dtype=np.int32)
-        b_factors = np.random.rand(num_res, num_atom_type).astype(
-            np.float32) * 50
+        b_factors = np.random.rand(num_res, num_atom_type).astype(np.float32) * 50
         chain_indices = np.zeros(num_res, dtype=np.int32)
 
-        output = FoldingOutput(atom_positions=atom_positions,
-                               residue_types=residue_types,
-                               atom_mask=atom_mask,
-                               residue_indices=residue_indices,
-                               b_factors=b_factors,
-                               chain_indices=chain_indices)
+        output = FoldingOutput(
+            atom_positions=atom_positions,
+            residue_types=residue_types,
+            atom_mask=atom_mask,
+            residue_indices=residue_indices,
+            b_factors=b_factors,
+            chain_indices=chain_indices,
+        )
 
         assert output["atom_positions"].shape == (num_res, num_atom_type, 3)
-        assert output["residue_types"].shape == (num_res, )
+        assert output["residue_types"].shape == (num_res,)
         assert output["atom_mask"].shape == (num_res, num_atom_type)
-        assert output["residue_indices"].shape == (num_res, )
+        assert output["residue_indices"].shape == (num_res,)
         assert output["b_factors"].shape == (num_res, num_atom_type)
-        assert output["chain_indices"].shape == (num_res, )
+        assert output["chain_indices"].shape == (num_res,)
 
     def test_create_folding_output_with_confidence_metrics(self):
         num_res = 95
         num_atom_type = 37
-        atom_positions = np.random.randn(num_res, num_atom_type,
-                                         3).astype(np.float32)
-        residue_types = np.random.randint(0,
-                                          21,
-                                          size=(num_res, ),
-                                          dtype=np.int32)
+        atom_positions = np.random.randn(num_res, num_atom_type, 3).astype(np.float32)
+        residue_types = np.random.randint(0, 21, size=(num_res,), dtype=np.int32)
         atom_mask = np.ones((num_res, num_atom_type), dtype=np.float32)
         residue_indices = np.arange(num_res, dtype=np.int32)
         plddt = np.random.rand(num_res).astype(np.float32) * 100
@@ -280,7 +258,7 @@ class TestFoldingOutput:
             max_pae=31.75,
         )
 
-        assert output["plddt"].shape == (num_res, )
+        assert output["plddt"].shape == (num_res,)
         assert output["ptm"] == pytest.approx(0.85)
         assert output["iptm"] == pytest.approx(0.72)
         assert output["pae"].shape == (num_res, num_res)
@@ -293,23 +271,24 @@ class TestFoldingOutput:
         num_res = len(sequence)
         num_atom_type = AtomTypes.num_types()
 
-        residue_types = np.array([
-            ResTypes.basic_20_residue_types().index(
-                ResTypes.from_string(r, return_unknown=True))
-            if ResTypes.from_string(r) in ResTypes.basic_20_residue_types()
-            else 20 for r in sequence
-        ],
-                                 dtype=np.int32)
+        residue_types = np.array(
+            [
+                ResTypes.basic_20_residue_types().index(ResTypes.from_string(r, return_unknown=True))
+                if ResTypes.from_string(r) in ResTypes.basic_20_residue_types()
+                else 20
+                for r in sequence
+            ],
+            dtype=np.int32,
+        )
 
         output = FoldingOutput(
-            atom_positions=np.zeros((num_res, num_atom_type, 3),
-                                    dtype=np.float32),
+            atom_positions=np.zeros((num_res, num_atom_type, 3), dtype=np.float32),
             residue_types=residue_types,
             atom_mask=np.zeros((num_res, num_atom_type), dtype=np.float32),
             residue_indices=np.arange(num_res, dtype=np.int32),
         )
 
-        assert output["residue_types"].shape == (100, )
+        assert output["residue_types"].shape == (100,)
         assert output["b_factors"] is None
         assert output["chain_indices"] is None
         assert output["plddt"] is None
@@ -321,14 +300,11 @@ class TestFoldingOutput:
     def test_get_scores_with_all_metrics(self):
         num_res = 10
         num_atom_type = 37
-        plddt = np.array(
-            [85.0, 90.1, 72.3, 95.0, 60.5, 88.2, 91.0, 77.4, 83.6, 69.8],
-            dtype=np.float32)
+        plddt = np.array([85.0, 90.1, 72.3, 95.0, 60.5, 88.2, 91.0, 77.4, 83.6, 69.8], dtype=np.float32)
         pae = np.random.rand(num_res, num_res).astype(np.float32) * 20.0
 
         output = FoldingOutput(
-            atom_positions=np.zeros((num_res, num_atom_type, 3),
-                                    dtype=np.float32),
+            atom_positions=np.zeros((num_res, num_atom_type, 3), dtype=np.float32),
             residue_types=np.zeros(num_res, dtype=np.int32),
             atom_mask=np.zeros((num_res, num_atom_type), dtype=np.float32),
             residue_indices=np.arange(num_res, dtype=np.int32),
@@ -355,8 +331,7 @@ class TestFoldingOutput:
         num_atom_type = 37
 
         output = FoldingOutput(
-            atom_positions=np.zeros((num_res, num_atom_type, 3),
-                                    dtype=np.float32),
+            atom_positions=np.zeros((num_res, num_atom_type, 3), dtype=np.float32),
             residue_types=np.zeros(num_res, dtype=np.int32),
             atom_mask=np.zeros((num_res, num_atom_type), dtype=np.float32),
             residue_indices=np.arange(num_res, dtype=np.int32),
@@ -374,14 +349,13 @@ class TestFoldingOutput:
         num_atom_type = 37
 
         output = FoldingOutput(
-            atom_positions=np.zeros((num_res, num_atom_type, 3),
-                                    dtype=np.float32),
+            atom_positions=np.zeros((num_res, num_atom_type, 3), dtype=np.float32),
             residue_types=np.zeros(num_res, dtype=np.int32),
             atom_mask=np.zeros((num_res, num_atom_type), dtype=np.float32),
             residue_indices=np.arange(num_res, dtype=np.int32),
-            ptm=float('nan'),
-            iptm=float('nan'),
-            max_pae=float('nan'),
+            ptm=float("nan"),
+            iptm=float("nan"),
+            max_pae=float("nan"),
         )
 
         scores = output.get_scores()
@@ -391,7 +365,6 @@ class TestFoldingOutput:
 
 
 class TestMSARecord:
-
     def test_create_with_content(self):
         content = ">seq1\nACDEFGHIKLMNPQRSTVWY\n>seq2\nACDEFGHIKLMNPQRSTVWY"
         record = MSARecord(content=content, format="a3m")
@@ -421,7 +394,6 @@ class TestMSARecord:
 
 
 class TestTemplate:
-
     def test_create_with_content(self):
         content = "data_sample\n_atom_site.id 1\n"
         template = Template(content=content, format="cif")
@@ -442,14 +414,10 @@ class TestTemplate:
 
 
 class TestPolymerWithMSA:
-
     def test_molecule_with_msa_content(self):
         msa_content = ">seq1\nACDEFGHIKL\n>seq2\nACDEFGHIKL"
         msa_record = MSARecord(content=msa_content)
-        molecule = Polymer(polymer_type=PolymerType.PROTEIN,
-                           chain_id="A",
-                           sequence="ACDEFGHIKL",
-                           msas=[msa_record])
+        molecule = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="ACDEFGHIKL", msas=[msa_record])
         assert molecule["msas"][0]["content"] == msa_content
 
     def test_molecule_with_msa_path(self):
@@ -459,10 +427,7 @@ class TestPolymerWithMSA:
         parsed = read_fasta(fasta_path)
         sequence = parsed["sequences"][0]["sequence"]
 
-        molecule = Polymer(polymer_type=PolymerType.PROTEIN,
-                           chain_id="A",
-                           sequence=sequence,
-                           msas=[msa_record])
+        molecule = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence=sequence, msas=[msa_record])
         assert molecule["msas"][0].is_file() is True
         content = molecule["msas"][0].get_content()
         assert content.startswith(">")
@@ -471,15 +436,11 @@ class TestPolymerWithMSA:
     def test_molecule_with_multiple_msas(self):
         msa1 = MSARecord(content=">seq1\nACDE")
         msa2 = MSARecord(content=">seq2\nFGHI")
-        molecule = Polymer(polymer_type=PolymerType.PROTEIN,
-                           chain_id="A",
-                           sequence="ACDEFGHI",
-                           msas=[msa1, msa2])
+        molecule = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="ACDEFGHI", msas=[msa1, msa2])
         assert len(molecule["msas"]) == 2
 
 
 class TestA3MIntegration:
-
     def test_read_a3m_from_samples(self):
         a3m_path = SAMPLES_DIR / "msas" / "T1031.a3m"
         parsed = read_a3m(a3m_path)

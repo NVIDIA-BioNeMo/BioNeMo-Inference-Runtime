@@ -14,14 +14,16 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import pytest
 import torch
 
 from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import (
-    GatedSigmoidCuTe, _classify_m_range, _invoke_vanilla_gated_sigmoid,
-    get_gated_sigmoid_op)
+    GatedSigmoidCuTe,
+    _classify_m_range,
+    _invoke_vanilla_gated_sigmoid,
+    get_gated_sigmoid_op,
+)
 from tests._torch import SM_VERSION, skip_if_no_cutedsl
 
 
@@ -29,12 +31,10 @@ def _ref_gated_sigmoid(
     s: torch.Tensor,
     weight: torch.Tensor,
     mha_out: torch.Tensor,
-    bias: Optional[torch.Tensor] = None,
+    bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Reference implementation in fp32 for tight tolerance checks."""
-    gate = torch.nn.functional.linear(
-        s.float(), weight.float(),
-        bias.float() if bias is not None else None)
+    gate = torch.nn.functional.linear(s.float(), weight.float(), bias.float() if bias is not None else None)
     return (gate.sigmoid() * mha_out.float()).to(s.dtype)
 
 
@@ -91,34 +91,37 @@ class Scenario:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(M_values=SHORT_M_VALUES, has_bias=True, dtype=torch.bfloat16),
-    Scenario(M_values=SHORT_M_VALUES, has_bias=False, dtype=torch.bfloat16),
-    Scenario(M_values=MEDIUM_M_VALUES, has_bias=True, dtype=torch.bfloat16),
-    Scenario(M_values=MEDIUM_M_VALUES, has_bias=False, dtype=torch.bfloat16),
-    Scenario(M_values=LONG_M_VALUES, has_bias=True, dtype=torch.bfloat16),
-    Scenario(M_values=LONG_M_VALUES, has_bias=False, dtype=torch.bfloat16),
-    Scenario(M_values=SHORT_M_VALUES, has_bias=True, dtype=torch.float16),
-    Scenario(M_values=SHORT_M_VALUES, has_bias=False, dtype=torch.float16),
-    Scenario(M_values=MEDIUM_M_VALUES, has_bias=True, dtype=torch.float16),
-    Scenario(M_values=MEDIUM_M_VALUES, has_bias=False, dtype=torch.float16),
-    Scenario(M_values=LONG_M_VALUES, has_bias=True, dtype=torch.float16),
-    Scenario(M_values=LONG_M_VALUES, has_bias=False, dtype=torch.float16),
-],
-                         ids=[
-                             "short_bias_bf16",
-                             "short_nobias_bf16",
-                             "medium_bias_bf16",
-                             "medium_nobias_bf16",
-                             "long_bias_bf16",
-                             "long_nobias_bf16",
-                             "short_bias_fp16",
-                             "short_nobias_fp16",
-                             "medium_bias_fp16",
-                             "medium_nobias_fp16",
-                             "long_bias_fp16",
-                             "long_nobias_fp16",
-                         ])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(M_values=SHORT_M_VALUES, has_bias=True, dtype=torch.bfloat16),
+        Scenario(M_values=SHORT_M_VALUES, has_bias=False, dtype=torch.bfloat16),
+        Scenario(M_values=MEDIUM_M_VALUES, has_bias=True, dtype=torch.bfloat16),
+        Scenario(M_values=MEDIUM_M_VALUES, has_bias=False, dtype=torch.bfloat16),
+        Scenario(M_values=LONG_M_VALUES, has_bias=True, dtype=torch.bfloat16),
+        Scenario(M_values=LONG_M_VALUES, has_bias=False, dtype=torch.bfloat16),
+        Scenario(M_values=SHORT_M_VALUES, has_bias=True, dtype=torch.float16),
+        Scenario(M_values=SHORT_M_VALUES, has_bias=False, dtype=torch.float16),
+        Scenario(M_values=MEDIUM_M_VALUES, has_bias=True, dtype=torch.float16),
+        Scenario(M_values=MEDIUM_M_VALUES, has_bias=False, dtype=torch.float16),
+        Scenario(M_values=LONG_M_VALUES, has_bias=True, dtype=torch.float16),
+        Scenario(M_values=LONG_M_VALUES, has_bias=False, dtype=torch.float16),
+    ],
+    ids=[
+        "short_bias_bf16",
+        "short_nobias_bf16",
+        "medium_bias_bf16",
+        "medium_nobias_bf16",
+        "long_bias_bf16",
+        "long_nobias_bf16",
+        "short_bias_fp16",
+        "short_nobias_fp16",
+        "medium_bias_fp16",
+        "medium_nobias_fp16",
+        "long_bias_fp16",
+        "long_nobias_fp16",
+    ],
+)
 def test_gated_sigmoid_cute_2d(sc: Scenario):
     """Test CuTeDSL kernel with 2-D [M, K] inputs across M-ranges."""
     skip_if_no_cutedsl()
@@ -126,8 +129,7 @@ def test_gated_sigmoid_cute_2d(sc: Scenario):
     cute_op = GatedSigmoidCuTe()
 
     W = torch.randn(sc.N_out, sc.K, dtype=sc.dtype, device="cuda")
-    bias = torch.randn(sc.N_out, dtype=sc.dtype,
-                       device="cuda") if sc.has_bias else None
+    bias = torch.randn(sc.N_out, dtype=sc.dtype, device="cuda") if sc.has_bias else None
 
     for M in sc.M_values:
         s = torch.randn(M, sc.K, dtype=sc.dtype, device="cuda")
@@ -137,53 +139,29 @@ def test_gated_sigmoid_cute_2d(sc: Scenario):
         out = cute_op(s, W, mha, bias)
 
         torch.testing.assert_close(
-            out,
-            ref,
-            atol=sc.atol,
-            rtol=sc.rtol,
-            msg=lambda m: f"M={M}, range={_classify_m_range(M)}: {m}")
+            out, ref, atol=sc.atol, rtol=sc.rtol, msg=lambda m, M=M: f"M={M}, range={_classify_m_range(M)}: {m}"
+        )
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(M_values=[33, 127, 511],
-             has_bias=True,
-             dtype=torch.bfloat16,
-             N_out=64,
-             K=64),
-    Scenario(M_values=[33, 127, 511],
-             has_bias=False,
-             dtype=torch.bfloat16,
-             N_out=64,
-             K=64),
-    Scenario(M_values=[33, 127, 511],
-             has_bias=True,
-             dtype=torch.bfloat16,
-             N_out=256,
-             K=128),
-    Scenario(M_values=[33, 127, 511],
-             has_bias=False,
-             dtype=torch.bfloat16,
-             N_out=256,
-             K=128),
-    Scenario(M_values=[33, 127, 511],
-             has_bias=True,
-             dtype=torch.bfloat16,
-             N_out=768,
-             K=384),
-    Scenario(M_values=[33, 127, 511],
-             has_bias=False,
-             dtype=torch.bfloat16,
-             N_out=768,
-             K=384),
-],
-                         ids=[
-                             "N64_K64_bias",
-                             "N64_K64_nobias",
-                             "N256_K128_bias",
-                             "N256_K128_nobias",
-                             "N768_K384_bias",
-                             "N768_K384_nobias",
-                         ])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(M_values=[33, 127, 511], has_bias=True, dtype=torch.bfloat16, N_out=64, K=64),
+        Scenario(M_values=[33, 127, 511], has_bias=False, dtype=torch.bfloat16, N_out=64, K=64),
+        Scenario(M_values=[33, 127, 511], has_bias=True, dtype=torch.bfloat16, N_out=256, K=128),
+        Scenario(M_values=[33, 127, 511], has_bias=False, dtype=torch.bfloat16, N_out=256, K=128),
+        Scenario(M_values=[33, 127, 511], has_bias=True, dtype=torch.bfloat16, N_out=768, K=384),
+        Scenario(M_values=[33, 127, 511], has_bias=False, dtype=torch.bfloat16, N_out=768, K=384),
+    ],
+    ids=[
+        "N64_K64_bias",
+        "N64_K64_nobias",
+        "N256_K128_bias",
+        "N256_K128_nobias",
+        "N768_K384_bias",
+        "N768_K384_nobias",
+    ],
+)
 def test_gated_sigmoid_cute_varied_kn(sc: Scenario):
     """Test with non-default K and N_out dimensions."""
     skip_if_no_cutedsl()
@@ -191,8 +169,7 @@ def test_gated_sigmoid_cute_varied_kn(sc: Scenario):
     cute_op = GatedSigmoidCuTe()
 
     W = torch.randn(sc.N_out, sc.K, dtype=sc.dtype, device="cuda")
-    bias = torch.randn(sc.N_out, dtype=sc.dtype,
-                       device="cuda") if sc.has_bias else None
+    bias = torch.randn(sc.N_out, dtype=sc.dtype, device="cuda") if sc.has_bias else None
 
     for M in sc.M_values:
         s = torch.randn(M, sc.K, dtype=sc.dtype, device="cuda")
@@ -202,11 +179,8 @@ def test_gated_sigmoid_cute_varied_kn(sc: Scenario):
         out = cute_op(s, W, mha, bias)
 
         torch.testing.assert_close(
-            out,
-            ref,
-            atol=sc.atol,
-            rtol=sc.rtol,
-            msg=lambda m: f"M={M}, K={sc.K}, N={sc.N_out}: {m}")
+            out, ref, atol=sc.atol, rtol=sc.rtol, msg=lambda m, M=M: f"M={M}, K={sc.K}, N={sc.N_out}: {m}"
+        )
 
 
 @pytest.mark.parametrize("has_bias", [True, False], ids=["bias", "nobias"])
@@ -218,7 +192,8 @@ def test_gated_sigmoid_cute_varied_kn(sc: Scenario):
         (1, 1, 65, 128),  # 4-D, M=65 (short, odd)
         (2, 1025, 128),  # 3-D, M=2050 (long, even)
     ],
-    ids=["3d_M1020", "4d_M1026", "4d_M65", "3d_M2050"])
+    ids=["3d_M1020", "4d_M1026", "4d_M65", "3d_M2050"],
+)
 def test_gated_sigmoid_cute_batched(shape, has_bias):
     """Test with batched (3-D/4-D) inputs; kernel flattens leading dims."""
     skip_if_no_cutedsl()
@@ -250,15 +225,15 @@ def test_gated_sigmoid_cute_batched(shape, has_bias):
     "B,S,I,K,N_out",
     [
         (2, 4, 130, 128, 128),  # I not a multiple of any tile dim
-        (1, 3, 65, 128, 128),   # single batch, odd inner
+        (1, 3, 65, 128, 128),  # single batch, odd inner
         (3, 1, 200, 128, 128),  # mult==1 via a size-1 broadcast dim
-        (2, 5, 1, 128, 128),    # inner==1
-        (4, 2, 33, 128, 128),   # many small batches, odd inner
-        (1, 5, 76, 384, 768),   # OF3 token diffusion: K != N
-        (1, 5, 76, 768, 768),   # OF3 token diffusion: K == N
+        (2, 5, 1, 128, 128),  # inner==1
+        (4, 2, 33, 128, 128),  # many small batches, odd inner
+        (1, 5, 76, 384, 768),  # OF3 token diffusion: K != N
+        (1, 5, 76, 768, 768),  # OF3 token diffusion: K == N
     ],
-    ids=["B2S4I130", "B1S3I65", "B3S1I200", "B2S5I1", "B4S2I33",
-         "B1S5I76_K384_N768", "B1S5I76_K768_N768"])
+    ids=["B2S4I130", "B1S3I65", "B3S1I200", "B2S5I1", "B4S2I33", "B1S5I76_K384_N768", "B1S5I76_K768_N768"],
+)
 def test_gated_sigmoid_cute_broadcast(B, S, I, K, N_out, has_bias):
     """Gate `s` is [B, 1, I, K], shared across S samples of mha_out [B, S, I, N]."""
     skip_if_no_cutedsl()
@@ -277,11 +252,8 @@ def test_gated_sigmoid_cute_broadcast(B, S, I, K, N_out, has_bias):
 
     assert out.shape == mha.shape
     torch.testing.assert_close(
-        out,
-        ref,
-        atol=0.05,
-        rtol=1e-2,
-        msg=lambda m: f"B={B}, S={S}, I={I}, K={K}, N={N_out}, bias={has_bias}: {m}")
+        out, ref, atol=0.05, rtol=1e-2, msg=lambda m: f"B={B}, S={S}, I={I}, K={K}, N={N_out}, bias={has_bias}: {m}"
+    )
 
 
 @pytest.mark.parametrize("has_bias", [True, False], ids=["bias", "nobias"])
@@ -430,22 +402,19 @@ def test_gated_sigmoid_cute_inplace_2d(M, has_bias):
     ref = cute_op(s, W, mha, bias)
     out = cute_op(s, W, mha_copy, bias, output=mha_copy)
 
-    assert out.data_ptr() == mha_copy.data_ptr(
-    ), "in-place should reuse mha_out memory"
-    torch.testing.assert_close(
-        out,
-        ref,
-        atol=0.0,
-        rtol=0.0,
-        msg=lambda m: f"M={M}, in-place != out-of-place: {m}")
+    assert out.data_ptr() == mha_copy.data_ptr(), "in-place should reuse mha_out memory"
+    torch.testing.assert_close(out, ref, atol=0.0, rtol=0.0, msg=lambda m: f"M={M}, in-place != out-of-place: {m}")
 
 
 @pytest.mark.parametrize("has_bias", [True, False], ids=["bias", "nobias"])
-@pytest.mark.parametrize("shape_s,shape_mha", [
-    ((4, 390, 768), (4, 390, 768)),
-    ((2, 3, 171, 768), (2, 3, 171, 768)),
-],
-                         ids=["3d_DiT", "4d_batched"])
+@pytest.mark.parametrize(
+    "shape_s,shape_mha",
+    [
+        ((4, 390, 768), (4, 390, 768)),
+        ((2, 3, 171, 768), (2, 3, 171, 768)),
+    ],
+    ids=["3d_DiT", "4d_batched"],
+)
 def test_gated_sigmoid_cute_inplace_batched(shape_s, shape_mha, has_bias):
     """In-place with batched inputs: flatten to 2D, pass as output=mha_flat."""
     skip_if_no_cutedsl()
@@ -466,11 +435,6 @@ def test_gated_sigmoid_cute_inplace_batched(shape_s, shape_mha, has_bias):
     mha_flat = mha.reshape(-1, N_out)
     out = cute_op(s, W, mha_flat, bias, output=mha_flat)
 
-    assert out.data_ptr() == mha_flat.data_ptr(
-    ), "in-place should reuse mha_out memory"
+    assert out.data_ptr() == mha_flat.data_ptr(), "in-place should reuse mha_out memory"
     out_restored = out.view(shape_mha)
-    torch.testing.assert_close(out_restored,
-                               ref,
-                               atol=0.05,
-                               rtol=1e-2,
-                               msg=lambda m: f"shapes={shape_s}: {m}")
+    torch.testing.assert_close(out_restored, ref, atol=0.05, rtol=1e-2, msg=lambda m: f"shapes={shape_s}: {m}")

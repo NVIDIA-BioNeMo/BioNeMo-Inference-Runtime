@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorrt_bionemo.configs import (BaseConfig, DiffusionTransformerConfig,
-                                      EvoformerStackConfig, PairformerConfig)
+from tensorrt_bionemo.configs import BaseConfig, DiffusionTransformerConfig, EvoformerStackConfig, PairformerConfig
 from tensorrt_bionemo.registry import SupMat
 
 
@@ -57,7 +56,8 @@ class InputEmbedderAllAtomConfig(BaseConfig):
         use_separate_layer_norm=True,
         conditioned_transition_using_silu=True,
         version="v1",
-        shared_pair_norm=True)
+        shared_pair_norm=True,
+    )
 
 
 class TemplateEmbedderConfig(BaseConfig):
@@ -70,15 +70,17 @@ class TemplateEmbedderConfig(BaseConfig):
         c_out=64,
     )
 
-    template_pair_stack: BaseConfig = BaseConfig(c_t=64,
-                                                 c_hidden_tri_att=16,
-                                                 c_hidden_tri_mul=64,
-                                                 no_blocks=2,
-                                                 no_heads=4,
-                                                 tri_mul_first=True,
-                                                 trimul_high_precision=False,
-                                                 pair_transition_n=2,
-                                                 transition_type="swiglu")
+    template_pair_stack: BaseConfig = BaseConfig(
+        c_t=64,
+        c_hidden_tri_att=16,
+        c_hidden_tri_mul=64,
+        no_blocks=2,
+        no_heads=4,
+        tri_mul_first=True,
+        trimul_high_precision=False,
+        pair_transition_n=2,
+        transition_type="swiglu",
+    )
 
 
 class MSAModuleStackConfig(EvoformerStackConfig):
@@ -88,7 +90,7 @@ class MSAModuleStackConfig(EvoformerStackConfig):
     c_hidden_opm: int = 32
     c_hidden_mul: int = 128
     c_hidden_pair_att: int = 32
-    transition_type: str = 'swiglu'
+    transition_type: str = "swiglu"
     transition_n: int = 4
     no_blocks: int = 4
     no_heads_msa: int = 8
@@ -110,6 +112,7 @@ class MSAModuleEmbedderConfig(BaseConfig):
     min_subsampled_all_msa: int = 1024
     max_subsampled_all_msa: int = 1024
 
+
 class DiffusionModuleConfig(BaseConfig):
     c_s_input: int = _Default.c_s_input
     c_atom_ref_element: int = 119
@@ -127,8 +130,7 @@ class DiffusionModuleConfig(BaseConfig):
     eps: float = 1e-5
     inf: float = 1e9
     add_noisy_pos: bool = True
-    diffusion_conditioning_config: BaseConfig = BaseConfig(
-        c_fourier_emb=256, max_relative_idx=32, max_relative_chain=2)
+    diffusion_conditioning_config: BaseConfig = BaseConfig(c_fourier_emb=256, max_relative_idx=32, max_relative_chain=2)
     atom_transformer_encoder_config: BaseConfig = BaseConfig(
         num_blocks=3,
         num_heads=4,
@@ -161,7 +163,7 @@ class DiffusionModuleConfig(BaseConfig):
             conditioned_transition_using_silu=True,
             version="v1",
             dtype="float32",
-        ) 
+        )
     )
     atom_transformer_decoder_config: BaseConfig = BaseConfig(
         num_blocks=3,
@@ -210,7 +212,8 @@ class AuxiliaryHeadsConfig(BaseConfig):
         num_heads=16,
         trimul_high_precision=False,
         version="v1",
-        dtype="float32")
+        dtype="float32",
+    )
     pde: BaseConfig = BaseConfig(
         c_z=128,
         c_out=64,
@@ -244,7 +247,6 @@ class NoiseScheduleConfig(BaseConfig):
     p: int = 7
 
 
-
 class OpenFold3Config(BaseConfig):
     c_z: int = _Default.c_z
     c_s: int = _Default.c_s
@@ -265,32 +267,36 @@ class OpenFold3Config(BaseConfig):
 
     trunk: BaseConfig = BaseConfig(
         pairformer=PairformerConfig(
-        token_s=c_s,
-        token_z=c_z,
-        pairwise_head_width=32,
-        pairwise_num_heads=4,
-        num_blocks=48,
-        num_heads=16,
-        trimul_high_precision=False,
-        version="v1",
-        dtype="float32",
+            token_s=c_s,
+            token_z=c_z,
+            pairwise_head_width=32,
+            pairwise_num_heads=4,
+            num_blocks=48,
+            num_heads=16,
+            trimul_high_precision=False,
+            version="v1",
+            dtype="float32",
         )
     )
     structure_module: BaseConfig = BaseConfig(
-        score_model=BaseConfig(token_transformer=DiffusionTransformerConfig(
-            num_blocks=24,
-            num_heads=16,
-            dim=768,
-            dim_single_cond=c_s,
-            dim_pairwise=c_z,
-            expansion_factor=2,
-            bias_proj=True,
-            use_separate_layer_norm=False,
-            conditioned_transition_using_silu=True,
-            attention_initial_norm=False,
-            post_layer_norm=False,
-            version="v1",
-            dtype="float32"), ))
+        score_model=BaseConfig(
+            token_transformer=DiffusionTransformerConfig(
+                num_blocks=24,
+                num_heads=16,
+                dim=768,
+                dim_single_cond=c_s,
+                dim_pairwise=c_z,
+                expansion_factor=2,
+                bias_proj=True,
+                use_separate_layer_norm=False,
+                conditioned_transition_using_silu=True,
+                attention_initial_norm=False,
+                post_layer_norm=False,
+                version="v1",
+                dtype="float32",
+            ),
+        )
+    )
 
 
 PRETRAINED_CONFIG_REGISTRY = {SupMat.OpenFold3: OpenFold3Config}

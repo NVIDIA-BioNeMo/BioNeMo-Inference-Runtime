@@ -15,16 +15,13 @@
 
 import hashlib
 from io import StringIO
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 from tensorrt_bionemo.data.parsers.a3m import parse_a3m_content
-from tensorrt_bionemo.data.schemas import (InputRequest, MSARecord, Polymer,
-                                           Template)
-from tensorrt_bionemo.data.schemas.basic import (InputParsed, MSAParsed,
-                                                 PolymerParsed, TemplateParsed)
+from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer, Template
+from tensorrt_bionemo.data.schemas.basic import InputParsed, MSAParsed, PolymerParsed, TemplateParsed
 from tensorrt_bionemo.pipeline.base import numpy_to_dict
-from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
-                                                   StatefulStageUDF)
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 
 class FileContentCache:
@@ -41,28 +38,28 @@ class FileContentCache:
 
     def __init__(self):
         # Maps content hash -> actual content
-        self._content_by_hash: Dict[str, str] = {}
+        self._content_by_hash: dict[str, str] = {}
         # Maps file path -> content hash
-        self._hash_by_path: Dict[str, str] = {}
+        self._hash_by_path: dict[str, str] = {}
 
     @staticmethod
     def _compute_hash(content: str) -> str:
         """Compute a hash for the given content."""
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
+        return hashlib.md5(content.encode("utf-8")).hexdigest()
 
-    def get_by_path(self, path: str) -> Optional[str]:
+    def get_by_path(self, path: str) -> str | None:
         """Get cached content for a file path."""
         content_hash = self._hash_by_path.get(path)
         if content_hash is not None:
             return self._content_by_hash.get(content_hash)
         return None
 
-    def get_by_content(self, content: str) -> Optional[str]:
+    def get_by_content(self, content: str) -> str | None:
         """Check if content is already cached (by hash), return cached version."""
         content_hash = self._compute_hash(content)
         return self._content_by_hash.get(content_hash)
 
-    def cache_content(self, content: str, path: Optional[str] = None) -> str:
+    def cache_content(self, content: str, path: str | None = None) -> str:
         """Cache content by its hash, optionally associating with a path.
 
         Args:
@@ -97,7 +94,7 @@ class FileContentCache:
             return cached
 
         # Load from file
-        with open(path, "r") as f:
+        with open(path) as f:
             content = f.read()
 
         # Cache and return (will deduplicate if same content exists)
@@ -123,7 +120,7 @@ class FileContentCache:
         self._hash_by_path.clear()
 
     @property
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         """Return cache statistics."""
         return {
             "unique_contents": len(self._content_by_hash),
@@ -145,7 +142,7 @@ class ParserUDF(StatefulStageUDF):
         # Instance-level cache for file content
         self._file_cache = FileContentCache()
 
-    def _get_content_with_cache(self, record: Dict[str, Any]) -> str:
+    def _get_content_with_cache(self, record: dict[str, Any]) -> str:
         """Get content from record, using cache for file paths."""
         # If content is provided directly, return it
         content = record.get("content")
@@ -194,11 +191,9 @@ class ParserUDF(StatefulStageUDF):
             return parse_a3m_content(StringIO(content))
         else:
             # TODO: Add support for other MSA formats (e.g., sto, fasta, clustal)
-            raise ValueError(f"Unsupported MSA format: '{msa_format}'. "
-                             f"Currently only 'a3m' format is supported.")
+            raise ValueError(f"Unsupported MSA format: '{msa_format}'. Currently only 'a3m' format is supported.")
 
-    def _parse_template(self, template_data,
-                        cache: FileContentCache) -> TemplateParsed:
+    def _parse_template(self, template_data, cache: FileContentCache) -> TemplateParsed:
         """Parse template data and return TemplateParsed object with content loaded.
 
         Uses cache for both file paths and content deduplication.
@@ -214,8 +209,7 @@ class ParserUDF(StatefulStageUDF):
         elif isinstance(template_data, Template):
             template = template_data
         else:
-            raise ValueError(
-                f"Unsupported template data type: {type(template_data)}")
+            raise ValueError(f"Unsupported template data type: {type(template_data)}")
 
         # Get content - use cache for both file loading and content deduplication
         content = template.get("content")
@@ -230,12 +224,9 @@ class ParserUDF(StatefulStageUDF):
             else:
                 raise ValueError("Template has no content or path")
 
-        return TemplateParsed(content=content,
-                              format=template.get("format", "cif"),
-                              chain_id=template.get("chain_id"))
+        return TemplateParsed(content=content, format=template.get("format", "cif"), chain_id=template.get("chain_id"))
 
-    def _parse_polymer(self, polymer_data,
-                       cache: FileContentCache) -> PolymerParsed:
+    def _parse_polymer(self, polymer_data, cache: FileContentCache) -> PolymerParsed:
         """Parse a single polymer and return PolymerParsed object.
 
         Args:
@@ -247,8 +238,7 @@ class ParserUDF(StatefulStageUDF):
         elif isinstance(polymer_data, Polymer):
             polymer = polymer_data
         else:
-            raise ValueError(
-                f"Unsupported polymer data type: {type(polymer_data)}")
+            raise ValueError(f"Unsupported polymer data type: {type(polymer_data)}")
 
         # Parse MSAs with cache
         msas_parsed = None
@@ -260,17 +250,13 @@ class ParserUDF(StatefulStageUDF):
         paired_msas_parsed = None
         paired_msas = polymer.get("paired_msas")
         if paired_msas:
-            paired_msas_parsed = [
-                self._parse_msa(msa, cache) for msa in paired_msas
-            ]
+            paired_msas_parsed = [self._parse_msa(msa, cache) for msa in paired_msas]
 
         # Parse templates with cache
         templates_parsed = None
         templates = polymer.get("templates")
         if templates:
-            templates_parsed = [
-                self._parse_template(t, cache) for t in templates
-            ]
+            templates_parsed = [self._parse_template(t, cache) for t in templates]
 
         return PolymerParsed(
             polymer_type=polymer.get("polymer_type"),
@@ -281,8 +267,7 @@ class ParserUDF(StatefulStageUDF):
             templates=templates_parsed,
         )
 
-    def _parse_input_request(self, input: InputRequest,
-                             cache: FileContentCache) -> InputParsed:
+    def _parse_input_request(self, input: InputRequest, cache: FileContentCache) -> InputParsed:
         """Parse the entire input request and return InputParsed object.
 
         Args:
@@ -293,16 +278,14 @@ class ParserUDF(StatefulStageUDF):
         # Deserialize numpy arrays to Python dicts
         # This because ray stage will be serialized by pyarrow
         polymers = numpy_to_dict(polymers)
-        polymers_parsed: List[PolymerParsed] = [
-            self._parse_polymer(p, cache) for p in polymers
-        ]
+        polymers_parsed: list[PolymerParsed] = [self._parse_polymer(p, cache) for p in polymers]
 
         return InputParsed(
             input_id=input.get("input_id"),
             polymers=polymers_parsed,
         )
 
-    async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
+    async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         """Process a single row and return parsed result.
 
         Uses instance-level file cache to avoid repeated disk reads
@@ -313,8 +296,7 @@ class ParserUDF(StatefulStageUDF):
         parsed = self._parse_input_request(record, self._file_cache)
         return {"parsed": parsed}
 
-    def on_row_error(self, row: Dict[str, Any],
-                     error: Exception) -> Dict[str, Any]:
+    def on_row_error(self, row: dict[str, Any], error: Exception) -> dict[str, Any]:
         return {"parsed": None}
 
 
@@ -323,12 +305,8 @@ class ParserStage(StatefulStage):
     A stage that parses the input.
     """
 
-    fn: Type[StatefulStageUDF] = ParserUDF
+    fn: type[StatefulStageUDF] = ParserUDF
 
-    def get_required_input_keys(self) -> Dict[str, str]:
+    def get_required_input_keys(self) -> dict[str, str]:
         """The required input keys of the stage and their descriptions."""
-        return {
-            "record":
-            "A record of the input. "
-            "See tensorrt_bionemo.data.schemas.InputRequest for details."
-        }
+        return {"record": "A record of the input. See tensorrt_bionemo.data.schemas.InputRequest for details."}

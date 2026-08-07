@@ -13,32 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable, Dict, List, Optional, Type
+from collections.abc import Callable
+from typing import Any
 
-from tensorrt_bionemo.pipeline.base import (ContextGeneratorBase,
-                                            TransformBase, dict_context_merger,
-                                            numpy_to_dict)
-from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
-                                                   StatefulStageUDF)
+from tensorrt_bionemo.pipeline.base import ContextGeneratorBase, TransformBase, dict_context_merger, numpy_to_dict
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 
 class TokenizerUDF(StatefulStageUDF):
-
-    def __init__(self,
-                 compute_by_rows: bool,
-                 drop_keys: List[str],
-                 expected_input_keys: List[str],
-                 update_row: bool,
-                 context_generators: dict[str, ContextGeneratorBase],
-                 context_merger_func: Optional[Callable] = dict_context_merger,
-                 transform_funcs: Optional[List[TransformBase]] = None):
-        super().__init__(compute_by_rows, drop_keys, expected_input_keys,
-                         update_row)
+    def __init__(
+        self,
+        compute_by_rows: bool,
+        drop_keys: list[str],
+        expected_input_keys: list[str],
+        update_row: bool,
+        context_generators: dict[str, ContextGeneratorBase],
+        context_merger_func: Callable | None = dict_context_merger,
+        transform_funcs: list[TransformBase] | None = None,
+    ):
+        super().__init__(compute_by_rows, drop_keys, expected_input_keys, update_row)
         self.context_generators = context_generators
         self.context_merger_func = context_merger_func
         self.transform_funcs = transform_funcs or []
 
-    async def udf_for_item(self, row: Dict[str, Any]) -> Dict[str, Any]:
+    async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         context_dict = {}
         for name, generator in self.context_generators.items():
             required_kwargs = generator.required_kwargs
@@ -61,12 +59,8 @@ class TokenizerStage(StatefulStage):
     A stage that tokenizes the input.
     """
 
-    fn: Type[StatefulStageUDF] = TokenizerUDF
+    fn: type[StatefulStageUDF] = TokenizerUDF
 
-    def get_required_input_keys(self) -> Dict[str, str]:
+    def get_required_input_keys(self) -> dict[str, str]:
         """The required input keys of the stage and their descriptions."""
-        return {
-            "parsed":
-            "A parsed record of the input. "
-            "See tensorrt_bionemo.data.schemas.InputParsed for details."
-        }
+        return {"parsed": "A parsed record of the input. See tensorrt_bionemo.data.schemas.InputParsed for details."}

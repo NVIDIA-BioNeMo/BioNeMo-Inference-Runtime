@@ -6,20 +6,35 @@
 # You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
 """Numerical tests for the CuTeDSL backend of AdaLN.
 
 Compares the default kernel-backed ``AdaLN`` against the torch fallback
 (obtained by clearing ``_fused_op`` after construction) on float32 and
 bfloat16, and exercises the underlying custom op directly.
 """
+
 import os
 from dataclasses import dataclass
 
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import \
-    get_adaln_layernorm_sigmoid_op
+from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import get_adaln_layernorm_sigmoid_op
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.utils import str_dtype_to_torch
 
@@ -36,7 +51,7 @@ class Scenario:
 def _torch_adaln_layernorm_sigmoid(x, s_scale, s_bias, eps=1e-5):
     """Inline torch reference for ``sigmoid(s_scale) * LN(x, eps) + s_bias``."""
     N = x.shape[-1]
-    normed = torch.nn.functional.layer_norm(x, (N, ), eps=eps)
+    normed = torch.nn.functional.layer_norm(x, (N,), eps=eps)
     return torch.sigmoid(s_scale) * normed + s_bias
 
 
@@ -72,50 +87,40 @@ def _max_rel_err(actual: torch.Tensor, ref: torch.Tensor) -> float:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(dim=768, dim_single_cond=768, torch_dtype="float32"),
-    Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16"),
-    Scenario(dim=384, dim_single_cond=384, torch_dtype="float32"),
-    Scenario(dim=384, dim_single_cond=384, torch_dtype="bfloat16"),
-    Scenario(dim=512, dim_single_cond=512, torch_dtype="float32"),
-    Scenario(dim=512, dim_single_cond=512, torch_dtype="bfloat16"),
-    Scenario(dim=1024, dim_single_cond=1024, torch_dtype="float32"),
-    Scenario(dim=1024, dim_single_cond=1024, torch_dtype="bfloat16"),
-    Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16",
-             batch_size=4),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(dim=768, dim_single_cond=768, torch_dtype="float32"),
+        Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16"),
+        Scenario(dim=384, dim_single_cond=384, torch_dtype="float32"),
+        Scenario(dim=384, dim_single_cond=384, torch_dtype="bfloat16"),
+        Scenario(dim=512, dim_single_cond=512, torch_dtype="float32"),
+        Scenario(dim=512, dim_single_cond=512, torch_dtype="bfloat16"),
+        Scenario(dim=1024, dim_single_cond=1024, torch_dtype="float32"),
+        Scenario(dim=1024, dim_single_cond=1024, torch_dtype="bfloat16"),
+        Scenario(dim=768, dim_single_cond=768, torch_dtype="bfloat16", batch_size=4),
+    ],
+)
 def test_adaln_cutedsl_matches_torch(sc: Scenario):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
 
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 
     dtype = str_dtype_to_torch(sc.torch_dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
-    adaln_ref = AdaLN(dim=sc.dim,
-                      dim_single_cond=sc.dim_single_cond,
-                      dtype=dtype).to(device)
+    adaln_ref = AdaLN(dim=sc.dim, dim_single_cond=sc.dim_single_cond, dtype=dtype).to(device)
     # Force the inline torch path on the reference module.
     adaln_ref._fused_op = None
     _init_adaln_weights(adaln_ref)
-    adaln_cute = AdaLN(dim=sc.dim,
-                       dim_single_cond=sc.dim_single_cond,
-                       dtype=dtype).to(device)
+    adaln_cute = AdaLN(dim=sc.dim, dim_single_cond=sc.dim_single_cond, dtype=dtype).to(device)
     _copy_weights(adaln_ref, adaln_cute)
 
-    a = torch.randn(sc.batch_size,
-                    sc.seq_len,
-                    sc.dim,
-                    dtype=dtype,
-                    device=device)
-    s = torch.randn(sc.batch_size,
-                    sc.seq_len,
-                    sc.dim_single_cond,
-                    dtype=dtype,
-                    device=device)
+    a = torch.randn(sc.batch_size, sc.seq_len, sc.dim, dtype=dtype, device=device)
+    s = torch.randn(sc.batch_size, sc.seq_len, sc.dim_single_cond, dtype=dtype, device=device)
 
     # The CuteDSL backend is in-place on ``a``. Run each backend on its own
     # copy so the snapshots stay independent.
@@ -134,21 +139,15 @@ def test_adaln_cutedsl_matches_torch(sc: Scenario):
         torch.testing.assert_close(out_cute, out_ref, atol=1e-4, rtol=1e-4)
     else:
         # bf16: compare both backends against an fp32 ground truth.
-        adaln_fp32 = AdaLN(dim=sc.dim,
-                           dim_single_cond=sc.dim_single_cond,
-                           dtype=torch.float32).to(device)
-        adaln_fp32.load_state_dict(
-            {k: v.float()
-             for k, v in adaln_ref.state_dict().items()},
-            strict=True)
+        adaln_fp32 = AdaLN(dim=sc.dim, dim_single_cond=sc.dim_single_cond, dtype=torch.float32).to(device)
+        adaln_fp32.load_state_dict({k: v.float() for k, v in adaln_ref.state_dict().items()}, strict=True)
         with torch.inference_mode():
             out_fp32 = adaln_fp32.forward(a_fp32, s.float())
 
         err_ref = (out_ref.float() - out_fp32).abs().max().item()
         err_cute = (out_cute.float() - out_fp32).abs().max().item()
         # Allow 2x the torch backend's quantization error.
-        assert err_cute < max(err_ref * 2.0, 0.05), (
-            f"CuTe err {err_cute:.3e} too large vs torch err {err_ref:.3e}")
+        assert err_cute < max(err_ref * 2.0, 0.05), f"CuTe err {err_cute:.3e} too large vs torch err {err_ref:.3e}"
 
 
 # ---------------------------------------------------------------------------
@@ -185,16 +184,12 @@ def test_custom_op_matches_vanilla(dtype: torch.dtype, shape: tuple):
 
     fused_op = get_adaln_layernorm_sigmoid_op(dtype)
     out_fused = fused_op(x, s_scale, s_bias, eps=eps)
-    out_ref = _torch_adaln_layernorm_sigmoid(x_orig,
-                                                      s_scale,
-                                                      s_bias,
-                                                      eps=eps)
+    out_ref = _torch_adaln_layernorm_sigmoid(x_orig, s_scale, s_bias, eps=eps)
 
     assert out_fused.shape == out_ref.shape == x_orig.shape
     assert out_fused.dtype == out_ref.dtype == dtype
 
-    out_ref_fp32 = _torch_adaln_layernorm_sigmoid(
-        x_orig.float(), s_scale.float(), s_bias.float(), eps=eps)
+    out_ref_fp32 = _torch_adaln_layernorm_sigmoid(x_orig.float(), s_scale.float(), s_bias.float(), eps=eps)
 
     diff_fused = (out_fused.float() - out_ref_fp32).abs().max().item()
     diff_torch = (out_ref.float() - out_ref_fp32).abs().max().item()
@@ -204,8 +199,8 @@ def test_custom_op_matches_vanilla(dtype: torch.dtype, shape: tuple):
     else:
         # Allow 2x the torch backend's quantization error.
         assert diff_fused < max(diff_torch * 2.0, 0.05), (
-            f"fused err {diff_fused:.3e} too large vs torch err "
-            f"{diff_torch:.3e}")
+            f"fused err {diff_fused:.3e} too large vs torch err {diff_torch:.3e}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -304,15 +299,14 @@ def test_adaln_default_backend_is_cutedsl():
         ((2, 4, 7, 128, 384), (2, 4, 1, 128, 384)),
         ((2, 6, 8, 384), (2, 1, 8, 384)),
         # Small / odd ``inner = prod(x.shape[bcast_dim + 1:-1])``.
-        ((1, 4, 3, 768), (1, 1, 3, 768)),     # inner=3
-        ((1, 5, 7, 384), (1, 1, 7, 384)),     # inner=7
-        ((2, 4, 5, 128), (2, 1, 5, 128)),     # inner=5
-        ((1, 8, 1, 768), (1, 1, 1, 768)),     # inner=1
-        ((1, 3, 6, 384), (1, 1, 6, 384)),     # inner=6
+        ((1, 4, 3, 768), (1, 1, 3, 768)),  # inner=3
+        ((1, 5, 7, 384), (1, 1, 7, 384)),  # inner=7
+        ((2, 4, 5, 128), (2, 1, 5, 128)),  # inner=5
+        ((1, 8, 1, 768), (1, 1, 1, 768)),  # inner=1
+        ((1, 3, 6, 384), (1, 1, 6, 384)),  # inner=6
     ],
 )
-def test_custom_op_broadcast(dtype: torch.dtype, x_shape: tuple,
-                             s_shape: tuple):
+def test_custom_op_broadcast(dtype: torch.dtype, x_shape: tuple, s_shape: tuple):
     """Kernel must produce torch-equivalent output when s_scale / s_bias
     broadcast against one leading dim of x."""
     if not torch.cuda.is_available():
@@ -339,8 +333,7 @@ def test_custom_op_broadcast(dtype: torch.dtype, x_shape: tuple,
     assert out_fused.shape == out_ref.shape == x_orig.shape
     assert out_fused.dtype == dtype
 
-    out_ref_fp32 = _torch_adaln_layernorm_sigmoid(
-        x_orig.float(), s_scale.float(), s_bias.float(), eps=eps)
+    out_ref_fp32 = _torch_adaln_layernorm_sigmoid(x_orig.float(), s_scale.float(), s_bias.float(), eps=eps)
 
     if dtype == torch.float32:
         torch.testing.assert_close(out_fused, out_ref, atol=1e-4, rtol=1e-4)
@@ -348,8 +341,8 @@ def test_custom_op_broadcast(dtype: torch.dtype, x_shape: tuple,
         diff_fused = (out_fused.float() - out_ref_fp32).abs().max().item()
         diff_torch = (out_ref.float() - out_ref_fp32).abs().max().item()
         assert diff_fused < max(diff_torch * 2.0, 0.05), (
-            f"fused err {diff_fused:.3e} too large vs torch err "
-            f"{diff_torch:.3e}")
+            f"fused err {diff_fused:.3e} too large vs torch err {diff_torch:.3e}"
+        )
 
 
 def test_adaln_multisample_does_not_fall_back():
@@ -363,9 +356,7 @@ def test_adaln_multisample_does_not_fall_back():
     dim, dim_cond = 768, 768
     B, S, I = 1, 5, 128
 
-    module = AdaLN(dim=dim,
-                   dim_single_cond=dim_cond,
-                   dtype=torch.bfloat16).to(device)
+    module = AdaLN(dim=dim, dim_single_cond=dim_cond, dtype=torch.bfloat16).to(device)
     _init_adaln_weights(module)
     assert module._fused_op is not None, "kernel must initialize on supported SM"
 
@@ -378,36 +369,32 @@ def test_adaln_multisample_does_not_fall_back():
     assert module._fused_op is not None, (
         "AdaLN.forward disabled the kernel mid-forward — multi-sample "
         "broadcast regression (kernel should handle s_scale/s_bias with "
-        "size-1 multiplicity dim)")
+        "size-1 multiplicity dim)"
+    )
     assert out.shape == a.shape
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("num_samples", [5, 10])
-def test_adaln_multisample_matches_torch(dtype: torch.dtype,
-                                         num_samples: int):
+def test_adaln_multisample_matches_torch(dtype: torch.dtype, num_samples: int):
     """End-to-end: AdaLN with multi-sample input should give same numerics
     via CuteDSL backend as via torch backend."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
 
     torch.manual_seed(0)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 
     device = torch.device("cuda")
     dim, dim_cond = 768, 768
     B, I = 1, 128
 
-    adaln_ref = AdaLN(dim=dim,
-                      dim_single_cond=dim_cond,
-                      dtype=dtype).to(device)
+    adaln_ref = AdaLN(dim=dim, dim_single_cond=dim_cond, dtype=dtype).to(device)
     # Force the inline torch path on the reference module.
     adaln_ref._fused_op = None
     _init_adaln_weights(adaln_ref)
-    adaln_cute = AdaLN(dim=dim,
-                       dim_single_cond=dim_cond,
-                       dtype=dtype).to(device)
+    adaln_cute = AdaLN(dim=dim, dim_single_cond=dim_cond, dtype=dtype).to(device)
     _copy_weights(adaln_ref, adaln_cute)
 
     a = torch.randn(B, num_samples, I, dim, dtype=dtype, device=device)
@@ -420,22 +407,16 @@ def test_adaln_multisample_matches_torch(dtype: torch.dtype,
         out_ref = adaln_ref.forward(a_ref, s)
         out_cute = adaln_cute.forward(a_cute, s)
 
-    assert adaln_cute._fused_op is not None, (
-        "kernel disabled — broadcast fallback regression")
+    assert adaln_cute._fused_op is not None, "kernel disabled — broadcast fallback regression"
     assert out_ref.shape == out_cute.shape == a.shape
 
     if dtype == torch.float32:
         torch.testing.assert_close(out_cute, out_ref, atol=1e-4, rtol=1e-4)
     else:
-        adaln_fp32 = AdaLN(dim=dim, dim_single_cond=dim_cond,
-                           dtype=torch.float32).to(device)
-        adaln_fp32.load_state_dict(
-            {k: v.float()
-             for k, v in adaln_ref.state_dict().items()},
-            strict=True)
+        adaln_fp32 = AdaLN(dim=dim, dim_single_cond=dim_cond, dtype=torch.float32).to(device)
+        adaln_fp32.load_state_dict({k: v.float() for k, v in adaln_ref.state_dict().items()}, strict=True)
         with torch.inference_mode():
             out_fp32 = adaln_fp32.forward(a.float(), s.float())
         err_ref = (out_ref.float() - out_fp32).abs().max().item()
         err_cute = (out_cute.float() - out_fp32).abs().max().item()
-        assert err_cute < max(err_ref * 2.0, 0.05), (
-            f"CuTe err {err_cute:.3e} vs torch err {err_ref:.3e}")
+        assert err_cute < max(err_ref * 2.0, 0.05), f"CuTe err {err_cute:.3e} vs torch err {err_ref:.3e}"

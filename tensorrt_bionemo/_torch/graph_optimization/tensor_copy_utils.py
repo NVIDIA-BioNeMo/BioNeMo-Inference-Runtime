@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +16,7 @@
 nestings of dict / list / tuple containing tensors): clone every tensor, copy
 values in-place, and assert two trees are value-equal but memory-distinct.
 """
+
 from typing import Any
 
 import torch
@@ -49,18 +50,17 @@ def _copy_tensors_into(dest: Any, src: Any) -> None:
     lengths, and tensor shapes/dtypes). Non-tensor leaves are left as-is.
     """
     if isinstance(dest, torch.Tensor):
-        assert isinstance(src, torch.Tensor), \
+        assert isinstance(src, torch.Tensor), (
             f"structure mismatch: static buffer is a tensor but live input is {type(src)}"
+        )
         dest.copy_(src)
     elif isinstance(dest, dict):
-        assert dest.keys() == src.keys(), \
-            "structure mismatch: static buffer and live input have different keys"
+        assert dest.keys() == src.keys(), "structure mismatch: static buffer and live input have different keys"
         for k in dest:
             _copy_tensors_into(dest[k], src[k])
     elif isinstance(dest, (list, tuple)):
-        assert len(dest) == len(src), \
-            "structure mismatch: static buffer and live input have different lengths"
-        for d, s in zip(dest, src):
+        assert len(dest) == len(src), "structure mismatch: static buffer and live input have different lengths"
+        for d, s in zip(dest, src, strict=True):
             _copy_tensors_into(d, s)
     # Non-tensor leaves: nothing to copy.
 
@@ -72,21 +72,17 @@ def _assert_equal_but_distinct(original: Any, clone: Any) -> None:
     structure is walked in lock-step; non-tensor leaves are not checked.
     """
     if isinstance(original, torch.Tensor):
-        assert isinstance(clone, torch.Tensor), \
-            f"expected a tensor clone, got {type(clone)}"
-        assert torch.equal(original, clone), \
-            "cloned tensor value differs from the original"
-        assert original is not clone, \
-            "cloned tensor is the same object as the original"
-        assert original.data_ptr() != clone.data_ptr(), \
-            "cloned tensor shares storage (same address) with the original"
+        assert isinstance(clone, torch.Tensor), f"expected a tensor clone, got {type(clone)}"
+        assert torch.equal(original, clone), "cloned tensor value differs from the original"
+        assert original is not clone, "cloned tensor is the same object as the original"
+        assert original.data_ptr() != clone.data_ptr(), "cloned tensor shares storage (same address) with the original"
     elif isinstance(original, dict):
         assert original.keys() == clone.keys()
         for k in original:
             _assert_equal_but_distinct(original[k], clone[k])
     elif isinstance(original, (list, tuple)):
         assert len(original) == len(clone)
-        for o, c in zip(original, clone):
+        for o, c in zip(original, clone, strict=True):
             _assert_equal_but_distinct(o, c)
 
 
@@ -98,8 +94,7 @@ def _tensors_byte_equal(left: torch.Tensor, right: torch.Tensor) -> bool:
     same bit pattern compare equal while ``+0.0`` and ``-0.0`` compare unequal.
     Tensors on different devices are treated as not equal.
     """
-    if (left.dtype != right.dtype or left.shape != right.shape
-            or left.device != right.device):
+    if left.dtype != right.dtype or left.shape != right.shape or left.device != right.device:
         return False
     if left.numel() == 0:
         return True
@@ -130,13 +125,11 @@ def _tensor_containers_are_byte_equal(left: Any, right: Any) -> bool:
     if isinstance(left, dict):
         if not isinstance(right, dict) or left.keys() != right.keys():
             return False
-        return all(_tensor_containers_are_byte_equal(left[k], right[k])
-                   for k in left)
+        return all(_tensor_containers_are_byte_equal(left[k], right[k]) for k in left)
     if isinstance(left, (list, tuple)):
         if type(left) is not type(right) or len(left) != len(right):
             return False
-        return all(_tensor_containers_are_byte_equal(lhs, rhs)
-                   for lhs, rhs in zip(left, right))
+        return all(_tensor_containers_are_byte_equal(lhs, rhs) for lhs, rhs in zip(left, right, strict=True))
     # Not a tensor-container (scalar, str, None, callable, ...).
     return False
 
@@ -162,5 +155,3 @@ def _delete_tensors_in_container(value: Any) -> None:
             _delete_tensors_in_container(v)
         if isinstance(value, list):
             value.clear()
-
-

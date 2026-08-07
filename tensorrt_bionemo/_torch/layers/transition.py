@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,32 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy, chunk_apply
-from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import \
-    get_gated_sigmoid_op
-from tensorrt_bionemo._torch.layers.linear import (Linear, WeightMode,
-                                                   WeightsLoadingConfig)
+from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
+from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 from tensorrt_bionemo.runtime.buffers import PreallocatedBuffers
 
 
 class Transition(nn.Module):
-
-    def __init__(self,
-                 dim: int,
-                 hidden: int,
-                 out_dim: Optional[int] = None,
-                 layer_idx: int = 0,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 auto_chunk_policy: Optional[ChunkPolicy] = None):
+    def __init__(
+        self,
+        dim: int,
+        hidden: int,
+        out_dim: int | None = None,
+        layer_idx: int = 0,
+        eps: float = 1e-5,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        auto_chunk_policy: ChunkPolicy | None = None,
+    ):
         super().__init__()
         if out_dim is None:
             out_dim = dim
@@ -55,35 +53,25 @@ class Transition(nn.Module):
             dtype=dtype,
             bias=False,
             skip_create_weights=skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(
-                weight_mode=WeightMode.FUSED_KV_LINEAR),
+            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
-        self._swiglu = FusedSwiGLU(d=self.hidden,
-                                   three_way=False,
-                                   dtype=dtype or torch.bfloat16)
-        self.fc3 = Linear(hidden,
-                          out_dim,
-                          dtype=dtype,
-                          bias=False,
-                          skip_create_weights=skip_create_weights)
+        self._swiglu = FusedSwiGLU(d=self.hidden, three_way=False, dtype=dtype or torch.bfloat16)
+        self.fc3 = Linear(hidden, out_dim, dtype=dtype, bias=False, skip_create_weights=skip_create_weights)
 
     def forward(
         self,
         x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # Chunk position-wise FFNs when configured; small inputs stay dense.
         if self.auto_chunk_policy is not None:
-            return chunk_apply(self._forward_impl,
-                               x,
-                               mask,
-                               policy=self.auto_chunk_policy)
+            return chunk_apply(self._forward_impl, x, mask, policy=self.auto_chunk_policy)
         return self._forward_impl(x, mask)
 
     def _forward_impl(
         self,
         x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x = self.norm(x)
         z = self.fused_fc2_fc1(x)
@@ -98,15 +86,16 @@ class Transition(nn.Module):
 
 
 class ConditionedTransitionBlock(nn.Module):
-
-    def __init__(self,
-                 dim_single: int,
-                 dim_single_cond: int,
-                 expansion_factor: int = 2,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False,
-                 using_silu: bool = False):
+    def __init__(
+        self,
+        dim_single: int,
+        dim_single_cond: int,
+        expansion_factor: int = 2,
+        eps: float = 1e-5,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        using_silu: bool = False,
+    ):
         super().__init__()
         self.dtype = dtype
 
@@ -118,9 +107,7 @@ class ConditionedTransitionBlock(nn.Module):
         self.dim_inner = int(dim_single * expansion_factor)
         # Fused swiglu_gate linear and a_to_b
         self.using_silu = using_silu
-        self._swiglu = FusedSwiGLU(d=self.dim_inner,
-                                   three_way=not using_silu,
-                                   dtype=dtype or torch.bfloat16)
+        self._swiglu = FusedSwiGLU(d=self.dim_inner, three_way=not using_silu, dtype=dtype or torch.bfloat16)
         if not using_silu:
             self.fused_swl_a_to_b = Linear(
                 self.dim_single,
@@ -128,8 +115,8 @@ class ConditionedTransitionBlock(nn.Module):
                 bias=False,
                 dtype=dtype,
                 skip_create_weights=skip_create_weights,
-                weights_loading_config=WeightsLoadingConfig(
-                    weight_mode=WeightMode.FUSED_QKV_LINEAR))
+                weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_QKV_LINEAR),
+            )
         else:
             self.fused_swl_a_to_b = Linear(
                 self.dim_single,
@@ -137,27 +124,22 @@ class ConditionedTransitionBlock(nn.Module):
                 bias=False,
                 dtype=dtype,
                 skip_create_weights=skip_create_weights,
-                weights_loading_config=WeightsLoadingConfig(
-                    weight_mode=WeightMode.FUSED_KV_LINEAR))
+                weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
+            )
 
-        self.b_to_a = Linear(self.dim_inner,
-                             self.dim_single,
-                             bias=False,
-                             dtype=dtype,
-                             skip_create_weights=skip_create_weights)
+        self.b_to_a = Linear(
+            self.dim_inner, self.dim_single, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
         self.output_projection = Linear(
-            self.dim_single_cond,
-            self.dim_single,
-            bias=True,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights)
+            self.dim_single_cond, self.dim_single, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
     def forward(
         self,
         a: torch.Tensor,
         s: torch.Tensor,
-        buffers: Optional[PreallocatedBuffers] = None,
+        buffers: PreallocatedBuffers | None = None,
         buffer_key: str = "cond_trans_adaln",
     ) -> torch.Tensor:
         """
@@ -185,17 +167,14 @@ class ConditionedTransitionBlock(nn.Module):
             self.output_projection.weight,
             a,
             self.output_projection.bias,
-            output=buffers.get(buffer_key) if buffers is not None else None)
+            output=buffers.get(buffer_key) if buffers is not None else None,
+        )
 
 
 class PairTransition(nn.Module):
-
-    def __init__(self,
-                 c_z: int,
-                 n: int,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self, c_z: int, n: int, eps: float = 1e-5, dtype: torch.dtype = None, skip_create_weights: bool = False
+    ):
         super().__init__()
         self.dtype = dtype
         self.c_z = c_z
@@ -223,13 +202,9 @@ class PairTransition(nn.Module):
 
 
 class MSATransition(nn.Module):
-
-    def __init__(self,
-                 c_m: int,
-                 n: int,
-                 eps: float = 1e-5,
-                 dtype: torch.dtype = None,
-                 skip_create_weights: bool = False):
+    def __init__(
+        self, c_m: int, n: int, eps: float = 1e-5, dtype: torch.dtype = None, skip_create_weights: bool = False
+    ):
         super().__init__()
         self.dtype = dtype
         self.c_m = c_m

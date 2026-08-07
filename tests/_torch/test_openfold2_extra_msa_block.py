@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,11 +19,12 @@ from dataclasses import dataclass
 import pytest
 import torch
 from test_utils.openfold.create_and_load_weights import (
-    create_extra_msa_block_weights, load_extra_msa_block_weights_torch)
+    create_extra_msa_block_weights,
+    load_extra_msa_block_weights_torch,
+)
 from test_utils.openfold.ref_layers import RefExtraMSABlock
 
-from tensorrt_bionemo._torch.attention_backend.utils import \
-    precompute_pair_masks
+from tensorrt_bionemo._torch.attention_backend.utils import precompute_pair_masks
 from tensorrt_bionemo._torch.modules.openfold2.trunk import ExtraMSABlock
 from tensorrt_bionemo.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
@@ -61,48 +62,35 @@ def _create_extra_msa_block(ref_module, sc, torch_dtype):
     )
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(triangle_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
-],
-                         ids=["vanilla", "cueequiv", "cutedsl_bf16"])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(triangle_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV"),
+        Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
+    ],
+    ids=["vanilla", "cueequiv", "cutedsl_bf16"],
+)
 def test_extra_msa_block(sc: Scenario):
     _skip_if_cutedsl(sc.triangle_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     torch_dtype = str_dtype_to_torch(sc.dtype)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     ref_module = RefExtraMSABlock.load_weights()
     ref_module = ref_module.to(device)
 
     weights_and_biases = create_extra_msa_block_weights(from_ref=ref_module)
-    m = torch.randn(bs,
-                    sc.n_seq,
-                    sc.n_res,
-                    ref_module.c_m,
-                    dtype=torch.float32).cuda()
-    z = torch.randn(bs,
-                    sc.n_res,
-                    sc.n_res,
-                    ref_module.c_z,
-                    dtype=torch.float32).cuda()
+    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_module.c_m, dtype=torch.float32).cuda()
+    z = torch.randn(bs, sc.n_res, sc.n_res, ref_module.c_z, dtype=torch.float32).cuda()
     # In production, both ``seq_mask`` and ``msa_row_mask`` are
     # left-aligned (``ones`` + right-only zero padding in the collator),
     # and ``msa_mask[b, s, n] = msa_row_mask[b, s] * seq_mask[b, n]``.
-    seq_mask = make_left_aligned_mask(bs,
-                                      sc.n_res,
-                                      dtype=torch.float32,
-                                      device="cuda",
-                                      min_valid=sc.n_res // 2)
-    msa_row_mask = make_left_aligned_mask(bs,
-                                          sc.n_seq,
-                                          dtype=torch.float32,
-                                          device="cuda",
-                                          min_valid=sc.n_seq // 2)
+    seq_mask = make_left_aligned_mask(bs, sc.n_res, dtype=torch.float32, device="cuda", min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs, sc.n_seq, dtype=torch.float32, device="cuda", min_valid=sc.n_seq // 2)
     msa_mask = msa_row_mask[..., None] * seq_mask[..., None, :]
     pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
 
@@ -129,8 +117,7 @@ def test_extra_msa_block(sc: Scenario):
     else:
         ref_module_typed = ref_module.to(torch_dtype)
         with torch.no_grad():
-            ref_m_typed, ref_z_typed = ref_module_typed(
-                m_t, z_t, msa_mask_t, pair_mask_t)
+            ref_m_typed, ref_z_typed = ref_module_typed(m_t, z_t, msa_mask_t, pair_mask_t)
 
         tol_mult = 10.0 if sc.triangle_attn_backend == "CuTeDSL" else 2.0
         for name, out, ref_typed, ref_f32 in [
@@ -139,8 +126,7 @@ def test_extra_msa_block(sc: Scenario):
         ]:
             diff_ours = torch.max(torch.abs(out.float() - ref_f32))
             diff_ref = torch.max(torch.abs(ref_typed.float() - ref_f32))
-            assert diff_ours <= tol_mult * diff_ref + 1e-3, (
-                f"{name}: ours_diff={diff_ours}, ref_diff={diff_ref}")
+            assert diff_ours <= tol_mult * diff_ref + 1e-3, f"{name}: ours_diff={diff_ours}, ref_diff={diff_ref}"
 
 
 # ---------------------------------------------------------------------------
@@ -148,18 +134,21 @@ def test_extra_msa_block(sc: Scenario):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("sc", [
-    Scenario(triangle_attn_backend="VANILLA"),
-    Scenario(triangle_attn_backend="CUEQUIV"),
-    Scenario(triangle_attn_backend="VANILLA", dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CUEQUIV", dtype="bfloat16"),
-    Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
-])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(triangle_attn_backend="VANILLA"),
+        Scenario(triangle_attn_backend="CUEQUIV"),
+        Scenario(triangle_attn_backend="VANILLA", dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CUEQUIV", dtype="bfloat16"),
+        Scenario(triangle_attn_backend="CuTeDSL", dtype="bfloat16"),
+    ],
+)
 def test_extra_msa_block_precomputed_masks(sc: Scenario):
     """Outputs with precomputed masks must exactly match the original path."""
     _skip_if_cutedsl(sc.triangle_attn_backend)
     torch.manual_seed(42)
-    os.environ['TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'] = "0"
+    os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
     bs = 1
     torch_dtype = str_dtype_to_torch(sc.dtype)
@@ -174,44 +163,18 @@ def test_extra_msa_block_precomputed_masks(sc: Scenario):
     module = module.to(device)
     module.eval()
 
-    m = torch.randn(bs,
-                    sc.n_seq,
-                    sc.n_res,
-                    ref_module.c_m,
-                    dtype=torch_dtype,
-                    device=device)
-    z = torch.randn(bs,
-                    sc.n_res,
-                    sc.n_res,
-                    ref_module.c_z,
-                    dtype=torch_dtype,
-                    device=device)
-    seq_mask = make_left_aligned_mask(bs,
-                                      sc.n_res,
-                                      dtype=torch.float32,
-                                      device=device,
-                                      min_valid=sc.n_res // 2)
-    msa_row_mask = make_left_aligned_mask(bs,
-                                          sc.n_seq,
-                                          dtype=torch.float32,
-                                          device=device,
-                                          min_valid=sc.n_seq // 2)
-    msa_mask = (msa_row_mask[..., None] *
-                seq_mask[..., None, :]).to(torch_dtype)
+    m = torch.randn(bs, sc.n_seq, sc.n_res, ref_module.c_m, dtype=torch_dtype, device=device)
+    z = torch.randn(bs, sc.n_res, sc.n_res, ref_module.c_z, dtype=torch_dtype, device=device)
+    seq_mask = make_left_aligned_mask(bs, sc.n_res, dtype=torch.float32, device=device, min_valid=sc.n_res // 2)
+    msa_row_mask = make_left_aligned_mask(bs, sc.n_seq, dtype=torch.float32, device=device, min_valid=sc.n_seq // 2)
+    msa_mask = (msa_row_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
     pair_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
 
-    precomputed = precompute_pair_masks(sc.triangle_attn_backend,
-                                        pair_mask,
-                                        inf=ref_module.inf,
-                                        dtype=torch_dtype)
+    precomputed = precompute_pair_masks(sc.triangle_attn_backend, pair_mask, inf=ref_module.inf, dtype=torch_dtype)
 
     with torch.inference_mode():
         out_m, out_z = module(m, z, msa_mask, pair_mask)
-        out_m_pre, out_z_pre = module(m,
-                                      z,
-                                      msa_mask,
-                                      pair_mask,
-                                      precomputed_masks=precomputed)
+        out_m_pre, out_z_pre = module(m, z, msa_mask, pair_mask, precomputed_masks=precomputed)
 
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)

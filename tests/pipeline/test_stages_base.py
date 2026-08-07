@@ -19,8 +19,7 @@ import pickle
 import pyarrow
 import pytest
 
-from tensorrt_bionemo.pipeline.stages.base import (StatefulStage,
-                                                   StatefulStageUDF)
+from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 
 def _unpack_columnar(output):
@@ -31,10 +30,8 @@ def _unpack_columnar(output):
     rows = [pickle.loads(d) if isinstance(d, bytes) else d for d in data_col]
     n = len(rows)
     flat = {
-        "__inference_error__":
-        output.get("__inference_error__", [None] * n),
-        "__record_id":
-        output.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN, [None] * n),
+        "__inference_error__": output.get("__inference_error__", [None] * n),
+        "__record_id": output.get(StatefulStageUDF.RECORD_ID_IN_BATCH_COLUMN, [None] * n),
     }
     all_keys: set = set()
     for row in rows:
@@ -81,16 +78,10 @@ class TestStatefulStageUDF:
         """
 
         async def run_test():
-            udf = MockRowUDF(compute_by_rows=True,
-                             expected_input_keys=["value"],
-                             update_row=True)
+            udf = MockRowUDF(compute_by_rows=True, expected_input_keys=["value"], update_row=True)
 
             # Create a batch with columnar format
-            batch = {
-                "value": [1, 2, 3],
-                "name": ["a", "b", "c"],
-                "__record_id": [10, 20, 30]
-            }
+            batch = {"value": [1, 2, 3], "name": ["a", "b", "c"], "__record_id": [10, 20, 30]}
 
             # Process the batch
             results = []
@@ -125,15 +116,10 @@ class TestStatefulStageUDF:
         """
 
         async def run_test():
-            udf = MockBatchUDF(compute_by_rows=False,
-                               expected_input_keys=["value"])
+            udf = MockBatchUDF(compute_by_rows=False, expected_input_keys=["value"])
 
             # Create a batch with columnar format
-            batch = {
-                "value": [5, 10, 15],
-                "category": ["x", "y", "z"],
-                "__record_id": [100, 200, 300]
-            }
+            batch = {"value": [5, 10, 15], "category": ["x", "y", "z"], "__record_id": [100, 200, 300]}
 
             # Process the batch
             results = []
@@ -169,9 +155,7 @@ class TestStatefulStageUDF:
         """
 
         async def run_test():
-            udf = MockRowUDF(compute_by_rows=True,
-                             expected_input_keys=["value"],
-                             update_row=True)
+            udf = MockRowUDF(compute_by_rows=True, expected_input_keys=["value"], update_row=True)
 
             # Create a batch with some error rows
             batch = {
@@ -179,23 +163,11 @@ class TestStatefulStageUDF:
                 "name": ["a", "b", "c", "d"],
                 "__record_id": [10, 20, 30, 40],
                 "__inference_error__": [
-                    {
-                        "error_msg": None,
-                        "traceback": None
-                    },  # Normal
-                    {
-                        "error_msg": "Error occurred",
-                        "traceback": "stack trace"
-                    },  # Error
-                    {
-                        "error_msg": None,
-                        "traceback": None
-                    },  # Normal
-                    {
-                        "error_msg": "Another error",
-                        "traceback": "another trace"
-                    }  # Error
-                ]
+                    {"error_msg": None, "traceback": None},  # Normal
+                    {"error_msg": "Error occurred", "traceback": "stack trace"},  # Error
+                    {"error_msg": None, "traceback": None},  # Normal
+                    {"error_msg": "Another error", "traceback": "another trace"},  # Error
+                ],
             }
 
             # Process the batch
@@ -209,11 +181,9 @@ class TestStatefulStageUDF:
 
             # Verify error information is preserved
             assert output["__inference_error__"][0]["error_msg"] is None
-            assert output["__inference_error__"][1][
-                "error_msg"] == "Error occurred"
+            assert output["__inference_error__"][1]["error_msg"] == "Error occurred"
             assert output["__inference_error__"][2]["error_msg"] is None
-            assert output["__inference_error__"][3][
-                "error_msg"] == "Another error"
+            assert output["__inference_error__"][3]["error_msg"] == "Another error"
 
             # Verify normal rows were processed (indices 0 and 2)
             assert output["computed_value"][0] == 2  # 1 * 2
@@ -235,17 +205,16 @@ class TestStatefulStageUDF:
         """
 
         async def run_test():
-            udf = MockRowUDF(compute_by_rows=True,
-                             expected_input_keys=["value"],
-                             drop_keys=["temporary_data"],
-                             update_row=True)
+            udf = MockRowUDF(
+                compute_by_rows=True, expected_input_keys=["value"], drop_keys=["temporary_data"], update_row=True
+            )
 
             # Create a batch with a column to be dropped
             batch = {
                 "value": [1, 2, 3],
                 "name": ["a", "b", "c"],
                 "temporary_data": ["temp1", "temp2", "temp3"],
-                "__record_id": [10, 20, 30]
+                "__record_id": [10, 20, 30],
             }
 
             # Process the batch
@@ -279,16 +248,10 @@ class TestStatefulStageUDF:
         """
 
         async def run_test():
-            udf = MockRowUDF(compute_by_rows=True,
-                             expected_input_keys=["value", "required_field"],
-                             update_row=True)
+            udf = MockRowUDF(compute_by_rows=True, expected_input_keys=["value", "required_field"], update_row=True)
 
             # Create a batch missing the required_field
-            batch = {
-                "value": [1, 2, 3],
-                "name": ["a", "b", "c"],
-                "__record_id": [10, 20, 30]
-            }
+            batch = {"value": [1, 2, 3], "name": ["a", "b", "c"], "__record_id": [10, 20, 30]}
 
             # Verify that processing raises ValueError for missing required key
             with pytest.raises(ValueError) as exc_info:
@@ -318,12 +281,14 @@ class TestStatefulStage:
 
     def test_get_dataset_map_batches_kwargs_merges_configuration(self):
         """Test that get_dataset_map_batches_kwargs correctly merges all configuration."""
-        stage = StatefulStage(fn=MockRowUDF,
-                              fn_constructor_kwargs={"custom_param": "value"},
-                              map_batches_kwargs={"concurrency": 2},
-                              compute_by_rows=True,
-                              drop_keys=["temp"],
-                              update_row=False)
+        stage = StatefulStage(
+            fn=MockRowUDF,
+            fn_constructor_kwargs={"custom_param": "value"},
+            map_batches_kwargs={"concurrency": 2},
+            compute_by_rows=True,
+            drop_keys=["temp"],
+            update_row=False,
+        )
 
         kwargs = stage.get_dataset_map_batches_kwargs(batch_size=100)
 
@@ -344,7 +309,8 @@ class TestStatefulStage:
         stage = StatefulStage(
             fn=MockRowUDF,
             fn_constructor_kwargs={"compute_by_rows": True},  # Invalid!
-            compute_by_rows=True)
+            compute_by_rows=True,
+        )
 
         with pytest.raises(ValueError) as exc_info:
             stage.get_dataset_map_batches_kwargs(batch_size=100)
@@ -381,23 +347,16 @@ class TestStatefulStage:
                 for row in rows:
                     idx = row[self.IDX_IN_BATCH_COLUMN]
                     # Return only new columns, not preserving old ones
-                    yield {
-                        self.IDX_IN_BATCH_COLUMN: idx,
-                        "new_value": row["value"] * 10
-                    }
+                    yield {self.IDX_IN_BATCH_COLUMN: idx, "new_value": row["value"] * 10}
 
         async def run_test():
             udf = ReplaceUDF(
                 compute_by_rows=True,
                 expected_input_keys=["value"],
-                update_row=False  # Replace mode
+                update_row=False,  # Replace mode
             )
 
-            batch = {
-                "value": [1, 2, 3],
-                "old_column": ["a", "b", "c"],
-                "__record_id": [10, 20, 30]
-            }
+            batch = {"value": [1, 2, 3], "old_column": ["a", "b", "c"], "__record_id": [10, 20, 30]}
 
             results = []
             async for output in udf(batch):
@@ -407,8 +366,7 @@ class TestStatefulStage:
             output = _unpack_columnar(results[0])
 
             # Verify old columns are not preserved (replaced)
-            assert "old_column" not in output or all(
-                v is None for v in output.get("old_column", []))
+            assert "old_column" not in output or all(v is None for v in output.get("old_column", []))
 
             # Verify new value is present
             assert "new_value" in output

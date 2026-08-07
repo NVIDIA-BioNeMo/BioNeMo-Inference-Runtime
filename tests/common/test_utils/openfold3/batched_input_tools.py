@@ -22,6 +22,7 @@ zero-pads them to a common token/atom count, and stacks them into a single
 batch-size-``len(sample_ids)`` input — with ``attn_metadata`` and the precomputed
 ``atom_broadcast_index`` rebuilt for the padded shape.
 """
+
 import tempfile
 from functools import partial
 from pathlib import Path
@@ -30,17 +31,21 @@ import pytest
 import torch
 
 from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
-    create_gather_indices, query_to_keys_optimized)
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import \
-    DiffusionModule
-from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import \
-    compute_atom_broadcast_index
+from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
+from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule
+from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index
 from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig
 from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
 from tests.common.test_utils.model_forwards import (
-    DIFFUSION_SAMPLES, NUM_SAMPLING_STEPS, RECYCLING_STEPS, _AVAILABILITY_EXC,
-    _default_model_config, _find_sample_json, _load_request, _run_pipeline)
+    _AVAILABILITY_EXC,
+    DIFFUSION_SAMPLES,
+    NUM_SAMPLING_STEPS,
+    RECYCLING_STEPS,
+    _default_model_config,
+    _find_sample_json,
+    _load_request,
+    _run_pipeline,
+)
 
 # The pipeline availability exception, re-exported so callers can gate on it.
 AVAILABILITY_EXC = _AVAILABILITY_EXC
@@ -97,21 +102,18 @@ def _pad_tree(x, n_atom: int, n_token: int, N_atom: int, N_token: int):
                 x = _pad_axis(x, axis, N_token)
         return x
     if isinstance(x, dict):
-        return {k: _pad_tree(v, n_atom, n_token, N_atom, N_token)
-                for k, v in x.items()}
+        return {k: _pad_tree(v, n_atom, n_token, N_atom, N_token) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
         return type(x)(_pad_tree(v, n_atom, n_token, N_atom, N_token) for v in x)
     return x
 
 
-def _rebuild_attn_metadata(n_atom: int,
-                           device: torch.device) -> AttentionMetadata:
+def _rebuild_attn_metadata(n_atom: int, device: torch.device) -> AttentionMetadata:
     """Sequence-local ``query_to_keys`` gather for a padded atom count (mirrors
     ``OpenFold3.generate_attn_metadata``)."""
     K = (n_atom + (_N_QUERY - (n_atom % _N_QUERY))) // _N_QUERY
     gather_indices, _ = create_gather_indices(K, _N_QUERY, _N_KEY, device)
-    query_to_keys = partial(query_to_keys_optimized,
-                            gather_indices=gather_indices, W=_N_QUERY, H=_N_KEY)
+    query_to_keys = partial(query_to_keys_optimized, gather_indices=gather_indices, W=_N_QUERY, H=_N_KEY)
     return AttentionMetadata(query_to_keys=query_to_keys, bias_cache={})
 
 
@@ -136,8 +138,8 @@ def _build_eager_config(output_dir: Path) -> EngineProcessorConfig:
             "num_sampling_steps": NUM_SAMPLING_STEPS,
             "diffusion_samples": DIFFUSION_SAMPLES,
         },
-        writer_stage=WriterStageConfig(output_path=str(output_dir),
-                                       format="cif"))
+        writer_stage=WriterStageConfig(output_path=str(output_dir), format="cif"),
+    )
 
 
 def _capture_per_sample_inputs(sample_ids):
@@ -167,8 +169,8 @@ def _capture_per_sample_inputs(sample_ids):
 
     kwargs_list = [by_token_count[nt] for nt in sorted(by_token_count)]
     assert len(kwargs_list) == len(sample_ids), (
-        f"expected {len(sample_ids)} distinct-size captures, "
-        f"got {len(kwargs_list)}")
+        f"expected {len(sample_ids)} distinct-size captures, got {len(kwargs_list)}"
+    )
     return module_box["module"], kwargs_list
 
 
@@ -183,7 +185,7 @@ def _assemble_batched_kwargs(per_sample):
     # ``atom_broadcast_index`` is size/content-specific and ``attn_metadata`` is
     # a closure; drop both before padding and rebuild them for the padded batch.
     padded = []
-    for kwargs, n_atom, n_token in zip(per_sample, atoms, tokens):
+    for kwargs, n_atom, n_token in zip(per_sample, atoms, tokens, strict=False):
         kw = dict(kwargs)
         kw.pop("attn_metadata", None)
         batch = dict(kw["batch"])
@@ -194,8 +196,7 @@ def _assemble_batched_kwargs(per_sample):
     # ``t`` (scalar noise level) and ``use_conditioning`` are size-independent
     # and identical across the first denoise step, so sample 0's carry over.
     batched = dict(padded[0])
-    for key in ("xl_noisy", "token_mask", "atom_mask", "si_input", "si_trunk",
-                "zij_trunk"):
+    for key in ("xl_noisy", "token_mask", "atom_mask", "si_input", "si_trunk", "zij_trunk"):
         batched[key] = torch.cat([p[key] for p in padded], dim=0)
     # Stack every ``batch`` field whose padded shape matches across samples
     # (the atom/token-indexed features the diffusion module consumes). Fields
@@ -212,7 +213,8 @@ def _assemble_batched_kwargs(per_sample):
             batched_batch[k] = torch.cat(vs, dim=0)
     batched["batch"] = batched_batch
     batched["batch"]["atom_broadcast_index"] = compute_atom_broadcast_index(
-        batched["batch"]["token_mask"], batched["batch"]["num_atoms_per_token"])
+        batched["batch"]["token_mask"], batched["batch"]["num_atoms_per_token"]
+    )
     batched["attn_metadata"] = _rebuild_attn_metadata(N_atom, device)
     return batched
 

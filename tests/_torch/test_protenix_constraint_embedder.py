@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """OSS equivalence tests for the Protenix constraint embedder."""
+
 import os
 
 import pytest
@@ -21,21 +22,17 @@ import torch.nn as nn
 
 from tensorrt_bionemo._torch.modules.protenix import ProtenixConstraintEmbedder
 from tensorrt_bionemo.models.protenix.config import ConstraintEmbedderConfig
-from tensorrt_bionemo.models.protenix.convert import \
-    convert_constraint_embedder_torch
+from tensorrt_bionemo.models.protenix.convert import convert_constraint_embedder_torch
 from tensorrt_bionemo.utils import str_dtype_to_torch
-from tests.common.test_utils.protenix.ref_layers_from_oss import \
-    RefProtenixConstraintEmbedderFromOSS
+from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixConstraintEmbedderFromOSS
 
 
 def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
     a, b = a.float(), b.float()
-    return (torch.sqrt(torch.mean(
-        (a - b)**2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
+    return (torch.sqrt(torch.mean((a - b) ** 2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
 
 
-@pytest.mark.parametrize("dtype", ["float32", "bfloat16"],
-                         ids=["fp32", "bf16"])
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"], ids=["fp32", "bf16"])
 def test_protenix_constraint_embedder(dtype: str):
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
@@ -45,22 +42,17 @@ def test_protenix_constraint_embedder(dtype: str):
     c_z, N, B = 32, 8, 1
 
     # Randomize the zero-initialized OSS projections.
-    ref = RefProtenixConstraintEmbedderFromOSS.build(c_constraint_z=c_z).to(
-        device=device, dtype=torch.float32).eval()
+    ref = RefProtenixConstraintEmbedderFromOSS.build(c_constraint_z=c_z).to(device=device, dtype=torch.float32).eval()
     with torch.no_grad():
         for m in ref.modules():
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.1)
 
-    config = ConstraintEmbedderConfig(c_constraint_z=c_z,
-                                      pocket_enable=True,
-                                      contact_enable=True,
-                                      contact_atom_enable=True,
-                                      dtype=dtype)
+    config = ConstraintEmbedderConfig(
+        c_constraint_z=c_z, pocket_enable=True, contact_enable=True, contact_atom_enable=True, dtype=dtype
+    )
     model = ProtenixConstraintEmbedder(config).to(device).eval()
-    converted = convert_constraint_embedder_torch(config,
-                                                  ref.state_dict(),
-                                                  prefix="")
+    converted = convert_constraint_embedder_torch(config, ref.state_dict(), prefix="")
     missing, unexpected = model.load_state_dict(converted, strict=False)
     assert not missing and not unexpected, (missing, unexpected)
 

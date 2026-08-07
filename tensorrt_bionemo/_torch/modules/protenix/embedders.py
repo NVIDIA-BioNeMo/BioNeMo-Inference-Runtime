@@ -1,18 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Protenix input embedding modules."""
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
 
 from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
 from tensorrt_bionemo._torch.layers.linear import Linear
-from tensorrt_bionemo._torch.modules.protenix.atom_attention import \
-    ProtenixAtomAttentionEncoder
+from tensorrt_bionemo._torch.modules.protenix.atom_attention import ProtenixAtomAttentionEncoder
 from tensorrt_bionemo.configs import BaseConfig
 
 
@@ -48,7 +60,7 @@ class ProtenixInputFeatureEmbedder(nn.Module):
     def forward(
         self,
         input_feature_dict: dict[str, Any],
-        attn_metadata: Optional[AttentionMetadata] = None,
+        attn_metadata: AttentionMetadata | None = None,
     ) -> torch.Tensor:
         """Embed Protenix token input features → ``s_inputs``.
 
@@ -75,16 +87,13 @@ class ProtenixInputFeatureEmbedder(nn.Module):
 
         batch_shape = input_feature_dict["restype"].shape[:-1]
         s_inputs = torch.cat(
-            [atom_token_embedding] + [
-                input_feature_dict[name].reshape(*batch_shape, dim)
-                for name, dim in self.input_feature_dims.items()
-            ],
+            [atom_token_embedding]
+            + [input_feature_dict[name].reshape(*batch_shape, dim) for name, dim in self.input_feature_dims.items()],
             dim=-1,
         )
 
         if self.esm_enabled:
-            s_inputs = s_inputs + self.linear_esm(
-                input_feature_dict["esm_token_embedding"])
+            s_inputs = s_inputs + self.linear_esm(input_feature_dict["esm_token_embedding"])
 
         return s_inputs
 
@@ -106,27 +115,20 @@ class ProtenixConstraintEmbedder(nn.Module):
         self.contact_atom_enable = config.contact_atom_enable
         if config.substructure_enable:
             raise NotImplementedError(
-                "Protenix substructure constraint embedder is not ported "
-                "(disabled in protenix-v2).")
+                "Protenix substructure constraint embedder is not ported (disabled in protenix-v2)."
+            )
 
         def _embedder(c_in: int):
-            return Linear(c_in,
-                          c,
-                          bias=False,
-                          dtype=dtype,
-                          skip_create_weights=config.skip_create_weights)
+            return Linear(c_in, c, bias=False, dtype=dtype, skip_create_weights=config.skip_create_weights)
 
         if self.pocket_enable:
             self.pocket_z_embedder = _embedder(config.pocket_c_z_input)
         if self.contact_enable:
             self.contact_z_embedder = _embedder(config.contact_c_z_input)
         if self.contact_atom_enable:
-            self.contact_atom_z_embedder = _embedder(
-                config.contact_atom_c_z_input)
+            self.contact_atom_z_embedder = _embedder(config.contact_atom_c_z_input)
 
-    def forward(
-            self,
-            constraint_feature_dict: dict[str, Any]) -> Optional[torch.Tensor]:
+    def forward(self, constraint_feature_dict: dict[str, Any]) -> torch.Tensor | None:
         """Sum enabled constraint pair projections, or ``None`` if none enabled.
 
         Args:
@@ -137,23 +139,15 @@ class ProtenixConstraintEmbedder(nn.Module):
             ``z_constraint`` ``[..., N_token, N_token, c_constraint_z]``, or
             ``None`` when all constraint embedders are disabled
         """
-        z_constraint: Optional[torch.Tensor] = None
+        z_constraint: torch.Tensor | None = None
 
-        def _add(z: Optional[torch.Tensor],
-                 update: torch.Tensor) -> torch.Tensor:
+        def _add(z: torch.Tensor | None, update: torch.Tensor) -> torch.Tensor:
             return update if z is None else z + update
 
         if self.pocket_enable:
-            z_constraint = _add(
-                z_constraint,
-                self.pocket_z_embedder(constraint_feature_dict["pocket"]))
+            z_constraint = _add(z_constraint, self.pocket_z_embedder(constraint_feature_dict["pocket"]))
         if self.contact_enable:
-            z_constraint = _add(
-                z_constraint,
-                self.contact_z_embedder(constraint_feature_dict["contact"]))
+            z_constraint = _add(z_constraint, self.contact_z_embedder(constraint_feature_dict["contact"]))
         if self.contact_atom_enable:
-            z_constraint = _add(
-                z_constraint,
-                self.contact_atom_z_embedder(
-                    constraint_feature_dict["contact_atom"]))
+            z_constraint = _add(z_constraint, self.contact_atom_z_embedder(constraint_feature_dict["contact_atom"]))
         return z_constraint

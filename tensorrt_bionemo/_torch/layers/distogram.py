@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,13 +22,15 @@ from tensorrt_bionemo._torch.layers.linear import Linear
 class DistogramModule(nn.Module):
     """Distogram Module."""
 
-    def __init__(self,
-                 token_z: int,
-                 num_bins: int,
-                 num_distograms: int = 1,
-                 version: str = "v1",
-                 dtype: torch.dtype = torch.float32,
-                 skip_create_weights: bool = False) -> None:
+    def __init__(
+        self,
+        token_z: int,
+        num_bins: int,
+        num_distograms: int = 1,
+        version: str = "v1",
+        dtype: torch.dtype = torch.float32,
+        skip_create_weights: bool = False,
+    ) -> None:
         """Initialize the distogram module.
 
         Args:
@@ -42,10 +44,9 @@ class DistogramModule(nn.Module):
         self.version = version
         self.num_bins = num_bins
         self.num_distograms = num_distograms
-        self.distogram = Linear(token_z,
-                                num_distograms * num_bins,
-                                dtype=dtype,
-                                skip_create_weights=skip_create_weights)
+        self.distogram = Linear(
+            token_z, num_distograms * num_bins, dtype=dtype, skip_create_weights=skip_create_weights
+        )
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Perform the forward pass.
@@ -63,5 +64,4 @@ class DistogramModule(nn.Module):
         if self.version == "v1":
             return self.distogram(z)
 
-        return self.distogram(z).reshape(z.shape[0], z.shape[1], z.shape[2],
-                                         self.num_distograms, self.num_bins)
+        return self.distogram(z).reshape(z.shape[0], z.shape[1], z.shape[2], self.num_distograms, self.num_bins)

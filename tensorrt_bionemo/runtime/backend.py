@@ -28,7 +28,7 @@ class FallbackStrategy:
     The default implementation never triggers a fallback.
     """
 
-    def bind(self, backend: 'BackendBase') -> 'FallbackStrategy':
+    def bind(self, backend: "BackendBase") -> "FallbackStrategy":
         """Bind to a concrete backend instance (called once per backend)."""
         return self
 
@@ -71,12 +71,12 @@ class AutoFallback:
         self._backend = None
         self._strategy: FallbackStrategy | None = None
 
-    def bind(self, backend: 'BackendBase') -> 'AutoFallback':
+    def bind(self, backend: "BackendBase") -> "AutoFallback":
         """Bind to a backend, selecting the appropriate strategy."""
         if self._backend is backend:
             return self
         self._backend = backend
-        backend_type = getattr(backend.config, 'backend', None)
+        backend_type = getattr(backend.config, "backend", None)
         strategy_cls = FALLBACK_STRATEGIES.get(backend_type)
         if strategy_cls is not None:
             self._strategy = strategy_cls()
@@ -96,7 +96,7 @@ class BackendBase(nn.Module, ABC):
     CONFIG_CLASS = None
 
     def __init__(self, config: BaseConfig):
-        """ BackendBase is the base class for all backends.
+        """BackendBase is the base class for all backends.
         It provides the basic functionality for all backends.
         Args:
             config(BaseConfig): The configuration for the backend.
@@ -148,7 +148,6 @@ class BackendBase(nn.Module, ABC):
         if isinstance(need_fallback, AutoFallback):
             need_fallback.bind(self)
         if need_fallback(*args, **kwargs):
-            logger.info(
-                f"Fallback to torch eager for {self.__class__.__name__}")
+            logger.info(f"Fallback to torch eager for {self.__class__.__name__}")
             return self._fallback_module(*args, **kwargs)
         return self.forward_udf(*args, **kwargs)

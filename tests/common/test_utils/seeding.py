@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Shared deterministic-seeding helper for tests."""
+
 import random
 
 import numpy as np

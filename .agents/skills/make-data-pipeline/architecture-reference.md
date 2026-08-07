@@ -7,9 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Directory Structure
 
-Every model pipeline lives under `tensorrt_bionemo/pipeline/models/<model_name>/`:
+Every model pipeline lives under
+`tensorrt_bionemo/pipeline/models/<model_name>/`:
 
-```
+```text
 tensorrt_bionemo/pipeline/models/<model_name>/
 ├── __init__.py                 # empty
 ├── const.py                    # Domain constants (residue types, atom types, etc.)
@@ -32,17 +33,22 @@ tensorrt_bionemo/pipeline/models/<model_name>/
 
 ### Pattern A — OpenFold-style (flat tensor dict)
 
-Context generator produces a complete tensor dict. All downstream stages operate on flat `dict[str, torch.Tensor]`.
+Context generator produces a complete tensor dict. All downstream stages operate
+on flat `dict[str, torch.Tensor]`.
 
-**Use when:** OSS has a single `make_features()` entry point; all intermediate data is tensors.
+**Use when:** OSS has a single `make_features()` entry point; all intermediate
+data is tensors.
 
 **Existing examples:** `openfold2/`, `boltz1/`
 
 ### Pattern B — Boltz2-style (mixed context row)
 
-Context generator returns a row dict with **both tensor and non-tensor data** (structures, molecules, parsed MSAs). Feature generators read `context["_row"]` and produce tensors incrementally.
+Context generator returns a row dict with **both tensor and non-tensor data**
+(structures, molecules, parsed MSAs). Feature generators read `context["_row"]`
+and produce tensors incrementally.
 
-**Use when:** OSS has multi-step featurization with intermediate non-tensor state (structure objects, molecule dicts, per-chain MSA lists).
+**Use when:** OSS has multi-step featurization with intermediate non-tensor
+state (structure objects, molecule dicts, per-chain MSA lists).
 
 **Existing examples:** `boltz2/`
 
@@ -50,7 +56,7 @@ Context generator returns a row dict with **both tensor and non-tensor data** (s
 
 ### Pattern A (OpenFold-style)
 
-```
+```text
 InputRequest
   → ParserStage (A3M/template parsing)
 InputParsed {polymers: [PolymerParsed]}
@@ -69,7 +75,7 @@ InputParsed {polymers: [PolymerParsed]}
 
 ### Pattern B (Boltz2-style)
 
-```
+```text
 InputRequest
   → ParserStage
 InputParsed
@@ -129,7 +135,8 @@ class TransformBase(ABC):
 
 ### FeatureGeneratorBase
 
-Produces NEW feature tensors from existing batch + context. Returns only the new keys.
+Produces NEW feature tensors from existing batch + context. Returns only the new
+keys.
 
 ```python
 class FeatureGeneratorBase(ABC):
@@ -150,7 +157,8 @@ class FeatureGeneratorBase(ABC):
 
 ### FeatureCollatorBase
 
-Modifies features dict in-place (sampling, cropping, padding). Inherits from FeatureGeneratorBase.
+Modifies features dict in-place (sampling, cropping, padding). Inherits from
+FeatureGeneratorBase.
 
 ```python
 class FeatureCollatorBase(FeatureGeneratorBase):
@@ -254,16 +262,19 @@ class NewModelConfig(BaseConfig):
     # ... model-specific fields
 ```
 
-All generators, collators, and transforms receive `config` in `__init__` and access it via `self.config`.
+All generators, collators, and transforms receive `config` in `__init__` and
+access it via `self.config`.
 
 ## SampleRepeater (Ensemble/Recycling)
 
-The recycling loop is implemented by `SampleRepeater`, which wraps a list of collator specs and runs them N times, stacking results:
+The recycling loop is implemented by `SampleRepeater`, which wraps a list of
+collator specs and runs them N times, stacking results:
 
 ```python
 class SampleRepeater(FeatureCollatorBase):
     def __init__(self, config, feature_collator_specs, get_n_iters, stack_dim=-1):
         self.n_iter = get_n_iters(config)
+        self.stack_dim = stack_dim
         self.feature_collators = [spec.functor(config=config, **spec.kwargs) for spec in feature_collator_specs]
 
     def __call__(self, batch, context):
@@ -300,8 +311,12 @@ from tensorrt_bionemo.data.utils import sequence_to_onehot
 ## Conventions
 
 1. **NVIDIA copyright header** on every file (Apache 2.0).
-1. **`is_enabled()` for conditional logic** — never skip a spec from the list; disable it via `is_enabled()`.
-1. **`context` dict carries seeds** — `ensemble_seed`, `random_seed` set in `pre_init()`.
-1. **Feature keys are flat strings** — e.g., `"msa"`, `"template_aatype"`, `"extra_msa"`.
-1. **Tensor device agnostic** — don't hardcode devices; use `device=batch["key"].device`.
+1. **`is_enabled()` for conditional logic** — never skip a spec from the list;
+   disable it via `is_enabled()`.
+1. **`context` dict carries seeds** — `ensemble_seed`, `random_seed` set in
+   `pre_init()`.
+1. **Feature keys are flat strings** — e.g., `"msa"`, `"template_aatype"`,
+   `"extra_msa"`.
+1. **Tensor device agnostic** — don't hardcode devices; use
+   `device=batch["key"].device`.
 1. **No global random state** — use `torch.Generator` seeded from context.

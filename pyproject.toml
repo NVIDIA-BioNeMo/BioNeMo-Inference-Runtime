@@ -98,6 +98,43 @@ ignore = ["E501", "E741", "E731"]
 [tool.ruff.lint.isort]
 known-first-party = ["tensorrt_bionemo"]
 
+# Branch coverage over the shipped package. The test job runs two pytest phases
+# (see .gitlab/ci/scripts/run_tests.sh) and phase 1 fans out over xdist workers,
+# so the data has to merge across processes and across runs.
+[tool.coverage.run]
+branch = true
+# One data file per process (xdist worker, phase), combined before reporting.
+parallel = true
+# Store paths relative to the measurement root, so data files produced by
+# different processes merge cleanly.
+# https://coverage.readthedocs.io/en/latest/config.html#run-relative-files
+relative_files = true
+# The repo root, NOT ["tensorrt_bionemo"]: coverage strips the configured source
+# root from the Cobertura filenames, and GitLab only maps coverage onto the MR
+# diff when those filenames are repo-relative (tensorrt_bionemo/foo.py). What
+# actually gets measured is narrowed to the package by `--cov=tensorrt_bionemo`
+# in .gitlab/ci/scripts/run_tests.sh; the omits below keep a bare
+# `pytest --cov` honest too.
+source = ["."]
+omit = [
+  # Vendored third-party trees (mirrors ruff's extend-exclude and prek.toml).
+  "*/3rdparty/*",
+  # The suite measures the shipped package, not itself.
+  "tests/*",
+  # Packaging script, not shipped package code.
+  "setup.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+precision = 2
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+  "if __name__ == .__main__.:",
+]
+
 [tool.commitizen]
 # Conventional Commits. Used now only to lint commit/MR titles (`cz check`).
 # Changelog generation (`cz changelog`) and version bumps (`cz bump`) are a

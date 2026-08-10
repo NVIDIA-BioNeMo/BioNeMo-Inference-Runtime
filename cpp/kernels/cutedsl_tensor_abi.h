@@ -132,9 +132,11 @@ inline constexpr std::int32_t kUnknownDevice = -1;
 
 /* Host-side view of one rank-``N`` operand.
  *
- * Holds ``N - 1`` outer strides because the innermost dimension is contiguous.
- * The ``sN_dM`` descriptors above vary independently: their ``M`` counts the
- * strides the compiled kernel left dynamic, not the operand's rank.
+ * Holds ``N - 1`` strides in the compiled descriptor's dynamic-stride order.
+ * Rank-3/4 views omit their contiguous final stride, while a rank-2 view's
+ * single value may represent dimension 0 or 1. The ``sN_dM`` descriptors above
+ * vary independently: their ``M`` counts the strides the compiled kernel left
+ * dynamic, not the operand's rank.
  *
  * ``device`` records the owning CUDA device ordinal, or ``kUnknownDevice`` when
  * the tensor is not on a GPU, for a cross-device check the launchers do not
@@ -168,6 +170,7 @@ struct TensorView
 };
 
 using Tensor1View = TensorView<1>;
+using Tensor2View = TensorView<2>;
 using Tensor3View = TensorView<3>;
 using Tensor4View = TensorView<4>;
 

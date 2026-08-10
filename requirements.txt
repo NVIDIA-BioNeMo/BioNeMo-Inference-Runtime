@@ -4,6 +4,7 @@ cuequivariance-ops-cu13==0.11.1
 cuequivariance-ops-torch-cu13==0.11.1
 triton==3.6.0
 biopython>=1.87
+dm-tree==0.1.10  # needed for OpenFold2 residue constants
 ray[serve,data]==2.56.1  # installs pandas, pyarrow
 uvloop==0.21.0  # >=0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
 modelcif==1.6  # needed for CIFWriter

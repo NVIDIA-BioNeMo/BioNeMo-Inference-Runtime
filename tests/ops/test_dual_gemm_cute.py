@@ -21,14 +21,54 @@
   transposed output.
 """
 
+import importlib
 from dataclasses import dataclass, field
 
 import pytest
 import torch
 
+from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
 from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe, get_dual_gemm_x0_x1_op
 from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import DualGemmXxCuTe, get_dual_gemm_x_x_op
-from tests._torch import SM_VERSION, make_left_aligned_mask, skip_if_no_cutedsl, skip_if_not_sm90
+from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
+from tests._torch import SM_VERSION, cutedsl_test_modes, make_left_aligned_mask, skip_if_no_cutedsl, skip_if_not_sm90
+
+_DUAL_GEMM_XX_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.sm80_dual_gemm_x_x_k128"
+_DUAL_GEMM_XX_TEST_MODES = cutedsl_test_modes(_DUAL_GEMM_XX_SOURCE_MODULE)
+_DUAL_GEMM_XX_MODE_CACHES: dict[str, dict] = {
+    "source": {},
+    "cubin": {},
+}
+
+
+def _configure_dual_gemm_x_x_mode(mode: str, monkeypatch) -> None:
+    """Force one x_x implementation without allowing silent fallback."""
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    monkeypatch.setattr(DualGemmXxCuTe, "_compiled_cache", _DUAL_GEMM_XX_MODE_CACHES[mode])
+
+    if mode == "cubin":
+        try:
+            importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+        except ImportError:
+            pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
+
+        try:
+            source_module = importlib.import_module("tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x._source")
+        except ImportError:
+            source_module = None
+        if source_module is not None:
+
+            def source_unavailable(_implementation):
+                raise ModuleNotFoundError("CuTeDSL source disabled by CUBIN test mode")
+
+            monkeypatch.setattr(source_module, "resolve_implementation", source_unavailable)
+        monkeypatch.setattr(library_runtime, "_kernel_library", None)
+        return
+
+    def reject_cubin_fallback(*_args, **_kwargs):
+        raise AssertionError("source test mode unexpectedly fell back to the CUBIN library")
+
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "populate_compiled_cache_from_library", reject_cubin_fallback)
 
 
 def _ref_x0_x1_dual_gemm(
@@ -183,7 +223,8 @@ def test_x0_x1_dual_gemm(sc: Scenario):
         "sc_N128_K128_b0_m0_bf16_t1_m_unaligned",
     ],
 )
-def test_x_x_dual_gemm(sc: Scenario):
+@pytest.mark.parametrize("cutedsl_mode", _DUAL_GEMM_XX_TEST_MODES, ids=lambda mode: f"impl-{mode}")
+def test_x_x_dual_gemm(sc: Scenario, cutedsl_mode: str, monkeypatch):
     """Test CuTe DSL dual GEMM x_x against fp32 reference.
 
     Covers the four call-site axes of :class:`DualGemmXxCuTe`:
@@ -196,6 +237,7 @@ def test_x_x_dual_gemm(sc: Scenario):
     if (sc.N, sc.K) == (512, 256) and SM_VERSION not in (80, 86, 89, 90):
         pytest.skip(f"Protenix (N=512,K=256) x_x CuTeDSL is SM80/86/89/90 only (current SM{SM_VERSION})")
     torch.manual_seed(42)
+    _configure_dual_gemm_x_x_mode(cutedsl_mode, monkeypatch)
 
     cute_op = DualGemmXxCuTe()
 
@@ -231,7 +273,8 @@ def test_x_x_dual_gemm(sc: Scenario):
         )
 
 
-def test_x_x_dual_gemm_actual_seqlen_overrides_mask():
+@pytest.mark.parametrize("cutedsl_mode", _DUAL_GEMM_XX_TEST_MODES, ids=lambda mode: f"impl-{mode}")
+def test_x_x_dual_gemm_actual_seqlen_overrides_mask(cutedsl_mode: str, monkeypatch):
     """Pre-computed ``actual_seqlen`` should take precedence over ``mask``.
 
     Asserts that passing a deliberately-wrong ``mask`` together with the
@@ -241,6 +284,7 @@ def test_x_x_dual_gemm_actual_seqlen_overrides_mask():
     """
     skip_if_no_cutedsl()
     torch.manual_seed(42)
+    _configure_dual_gemm_x_x_mode(cutedsl_mode, monkeypatch)
 
     cute_op = DualGemmXxCuTe()
 
@@ -343,7 +387,13 @@ def test_x0_x1_dual_gemm_sm90_uses_hopper_kernel():
     [(128, False), (128, True), (256, False), (256, True)],
     ids=["N128_t0", "N128_t1", "N256_t0", "N256_t1"],
 )
-def test_x_x_dual_gemm_large_anchor(N: int, transpose_out: bool):
+@pytest.mark.parametrize("cutedsl_mode", _DUAL_GEMM_XX_TEST_MODES, ids=lambda mode: f"impl-{mode}")
+def test_x_x_dual_gemm_large_anchor(
+    N: int,
+    transpose_out: bool,
+    cutedsl_mode: str,
+    monkeypatch,
+):
     """Exercise the ``S=2048`` tuned bucket for the x_x variant.
 
     Uses a rectangular ``[1, 4, 2048, K]`` input so the per-sample side
@@ -353,6 +403,7 @@ def test_x_x_dual_gemm_large_anchor(N: int, transpose_out: bool):
     """
     skip_if_no_cutedsl()
     torch.manual_seed(0)
+    _configure_dual_gemm_x_x_mode(cutedsl_mode, monkeypatch)
     K, dtype = 128, torch.bfloat16
 
     W0 = torch.randn(N, K, dtype=dtype, device="cuda")
@@ -369,6 +420,42 @@ def test_x_x_dual_gemm_large_anchor(N: int, transpose_out: bool):
         rtol=1e-2,
         msg=lambda m: f"N={N}, transpose_out={transpose_out}: {m}",
     )
+
+
+@pytest.mark.skipif(
+    set(_DUAL_GEMM_XX_TEST_MODES) != {"source", "cubin"},
+    reason="both implementations are required for a bitwise equivalence check",
+)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("has_bias", [False, True], ids=["bias0", "bias1"])
+@pytest.mark.parametrize("has_mask", [False, True], ids=["mask0", "mask1"])
+@pytest.mark.parametrize("transpose_out", [False, True], ids=["t0", "t1"])
+def test_x_x_source_and_cubin_agree_bitwise(
+    dtype: torch.dtype,
+    has_bias: bool,
+    has_mask: bool,
+    transpose_out: bool,
+    monkeypatch,
+):
+    """The direct launcher must reproduce the source host launch exactly."""
+    skip_if_no_cutedsl()
+    torch.manual_seed(123)
+    batch, rows, cols, K, N = 1, 4, 31, 128, 128
+    x = torch.randn(batch, rows, cols, K, dtype=dtype, device="cuda")
+    w0 = torch.randn(N, K, dtype=dtype, device="cuda")
+    w1 = torch.randn_like(w0)
+    bias0 = torch.randn(N, dtype=dtype, device="cuda") if has_bias else None
+    bias1 = torch.randn(N, dtype=dtype, device="cuda") if has_bias else None
+    mask = make_left_aligned_mask(batch, rows, cols, dtype=dtype, device="cuda") if has_mask else None
+
+    with monkeypatch.context() as source_patch:
+        _configure_dual_gemm_x_x_mode("source", source_patch)
+        source = DualGemmXxCuTe()(x, w0, w1, bias0=bias0, bias1=bias1, mask=mask, transpose_out=transpose_out)
+    with monkeypatch.context() as cubin_patch:
+        _configure_dual_gemm_x_x_mode("cubin", cubin_patch)
+        cubin = DualGemmXxCuTe()(x, w0, w1, bias0=bias0, bias1=bias1, mask=mask, transpose_out=transpose_out)
+
+    torch.testing.assert_close(cubin, source, atol=0.0, rtol=0.0)
 
 
 def test_x0_x1_dual_gemm_large_anchor():

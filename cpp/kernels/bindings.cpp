@@ -44,6 +44,13 @@ void bind(nb::module_& module);
 
 } // namespace trtbnm::cutedsl::pairwise_attention
 
+namespace trtbnm::cutedsl::dual_gemm_x_x
+{
+
+void bind(nb::module_& module);
+
+} // namespace trtbnm::cutedsl::dual_gemm_x_x
+
 namespace
 {
 
@@ -93,6 +100,7 @@ NB_MODULE(_cutedsl_kernels, module)
   module.attr("UNKNOWN_DEVICE") = kUnknownDevice;
 
   bind_tensor_view<1>(module, "Tensor1View");
+  bind_tensor_view<2>(module, "Tensor2View");
   bind_tensor_view<3>(module, "Tensor3View");
   bind_tensor_view<4>(module, "Tensor4View");
 
@@ -107,5 +115,6 @@ NB_MODULE(_cutedsl_kernels, module)
 
   triangle_attention::bind(module);
   pairwise_attention::bind(module);
+  dual_gemm_x_x::bind(module);
   (void) preload_registered_kernels_if_context_active();
 }

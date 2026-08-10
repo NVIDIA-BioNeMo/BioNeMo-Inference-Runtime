@@ -95,6 +95,25 @@ inline cute_tensor_s1_d0_t make_tensor1_descriptor(Tensor1View const& view)
   return descriptor;
 }
 
+inline cute_tensor_s1_d1_t make_tensor2_s1_d1_descriptor(Tensor2View const& view)
+{
+  cute_tensor_s1_d1_t descriptor{};
+  descriptor.data = static_cast<CUdeviceptr>(view.data);
+  descriptor.dynamic_shapes[0] = view.shape[0];
+  descriptor.dynamic_strides[0] = view.strides[0];
+  return descriptor;
+}
+
+inline cute_tensor_s2_d1_t make_tensor2_s2_d1_descriptor(Tensor2View const& view)
+{
+  cute_tensor_s2_d1_t descriptor{};
+  descriptor.data = static_cast<CUdeviceptr>(view.data);
+  for (std::size_t index = 0; index < view.shape.size(); ++index)
+    descriptor.dynamic_shapes[index] = view.shape[index];
+  descriptor.dynamic_strides[0] = view.strides[0];
+  return descriptor;
+}
+
 inline cute_tensor_s3_d2_t make_sm90_lse_descriptor(Tensor3View const& view)
 {
   cute_tensor_s3_d2_t descriptor{};
@@ -107,6 +126,16 @@ inline cute_tensor_s3_d2_t make_sm90_lse_descriptor(Tensor3View const& view)
   return descriptor;
 }
 
+struct CoordTensorS1
+{
+  std::int32_t dynamic_shapes[1];
+};
+
+struct CoordTensorS2
+{
+  std::int32_t dynamic_shapes[2];
+};
+
 struct CoordTensorS3
 {
   std::int32_t dynamic_shapes[3];
@@ -117,8 +146,31 @@ struct CoordTensorS4
   std::int32_t dynamic_shapes[4];
 };
 
+static_assert(sizeof(CoordTensorS1) == 4);
+static_assert(alignof(CoordTensorS1) == alignof(std::int32_t));
+static_assert(offsetof(CoordTensorS1, dynamic_shapes) == 0);
+static_assert(sizeof(CoordTensorS2) == 8);
+static_assert(alignof(CoordTensorS2) == alignof(std::int32_t));
+static_assert(offsetof(CoordTensorS2, dynamic_shapes) == 0);
 static_assert(sizeof(CoordTensorS3) == 12);
+static_assert(alignof(CoordTensorS3) == alignof(std::int32_t));
+static_assert(offsetof(CoordTensorS3, dynamic_shapes) == 0);
 static_assert(sizeof(CoordTensorS4) == 16);
+static_assert(alignof(CoordTensorS4) == alignof(std::int32_t));
+static_assert(offsetof(CoordTensorS4, dynamic_shapes) == 0);
+
+inline CoordTensorS1 make_tensor2_s1_coord(Tensor2View const& view)
+{
+  return CoordTensorS1{{view.shape[0]}};
+}
+
+inline CoordTensorS2 make_tensor2_s2_coord(Tensor2View const& view)
+{
+  return CoordTensorS2{{
+    view.shape[0],
+    view.shape[1],
+  }};
+}
 
 inline CoordTensorS3 make_sm90_tensor3_coord(Tensor3View const& view)
 {
@@ -145,6 +197,22 @@ struct TmaTensorSource
   std::array<std::uint64_t, 4> dimensions;
   std::array<std::uint64_t, 4> strides;
 };
+
+inline TmaTensorSource make_tma_tensor2_source(Tensor2View const& view, bool is_column_major)
+{
+  std::uint64_t const dynamic_stride = static_cast<std::uint64_t>(view.strides[0]);
+  return TmaTensorSource{
+    view.data,
+    {
+      static_cast<std::uint64_t>(view.shape[0]),
+      static_cast<std::uint64_t>(view.shape[1]),
+      0,
+      0,
+    },
+    is_column_major ? std::array<std::uint64_t, 4>{1, dynamic_stride, 0, 0}
+                    : std::array<std::uint64_t, 4>{dynamic_stride, 1, 0, 0},
+  };
+}
 
 inline TmaTensorSource make_tma_tensor3_source(Tensor3View const& view, std::int32_t head_dim)
 {
@@ -201,7 +269,8 @@ inline void encode_tma_descriptor(
   constexpr std::uint64_t kTmaStrideAlignment = 16;
   constexpr std::uint64_t kMaxTmaGlobalDimension = std::uint64_t{1} << 32;
   constexpr std::uint64_t kMaxTmaGlobalStride = std::uint64_t{1} << 40;
-  if (info.rank != kSourceRank || info.rank > kTmaMaxRank)
+  static_assert(kSourceRank <= kTmaMaxRank);
+  if (info.rank == 0 || info.rank > kSourceRank)
     throw std::invalid_argument("CUBIN has an unsupported TMA rank");
   if (info.data_type != expected_dtype)
     throw std::invalid_argument("CUBIN has a mismatched TMA data type");
@@ -214,7 +283,7 @@ inline void encode_tma_descriptor(
   for (std::uint32_t index = 0; index < info.rank; ++index)
   {
     std::uint32_t const source_index = info.global_dim_order[index];
-    if (source_index >= kSourceRank || seen_dimensions[source_index])
+    if (source_index >= info.rank || seen_dimensions[source_index])
       throw std::invalid_argument("CUBIN has an invalid TMA dimension order");
     seen_dimensions[source_index] = true;
     global_dimensions[index] = source.dimensions[source_index];

@@ -113,6 +113,23 @@ def tensor_s1_d0(library: ModuleType, tensor: torch.Tensor) -> Any:
     return library.Tensor1View(tensor.data_ptr(), (tensor.shape[0],), (), tensor.get_device())
 
 
+def tensor_s2_d1(library: ModuleType, tensor: torch.Tensor, dynamic_stride_dim: int = 0) -> Any:
+    """Create a CuTe ``s2_d1`` view from a rank-2 tensor with one dynamic stride."""
+    if tensor.ndim != 2:
+        raise ValueError("s2_d1 tensor must have rank 2")
+    if dynamic_stride_dim not in (0, 1):
+        raise ValueError("dynamic_stride_dim must be 0 or 1")
+    contiguous_stride_dim = 1 - dynamic_stride_dim
+    if tensor.stride(contiguous_stride_dim) != 1:
+        raise ValueError(f"s2_d1 tensor stride for dimension {contiguous_stride_dim} must be 1")
+    return library.Tensor2View(
+        tensor.data_ptr(),
+        tuple(tensor.shape),
+        (tensor.stride(dynamic_stride_dim),),
+        tensor.get_device(),
+    )
+
+
 def tensor_s3_d2(library: ModuleType, tensor: torch.Tensor) -> Any:
     """Create a CuTe ``s3_d2`` view using three extents and two strides."""
     if tensor.ndim < 3:

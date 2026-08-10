@@ -149,13 +149,17 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
 def test_tensor_views_reject_the_wrong_rank():
     library = SimpleNamespace(
         Tensor1View=lambda *args: args,
+        Tensor2View=lambda *args: args,
         Tensor3View=lambda *args: args,
         Tensor4View=lambda *args: args,
     )
     rank2 = torch.zeros(2, 3)
+    rank3 = torch.zeros(2, 3, 4)
 
     with pytest.raises(ValueError):
         library_runtime.tensor_s1_d0(library, rank2)
+    with pytest.raises(ValueError):
+        library_runtime.tensor_s2_d1(library, rank3)
     with pytest.raises(ValueError):
         library_runtime.tensor_s3_d2(library, rank2)
     with pytest.raises(ValueError):
@@ -165,13 +169,23 @@ def test_tensor_views_reject_the_wrong_rank():
 def test_tensor_views_carry_shapes_strides_and_device():
     library = SimpleNamespace(
         Tensor1View=lambda data, shape, strides, device: ("1d", shape, device),
+        Tensor2View=lambda data, shape, strides, device: ("2d", shape, strides, device),
         Tensor3View=lambda data, shape, strides, device: ("3d", shape, strides, device),
         Tensor4View=lambda data, shape, strides, device: ("4d", shape, strides, device),
     )
+    tensor2 = torch.zeros(2, 3)
+    transposed_tensor2 = torch.zeros(3, 2).T
     tensor4 = torch.zeros(2, 3, 4, 5)
     cpu = -1  # get_device() on a CPU tensor, matching the library's UNKNOWN_DEVICE
 
     assert library_runtime.tensor_s1_d0(library, torch.zeros(7)) == ("1d", (7,), cpu)
+    assert library_runtime.tensor_s2_d1(library, tensor2) == ("2d", (2, 3), (3,), cpu)
+    assert library_runtime.tensor_s2_d1(library, transposed_tensor2, dynamic_stride_dim=1) == (
+        "2d",
+        (2, 3),
+        (2,),
+        cpu,
+    )
     assert library_runtime.tensor_s3_d2(library, tensor4) == (
         "3d",
         (2, 3, 4),
@@ -184,3 +198,22 @@ def test_tensor_views_carry_shapes_strides_and_device():
         tensor4.stride()[:3],
         cpu,
     )
+
+
+@pytest.mark.parametrize("dynamic_stride_dim", [-1, 2])
+def test_tensor_s2_d1_rejects_invalid_dynamic_stride_dimension(dynamic_stride_dim):
+    library = SimpleNamespace(Tensor2View=lambda *args: args)
+
+    with pytest.raises(ValueError, match="dynamic_stride_dim"):
+        library_runtime.tensor_s2_d1(library, torch.zeros(2, 3), dynamic_stride_dim)
+
+
+def test_tensor_s2_d1_requires_the_other_dimension_to_be_contiguous():
+    library = SimpleNamespace(Tensor2View=lambda *args: args)
+    row_major = torch.zeros(2, 3)
+    column_major = torch.zeros(3, 2).T
+
+    with pytest.raises(ValueError, match="stride for dimension 0"):
+        library_runtime.tensor_s2_d1(library, row_major, dynamic_stride_dim=1)
+    with pytest.raises(ValueError, match="stride for dimension 1"):
+        library_runtime.tensor_s2_d1(library, column_major, dynamic_stride_dim=0)

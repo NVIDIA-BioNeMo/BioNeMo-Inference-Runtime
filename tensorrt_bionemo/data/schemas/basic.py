@@ -21,7 +21,7 @@ from typing import Optional
 import numpy as np
 
 
-class PolymerType(str, Enum):  # noqa: UP042 — StrEnum changes str()/format() output; keep str+Enum to preserve serialization
+class PolymerType(str, Enum):
     """Polymer kind. Tells consumers how to interpret ``Polymer.sequence``.
 
     Sequence convention by type:

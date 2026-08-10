@@ -19,7 +19,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class ParallelismMode(str, Enum):  # noqa: UP042  # StrEnum changes str()/format() behavior; keep str+Enum
+class ParallelismMode(str, Enum):
     """Engine stage parallelism mode."""
 
     REPLICA = "replica"

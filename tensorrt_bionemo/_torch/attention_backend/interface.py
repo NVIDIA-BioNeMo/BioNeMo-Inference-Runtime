@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,8 +14,8 @@
 # limitations under the License.
 
 import enum
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Generic, Optional, Type, TypeVar
 
 import torch
 
@@ -25,18 +25,16 @@ class AttentionMetadata:
     """
     Metadata for multi-head attention layer.
     """
+
     # Bias caching for diffusion transformer layers
-    bias_cache: Optional[dict[str, torch.Tensor]] = None
+    bias_cache: dict[str, torch.Tensor] | None = None
 
     # Function to convert query to keys for sequence-local atom attention.
     # OSS-equivalent zero-pad path: a gather with a sentinel zero row at OOB
     # columns. Pre-bound to ``gather_indices``, ``W=n_query``, ``H=n_key`` so
     # callers only pass the input tensor. Used by both atom attention and
     # ``convert_pair_atom_to_blocks``.
-    query_to_keys: Optional[Callable] = None
-
-
-TMetadata = TypeVar("TMetadata", bound=AttentionMetadata)
+    query_to_keys: Callable | None = None
 
 
 class AttentionType(str, enum.Enum):
@@ -52,24 +50,21 @@ class AttentionType(str, enum.Enum):
     PAIRWISE = "pairwise"
 
 
-class AttentionBackend(Generic[TMetadata]):
+class AttentionBackend[TMetadata: AttentionMetadata]:
     """
     Base class for attention backends.
     """
-    Metadata: Type[TMetadata] = AttentionMetadata
 
-    def __init__(self,
-                 layer_idx: int,
-                 num_heads: int,
-                 head_dim: int,
-                 num_kv_heads: Optional[int] = None):
+    Metadata: type[TMetadata] = AttentionMetadata
+
+    def __init__(self, layer_idx: int, num_heads: int, head_dim: int, num_kv_heads: int | None = None):
         """
         Initialize the attention backend.
         Args:
             layer_idx (int): The index of the attention layer.
             num_heads (int): The number of attention heads.
             head_dim (int): The dimension of each attention head.
-            num_kv_heads (Optional[int]): The number of key-value heads.
+            num_kv_heads (int | None): The number of key-value heads.
         """
         self.layer_idx = layer_idx
         self.num_heads = num_heads
@@ -81,8 +76,8 @@ class AttentionBackend(Generic[TMetadata]):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        biases: Optional[list[torch.Tensor]] = None,
-        metadata: TMetadata = None,
+        biases: list[torch.Tensor] | None = None,
+        metadata: TMetadata | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -91,8 +86,8 @@ class AttentionBackend(Generic[TMetadata]):
             q (torch.Tensor): The query tensor. Shape [I, s_q, h_q*d]
             k (torch.Tensor): The key tensor. Shape [I, s_kv, h_kv*d]
             v (torch.Tensor): The value tensor. Shape [I, s_kv, h_kv*d]
-            biases (Optional[list[torch.Tensor]]): The biases for the attention layer.
-            metadata (AttentionMetadata): The metadata for the attention layer.
+            biases (list[torch.Tensor] | None): The biases for the attention layer.
+            metadata (TMetadata | None): The metadata for the attention layer.
             **kwargs: Additional keyword arguments.
         Returns:
             torch.Tensor: The output tensor.

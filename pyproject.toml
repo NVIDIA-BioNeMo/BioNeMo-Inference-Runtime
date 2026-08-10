@@ -2,10 +2,7 @@
 ###############################  BUILD CONFIGURATION  ##############################################
 ####################################################################################################
 [build-system]
-requires = [
-  "cmake>=3.27",
-  "setuptools>=77",
-]
+requires = ["cmake>=3.27", "setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 
@@ -16,10 +13,10 @@ package-dir = { "" = "." }
 # version is supplied by setup.py so the CUDA local segment (e.g. 0.4.0+cu131)
 # lands in the wheel METADATA — see setup.py. It stays in [project].dynamic below.
 [tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
+dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.dynamic.optional-dependencies]
-dev = {file = ["requirements-dev.txt"]}
+dev = { file = ["requirements-dev.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -27,8 +24,8 @@ include = ["tensorrt_bionemo*"]
 
 [tool.setuptools.package-data]
 "tensorrt_bionemo" = [
-    "_torch/custom_ops/configs/**/*.json",
-    "_torch/attention_backend/configs/**/*.json",
+  "_torch/custom_ops/configs/**/*.json",
+  "_torch/attention_backend/configs/**/*.json",
 ]
 
 [project]
@@ -94,7 +91,10 @@ select = [
 # call sites for no readability gain.
 # E731: assigning a lambda to a name is used deliberately for small local
 # helpers; rewriting to def is low-value churn.
-ignore = ["E501", "E741", "E731"]
+# UP042: rewriting `class X(str, Enum)` to `enum.StrEnum` is a behaviour change,
+# not a style fix. New enums should still subclass `enum.StrEnum`.
+# https://docs.astral.sh/ruff/rules/replace-str-enum/
+ignore = ["E501", "E741", "E731", "UP042"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["tensorrt_bionemo"]

@@ -1,4 +1,8 @@
-recursive-include cpp CMakeLists.txt *.cmake *.cpp *.h *.py
+recursive-include cpp CMakeLists.txt *.cmake *.cpp *.h
+# The CUBIN generator and its builders enumerate the kernel matrix and import the
+# CuTeDSL sources a distribution omits, so they never ship; a distribution builds
+# the committed cpp/kernels/*/cubins headers instead.
+prune cpp/tools
 # recursive-include does not consult .gitignore, and local CMake trees vendor the
 # fetched nanobind sources.
 prune cpp/build*

@@ -22,6 +22,7 @@
 #define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_TRIANGLE_ATTENTION_LAUNCHER_H_
 
 #include "cubin_runtime.h"
+#include "cutedsl_launch_utils.h"
 #include "cutedsl_tensor_abi.h"
 
 #include <array>
@@ -101,18 +102,9 @@ inline cubin_launch_config_t sm80_launch_config(
   return config;
 }
 
-struct CoordTensorS3
-{
-  std::int32_t dynamic_shapes[3];
-};
-
-struct CoordTensorS4
-{
-  std::int32_t dynamic_shapes[4];
-};
-
 /* Hopper's five TMA descriptors are kernel parameters passed by value.
  * The descriptor bytes are encoded on the host for each runtime tensor.
+ * CoordTensorS3/S4 come from the shared launch utils.
  */
 struct SM90Params
 {
@@ -166,8 +158,6 @@ inline void pack_sm90_kernel_params(SM90Params* params, void* kernel_params[kSM9
 
 static_assert(sizeof(CUtensorMap) == 128);
 static_assert(alignof(CUtensorMap) >= 64);
-static_assert(sizeof(CoordTensorS3) == 12);
-static_assert(sizeof(CoordTensorS4) == 16);
 
 } // namespace trtbnm::cutedsl::triangle_attention::abi
 

@@ -14,13 +14,11 @@
 # limitations under the License.
 """Build-time packaging shim. pyproject.toml remains the metadata source of truth.
 
-The wheel contains a nanobind extension under ``tensorrt_bionemo.libs`` with
-embedded, architecture-specific CuTeDSL CUBINs. ``build_ext`` delegates that
-extension to CMake while the local version segment (for example ``+cu131``)
-records the CUDA toolkit used by the wheel builder. Private development reads
-``build.env`` and skips this optional extension unless
-``TRTBNM_BUILD_CUTEDSL_KERNELS=1`` is explicitly set. Public source builds omit
-``build.env`` and therefore build the extension by default.
+``build_ext`` delegates the ``tensorrt_bionemo.libs`` nanobind extension, which
+embeds architecture-specific CuTeDSL CUBINs, to CMake; the local version segment
+(for example ``+cu131``) records the CUDA toolkit that built the wheel. Every
+checkout builds the extension, and ``TRTBNM_BUILD_CUTEDSL_KERNELS=0`` opts out
+from the environment or an untracked ``build.env``.
 """
 
 import os
@@ -35,6 +33,8 @@ from setuptools.command.build_ext import build_ext
 
 ROOT_DIR = Path(__file__).parent.resolve()
 _BUILD_ENV_FILE = ROOT_DIR / "build.env"
+_KERNELS_DIR = ROOT_DIR / "cpp" / "kernels"
+_CUBIN_GENERATOR = ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"
 _BUILD_CUTEDSL_KERNELS_ENV = "TRTBNM_BUILD_CUTEDSL_KERNELS"
 _KERNEL_LIBRARY_STEM = "_cutedsl_kernels"
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -89,30 +89,50 @@ def _remove_stale_kernel_libraries(directories: set[Path]) -> None:
                 path.unlink()
 
 
+def _missing_payload_headers() -> list[Path]:
+    """Embedded CUBIN headers the CMake build needs but this tree does not have.
+
+    A kernel family is a ``cpp/kernels/cutedsl_*`` subdirectory CMake descends
+    into; anything else under ``cpp/kernels`` embeds no CUBIN payload.
+    """
+    missing = []
+    for cmake_file in sorted(_KERNELS_DIR.glob("cutedsl_*/CMakeLists.txt")):
+        header = cmake_file.parent / "cubins" / "embedded_cubins.h"
+        if not header.is_file():
+            missing.append(header)
+    return missing
+
+
 def _prepare_cutedsl_kernel_payloads() -> None:
-    """Compile private CUBINs; public builds use committed payload headers."""
-    if not _BUILD_ENV_FILE.is_file():
+    """Generate the embedded CUBIN headers this tree is missing.
+
+    An existing header is compiled as-is, so refresh it with
+    ``cpp/tools/prepare_cubins.py`` after editing a kernel. CMake reports a
+    header that neither this tree nor the generator can supply.
+    """
+    if not _missing_payload_headers() or not _CUBIN_GENERATOR.is_file():
         return
-
-    command = [
-        sys.executable,
-        str(ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"),
-    ]
-    subprocess.run(command, cwd=ROOT_DIR, check=True)
+    subprocess.run([sys.executable, str(_CUBIN_GENERATOR)], cwd=ROOT_DIR, check=True)
 
 
-_BUILD_CUTEDSL_KERNELS = _env_flag(
-    _BUILD_CUTEDSL_KERNELS_ENV,
-    env_file=_BUILD_ENV_FILE,
-    default=not _BUILD_ENV_FILE.is_file(),
-)
+def _drop_opted_out_kernel_libraries() -> None:
+    """Remove an extension left behind by an earlier build, now opted out of.
 
-if not _BUILD_CUTEDSL_KERNELS:
+    ``build_extension`` never runs for a disabled extension, so this is the only
+    place a previously built copy gets cleaned up.
+    """
     package_dirs = {ROOT_DIR / "tensorrt_bionemo"}
     build_root = ROOT_DIR / "build"
     if build_root.is_dir():
         package_dirs.update(build_root.glob("lib*/tensorrt_bionemo"))
     _remove_stale_kernel_libraries(package_dirs | {path / "libs" for path in package_dirs})
+
+
+_BUILD_CUTEDSL_KERNELS = _env_flag(
+    _BUILD_CUTEDSL_KERNELS_ENV,
+    env_file=_BUILD_ENV_FILE,
+    default=True,
+)
 
 
 def _base_version() -> str:
@@ -176,6 +196,13 @@ class CMakeExtension(Extension):
 
 class CMakeBuild(build_ext):
     """Configure and build the unified embedded-CUBIN nanobind module."""
+
+    def run(self) -> None:
+        # Only a real build cleans up, so reading metadata (``egg_info``,
+        # ``--version``) cannot delete an extension the tree still needs.
+        if not _BUILD_CUTEDSL_KERNELS:
+            _drop_opted_out_kernel_libraries()
+        super().run()
 
     def build_extension(self, extension: Extension) -> None:
         if not isinstance(extension, CMakeExtension):

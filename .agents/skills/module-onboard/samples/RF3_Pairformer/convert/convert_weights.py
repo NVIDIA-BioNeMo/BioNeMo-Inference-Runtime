@@ -12,18 +12,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 
 """
-Weight conversion: BakerLab RF3 PairformerBlock -> TRT-BNM PairformerLayerV1.
+Weight conversion: RF3 PairformerBlock -> TRT-BNM PairformerLayerV1.
 
 Handles:
 - Name renames (tri_mul_outgoing -> tri_mul_out, etc.)
 - QKV fusion for triangle attention (separate q,k,v -> fused qkv_proj)
 - KV fusion for attention pair bias (separate k,v -> fused proj_kv)
 - Gate+Input fusion for transition (linear_1,linear_2 -> fused_fc2_fc1)
-- Bias handling (customer to_g has bias, TRT-BNM g_proj has no bias for tri_attn)
+- Bias handling (the source to_g has bias, TRT-BNM g_proj has no bias for tri_attn)
 
-No checkpoint needed — works with any state_dict matching the BakerLab PairformerBlock layout.
+No checkpoint needed — works with any state_dict matching the RF3 PairformerBlock layout.
 """
 
 import torch
@@ -107,7 +111,7 @@ def convert_attention_pair_bias_weights(state_dict, prefix, tbm_prefix):
     kv_weight = torch.cat([k_weight, v_weight], dim=0)
 
     q_weight = state_dict[f"{prefix}.to_q.weight"]
-    # TRT-BNM proj_q has a bias; customer does not. Initialize to zero.
+    # TRT-BNM proj_q has a bias; the source module does not. Initialize to zero.
     q_bias = torch.zeros(q_weight.shape[0], dtype=q_weight.dtype)
 
     return {
@@ -125,11 +129,11 @@ def convert_attention_pair_bias_weights(state_dict, prefix, tbm_prefix):
 
 
 def convert_pairformer_block_weights(state_dict, prefix="", tbm_prefix=""):
-    """Convert a single BakerLab PairformerBlock to TRT-BNM PairformerLayerV1 weights.
+    """Convert a single RF3 PairformerBlock to TRT-BNM PairformerLayerV1 weights.
 
     Args:
-        state_dict: Customer checkpoint state_dict (or subset for one block).
-        prefix: Key prefix for customer weights (e.g., "pairformer_stack.0").
+        state_dict: Source checkpoint state_dict (or subset for one block).
+        prefix: Key prefix for source weights (e.g., "pairformer_stack.0").
         tbm_prefix: Key prefix for TRT-BNM weights (e.g., "layers.0").
 
     Returns:
@@ -171,7 +175,7 @@ def convert_pairformer_stack_weights(state_dict, num_blocks, prefix="pairformer_
     Args:
         state_dict: Full model state_dict.
         num_blocks: Number of pairformer blocks.
-        prefix: Customer prefix for the stack (e.g., "pairformer_stack").
+        prefix: Source prefix for the stack (e.g., "pairformer_stack").
         tbm_prefix: TRT-BNM prefix (e.g., "layers").
 
     Returns:

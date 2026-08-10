@@ -12,11 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 
 """
-Drop-in adapter: wraps TRT-BNM PairformerModule to match BakerLab PairformerBlock forward signature.
+Drop-in adapter: wraps TRT-BNM PairformerModule to match RF3 PairformerBlock forward signature.
 
-Customer signature:  forward(S_I, Z_II, is_padding_I) -> (S_I, Z_II)
+Source signature:   forward(S_I, Z_II, is_padding_I) -> (S_I, Z_II)
 TRT-BNM signature:   forward(s, z, mask, pair_mask, ...) -> (s, z)
 """
 
@@ -25,15 +29,15 @@ import torch.nn as nn
 from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
 
 
-class BakerLabPairformerAdapter(nn.Module):
-    """Drop-in replacement for BakerLab's pairformer_stack (list of PairformerBlocks)."""
+class RF3PairformerAdapter(nn.Module):
+    """Drop-in replacement for RF3's pairformer_stack (list of PairformerBlocks)."""
 
     def __init__(self, trtbnm_module: PairformerModule):
         super().__init__()
         self.module = trtbnm_module
 
     def forward(self, S_I, Z_II, is_padding_I):
-        # Convert mask: customer is_padding_I (bool, True=pad) -> TRT-BNM mask (float, 1.0=valid)
+        # Convert mask: source is_padding_I (bool, True=pad) -> TRT-BNM mask (float, 1.0=valid)
         mask = (~is_padding_I).float()
         pair_mask = mask.unsqueeze(-1) * mask.unsqueeze(-2)
 

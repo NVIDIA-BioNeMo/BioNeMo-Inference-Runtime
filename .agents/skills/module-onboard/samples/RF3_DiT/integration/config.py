@@ -12,13 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 
-"""TRT-BNM DiffusionTransformerConfig for BakerLab RF3 DiffusionTransformer hyperparameters."""
+"""TRT-BNM DiffusionTransformerConfig for RF3 DiffusionTransformer hyperparameters."""
 
 from tensorrt_bionemo.configs.modules import DiffusionTransformerConfig
 
 
-def make_bakerlab_dit_config(
+def make_rf3_dit_config(
     num_blocks: int = 24,
     c_token: int = 384,
     c_s: int = 384,

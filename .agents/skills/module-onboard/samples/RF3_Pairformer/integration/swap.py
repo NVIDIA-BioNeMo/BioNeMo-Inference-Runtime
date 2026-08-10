@@ -12,20 +12,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 
 """
-Module swap: replace BakerLab Recycler's pairformer_stack with TRT-BNM PairformerModule.
+Module swap: replace RF3 Recycler's pairformer_stack with TRT-BNM PairformerModule.
 """
 
 from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
 
-from .adapter import BakerLabPairformerAdapter
-from .config import make_bakerlab_pairformer_config
+from .adapter import RF3PairformerAdapter
+from .config import make_rf3_pairformer_config
 
 
 def swap_pairformer_stack(
     recycler,
-    customer_state_dict=None,
+    source_state_dict=None,
     num_blocks: int = 48,
     c_s: int = 384,
     c_z: int = 128,
@@ -37,8 +41,8 @@ def swap_pairformer_stack(
     """Replace recycler.pairformer_stack with a TRT-BNM PairformerModule.
 
     Args:
-        recycler: BakerLab Recycler nn.Module instance.
-        customer_state_dict: Optional state_dict from the customer's pairformer_stack.
+        recycler: RF3 Recycler nn.Module instance.
+        source_state_dict: Optional state_dict from the source model's pairformer_stack.
             If None, TRT-BNM module uses default (random) initialization.
         num_blocks: Number of pairformer blocks.
         c_s: Single representation dimension.
@@ -54,7 +58,7 @@ def swap_pairformer_stack(
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from convert.convert_weights import convert_pairformer_stack_weights
 
-    config = make_bakerlab_pairformer_config(
+    config = make_rf3_pairformer_config(
         num_blocks=num_blocks,
         c_s=c_s,
         c_z=c_z,
@@ -64,11 +68,11 @@ def swap_pairformer_stack(
     )
     trtbnm_module = PairformerModule(config)
 
-    if customer_state_dict is not None:
-        converted = convert_pairformer_stack_weights(customer_state_dict, num_blocks=num_blocks)
+    if source_state_dict is not None:
+        converted = convert_pairformer_stack_weights(source_state_dict, num_blocks=num_blocks)
         trtbnm_module.load_weights(converted)
 
     trtbnm_module = trtbnm_module.to(device)
-    adapter = BakerLabPairformerAdapter(trtbnm_module)
+    adapter = RF3PairformerAdapter(trtbnm_module)
     recycler.pairformer_stack = adapter
     return recycler

@@ -103,6 +103,21 @@ hooks = [
     "/*| *| */",
     "--use-current-year",
   ] },
+  # Agent skills under .agents/ ship as public artifacts, so their markdown
+  # carries the header too. Scoped to .agents/ — the rest of the repo's markdown
+  # (docs/, READMEs) is prose and stays unstamped.
+  # exclude: SKILL.md keeps the header inside its YAML frontmatter as `#`
+  # comments, because the frontmatter must open on line 1 and this hook can only
+  # prepend above it.
+  { id = "insert-license", name = "insert license (agent skills markdown)", types = [
+    "markdown",
+  ], files = '''^\.agents/''', exclude = '''^.*/SKILL\.md$''', args = [
+    "--license-filepath",
+    ".license-header.txt",
+    "--comment-style",
+    "<!--||-->",
+    "--use-current-year",
+  ] },
 ]
 
 [[repos]]

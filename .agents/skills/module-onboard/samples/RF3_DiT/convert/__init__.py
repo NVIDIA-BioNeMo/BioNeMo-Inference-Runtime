@@ -12,4 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 

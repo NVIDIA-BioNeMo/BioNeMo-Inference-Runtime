@@ -12,9 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 
 """
-Module swap: replace BakerLab DiffusionModule's diffusion_transformer
+Module swap: replace RF3 DiffusionModule's diffusion_transformer
 with TRT-BNM DiffusionTransformerLayer stack.
 """
 
@@ -27,8 +31,8 @@ from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import (
     DiffusionTransformerLayer,
 )
 
-from .adapter import BakerLabDiTStackAdapter
-from .config import make_bakerlab_dit_config
+from .adapter import RF3DiTStackAdapter
+from .config import make_rf3_dit_config
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from convert.convert_weights import convert_dit_block_weights
@@ -36,7 +40,7 @@ from convert.convert_weights import convert_dit_block_weights
 
 def swap_diffusion_transformer(
     diffusion_module,
-    customer_state_dict=None,
+    source_state_dict=None,
     num_blocks: int = 24,
     c_token: int = 384,
     c_s: int = 384,
@@ -49,11 +53,11 @@ def swap_diffusion_transformer(
     """Replace diffusion_module.diffusion_transformer with TRT-BNM equivalent.
 
     Args:
-        diffusion_module: BakerLab DiffusionModule instance.
-        customer_state_dict: Optional state_dict from customer's DiffusionTransformer.
+        diffusion_module: RF3 DiffusionModule instance.
+        source_state_dict: Optional state_dict from the source model's DiffusionTransformer.
             If None, TRT-BNM modules use default initialization.
     """
-    config = make_bakerlab_dit_config(
+    config = make_rf3_dit_config(
         num_blocks=num_blocks,
         c_token=c_token,
         c_s=c_s,
@@ -80,12 +84,12 @@ def swap_diffusion_transformer(
             attn_output_gate=False,
             conditioned_transition_using_silu=True,
         )
-        if customer_state_dict is not None:
-            converted = convert_dit_block_weights(customer_state_dict, f"blocks.{i}", "", c_token, num_heads)
+        if source_state_dict is not None:
+            converted = convert_dit_block_weights(source_state_dict, f"blocks.{i}", "", c_token, num_heads)
             layer.load_state_dict({k: v.to(device) for k, v in converted.items()})
         layers.append(layer)
 
     layers = layers.to(device).eval()
-    adapter = BakerLabDiTStackAdapter(layers)
+    adapter = RF3DiTStackAdapter(layers)
     diffusion_module.diffusion_transformer = adapter
     return diffusion_module

@@ -1,8 +1,23 @@
 ---
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 name: make-data-pipeline
 description: Port an open-source bioinformatics data pipeline into the TensorRT-BioNeMo (TRT-BNM) pipeline architecture. Use when the user asks to create, port, convert, or write a new data pipeline from OSS code, or add a new model's data processing to the TRT-BNM system.
+license: Apache-2.0
+metadata:
+  author: NVIDIA Corporation
 ---
 
 # Port OSS Data Pipeline to TRT-BNM
@@ -957,17 +972,18 @@ running either side, discover and lock down these parameters:
 a feature the OSS model uses), document the difference and its expected impact
 on metrics in `$WORKDIR/NOTES.md`.
 
-### Step 1 — Set up metrics tooling (OpenStructure via Miniconda)
+### Step 1 — Set up metrics tooling (OpenStructure via Miniforge)
 
 Phases 7 and 9 use **OpenStructure** (`ost compare-structures`) to compute lDDT,
-TM-score, and other structural metrics. OpenStructure requires its own Python
-environment via Miniconda — it cannot be pip-installed into the main
-environment.
+TM-score, and other structural metrics. OpenStructure requires its own conda
+environment — it cannot be pip-installed into the main environment. Use
+[Miniforge][miniforge], which defaults to conda-forge and carries no
+Anaconda-channel terms of service.
 
 **Check if already installed:**
 
 ```bash
-OST_CMD=${OST_CMD:-$(pwd)/miniconda3/bin/ost}
+OST_CMD=${OST_CMD:-$(pwd)/miniforge3/bin/ost}
 if command -v "$OST_CMD" &>/dev/null; then
     echo "OpenStructure found: $($OST_CMD --version)"
 else
@@ -975,29 +991,31 @@ else
 fi
 ```
 
-**Auto-install Miniconda + OpenStructure** (if not found):
+**Auto-install Miniforge + OpenStructure** (if not found):
 
 ```bash
-MINICONDA_DIR=${MINICONDA_DIR:-$(pwd)/miniconda3}
+MINIFORGE_DIR=${MINIFORGE_DIR:-$(pwd)/miniforge3}
 
-# 1. Install Miniconda to a local directory (no root required)
-if [ ! -f "$MINICONDA_DIR/bin/conda" ]; then
-    wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
-    bash /tmp/miniconda.sh -b -p "$MINICONDA_DIR"
-    rm /tmp/miniconda.sh
+# 1. Install Miniforge to a local directory (no root required)
+if [ ! -f "$MINIFORGE_DIR/bin/conda" ]; then
+    wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh
+    bash /tmp/miniforge.sh -b -p "$MINIFORGE_DIR"
+    rm /tmp/miniforge.sh
 fi
 
-# 2. Install OpenStructure into the Miniconda environment
-"$MINICONDA_DIR/bin/conda" install -y -c conda-forge openstructure
+# 2. Install OpenStructure (conda-forge is Miniforge's default channel)
+"$MINIFORGE_DIR/bin/conda" install -y -c conda-forge openstructure
 
 # 3. Verify
-OST_CMD="$MINICONDA_DIR/bin/ost"
+OST_CMD="$MINIFORGE_DIR/bin/ost"
 "$OST_CMD" --version
 ```
 
 Record `$OST_CMD` in `$WORKDIR/NOTES.md`. All subsequent
-`ost compare-structures` calls use this path. The Miniconda installation is
+`ost compare-structures` calls use this path. The Miniforge installation is
 local and does not affect the main Python environment.
+
+[miniforge]: https://github.com/conda-forge/miniforge
 
 ### ⚠️ MANDATORY: Use ONLY `ost compare-structures` for ALL metrics ⚠️
 
@@ -1156,7 +1174,7 @@ Save per-sample metrics to `$WORKDIR/ref_data/oss_metrics.json`:
 import json
 import subprocess
 
-OST_CMD = "<repo_root>/miniconda3/bin/ost"  # from Step 1
+OST_CMD = "<repo_root>/miniforge3/bin/ost"  # from Step 1
 
 def score_with_ost(prediction_path, reference_path, output_json):
     """Run ost compare-structures and parse the JSON output."""

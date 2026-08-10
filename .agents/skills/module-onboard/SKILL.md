@@ -1,21 +1,37 @@
 ---
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 name: module-onboard
-description: Converts a customer's fundamental module (Pairformer, DiffusionTransformer, etc.) to use TRT-BNM optimized layers, with weight conversion and numerical validation.
+description: Converts a source model's fundamental module (Pairformer, DiffusionTransformer, etc.) to use TRT-BNM optimized layers, with weight conversion and numerical validation.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
 ---
 
-# Module Onboarding — Converting Customer Modules to TRT-BNM
+# Module Onboarding — Converting Source Modules to TRT-BNM
 
-- **Input:** Customer module source (an `nn.Module` subclass) + checkpoint.
+- **Input:** Source module (an `nn.Module` subclass) + checkpoint.
 - **Output:** Weight conversion function + adapter wrapper + hierarchical
   equivalence tests.
 
-## Reference Samples (BakerLab RF3)
+## Reference Samples (RF3)
 
-Complete worked examples for BakerLab RF3 module onboarding live under
-`samples/`:
+Complete worked examples live under `samples/`, built against [RoseTTAFold3
+(RF3)][rf3] — an open-source, BSD-3-Clause all-atom structure prediction model.
+Its module layouts are public, so the samples double as a reference for the
+naming and fusion patterns a conversion has to handle:
 
 ```plaintext/none
 samples/
@@ -27,33 +43,35 @@ samples/
     └── integration/                 # adapter.py, config.py, swap.py
 ```
 
-Use these as templates when the customer module matches the BakerLab RF3 layout
+Use these as templates when the source module matches the RF3 layout
 (Pairformer or DiffusionTransformer).
+
+[rf3]: https://github.com/RosettaCommons/foundry/tree/production/models/rf3
 
 **Before starting, confirm the following with the user** (ask if not provided):
 
-1. **Path to the customer module source file** — the `.py` file containing the
+1. **Path to the source module file** — the `.py` file containing the
    `nn.Module` subclass to convert.
 1. **Class name** — if the file contains multiple modules, which class is the
    target.
 1. **Path to checkpoint** (optional) — `.pt`, `.safetensors`, or checkpoint
    directory. If none, random weights will be used.
 1. **Working directory** — where to place all generated artifacts (default:
-   `/workspace/onboard_<customer>_<module>/`).
+   `/workspace/onboard_<source>_<module>/`).
 
 ## Working Directory Isolation (CRITICAL)
 
 **All generated artifacts MUST live in a dedicated working directory outside the
 TRT-BNM codebase.** Do NOT create, modify, or place any files inside the TRT-BNM
 install/source tree (`tensorrt_bionemo/`, `tests/`, `examples/`, etc.) or the
-customer's source tree. Both the TRT-BNM repo and the customer's codebase are
+source repository. Both the TRT-BNM repo and the source repository are
 read-only dependencies.
 
 At the start of the onboarding, create a working directory and use it for
 everything:
 
 ```plaintext/none
-<workdir>/                          # e.g., /workspace/onboard_<customer>_<module>/
+<workdir>/                          # e.g., /workspace/onboard_<source>_<module>/
 ├── convert/                        # Weight conversion scripts + converted checkpoints
 │   ├── convert_weights.py          # Conversion function (Phase 2)
 │   ├── <module>_ckpt/              # Optional serialized checkpoint (safetensors)
@@ -76,18 +94,17 @@ everything:
 **Rules:**
 
 - Import from `tensorrt_bionemo` as installed package — never modify its source.
-- Import from the customer's codebase as needed — never modify it either.
+- Import from the source repository as needed — never modify it either.
 - All converted weights, test scripts, adapter code, and benchmark results go
   under `<workdir>/`.
 - The working directory path should be confirmed with the user in Phase 0 before
   any files are created.
 - Add `<workdir>` to `PYTHONPATH` if needed so that test scripts can import the
-  conversion and
-adapter modules.
+  conversion and adapter modules.
 
-    ```bash
-    export PYTHONPATH=<workdir>:${PYTHONPATH}
-    ```
+  ```bash
+  export PYTHONPATH=<workdir>:${PYTHONPATH}
+  ```
 
 ## Phase 0 — Gather Resources & Feasibility Check
 
@@ -108,16 +125,16 @@ Confirm the working directory path with the user, then create the directory
 structure:
 
 ```bash
-export WORKDIR=/workspace/onboard_<customer>_<module>
+export WORKDIR=/workspace/onboard_<source>_<module>
 mkdir -p $WORKDIR/{convert,integration,tests,benchmarks}
 ```
 
 All subsequent phases write files exclusively under `$WORKDIR`. Never write into
-the TRT-BNM source tree or the customer's source tree.
+the TRT-BNM source tree or the source repository.
 
-### Step 2 — Locate customer module source & install dependencies
+### Step 2 — Locate the source module & install dependencies
 
-Read the customer's module file. Extract:
+Read the source model's module file. Extract:
 
 - Class name and inheritance chain
 - All `__init__` sub-modules (name, class, constructor args)
@@ -125,12 +142,12 @@ Read the customer's module file. Extract:
   order, what residual connections exist)
 - Training-only features (dropout, activation checkpointing, auxiliary losses)
 
-**Install only the packages needed to import and run the customer module.** Do
-NOT install the customer's full package or all of its dependencies — only
+**Install only the packages needed to import and run the source module.** Do
+NOT install the source model's full package or all of its dependencies — only
 install the minimal set required to instantiate the module and run its
 `forward()`. This avoids dependency conflicts with TRT-BNM.
 
-1. **Identify required imports** — read the customer module source and trace its
+1. **Identify required imports** — read the source module and trace its
    import chain. List only the packages the module actually imports (e.g.,
    `einops`, `ml_collections`, a custom ops package). Ignore packages used only
    by training, data loading, or CLI code that the onboarding does not touch.
@@ -141,29 +158,29 @@ install the minimal set required to instantiate the module and run its
    pip install <package>
    ```
 
-   If the customer source is a proper package and the module cannot be imported
-   without it being installed (e.g., relative imports), add the customer source
+   If the source model is a proper package and the module cannot be imported
+   without it being installed (e.g., relative imports), add the source
    root to `sys.path` instead of installing:
 
    ```bash
-   export PYTHONPATH=<customer_source_root>:$PYTHONPATH
+   export PYTHONPATH=<source_root>:$PYTHONPATH
    ```
 
-1. **Verify the import works** — confirm the customer module can be
+1. **Verify the import works** — confirm the source module can be
    instantiated:
 
    ```bash
-   python -c "from <customer_package>.<module_path> import <ClassName>; print('OK')"
+   python -c "from <source_package>.<module_path> import <ClassName>; print('OK')"
    ```
 
 If any required package conflicts with TRT-BNM's dependencies (e.g., different
 PyTorch version), **stop and report the conflict to the user**. Do not
 force-install conflicting packages.
 
-### Step 3 — Locate customer checkpoint (or use random weights)
+### Step 3 — Locate source checkpoint (or use random weights)
 
 Check whether the user has placed a checkpoint file in `$WORKDIR` (e.g.,
-`$WORKDIR/customer_checkpoint.pt`, `$WORKDIR/*.safetensors`).
+`$WORKDIR/source_checkpoint.pt`, `$WORKDIR/*.safetensors`).
 
 **If a checkpoint is provided:**
 
@@ -174,7 +191,7 @@ Check whether the user has placed a checkpoint file in `$WORKDIR` (e.g.,
 
 **If no checkpoint is provided:**
 
-- Proceed with **randomly initialized weights**. Instantiate the customer module
+- Proceed with **randomly initialized weights**. Instantiate the source module
   and the TRT-BNM module with matching hyperparameters, then use their
   default-initialized `state_dict()` for conversion and testing.
 - This is sufficient for validating the conversion pipeline (weight mapping,
@@ -185,7 +202,7 @@ Check whether the user has placed a checkpoint file in `$WORKDIR` (e.g.,
 
 ## Phase 1 — Survey TRT-BNM Coverage & Architecture Analysis
 
-TRT-BNM accelerates customer modules via the **optimized PyTorch backend**
+TRT-BNM accelerates source modules via the **optimized PyTorch backend**
 (`tensorrt_bionemo/_torch/`). Survey it to determine which sub-modules have
 matching implementations.
 
@@ -298,8 +315,8 @@ checks = {
     # ── Testing (Phase 4) ──
     'pytest':             'pytest (test runner)',
 
-    # ── Customer model (Phase 0) ──
-    # Customer-specific imports are checked separately in Phase 0.
+    # ── Source model (Phase 0) ──
+    # Source-specific imports are checked separately in Phase 0.
 }
 
 missing = []
@@ -388,27 +405,27 @@ DSL, cuEquivariance) under the hood but remain standard PyTorch modules with
    `get_tri_mul_node_weights`, `get_transition_weights`,
    `get_pairwise_attn_weights`).
 
-For each customer sub-module, record whether a Torch-backend counterpart exists
+For each source sub-module, record whether a Torch-backend counterpart exists
 at the composite or primitive level.
 
 ### Step 2 — Determine Torch backend support
 
-For the customer module, produce a **Torch backend support matrix**. For each
-customer sub-module, assess whether the Torch backend can support conversion;
+For the source module, produce a **Torch backend support matrix**. For each
+source sub-module, assess whether the Torch backend can support conversion;
 when it cannot, state the specific reason.
 
 #### Torch backend blockers
 
-When a customer sub-module cannot be converted to the Torch backend, classify
+When a source sub-module cannot be converted to the Torch backend, classify
 the reason:
 
-| Blocker                           | Description                                                                                                                                                                                                                                                           |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **No primitive match**            | No `nn.Module` in `_torch/layers/` implements the same operation (e.g., a novel gating mechanism or custom geometric layer).                                                                                                                                          |
-| **Incompatible math**             | A TRT-BNM primitive exists but computes a different mathematical operation — for example, the customer uses a non-SwiGLU activation in its transition block while TRT-BNM `Transition` hardcodes SwiGLU.                                                              |
-| **Dimensional constraint**        | The customer's dimensions violate TRT-BNM assumptions — e.g., hidden dim not divisible by the required head count, or a non-standard expansion factor that doesn't match the `2 * hidden` fusion layout.                                                              |
-| **Unsupported attention pattern** | The customer uses an attention variant not covered by any available attention backend (triangle: `VANILLA`, `CUEQUIV`, `CuTeDSL`; pairwise: `VANILLA`, `SDPA`) — e.g., a custom sparse attention pattern, windowed triangle attention, or non-standard masking logic. |
-| **Feature gap**                   | The customer requires a feature the Torch backend doesn't support — e.g., custom bias terms, non-standard normalization placement, auxiliary outputs consumed downstream.                                                                                             |
+| Blocker                           | Description                                                                                                                                                                                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **No primitive match**            | No `nn.Module` in `_torch/layers/` implements the same operation (e.g., a novel gating mechanism or custom geometric layer).                                                                                                                                        |
+| **Incompatible math**             | A TRT-BNM primitive exists but computes a different mathematical operation — for example, the source uses a non-SwiGLU activation in its transition block while TRT-BNM `Transition` hardcodes SwiGLU.                                                              |
+| **Dimensional constraint**        | The source model's dimensions violate TRT-BNM assumptions — e.g., hidden dim not divisible by the required head count, or a non-standard expansion factor that doesn't match the `2 * hidden` fusion layout.                                                        |
+| **Unsupported attention pattern** | The source uses an attention variant not covered by any available attention backend (triangle: `VANILLA`, `CUEQUIV`, `CuTeDSL`; pairwise: `VANILLA`, `SDPA`) — e.g., a custom sparse attention pattern, windowed triangle attention, or non-standard masking logic. |
+| **Feature gap**                   | The source requires a feature the Torch backend doesn't support — e.g., custom bias terms, non-standard normalization placement, auxiliary outputs consumed downstream.                                                                                             |
 
 #### Support matrix format
 
@@ -431,7 +448,7 @@ Then determine the overall conversion options:
 - **Full conversion** — All sub-modules have Torch-backend counterparts. The
   converted module runs as an optimized `nn.Module`.
 - **Partial conversion** — Some sub-modules have blockers. These remain in the
-  customer's original eager PyTorch. The rest can still be converted. Report
+  source model's original eager PyTorch. The rest can still be converted. Report
   which sub-modules are left unconverted and why.
 
 **Report the support matrix to the user before proceeding.** For any sub-module
@@ -453,7 +470,7 @@ below — fill every section, remove nothing, mark empty sections with "None".
 
 | Field | Value |
 |---|---|
-| Customer module class | `<ClassName>` |
+| Source module class | `<ClassName>` |
 | Source file | `<path/to/module.py>` |
 | Checkpoint | `<path or "random weights">` |
 | Parameter count | `<N>M` |
@@ -464,24 +481,24 @@ below — fill every section, remove nothing, mark empty sections with "None".
 
 ## 2. Torch Backend Support Matrix
 
-| # | Customer Sub-Module | Customer Class | Torch Backend | Blocker (if any) |
+| # | Source Sub-Module | Source Class | Torch Backend | Blocker (if any) |
 |---|---|---|---|---|
-| 1 | `<name>` | `<CustomerClass>` | YES / NO | `<blocker or "—">` |
-| 2 | `<name>` | `<CustomerClass>` | YES / NO | `<blocker or "—">` |
+| 1 | `<name>` | `<SourceClass>` | YES / NO | `<blocker or "—">` |
+| 2 | `<name>` | `<SourceClass>` | YES / NO | `<blocker or "—">` |
 | ... | ... | ... | ... | ... |
 
 **Conversion path:** `<Full / Partial>`
 
 ## 3. Sub-Module Mapping
 
-| # | Customer Sub-Module | Customer Class | TRT-BNM Torch Class | Notes |
+| # | Source Sub-Module | Source Class | TRT-BNM Torch Class | Notes |
 |---|---|---|---|---|
-| 1 | `<name>` | `<CustClass>` | `<TorchClass or "GAP">` | `<notes>` |
+| 1 | `<name>` | `<SourceClass>` | `<TorchClass or "GAP">` | `<notes>` |
 | 2 | ... | ... | ... | ... |
 
 ## 4. Hyperparameter Mapping
 
-| Parameter | Customer Value | TRT-BNM Field | Match? | Notes |
+| Parameter | Source Value | TRT-BNM Field | Match? | Notes |
 |---|---|---|---|---|
 | hidden_dim | `<value>` | `token_s` / `token_z` | YES / NO | |
 | num_heads | `<value>` | `num_heads` | YES / NO | |
@@ -492,7 +509,7 @@ below — fill every section, remove nothing, mark empty sections with "None".
 
 ## 5. Forward Signature Differences
 
-| Aspect | Customer | TRT-BNM | Adapter Needed? |
+| Aspect | Source | TRT-BNM | Adapter Needed? |
 |---|---|---|---|
 | Mask format | `<e.g., bool padding mask>` | `<e.g., float valid mask>` | YES / NO |
 | Extra TRT-BNM args | — | `<e.g., attn_metadatas, precomputed_masks>` | YES |
@@ -524,15 +541,15 @@ below — fill every section, remove nothing, mark empty sections with "None".
 
 ## 9. Open Questions
 
-- `<Any unresolved questions for the TRT-BNM team>`
+- `<Any unresolved questions for the maintainers>`
 - ...
 ```
 
 ### Step 3 — Analyze architectural differences
 
-Compare the customer module against the closest TRT-BNM equivalent(s). Document:
+Compare the source module against the closest TRT-BNM equivalent(s). Document:
 
-1. **Sub-module mapping table** — For each customer sub-module: customer class,
+1. **Sub-module mapping table** — For each source sub-module: source class,
    Torch-backend class (or gap), file paths.
 1. **Forward signature differences** — Compare input/output signatures. Common
    differences:
@@ -541,7 +558,7 @@ Compare the customer module against the closest TRT-BNM equivalent(s). Document:
    - Return type (tuple ordering, extra outputs)
 1. **Hyperparameter mapping** — Map constructor args: hidden dims, head counts,
    expansion factors, epsilon values, etc. Note any without a direct equivalent.
-1. **Inference-irrelevant features** — List customer features to strip: dropout,
+1. **Inference-irrelevant features** — List source features to strip: dropout,
    activation checkpointing, training-mode branches, auxiliary losses.
 
 Report findings to the user before proceeding.
@@ -552,11 +569,11 @@ The Torch backend (`_torch/`) consumes weights via `load_weights()` /
 `recursive_calling_load_weights`. Perform weight conversion for every sub-module
 that Phase 1 Step 2 marked as supported.
 
-### Step 1 — Extract customer weight names
+### Step 1 — Extract source weight names
 
-If a customer checkpoint was provided (Phase 0 Step 3), load it and list all
+If a source checkpoint was provided (Phase 0 Step 3), load it and list all
 parameter keys for the module being converted. If no checkpoint was provided,
-instantiate the customer module with the correct hyperparameters and use
+instantiate the source module with the correct hyperparameters and use
 `model.state_dict().keys()` to get the key names — the values will be
 random-initialized but the names and shapes are what matter here.
 
@@ -568,7 +585,7 @@ and print `state_dict().keys()`, or read the source to identify `nn.Parameter` /
 
 ### Step 3 — Build the weight name mapping
 
-Create a complete mapping from customer keys to TRT-BNM keys. This MUST account
+Create a complete mapping from source keys to TRT-BNM keys. This MUST account
 for:
 
 1. **Name renames** — Different attribute names for the same logical weight
@@ -584,8 +601,8 @@ for:
      `torch.cat([gate, input], dim=0)` (note ordering!)
 1. **Shape transforms** — Transpositions, reshapes, or padding needed due to
    different layout conventions.
-1. **Missing weights** — TRT-BNM weights with no customer equivalent (should be
-   initialized, not converted). Customer weights with no TRT-BNM equivalent
+1. **Missing weights** — TRT-BNM weights with no source equivalent (should be
+   initialized, not converted). Source weights with no TRT-BNM equivalent
    (should be discarded or flagged).
 
 ### Step 4 — Write the conversion function
@@ -595,11 +612,11 @@ in `tensorrt_bionemo/models/*/convert.py`:
 
 ```python
 def convert_<module>_weights(state_dict, prefix, tbm_prefix, mapping, dtype, ...):
-    """Convert customer checkpoint weights to TRT-BNM format.
+    """Convert source checkpoint weights to TRT-BNM format.
 
     The returned dict is consumed by the Torch backend via module.load_weights(weights).
     """
-    # 1. Read customer weights by key
+    # 1. Read source weights by key
     # 2. Apply fusions (cat, reshape, etc.)
     # 3. Apply dtype conversion
     # 4. Return dict with TRT-BNM key names
@@ -627,7 +644,7 @@ backend:
 1. **Weight completeness** — compare converted keys against
    `nn_module.state_dict().keys()`:
    - No missing weights (every TRT-BNM key has a value).
-   - No extra weights (every customer key was consumed or explicitly discarded).
+   - No extra weights (every source key was consumed or explicitly discarded).
 1. **Shape match** — each converted tensor's shape matches the `nn.Module`
    parameter's shape.
 1. **Dtype match** — each converted tensor has the target dtype.
@@ -637,45 +654,45 @@ backend:
 ## Phase 3 — Integration
 
 All integration code goes under `$WORKDIR/integration/`. Import
-`tensorrt_bionemo` as an installed package and the customer's module from its
+`tensorrt_bionemo` as an installed package and the source model's module from its
 source path.
 
 ### Step 1 — Write the adapter wrapper
 
 Create `$WORKDIR/integration/adapter.py` — a thin `nn.Module` that bridges the
-customer's `forward()` signature to the TRT-BNM module's `forward()`. The
+source model's `forward()` signature to the TRT-BNM module's `forward()`. The
 adapter handles:
 
-- **Mask conversion** — Transform the customer's mask format to TRT-BNM's
+- **Mask conversion** — Transform the source model's mask format to TRT-BNM's
   expected format.
 - **Argument bridging** — Supply TRT-BNM-specific args with sensible defaults
   (e.g., `attn_metadatas=None`, `precomputed_masks=None`).
-- **Output reshaping** — Match the customer's expected return type.
+- **Output reshaping** — Match the source model's expected return type.
 - **Inference-mode stripping** — Do not replicate dropout or training-only
   logic.
 
 The adapter must be a **drop-in replacement**: same `forward()` signature as the
-customer module, so the customer's calling code doesn't change.
+source module, so the source model's calling code doesn't change.
 
 ### Step 2 — Write the module swap function
 
-Create `$WORKDIR/integration/swap.py` — a function that patches the customer's
+Create `$WORKDIR/integration/swap.py` — a function that patches the source model's
 model in-place:
 
-1. Instantiate the TRT-BNM module with a config matching the customer's
+1. Instantiate the TRT-BNM module with a config matching the source model's
    hyperparameters.
 1. Load and convert weights using the function from Phase 2.
 1. Load converted weights into the TRT-BNM module.
 1. Wrap in the adapter from Step 1.
-1. Replace the customer's sub-module attribute (e.g.,
+1. Replace the source model's sub-module attribute (e.g.,
    `model.trunk.pairformer = adapter`).
 
 ### Step 3 — Write or reuse the config
 
 Check `tensorrt_bionemo/configs/modules.py` for an existing `BaseConfig`
-subclass that fits. If one exists, instantiate it with the customer's
+subclass that fits. If one exists, instantiate it with the source model's
 hyperparameters. If not, create a minimal new one — only add fields that the
-customer's module actually needs.
+source model's module actually needs.
 
 Key config fields to set:
 
@@ -691,7 +708,7 @@ Create test files under `$WORKDIR/tests/`. Run them with
 `pytest $WORKDIR/tests/`.
 **Bottom-up testing — each level must pass before the next.**
 
-These tests work with both real and random weights. When no customer checkpoint
+These tests work with both real and random weights. When no source checkpoint
 was provided, use random-initialized weights — the tests validate that the
 conversion pipeline and adapter produce **identical outputs** for both modules
 given the same weights and inputs, regardless of whether the weights are
@@ -714,7 +731,7 @@ input → compare output.
 ### Step 2 — Layer equivalence
 
 Test one full layer (e.g., one PairformerBlock / one DiffusionTransformerLayer):
-customer layer vs TRT-BNM Torch layer via adapter wrapper.
+source layer vs TRT-BNM Torch layer via adapter wrapper.
 
 - Load identical weights (via conversion function).
 - Feed identical random inputs.
@@ -726,33 +743,34 @@ customer layer vs TRT-BNM Torch layer via adapter wrapper.
 Test the complete stacked module (e.g., 2-3 layers, not the full depth):
 
 - Confirm error does not diverge across layers.
-- Use representative input shapes from the customer's use case.
+- Use representative input shapes from the source model's use case.
 
 ### Step 4 — Weight round-trip test
 
 Verify the conversion is lossless:
 
 ```python
-# customer_state -> convert -> load into TRT-BNM -> extract state_dict -> compare shapes/values
+# source_state -> convert -> load into TRT-BNM -> extract state_dict -> compare shapes/values
 ```
 
 ## Phase 5 — Performance Benchmarks (Optional)
 
-Once correctness is confirmed (Phase 4 passes), benchmark against the customer's
+Once correctness is confirmed (Phase 4 passes), benchmark against the source model's
 original module. **All benchmarks use bfloat16 precision** — this is the target
 inference dtype.
 
 ### Benchmark table format
 
 The baseline is always the
-**customer's e2e model with its default configuration** (bfloat16). This means
+**source model's own e2e model with its default configuration** (bfloat16). This
+means
 using whatever attention backends, kernel settings, and optimizations the
-customer ships — not a stripped-down module in isolation. The baseline must
-reflect the real-world performance the customer currently achieves. Report
+source model ships — not a stripped-down module in isolation. The baseline must
+reflect the real-world performance the source model currently achieves. Report
 results in this table format:
 
 ```text
-Input Shape     | Baseline (Customer e2e, bf16) | [TriAttn=CUEQUIV, AttnPB=SDPA] | [TriAttn=CuTeDSL, AttnPB=CuTeDSL]*
+Input Shape     | Baseline (Source e2e, bf16) | [TriAttn=CUEQUIV, AttnPB=SDPA] | [TriAttn=CuTeDSL, AttnPB=CuTeDSL]*
 ----------------|-------------------------------|--------------------------------|-------------------------------------
 N_res=128       | X ms                          | Y ms (Z× speedup)             | Y ms (Z× speedup)
 N_res=256       | X ms                          | Y ms (Z× speedup)             | Y ms (Z× speedup)
@@ -772,14 +790,14 @@ size, report OOM and stop that column — do not skip to larger sizes.
 
 ### Benchmark columns
 
-All columns use **bfloat16** dtype — both for the customer baseline and all
+All columns use **bfloat16** dtype — both for the source baseline and all
 TRT-BNM configurations.
 
-| Column                                  | Config                                                                                                                    | Notes                                                                                                                                                        |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Baseline (Customer e2e, bf16)**       | Customer's e2e model with its default config (attention backends, kernels, `torch.compile`, etc.), `dtype=torch.bfloat16` | Always present. This is the reference. Must inherit the customer's own optimizations — use their recommended inference settings, not a naive eager fallback. |
-| **\[TriAttn=CUEQUIV, AttnPB=SDPA\]**    | Torch backend, `dtype=bfloat16`, `triangle_attention_backend="CUEQUIV"`, `pairwise_attention_backend="SDPA"`              | Default Torch backend config. Always present.                                                                                                                |
-| **\[TriAttn=CuTeDSL, AttnPB=CuTeDSL\]** | Torch backend, `dtype=bfloat16`, `triangle_attention_backend="CuTeDSL"`, `pairwise_attention_backend="CuTeDSL"`           | Only if GPU SM version supports CuTeDSL. Check with `torch.cuda.get_device_capability()` — requires SM80+.                                                   |
+| Column                                  | Config                                                                                                                            | Notes                                                                                                                                                            |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Baseline (Source e2e, bf16)**         | The source model's e2e model with its default config (attention backends, kernels, `torch.compile`, etc.), `dtype=torch.bfloat16` | Always present. This is the reference. Must inherit the source model's own optimizations — use their recommended inference settings, not a naive eager fallback. |
+| **\[TriAttn=CUEQUIV, AttnPB=SDPA\]**    | Torch backend, `dtype=bfloat16`, `triangle_attention_backend="CUEQUIV"`, `pairwise_attention_backend="SDPA"`                      | Default Torch backend config. Always present.                                                                                                                    |
+| **\[TriAttn=CuTeDSL, AttnPB=CuTeDSL\]** | Torch backend, `dtype=bfloat16`, `triangle_attention_backend="CuTeDSL"`, `pairwise_attention_backend="CuTeDSL"`                   | Only if GPU SM version supports CuTeDSL. Check with `torch.cuda.get_device_capability()` — requires SM80+.                                                       |
 
 ### Benchmark procedure
 
@@ -789,13 +807,13 @@ TRT-BNM configurations.
    memory reuse, kernel launch amortization, and realistic activation memory
    pressure — a single-layer benchmark understates memory usage and overstates
    throughput.
-1. **Shared weights across all configs.** Instantiate the customer module stack,
+1. **Shared weights across all configs.** Instantiate the source module stack,
    extract each layer's `state_dict()`, convert via the Phase 2 conversion
    function, and load the converted weights into every TRT-BNM configuration.
    This ensures all columns benchmark with identical weights — differences in
    latency are purely from the execution backend, not from weight values.
 1. Sweep `N_res` from 128 to 2048 with step size 128.
-1. All modules and inputs use `torch.bfloat16`. For the customer baseline, cast
+1. All modules and inputs use `torch.bfloat16`. For the source baseline, cast
    the module and inputs to bfloat16 before benchmarking.
 1. Warm up each configuration with 3 runs, then measure over 10 runs. Report
    median latency.
@@ -829,30 +847,30 @@ Print (not file) after completion:
 - **Never write into the TRT-BNM codebase.** All generated files (conversion
   scripts, checkpoints, adapters, tests, benchmarks) go under `$WORKDIR`. The
   TRT-BNM repo and install directory are read-only dependencies — import from
-  them, never modify them. Same applies to the customer's source tree.
-- **Use the optimized PyTorch backend.** This skill converts customer modules to
+  them, never modify them. Same applies to the source repository.
+- **Use the optimized PyTorch backend.** This skill converts source modules to
   TRT-BNM's `_torch/` implementations. TensorRT engine build is out of scope for
   this release.
 - **Weight fusion ordering matters.** When fusing gate + input into
   `fused_fc2_fc1`, the gate weight comes first:
   `torch.cat([gate, input], dim=0)`. Getting this wrong produces silent
   numerical errors, not crashes.
-- **Mask polarity.** Customer models often use `is_padding=True` for padded
+- **Mask polarity.** Source models often use `is_padding=True` for padded
   positions. TRT-BNM uses `mask=1.0` for **valid** positions. Invert carefully.
 - **Precomputed masks for performance.** TRT-BNM attention backends support
   precomputed mask biases (`precompute_pair_masks`, `precompute_single_masks`).
   Compute these once outside the layer loop, not per-layer.
-- **Dropout is inference-irrelevant.** Customer modules often have dropout in
+- **Dropout is inference-irrelevant.** Source modules often have dropout in
   `forward()`. TRT-BNM modules do not apply dropout (they're inference-only). Do
   not add dropout to the adapter.
 - **dtype matters.** TRT-BNM modules expect explicit dtype at construction time.
   Some internal paths (e.g., `s_path_dtype`) may use a different precision than
-  the main dtype. Match the customer's precision policy.
+  the main dtype. Match the source model's precision policy.
 - **Reuse existing conversion helpers.** Check
   `tensorrt_bionemo/models/*/convert.py` — the per-component weight conversion
   functions (`get_tri_attn_node_weights`, `get_tri_mul_node_weights`,
   `get_transition_weights`, `get_pairwise_attn_weights`) are designed to be
-  reusable across models. Only write new ones when the customer's weight layout
+  reusable across models. Only write new ones when the source model's weight layout
   genuinely differs.
 - **Torch attention defaults: CUEQUIV + SDPA.** The Torch backend defaults are
   `triangle_attention_backend="CUEQUIV"` and
@@ -862,7 +880,7 @@ Print (not file) after completion:
   switching.
 - **DiffusionTransformer with fixed pair bias: detect the pattern, then use
   `OpenFold3DiffusionTransformer` with `precompute_bias=True` by default.**
-  During Phase 1 survey, check whether the customer's DiffusionTransformer
+  During Phase 1 survey, check whether the source model's DiffusionTransformer
   layers project a **fixed** pair representation `z` into an attention bias via
   `LayerNorm + Linear` on every layer (i.e., `z` is passed unchanged into every
   layer's pair bias projection). If yes, this is the precomputed-bias pattern:
@@ -873,7 +891,7 @@ Print (not file) after completion:
   `precompute_bias=True` (the default). This turns O(N²) per-layer pair
   projections into a single constant-time GEMM — up to 14.8× speedup at large
   N_res. Skip this if `z` is updated between layers (e.g. EvoformerStack-style),
-  or if the customer module has no pair bias projection at all. Two
+  or if the source module has no pair bias projection at all. Two
   implementation gotchas when using this path:
   1. `DiffusionTransformerConfig` has no `version` field — pass `version="v1"`
      as an extra field (allowed by `extra = "allow"` on `BaseConfig`).

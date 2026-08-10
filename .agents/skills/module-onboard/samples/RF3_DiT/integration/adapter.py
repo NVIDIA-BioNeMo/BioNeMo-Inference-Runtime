@@ -12,22 +12,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 
 """
 Drop-in adapter: wraps TRT-BNM DiffusionTransformerLayer to match
-BakerLab RF3 DiffusionTransformerBlock forward signature.
+RF3 DiffusionTransformerBlock forward signature.
 
-Customer signature:  forward(A_I, S_I, Z_II, is_padding_I) -> A_I
+Source signature:   forward(A_I, S_I, Z_II, is_padding_I) -> A_I
 TRT-BNM signature:   forward(a, s, bias, mask, ...) -> a
 """
 
 import torch.nn as nn
 
 
-class BakerLabDiTBlockAdapter(nn.Module):
-    """Drop-in replacement for a single BakerLab DiffusionTransformerBlock.
+class RF3DiTBlockAdapter(nn.Module):
+    """Drop-in replacement for a single RF3 DiffusionTransformerBlock.
 
-    Customer forward: (A_I [B,D,I,C], S_I [B,D,I,C], Z_II [B,I,I,Cz], is_padding_I [B,I]) -> A_I [B,D,I,C]
+    Source forward: (A_I [B,D,I,C], S_I [B,D,I,C], Z_II [B,I,I,Cz], is_padding_I [B,I]) -> A_I [B,D,I,C]
     TRT-BNM forward:  (a [B,I,C], s [B,I,C], bias [B,I,I,Cz], mask [B,I]) -> a [B,I,C]
 
     The D (diffusion samples) dimension is flattened into B for TRT-BNM, then reshaped back.
@@ -55,8 +59,8 @@ class BakerLabDiTBlockAdapter(nn.Module):
         return a.reshape(B, D, *a.shape[1:])
 
 
-class BakerLabDiTStackAdapter(nn.Module):
-    """Drop-in replacement for BakerLab's DiffusionTransformer (stack of blocks)."""
+class RF3DiTStackAdapter(nn.Module):
+    """Drop-in replacement for RF3's DiffusionTransformer (stack of blocks)."""
 
     def __init__(self, trtbnm_layers: nn.ModuleList):
         super().__init__()

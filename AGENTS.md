@@ -14,4 +14,14 @@
 - **License headers.** Every source file carries the NVIDIA SPDX Apache-2.0
   header; `insert-license` adds it where missing.
 
+## Agent skills
+
+Task-specific playbooks live in `.agents/skills/`
+
+| Skill                   | Read it when                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------- |
+| `make-data-pipeline`    | porting an open-source data pipeline into the TRT-BNM pipeline architecture                 |
+| `module-onboard`        | moving a source model's module onto TRT-BNM layers, with weight conversion and validation   |
+| `scan-mem-opt-patterns` | cutting activation memory or diagnosing large-`N` OOM in a pairwise-representation model    |
+
 [coding]: docs/coding.md

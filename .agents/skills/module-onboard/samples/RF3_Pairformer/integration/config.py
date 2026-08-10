@@ -12,13 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Layout reference: RoseTTAFold3 (RosettaCommons/foundry), BSD-3-Clause.
+# https://github.com/RosettaCommons/foundry/tree/production/models/rf3
+# Only upstream parameter and module names are reproduced here.
 
-"""TRT-BNM PairformerConfig for BakerLab RF3 Pairformer hyperparameters."""
+"""TRT-BNM PairformerConfig for RF3 Pairformer hyperparameters."""
 
 from tensorrt_bionemo.configs.modules import PairformerConfig
 
 
-def make_bakerlab_pairformer_config(
+def make_rf3_pairformer_config(
     num_blocks: int = 48,
     c_s: int = 384,
     c_z: int = 128,

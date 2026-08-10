@@ -1,6 +1,20 @@
 ---
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 name: scan-mem-opt-patterns
-description: Scan a pairwise-representation structure model (Boltz1/2, OpenFold2/3, Protenix, or a new port) for activation-memory patterns proven on Boltz2 (~4000 residues / 80 GB) and ProtenixV2. Four levers — precision (fp32→bf16 trimul / pair-cond / consumer-dtype cached pair_z), lifetime (in-place [N,N,*] accumulate, RAII / stream multi-sample confidence, drop dead features with real ownership, compact output), never-materialize (one-hot→embedding-gather for RPE/MSA/template, sample-independent DiT pair-bias broadcast over S, joint LN+Linear without cat, reduce-at-producer when only a reduction crosses a stage boundary), and chunking (pair-row ChunkPolicy; never chunk sample-axis transitions). Also covers slice-aliasing that pins a parent storage, expandable_segments, and a per-submodule memory profiler. Reusable code is inlined. Use when reducing activation memory, fitting longer sequences, diagnosing large-N OOM, or porting these optimizations to another pairwise model.
+description: Scan a pairwise-representation structure model (Boltz1/2, OpenFold2/3, Protenix, or a new port) for activation-memory patterns, grouped under four transferable levers — precision, lifetime, never-materialize, and chunking. Ships an inlined chunk engine and per-submodule memory profiler. Use when reducing activation memory, fitting longer sequences or more residues, diagnosing large-N OOM, or porting these optimizations to another pairwise model.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
@@ -15,10 +29,11 @@ activations, each `N²·c·sizeof(elem)` bytes (e.g. `[N,N,256]` fp32 ≈ 16 GB 
 N≈4000). Fitting a longer sequence is almost never one big win — it is removing
 that stack **one `[N,N,*]` tensor at a time**.
 
-This skill is the checklist proven on **Boltz2** (~4000 residues on 80 GB) and
-extended with patterns from **ProtenixV2** (multi-sample diffusion +
-confidence), written to **transfer**: the catalog is grouped under four
-*levers*, and for a new model you walk the levers even when no keyword matches.
+This skill is the checklist developed against **Boltz2** (numbers below were
+measured at ~4000 residues on a single 80 GB GPU) and extended with patterns
+from **ProtenixV2** (multi-sample diffusion + confidence), written to
+**transfer**: the catalog is grouped under four *levers*, and for a new model
+you walk the levers even when no keyword matches.
 It is self-contained — the reusable code (profiler harness, chunk engine) is
 inlined; nothing here depends on a specific repo layout.
 

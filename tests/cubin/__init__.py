@@ -12,12 +12,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-nanobind_add_module(_cutedsl_kernels bindings.cpp cubin_runtime.cpp)
-target_include_directories(_cutedsl_kernels PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
-target_link_libraries(_cutedsl_kernels PRIVATE CUDA::cuda_driver)
-
-add_subdirectory(cutedsl_triangle_attention)
-add_subdirectory(cutedsl_pairwise_attention)
-
-install(TARGETS _cutedsl_kernels LIBRARY DESTINATION tensorrt_bionemo/libs)

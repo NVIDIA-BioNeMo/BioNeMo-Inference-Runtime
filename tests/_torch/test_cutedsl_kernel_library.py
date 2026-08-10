@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Unit tests for the shared precompiled-kernel runtime."""
 
 from __future__ import annotations
 
@@ -51,6 +52,13 @@ def test_populate_compiled_cache_from_library(monkeypatch):
     assert cached is executable
     assert cache[("variant",)] is executable
     assert factory_calls == [(library, family)]
+
+
+def test_missing_family_reports_unavailable(monkeypatch):
+    monkeypatch.setattr(library_runtime, "_kernel_library", SimpleNamespace())
+
+    with pytest.raises(library_runtime.CuTeDSLKernelLibraryUnavailable):
+        library_runtime.populate_compiled_cache_from_library({}, ("variant",), "absent", lambda *_: None)
 
 
 def test_launch_library_executable_does_not_require_tvm_ffi():
@@ -136,3 +144,43 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
         library_runtime.CuTeDSLKernelLibraryExecutable,
     )
     torch.testing.assert_close(actual, expected, atol=1e-1, rtol=1e-2)
+
+
+def test_tensor_views_reject_the_wrong_rank():
+    library = SimpleNamespace(
+        Tensor1View=lambda *args: args,
+        Tensor3View=lambda *args: args,
+        Tensor4View=lambda *args: args,
+    )
+    rank2 = torch.zeros(2, 3)
+
+    with pytest.raises(ValueError):
+        library_runtime.tensor_s1_d0(library, rank2)
+    with pytest.raises(ValueError):
+        library_runtime.tensor_s3_d2(library, rank2)
+    with pytest.raises(ValueError):
+        library_runtime.tensor_s4_d3(library, rank2)
+
+
+def test_tensor_views_carry_shapes_strides_and_device():
+    library = SimpleNamespace(
+        Tensor1View=lambda data, shape, strides, device: ("1d", shape, device),
+        Tensor3View=lambda data, shape, strides, device: ("3d", shape, strides, device),
+        Tensor4View=lambda data, shape, strides, device: ("4d", shape, strides, device),
+    )
+    tensor4 = torch.zeros(2, 3, 4, 5)
+    cpu = -1  # get_device() on a CPU tensor, matching the library's UNKNOWN_DEVICE
+
+    assert library_runtime.tensor_s1_d0(library, torch.zeros(7)) == ("1d", (7,), cpu)
+    assert library_runtime.tensor_s3_d2(library, tensor4) == (
+        "3d",
+        (2, 3, 4),
+        tensor4.stride()[:2],
+        cpu,
+    )
+    assert library_runtime.tensor_s4_d3(library, tensor4) == (
+        "4d",
+        (2, 3, 4, 5),
+        tensor4.stride()[:3],
+        cpu,
+    )

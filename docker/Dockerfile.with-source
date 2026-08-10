@@ -50,11 +50,12 @@ COPY . ${PROJECT_WORKDIR}/
 # pre-generated artifacts, fall back to the CUDA compile-time stub; note that
 # the sm_90a (Hopper) path needs a live CUDA driver, so pass --gpus all when
 # building locally against a Hopper host.
-RUN if [ ! -f cpp/kernels/cutedsl_triangle_attention/cubins/embedded_cubins.h ]; then \
+RUN if [ ! -f cpp/kernels/cutedsl_triangle_attention/cubins/embedded_cubins.h ] || \
+       [ ! -f cpp/kernels/cutedsl_pairwise_attention/cubins/embedded_cubins.h ]; then \
       ln -sf /usr/local/cuda/lib64/stubs/libcuda.so \
              /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
       LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
-      python cpp/tools/prepare_cubins.py --kernel triangle_attention --jobs "$(nproc)"; \
+      python cpp/tools/prepare_cubins.py --jobs "$(nproc)"; \
     fi
 
 # ------------------------------------------------------

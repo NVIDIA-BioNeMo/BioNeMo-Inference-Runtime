@@ -14,15 +14,17 @@
 # limitations under the License.
 
 from .._common import SDPAAttentionMetadata, VanillaAttentionMetadata
-from .cutedsl import (
+from ._config import (
     _PW_CONFIGS_DIR,
-    PairwiseAttentionCuTeLeftMask,
-    PairwiseAttentionCuTeLeftMaskMetadata,
     PairwiseAttentionLeftMaskKernelConfig,
     _build_sm80_config,
     _build_sm90_config,
     get_kernel_config,
     get_nearest_bucket,
+)
+from .cutedsl import (
+    PairwiseAttentionCuTeLeftMask,
+    PairwiseAttentionCuTeLeftMaskMetadata,
 )
 from .sdpa import SDPAPairwiseAttention
 from .vanilla import VanillaPairwiseAttention

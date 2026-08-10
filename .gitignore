@@ -41,6 +41,10 @@ cpp/kernels/cutedsl_triangle_attention/cubins/*
 !cpp/kernels/cutedsl_triangle_attention/cubins/embedded_cubins.h
 !cpp/kernels/cutedsl_triangle_attention/cubins/embedded/
 !cpp/kernels/cutedsl_triangle_attention/cubins/embedded/*.h
+cpp/kernels/cutedsl_pairwise_attention/cubins/*
+!cpp/kernels/cutedsl_pairwise_attention/cubins/embedded_cubins.h
+!cpp/kernels/cutedsl_pairwise_attention/cubins/embedded/
+!cpp/kernels/cutedsl_pairwise_attention/cubins/embedded/*.h
 tensorrt_bionemo/bin
 tensorrt_bionemo/libs/*
 !tensorrt_bionemo/libs/__init__.py

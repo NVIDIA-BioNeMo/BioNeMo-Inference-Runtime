@@ -37,6 +37,13 @@ void bind(nb::module_& module);
 
 } // namespace trtbnm::cutedsl::triangle_attention
 
+namespace trtbnm::cutedsl::pairwise_attention
+{
+
+void bind(nb::module_& module);
+
+} // namespace trtbnm::cutedsl::pairwise_attention
+
 namespace
 {
 
@@ -99,5 +106,6 @@ NB_MODULE(_cutedsl_kernels, module)
     "Load every registered CUBIN compatible with the current CUDA device.");
 
   triangle_attention::bind(module);
+  pairwise_attention::bind(module);
   (void) preload_registered_kernels_if_context_active();
 }

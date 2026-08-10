@@ -97,8 +97,6 @@ def _prepare_cutedsl_kernel_payloads() -> None:
     command = [
         sys.executable,
         str(ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"),
-        "--kernel",
-        "triangle_attention",
     ]
     subprocess.run(command, cwd=ROOT_DIR, check=True)
 

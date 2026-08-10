@@ -482,7 +482,7 @@ class Boltz2ConfidenceModule(nn.Module):
             batch_size, multiplicity, _, _ = x_pred.shape
 
         if run_sequentially:
-            niter = 1
+            niter = multiplicity
         else:
             assert max_parallel_samples <= multiplicity, (
                 "max_parallel_samples must be less than or equal to multiplicity"
@@ -946,7 +946,8 @@ class Boltz1ConfidenceModule(nn.Module):
             max_parallel_samples: Optional[int]
                 max_parallel_samples from the structure module.
             run_sequentially: bool
-                Whether to process all confidence samples in a single iteration.
+                Whether to process the confidence samples one at a time, ignoring
+                ``max_parallel_samples``.
         return: dict[str, torch.Tensor]
             Output dictionary containing the confidence heads.
         """
@@ -961,7 +962,7 @@ class Boltz1ConfidenceModule(nn.Module):
             B, multiplicity, _, _ = x_pred.shape
 
         if run_sequentially:
-            niter = 1
+            niter = multiplicity
         else:
             assert max_parallel_samples <= multiplicity, (
                 "max_parallel_samples must be less than or equal to multiplicity"

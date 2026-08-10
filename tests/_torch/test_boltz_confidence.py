@@ -121,10 +121,20 @@ def test_forward_consumes_reduced_prob_contact(multiplicity):
 
 
 @pytest.mark.parametrize(
-    ("run_sequentially", "max_parallel_samples", "expected_iterations"),
-    [(True, 1, 1), (True, 3, 1), (False, 1, 2)],
+    ("multiplicity", "run_sequentially", "max_parallel_samples", "expected_iterations"),
+    [
+        # Sequential means one sample per iteration; ``max_parallel_samples`` does not apply.
+        (2, True, 1, 2),
+        (4, True, 4, 4),
+        # Otherwise the samples are split into ceil(multiplicity / max_parallel_samples) chunks.
+        (4, False, 1, 4),
+        (4, False, 2, 2),
+        (4, False, 4, 1),
+    ],
 )
-def test_run_sequentially_controls_iteration_count(run_sequentially, max_parallel_samples, expected_iterations):
+def test_run_sequentially_controls_iteration_count(
+    multiplicity, run_sequentially, max_parallel_samples, expected_iterations
+):
     device = torch.device("cuda")
     module = _tiny_module(device)
     iterations = []
@@ -135,7 +145,7 @@ def test_run_sequentially_controls_iteration_count(run_sequentially, max_paralle
             module,
             torch.rand(1, N_TOKENS, N_TOKENS, device=device),
             device,
-            multiplicity=2,
+            multiplicity=multiplicity,
             run_sequentially=run_sequentially,
             max_parallel_samples=max_parallel_samples,
         )

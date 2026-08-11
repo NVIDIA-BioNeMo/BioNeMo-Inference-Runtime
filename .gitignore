@@ -52,6 +52,10 @@ cpp/kernels/cutedsl_dual_gemm_x_x/cubins/*
 !cpp/kernels/cutedsl_dual_gemm_x_x/cubins/embedded_cubins.h
 !cpp/kernels/cutedsl_dual_gemm_x_x/cubins/embedded/
 !cpp/kernels/cutedsl_dual_gemm_x_x/cubins/embedded/*.h
+cpp/kernels/cutedsl_dual_gemm_x0_x1/cubins/*
+!cpp/kernels/cutedsl_dual_gemm_x0_x1/cubins/embedded_cubins.h
+!cpp/kernels/cutedsl_dual_gemm_x0_x1/cubins/embedded/
+!cpp/kernels/cutedsl_dual_gemm_x0_x1/cubins/embedded/*.h
 tensorrt_bionemo/bin
 tensorrt_bionemo/libs/*
 !tensorrt_bionemo/libs/__init__.py

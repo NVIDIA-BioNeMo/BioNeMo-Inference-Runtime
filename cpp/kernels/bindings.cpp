@@ -51,6 +51,13 @@ void bind(nb::module_& module);
 
 } // namespace trtbnm::cutedsl::dual_gemm_x_x
 
+namespace trtbnm::cutedsl::dual_gemm_x0_x1
+{
+
+void bind(nb::module_& module);
+
+} // namespace trtbnm::cutedsl::dual_gemm_x0_x1
+
 namespace
 {
 
@@ -116,5 +123,6 @@ NB_MODULE(_cutedsl_kernels, module)
   triangle_attention::bind(module);
   pairwise_attention::bind(module);
   dual_gemm_x_x::bind(module);
+  dual_gemm_x0_x1::bind(module);
   (void) preload_registered_kernels_if_context_active();
 }

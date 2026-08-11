@@ -21,6 +21,8 @@ from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, PAIR_WEIGHTED_AVE
 from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import (
     PairWeightedAveragingCuTe,
     get_pair_weighted_averaging_op,
+    is_profitable_pwa_shape,
+    is_supported_pwa_dims,
 )
 
 from .linear import Linear, WeightMode, WeightsLoadingConfig
@@ -59,9 +61,7 @@ class PairWeightedAveraging(nn.Module):
         self.c_z = c_z
         self.c_h = c_h
         self.inf = inf
-        # Sequence-row chunking policy for the eager fallback (registry default unless explicitly
-        # overridden). The fused kernel is already memory-bounded and takes precedence when
-        # available; otherwise chunking bounds the [B, H, S, N, D] eager intermediate.
+        # Chunk the eager [B, H, S, N, D] intermediate along S.
         self.chunk_policy = chunk_policy if chunk_policy is not None else CHUNK_REGISTRY.get(PAIR_WEIGHTED_AVERAGING)
 
         self.num_heads = num_heads
@@ -91,10 +91,8 @@ class PairWeightedAveraging(nn.Module):
             skip_create_weights=skip_create_weights,
         )
 
-        # Eligibility for the fused PWA CuTe op (the einsum -> sigmoid(gate) -> proj_o
-        # chain): the kernel has fixed dims (H=8, D=c_h=32, c_m=64). The op itself further
-        # gates on SM/dtype/j-pad and falls back.
-        self._pwa_op_eligible = self.num_heads == 8 and self.c_h == 32 and c_m == 64
+        # Each fused kernel is specialized for (H=num_heads, D=c_h, c_m).
+        self._pwa_op_eligible = is_supported_pwa_dims(self.num_heads, self.c_h, c_m)
 
     def forward(
         self,
@@ -104,24 +102,22 @@ class PairWeightedAveraging(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            m(torch.Tensor): The input sequence tensor (B, S, N, D)
-            z(torch.Tensor): The input pairwise tensor (B, N, N, D)
-            mask(torch.Tensor): The pairwise mask tensor (B, N, N)
+            m(torch.Tensor): Sequence tensor [B, S, N, c_m].
+            z(torch.Tensor): Pair tensor [B, N, N, c_z].
+            mask(torch.Tensor): Pair mask [B, N, N].
         Returns:
-            torch.Tensor: The output tensor (B, S, N, D)
+            torch.Tensor: Output tensor [B, S, N, c_m].
         """
         m = self.norm_m(m)
         z = self.norm_z(z)
 
-        # Fused CuTe path: collapses einsum -> gate -> proj_o so the
-        # [B,H,S,N,D] intermediate is never materialized. The op further gates
-        # on SM/dtype/j-padding support.
-        if self._pwa_op_eligible:
-            op = get_pair_weighted_averaging_op(m.dtype)
+        # Fuse einsum -> gate -> proj_o without materializing [B, H, S, N, D].
+        if self._pwa_op_eligible and is_profitable_pwa_shape(self.num_heads, self.c_h, self.c_m, m.shape[2]):
+            op = get_pair_weighted_averaging_op(m.dtype, D=self.c_h, c_m=self.c_m, H=self.num_heads)
             if isinstance(op, PairWeightedAveragingCuTe):
                 return self._forward_fused(m, z, mask, op)
 
-        # Inference-only.
+        # Eager fallback, optionally chunked along S.
         if self.chunk_policy is not None:
             return chunk_apply(self._forward_impl, m, policy=self.chunk_policy, cat_dim=1, z=z, mask=mask)
         return self._forward_impl(m, z, mask)
@@ -156,17 +152,10 @@ class PairWeightedAveraging(nn.Module):
         mask: torch.Tensor,
         op: PairWeightedAveragingCuTe,
     ) -> torch.Tensor:
-        """Fused PWA via the CuTe op. Prepares the kernel inputs -- softmax'd pair weights ``w``
-        (zero-padded on j to a multiple of 8), values ``v``, the RAW (pre-sigmoid) gate ``g``, and
-        ``proj_o.weight`` -- and returns the [B,S,N,c_m] projection (the kernel applies the sigmoid,
-        fuses the value-GEMM + gate + proj_o, and never materializes o[B,H,S,N,D])."""
+        """Run fused PWA and return [B, S, N, c_m]."""
         vg = self.fused_proj_m_g(m)
         v, g = vg.split([self.c_h * self.num_heads, self.c_h * self.num_heads], dim=-1)
-        # v, g are [B, S, N, H*D] views of vg (last dim H*D contiguous, N strided). The kernel reads
-        # per-head D-blocks straight from this layout (head h = the h-th D-block), so we pass them
-        # AS-IS -- no permute, no .contiguous(): that avoids two full
-        # [B,S,N,H*D]-sized copies, which would dominate the memory and
-        # latency cost of this path.
+        # Keep v/g as [B, S, N, H*D] views; each head occupies one contiguous D block.
 
         b = self.proj_z(z)
         b = b.permute(0, 3, 1, 2)  # [B, H, N, N]
@@ -176,7 +165,7 @@ class PairWeightedAveraging(nn.Module):
         N = w.shape[-1]
         Jp = (N + 7) // 8 * 8
         if Jp != N:
-            w = F.pad(w, (0, Jp - N))  # [B, H, N, Jp]   (pad value 0 -- required; w only)
+            w = F.pad(w, (0, Jp - N))  # [B, H, N, Jp], zero-padded along J
 
-        # g is the RAW gate [B, S, N, H*D] (kernel applies sigmoid); proj_o.weight is [c_m, H*D].
+        # g is pre-sigmoid [B, S, N, H*D]; proj_o.weight is [c_m, H*D].
         return op(w, v, g, self.proj_o.weight)

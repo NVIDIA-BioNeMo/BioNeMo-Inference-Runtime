@@ -21,5 +21,6 @@ add_subdirectory(cutedsl_triangle_attention)
 add_subdirectory(cutedsl_pairwise_attention)
 add_subdirectory(cutedsl_dual_gemm_x_x)
 add_subdirectory(cutedsl_dual_gemm_x0_x1)
+add_subdirectory(cutedsl_pair_weighted_averaging)
 
 install(TARGETS _cutedsl_kernels LIBRARY DESTINATION tensorrt_bionemo/libs)

@@ -41,8 +41,10 @@
 extern "C"
 {
 #define CUTE_ABI_ASSERT(condition, message) static_assert(condition, message)
+#define CUTE_ABI_ALIGNOF(type) alignof(type)
 #else
 #define CUTE_ABI_ASSERT(condition, message) _Static_assert(condition, message)
+#define CUTE_ABI_ALIGNOF(type) _Alignof(type)
 #endif
 
   /* Fully static tensor: only the global-memory pointer is dynamic. */
@@ -97,6 +99,14 @@ extern "C"
     int64_t dynamic_strides[2];
   } cute_tensor_s3_d2_t;
 
+  /* Three dynamic extents and three independently dynamic outer strides. */
+  typedef struct
+  {
+    CUdeviceptr data;
+    int32_t dynamic_shapes[3];
+    int64_t dynamic_strides[3];
+  } cute_tensor_s3_d3_t;
+
   /* Four dynamic extents and three dynamic outer strides. */
   typedef struct
   {
@@ -117,10 +127,14 @@ extern "C"
   CUTE_ABI_ASSERT(offsetof(cute_tensor_s2_d3_t, dynamic_strides) == 16, "unexpected CuTe tensor s2_d3 stride offset");
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s3_d2_t) == 40, "unexpected CuTe tensor s3_d2 ABI");
   CUTE_ABI_ASSERT(offsetof(cute_tensor_s3_d2_t, dynamic_strides) == 24, "unexpected CuTe tensor s3_d2 stride offset");
+  CUTE_ABI_ASSERT(sizeof(cute_tensor_s3_d3_t) == 48, "unexpected CuTe tensor s3_d3 ABI");
+  CUTE_ABI_ASSERT(CUTE_ABI_ALIGNOF(cute_tensor_s3_d3_t) == 8, "unexpected CuTe tensor s3_d3 alignment");
+  CUTE_ABI_ASSERT(offsetof(cute_tensor_s3_d3_t, dynamic_strides) == 24, "unexpected CuTe tensor s3_d3 stride offset");
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s4_d3_t) == 48, "unexpected CuTe tensor s4_d3 ABI");
   CUTE_ABI_ASSERT(offsetof(cute_tensor_s4_d3_t, dynamic_strides) == 24, "unexpected CuTe tensor s4_d3 stride offset");
 
 #undef CUTE_ABI_ASSERT
+#undef CUTE_ABI_ALIGNOF
 
 #ifdef __cplusplus
 } /* extern "C" */

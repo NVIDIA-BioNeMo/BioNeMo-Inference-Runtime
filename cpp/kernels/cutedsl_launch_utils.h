@@ -87,6 +87,18 @@ inline cute_tensor_s4_d3_t make_tensor4_descriptor(Tensor4View const& view)
   return descriptor;
 }
 
+inline cute_tensor_s3_d3_t make_tensor4_s3_d3_descriptor(Tensor4View const& view)
+{
+  cute_tensor_s3_d3_t descriptor{};
+  descriptor.data = static_cast<CUdeviceptr>(view.data);
+  for (std::size_t index = 0; index < view.strides.size(); ++index)
+  {
+    descriptor.dynamic_shapes[index] = view.shape[index];
+    descriptor.dynamic_strides[index] = view.strides[index];
+  }
+  return descriptor;
+}
+
 inline cute_tensor_s1_d0_t make_tensor1_descriptor(Tensor1View const& view)
 {
   cute_tensor_s1_d0_t descriptor{};

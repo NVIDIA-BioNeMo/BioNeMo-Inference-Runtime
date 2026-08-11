@@ -58,6 +58,13 @@ void bind(nb::module_& module);
 
 } // namespace trtbnm::cutedsl::dual_gemm_x0_x1
 
+namespace trtbnm::cutedsl::pair_weighted_averaging
+{
+
+void bind(nb::module_& module);
+
+} // namespace trtbnm::cutedsl::pair_weighted_averaging
+
 namespace
 {
 
@@ -124,5 +131,6 @@ NB_MODULE(_cutedsl_kernels, module)
   pairwise_attention::bind(module);
   dual_gemm_x_x::bind(module);
   dual_gemm_x0_x1::bind(module);
+  pair_weighted_averaging::bind(module);
   (void) preload_registered_kernels_if_context_active();
 }

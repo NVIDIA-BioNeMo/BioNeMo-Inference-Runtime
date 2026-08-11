@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
@@ -322,11 +321,6 @@ class DualGemmXxCuTe(CuteKernelCache):
             actual_seqlen = None
 
         is_sm90 = self._kernel_is_sm90(K, N)
-        if os.environ.get("BNM_DBG_DG"):
-            logger.info(
-                f"[DBG dual_gemm_x_x] K={K} N={N} is_sm90={is_sm90} "
-                f"capturing={torch.cuda.is_current_stream_capturing()}"
-            )
 
         if transpose_out:
             m_padded = (M + 7) // 8 * 8

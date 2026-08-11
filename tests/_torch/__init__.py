@@ -30,9 +30,8 @@ SM_VERSION: int = (
 # op-specific override below by op name when one is supplied.
 _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 
-# Per-op CuTeDSL SM overrides. Empty today: every CuTeDSL op was verified to
-# run on the whole generic range from its dispatch / config coverage in
-# ``tensorrt_bionemo/_torch``:
+# Per-op CuTeDSL SM overrides. Most kernels run on the generic range from their
+# dispatch / config coverage in ``tensorrt_bionemo/_torch``:
 #   * gated_sigmoid            -- get_gated_sigmoid_op gates on
 #                                 ``sm in (80, 86, 89, 90)``.
 #   * dual_gemm_x_x / x0_x1     -- get_dual_gemm_*_op use
@@ -50,7 +49,9 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 # (Tests that assert an SM-specific *kernel path* should use a direct SM
 # gate like ``skip_if_not_sm90`` instead -- that's a test requirement, not an
 # op-support fact.)
-_CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {}
+_CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
+    "pair_weighted_averaging": (80, 90, 100, 103),
+}
 
 CUTEDSL_TEST_MODES_ENV = "TRTBNM_TEST_CUTEDSL_MODES"
 _CUTEDSL_TEST_MODES = ("source", "cubin")

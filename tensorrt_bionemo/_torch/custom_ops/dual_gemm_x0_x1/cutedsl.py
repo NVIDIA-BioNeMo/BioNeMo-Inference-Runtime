@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -303,11 +302,6 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             self._last_exe = exe
 
         out_2d = torch.empty((M, N), dtype=dtype, device=device)
-        if os.environ.get("BNM_DBG_DG"):
-            logger.info(
-                f"[DBG dual_gemm_x0_x1] K={K} N={N} is_sm90={self._kernel_is_sm90(K, N)} "
-                f"capturing={torch.cuda.is_current_stream_capturing()}"
-            )
         if self._kernel_is_sm90(K, N):
             # Hopper carries unused mask and I_dim slots.
             launch_compiled_kernel(exe, X0_2d, X1_2d, W0, W1, bias0, bias1, None, out_2d, 1)

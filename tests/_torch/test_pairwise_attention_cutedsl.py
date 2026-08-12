@@ -38,11 +38,11 @@ from tensorrt_bionemo._torch.attention_backend.pairwise_attention import _PW_CON
 from tensorrt_bionemo._torch.attention_backend.pairwise_attention import _config as pw_config
 from tensorrt_bionemo._torch.attention_backend.pairwise_attention import _cubin as pw_cubin
 from tensorrt_bionemo._torch.attention_backend.pairwise_attention import cutedsl as pw_cutedsl
-from tensorrt_bionemo.dsl_kernels.cute_cache import FORCE_CUBIN_ENV
 from tests._torch import SM_VERSION, cutedsl_test_modes, skip_cutedsl
 
 pytestmark = skip_cutedsl
 
+FORCE_CUBIN_ENV = pw_cutedsl.FORCE_CUBIN_ENV
 _SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.sm80_attn_pb_left_mask"
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 _HEAD_DIMS = (32, 48, 64)

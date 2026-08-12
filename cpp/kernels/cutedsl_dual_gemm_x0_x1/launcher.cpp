@@ -34,8 +34,8 @@ namespace trtbnm::cutedsl::dual_gemm_x0_x1
 namespace
 {
 
-constexpr char kSM80LaunchAbi[] = "dual_gemm_x0_x1_sm80_v1";
-constexpr char kSM90LaunchAbi[] = "dual_gemm_x0_x1_sm90_v1";
+constexpr char kSM80LaunchAbi[] = "dual_gemm_x0_x1_sm80";
+constexpr char kSM90LaunchAbi[] = "dual_gemm_x0_x1_sm90";
 
 /* Matches the source path's unused I_dim value. */
 constexpr std::int32_t kSM90UnusedIDim = 1;

@@ -37,8 +37,8 @@ namespace
 {
 
 constexpr float kLog2E = 1.4426950408889634F;
-constexpr char kSM80LaunchAbi[] = "triangle_attention_sm80_v1";
-constexpr char kSM90LaunchAbi[] = "triangle_attention_sm90_v1";
+constexpr char kSM80LaunchAbi[] = "triangle_attention_sm80";
+constexpr char kSM90LaunchAbi[] = "triangle_attention_sm90";
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
 {

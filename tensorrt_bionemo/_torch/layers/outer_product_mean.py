@@ -68,6 +68,12 @@ class OuterProductMean(nn.Module):
         # [B, N, N, c_hidden**2] intermediate. If it is unavailable, forward
         # falls through to the registry-driven eager row-chunking path.
         self._opm_eligible = self.c_hidden == 32 and self.c_out == 128
+        self._opm_op = get_outer_product_mean_op(
+            dtype or torch.get_default_dtype(),
+            C=self.c_hidden,
+            D=self.c_hidden,
+            C_z=self.c_out,
+        )
         self.norm = nn.LayerNorm(c_in, eps=eps, dtype=dtype)
         self.fused_proj_a_b = Linear(
             c_in,
@@ -155,18 +161,14 @@ class OuterProductMean(nn.Module):
         a = a * mask
         b = b * mask
 
-        opm_op = None
-        use_fused_opm = False
-        if self._opm_eligible:
-            opm_op = get_outer_product_mean_op(a.dtype)
-            use_fused_opm = isinstance(opm_op, OuterProductMeanCuTe)
+        use_fused_opm = self._opm_eligible and isinstance(self._opm_op, OuterProductMeanCuTe)
 
         # The fused CuTe OPM kernel expects an fp32 num_mask; the eager
         # PyTorch fallback computes it in the mask's own dtype.
         num_mask = self._compute_num_mask(mask, dtype=torch.float32 if use_fused_opm else mask.dtype)
 
         if use_fused_opm:
-            return opm_op(
+            return self._opm_op(
                 a, b, num_mask.squeeze(-1), self.proj_o.weight, self.proj_o.bias, norm_before=self.norm_before_output
             )
 

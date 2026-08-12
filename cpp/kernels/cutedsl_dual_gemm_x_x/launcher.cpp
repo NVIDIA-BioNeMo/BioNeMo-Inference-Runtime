@@ -34,8 +34,8 @@ namespace trtbnm::cutedsl::dual_gemm_x_x
 namespace
 {
 
-constexpr char kSM80LaunchAbi[] = "dual_gemm_x_x_sm80_v1";
-constexpr char kSM90LaunchAbi[] = "dual_gemm_x_x_sm90_v1";
+constexpr char kSM80LaunchAbi[] = "dual_gemm_x_x_sm80";
+constexpr char kSM90LaunchAbi[] = "dual_gemm_x_x_sm90";
 constexpr std::int64_t kElementsPer16Bytes = 8;
 
 struct EmbeddedSelection

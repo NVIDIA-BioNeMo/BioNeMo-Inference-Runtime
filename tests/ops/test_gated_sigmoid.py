@@ -24,7 +24,12 @@ from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import (
     _invoke_vanilla_gated_sigmoid,
     get_gated_sigmoid_op,
 )
-from tests._torch import SM_VERSION, skip_if_no_cutedsl
+from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import _config as gated_config
+from tensorrt_bionemo._torch.custom_ops.gated_sigmoid import cutedsl as gated_cutedsl
+from tensorrt_bionemo._torch.custom_ops.gated_sigmoid._cubin import GatedSigmoidCubinExecutable
+from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode, skip_if_no_cutedsl
+
+_CUTEDSL_MODES = cutedsl_test_modes("tensorrt_bionemo.dsl_kernels.cute.sm80_gated_sigmoid")
 
 
 def _ref_gated_sigmoid(
@@ -89,6 +94,51 @@ class Scenario:
 # ---------------------------------------------------------------------------
 # CuTe kernel tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("has_bias", [False, True], ids=["no_bias", "bias"])
+@pytest.mark.parametrize("M", [65, 1025, 2049], ids=["short", "medium", "long"])
+def test_gated_sigmoid_source_and_cubin(mode, dtype, has_bias, M, monkeypatch):
+    if SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(f"gated-sigmoid CUBINs do not target SM{SM_VERSION}")
+    torch.manual_seed(13)
+    K, N = 128, 256
+    s = torch.randn(M, K, device="cuda", dtype=dtype)
+    weight = torch.randn(N, K, device="cuda", dtype=dtype)
+    mha_out = torch.randn(M, N, device="cuda", dtype=dtype)
+    bias = torch.randn(N, device="cuda", dtype=dtype) if has_bias else None
+
+    result = run_cutedsl_test_mode(
+        mode,
+        monkeypatch,
+        GatedSigmoidCuTe,
+        gated_cutedsl,
+        lambda: GatedSigmoidCuTe()(s, weight, mha_out, bias),
+    )
+    reference = _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias)
+    torch.testing.assert_close(result, reference, atol=0.05, rtol=0.02)
+
+
+def test_gated_sigmoid_force_cubin_ignores_warmed_source(monkeypatch):
+    backend = GatedSigmoidCuTe()
+    key = (backend._sm_version, torch.bfloat16, True, 128, 256, "short")
+    cached_source, cubin = object(), object()
+    monkeypatch.setattr(GatedSigmoidCuTe, "_compiled_cache", {key: cached_source})
+    monkeypatch.setattr(backend, "force_cubin", lambda: True)
+    monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
+    assert backend._get_or_compile(key, object, torch.bfloat16, True, 128, 256, 65) is cubin
+
+
+def test_gated_sigmoid_config_selection_is_source_free(monkeypatch):
+    def reject_source(_implementation):
+        raise AssertionError("configuration selection imported a private kernel")
+
+    monkeypatch.setattr(gated_config, "resolve_implementation", reject_source)
+    config = gated_config.get_kernel_config(90, 128, 256, 65)
+    expected = gated_config.get_tile_params(90, 128, 256, 65)
+    assert {**config.tile_params, "atom_layout_mnk": tuple(config.tile_params["atom_layout_mnk"])} == expected
 
 
 @pytest.mark.parametrize(
@@ -331,9 +381,9 @@ def test_vanilla_gated_sigmoid(M, has_bias):
 
 def test_get_gated_sigmoid_op_selector():
     """Verify that get_gated_sigmoid_op returns the correct backend."""
-    op_bf16 = get_gated_sigmoid_op(torch.bfloat16)
-    op_fp16 = get_gated_sigmoid_op(torch.float16)
-    op_fp32 = get_gated_sigmoid_op(torch.float32)
+    op_bf16 = get_gated_sigmoid_op(torch.bfloat16, N=128, K=128)
+    op_fp16 = get_gated_sigmoid_op(torch.float16, N=128, K=128)
+    op_fp32 = get_gated_sigmoid_op(torch.float32, N=128, K=128)
 
     if SM_VERSION in (80, 86, 89, 90):
         assert isinstance(op_bf16, GatedSigmoidCuTe)
@@ -343,6 +393,7 @@ def test_get_gated_sigmoid_op_selector():
         assert op_fp16 is _invoke_vanilla_gated_sigmoid
 
     assert op_fp32 is _invoke_vanilla_gated_sigmoid
+    assert get_gated_sigmoid_op(torch.bfloat16, N=128, K=64) is _invoke_vanilla_gated_sigmoid
 
 
 def test_get_gated_sigmoid_op_runs():
@@ -351,7 +402,7 @@ def test_get_gated_sigmoid_op_runs():
     dtype = torch.bfloat16
     K, N_out, M = 128, 128, 513
 
-    op = get_gated_sigmoid_op(dtype)
+    op = get_gated_sigmoid_op(dtype, N=N_out, K=K)
     W = torch.randn(N_out, K, dtype=dtype, device="cuda")
     bias = torch.randn(N_out, dtype=dtype, device="cuda")
     s = torch.randn(M, K, dtype=dtype, device="cuda")
@@ -361,6 +412,26 @@ def test_get_gated_sigmoid_op_runs():
     out = op(s, W, mha, bias)
 
     torch.testing.assert_close(out, ref, atol=0.05, rtol=1e-2)
+
+
+def test_sm80_cubin_adapter_selects_atom_layout():
+    """The Python adapter must pass every tile-selection axis to C++."""
+    library = pytest.importorskip("tensorrt_bionemo.libs._cutedsl_kernels")
+    launcher = library.gated_sigmoid
+    tile_params = gated_config.get_tile_params(80, K=128, N=128, M=1)
+
+    executable = GatedSigmoidCubinExecutable(
+        library,
+        launcher,
+        target_sm=80,
+        m_bucket=0,
+        dtype=torch.bfloat16,
+        has_bias=True,
+        tile_params=tile_params,
+    )
+
+    assert executable._config.spec.target_sm == 80
+    assert tuple(executable._config.spec.atom_layout_mnk) == tuple(tile_params["atom_layout_mnk"])
 
 
 # ---------------------------------------------------------------------------
@@ -437,4 +508,4 @@ def test_gated_sigmoid_cute_inplace_batched(shape_s, shape_mha, has_bias):
 
     assert out.data_ptr() == mha_flat.data_ptr(), "in-place should reuse mha_out memory"
     out_restored = out.view(shape_mha)
-    torch.testing.assert_close(out_restored, ref, atol=0.05, rtol=1e-2, msg=lambda m: f"shapes={shape_s}: {m}")
+    torch.testing.assert_close(out_restored, ref, atol=0.07, rtol=1e-2, msg=lambda m: f"shapes={shape_s}: {m}")

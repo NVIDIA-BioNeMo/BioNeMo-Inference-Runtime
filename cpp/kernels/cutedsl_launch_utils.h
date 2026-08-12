@@ -107,6 +107,10 @@ inline cute_tensor_s1_d0_t make_tensor1_descriptor(Tensor1View const& view)
   return descriptor;
 }
 
+/* Rank-2 operand whose inner extent the kernel compiled as a constant, so only
+ * the row count survives into the descriptor. The caller still supplies both
+ * extents; the launcher checks the static one against its own spec first.
+ */
 inline cute_tensor_s1_d1_t make_tensor2_s1_d1_descriptor(Tensor2View const& view)
 {
   cute_tensor_s1_d1_t descriptor{};
@@ -116,6 +120,7 @@ inline cute_tensor_s1_d1_t make_tensor2_s1_d1_descriptor(Tensor2View const& view
   return descriptor;
 }
 
+/* Rank-2 operand with both extents dynamic. */
 inline cute_tensor_s2_d1_t make_tensor2_s2_d1_descriptor(Tensor2View const& view)
 {
   cute_tensor_s2_d1_t descriptor{};

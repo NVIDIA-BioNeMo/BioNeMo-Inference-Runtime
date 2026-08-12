@@ -34,9 +34,9 @@ class AdaLN(nn.Module):
     ):
         """Adaptive LayerNorm with a sigmoid-gated affine.
 
-        Uses the fused CuTe DSL kernel, falling back to the inline torch
-        path when the kernel is unavailable. Kernel init / forward
-        failures propagate to the caller — no silent fallback.
+        ``get_adaln_layernorm_sigmoid_op`` returns the fused CuTe DSL kernel
+        where it is supported and a signature-compatible torch fallback
+        otherwise, so this layer has one code path either way.
         """
         super().__init__()
         self.dim = dim
@@ -57,7 +57,10 @@ class AdaLN(nn.Module):
             weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
 
-        self._fused_op = get_adaln_layernorm_sigmoid_op(dtype if dtype is not None else torch.float32)
+        self._fused_op = get_adaln_layernorm_sigmoid_op(
+            dtype if dtype is not None else torch.float32,
+            N=self.dim,
+        )
 
     def forward(
         self,
@@ -76,14 +79,13 @@ class AdaLN(nn.Module):
         Returns:
             a: [B, I, d]
         """
-        # Pre-fused-step torch ops are reliable, so compute s_scale / s_bias
-        # once up front. Both the fused kernel and the torch fallback consume
-        # them — keeping these outside the try block avoids re-doing the
-        # ``s_norm`` + linear + split if the kernel fails mid-forward.
         s_normed = self.s_norm(s)
         ss = self.fused_s_scale_s_bias(s_normed)
         s_scale, s_bias = ss.split([self.dim, self.dim], dim=-1)
 
+        # ``_fused_op`` is never None in production -- the dispatcher returns a
+        # torch fallback rather than nothing. Tests clear it to force this
+        # inline path as an independent reference, so the guard stays.
         if self._fused_op is not None:
             a = a.contiguous()
             # Write to a separate buffer so callers that use ``a`` as a

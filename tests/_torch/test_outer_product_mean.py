@@ -31,11 +31,14 @@ from tensorrt_bionemo._torch.custom_ops.outer_product_mean import (
     get_outer_product_mean_op,
     select_opm_config,
 )
+from tensorrt_bionemo._torch.custom_ops.outer_product_mean import cutedsl as opm_cutedsl
+from tensorrt_bionemo._torch.custom_ops.outer_product_mean.ops import _invoke_vanilla_opm
 from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
 from tensorrt_bionemo.utils import str_dtype_to_torch
-from tests._torch import SM_VERSION, skip_if_no_cutedsl
+from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
+_CUTEDSL_MODES = cutedsl_test_modes("tensorrt_bionemo.dsl_kernels.cute.sm80_opm")
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -109,7 +112,15 @@ def test_outer_product_mean(sc: Scenario):
     # to the fused custom op (guards against a silent fall-back to eager).
     if dtype in (torch.float16, torch.bfloat16) and SM_VERSION in _CUTEDSL_SM:
         assert outer_product_mean._opm_eligible
-        assert isinstance(get_outer_product_mean_op(dtype), OuterProductMeanCuTe)
+        assert isinstance(
+            get_outer_product_mean_op(
+                dtype,
+                C=outer_product_mean.c_hidden,
+                D=outer_product_mean.c_hidden,
+                C_z=outer_product_mean.c_out,
+            ),
+            OuterProductMeanCuTe,
+        )
 
     m = torch.randn(bs, sc.n_seq, sc.n_res, ref_m.c_in, dtype=torch.float32).cuda()
     mask = torch.randint(0, 2, (bs, sc.n_seq, sc.n_res), dtype=torch.float32).to(device)
@@ -179,6 +190,43 @@ def test_outer_product_mean_chunk_matches_dense(rows: int):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("has_bias", [False, True], ids=["no_bias", "bias"])
+@pytest.mark.parametrize("norm_before", [False, True], ids=["norm_after", "norm_before"])
+def test_outer_product_mean_source_and_cubin(mode, dtype, has_bias, norm_before, monkeypatch):
+    if SM_VERSION not in _CUTEDSL_SM:
+        pytest.skip(f"OPM CUBINs do not target SM{SM_VERSION}")
+    torch.manual_seed(7)
+    B, S, I, J, C, D, C_z = 1, 31, 17, 19, 32, 32, 128
+    a = torch.randn(B, S, I, C, device="cuda", dtype=dtype).mul_(0.2)
+    b = torch.randn(B, S, J, D, device="cuda", dtype=dtype).mul_(0.2)
+    num_mask = torch.randint(1, S + 1, (B, I, J), device="cuda", dtype=torch.int32).float()
+    weight = torch.randn(C_z, C * D, device="cuda", dtype=dtype).mul_(0.1)
+    bias = torch.randn(C_z, device="cuda", dtype=dtype).mul_(0.1) if has_bias else None
+
+    result = run_cutedsl_test_mode(
+        mode,
+        monkeypatch,
+        OuterProductMeanCuTe,
+        opm_cutedsl,
+        lambda: OuterProductMeanCuTe()(a, b, num_mask, weight, bias, norm_before),
+    )
+    reference = _invoke_vanilla_opm(a, b, num_mask, weight, bias, norm_before)
+    torch.testing.assert_close(result, reference, atol=0.08, rtol=0.02)
+
+
+def test_outer_product_mean_force_cubin_ignores_warmed_source(monkeypatch):
+    backend = OuterProductMeanCuTe()
+    config = object()
+    key = (90, ("config",), True, True)
+    cached_source, cubin = object(), object()
+    monkeypatch.setattr(OuterProductMeanCuTe, "_compiled_cache", {key: cached_source})
+    monkeypatch.setattr(backend, "force_cubin", lambda: True)
+    monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
+    assert backend._get_or_compile(config, torch.bfloat16, True, True, key) is cubin
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
 @pytest.mark.parametrize("norm_before_output", [True, False], ids=["nb1", "nb0"])
 @pytest.mark.parametrize(
@@ -201,7 +249,10 @@ def test_outer_product_mean_cute_matches_eager(dtype, norm_before_output, n_seq,
     # Kernel-eligible (single-GPU, c_hidden==32, c_out==128) and the op resolves
     # to the CuTe backend on this GPU.
     assert layer._opm_eligible
-    assert isinstance(get_outer_product_mean_op(dtype), OuterProductMeanCuTe)
+    assert isinstance(
+        get_outer_product_mean_op(dtype, C=layer.c_hidden, D=layer.c_hidden, C_z=layer.c_out),
+        OuterProductMeanCuTe,
+    )
 
     m = torch.randn(1, n_seq, n_res, c_in, dtype=dtype, device="cuda")
     mask = (torch.rand(1, n_seq, n_res, device="cuda") < 0.9).to(dtype)
@@ -222,19 +273,21 @@ def test_outer_product_mean_cute_matches_eager(dtype, norm_before_output, n_seq,
 def test_outer_product_mean_op_selector():
     """The selector returns the CuTe op on CuTeDSL GPUs for fp16/bf16 and the
     vanilla fallback for fp32 / unsupported hardware."""
-    op_bf16 = get_outer_product_mean_op(torch.bfloat16)
-    op_fp32 = get_outer_product_mean_op(torch.float32)
+    op_bf16 = get_outer_product_mean_op(torch.bfloat16, C=32, D=32, C_z=128)
+    op_fp32 = get_outer_product_mean_op(torch.float32, C=32, D=32, C_z=128)
     if SM_VERSION in _CUTEDSL_SM:
         assert isinstance(op_bf16, OuterProductMeanCuTe)
     assert not isinstance(op_fp32, OuterProductMeanCuTe)
+    assert get_outer_product_mean_op(torch.bfloat16, C=64, D=32, C_z=128) is _invoke_vanilla_opm
 
 
 @pytest.mark.parametrize("sm", [100, 103])
 def test_outer_product_mean_supports_blackwell(monkeypatch, sm):
     sentinel = object()
-    monkeypatch.setattr(opm_ops, "get_sm_version", lambda: sm)
-    monkeypatch.setattr(opm_ops, "_opm_cute_instance", sentinel)
-    assert opm_ops.get_outer_product_mean_op(torch.bfloat16) is sentinel
+    # Public backend selection lives in ops.py; patch it where it is defined.
+    monkeypatch.setattr(opm_ops.ops, "get_sm_version", lambda: sm)
+    monkeypatch.setattr(opm_ops.ops, "_opm_cute_instance", sentinel)
+    assert opm_ops.get_outer_product_mean_op(torch.bfloat16, C=32, D=32, C_z=128) is sentinel
 
 
 def test_outer_product_mean_config_selects_n_bucket_before_s():

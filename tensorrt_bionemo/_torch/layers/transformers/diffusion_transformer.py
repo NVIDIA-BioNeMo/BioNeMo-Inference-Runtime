@@ -149,9 +149,15 @@ class DiffusionTransformerLayer(nn.Module):
 
         self.output_projection = None
         self._can_fuse_output_gate = False
+        self._gated_sigmoid_op = None
         if self.attn_output_gate:
             self.output_projection = Linear(dim_single_cond, dim, dtype=dtype, skip_create_weights=skip_create_weights)
             self._can_fuse_output_gate = True
+            self._gated_sigmoid_op = get_gated_sigmoid_op(
+                dtype or torch.get_default_dtype(),
+                N=dim,
+                K=dim_single_cond,
+            )
         self.transition = ConditionedTransitionBlock(
             dim_single=dim,
             dim_single_cond=dim_single_cond,
@@ -201,9 +207,14 @@ class DiffusionTransformerLayer(nn.Module):
                 # The gated-sigmoid op broadcasts `s` (gate) across the
                 # multiplicity dim of `b` when their leading shapes differ,
                 # falling back to torch internally for unsupported patterns.
-                _gs_op = get_gated_sigmoid_op(b.dtype)
                 gs_buf = ensure_buffer(buffers, "dit_bsd_scratch", b.shape, b.dtype, b.device)
-                b = _gs_op(s, self.output_projection.weight, b, self.output_projection.bias, output=gs_buf)
+                b = self._gated_sigmoid_op(
+                    s,
+                    self.output_projection.weight,
+                    b,
+                    self.output_projection.bias,
+                    output=gs_buf,
+                )
             else:
                 b = F.sigmoid(self.output_projection(s)) * b
         a = a + b

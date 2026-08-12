@@ -93,6 +93,12 @@ class PairWeightedAveraging(nn.Module):
 
         # Each fused kernel is specialized for (H=num_heads, D=c_h, c_m).
         self._pwa_op_eligible = is_supported_pwa_dims(self.num_heads, self.c_h, c_m)
+        self._pwa_op = get_pair_weighted_averaging_op(
+            dtype or torch.get_default_dtype(),
+            D=self.c_h,
+            c_m=self.c_m,
+            H=self.num_heads,
+        )
 
     def forward(
         self,
@@ -113,9 +119,8 @@ class PairWeightedAveraging(nn.Module):
 
         # Fuse einsum -> gate -> proj_o without materializing [B, H, S, N, D].
         if self._pwa_op_eligible and is_profitable_pwa_shape(self.num_heads, self.c_h, self.c_m, m.shape[2]):
-            op = get_pair_weighted_averaging_op(m.dtype, D=self.c_h, c_m=self.c_m, H=self.num_heads)
-            if isinstance(op, PairWeightedAveragingCuTe):
-                return self._forward_fused(m, z, mask, op)
+            if isinstance(self._pwa_op, PairWeightedAveragingCuTe):
+                return self._forward_fused(m, z, mask, self._pwa_op)
 
         # Eager fallback, optionally chunked along S.
         if self.chunk_policy is not None:

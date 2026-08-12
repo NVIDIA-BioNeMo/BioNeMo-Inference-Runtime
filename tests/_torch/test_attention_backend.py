@@ -15,15 +15,17 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 
 import pytest
 import torch
 
+import tests as tests_package
 from tensorrt_bionemo._torch import attention_backend
 from tensorrt_bionemo._torch.attention_backend import pairwise_attention, triangle_attention
 from tensorrt_bionemo._torch.attention_backend import utils as attention_utils
+from tests import require_public_cutedsl_library
 from tests._torch import CUTEDSL_TEST_MODES_ENV, cutedsl_test_modes, make_left_aligned_pair_mask
 
 
@@ -98,6 +100,25 @@ def test_cutedsl_test_modes_auto_detects_public_build(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
 
     assert cutedsl_test_modes("private.cutedsl.source") == ("cubin",)
+
+
+def test_public_source_accepts_built_cutedsl_library(monkeypatch, tmp_path):
+    monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", tmp_path / "cute")
+    monkeypatch.setattr(importlib, "import_module", lambda _name: object())
+
+    require_public_cutedsl_library()
+
+
+def test_public_source_requires_built_cutedsl_library(monkeypatch, tmp_path):
+    monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", tmp_path / "cute")
+
+    def missing_library(name: str) -> None:
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(importlib, "import_module", missing_library)
+    with pytest.warns(RuntimeWarning, match="Build the shared library first"):
+        with pytest.raises(pytest.UsageError, match="_cutedsl_kernels"):
+            require_public_cutedsl_library()
 
 
 def test_cutedsl_test_modes_parses_explicit_modes(monkeypatch):

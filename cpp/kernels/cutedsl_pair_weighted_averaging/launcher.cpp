@@ -34,7 +34,7 @@ namespace trtbnm::cutedsl::pair_weighted_averaging
 namespace
 {
 
-constexpr char kLaunchAbi[] = "pair_weighted_averaging_sm80_v1";
+constexpr char kLaunchAbi[] = "pair_weighted_averaging_sm80";
 constexpr std::int32_t kKernelSM = 80;
 constexpr std::int32_t kH = 8;
 constexpr std::int32_t kJAlignment = 8;

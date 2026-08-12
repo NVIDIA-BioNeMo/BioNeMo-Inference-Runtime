@@ -15,9 +15,12 @@
 
 import importlib.util
 import os
+from collections.abc import Callable
 
 import pytest
 import torch
+
+from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
 
 SM_VERSION: int = (
     torch.cuda.get_device_capability()[0] * 10 + torch.cuda.get_device_capability()[1]
@@ -55,6 +58,7 @@ _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
 
 CUTEDSL_TEST_MODES_ENV = "TRTBNM_TEST_CUTEDSL_MODES"
 _CUTEDSL_TEST_MODES = ("source", "cubin")
+_CUTEDSL_MODE_CACHES: dict[tuple[type, str], dict] = {}
 
 
 def cutedsl_test_modes(source_module: str | None = None) -> tuple[str, ...]:
@@ -84,6 +88,36 @@ def cutedsl_test_modes(source_module: str | None = None) -> tuple[str, ...]:
             f"{CUTEDSL_TEST_MODES_ENV} contains unsupported modes {invalid}; choose from {_CUTEDSL_TEST_MODES}"
         )
     return modes
+
+
+def run_cutedsl_test_mode(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: type,
+    module,
+    operation: Callable[[], torch.Tensor],
+) -> torch.Tensor:
+    """Run twice through exactly one source/CUBIN path and verify dispatch."""
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    cache = _CUTEDSL_MODE_CACHES.setdefault((backend, mode), {})
+    monkeypatch.setattr(backend, "_compiled_cache", cache)
+
+    if mode == "cubin":
+        monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        monkeypatch.setattr(library_runtime, "_kernel_library", None)
+    else:
+
+        def reject_cubin(*_args, **_kwargs):
+            raise AssertionError("source test mode unexpectedly fell back to the CUBIN library")
+
+        monkeypatch.setattr(module, "populate_compiled_cache_from_library", reject_cubin)
+
+    operation()
+    result = operation()
+    assert cache
+    is_library = all(isinstance(value, library_runtime.CuTeDSLKernelLibraryExecutable) for value in cache.values())
+    assert is_library == (mode == "cubin")
+    return result
 
 
 def _cutedsl_supported_sm(op_name: str | None = None) -> tuple[int, ...]:

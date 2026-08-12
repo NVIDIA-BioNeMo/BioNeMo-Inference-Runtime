@@ -30,6 +30,27 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
+namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+{
+
+void bind(nb::module_& module);
+
+} // namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+
+namespace trtbnm::cutedsl::gated_sigmoid
+{
+
+void bind(nb::module_& module);
+
+} // namespace trtbnm::cutedsl::gated_sigmoid
+
+namespace trtbnm::cutedsl::outer_product_mean
+{
+
+void bind(nb::module_& module);
+
+} // namespace trtbnm::cutedsl::outer_product_mean
+
 namespace trtbnm::cutedsl::triangle_attention
 {
 
@@ -127,6 +148,9 @@ NB_MODULE(_cutedsl_kernels, module)
     },
     "Load every registered CUBIN compatible with the current CUDA device.");
 
+  adaln_layernorm_sigmoid::bind(module);
+  gated_sigmoid::bind(module);
+  outer_product_mean::bind(module);
   triangle_attention::bind(module);
   pairwise_attention::bind(module);
   dual_gemm_x_x::bind(module);

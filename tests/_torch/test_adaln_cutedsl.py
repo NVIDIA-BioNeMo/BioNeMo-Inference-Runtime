@@ -13,14 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
 """Numerical tests for the CuTeDSL backend of AdaLN.
 
 Compares the default kernel-backed ``AdaLN`` against the torch fallback
@@ -30,13 +22,29 @@ bfloat16, and exercises the underlying custom op directly.
 
 import os
 from dataclasses import dataclass
+from types import ModuleType
 
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import get_adaln_layernorm_sigmoid_op
+from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import (
+    AdaLNLayerNormSigmoidCuTe,
+    get_adaln_layernorm_sigmoid_op,
+)
+from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import cutedsl as adaln_cutedsl
+from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import ops as adaln_ops
+from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+    config_identity as adaln_config_identity,
+)
+from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.ops import (
+    _invoke_vanilla_adaln_layernorm_sigmoid,
+)
 from tensorrt_bionemo._torch.layers.normalization import AdaLN
 from tensorrt_bionemo.utils import str_dtype_to_torch
+from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode
+
+_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.layernorm_sigmoid_fusion"
+_CUTEDSL_MODES = cutedsl_test_modes(_SOURCE_MODULE)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -155,6 +163,55 @@ def test_adaln_cutedsl_matches_torch(sc: Scenario):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize(
+    "dtype,M,N",
+    [
+        (torch.float16, 33, 128),
+        (torch.bfloat16, 300, 768),
+        (torch.float32, 2050, 1024),
+    ],
+    ids=["fp16_small", "bf16_second_bucket", "fp32_big_m"],
+)
+def test_adaln_source_and_cubin(mode, dtype, M, N, monkeypatch):
+    if SM_VERSION not in (80, 86, 89, 90, 100, 103):
+        pytest.skip(f"AdaLN CUBINs do not target SM{SM_VERSION}")
+    torch.manual_seed(11)
+    x = torch.randn(M, N, device="cuda", dtype=dtype)
+    scale = torch.randn(M, N, device="cuda", dtype=dtype)
+    bias = torch.randn(M, N, device="cuda", dtype=dtype)
+
+    result = run_cutedsl_test_mode(
+        mode,
+        monkeypatch,
+        AdaLNLayerNormSigmoidCuTe,
+        adaln_cutedsl,
+        lambda: AdaLNLayerNormSigmoidCuTe()(x.clone(), scale, bias),
+    )
+    reference = _invoke_vanilla_adaln_layernorm_sigmoid(x.clone(), scale, bias)
+    torch.testing.assert_close(result, reference, atol=0.05, rtol=0.02)
+
+
+def test_adaln_force_cubin_ignores_warmed_source(monkeypatch):
+    backend = AdaLNLayerNormSigmoidCuTe()
+    ct_dtype = type("FakeDType", (), {})
+    geometry = (256, 256, 256)
+    key = (backend._sm_version, ct_dtype.__name__, 256, geometry, adaln_config_identity({}))
+    cached_source, cubin = object(), object()
+    monkeypatch.setattr(AdaLNLayerNormSigmoidCuTe, "_compiled_cache", {key: cached_source})
+    monkeypatch.setattr(backend, "force_cubin", lambda: True)
+    monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
+    assert backend._compile_bucket(ct_dtype, torch.bfloat16, 256, {}, geometry) is cubin
+
+
+def test_adaln_selector_rejects_unshipped_targets(monkeypatch):
+    monkeypatch.setattr(adaln_ops, "get_sm_version", lambda: 120)
+    assert adaln_ops.get_adaln_layernorm_sigmoid_op(torch.bfloat16, N=128) is _invoke_vanilla_adaln_layernorm_sigmoid
+
+    monkeypatch.setattr(adaln_ops, "get_sm_version", lambda: 90)
+    assert adaln_ops.get_adaln_layernorm_sigmoid_op(torch.bfloat16, N=8192) is _invoke_vanilla_adaln_layernorm_sigmoid
+
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize(
     "shape",
@@ -182,7 +239,7 @@ def test_custom_op_matches_vanilla(dtype: torch.dtype, shape: tuple):
     # so the reference computation sees the original values.
     x_orig = x.clone()
 
-    fused_op = get_adaln_layernorm_sigmoid_op(dtype)
+    fused_op = get_adaln_layernorm_sigmoid_op(dtype, N=D)
     out_fused = fused_op(x, s_scale, s_bias, eps=eps)
     out_ref = _torch_adaln_layernorm_sigmoid(x_orig, s_scale, s_bias, eps=eps)
 
@@ -324,7 +381,7 @@ def test_custom_op_broadcast(dtype: torch.dtype, x_shape: tuple, s_shape: tuple)
     x_orig = x.clone()
     out = torch.empty_like(x)
 
-    fused_op = get_adaln_layernorm_sigmoid_op(dtype)
+    fused_op = get_adaln_layernorm_sigmoid_op(dtype, N=x_shape[-1])
     out_fused = fused_op(x_orig.clone(), s_scale, s_bias, out=out, eps=eps)
 
     # Reference: torch handles size-1 broadcast natively.
@@ -358,7 +415,10 @@ def test_adaln_multisample_does_not_fall_back():
 
     module = AdaLN(dim=dim, dim_single_cond=dim_cond, dtype=torch.bfloat16).to(device)
     _init_adaln_weights(module)
-    assert module._fused_op is not None, "kernel must initialize on supported SM"
+    # isinstance, not "is not None": the dispatcher now returns a torch
+    # fallback rather than raising, so a None check would pass even when the
+    # kernel silently degraded.
+    assert isinstance(module._fused_op, AdaLNLayerNormSigmoidCuTe), "kernel must initialize on supported SM"
 
     a = torch.randn(B, S, I, dim, dtype=torch.bfloat16, device=device)
     s = torch.randn(B, 1, I, dim_cond, dtype=torch.bfloat16, device=device)
@@ -366,7 +426,7 @@ def test_adaln_multisample_does_not_fall_back():
     with torch.inference_mode():
         out = module(a.clone(), s)
 
-    assert module._fused_op is not None, (
+    assert isinstance(module._fused_op, AdaLNLayerNormSigmoidCuTe), (
         "AdaLN.forward disabled the kernel mid-forward — multi-sample "
         "broadcast regression (kernel should handle s_scale/s_bias with "
         "size-1 multiplicity dim)"
@@ -407,7 +467,9 @@ def test_adaln_multisample_matches_torch(dtype: torch.dtype, num_samples: int):
         out_ref = adaln_ref.forward(a_ref, s)
         out_cute = adaln_cute.forward(a_cute, s)
 
-    assert adaln_cute._fused_op is not None, "kernel disabled — broadcast fallback regression"
+    assert isinstance(adaln_cute._fused_op, AdaLNLayerNormSigmoidCuTe), (
+        "kernel disabled — broadcast fallback regression"
+    )
     assert out_ref.shape == out_cute.shape == a.shape
 
     if dtype == torch.float32:
@@ -420,3 +482,218 @@ def test_adaln_multisample_matches_torch(dtype: torch.dtype, num_samples: int):
         err_ref = (out_ref.float() - out_fp32).abs().max().item()
         err_cute = (out_cute.float() - out_fp32).abs().max().item()
         assert err_cute < max(err_ref * 2.0, 0.05), f"CuTe err {err_cute:.3e} vs torch err {err_ref:.3e}"
+
+
+# ---------------------------------------------------------------------------
+# Shared-memory accounting
+#
+# ``dynamic_smem_bytes()`` once counted only the reduction buffer while
+# ``kernel`` also allocated ``sX``/``sS``/``sSb``, so a staged-mode launch asked
+# for 32 B against a real 98,336 B and faulted.
+#
+# Staged mode (``N > 8192``) is no longer covered here. It is unreachable from
+# the models (their N are 128 / 384 / 768, and every shipped N is <= 1024), and
+# in fp32 it needs 196,640 B -- over SM80's 166,912 B opt-in ceiling but under
+# SM90's 232,448 B, so the case passed or failed depending on which GPU the CI
+# pool handed out. ``AdaLNLayerNormSigmoidCuTe._assert_smem_fits`` still rejects
+# an over-budget variant with the numbers if anyone reaches staged mode.
+# ---------------------------------------------------------------------------
+
+# All direct mode: below the N <= 8192 boundary that flips direct_load/async_s_copy.
+_SMEM_N = [128, 1024, 8192]
+
+
+def _make_fusion(dtype: torch.dtype, N: int, **kwargs):
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import _TORCH_TO_CUTLASS_DTYPE
+
+    source = _require_source()
+    return source.LayerNormSigmoidFusion(_TORCH_TO_CUTLASS_DTYPE[dtype], N, **kwargs)
+
+
+def _reduction_only_bytes(kernel) -> int:
+    """The reduction buffer + mbarriers, i.e. the base-class contribution."""
+    return _require_source().ReductionBase.dynamic_smem_bytes(kernel)
+
+
+def _require_source() -> ModuleType:
+    """Skip source-only checks after the private implementation is stripped."""
+    return pytest.importorskip(_SOURCE_MODULE, reason="private AdaLN CuTeDSL source is unavailable")
+
+
+@pytest.mark.parametrize("N", _SMEM_N)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_dynamic_smem_bytes_matches_direct_mode(dtype: torch.dtype, N: int):
+    """Every covered N is direct mode, which needs only the reduction buffer.
+
+    The staged-mode arm (sX/sS/sSb) is deliberately not covered -- see the
+    section comment above.
+    """
+    kernel = _make_fusion(dtype, N)
+    assert kernel.direct_load and not kernel.async_s_copy, (
+        f"N={N} is expected to be direct mode: direct_load={kernel.direct_load} async_s_copy={kernel.async_s_copy}"
+    )
+    reported = kernel.dynamic_smem_bytes()
+    assert reported == _reduction_only_bytes(kernel), (
+        f"direct mode should need only the reduction buffer, got {reported}"
+    )
+
+
+@pytest.mark.parametrize("N", _SMEM_N)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_launch_requests_enough_smem_no_cuda_error(dtype: torch.dtype, N: int):
+    """Run each N end to end: no CuTe under-subscription warning, no CUDA fault.
+
+    Skipped under ``CUTEDSL_FORCE_CUBIN=1``: ``N`` is compiled in, and the staged
+    ``N`` here is deliberately outside ``SHIPPED_N`` so no payload exists.
+    """
+    import warnings
+
+    _require_source()
+    force_cubin_env = adaln_cutedsl.FORCE_CUBIN_ENV
+
+    if os.getenv(force_cubin_env, "").strip().lower() in ("1", "true", "yes", "on"):
+        pytest.skip(f"{force_cubin_env}=1: unshipped N has no CUBIN payload")
+
+    M = 64
+    torch.manual_seed(0)
+    x = torch.randn(M, N, device="cuda", dtype=dtype)
+    s_scale = torch.randn(M, N, device="cuda", dtype=dtype)
+    s_bias = torch.randn(M, N, device="cuda", dtype=dtype)
+    expected = _torch_adaln_layernorm_sigmoid(x.float(), s_scale.float(), s_bias.float())
+
+    op = AdaLNLayerNormSigmoidCuTe()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = op(x, s_scale, s_bias, torch.empty_like(x))
+        torch.cuda.synchronize()  # surface an illegal access here, not in a later test
+
+    undersized = [str(w.message) for w in caught if "smem" in str(w.message).lower()]
+    assert not undersized, f"CuTe reports the launch under-requests smem: {undersized}"
+
+    tol = 1e-4 if dtype == torch.float32 else 0.05
+    assert (out.float() - expected).abs().max().item() < tol
+
+
+def test_explicit_staged_flags_are_accounted():
+    """A tuning config may set these; both builder and source path forward them."""
+    N = 128
+    direct = _make_fusion(torch.bfloat16, N)
+    staged = _make_fusion(torch.bfloat16, N, direct_load=False)
+
+    assert direct.dynamic_smem_bytes() == _reduction_only_bytes(direct)
+    # direct_load=False also defaults async_s_copy on, so all three tiles land in smem.
+    assert staged.async_s_copy is True
+    assert staged.dynamic_smem_bytes() > direct.dynamic_smem_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Compile-cache identity
+#
+# The bucket cache key was ``(dtype, N, geometry)``, and geometry resolves only
+# tpr_override / num_threads_override. Every other knob was absent from the key,
+# so two machine-distinct configs shared one entry -- in memory and on disk --
+# and the second silently reused the first's kernel.
+# ---------------------------------------------------------------------------
+
+
+def test_config_identity_separates_every_kernel_knob():
+    """Each knob make_kernel forwards must change the identity."""
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+        _KERNEL_CFG_DEFAULTS,
+        config_identity,
+    )
+
+    base = config_identity({})
+    for knob, default in _KERNEL_CFG_DEFAULTS.items():
+        altered = 1 if not isinstance(default, bool) and default is None else not default
+        assert config_identity({knob: altered}) != base, f"{knob} does not reach the cache key"
+
+
+def test_config_identity_is_default_insensitive_and_extensible():
+    """Omitted knobs equal explicit defaults; unknown knobs still participate."""
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+        config_identity,
+        is_cubin_representable,
+    )
+
+    assert config_identity({}) == config_identity({"single_pass": True})
+    assert is_cubin_representable({}) and is_cubin_representable({"single_pass": True})
+    # A knob added to make_kernel but not to _KERNEL_CFG_DEFAULTS must not alias.
+    assert config_identity({"some_future_knob": 7}) != config_identity({})
+    assert not is_cubin_representable({"single_pass": False})
+
+
+def test_shipped_bucket_configs_stay_cubin_representable():
+    """Every config the scheduler can hand out must be loadable from a CUBIN.
+
+    ``_BUCKET_BIG_M`` sets tpr/num_threads overrides and is shipped, so a guard
+    that treats *any* non-empty config as unrepresentable breaks the whole CUBIN
+    path -- those two knobs resolve into ``geometry``, which the registry keys on.
+    """
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+        SHIPPED_N,
+        SUPPORTED_SMS,
+        bucket_variants,
+        is_cubin_representable,
+    )
+
+    for sm in SUPPORTED_SMS:
+        for N in SHIPPED_N:
+            for _m_max, cfg, _geometry in bucket_variants(sm, N):
+                assert is_cubin_representable(cfg), f"sm{sm} N={N} ships {cfg}, which no payload can select"
+
+
+def test_distinct_configs_do_not_share_a_compiled_cache_entry():
+    """Two configs with identical geometry must compile to separate entries.
+
+    Exercises ``_compile_bucket`` itself rather than re-deriving the key, so the
+    test fails if the key ever drops back to ``(dtype, N, geometry)``.
+    """
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import resolve_geometry
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import (
+        _TORCH_TO_CUTLASS_DTYPE,
+        AdaLNLayerNormSigmoidCuTe,
+    )
+
+    _require_source()
+    force_cubin_env = adaln_cutedsl.FORCE_CUBIN_ENV
+
+    if os.getenv(force_cubin_env, "").strip().lower() in ("1", "true", "yes", "on"):
+        pytest.skip(f"{force_cubin_env}=1: non-default knobs have no CUBIN payload by design")
+
+    N = 768
+    default_cfg, tuned_cfg = {}, {"single_pass": False}
+    geometry = resolve_geometry(N, default_cfg)
+    assert geometry == resolve_geometry(N, tuned_cfg), "geometry alone cannot tell them apart"
+
+    ct_dtype = _TORCH_TO_CUTLASS_DTYPE[torch.bfloat16]
+    cache = AdaLNLayerNormSigmoidCuTe()
+    saved = dict(AdaLNLayerNormSigmoidCuTe._compiled_cache)
+    AdaLNLayerNormSigmoidCuTe._compiled_cache.clear()
+    try:
+        first = cache._compile_bucket(ct_dtype, torch.bfloat16, N, default_cfg, geometry)
+        second = cache._compile_bucket(ct_dtype, torch.bfloat16, N, tuned_cfg, geometry)
+        assert len(AdaLNLayerNormSigmoidCuTe._compiled_cache) == 2, (
+            "both configs landed on one cache entry; the second reused the first's kernel"
+        )
+        assert first is not second
+    finally:
+        AdaLNLayerNormSigmoidCuTe._compiled_cache.clear()
+        AdaLNLayerNormSigmoidCuTe._compiled_cache.update(saved)
+
+
+def test_cubin_path_refuses_non_default_knobs():
+    """No payload encodes a non-default knob, so loading one must fail loudly."""
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import resolve_geometry
+    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import AdaLNLayerNormSigmoidCuTe
+
+    N = 768
+    cache = AdaLNLayerNormSigmoidCuTe()
+    with pytest.raises(RuntimeError, match="no AdaLN CUBIN can represent"):
+        cache._load_cubin_executable(
+            ("BFloat16", N, resolve_geometry(N, {}), ()),
+            torch.bfloat16,
+            N,
+            resolve_geometry(N, {}),
+            cfg={"single_pass": False},
+        )

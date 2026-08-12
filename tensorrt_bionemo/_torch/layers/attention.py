@@ -86,6 +86,7 @@ class TriangleAttention(nn.Module):
             skip_create_weights=skip_create_weights,
         )
         self.g_proj = None
+        self._gated_sigmoid_op = None
         if gating:
             self.g_proj = Linear(
                 self.hidden_size,
@@ -93,6 +94,11 @@ class TriangleAttention(nn.Module):
                 bias=bias_flags["g"],
                 dtype=dtype,
                 skip_create_weights=skip_create_weights,
+            )
+            self._gated_sigmoid_op = get_gated_sigmoid_op(
+                dtype or torch.get_default_dtype(),
+                N=self.q_size,
+                K=self.hidden_size,
             )
         self.attn = create_attention(
             attn_backend,
@@ -167,8 +173,13 @@ class TriangleAttention(nn.Module):
         )
         if self.g_proj is not None:
             mha_flat = mha_o.reshape(-1, self.num_heads * self.head_dim)
-            _gs_op = get_gated_sigmoid_op(mha_flat.dtype)
-            attn_output = _gs_op(hidden_states, self.g_proj.weight, mha_flat, self.g_proj.bias, output=mha_flat)
+            attn_output = self._gated_sigmoid_op(
+                hidden_states,
+                self.g_proj.weight,
+                mha_flat,
+                self.g_proj.bias,
+                output=mha_flat,
+            )
             attn_output = attn_output.reshape(hidden_states.shape[:-1] + (self.num_heads * self.head_dim,))
         else:
             attn_output = mha_o.reshape(mha_o.shape[:-2] + (self.num_heads * self.head_dim,))
@@ -246,6 +257,7 @@ class CrossTriangleAttention(nn.Module):
             skip_create_weights=skip_create_weights,
         )
         self.g_proj = None
+        self._gated_sigmoid_op = None
         if gating:
             self.g_proj = Linear(
                 self.q_hidden_size,
@@ -253,6 +265,11 @@ class CrossTriangleAttention(nn.Module):
                 bias=bias_flags["g"],
                 dtype=dtype,
                 skip_create_weights=skip_create_weights,
+            )
+            self._gated_sigmoid_op = get_gated_sigmoid_op(
+                dtype or torch.get_default_dtype(),
+                N=self.q_size,
+                K=self.q_hidden_size,
             )
         self.attn = create_attention(
             attn_backend,
@@ -284,8 +301,7 @@ class CrossTriangleAttention(nn.Module):
         mha_o = self.attn.forward(q, k, v, biases=biases, metadata=attn_metadata)
         if self.g_proj is not None:
             mha_flat = mha_o.reshape(mha_o.shape[:-2] + (self.num_heads * self.head_dim,))
-            _gs_op = get_gated_sigmoid_op(mha_flat.dtype)
-            attn_output = _gs_op(q_x, self.g_proj.weight, mha_flat, self.g_proj.bias)
+            attn_output = self._gated_sigmoid_op(q_x, self.g_proj.weight, mha_flat, self.g_proj.bias)
         else:
             attn_output = mha_o.reshape(mha_o.shape[:-2] + (self.num_heads * self.head_dim,))
         if not attn_output.is_contiguous():
@@ -393,6 +409,11 @@ class AttentionPairBias(nn.Module):
             bias=gate_bias,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
+        )
+        self._gated_sigmoid_op = get_gated_sigmoid_op(
+            dtype or torch.get_default_dtype(),
+            N=self.q_size,
+            K=self.c_s,
         )
         if self.bias_proj:
             linear_z = Linear(
@@ -690,8 +711,7 @@ class AttentionPairBias(nn.Module):
         batch_dims = mha_o.shape[:-2]
         o = mha_o.reshape(-1, self.num_heads * self.head_dim)
 
-        _gs_op = get_gated_sigmoid_op(o.dtype)
-        o = _gs_op(s, self.proj_g.weight, o, self.proj_g.bias, output=o)
+        o = self._gated_sigmoid_op(s, self.proj_g.weight, o, self.proj_g.bias, output=o)
         o = o.reshape(*batch_dims, self.num_heads * self.head_dim)
         o = self.proj_o(o)
         return o

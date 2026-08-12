@@ -134,6 +134,11 @@ class ConditionedTransitionBlock(nn.Module):
         self.output_projection = Linear(
             self.dim_single_cond, self.dim_single, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
         )
+        self._gated_sigmoid_op = get_gated_sigmoid_op(
+            dtype or torch.get_default_dtype(),
+            N=self.dim_single,
+            K=self.dim_single_cond,
+        )
 
     def forward(
         self,
@@ -162,7 +167,7 @@ class ConditionedTransitionBlock(nn.Module):
         # internally for unsupported patterns. Reuse the AdaLN output buffer —
         # fused_swl_a_to_b consumed it above, same shape as the gated_sigmoid
         # output.
-        return get_gated_sigmoid_op(s.dtype)(
+        return self._gated_sigmoid_op(
             s,
             self.output_projection.weight,
             a,

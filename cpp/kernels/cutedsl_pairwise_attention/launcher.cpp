@@ -36,8 +36,8 @@ namespace trtbnm::cutedsl::pairwise_attention
 namespace
 {
 
-constexpr char kSM80LaunchAbi[] = "pairwise_attention_sm80_v1";
-constexpr char kSM90LaunchAbi[] = "pairwise_attention_sm90_v1";
+constexpr char kSM80LaunchAbi[] = "pairwise_attention_sm80";
+constexpr char kSM90LaunchAbi[] = "pairwise_attention_sm90";
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
 {

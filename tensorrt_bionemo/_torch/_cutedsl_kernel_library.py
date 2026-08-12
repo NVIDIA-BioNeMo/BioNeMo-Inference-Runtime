@@ -114,7 +114,15 @@ def tensor_s1_d0(library: ModuleType, tensor: torch.Tensor) -> Any:
 
 
 def tensor_s2_d1(library: ModuleType, tensor: torch.Tensor, dynamic_stride_dim: int = 0) -> Any:
-    """Create a CuTe ``s2_d1`` view from a rank-2 tensor with one dynamic stride."""
+    """Create a CuTe ``s2_d1``/``s1_d1`` view from a rank-2 tensor.
+
+    Both descriptors share this host view: they differ only in whether the
+    compiled kernel left the inner extent dynamic, which the launcher resolves
+    against its own spec rather than the caller's tensor.
+
+    ``dynamic_stride_dim`` selects which dimension carries the dynamic stride;
+    the other must be contiguous. Row-major operands use the default of 0.
+    """
     if tensor.ndim != 2:
         raise ValueError("s2_d1 tensor must have rank 2")
     if dynamic_stride_dim not in (0, 1):

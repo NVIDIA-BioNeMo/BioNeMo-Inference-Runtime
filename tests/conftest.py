@@ -38,10 +38,18 @@ import os
 os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
 
+import pytest  # noqa: E402
 import torch  # noqa: E402  (imported after the env vars above on purpose)
+
+from tests import require_public_cutedsl_library  # noqa: E402
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
     # torch >= 2.9 precision API; "ieee" == full fp32 (no TF32).
     torch.backends.cuda.matmul.fp32_precision = "ieee"
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Require the prebuilt CuTeDSL launcher before collecting public tests."""
+    require_public_cutedsl_library()

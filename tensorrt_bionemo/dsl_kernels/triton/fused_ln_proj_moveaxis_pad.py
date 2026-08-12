@@ -190,8 +190,9 @@ def _fused_ln_proj_moveaxis_pad_kernel(
     out_base = out_ptr + batch_idx * out_stride_b + pid_i * out_stride_i
     out_ptrs = out_base + offs_h[None, :] * out_stride_h + offs_j[:, None]
 
-    store_mask = mask_j[:, None] & mask_h[None, :]
-    tl.store(out_ptrs, acc, mask=store_mask)
+    store_mask = (offs_j[:, None] < J_padded) & mask_h[None, :]
+    out = tl.where(mask_j[:, None], acc, 0.0)
+    tl.store(out_ptrs, out, mask=store_mask)
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +231,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         self._tile_k = min(D, 128) if D > 16 else 16
         self._heads_per_blk = min(triton.next_power_of_2(H), 16)
         self._dtype = dtype
-        self._kernels: dict[torch.dtype, CachedKernel] = {}
+        self._kernels: dict[torch.dtype | tuple[torch.dtype, ...], CachedKernel] = {}
 
         if torch.cuda.is_available():
             self._ensure_compiled()
@@ -261,15 +262,28 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
                 grid=(1, 2, 1),
                 **common_kwargs,
             )
-            if result:
-                self._kernels = result
-                FusedLNProjMoveaxisPad._global_cache[base_key] = result
+            mixed_result = self.compile_for_dtypes(
+                _fused_ln_proj_moveaxis_pad_kernel,
+                dtypes=[dt for dt in dtypes if dt != torch.float32],
+                make_dummy_args=lambda dt: self._make_dummy_args(dt, ln_dtype=torch.float32),
+                grid=(1, 2, 1),
+                **common_kwargs,
+            )
+            result.update(
+                {
+                    (dtype, torch.float32, torch.float32, dtype): kernel
+                    for dtype, kernel in mixed_result.items()
+                }
+            )
+            self._kernels = result
+            FusedLNProjMoveaxisPad._global_cache[base_key] = result
 
-    def _make_dummy_args(self, dtype):
+    def _make_dummy_args(self, dtype: torch.dtype, ln_dtype: torch.dtype | None = None) -> tuple:
         D, H, tj = self._dim_d, self._num_heads, self._tile_j
+        ln_dtype = ln_dtype or dtype
         z = torch.empty(1, 2, tj, D, dtype=dtype, device="cuda")
-        w_ln = torch.empty(D, dtype=dtype, device="cuda")
-        b_ln = torch.empty(D, dtype=dtype, device="cuda")
+        w_ln = torch.empty(D, dtype=ln_dtype, device="cuda")
+        b_ln = torch.empty(D, dtype=ln_dtype, device="cuda")
         w_proj = torch.empty(H, D, dtype=dtype, device="cuda")
         out = torch.empty(1, H, 2, tj, dtype=dtype, device="cuda")
         return (
@@ -323,7 +337,8 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         grid_j = triton.cdiv(J_padded, self._tile_j)
         num_head_blks = triton.cdiv(H, self._heads_per_blk)
 
-        kernel = self._kernels.get(z.dtype)
+        signature = (z.dtype, w_ln.dtype, b_ln.dtype, w_proj.dtype)
+        kernel = self._kernels.get(z.dtype if len(set(signature)) == 1 else signature)
 
         if kernel is not None and kernel.driver is not None:
             drv = kernel.driver

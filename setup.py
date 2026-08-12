@@ -16,9 +16,11 @@
 
 ``build_ext`` delegates the ``tensorrt_bionemo.libs`` nanobind extension, which
 embeds architecture-specific CuTeDSL CUBINs, to CMake; the local version segment
-(for example ``+cu131``) records the CUDA toolkit that built the wheel. Every
-checkout builds the extension, and ``TRTBNM_BUILD_CUTEDSL_KERNELS=0`` opts out
-from the environment or an untracked ``build.env``.
+(for example ``+cu131``) records the CUDA toolkit that built the wheel, and
+``TRTBNM_VERSION_LOCAL`` appends more segments to it so a wheel built from an
+arbitrary commit is traceable (for example ``+cu131.g1a2b3c4``). Every checkout
+builds the extension, and ``TRTBNM_BUILD_CUTEDSL_KERNELS=0`` opts out from the
+environment or an untracked ``build.env``.
 """
 
 import os
@@ -186,6 +188,30 @@ def _cuda_local_version() -> str:
     )
 
 
+def _extra_local_version() -> str:
+    """Build-identity segments appended to the local version, from the environment.
+
+    A wheel built off a branch has to name the commit it came from — its base
+    version cannot, because ``version.py`` only changes at a release. CI sets
+    ``TRTBNM_VERSION_LOCAL`` (for example ``g1a2b3c4`` or ``g1a2b3c4 tai/ci/x``)
+    and this normalizes it to `PEP 440 local version segments
+    <https://packaging.python.org/en/latest/specifications/version-specifiers/#local-version-identifiers>`_
+    — lowercase alphanumerics separated by dots, which is all the grammar
+    allows. Unset (a release build) leaves the version at ``<base>+<cuda tag>``.
+
+    Returns:
+        The segments to append, each already dot-prefixed, or ``""``.
+    """
+    raw = os.environ.get("TRTBNM_VERSION_LOCAL", "").strip()
+    if not raw:
+        return ""
+
+    normalized = re.sub(r"[^A-Za-z0-9]+", ".", raw).strip(".").lower()
+    if not normalized:
+        raise ValueError(f"TRTBNM_VERSION_LOCAL has no alphanumeric content: {raw!r}")
+    return f".{normalized}"
+
+
 class CMakeExtension(Extension):
     """A setuptools extension whose implementation is built by CMake."""
 
@@ -257,7 +283,7 @@ class CMakeBuild(build_ext):
 
 
 setup(
-    version=f"{_base_version()}+{_cuda_local_version()}",
+    version=f"{_base_version()}+{_cuda_local_version()}{_extra_local_version()}",
     ext_modules=(
         [CMakeExtension("tensorrt_bionemo.libs._cutedsl_kernels", ROOT_DIR / "cpp")] if _BUILD_CUTEDSL_KERNELS else []
     ),

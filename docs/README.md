@@ -41,8 +41,14 @@ live on NGC, never in the repository.
 <!-- TODO: expand — GPU/distributed test markers, ciflow:* CI labels, coverage
      expectations, C++/CUDA test invocation, benchmarking. -->
 
+## Release artifacts
+
+[nv/release.md](nv/release.md) covers how to build a wheel from any branch — for
+testing on a host with no checkout — the version scheme, when to bump it, and
+what a `release/*` push runs.
+
 ## Further development guidelines
 
 <!-- Placeholder for deeper project development guidelines: architecture
-     overview, adding a new model, kernel development, release/versioning
-     workflow, debugging. Add sections here as they are written. -->
+     overview, adding a new model, kernel development, debugging. Add sections
+     here as they are written. -->

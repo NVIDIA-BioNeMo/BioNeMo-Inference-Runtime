@@ -38,6 +38,18 @@ RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install -r requirements.txt
 
 # ------------------------------------------------------------------------
+# CI stage: runtime deps + test deps, no source
+#   - build:extension and the test shards run on this and install the checkout
+#     with --no-deps, so everything the suite imports must be here.
+#   - deliberately outside the prod/dev chain below: prod_stage must not ship
+#     pytest and friends.
+# -------------------------------------------------------------------------
+FROM requirements_stage AS ci_stage
+COPY requirements-dev.txt ./
+RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
+    pip install -r requirements-dev.txt
+
+# ------------------------------------------------------------------------
 # copy source
 #   - kept after the cuda-deps install so source edits don't invalidate it
 # -------------------------------------------------------------------------
@@ -45,8 +57,8 @@ FROM requirements_stage AS copy_source_stage
 COPY . ${PROJECT_WORKDIR}/
 
 # Generate the embedded CUBIN headers required by the CMake build.
-# In CI the headers arrive as artifacts from prepare:cutedsl-cubins (a GPU
-# runner job) and this step is a no-op. For local docker builds without
+# In CI the headers arrive as artifacts from build:extension (a GPU runner job)
+# and this step is a no-op. For local docker builds without
 # pre-generated artifacts, fall back to the CUDA compile-time stub; note that
 # the sm_90a (Hopper) path needs a live CUDA driver, so pass --gpus all when
 # building locally against a Hopper host.

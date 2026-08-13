@@ -19,7 +19,12 @@ TAG ?= $(TRTBNM_BRANCH)_trtbnm$(COMMIT_SHORT_SHA)_from_pytorch$(TORCH_BASE_TAG)
 endif
 REGISTRY_IMAGE_AND_TAG := ${REGISTRY_IMAGE}:${TAG}
 
-# Docker layer caching (CI build:docker-image follow-up).
+# Dependency-only image: the Dockerfile's `ci_stage`, with no source copy, no
+# editable install and no CMake build tree. CI runs build:extension and the test
+# shards on this instead of the full dev image.
+REQS_IMAGE_AND_TAG ?= ${REGISTRY_IMAGE}:reqs-${TORCH_BASE_TAG}
+
+# Docker layer caching (CI build:image follow-up).
 #   Default: reuse the local BuildKit layer cache. The CI runner talks to a
 #   persistent host docker daemon, so unchanged layers — notably the uv dependency
 #   install in requirements_stage (before COPY .) — survive between builds.
@@ -38,7 +43,22 @@ else
 $(error Unsupported architecture: $(CPU_ARCH))
 endif
 
-.PHONY: submodules trtbnm_dev
+.PHONY: submodules trtbnm_dev trtbnm_reqs
+
+trtbnm_reqs:
+	@echo "Build ${REQS_IMAGE_AND_TAG} (ci_stage), begin"
+	pushd $(PROJECT_DIR) \
+		&& docker build \
+			$(_DOCKER_CACHE_ARGS) \
+			--platform $(BUILD_PLATFORM) \
+			--target ci_stage \
+			--file $(PROJECT_DIR)/docker/Dockerfile.with-source \
+			--build-arg BASE_IMAGE=$(TORCH_BASE_IMAGE) \
+			--build-arg BASE_TAG=$(TORCH_BASE_TAG) \
+			--tag $(REQS_IMAGE_AND_TAG) \
+			$(PROJECT_DIR) \
+		&& popd
+	@echo "Build ${REQS_IMAGE_AND_TAG}, end"
 
 trtbnm_dev:
 	@echo "Make target build_with_source, begin"

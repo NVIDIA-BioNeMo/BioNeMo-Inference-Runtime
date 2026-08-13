@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib
+from importlib.machinery import EXTENSION_SUFFIXES
 from types import SimpleNamespace
 
 import pytest
@@ -59,6 +60,44 @@ def test_missing_family_reports_unavailable(monkeypatch):
 
     with pytest.raises(library_runtime.CuTeDSLKernelLibraryUnavailable):
         library_runtime.populate_compiled_cache_from_library({}, ("variant",), "absent", lambda *_: None)
+
+
+@pytest.mark.parametrize(
+    ("extension", "sources"),
+    [(True, True), (True, False), (False, True)],
+    ids=["both", "wheel", "checkout"],
+)
+def test_require_kernel_backend_accepts_either_path(monkeypatch, extension, sources):
+    monkeypatch.setattr(library_runtime, "_extension_installed", lambda: extension)
+    monkeypatch.setattr(library_runtime, "_kernel_sources_installed", lambda: sources)
+
+    library_runtime.require_kernel_backend()
+
+
+def test_require_kernel_backend_rejects_a_build_with_neither(monkeypatch):
+    monkeypatch.setattr(library_runtime, "_extension_installed", lambda: False)
+    monkeypatch.setattr(library_runtime, "_kernel_sources_installed", lambda: False)
+
+    with pytest.raises(library_runtime.CuTeDSLKernelLibraryUnavailable, match="No CuTeDSL kernel backend"):
+        library_runtime.require_kernel_backend()
+
+
+def test_kernel_sources_probe_ignores_the_package_marker(monkeypatch, tmp_path):
+    monkeypatch.setattr(library_runtime, "_KERNEL_SOURCE_DIR", tmp_path)
+    (tmp_path / "__init__.py").touch()
+    assert not library_runtime._kernel_sources_installed()
+
+    (tmp_path / "sm80_opm.py").touch()
+    assert library_runtime._kernel_sources_installed()
+
+
+def test_extension_probe_matches_the_built_filename(monkeypatch, tmp_path):
+    """The probe must name the extension exactly as ``setup.py`` writes it."""
+    monkeypatch.setattr(library_runtime, "_KERNEL_LIBRARY_DIR", tmp_path)
+    assert not library_runtime._extension_installed()
+
+    (tmp_path / f"{library_runtime._KERNEL_LIBRARY_STEM}{EXTENSION_SUFFIXES[0]}").touch()
+    assert library_runtime._extension_installed()
 
 
 def test_launch_library_executable_does_not_require_tvm_ffi():

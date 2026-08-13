@@ -24,12 +24,18 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, MutableMapping
+from importlib.machinery import EXTENSION_SUFFIXES
+from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
 
 import torch
 
 _KERNEL_LIBRARY_MODULE = "tensorrt_bionemo.libs._cutedsl_kernels"
+_KERNEL_LIBRARY_STEM = "_cutedsl_kernels"
+_PACKAGE_DIR = Path(__file__).resolve().parents[1]
+_KERNEL_LIBRARY_DIR = _PACKAGE_DIR / "libs"
+_KERNEL_SOURCE_DIR = _PACKAGE_DIR / "dsl_kernels" / "cute"
 _kernel_library: ModuleType | None = None
 
 
@@ -51,6 +57,43 @@ class CuTeDSLKernelLibraryExecutable:
     Unlike TVM-FFI executables, these callables pass the current CUDA stream
     directly to the C++ launcher.
     """
+
+
+def _extension_installed() -> bool:
+    """Whether the compiled extension is present, without loading it.
+
+    Named exactly as ``setup.py`` writes it. A file test rather than
+    ``find_spec``, which imports the parent packages — this runs during
+    ``tensorrt_bionemo``'s own import — and rather than an import, which would
+    move any CUDA or driver problem into package import as a different failure.
+    """
+    return any((_KERNEL_LIBRARY_DIR / f"{_KERNEL_LIBRARY_STEM}{suffix}").is_file() for suffix in EXTENSION_SUFFIXES)
+
+
+def _kernel_sources_installed() -> bool:
+    """Whether any CuTeDSL kernel source survives to be compiled at runtime."""
+    return any(path.name != "__init__.py" for path in _KERNEL_SOURCE_DIR.glob("*.py"))
+
+
+def require_kernel_backend() -> None:
+    """Refuse a build that can neither launch nor compile a CuTeDSL kernel.
+
+    Backend selection picks on device and shape alone, so a build missing both
+    paths installs cleanly and then dies on the first fused op, far from the
+    cause. Raise the same error at import instead, where the message can name
+    what is absent.
+
+    Raises:
+        CuTeDSLKernelLibraryUnavailable: Neither path is installed.
+    """
+    if _extension_installed() or _kernel_sources_installed():
+        return
+    raise CuTeDSLKernelLibraryUnavailable(
+        "No CuTeDSL kernel backend is installed: this build has neither the "
+        f"compiled {_KERNEL_LIBRARY_MODULE!r} extension nor kernel sources in "
+        f"{_KERNEL_SOURCE_DIR}. Install a released wheel, or rebuild with "
+        "TRTBNM_BUILD_CUTEDSL_KERNELS=1 from a checkout that carries the sources."
+    )
 
 
 def _load_kernel_library() -> ModuleType:

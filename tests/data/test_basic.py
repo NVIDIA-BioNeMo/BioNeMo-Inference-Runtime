@@ -18,9 +18,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.data.parsers import read_a3m
-from tensorrt_bionemo.data.parsers.fasta import read_fasta
-from tensorrt_bionemo.data.schemas.basic import (
+from bionemo_ir.data.parsers import read_a3m
+from bionemo_ir.data.parsers.fasta import read_fasta
+from bionemo_ir.data.schemas.basic import (
     AtomTypes,
     FoldingOutput,
     InputRequest,
@@ -186,7 +186,7 @@ class TestPolymerType:
         """Both ligand variants must map to MOL_TYPE_LIGAND in the OF3
         token-feature pipeline; otherwise a CCD or SMILES ligand would be
         silently routed to protein/RNA/DNA."""
-        from tensorrt_bionemo.pipeline.models.openfold3.const import (
+        from bionemo_ir.pipeline.models.openfold3.const import (
             MOL_TYPE_DNA,
             MOL_TYPE_LIGAND,
             MOL_TYPE_PROTEIN,

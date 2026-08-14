@@ -3,7 +3,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions & Discussion
-    url: https://github.com/NVIDIA-BioNeMo/BioNeMoAIR/discussions
+    url: https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/discussions
     about: For usage questions and general discussion, please use Discussions.
   - name: Report a Security Vulnerability
     url: https://www.nvidia.com/en-us/support/submit-security-vulnerability/

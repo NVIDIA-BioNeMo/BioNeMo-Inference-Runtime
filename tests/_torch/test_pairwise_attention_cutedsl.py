@@ -14,7 +14,7 @@
 # limitations under the License.
 """Source/CUBIN parity for the CuTeDSL pairwise-attention backend.
 
-``TRTBNM_TEST_CUTEDSL_MODES`` selects which implementations run. A private
+``BIOIR_TEST_CUTEDSL_MODES`` selects which implementations run. A private
 checkout defaults to ``source``; a source-free public build defaults to
 ``cubin``; private CI sets ``source,cubin`` so both are covered.
 """
@@ -27,23 +27,23 @@ from pathlib import Path
 import pytest
 import torch
 
-from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
-from tensorrt_bionemo._torch.attention_backend import (
+from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
+from bionemo_ir._torch.attention_backend import (
     AttentionMetadata,
     PairwiseAttentionCuTeLeftMask,
     PairwiseAttentionCuTeLeftMaskMetadata,
     VanillaPairwiseAttention,
 )
-from tensorrt_bionemo._torch.attention_backend.pairwise_attention import _PW_CONFIGS_DIR
-from tensorrt_bionemo._torch.attention_backend.pairwise_attention import _config as pw_config
-from tensorrt_bionemo._torch.attention_backend.pairwise_attention import _cubin as pw_cubin
-from tensorrt_bionemo._torch.attention_backend.pairwise_attention import cutedsl as pw_cutedsl
+from bionemo_ir._torch.attention_backend.pairwise_attention import _PW_CONFIGS_DIR
+from bionemo_ir._torch.attention_backend.pairwise_attention import _config as pw_config
+from bionemo_ir._torch.attention_backend.pairwise_attention import _cubin as pw_cubin
+from bionemo_ir._torch.attention_backend.pairwise_attention import cutedsl as pw_cutedsl
 from tests._torch import SM_VERSION, cutedsl_test_modes, skip_cutedsl
 
 pytestmark = skip_cutedsl
 
 FORCE_CUBIN_ENV = pw_cutedsl.FORCE_CUBIN_ENV
-_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.sm80_attn_pb_left_mask"
+_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_attn_pb_left_mask"
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 _HEAD_DIMS = (32, 48, 64)
 
@@ -182,7 +182,7 @@ def test_rectangular_and_broadcast_batch(monkeypatch, mode):
 
 def test_unavailable_cubin_variant_raises(monkeypatch):
     """A missing CUBIN must fail loudly rather than silently degrade."""
-    pytest.importorskip("tensorrt_bionemo.libs._cutedsl_kernels")
+    pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
 
     def missing_source(_implementation):
         raise ModuleNotFoundError("CuTeDSL kernel source removed")
@@ -200,7 +200,7 @@ def test_unavailable_cubin_variant_raises(monkeypatch):
 
 
 # CUTEDSL_FORCE_CUBIN is the process-wide switch, distinct from the per-test
-# TRTBNM_TEST_CUTEDSL_MODES plumbing. The two must not be combined -- source mode
+# BIOIR_TEST_CUTEDSL_MODES plumbing. The two must not be combined -- source mode
 # asserts it never reaches the library -- so these tests stay unparametrised.
 
 
@@ -215,7 +215,7 @@ def _forced_backend(head_dim, num_heads=4):
 
 def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
     """The flag must reach the CUBINs without deleting the private sources."""
-    pytest.importorskip("tensorrt_bionemo.libs._cutedsl_kernels")
+    pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
     monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
     PairwiseAttentionCuTeLeftMask._compiled_cache.clear()
 
@@ -229,7 +229,7 @@ def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
 
 def test_force_cubin_error_names_the_flag(monkeypatch):
     """A forced run must not blame absent sources when the CUBIN is missing."""
-    pytest.importorskip("tensorrt_bionemo.libs._cutedsl_kernels")
+    pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
 
     def unavailable(*_args, **_kwargs):
         raise library_runtime.CuTeDSLKernelVariantUnavailable("no such variant")
@@ -245,7 +245,7 @@ def test_force_cubin_error_names_the_flag(monkeypatch):
 
 def _cubin_launch_args(head_dim, num_heads=4, batch=2, seqlen=96):
     """One valid launch through the CUBIN adapter, ready to be perturbed."""
-    library = pytest.importorskip("tensorrt_bionemo.libs._cutedsl_kernels")
+    library = pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
     executable = pw_cubin.PairwiseAttentionCubinExecutable(
         library, library.pairwise_attention, SM_VERSION, head_dim, 0, torch.float16, False
     )

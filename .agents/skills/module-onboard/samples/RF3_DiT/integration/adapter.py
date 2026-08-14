@@ -18,11 +18,11 @@
 # Only upstream parameter and module names are reproduced here.
 
 """
-Drop-in adapter: wraps TRT-BNM DiffusionTransformerLayer to match
+Drop-in adapter: wraps BioIR DiffusionTransformerLayer to match
 RF3 DiffusionTransformerBlock forward signature.
 
 Source signature:   forward(A_I, S_I, Z_II, is_padding_I) -> A_I
-TRT-BNM signature:   forward(a, s, bias, mask, ...) -> a
+BioIR signature:   forward(a, s, bias, mask, ...) -> a
 """
 
 import torch.nn as nn
@@ -32,15 +32,15 @@ class RF3DiTBlockAdapter(nn.Module):
     """Drop-in replacement for a single RF3 DiffusionTransformerBlock.
 
     Source forward: (A_I [B,D,I,C], S_I [B,D,I,C], Z_II [B,I,I,Cz], is_padding_I [B,I]) -> A_I [B,D,I,C]
-    TRT-BNM forward:  (a [B,I,C], s [B,I,C], bias [B,I,I,Cz], mask [B,I]) -> a [B,I,C]
+    BioIR forward:  (a [B,I,C], s [B,I,C], bias [B,I,I,Cz], mask [B,I]) -> a [B,I,C]
 
-    The D (diffusion samples) dimension is flattened into B for TRT-BNM, then reshaped back.
+    The D (diffusion samples) dimension is flattened into B for BioIR, then reshaped back.
     Z_II and is_padding_I have no D dim — they are broadcast across D.
     """
 
-    def __init__(self, trtbnm_layer):
+    def __init__(self, bioir_layer):
         super().__init__()
-        self.layer = trtbnm_layer
+        self.layer = bioir_layer
 
     def forward(self, A_I, S_I, Z_II, is_padding_I):
         B, D = A_I.shape[0], A_I.shape[1]
@@ -62,9 +62,9 @@ class RF3DiTBlockAdapter(nn.Module):
 class RF3DiTStackAdapter(nn.Module):
     """Drop-in replacement for RF3's DiffusionTransformer (stack of blocks)."""
 
-    def __init__(self, trtbnm_layers: nn.ModuleList):
+    def __init__(self, bioir_layers: nn.ModuleList):
         super().__init__()
-        self.layers = trtbnm_layers
+        self.layers = bioir_layers
 
     def forward(self, A_I, S_I, Z_II, is_padding_I):
         B, D = A_I.shape[0], A_I.shape[1]

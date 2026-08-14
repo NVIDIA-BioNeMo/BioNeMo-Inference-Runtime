@@ -12,7 +12,7 @@ tensorrt_bionemo_benchmarking/
 .VSCodeCounter
 cpp/build*
 build
-!tensorrt_bionemo/bench/build
+!bionemo_ir/bench/build
 !builders/
 *.egg-info/
 .coverage
@@ -43,12 +43,12 @@ cpp/kernels/cutedsl_*/cubins/*
 !cpp/kernels/cutedsl_*/cubins/embedded_cubins.h
 !cpp/kernels/cutedsl_*/cubins/embedded/
 !cpp/kernels/cutedsl_*/cubins/embedded/*.h
-tensorrt_bionemo/bin
-tensorrt_bionemo/libs/*
-!tensorrt_bionemo/libs/__init__.py
-tensorrt_bionemo/bindings.*.so
-tensorrt_bionemo/bindings.pyi
-tensorrt_bionemo/bindings/**/*.pyi
+bionemo_ir/bin
+bionemo_ir/libs/*
+!bionemo_ir/libs/__init__.py
+bionemo_ir/bindings.*.so
+bionemo_ir/bindings.pyi
+bionemo_ir/bindings/**/*.pyi
 *docs/cpp_docs*
 *docs/source/_cpp_gen*
 *.swp

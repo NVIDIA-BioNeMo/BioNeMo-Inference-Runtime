@@ -18,7 +18,7 @@
 # Only upstream parameter and module names are reproduced here.
 
 """
-Weight conversion: RF3 DiffusionTransformerBlock -> TRT-BNM DiffusionTransformerLayer.
+Weight conversion: RF3 DiffusionTransformerBlock -> BioIR DiffusionTransformerLayer.
 
 Checkpoint layout (variant A; variant B renames ada_ln_1 -> ln_1 — both handled below):
 - c_token=768, c_s=384, c_z=128, n_head=16, 24 blocks
@@ -31,7 +31,7 @@ Checkpoint layout (variant A; variant B renames ada_ln_1 -> ln_1 — both handle
 import torch
 
 
-def convert_adaln_weights(state_dict, prefix, tbm_prefix):
+def convert_adaln_weights(state_dict, prefix, bioir_prefix):
     """Convert AdaLN: separate gain/bias -> fused_s_scale_s_bias."""
     gain_w = state_dict[f"{prefix}.to_gain.0.weight"]
     bias_w = state_dict[f"{prefix}.to_bias.weight"]
@@ -42,13 +42,13 @@ def convert_adaln_weights(state_dict, prefix, tbm_prefix):
     fused_bias = torch.cat([gain_b, zero_b], dim=0)
 
     return {
-        f"{tbm_prefix}.s_norm.weight": state_dict[f"{prefix}.ln_s.weight"],
-        f"{tbm_prefix}.fused_s_scale_s_bias.weight": fused_weight,
-        f"{tbm_prefix}.fused_s_scale_s_bias.bias": fused_bias,
+        f"{bioir_prefix}.s_norm.weight": state_dict[f"{prefix}.ln_s.weight"],
+        f"{bioir_prefix}.fused_s_scale_s_bias.weight": fused_weight,
+        f"{bioir_prefix}.fused_s_scale_s_bias.bias": fused_bias,
     }
 
 
-def convert_attention_weights(state_dict, prefix, tbm_prefix, dim):
+def convert_attention_weights(state_dict, prefix, bioir_prefix, dim):
     """Convert AttentionPairBias weights from an RF3 checkpoint.
 
     Key differences from simple test variant:
@@ -67,15 +67,15 @@ def convert_attention_weights(state_dict, prefix, tbm_prefix, dim):
     g_key = f"{prefix}.to_g.0.weight" if f"{prefix}.to_g.0.weight" in state_dict else f"{prefix}.to_g.weight"
 
     return {
-        f"{tbm_prefix}.proj_q.weight": q_weight,
-        f"{tbm_prefix}.proj_q.bias": q_bias,
-        f"{tbm_prefix}.proj_kv.weight": kv_weight,
-        f"{tbm_prefix}.proj_g.weight": state_dict[g_key],
-        f"{tbm_prefix}.proj_o.weight": state_dict[f"{prefix}.to_a.weight"],
+        f"{bioir_prefix}.proj_q.weight": q_weight,
+        f"{bioir_prefix}.proj_q.bias": q_bias,
+        f"{bioir_prefix}.proj_kv.weight": kv_weight,
+        f"{bioir_prefix}.proj_g.weight": state_dict[g_key],
+        f"{bioir_prefix}.proj_o.weight": state_dict[f"{prefix}.to_a.weight"],
     }
 
 
-def convert_pair_bias_norm_weights(state_dict, prefix, tbm_prefix, for_trt=False):
+def convert_pair_bias_norm_weights(state_dict, prefix, bioir_prefix, for_trt=False):
     """Convert pair bias norm (ln_0 + to_b).
 
     Torch backend uses Sequential: proj_z.0 (LayerNorm) + proj_z.1 (Linear)
@@ -83,7 +83,7 @@ def convert_pair_bias_norm_weights(state_dict, prefix, tbm_prefix, for_trt=False
     """
     if for_trt:
         # TRT naming: proj_z_norm + proj_z
-        base = tbm_prefix.rsplit(".proj_z", 1)[0]
+        base = bioir_prefix.rsplit(".proj_z", 1)[0]
         return {
             f"{base}.proj_z_norm.weight": state_dict[f"{prefix}.ln_0.weight"],
             f"{base}.proj_z_norm.bias": state_dict[f"{prefix}.ln_0.bias"],
@@ -92,42 +92,42 @@ def convert_pair_bias_norm_weights(state_dict, prefix, tbm_prefix, for_trt=False
     else:
         # Torch naming: proj_z.0 + proj_z.1
         return {
-            f"{tbm_prefix}.0.weight": state_dict[f"{prefix}.ln_0.weight"],
-            f"{tbm_prefix}.0.bias": state_dict[f"{prefix}.ln_0.bias"],
-            f"{tbm_prefix}.1.weight": state_dict[f"{prefix}.to_b.weight"],
+            f"{bioir_prefix}.0.weight": state_dict[f"{prefix}.ln_0.weight"],
+            f"{bioir_prefix}.0.bias": state_dict[f"{prefix}.ln_0.bias"],
+            f"{bioir_prefix}.1.weight": state_dict[f"{prefix}.to_b.weight"],
         }
 
 
-def convert_output_gate_weights(state_dict, prefix, tbm_prefix):
+def convert_output_gate_weights(state_dict, prefix, bioir_prefix):
     """Convert attention output gate (linear_output_project -> output_projection)."""
     return {
-        f"{tbm_prefix}.weight": state_dict[f"{prefix}.linear_output_project.0.weight"],
-        f"{tbm_prefix}.bias": state_dict[f"{prefix}.linear_output_project.0.bias"],
+        f"{bioir_prefix}.weight": state_dict[f"{prefix}.linear_output_project.0.weight"],
+        f"{bioir_prefix}.bias": state_dict[f"{prefix}.linear_output_project.0.bias"],
     }
 
 
-def convert_conditioned_transition_weights(state_dict, prefix, tbm_prefix):
+def convert_conditioned_transition_weights(state_dict, prefix, bioir_prefix):
     """Convert ConditionedTransitionBlock with using_silu=True (2-way fusion)."""
     linear_1_w = state_dict[f"{prefix}.linear_1.weight"]
     linear_2_w = state_dict[f"{prefix}.linear_2.weight"]
     fused_weight = torch.cat([linear_1_w, linear_2_w], dim=0)
 
     return {
-        f"{tbm_prefix}.fused_swl_a_to_b.weight": fused_weight,
-        f"{tbm_prefix}.b_to_a.weight": state_dict[f"{prefix}.linear_3.weight"],
-        f"{tbm_prefix}.output_projection.weight": state_dict[f"{prefix}.linear_output_project.0.weight"],
-        f"{tbm_prefix}.output_projection.bias": state_dict[f"{prefix}.linear_output_project.0.bias"],
+        f"{bioir_prefix}.fused_swl_a_to_b.weight": fused_weight,
+        f"{bioir_prefix}.b_to_a.weight": state_dict[f"{prefix}.linear_3.weight"],
+        f"{bioir_prefix}.output_projection.weight": state_dict[f"{prefix}.linear_output_project.0.weight"],
+        f"{bioir_prefix}.output_projection.bias": state_dict[f"{prefix}.linear_output_project.0.bias"],
     }
 
 
-def convert_dit_block_weights(state_dict, prefix="", tbm_prefix="", dim=768, n_head=16, for_trt=False):
+def convert_dit_block_weights(state_dict, prefix="", bioir_prefix="", dim=768, n_head=16, for_trt=False):
     """Convert a single RF3 DiffusionTransformerBlock from a released checkpoint.
 
     Args:
         for_trt: If True, use TRT weight naming (proj_z_norm/proj_z instead of proj_z.0/proj_z.1).
     """
     dot = "." if prefix else ""
-    tdot = "." if tbm_prefix else ""
+    tdot = "." if bioir_prefix else ""
 
     weights = {}
 
@@ -135,19 +135,22 @@ def convert_dit_block_weights(state_dict, prefix="", tbm_prefix="", dim=768, n_h
     adaln_prefix = f"{prefix}{dot}attention_pair_bias.ada_ln_1"
     if f"{adaln_prefix}.ln_s.weight" not in state_dict:
         adaln_prefix = f"{prefix}{dot}attention_pair_bias.ln_1"
-    weights.update(convert_adaln_weights(state_dict, adaln_prefix, f"{tbm_prefix}{tdot}adaln"))
+    weights.update(convert_adaln_weights(state_dict, adaln_prefix, f"{bioir_prefix}{tdot}adaln"))
 
     # Attention projections
     weights.update(
         convert_attention_weights(
-            state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}pair_bias_attn", dim
+            state_dict, f"{prefix}{dot}attention_pair_bias", f"{bioir_prefix}{tdot}pair_bias_attn", dim
         )
     )
 
     # Pair bias norm
     weights.update(
         convert_pair_bias_norm_weights(
-            state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}pair_bias_attn.proj_z", for_trt=for_trt
+            state_dict,
+            f"{prefix}{dot}attention_pair_bias",
+            f"{bioir_prefix}{tdot}pair_bias_attn.proj_z",
+            for_trt=for_trt,
         )
     )
 
@@ -156,21 +159,21 @@ def convert_dit_block_weights(state_dict, prefix="", tbm_prefix="", dim=768, n_h
     if output_gate_key in state_dict:
         weights.update(
             convert_output_gate_weights(
-                state_dict, f"{prefix}{dot}attention_pair_bias", f"{tbm_prefix}{tdot}output_projection"
+                state_dict, f"{prefix}{dot}attention_pair_bias", f"{bioir_prefix}{tdot}output_projection"
             )
         )
 
     # Conditioned transition block — AdaLN
     weights.update(
         convert_adaln_weights(
-            state_dict, f"{prefix}{dot}conditioned_transition_block.ada_ln", f"{tbm_prefix}{tdot}transition.adaln"
+            state_dict, f"{prefix}{dot}conditioned_transition_block.ada_ln", f"{bioir_prefix}{tdot}transition.adaln"
         )
     )
 
     # Conditioned transition block — linear layers
     weights.update(
         convert_conditioned_transition_weights(
-            state_dict, f"{prefix}{dot}conditioned_transition_block", f"{tbm_prefix}{tdot}transition"
+            state_dict, f"{prefix}{dot}conditioned_transition_block", f"{bioir_prefix}{tdot}transition"
         )
     )
 
@@ -178,12 +181,12 @@ def convert_dit_block_weights(state_dict, prefix="", tbm_prefix="", dim=768, n_h
 
 
 def convert_dit_stack_weights(
-    state_dict, num_blocks, prefix="blocks", tbm_prefix="layers", dim=768, n_head=16, for_trt=False
+    state_dict, num_blocks, prefix="blocks", bioir_prefix="layers", dim=768, n_head=16, for_trt=False
 ):
     """Convert a full stack of DiffusionTransformerBlocks from a released checkpoint."""
     weights = {}
     for i in range(num_blocks):
         weights.update(
-            convert_dit_block_weights(state_dict, f"{prefix}.{i}", f"{tbm_prefix}.{i}", dim, n_head, for_trt=for_trt)
+            convert_dit_block_weights(state_dict, f"{prefix}.{i}", f"{bioir_prefix}.{i}", dim, n_head, for_trt=for_trt)
         )
     return weights

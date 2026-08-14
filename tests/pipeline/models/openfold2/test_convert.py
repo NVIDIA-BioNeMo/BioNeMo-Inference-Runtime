@@ -18,7 +18,7 @@
 import pytest
 import torch
 
-from tensorrt_bionemo.models.openfold2.convert import get_point_projection_torch_weights
+from bionemo_ir.models.openfold2.convert import get_point_projection_torch_weights
 
 PREFIX = "structure_module.ipa.linear_q_points"
 

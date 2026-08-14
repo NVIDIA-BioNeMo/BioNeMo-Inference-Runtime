@@ -28,8 +28,8 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
-from tensorrt_bionemo.configs.modules import DiffusionTransformerConfig
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
+from bionemo_ir.configs.modules import DiffusionTransformerConfig
 from tests._torch import skip_if_cutedsl
 
 SEED = 42

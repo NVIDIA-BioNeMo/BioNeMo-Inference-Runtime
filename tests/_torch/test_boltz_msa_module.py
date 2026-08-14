@@ -25,11 +25,11 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefMSALayer, RefMSAModule
 
-from tensorrt_bionemo._torch.attention_backend import AttentionType, get_attention_backend
-from tensorrt_bionemo._torch.attention_backend.utils import precompute_pair_masks
-from tensorrt_bionemo._torch.modules.boltz.trunk import MSALayer, MSAModule
-from tensorrt_bionemo.configs import MSAModuleConfig
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks
+from bionemo_ir._torch.modules.boltz.trunk import MSALayer, MSAModule
+from bionemo_ir.configs import MSAModuleConfig
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 

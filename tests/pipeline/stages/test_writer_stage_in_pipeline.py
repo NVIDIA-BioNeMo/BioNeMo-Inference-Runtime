@@ -24,11 +24,11 @@ import numpy.testing as npt
 import ray
 from biotite.structure import AtomArrayStack
 
-from tensorrt_bionemo.data.parsers import read_fasta
-from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
-from tensorrt_bionemo.pipeline.processor.base import SerialProcessor
-from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig, Processor, build_processor
-from tensorrt_bionemo.pipeline.stages.configs import FeatureGeneratorStageConfig, ParserStageConfig, WriterStageConfig
+from bionemo_ir.data.parsers import read_fasta
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.pipeline.processor.base import SerialProcessor
+from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, Processor, build_processor
+from bionemo_ir.pipeline.stages.configs import FeatureGeneratorStageConfig, ParserStageConfig, WriterStageConfig
 
 SAMPLE_DIR = Path("examples") / "data" / "samples" / "monomers"
 

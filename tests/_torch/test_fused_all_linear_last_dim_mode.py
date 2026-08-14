@@ -19,7 +19,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
+from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 
 
 class SampleModule(nn.Module):

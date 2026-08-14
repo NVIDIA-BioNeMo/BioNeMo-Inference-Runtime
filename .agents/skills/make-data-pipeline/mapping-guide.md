@@ -15,12 +15,12 @@
  limitations under the License.
 -->
 
-# OSS → TRT-BNM Function Mapping Guide
+# OSS → BioIR Function Mapping Guide
 
-This document shows how OSS data pipeline functions map to TRT-BNM classes. It
+This document shows how OSS data pipeline functions map to BioIR classes. It
 covers:
 
-- **Mapping strategy** — how to classify any OSS function into its TRT-BNM
+- **Mapping strategy** — how to classify any OSS function into its BioIR
   target
 - **Concrete example (Pattern A)** — OpenFold2 (flat tensor dict,
   `data_transforms.py`-style)
@@ -44,7 +44,7 @@ Typical OSS code has:
 
 ### 2. Classify Each OSS Function
 
-| Classification                      | Criteria                                                             | TRT-BNM Target                                    |
+| Classification                      | Criteria                                                             | BioIR Target                                      |
 | ----------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------- |
 | **Raw feature builder**             | Creates numpy arrays from sequences/MSAs/templates                   | `ContextGeneratorBase` in `feature_context.py`    |
 | **Non-ensembled, modifies dict**    | Runs once, modifies existing keys (cast, reorder, squeeze)           | `TransformBase` in `transforms.py`                |
@@ -57,7 +57,7 @@ Typical OSS code has:
 
 #### Non-ensembled transforms → `transforms.py` (TransformBase)
 
-| OSS Function                                      | TRT-BNM Class                   | Notes                                                |
+| OSS Function                                      | BioIR Class                     | Notes                                                |
 | ------------------------------------------------- | ------------------------------- | ---------------------------------------------------- |
 | `cast_to_64bit_ints(protein)`                     | `CastTo64BitInts`               | Direct 1:1                                           |
 | `correct_msa_restypes(protein)`                   | `CorrectMsaRestypes`            | Direct 1:1                                           |
@@ -67,7 +67,7 @@ Typical OSS code has:
 
 #### Non-ensembled generators → `feature_generators.py` (FeatureGeneratorBase)
 
-| OSS Function                                     | TRT-BNM Class            | Notes                                               |
+| OSS Function                                     | BioIR Class              | Notes                                               |
 | ------------------------------------------------ | ------------------------ | --------------------------------------------------- |
 | `make_seq_mask(protein)`                         | `MakeSequenceMask`       | Returns new `feats = {"seq_mask": ...}`             |
 | `make_msa_mask(protein)`                         | `MakeMsaMask`            | Returns new `feats` with `msa_mask`, `msa_row_mask` |
@@ -80,7 +80,7 @@ Typical OSS code has:
 
 #### Ensembled transforms → `feature_collators.py` (FeatureCollatorBase)
 
-| OSS Function                            | TRT-BNM Class             | Notes                                                            |
+| OSS Function                            | BioIR Class               | Notes                                                            |
 | --------------------------------------- | ------------------------- | ---------------------------------------------------------------- |
 | `sample_msa(max_seq, keep_extra, seed)` | `SampleMsa`               | Reads `config.max_msa_clusters`, uses `context["ensemble_seed"]` |
 | `make_masked_msa(cfg, frac, seed)`      | `MakeMaskedMsa`           | `__init__` takes `profile_prob`, `same_prob`, etc.               |
@@ -95,7 +95,7 @@ Typical OSS code has:
 
 #### Multimer-specific transforms
 
-| OSS Function                                 | TRT-BNM Class                     | Notes                                                     |
+| OSS Function                                 | BioIR Class                       | Notes                                                     |
 | -------------------------------------------- | --------------------------------- | --------------------------------------------------------- |
 | `make_msa_profile(protein)`                  | `MultimerMakeMsaProfile`          | Generator, uses masked mean                               |
 | `create_target_feat(protein)`                | `MultimerCreateTargetFeatures`    | Generator, one-hot aatype                                 |
@@ -107,7 +107,7 @@ Typical OSS code has:
 
 #### Raw feature construction → `feature_context.py` (ContextGeneratorBase)
 
-| OSS Component                | TRT-BNM Method                                       | Notes                                                                                                                                                                                                                                                                                             |
+| OSS Component                | BioIR Method                                         | Notes                                                                                                                                                                                                                                                                                             |
 | ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `make_sequence_features()`   | `FeatureContextGenerator.make_sequence_features()`   | Returns aatype, residue_index, seq_length                                                                                                                                                                                                                                                         |
 | `make_msa_features()`        | `FeatureContextGenerator.make_msa_features()`        | Returns msa, deletion_matrix, num_alignments                                                                                                                                                                                                                                                      |
@@ -129,7 +129,7 @@ def make_seq_mask(protein):
     return protein
 ```
 
-**TRT-BNM:**
+**BioIR:**
 
 ```python
 class MakeSequenceMask(FeatureGeneratorBase):
@@ -151,7 +151,7 @@ def sample_msa(protein, max_seq, keep_extra=True, seed=None):
 # Usage: sample_msa(max_seq=512, keep_extra=True, seed=seed)
 ```
 
-**TRT-BNM:**
+**BioIR:**
 
 ```python
 class SampleMsa(FeatureCollatorBase):
@@ -174,7 +174,7 @@ if common_cfg.use_templates:
     transforms.append(data_transforms.make_template_mask)
 ```
 
-**TRT-BNM:**
+**BioIR:**
 
 ```python
 class MakeTemplateMask(FeatureGeneratorBase):
@@ -197,7 +197,7 @@ tensors = map_fn(lambda x: wrap_ensemble_fn(tensors, x),
                  torch.arange(num_recycling + 1))
 ```
 
-**TRT-BNM:**
+**BioIR:**
 
 ```python
 FeatureCollatorSpec(
@@ -225,7 +225,7 @@ sample_msa(max_seq, seed=msa_seed)
 make_masked_msa(cfg, frac, seed=(msa_seed + 1) if msa_seed else None)
 ```
 
-**TRT-BNM:**
+**BioIR:**
 
 ```python
 def pre_init(context):
@@ -249,7 +249,7 @@ class SampleMsa(FeatureCollatorBase):
 When the OSS pipeline uses multi-step featurization with intermediate non-tensor
 state, the mapping differs:
 
-| OSS Pattern                                                                                                                                   | TRT-BNM Target                                                                                                                            | Notes                                                     |
+| OSS Pattern                                                                                                                                   | BioIR Target                                                                                                                              | Notes                                                     |
 | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | Structure building from CCD/molecules                                                                                                         | `ContextGeneratorBase` in `feature_context.py`                                                                                            | Returns a row dict with structure objects, tokens, etc.   |
 | Per-step featurization (token features, atom features, MSA features)                                                                          | Separate `FeatureGeneratorBase` classes in `feature_generators.py`                                                                        | Each reads `context["_row"]` and produces new tensor keys |

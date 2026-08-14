@@ -25,8 +25,8 @@
  * manifest; descriptors with the same byte size are not interchangeable.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_TENSOR_ABI_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_TENSOR_ABI_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_TENSOR_ABI_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_TENSOR_ABI_H_
 
 #include <cuda.h>
 
@@ -139,7 +139,7 @@ extern "C"
 #ifdef __cplusplus
 } /* extern "C" */
 
-namespace trtbnm::cutedsl
+namespace bioir::cutedsl
 {
 
 inline constexpr std::int32_t kUnknownDevice = -1;
@@ -188,7 +188,7 @@ using Tensor2View = TensorView<2>;
 using Tensor3View = TensorView<3>;
 using Tensor4View = TensorView<4>;
 
-} // namespace trtbnm::cutedsl
+} // namespace bioir::cutedsl
 #endif
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_TENSOR_ABI_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_TENSOR_ABI_H_ */

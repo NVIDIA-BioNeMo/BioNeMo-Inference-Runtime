@@ -17,8 +17,8 @@
 
 /* Dual-GEMM x0_x1 CUBIN ABI and launcher interface. */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X0_X1_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X0_X1_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X0_X1_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X0_X1_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -33,7 +33,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace trtbnm::cutedsl::dual_gemm_x0_x1::embedded
+namespace bioir::cutedsl::dual_gemm_x0_x1::embedded
 {
 struct CubinImage;
 }
@@ -51,7 +51,7 @@ struct CubinImage;
  *
  * Without bias, out moves to 0x60 and raster_factor to 0x78.
  */
-namespace trtbnm::cutedsl::dual_gemm_x0_x1::abi
+namespace bioir::cutedsl::dual_gemm_x0_x1::abi
 {
 
 inline constexpr std::size_t kSM80BiasParameterCount = 8;
@@ -215,9 +215,9 @@ static_assert(sizeof(SM90Params::tiled_mma) == 0x01, "unexpected dual-GEMM x0_x1
 static_assert(sm90_parameter_count(true) == kSM90MaxParameterCount);
 static_assert(sm90_parameter_count(false) == 12U);
 
-} // namespace trtbnm::cutedsl::dual_gemm_x0_x1::abi
+} // namespace bioir::cutedsl::dual_gemm_x0_x1::abi
 
-namespace trtbnm::cutedsl::dual_gemm_x0_x1
+namespace bioir::cutedsl::dual_gemm_x0_x1
 {
 
 enum class DType : std::uint8_t
@@ -278,6 +278,6 @@ make_kernel_config(std::int32_t target_sm, std::int32_t K, std::int32_t N, std::
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::dual_gemm_x0_x1
+} // namespace bioir::cutedsl::dual_gemm_x0_x1
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X0_X1_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X0_X1_LAUNCHER_H_ */

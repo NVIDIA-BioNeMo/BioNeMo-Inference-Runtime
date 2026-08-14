@@ -20,9 +20,9 @@ import torch
 from test_utils.boltz.create_and_load_weights import create_template_module_weights, load_template_module_weights_torch
 from test_utils.boltz.ref_layers import RefTemplateV2Module
 
-from tensorrt_bionemo._torch.modules.boltz.template import TemplateV2Module
-from tensorrt_bionemo.models.boltz2.config import TemplateV2ModuleConfig
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.modules.boltz.template import TemplateV2Module
+from bionemo_ir.models.boltz2.config import TemplateV2ModuleConfig
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
@@ -154,7 +154,7 @@ def test_template_v2_module(sc: Scenario):
         torch.testing.assert_close(_masked(out), _masked(ref_out), atol=1e-3, rtol=1e-4)
     else:
         # Compare bf16 outputs against ref_float using the same statistical
-        # pattern as ``test_boltz_msa_module.test_msa_layer``: the TRT-BNM
+        # pattern as ``test_boltz_msa_module.test_msa_layer``: the BioIR
         # path's deviation from the fp32 reference should be on the same
         # order as the ref-bf16 path's deviation from fp32.
         d_out = _masked(out) - _masked(ref_float)

@@ -18,8 +18,8 @@
 /* Pairwise-attention CUBIN configuration, device ABI, and launcher interface.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_PAIRWISE_ATTENTION_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_PAIRWISE_ATTENTION_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_PAIRWISE_ATTENTION_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_PAIRWISE_ATTENTION_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -32,7 +32,7 @@
 #include <string>
 #include <variant>
 
-namespace trtbnm::cutedsl::pairwise_attention::embedded
+namespace bioir::cutedsl::pairwise_attention::embedded
 {
 struct CubinImage;
 }
@@ -41,7 +41,7 @@ struct CubinImage;
  * These are device-kernel ABIs, not the high-level CuTeDSL __call__ ABI, and
  * were read back from the compiled CUBINs' EIATTR_KPARAM_INFO.
  */
-namespace trtbnm::cutedsl::pairwise_attention::abi
+namespace bioir::cutedsl::pairwise_attention::abi
 {
 
 inline constexpr std::size_t kSM80ParameterCount = 12;
@@ -160,9 +160,9 @@ inline void pack_sm90_kernel_params(SM90Params* params, void* kernel_params[kSM9
 static_assert(sizeof(CUtensorMap) == 128);
 static_assert(alignof(CUtensorMap) >= 64);
 
-} // namespace trtbnm::cutedsl::pairwise_attention::abi
+} // namespace bioir::cutedsl::pairwise_attention::abi
 
-namespace trtbnm::cutedsl::pairwise_attention
+namespace bioir::cutedsl::pairwise_attention
 {
 
 enum class DType : std::uint8_t
@@ -375,6 +375,6 @@ make_kernel_config(std::int32_t target_sm, std::int32_t head_dim, std::int32_t S
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::pairwise_attention
+} // namespace bioir::cutedsl::pairwise_attention
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_PAIRWISE_ATTENTION_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_PAIRWISE_ATTENTION_LAUNCHER_H_ */

@@ -24,12 +24,12 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefAtomAttentionEncoder
 
-from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
-from tensorrt_bionemo._torch.layers.transformers.atom import AtomAttentionEncoder
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import BoltzDiffusionTransformer
-from tensorrt_bionemo.configs import DiffusionTransformerConfig
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
+from bionemo_ir._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
+from bionemo_ir._torch.layers.transformers.atom import AtomAttentionEncoder
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import BoltzDiffusionTransformer
+from bionemo_ir.configs import DiffusionTransformerConfig
+from bionemo_ir.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

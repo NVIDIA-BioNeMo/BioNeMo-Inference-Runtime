@@ -26,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-namespace trtbnm::cutedsl
+namespace bioir::cutedsl
 {
 namespace
 {
@@ -352,4 +352,4 @@ std::size_t preload_registered_kernels_if_context_active()
   return preload_registered_kernels(context, cuda_sm_for_context(context));
 }
 
-} // namespace trtbnm::cutedsl
+} // namespace bioir::cutedsl

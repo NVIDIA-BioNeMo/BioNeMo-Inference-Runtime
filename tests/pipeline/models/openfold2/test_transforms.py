@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from tensorrt_bionemo.pipeline.models.openfold2.transforms import (
+from bionemo_ir.pipeline.models.openfold2.transforms import (
     CastTo64BitInts,
     CorrectMsaRestypes,
     FixTemplatesAatype,

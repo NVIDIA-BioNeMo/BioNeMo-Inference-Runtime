@@ -23,9 +23,9 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
-from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
-from tensorrt_bionemo._torch.layers.transition import ConditionedTransitionBlock, Transition
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.auto_chunk import ChunkPolicy
+from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, Transition
+from bionemo_ir.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

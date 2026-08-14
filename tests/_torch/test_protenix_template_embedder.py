@@ -21,10 +21,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.modules.protenix import ProtenixTemplateEmbedder
-from tensorrt_bionemo.models.protenix.config import TemplateEmbedderConfig
-from tensorrt_bionemo.models.protenix.convert import convert_template_embedder_torch
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.modules.protenix import ProtenixTemplateEmbedder
+from bionemo_ir.models.protenix.config import TemplateEmbedderConfig
+from bionemo_ir.models.protenix.convert import convert_template_embedder_torch
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import skip_if_cutedsl
 from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixTemplateEmbedderFromOSS
 

@@ -20,8 +20,8 @@ import torch
 from test_utils.boltz.create_and_load_weights import create_adaln_weights, load_adaln_weights_torch
 from test_utils.boltz.ref_layers import RefAdaLN
 
-from tensorrt_bionemo._torch.layers.normalization import AdaLN
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.layers.normalization import AdaLN
+from bionemo_ir.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

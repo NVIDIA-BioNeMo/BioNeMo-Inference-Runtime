@@ -26,7 +26,7 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
-namespace trtbnm::cutedsl::triangle_attention
+namespace bioir::cutedsl::triangle_attention
 {
 namespace
 {
@@ -116,4 +116,4 @@ void bind(nb::module_& parent)
     "Launch using prepacked raw pointers, shapes, strides, and stream.");
 }
 
-} // namespace trtbnm::cutedsl::triangle_attention
+} // namespace bioir::cutedsl::triangle_attention

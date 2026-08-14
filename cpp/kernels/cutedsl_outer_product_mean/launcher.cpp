@@ -27,7 +27,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::outer_product_mean
+namespace bioir::cutedsl::outer_product_mean
 {
 namespace
 {
@@ -259,4 +259,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
-} // namespace trtbnm::cutedsl::outer_product_mean
+} // namespace bioir::cutedsl::outer_product_mean

@@ -17,7 +17,7 @@
 
 This script is intentionally outside the pytest path. It imports featurization
 primitives from a commit-pinned OpenFold checkout and never imports the
-TRT-BioNeMo OpenFold2 pipeline. Normal CI only consumes the generated NPZ and
+BioIR OpenFold2 pipeline. Normal CI only consumes the generated NPZ and
 does not need OpenFold installed.
 
 Example:
@@ -51,7 +51,7 @@ CHAIN_ID = "A"
 SAMPLE_ID = "4zey_A_self_template"
 INPUT_RELATIVE_PATH = Path("tests/test_data/mmcifs/4zey.cif")
 INPUT_SHA256 = "c412665889d225f21c39e31609e44e1582bd51b9feac2e592bad996347ee4606"
-FORBIDDEN_IMPORT_PREFIX = "tensorrt_bionemo.pipeline.models.openfold2"
+FORBIDDEN_IMPORT_PREFIX = "bionemo_ir.pipeline.models.openfold2"
 
 SCRIPT_PATH = Path(__file__).resolve()
 DATA_DIR = SCRIPT_PATH.with_name("data")
@@ -108,7 +108,7 @@ EXPECTED_ARCHIVE_DTYPES = {
 }
 
 
-class _BlockTrtBnmOpenFold2Imports:
+class _BlockBioIROpenFold2Imports:
     """Make accidental self-reference fail before Python resolves a module."""
 
     @staticmethod
@@ -159,7 +159,7 @@ def _assert_no_self_reference() -> None:
         if name == FORBIDDEN_IMPORT_PREFIX or name.startswith(FORBIDDEN_IMPORT_PREFIX + ".")
     )
     if loaded:
-        raise RuntimeError(f"TRT-BioNeMo OpenFold2 modules are loaded by the oracle: {loaded}")
+        raise RuntimeError(f"BioIR OpenFold2 modules are loaded by the oracle: {loaded}")
 
 
 def _verify_checkout(oss_root: Path) -> dict[str, str]:
@@ -339,7 +339,7 @@ def main() -> None:
     oss_root = args.oss_root.expanduser().resolve()
 
     _assert_no_self_reference()
-    sys.meta_path.insert(0, _BlockTrtBnmOpenFold2Imports())
+    sys.meta_path.insert(0, _BlockBioIROpenFold2Imports())
     source_hashes = _verify_checkout(oss_root)
     source_cif = oss_root / INPUT_RELATIVE_PATH
     if not source_cif.is_file():

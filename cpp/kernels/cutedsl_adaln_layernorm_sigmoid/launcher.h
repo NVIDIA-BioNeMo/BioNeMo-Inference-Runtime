@@ -17,8 +17,8 @@
 
 /* AdaLN layernorm-sigmoid CUBIN configuration, device ABI, and launcher. */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_ADALN_LAYERNORM_SIGMOID_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_ADALN_LAYERNORM_SIGMOID_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_ADALN_LAYERNORM_SIGMOID_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_ADALN_LAYERNORM_SIGMOID_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::adaln_layernorm_sigmoid::embedded
+namespace bioir::cutedsl::adaln_layernorm_sigmoid::embedded
 {
 struct CubinImage;
 }
@@ -48,7 +48,7 @@ struct CubinImage;
  * The tiler/tiled-copy/threads-per-row/vecsize arguments in the @cute.kernel
  * signature are compile-time objects and are traced away.
  */
-namespace trtbnm::cutedsl::adaln_layernorm_sigmoid::abi
+namespace bioir::cutedsl::adaln_layernorm_sigmoid::abi
 {
 
 inline constexpr std::size_t kParameterCount = 7;
@@ -93,9 +93,9 @@ static_assert(offsetof(Params, inner) == 104, "unexpected AdaLN inner offset");
 static_assert(offsetof(Params, inner) + sizeof(Params::inner) == 108, "AdaLN parameter bank changed");
 static_assert(sizeof(Params) == 112, "AdaLN backing struct size changed");
 
-} // namespace trtbnm::cutedsl::adaln_layernorm_sigmoid::abi
+} // namespace bioir::cutedsl::adaln_layernorm_sigmoid::abi
 
-namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+namespace bioir::cutedsl::adaln_layernorm_sigmoid
 {
 
 enum class DType : std::uint8_t
@@ -169,6 +169,6 @@ KernelConfig make_kernel_config(
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+} // namespace bioir::cutedsl::adaln_layernorm_sigmoid
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_ADALN_LAYERNORM_SIGMOID_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_ADALN_LAYERNORM_SIGMOID_LAUNCHER_H_ */

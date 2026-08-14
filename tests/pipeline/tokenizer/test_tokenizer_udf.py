@@ -19,9 +19,9 @@ import pickle
 import pytest
 import torch
 
-from tensorrt_bionemo.pipeline.base import ContextGeneratorBase, TransformBase
-from tensorrt_bionemo.pipeline.stages.base import StatefulStageUDF
-from tensorrt_bionemo.pipeline.stages.tokenizer_stage import TokenizerUDF
+from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase
+from bionemo_ir.pipeline.stages.base import StatefulStageUDF
+from bionemo_ir.pipeline.stages.tokenizer_stage import TokenizerUDF
 
 
 def _unpack_columnar(output):
@@ -281,7 +281,7 @@ class TestTokenizerUDFContextMerger:
         assert "gen2_feat" in result
 
     def test_default_dict_merger(self):
-        from tensorrt_bionemo.pipeline.base import dict_context_merger
+        from bionemo_ir.pipeline.base import dict_context_merger
 
         gen = MockContextGenerator({"feature": torch.ones(5)})
 

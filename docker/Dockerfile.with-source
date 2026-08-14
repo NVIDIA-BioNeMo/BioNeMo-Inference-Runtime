@@ -31,7 +31,7 @@ ENV _PIP_CACHE_DIR="/root/.cache/pip"
 RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install --upgrade pip
 
-ENV PROJECT_WORKDIR=/workspace/tensorrt-bionemo
+ENV PROJECT_WORKDIR=/workspace/bionemo-ir
 WORKDIR ${PROJECT_WORKDIR}
 COPY requirements.txt ./
 RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
@@ -71,7 +71,7 @@ RUN if [ ! -f cpp/kernels/cutedsl_triangle_attention/cubins/embedded_cubins.h ] 
     fi
 
 # ------------------------------------------------------
-# install tensorrt-bionemo for prod
+# install bionemo-ir for prod
 # -----------------------------------------------------
 FROM copy_source_stage AS prod_stage
 
@@ -80,7 +80,7 @@ RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install --no-build-isolation --no-deps -v .
 
 # ------------------------------------------------------------------------
-# install tensorrt-bionemo for development and testing
+# install bionemo-ir for development and testing
 # -------------------------------------------------------------------------
 FROM copy_source_stage AS dev_stage
 

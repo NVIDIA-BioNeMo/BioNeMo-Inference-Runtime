@@ -33,8 +33,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from tensorrt_bionemo.data.schemas.basic import FoldingOutput
-from tensorrt_bionemo.data.utils import get_all_atom_types, get_all_residue_types
+from bionemo_ir.data.schemas.basic import FoldingOutput
+from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
 
 # ---------------------------------------------------------------------------
 # Helpers

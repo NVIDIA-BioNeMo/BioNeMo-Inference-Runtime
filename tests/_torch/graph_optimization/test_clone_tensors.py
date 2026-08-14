@@ -29,9 +29,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization.config import CUDAGraphOptimizationConfig
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
-from tensorrt_bionemo._torch.graph_optimization.tensor_copy_utils import (
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+from bionemo_ir._torch.graph_optimization.tensor_copy_utils import (
     _clone_tensors,
     _copy_tensors_into,
     _delete_tensors_in_container,

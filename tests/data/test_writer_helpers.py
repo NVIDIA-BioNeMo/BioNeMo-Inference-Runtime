@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import pytest
 
-from tensorrt_bionemo.data.writers.base_writer import (
+from bionemo_ir.data.writers.base_writer import (
     _IHM_REMAP,
     _MOL_TYPE_TO_KIND,
     _classify_chain,
 )
-from tensorrt_bionemo.data.writers.cif_writer import _chain_id_from_index
+from bionemo_ir.data.writers.cif_writer import _chain_id_from_index
 
 
 class TestClassifyChain:

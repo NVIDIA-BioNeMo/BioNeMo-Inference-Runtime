@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Global pytest configuration for the TRT-BioNemo test suite.
+"""Global pytest configuration for the BioIR test suite.
 
 Disable TF32 for fp32 math before any CUDA context / cuBLAS handle is created.
 The numerical tests compare against IEEE fp32 references at tight tolerances

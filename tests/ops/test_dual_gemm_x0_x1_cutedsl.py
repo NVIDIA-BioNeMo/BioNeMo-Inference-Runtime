@@ -24,14 +24,14 @@ from pathlib import Path
 import pytest
 import torch
 
-from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import _config as dg_config
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import cutedsl as dg_cutedsl
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1._cubin import DualGemmX0X1CubinExecutable
+from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import _config as dg_config
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import cutedsl as dg_cutedsl
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1._cubin import DualGemmX0X1CubinExecutable
 from tests._torch import SM_VERSION, cutedsl_test_modes, skip_if_no_cutedsl
 
-_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.sm80_dualgemm_x0x1_splitkv1"
+_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_dualgemm_x0x1_splitkv1"
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 # Configs select Ampere split-K or Hopper ping-pong by device.
 _CUBIN_SMS = (80, 86, 89, 90)
@@ -48,7 +48,7 @@ def _configure_mode(mode: str, monkeypatch) -> None:
         if SM_VERSION not in _CUBIN_SMS:
             pytest.skip(f"dual_gemm x0_x1 CUBINs cover SM{_CUBIN_SMS} (current SM{SM_VERSION})")
         try:
-            importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
         except ImportError:
             pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
 
@@ -141,7 +141,7 @@ def test_cubin_and_python_agree_on_the_bucket(monkeypatch):
     """Nearest-anchor selection is implemented twice; they must not diverge."""
     skip_if_no_cutedsl()
     _configure_mode("cubin", monkeypatch)
-    library = importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
     launcher = library.dual_gemm_x0_x1
     for K, N in ((128, 128), (256, 256)):
         anchors = dg_config.bucket_anchors(dg_config.load_bundle(SM_VERSION, K, N).configs, True)
@@ -156,7 +156,7 @@ def test_every_shipped_config_is_reachable_through_the_cubin_path(monkeypatch):
     """A tuned entry the CUBIN path cannot select is a variant nobody runs."""
     skip_if_no_cutedsl()
     _configure_mode("cubin", monkeypatch)
-    library = importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
     launcher = library.dual_gemm_x0_x1
     dtypes = {"bf16": launcher.DType.BFLOAT16, "fp16": launcher.DType.FLOAT16}
     path = CONFIG_DIR / f"K{128}_N{128}_sm{SM_VERSION}.json"
@@ -183,7 +183,7 @@ def test_unavailable_variant_raises_instead_of_falling_back(monkeypatch):
     """An unsupported shape must fail loudly, not silently pick another kernel."""
     skip_if_no_cutedsl()
     _configure_mode("cubin", monkeypatch)
-    library = importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
     launcher = library.dual_gemm_x0_x1
     # nanobind maps the launcher's std::invalid_argument onto ValueError.
     with pytest.raises(ValueError, match="No embedded dual-GEMM x0_x1 CUBIN"):

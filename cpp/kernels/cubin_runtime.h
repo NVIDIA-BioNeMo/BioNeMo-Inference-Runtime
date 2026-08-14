@@ -18,15 +18,15 @@
 /* Shared embedded-CUBIN loading, caching, and preloading runtime.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUBIN_RUNTIME_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUBIN_RUNTIME_H_
+#ifndef BIOIR_CPP_KERNELS_CUBIN_RUNTIME_H_
+#define BIOIR_CPP_KERNELS_CUBIN_RUNTIME_H_
 
 #include "cubin_launch.h"
 
 #include <cstddef>
 #include <cstdint>
 
-namespace trtbnm::cutedsl
+namespace bioir::cutedsl
 {
 
 struct EmbeddedCubinImage
@@ -94,6 +94,6 @@ std::size_t preload_registered_kernels();
 
 std::size_t preload_registered_kernels_if_context_active();
 
-} // namespace trtbnm::cutedsl
+} // namespace bioir::cutedsl
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUBIN_RUNTIME_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUBIN_RUNTIME_H_ */

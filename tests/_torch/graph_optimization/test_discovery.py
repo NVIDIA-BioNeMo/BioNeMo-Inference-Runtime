@@ -27,11 +27,11 @@ Constructs OpenFold3 without weights (cheap, no GPU) and asserts the
 
 import pytest
 
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
-from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
-from tensorrt_bionemo.configs import AcceleratedConfig, BackendType
-from tensorrt_bionemo.registry import get_model_class
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
+from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
+from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
+from bionemo_ir.configs import AcceleratedConfig, BackendType
+from bionemo_ir.registry import get_model_class
 
 
 @pytest.fixture(scope="module")
@@ -112,7 +112,7 @@ def test_optimize_falls_back_to_decorator_default():
 
     Uses a fresh model because ``optimize`` swaps submodules in place.
     """
-    from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+    from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
     cls = get_model_class("openfold3")
     model = cls(config=cls.get_pretrained_config("openfold3"), include_load_weights=False)

@@ -15,7 +15,7 @@
 
 import torch
 
-from tensorrt_bionemo._torch.modules.openfold2.template import TemplatePairBlock
+from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock
 from tests.common.test_utils.boltz.create_and_load_weights import (
     load_outer_product_mean_weights_torch,
     load_triangle_attention_node_weights_torch,
@@ -165,7 +165,7 @@ def create_triangle_attention_weights_from_of3_oss(from_ref: RefTriangleAttentio
 
 
 def create_triangle_multiplication_node_weights_from_of3oss(from_ref: RefTriangleMultiplicationFromOF3OSS = None):
-    """Reformat the weights from an OF3 OSS checkpoint to TRTBNM _torch format."""
+    """Reformat the weights from an OF3 OSS checkpoint to BioIR _torch format."""
 
     norm_in_weight = getattr(from_ref.layer_norm_in.weight, "data", None)
     norm_in_bias = getattr(from_ref.layer_norm_in.bias, "data", None)

@@ -5,12 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Support matrix
 
-What TensorRT-BioNeMo (TRT-BNM) runs, on which GPUs, and which fused kernels
-it uses. How to construct a model or call `build_processor` is in
+What BioNeMo Inference Runtime (BioIR) runs, on which GPUs, and which fused
+kernels it uses. How to construct a model or call `build_processor` is in
 [`api.md`](api.md).
 
 Model keys are the strings in
-`tensorrt_bionemo.hubs.FoldingSupportMatrix`. Pass them as
+`bionemo_ir.hubs.FoldingSupportMatrix`. Pass them as
 `EngineProcessorConfig.model_source` or as `model_name=` on the constructor.
 
 ## Models and data pipeline
@@ -56,7 +56,7 @@ Notes:
 
 - Nucleic acids and ligands are Boltz-1/2 and OpenFold3 only. OpenFold2 /
   AlphaFold2 fold protein chains exclusively.
-- Templates are allowed only on `polymer_type="protein"`. TRT-BNM does
+- Templates are allowed only on `polymer_type="protein"`. BioIR does
   **not** run HHsearch / HMMsearch; pass CIF (or PDB) hits you already have.
 - Nucleic-acid and ligand chains carry no MSA (`msas` / `paired_msas` are
   empty).
@@ -112,23 +112,23 @@ SM121, triangle attention and dual GEMM use **cuEquivariance** (no CuTeDSL
 CUBIN). Other SKUs or fp32 fall back to cuEquivariance (triangle attention,
 if installed) or PyTorch SDPA.
 
-Call through the dispatchers below (`tensorrt_bionemo._torch.attention_backend`
-and `tensorrt_bionemo._torch.custom_ops`). Layers wrap the same ops:
+Call through the dispatchers below (`bionemo_ir._torch.attention_backend`
+and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 `TriangleAttention` / `AttentionPairBias`, `TriangleMultiplicationNode`,
 `PairWeightedAveraging`, `OuterProductMean`, `AdaLN`, `LNProjMoveaxisPad`,
 `Transition`.
 
-| Kernel                         | Used for                              | Implementation                       | SM (optimized)                                | Calling interface                                                                                                                                                                                       |
-| ------------------------------ | ------------------------------------- | ------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Triangle attention             | Pairformer / Evoformer triangle attn  | CuTeDSL → CUBIN; else CUEQUIV / SDPA | 80, 86, 89, 90; CUEQUIV on 100, 103, 120, 121 | [`create_attention`](../../tensorrt_bionemo/_torch/attention_backend/utils.py) (`AttentionType.TRIANGLE`)                                                                                               |
-| Pairwise attention             | Token / atom attention with pair bias | CuTeDSL → CUBIN; else SDPA           | 80, 86, 89, 90                                | [`create_attention`](../../tensorrt_bionemo/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                               |
-| Dual-GEMM `x_x` / `x0_x1`      | Triangle multiplication               | CuTeDSL → CUBIN; else CUEQUIV        | 80, 90; CUEQUIV on 100, 103, 120, 121         | [`get_dual_gemm_x_x_op`](../../tensorrt_bionemo/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_dual_gemm_x0_x1_op`](../../tensorrt_bionemo/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                   |
-| Pair-weighted averaging (PWA)  | Pair → single update                  | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_pair_weighted_averaging_op`](../../tensorrt_bionemo/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                             |
-| Outer-product mean (OPM)       | Single → pair update                  | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_outer_product_mean_op`](../../tensorrt_bionemo/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                       |
-| Gated sigmoid                  | Attention output gate                 | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_gated_sigmoid_op`](../../tensorrt_bionemo/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                                 |
-| AdaLN (LayerNorm + sigmoid)    | Diffusion adaptive LayerNorm          | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_adaln_layernorm_sigmoid_op`](../../tensorrt_bionemo/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                             |
-| Fused LN + proj + moveaxis/pad | Pair-bias LayerNorm + linear + layout | Triton                               | all CUDA                                      | [`LNProjMoveaxisPad`](../../tensorrt_bionemo/_torch/custom_ops/fused_ln_proj_moveaxis_pad.py) / [`fused_ln_proj_moveaxis_pad`](../../tensorrt_bionemo/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py) |
-| Fused SwiGLU                   | Transition / FFN                      | Triton                               | all CUDA                                      | [`FusedSwiGLU`](../../tensorrt_bionemo/dsl_kernels/triton/fused_swiglu.py) / [`fused_swiglu`](../../tensorrt_bionemo/dsl_kernels/triton/fused_swiglu.py)                                                |
+| Kernel                         | Used for                              | Implementation                       | SM (optimized)                                | Calling interface                                                                                                                                                                           |
+| ------------------------------ | ------------------------------------- | ------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Triangle attention             | Pairformer / Evoformer triangle attn  | CuTeDSL → CUBIN; else CUEQUIV / SDPA | 80, 86, 89, 90; CUEQUIV on 100, 103, 120, 121 | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.TRIANGLE`)                                                                                         |
+| Pairwise attention             | Token / atom attention with pair bias | CuTeDSL → CUBIN; else SDPA           | 80, 86, 89, 90                                | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
+| Dual-GEMM `x_x` / `x0_x1`      | Triangle multiplication               | CuTeDSL → CUBIN; else CUEQUIV        | 80, 90; CUEQUIV on 100, 103, 120, 121         | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                   |
+| Pair-weighted averaging (PWA)  | Pair → single update                  | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
+| Outer-product mean (OPM)       | Single → pair update                  | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
+| Gated sigmoid                  | Attention output gate                 | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
+| AdaLN (LayerNorm + sigmoid)    | Diffusion adaptive LayerNorm          | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_adaln_layernorm_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                       |
+| Fused LN + proj + moveaxis/pad | Pair-bias LayerNorm + linear + layout | Triton                               | all CUDA                                      | [`LNProjMoveaxisPad`](../../bionemo_ir/_torch/custom_ops/fused_ln_proj_moveaxis_pad.py) / [`fused_ln_proj_moveaxis_pad`](../../bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py) |
+| Fused SwiGLU                   | Transition / FFN                      | Triton                               | all CUDA                                      | [`FusedSwiGLU`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py) / [`fused_swiglu`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py)                                                |
 
 Override backends on a config if you need a reference path, for example
 `config.trunk.set_triangle_attention_backend("SDPA")`.
@@ -141,5 +141,5 @@ Loading a CUBIN skips CuTeDSL JIT (`cute.compile`), so those kernels run at
 full speed on the first iterations — no kernel-JIT warmup is required to hide
 compile latency. If a CUBIN is missing for the current SM / dtype, those ops
 fall back to PyTorch (SDPA or a vanilla reference) rather than JIT-compiling
-CuTeDSL. Triton fused ops in `tensorrt_bionemo.dsl_kernels.triton` remain
+CuTeDSL. Triton fused ops in `bionemo_ir.dsl_kernels.triton` remain
 ordinary Python source and still JIT on first use.

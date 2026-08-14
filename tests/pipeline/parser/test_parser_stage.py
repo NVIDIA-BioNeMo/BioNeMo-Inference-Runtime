@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
-from tensorrt_bionemo.pipeline.stages.base import StatefulStageUDF
-from tensorrt_bionemo.pipeline.stages.configs import ParserStageConfig
-from tensorrt_bionemo.pipeline.stages.parser_stage import ParserStage, ParserUDF
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.pipeline.stages.base import StatefulStageUDF
+from bionemo_ir.pipeline.stages.configs import ParserStageConfig
+from bionemo_ir.pipeline.stages.parser_stage import ParserStage, ParserUDF
 
 
 def _unpack_columnar(output):
@@ -261,7 +261,7 @@ class TestParserWithRealSampleFiles:
 
     @pytest.mark.skipif(not (SAMPLES_DIR / "T1031.fasta").exists(), reason="Sample FASTA file not found")
     def test_parse_with_real_fasta_sequence(self, parser_udf):
-        from tensorrt_bionemo.data.parsers.fasta import read_fasta
+        from bionemo_ir.data.parsers.fasta import read_fasta
 
         fasta_path = SAMPLES_DIR / "T1031.fasta"
         parsed_fasta = read_fasta(fasta_path)

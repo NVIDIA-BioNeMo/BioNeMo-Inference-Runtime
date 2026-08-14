@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo.pipeline.engine import FoldingEngine
+from bionemo_ir.pipeline.engine import FoldingEngine
 
 # Determine device based on CUDA availability
 TEST_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

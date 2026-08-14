@@ -3,9 +3,9 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Contributing to BioNeMo AIR
+# Contributing to BioNeMo Inference Runtime
 
-Thanks for your interest in improving BioNeMo AIR. This document explains how to
+Thanks for your interest in improving BioIR. This document explains how to
 propose changes, the sign-off we require, and the local checks your change must
 pass before review.
 
@@ -17,14 +17,14 @@ participating you are expected to uphold it.
 ## Ways to contribute
 
 1. **Report a bug or request a feature** using the
-   [issue forms](https://github.com/NVIDIA-BioNeMo/BioNeMoAIR/issues/new/choose).
+   [issue forms](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/issues/new/choose).
 2. **Discuss usage questions** in
-   [Discussions](https://github.com/NVIDIA-BioNeMo/BioNeMoAIR/discussions).
+   [Discussions](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/discussions).
 3. **Open a pull request** for a fix or feature (see the workflow below).
 
 ## When an issue is required
 
-BioNeMo AIR uses a **hybrid** contribution model:
+BioIR uses a **hybrid** contribution model:
 
 - **New features and API-breaking changes** must begin with an **issue**
   (feature request or RFC) that a maintainer reviews and approves **before** you

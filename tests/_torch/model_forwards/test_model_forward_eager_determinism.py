@@ -51,10 +51,10 @@ import pytest
 import torch
 
 import tests
-from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
-from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
-from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
-from tensorrt_bionemo.pipeline.stages.engine_stage import FoldingPredictionError
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
+from bionemo_ir.pipeline.stages.configs import WriterStageConfig
+from bionemo_ir.pipeline.stages.engine_stage import FoldingPredictionError
 from tests._torch.model_forwards.test_model_forward_with_cuda_graph import _default_of3_model_config
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.seeding import seed_everything

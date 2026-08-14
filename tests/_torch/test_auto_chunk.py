@@ -20,7 +20,7 @@ import pytest
 import torch
 
 # isort: off
-from tensorrt_bionemo._torch.auto_chunk import (
+from bionemo_ir._torch.auto_chunk import (
     _AUTOCHUNK_MIN_FLOOR,
     AUTOCHUNK_MIN_AUTO,
     CHUNK_REGISTRY,

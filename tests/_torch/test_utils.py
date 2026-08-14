@@ -25,7 +25,7 @@ pin that contract on CPU (and CUDA when available) without any model.
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.utils import safe_generator
+from bionemo_ir._torch.utils import safe_generator
 
 SEED = 1234
 

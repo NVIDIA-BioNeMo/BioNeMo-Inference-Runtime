@@ -30,61 +30,61 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
-namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+namespace bioir::cutedsl::adaln_layernorm_sigmoid
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+} // namespace bioir::cutedsl::adaln_layernorm_sigmoid
 
-namespace trtbnm::cutedsl::gated_sigmoid
+namespace bioir::cutedsl::gated_sigmoid
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::gated_sigmoid
+} // namespace bioir::cutedsl::gated_sigmoid
 
-namespace trtbnm::cutedsl::outer_product_mean
+namespace bioir::cutedsl::outer_product_mean
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::outer_product_mean
+} // namespace bioir::cutedsl::outer_product_mean
 
-namespace trtbnm::cutedsl::triangle_attention
+namespace bioir::cutedsl::triangle_attention
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::triangle_attention
+} // namespace bioir::cutedsl::triangle_attention
 
-namespace trtbnm::cutedsl::pairwise_attention
+namespace bioir::cutedsl::pairwise_attention
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::pairwise_attention
+} // namespace bioir::cutedsl::pairwise_attention
 
-namespace trtbnm::cutedsl::dual_gemm_x_x
+namespace bioir::cutedsl::dual_gemm_x_x
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::dual_gemm_x_x
+} // namespace bioir::cutedsl::dual_gemm_x_x
 
-namespace trtbnm::cutedsl::dual_gemm_x0_x1
+namespace bioir::cutedsl::dual_gemm_x0_x1
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::dual_gemm_x0_x1
+} // namespace bioir::cutedsl::dual_gemm_x0_x1
 
-namespace trtbnm::cutedsl::pair_weighted_averaging
+namespace bioir::cutedsl::pair_weighted_averaging
 {
 
 void bind(nb::module_& module);
 
-} // namespace trtbnm::cutedsl::pair_weighted_averaging
+} // namespace bioir::cutedsl::pair_weighted_averaging
 
 namespace
 {
@@ -92,14 +92,14 @@ namespace
 template <std::size_t N>
 void bind_tensor_view(nb::module_& module, char const* name)
 {
-  using View = trtbnm::cutedsl::TensorView<N>;
+  using View = bioir::cutedsl::TensorView<N>;
   nb::class_<View>(module, name)
     .def(
       nb::init<std::uint64_t, std::array<std::int32_t, N>, std::array<std::int64_t, N - 1>, std::int32_t>(),
       "data"_a,
       "shape"_a,
       "strides"_a,
-      "device"_a = trtbnm::cutedsl::kUnknownDevice)
+      "device"_a = bioir::cutedsl::kUnknownDevice)
     .def_rw("data", &View::data)
     .def_rw("shape", &View::shape)
     .def_rw("strides", &View::strides)
@@ -110,9 +110,9 @@ void bind_tensor_view(nb::module_& module, char const* name)
 
 NB_MODULE(_cutedsl_kernels, module)
 {
-  using namespace trtbnm::cutedsl;
+  using namespace bioir::cutedsl;
 
-  module.doc() = "CUDA Driver runtime for precompiled TensorRT-BioNeMo CuTeDSL kernels";
+  module.doc() = "CUDA Driver runtime for precompiled BioIR CuTeDSL kernels";
 
   nb::class_<EmbeddedCubinImage>(module, "Cubin")
     .def_ro("target_sm", &EmbeddedCubinImage::target_sm)

@@ -29,7 +29,7 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
-namespace trtbnm::cutedsl::gated_sigmoid
+namespace bioir::cutedsl::gated_sigmoid
 {
 namespace
 {
@@ -137,4 +137,4 @@ void bind(nb::module_& parent)
     "Launch using prepacked raw pointers, shapes, strides, and stream.");
 }
 
-} // namespace trtbnm::cutedsl::gated_sigmoid
+} // namespace bioir::cutedsl::gated_sigmoid

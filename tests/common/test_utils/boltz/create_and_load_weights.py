@@ -2301,7 +2301,7 @@ def load_diffusion_module_weights_torch(module, weights_and_biases, dtype=torch.
 
 def create_template_module_weights(from_ref: RefTemplateV2Module = None):
     """Collect the weights of a :class:`RefTemplateV2Module` so they can be
-    loaded into the TRT-BNM :class:`TemplateV2Module` for tests.
+    loaded into the BioIR :class:`TemplateV2Module` for tests.
     """
     assert from_ref is not None, "from_ref is required"
     z_norm_weight = from_ref.z_norm.weight.data
@@ -2329,7 +2329,7 @@ def create_template_module_weights(from_ref: RefTemplateV2Module = None):
 
 def load_template_module_weights_torch(module, weights_and_biases, dtype=torch.float32):
     """Load template-v2 module weights produced by
-    :func:`create_template_module_weights` into a TRT-BNM
+    :func:`create_template_module_weights` into a BioIR
     :class:`TemplateV2Module` instance.
     """
     (

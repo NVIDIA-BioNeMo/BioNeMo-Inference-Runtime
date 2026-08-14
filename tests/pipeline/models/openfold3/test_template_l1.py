@@ -70,10 +70,10 @@ def _build_template_features(target: str) -> dict[str, torch.Tensor]:
     MSA-independent, so it does not affect the golden."""
     from io import StringIO
 
-    from tensorrt_bionemo.data.parsers import parse_a3m_content
-    from tensorrt_bionemo.data.schemas.basic import InputParsed, PolymerParsed, PolymerType, TemplateParsed
-    from tensorrt_bionemo.pipeline.models.openfold3.feature_context import OpenFold3ContextGenerator
-    from tensorrt_bionemo.pipeline.models.openfold3.feature_generators import (
+    from bionemo_ir.data.parsers import parse_a3m_content
+    from bionemo_ir.data.schemas.basic import InputParsed, PolymerParsed, PolymerType, TemplateParsed
+    from bionemo_ir.pipeline.models.openfold3.feature_context import OpenFold3ContextGenerator
+    from bionemo_ir.pipeline.models.openfold3.feature_generators import (
         StructureFeatureGenerator,
         TemplateFeatureGenerator,
     )

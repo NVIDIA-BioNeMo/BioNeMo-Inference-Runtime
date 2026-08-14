@@ -19,9 +19,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.pipeline.models.openfold2 import const as rc
-from tensorrt_bionemo.pipeline.models.openfold2 import template_logic
-from tensorrt_bionemo.pipeline.models.openfold2.template_logic import (
+from bionemo_ir.pipeline.models.openfold2 import const as rc
+from bionemo_ir.pipeline.models.openfold2 import template_logic
+from bionemo_ir.pipeline.models.openfold2.template_logic import (
     ChainTemplateData,
     align_query_to_template_chain,
     build_template_feats,

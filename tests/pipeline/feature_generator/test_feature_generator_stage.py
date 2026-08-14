@@ -15,8 +15,8 @@
 
 from unittest.mock import MagicMock
 
-from tensorrt_bionemo.pipeline.stages.configs import FeatureGeneratorStageConfig
-from tensorrt_bionemo.pipeline.stages.feature_generator_stage import (
+from bionemo_ir.pipeline.stages.configs import FeatureGeneratorStageConfig
+from bionemo_ir.pipeline.stages.feature_generator_stage import (
     FeatureGeneratorStage,
     FeatureGeneratorUDF,
 )

@@ -27,13 +27,13 @@ from dataclasses import dataclass, field
 import pytest
 import torch
 
-from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe, get_dual_gemm_x0_x1_op
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import DualGemmXxCuTe, get_dual_gemm_x_x_op
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
+from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe, get_dual_gemm_x0_x1_op
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import DualGemmXxCuTe, get_dual_gemm_x_x_op
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
 from tests._torch import SM_VERSION, cutedsl_test_modes, make_left_aligned_mask, skip_if_no_cutedsl, skip_if_not_sm90
 
-_DUAL_GEMM_XX_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.sm80_dual_gemm_x_x_k128"
+_DUAL_GEMM_XX_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_dual_gemm_x_x_k128"
 _DUAL_GEMM_XX_TEST_MODES = cutedsl_test_modes(_DUAL_GEMM_XX_SOURCE_MODULE)
 _DUAL_GEMM_XX_MODE_CACHES: dict[str, dict] = {
     "source": {},
@@ -48,12 +48,12 @@ def _configure_dual_gemm_x_x_mode(mode: str, monkeypatch) -> None:
 
     if mode == "cubin":
         try:
-            importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
         except ImportError:
             pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
 
         try:
-            source_module = importlib.import_module("tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x._source")
+            source_module = importlib.import_module("bionemo_ir._torch.custom_ops.dual_gemm_x_x._source")
         except ImportError:
             source_module = None
         if source_module is not None:
@@ -96,7 +96,7 @@ def _ref_x_x_dual_gemm(
 ) -> torch.Tensor:
     """Reference implementation in fp32 for tight tolerance checks.
 
-    Mirrors :func:`tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x._invoke_vanilla_dual_gemm_x_x`
+    Mirrors :func:`bionemo_ir._torch.custom_ops.dual_gemm_x_x._invoke_vanilla_dual_gemm_x_x`
     bit-for-bit (mask multiply, optional transpose) but in fp32.
     """
     d0 = torch.nn.functional.linear(X.float(), W0.float(), bias0.float() if bias0 is not None else None)

@@ -15,15 +15,15 @@
 
 # Prefer the nanobind package installed for the selected Python interpreter.
 # Fall back to the same FetchContent pattern/version used by the historical
-# TensorRT-BioNeMo nanobind build.
+# BioIR nanobind build.
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
-  RESULT_VARIABLE TRTBNM_NANOBIND_CMAKE_DIR_RESULT
-  OUTPUT_VARIABLE TRTBNM_NANOBIND_CMAKE_DIR
+  RESULT_VARIABLE BIOIR_NANOBIND_CMAKE_DIR_RESULT
+  OUTPUT_VARIABLE BIOIR_NANOBIND_CMAKE_DIR
   OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 
-if(TRTBNM_NANOBIND_CMAKE_DIR_RESULT EQUAL 0)
-  list(PREPEND CMAKE_PREFIX_PATH "${TRTBNM_NANOBIND_CMAKE_DIR}")
+if(BIOIR_NANOBIND_CMAKE_DIR_RESULT EQUAL 0)
+  list(PREPEND CMAKE_PREFIX_PATH "${BIOIR_NANOBIND_CMAKE_DIR}")
   find_package(nanobind CONFIG QUIET)
 endif()
 

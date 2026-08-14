@@ -17,9 +17,9 @@
 # https://github.com/RosettaCommons/foundry/tree/production/models/rf3
 # Only upstream parameter and module names are reproduced here.
 
-"""TRT-BNM PairformerConfig for RF3 Pairformer hyperparameters."""
+"""BioIR PairformerConfig for RF3 Pairformer hyperparameters."""
 
-from tensorrt_bionemo.configs.modules import PairformerConfig
+from bionemo_ir.configs.modules import PairformerConfig
 
 
 def make_rf3_pairformer_config(

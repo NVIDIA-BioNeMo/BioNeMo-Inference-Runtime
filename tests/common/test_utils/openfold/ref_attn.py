@@ -17,7 +17,7 @@ import torch.nn as nn
 from test_utils.boltz.ref_attn import RefPairwiseSelfAttention as BoltzRefPairwiseSelfAttention
 from test_utils.boltz.ref_attn import RefTriangleAttention as BoltzRefTriangleAttention
 
-from tensorrt_bionemo.hubs import load_weights
+from bionemo_ir.hubs import load_weights
 
 
 class RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):

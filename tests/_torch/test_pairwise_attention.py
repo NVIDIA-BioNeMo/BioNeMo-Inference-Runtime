@@ -23,9 +23,9 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_attn import RefPairwiseSelfAttention
 
-from tensorrt_bionemo._torch.attention_backend import AttentionType, get_attention_backend
-from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.layers.attention import AttentionPairBias
+from bionemo_ir.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

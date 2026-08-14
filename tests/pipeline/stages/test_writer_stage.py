@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.pipeline.stages.writer_stage import WriterStage, WriterUDF
+from bionemo_ir.pipeline.stages.writer_stage import WriterStage, WriterUDF
 
 
 @pytest.fixture
@@ -127,8 +127,8 @@ class TestWriterUDFInit:
 
 class TestWriterUDFCreateWriter:
     def test_create_writer_pdb_format(self):
-        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
-        from tensorrt_bionemo.data.writers import PDBWriter
+        from bionemo_ir.data.schemas.basic import AtomTypes, ResTypes
+        from bionemo_ir.data.writers import PDBWriter
 
         basic_20 = ResTypes.basic_20_residue_types()
         res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}
@@ -146,9 +146,9 @@ class TestWriterUDFCreateWriter:
         assert isinstance(writer, PDBWriter)
 
     def test_pdb_writer_uses_canonical_protein_residue_names(self):
-        from tensorrt_bionemo.data.schemas import FoldingOutput
-        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
-        from tensorrt_bionemo.data.writers import PDBWriter
+        from bionemo_ir.data.schemas import FoldingOutput
+        from bionemo_ir.data.schemas.basic import AtomTypes, ResTypes
+        from bionemo_ir.data.writers import PDBWriter
 
         output = PDBWriter(
             res_type_mapping={0: ResTypes.A},
@@ -169,8 +169,8 @@ class TestWriterUDFCreateWriter:
         assert atom_line[17:20] == "ALA"
 
     def test_create_writer_cif_format(self):
-        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
-        from tensorrt_bionemo.data.writers import CIFWriter
+        from bionemo_ir.data.schemas.basic import AtomTypes, ResTypes
+        from bionemo_ir.data.writers import CIFWriter
 
         basic_20 = ResTypes.basic_20_residue_types()
         res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}
@@ -188,7 +188,7 @@ class TestWriterUDFCreateWriter:
         assert isinstance(writer, CIFWriter)
 
     def test_create_writer_invalid_format_raises(self):
-        from tensorrt_bionemo.data.schemas.basic import AtomTypes, ResTypes
+        from bionemo_ir.data.schemas.basic import AtomTypes, ResTypes
 
         basic_20 = ResTypes.basic_20_residue_types()
         res_type_mapping = {i: basic_20[i] for i in range(len(basic_20))}

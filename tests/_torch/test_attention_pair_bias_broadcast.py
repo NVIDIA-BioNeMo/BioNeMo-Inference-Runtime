@@ -28,7 +28,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.layers.attention import AttentionPairBias
+from bionemo_ir._torch.layers.attention import AttentionPairBias
 from tests._torch import skip_if_cutedsl
 
 SEED = 42

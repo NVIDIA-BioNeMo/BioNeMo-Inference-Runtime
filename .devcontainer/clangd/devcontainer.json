@@ -1,18 +1,18 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
     // https://github.com/microsoft/vscode-dev-containers/tree/v0.245.2/containers/docker-existing-dockerfile
     {
-        "name": "TRT-BioNemo clangd Devcontainer",
+        "name": "BioIR clangd Devcontainer",
         "dockerComposeFile": [
           "../docker-compose.yml"
         ],
-        "service": "tensorrt_bionemo-dev",
+        "service": "bionemo_ir-dev",
         "remoteUser": "ubuntu",
         "containerEnv": {
           // "CCACHE_DIR" : "/home/coder/${localWorkspaceFolderBasename}/cpp/.ccache",
           // "CCACHE_BASEDIR" : "/home/coder/${localWorkspaceFolderBasename}",
           "HISTFILE": "${containerWorkspaceFolder}/.cache/._bash_history"
         },
-        "workspaceFolder": "/workspaces/tensorrt_bionemo",
+        "workspaceFolder": "/workspaces/bionemo_ir",
         // "workspaceFolder": "/home/coder/${localWorkspaceFolderBasename}",
         // "workspaceMount": "source=${localWorkspaceFolder},target=/home/coder/${localWorkspaceFolderBasename},type=bind,consistency=consistent",
         "mounts": [

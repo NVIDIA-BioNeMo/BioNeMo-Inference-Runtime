@@ -6,16 +6,16 @@ PROJECT_DIR ?= $(PWD)/..
 TORCH_BASE_IMAGE ?= nvcr.io/nvidia/pytorch
 TORCH_BASE_TAG ?= 26.05-py3
 
-# TRTBNM image parameters
-REGISTRY_IMAGE ?= tensorrt-bionemo
+# BioIR image parameters
+REGISTRY_IMAGE ?= bionemo-ir
 
 COMMIT_SHORT_SHA ?= $(shell git rev-parse --short=7 HEAD)
-TRTBNM_BRANCH_ROUGH := $(shell git rev-parse --abbrev-ref HEAD)
-TRTBNM_BRANCH := $(subst /,_,$(TRTBNM_BRANCH_ROUGH))
+BIOIR_BRANCH_ROUGH := $(shell git rev-parse --abbrev-ref HEAD)
+BIOIR_BRANCH := $(subst /,_,$(BIOIR_BRANCH_ROUGH))
 ifdef CI_COMMIT_BRANCH
-TAG ?= trtbnm$(COMMIT_SHORT_SHA)_from_pytorch$(TORCH_BASE_TAG)
+TAG ?= bioir$(COMMIT_SHORT_SHA)_from_pytorch$(TORCH_BASE_TAG)
 else
-TAG ?= $(TRTBNM_BRANCH)_trtbnm$(COMMIT_SHORT_SHA)_from_pytorch$(TORCH_BASE_TAG)
+TAG ?= $(BIOIR_BRANCH)_bioir$(COMMIT_SHORT_SHA)_from_pytorch$(TORCH_BASE_TAG)
 endif
 REGISTRY_IMAGE_AND_TAG := ${REGISTRY_IMAGE}:${TAG}
 
@@ -43,9 +43,9 @@ else
 $(error Unsupported architecture: $(CPU_ARCH))
 endif
 
-.PHONY: submodules trtbnm_dev trtbnm_reqs
+.PHONY: submodules bioir_dev bioir_reqs
 
-trtbnm_reqs:
+bioir_reqs:
 	@echo "Build ${REQS_IMAGE_AND_TAG} (ci_stage), begin"
 	pushd $(PROJECT_DIR) \
 		&& docker build \
@@ -60,7 +60,7 @@ trtbnm_reqs:
 		&& popd
 	@echo "Build ${REQS_IMAGE_AND_TAG}, end"
 
-trtbnm_dev:
+bioir_dev:
 	@echo "Make target build_with_source, begin"
 	@echo "PROJECT_DIR=${PROJECT_DIR}"
 	pushd $(PROJECT_DIR) \

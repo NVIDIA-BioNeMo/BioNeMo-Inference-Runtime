@@ -15,7 +15,7 @@
 
 import numpy as np
 
-from tensorrt_bionemo.pipeline.models.openfold2.postprocessor import PostProcessor, PostProcessorConfig
+from bionemo_ir.pipeline.models.openfold2.postprocessor import PostProcessor, PostProcessorConfig
 
 
 class TestPostProcessorNormalizeResidueIndices:

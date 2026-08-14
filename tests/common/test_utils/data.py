@@ -17,7 +17,7 @@ import os
 
 import numpy as np
 
-from tensorrt_bionemo.data.schemas.basic import FoldingOutput
+from bionemo_ir.data.schemas.basic import FoldingOutput
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 

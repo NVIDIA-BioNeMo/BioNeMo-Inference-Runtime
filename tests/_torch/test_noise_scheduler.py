@@ -27,8 +27,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.layers.noise_scheduler import SampleDiffusion, create_noise_schedule
-from tensorrt_bionemo._torch.layers.random_augmentation import (
+from bionemo_ir._torch.layers.noise_scheduler import SampleDiffusion, create_noise_schedule
+from bionemo_ir._torch.layers.random_augmentation import (
     centre_random_augmentation,
     quaternion_to_matrix,
     random_quaternions,

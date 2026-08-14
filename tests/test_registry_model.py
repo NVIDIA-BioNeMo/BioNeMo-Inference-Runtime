@@ -15,8 +15,8 @@
 
 import pytest
 
-from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.registry import ModelRegistry, get_model_class, register_all_factories
+from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
+from bionemo_ir.registry import ModelRegistry, get_model_class, register_all_factories
 
 
 class MockModel:
@@ -74,9 +74,9 @@ class TestModelRegistry:
         """Test that default models are registered with correct class types."""
         register_all_factories()
 
-        from tensorrt_bionemo.models.boltz1 import Boltz1
-        from tensorrt_bionemo.models.boltz2 import Boltz2, Boltz2Affinity
-        from tensorrt_bionemo.models.openfold2 import OpenFold2
+        from bionemo_ir.models.boltz1 import Boltz1
+        from bionemo_ir.models.boltz2 import Boltz2, Boltz2Affinity
+        from bionemo_ir.models.openfold2 import OpenFold2
 
         assert get_model_class(SupMat.Boltz1) == Boltz1
         assert get_model_class(SupMat.Boltz2) == Boltz2

@@ -18,10 +18,10 @@
 
 Task-specific playbooks live in `.agents/skills/`
 
-| Skill                   | Read it when                                                                                |
-| ----------------------- | ------------------------------------------------------------------------------------------- |
-| `make-data-pipeline`    | porting an open-source data pipeline into the TRT-BNM pipeline architecture                 |
-| `module-onboard`        | moving a source model's module onto TRT-BNM layers, with weight conversion and validation   |
-| `scan-mem-opt-patterns` | cutting activation memory or diagnosing large-`N` OOM in a pairwise-representation model    |
+| Skill                   | Read it when                                                                             |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| `make-data-pipeline`    | porting an open-source data pipeline into the BioIR pipeline architecture                |
+| `module-onboard`        | moving a source model's module onto BioIR layers, with weight conversion and validation  |
+| `scan-mem-opt-patterns` | cutting activation memory or diagnosing large-`N` OOM in a pairwise-representation model |
 
 [coding]: docs/coding.md

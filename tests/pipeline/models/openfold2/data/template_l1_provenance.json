@@ -117,7 +117,7 @@
   },
   "generation_command": "/usr/bin/python tests/pipeline/models/openfold2/generate_template_l1.py --oss-root /tmp/openfold-ref",
   "generator_ast_python": "3.12",
-  "generator_ast_sha256": "90fd04214270b01d568ccd18ddd509957c2899a355c6eda64d1764715464aab1",
+  "generator_ast_sha256": "c337ca305589be36058c7b515a35c9edd44d2a11b8e8ab377e77698cbf32ee5c",
   "generator_path": "tests/pipeline/models/openfold2/generate_template_l1.py",
   "input_path": "examples/data/samples/monomers/templates/4zey.cif",
   "input_sha256": "c412665889d225f21c39e31609e44e1582bd51b9feac2e592bad996347ee4606",

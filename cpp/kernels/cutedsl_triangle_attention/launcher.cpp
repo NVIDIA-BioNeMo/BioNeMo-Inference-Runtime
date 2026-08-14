@@ -31,7 +31,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::triangle_attention
+namespace bioir::cutedsl::triangle_attention
 {
 namespace
 {
@@ -393,4 +393,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   throw std::invalid_argument("triangle-attention config has no registered SM launcher");
 }
 
-} // namespace trtbnm::cutedsl::triangle_attention
+} // namespace bioir::cutedsl::triangle_attention

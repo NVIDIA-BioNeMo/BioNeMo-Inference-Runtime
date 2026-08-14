@@ -19,16 +19,16 @@ from pathlib import Path
 import pytest
 import torch
 
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.data.schemas.basic import InputParsed, PolymerParsed, TemplateParsed
-from tensorrt_bionemo.models.openfold2.config import AlphaFold2_Multimer_1_Config, OpenFold2_FT2_Config
-from tensorrt_bionemo.pipeline.models.openfold2.feature_context import FeatureContextGenerator
-from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import FeatureFactory, MultimerFeatureFactory
-from tensorrt_bionemo.pipeline.models.openfold2.feature_generators import Atom37ToTorsionAngles, MakeTemplatePseudoBeta
-from tensorrt_bionemo.pipeline.models.openfold2.tokenizer import MultimerTokenizer, Tokenizer
-from tensorrt_bionemo.pipeline.models.openfold2.transforms import FixTemplatesAatype
-from tensorrt_bionemo.pipeline.stages.feature_generator_stage import FeatureGeneratorUDF
-from tensorrt_bionemo.pipeline.stages.tokenizer_stage import TokenizerUDF
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.data.schemas.basic import InputParsed, PolymerParsed, TemplateParsed
+from bionemo_ir.models.openfold2.config import AlphaFold2_Multimer_1_Config, OpenFold2_FT2_Config
+from bionemo_ir.pipeline.models.openfold2.feature_context import FeatureContextGenerator
+from bionemo_ir.pipeline.models.openfold2.feature_factory import FeatureFactory, MultimerFeatureFactory
+from bionemo_ir.pipeline.models.openfold2.feature_generators import Atom37ToTorsionAngles, MakeTemplatePseudoBeta
+from bionemo_ir.pipeline.models.openfold2.tokenizer import MultimerTokenizer, Tokenizer
+from bionemo_ir.pipeline.models.openfold2.transforms import FixTemplatesAatype
+from bionemo_ir.pipeline.stages.feature_generator_stage import FeatureGeneratorUDF
+from bionemo_ir.pipeline.stages.tokenizer_stage import TokenizerUDF
 
 _TEMPLATE_CIF = Path(__file__).with_name("data") / "minimal_template.cif"
 

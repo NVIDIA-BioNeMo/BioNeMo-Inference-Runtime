@@ -19,13 +19,13 @@ error, not a silently-ignored rule."""
 import pytest
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     InputKeyMethod,
     InputRoutingConfigFactory,
     NamedDimTies,
 )
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 
 def _tracker(factory: InputRoutingConfigFactory) -> CUDAGraphOptimizationTracker:

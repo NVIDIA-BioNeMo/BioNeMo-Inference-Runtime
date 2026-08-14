@@ -27,7 +27,7 @@ from test_utils.boltz.ref_layers import RefTriangleAttentionNode as BoltzRefTria
 from test_utils.boltz.ref_layers import RefTriangleMultiplicationNode as BoltzRefTriangleMultiplicationNode
 from test_utils.openfold.ref_attn import RefGlobalAttention, RefPairwiseSelfAttention, RefTriangleAttention
 
-from tensorrt_bionemo.hubs import load_weights
+from bionemo_ir.hubs import load_weights
 
 
 class RefMSAAttention(nn.Module):

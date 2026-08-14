@@ -16,7 +16,7 @@
 
 import torch
 
-from tensorrt_bionemo._torch.modules.boltz.loss.diffusion import weighted_rigid_align
+from bionemo_ir._torch.modules.boltz.loss.diffusion import weighted_rigid_align
 
 
 def _random_rigid(batch=2, multiplicity=1, n=64, seed=0):

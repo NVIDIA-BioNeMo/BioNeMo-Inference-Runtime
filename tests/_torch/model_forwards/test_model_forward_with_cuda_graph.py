@@ -53,28 +53,28 @@ import pytest
 import torch
 
 import tests
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     GraphOptimizationMode,
     InputKeyMethod,
     InputRoutingConfigFactory,
 )
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import (
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
     BoltzDiffusionTransformer,
     OpenFold3DiffusionTransformer,
     ProtenixDiffusionTransformer,
 )
-from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
-from tensorrt_bionemo._torch.modules.boltz.structure import DiffusionModule as BoltzDiffusionModule
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
-from tensorrt_bionemo._torch.modules.protenix.diffusion import ProtenixDiffusionModule
-from tensorrt_bionemo.configs import AcceleratedConfig, BackendType, BaseConfig
-from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig
-from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
+from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
+from bionemo_ir._torch.modules.boltz.structure import DiffusionModule as BoltzDiffusionModule
+from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
+from bionemo_ir._torch.modules.protenix.diffusion import ProtenixDiffusionModule
+from bionemo_ir.configs import AcceleratedConfig, BackendType, BaseConfig
+from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig
+from bionemo_ir.pipeline.stages.configs import WriterStageConfig
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.model_forwards import (
     _AVAILABILITY_EXC,
@@ -197,7 +197,7 @@ def _default_of3_model_config(model_source: str):
     """
     if model_source != "openfold3":
         return None
-    from tensorrt_bionemo.registry import get_model_class
+    from bionemo_ir.registry import get_model_class
 
     cfg = get_model_class(model_source).get_pretrained_config(model_source)
     # Only a locally-present ``OPENFOLD3_CKPT`` can be inspected cheaply; when

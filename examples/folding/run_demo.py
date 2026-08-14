@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Run a folding model through the TRT-BioNeMo processor pipeline."""
+"""Run a folding model through the BioIR processor pipeline."""
 
 from __future__ import annotations
 
@@ -22,17 +22,17 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tensorrt_bionemo.data.schemas import (
+from bionemo_ir.data.schemas import (
     InputRequest,
     MSARecord,
     Polymer,
     Template,
 )
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
+from bionemo_ir.pipeline.processor.engine_proc import (
     EngineProcessorConfig,
     build_processor,
 )
-from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
+from bionemo_ir.pipeline.stages.configs import WriterStageConfig
 
 DEFAULT_INPUT = Path(__file__).resolve().parents[1] / "data" / "samples" / "monomers" / "T1031.json"
 DIFFUSION_MODELS = {"boltz-1", "boltz-2", "openfold3"}
@@ -119,7 +119,7 @@ def _engine_kwargs(model_source: str) -> dict[str, Any]:
 
     # The published OpenFold3 checkpoint stores per-block atom-transformer
     # pair LayerNorms. Match the model-forward pipeline tests.
-    from tensorrt_bionemo.registry import get_model_class
+    from bionemo_ir.registry import get_model_class
 
     config = get_model_class(model_source).get_pretrained_config(model_source)
     config.input_embedder_config.atom_transformer_config.shared_pair_norm = False
@@ -129,7 +129,7 @@ def _engine_kwargs(model_source: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a folding model through TRT-BioNeMo build_processor.")
+    parser = argparse.ArgumentParser(description="Run a folding model through BioIR build_processor.")
     parser.add_argument("--model-source", default="boltz-2")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output-dir", type=Path, default=Path("output"))

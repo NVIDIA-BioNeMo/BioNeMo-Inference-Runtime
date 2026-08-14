@@ -43,7 +43,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import (
+from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import (
     _deterministic_algorithms,
     aggregate_atom_feat_to_tokens,
 )

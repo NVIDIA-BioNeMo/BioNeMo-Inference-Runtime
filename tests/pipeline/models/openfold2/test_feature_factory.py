@@ -18,7 +18,7 @@ import random
 import numpy as np
 import torch
 
-from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import pre_init
+from bionemo_ir.pipeline.models.openfold2.feature_factory import pre_init
 
 
 def test_pre_init_is_independent_of_python_worker_rng_state():

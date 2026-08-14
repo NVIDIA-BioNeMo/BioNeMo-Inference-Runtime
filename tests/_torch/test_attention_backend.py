@@ -22,9 +22,9 @@ import pytest
 import torch
 
 import tests as tests_package
-from tensorrt_bionemo._torch import attention_backend
-from tensorrt_bionemo._torch.attention_backend import pairwise_attention, triangle_attention
-from tensorrt_bionemo._torch.attention_backend import utils as attention_utils
+from bionemo_ir._torch import attention_backend
+from bionemo_ir._torch.attention_backend import pairwise_attention, triangle_attention
+from bionemo_ir._torch.attention_backend import utils as attention_utils
 from tests import require_public_cutedsl_library
 from tests._torch import CUTEDSL_TEST_MODES_ENV, cutedsl_test_modes, make_left_aligned_pair_mask
 

@@ -28,7 +28,7 @@ right-aligned the mask's batch dim with ``xl``'s samples dim, which crashed for
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import broadcast_atom_mask, centre_random_augmentation
+from bionemo_ir._torch.modules.openfold3.diffusion_module import broadcast_atom_mask, centre_random_augmentation
 
 
 def test_broadcast_atom_mask_matches_legacy_when_dims_align():

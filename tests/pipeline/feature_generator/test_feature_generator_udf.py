@@ -20,9 +20,9 @@ import numpy as np
 import pytest
 import torch
 
-from tensorrt_bionemo.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase, default_context_and_feature_merger
-from tensorrt_bionemo.pipeline.stages.base import StatefulStageUDF
-from tensorrt_bionemo.pipeline.stages.feature_generator_stage import FeatureGeneratorUDF
+from bionemo_ir.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase, default_context_and_feature_merger
+from bionemo_ir.pipeline.stages.base import StatefulStageUDF
+from bionemo_ir.pipeline.stages.feature_generator_stage import FeatureGeneratorUDF
 
 
 def _unpack_columnar(output):

@@ -29,7 +29,7 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
-namespace trtbnm::cutedsl::outer_product_mean
+namespace bioir::cutedsl::outer_product_mean
 {
 namespace
 {
@@ -138,4 +138,4 @@ void bind(nb::module_& parent)
     "Launch using prepacked raw pointers, shapes, strides, and stream.");
 }
 
-} // namespace trtbnm::cutedsl::outer_product_mean
+} // namespace bioir::cutedsl::outer_product_mean

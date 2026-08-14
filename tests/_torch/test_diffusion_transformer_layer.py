@@ -24,10 +24,10 @@ from test_utils.boltz.create_and_load_weights import (
 from test_utils.boltz.ref_layers import RefDiffusionTransformerLayer as BoltzRefDiffusionTransformerLayer
 from test_utils.openfold3.ref_layers import Openfold3RefDiffusionTransformerLayer
 
-from tensorrt_bionemo._torch.attention_backend import AttentionType, get_attention_backend
-from tensorrt_bionemo._torch.attention_backend.utils import precompute_single_masks
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import DiffusionTransformerLayer
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.attention_backend.utils import precompute_single_masks
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import DiffusionTransformerLayer
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 

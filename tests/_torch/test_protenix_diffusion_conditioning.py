@@ -21,11 +21,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.auto_chunk import CHUNK_REGISTRY, DIFFUSION_PAIR_TRANSITION, ChunkPolicy
-from tensorrt_bionemo._torch.modules.protenix import ProtenixDiffusionConditioning
-from tensorrt_bionemo.models.protenix.config import DiffusionConditioningConfig, RelativePositionEncodingConfig
-from tensorrt_bionemo.models.protenix.convert import convert_diffusion_conditioning_torch
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.auto_chunk import CHUNK_REGISTRY, DIFFUSION_PAIR_TRANSITION, ChunkPolicy
+from bionemo_ir._torch.modules.protenix import ProtenixDiffusionConditioning
+from bionemo_ir.models.protenix.config import DiffusionConditioningConfig, RelativePositionEncodingConfig
+from bionemo_ir.models.protenix.convert import convert_diffusion_conditioning_torch
+from bionemo_ir.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixDiffusionConditioningFromOSS
 
 

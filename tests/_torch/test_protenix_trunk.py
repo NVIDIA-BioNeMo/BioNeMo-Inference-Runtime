@@ -18,9 +18,9 @@ import os
 
 import torch
 
-from tensorrt_bionemo._torch.modules.protenix import ProtenixTrunk
-from tensorrt_bionemo.configs import PairformerConfig
-from tensorrt_bionemo.models.protenix.config import (
+from bionemo_ir._torch.modules.protenix import ProtenixTrunk
+from bionemo_ir.configs import PairformerConfig
+from bionemo_ir.models.protenix.config import (
     ProtenixMSAModuleConfig,
     TemplateEmbedderConfig,
     TrunkConfig,

@@ -23,22 +23,22 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefOuterProductMean
 
-from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
-from tensorrt_bionemo._torch.custom_ops import outer_product_mean as opm_ops
-from tensorrt_bionemo._torch.custom_ops.outer_product_mean import (
+from bionemo_ir._torch.auto_chunk import ChunkPolicy
+from bionemo_ir._torch.custom_ops import outer_product_mean as opm_ops
+from bionemo_ir._torch.custom_ops.outer_product_mean import (
     OuterProductMeanCuTe,
     _select_opm_config_bucket,
     get_outer_product_mean_op,
     select_opm_config,
 )
-from tensorrt_bionemo._torch.custom_ops.outer_product_mean import cutedsl as opm_cutedsl
-from tensorrt_bionemo._torch.custom_ops.outer_product_mean.ops import _invoke_vanilla_opm
-from tensorrt_bionemo._torch.layers.outer_product_mean import OuterProductMean
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.custom_ops.outer_product_mean import cutedsl as opm_cutedsl
+from bionemo_ir._torch.custom_ops.outer_product_mean.ops import _invoke_vanilla_opm
+from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
-_CUTEDSL_MODES = cutedsl_test_modes("tensorrt_bionemo.dsl_kernels.cute.sm80_opm")
+_CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir.dsl_kernels.cute.sm80_opm")
 
 
 @dataclass(kw_only=True, frozen=True)

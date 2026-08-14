@@ -1,0 +1,19 @@
+{
+  "implementation": "bionemo_ir.dsl_kernels.cute.sm80_triangle_attn_left_mask.TriangleAttentionForwardAmpere",
+  "configs": {
+    "S=0": {
+      "m_block_size": 32,
+      "n_block_size": 64,
+      "num_threads": 64,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=384": {
+      "m_block_size": 32,
+      "n_block_size": 64,
+      "num_threads": 64,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    }
+  }
+}

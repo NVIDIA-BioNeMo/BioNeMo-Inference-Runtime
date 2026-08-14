@@ -17,10 +17,10 @@ import numpy as np
 import pytest
 import torch
 
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.data.parsers import InputParsed, MSAParsed
-from tensorrt_bionemo.data.schemas.basic import PolymerParsed
-from tensorrt_bionemo.pipeline.models.openfold2.feature_context import FeatureContextGenerator
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.data.parsers import InputParsed, MSAParsed
+from bionemo_ir.data.schemas.basic import PolymerParsed
+from bionemo_ir.pipeline.models.openfold2.feature_context import FeatureContextGenerator
 
 
 class MockConfig(BaseConfig):

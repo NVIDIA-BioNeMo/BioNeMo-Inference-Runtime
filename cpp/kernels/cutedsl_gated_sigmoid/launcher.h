@@ -17,8 +17,8 @@
 
 /* Gated-sigmoid CUBIN configuration, device ABI, and launcher interface. */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_GATED_SIGMOID_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_GATED_SIGMOID_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_GATED_SIGMOID_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_GATED_SIGMOID_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::gated_sigmoid::embedded
+namespace bioir::cutedsl::gated_sigmoid::embedded
 {
 struct CubinImage;
 }
@@ -49,7 +49,7 @@ struct CubinImage;
  * The layout/tiled-copy/tiled-mma arguments in the @cute.kernel signature are
  * compile-time objects and are traced away; they occupy no parameter slot.
  */
-namespace trtbnm::cutedsl::gated_sigmoid::abi
+namespace bioir::cutedsl::gated_sigmoid::abi
 {
 
 inline constexpr std::size_t kSM80ParameterCountWithBias = 8;
@@ -110,9 +110,9 @@ static_assert(offsetof(SM80Params, inner) + sizeof(SM80Params::inner) == 124, "g
 static_assert(sizeof(SM80Params) == 128, "gated-sigmoid SM80 backing struct size changed");
 static_assert(alignof(SM80Params) == 8, "gated-sigmoid SM80 backing struct alignment changed");
 
-} // namespace trtbnm::cutedsl::gated_sigmoid::abi
+} // namespace bioir::cutedsl::gated_sigmoid::abi
 
-namespace trtbnm::cutedsl::gated_sigmoid
+namespace bioir::cutedsl::gated_sigmoid
 {
 
 enum class DType : std::uint8_t
@@ -186,6 +186,6 @@ KernelConfig make_kernel_config(
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::gated_sigmoid
+} // namespace bioir::cutedsl::gated_sigmoid
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_GATED_SIGMOID_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_GATED_SIGMOID_LAUNCHER_H_ */

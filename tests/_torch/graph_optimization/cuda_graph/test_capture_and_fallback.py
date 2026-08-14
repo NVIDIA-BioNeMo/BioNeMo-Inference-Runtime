@@ -23,15 +23,15 @@ import pytest
 import torch
 import torch.nn as nn
 
-import tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime as trk
-from tensorrt_bionemo._torch.graph_optimization.config import (
+import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as trk
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     InputKeyMethod,
     InputRoutingConfigFactory,
     NamedDimTies,
 )
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_mem
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
+from bionemo_ir._torch.graph_optimization.cuda_graph import memory as gc_mem
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )

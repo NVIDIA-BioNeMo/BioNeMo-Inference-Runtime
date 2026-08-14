@@ -28,11 +28,11 @@ import numpy as np
 import torch
 from biotite.structure.io import pdbx
 
-from tensorrt_bionemo.data.schemas import InputRequest, Polymer, Template
-from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
-from tensorrt_bionemo.pipeline.stages.configs import FeatureGeneratorStageConfig, WriterStageConfig
-from tensorrt_bionemo.pipeline.stages.parser_stage import ParserUDF
-from tensorrt_bionemo.registry import get_model_class, get_tokenizer
+from bionemo_ir.data.schemas import InputRequest, Polymer, Template
+from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
+from bionemo_ir.pipeline.stages.configs import FeatureGeneratorStageConfig, WriterStageConfig
+from bionemo_ir.pipeline.stages.parser_stage import ParserUDF
+from bionemo_ir.registry import get_model_class, get_tokenizer
 from tests.common.test_utils.seeding import seed_everything
 
 QUERY_SEQUENCE = "GMEGPLNLAHQQSRRADRLLAAGKYEEAISCHKKAAAYLSEAMKLTQSEQAHLSLELQRDSHMKQLLLIQERWKRAQREERLKA"

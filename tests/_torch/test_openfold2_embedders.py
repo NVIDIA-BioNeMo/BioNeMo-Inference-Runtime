@@ -25,8 +25,8 @@ from test_utils.openfold.create_and_load_weights import (
 )
 from test_utils.openfold.ref_layers import RefInputEmbedder, RefInputEmbedderMultimer, RefRecyclingEmbedder
 
-from tensorrt_bionemo._torch.modules.openfold2.embedders import InputEmbedder, InputEmbedderMultimer, RecyclingEmbedder
-from tensorrt_bionemo.configs import BaseConfig
+from bionemo_ir._torch.modules.openfold2.embedders import InputEmbedder, InputEmbedderMultimer, RecyclingEmbedder
+from bionemo_ir.configs import BaseConfig
 
 
 @dataclass(kw_only=True, frozen=True)

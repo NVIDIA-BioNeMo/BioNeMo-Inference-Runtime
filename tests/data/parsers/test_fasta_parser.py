@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.data.parsers import SequenceParsed, parse_fasta_content, read_fasta
-from tensorrt_bionemo.data.parsers.fasta import _generate_chain_id
-from tensorrt_bionemo.data.schemas import PolymerType
+from bionemo_ir.data.parsers import SequenceParsed, parse_fasta_content, read_fasta
+from bionemo_ir.data.parsers.fasta import _generate_chain_id
+from bionemo_ir.data.schemas import PolymerType
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 

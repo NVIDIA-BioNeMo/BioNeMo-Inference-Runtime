@@ -16,7 +16,7 @@
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.data.tools.template_alignment import calculate_ids_hit, seq_identity_and_coverage
+from bionemo_ir.data.tools.template_alignment import calculate_ids_hit, seq_identity_and_coverage
 
 
 def _chars(text: str) -> np.ndarray:

@@ -1,6 +1,6 @@
 version: "3.9"
 services:
-  tensorrt_bionemo-dev:
+  bionemo_ir-dev:
     image: <internal-registry-image>:pytorch-25.01-py3-x86_64-ubuntu24.04-trt10.8.0.43-skip-devel-202502131150-8377
 
     network_mode: host
@@ -23,11 +23,11 @@ services:
               capabilities: [gpu]
 
     volumes:
-      - ..:/workspaces/tensorrt_bionemo:cached
+      - ..:/workspaces/bionemo_ir:cached
 
     environment:
-      - CCACHE_DIR=/workspaces/tensorrt_bionemo/cpp/.ccache
-      - CCACHE_BASEDIR=/workspaces/tensorrt_bionemo
+      - CCACHE_DIR=/workspaces/bionemo_ir/cpp/.ccache
+      - CCACHE_BASEDIR=/workspaces/bionemo_ir
 
     # Overrides default command so things don't shut down after the process ends.
     command: /bin/sh -c "while sleep 1000; do :; done"

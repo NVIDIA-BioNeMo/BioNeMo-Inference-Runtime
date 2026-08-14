@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(TRTBNM_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER
+set(BIOIR_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER
     "${CMAKE_CURRENT_LIST_DIR}/cubins/embedded_cubins.h")
-if(NOT EXISTS "${TRTBNM_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}")
+if(NOT EXISTS "${BIOIR_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}")
   message(
     FATAL_ERROR
-      "Missing ${TRTBNM_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}. "
+      "Missing ${BIOIR_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}. "
       "Run cpp/tools/prepare_cubins.py --kernel pair_weighted_averaging in the "
       "private CuTeDSL development tree before configuring this public build.")
 endif()
@@ -26,8 +26,8 @@ endif()
 target_sources(
   _cutedsl_kernels
   PRIVATE bindings.cpp launcher.cpp launcher.h
-          "${TRTBNM_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}")
-set_source_files_properties("${TRTBNM_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}"
+          "${BIOIR_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}")
+set_source_files_properties("${BIOIR_PAIR_WEIGHTED_AVERAGING_CUBIN_HEADER}"
                             PROPERTIES HEADER_FILE_ONLY TRUE)
 
 target_include_directories(_cutedsl_kernels PRIVATE "${CMAKE_CURRENT_LIST_DIR}")

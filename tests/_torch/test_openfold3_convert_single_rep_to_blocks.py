@@ -19,8 +19,8 @@ import pytest
 import torch
 from test_utils.openfold3.atom_attention_block_utils import convert_single_rep_to_blocks
 
-from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
+from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
+from bionemo_ir._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
 
 
 @dataclass(kw_only=True, frozen=True)

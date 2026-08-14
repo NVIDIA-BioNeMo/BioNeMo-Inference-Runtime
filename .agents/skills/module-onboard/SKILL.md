@@ -14,13 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 name: module-onboard
-description: Converts a source model's fundamental module (Pairformer, DiffusionTransformer, etc.) to use TRT-BNM optimized layers, with weight conversion and numerical validation.
+description: Converts a source model's fundamental module (Pairformer, DiffusionTransformer, etc.) to use BioIR optimized layers, with weight conversion and numerical validation.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
 ---
 
-# Module Onboarding — Converting Source Modules to TRT-BNM
+# Module Onboarding — Converting Source Modules to BioIR
 
 - **Input:** Source module (an `nn.Module` subclass) + checkpoint.
 - **Output:** Weight conversion function + adapter wrapper + hierarchical
@@ -62,9 +62,9 @@ Use these as templates when the source module matches the RF3 layout
 ## Working Directory Isolation (CRITICAL)
 
 **All generated artifacts MUST live in a dedicated working directory outside the
-TRT-BNM codebase.** Do NOT create, modify, or place any files inside the TRT-BNM
-install/source tree (`tensorrt_bionemo/`, `tests/`, `examples/`, etc.) or the
-source repository. Both the TRT-BNM repo and the source repository are
+BioIR codebase.** Do NOT create, modify, or place any files inside the BioIR
+install/source tree (`bionemo_ir/`, `tests/`, `examples/`, etc.) or the
+source repository. Both the BioIR repo and the source repository are
 read-only dependencies.
 
 At the start of the onboarding, create a working directory and use it for
@@ -93,7 +93,7 @@ everything:
 
 **Rules:**
 
-- Import from `tensorrt_bionemo` as installed package — never modify its source.
+- Import from `bionemo_ir` as installed package — never modify its source.
 - Import from the source repository as needed — never modify it either.
 - All converted weights, test scripts, adapter code, and benchmark results go
   under `<workdir>/`.
@@ -116,8 +116,8 @@ Do ALL file reads and analysis upfront before proceeding.
    get available VRAM.
 1. Estimate module memory footprint (parameter count x bytes-per-dtype). If it
    exceeds VRAM, **stop and report to the user**.
-1. Verify TRT-BNM is installed:
-   `python -c "import tensorrt_bionemo; print(tensorrt_bionemo.__file__)"`.
+1. Verify BioIR is installed:
+   `python -c "import bionemo_ir; print(bionemo_ir.__file__)"`.
 
 ### Step 1 — Create working directory
 
@@ -130,7 +130,7 @@ mkdir -p $WORKDIR/{convert,integration,tests,benchmarks}
 ```
 
 All subsequent phases write files exclusively under `$WORKDIR`. Never write into
-the TRT-BNM source tree or the source repository.
+the BioIR source tree or the source repository.
 
 ### Step 2 — Locate the source module & install dependencies
 
@@ -145,7 +145,7 @@ Read the source model's module file. Extract:
 **Install only the packages needed to import and run the source module.** Do
 NOT install the source model's full package or all of its dependencies — only
 install the minimal set required to instantiate the module and run its
-`forward()`. This avoids dependency conflicts with TRT-BNM.
+`forward()`. This avoids dependency conflicts with BioIR.
 
 1. **Identify required imports** — read the source module and trace its
    import chain. List only the packages the module actually imports (e.g.,
@@ -173,7 +173,7 @@ install the minimal set required to instantiate the module and run its
    python -c "from <source_package>.<module_path> import <ClassName>; print('OK')"
    ```
 
-If any required package conflicts with TRT-BNM's dependencies (e.g., different
+If any required package conflicts with BioIR's dependencies (e.g., different
 PyTorch version), **stop and report the conflict to the user**. Do not
 force-install conflicting packages.
 
@@ -192,7 +192,7 @@ Check whether the user has placed a checkpoint file in `$WORKDIR` (e.g.,
 **If no checkpoint is provided:**
 
 - Proceed with **randomly initialized weights**. Instantiate the source module
-  and the TRT-BNM module with matching hyperparameters, then use their
+  and the BioIR module with matching hyperparameters, then use their
   default-initialized `state_dict()` for conversion and testing.
 - This is sufficient for validating the conversion pipeline (weight mapping,
   shape correctness, forward-pass equivalence). Numerical outputs won't be
@@ -200,15 +200,15 @@ Check whether the user has placed a checkpoint file in `$WORKDIR` (e.g.,
 - Note in the summary report (Phase 6) that random weights were used and
   real-checkpoint validation is still pending.
 
-## Phase 1 — Survey TRT-BNM Coverage & Architecture Analysis
+## Phase 1 — Survey BioIR Coverage & Architecture Analysis
 
-TRT-BNM accelerates source modules via the **optimized PyTorch backend**
-(`tensorrt_bionemo/_torch/`). Survey it to determine which sub-modules have
+BioIR accelerates source modules via the **optimized PyTorch backend**
+(`bionemo_ir/_torch/`). Survey it to determine which sub-modules have
 matching implementations.
 
-### Preamble — Investigating TRT-BNM when only the wheel is available
+### Preamble — Investigating BioIR when only the wheel is available
 
-When the TRT-BNM git repository is not present (e.g., the user installed from a
+When the BioIR git repository is not present (e.g., the user installed from a
 wheel), you cannot use Read/Glob/Grep on source files directly. Use these
 techniques instead — they work on any installed Python package because wheels
 include `.py` source files:
@@ -216,15 +216,15 @@ include `.py` source files:
 **1. Find the install location:**
 
 ```bash
-python -c "import tensorrt_bionemo, os; print(os.path.dirname(tensorrt_bionemo.__file__))"
+python -c "import bionemo_ir, os; print(os.path.dirname(bionemo_ir.__file__))"
 ```
 
 **2. List all source files under a subpackage:**
 
 ```bash
 python -c "
-import tensorrt_bionemo, os
-root = os.path.dirname(tensorrt_bionemo.__file__)
+import bionemo_ir, os
+root = os.path.dirname(bionemo_ir.__file__)
 for dirpath, _, files in os.walk(root):
     for f in files:
         if f.endswith('.py'):
@@ -236,7 +236,7 @@ for dirpath, _, files in os.walk(root):
 
 ```python
 import inspect
-import tensorrt_bionemo._torch.layers.transformers.diffusion_transformer as m
+import bionemo_ir._torch.layers.transformers.diffusion_transformer as m
 print(inspect.getsource(m))                          # full file
 print(inspect.getsource(m.OpenFold3DiffusionTransformer))   # one class
 ```
@@ -244,7 +244,7 @@ print(inspect.getsource(m.OpenFold3DiffusionTransformer))   # one class
 **4. Discover available classes/functions in a module:**
 
 ```python
-import tensorrt_bionemo._torch.layers.transformers.pairformer as m
+import bionemo_ir._torch.layers.transformers.pairformer as m
 import inspect
 print([n for n, o in inspect.getmembers(m, inspect.isclass) if o.__module__ == m.__name__])
 ```
@@ -253,14 +253,14 @@ print([n for n, o in inspect.getmembers(m, inspect.isclass) if o.__module__ == m
 
 ```python
 import inspect
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import DiffusionTransformerLayer
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import DiffusionTransformerLayer
 print(inspect.signature(DiffusionTransformerLayer.__init__))
 ```
 
 **6. Inspect config fields (Pydantic models):**
 
 ```python
-from tensorrt_bionemo.configs.modules import DiffusionTransformerConfig
+from bionemo_ir.configs.modules import DiffusionTransformerConfig
 for name, field in DiffusionTransformerConfig.model_fields.items():
     print(f"{name}: default={field.default}, type={field.annotation}")
 ```
@@ -268,7 +268,7 @@ for name, field in DiffusionTransformerConfig.model_fields.items():
 **7. List all config classes:**
 
 ```python
-import inspect, tensorrt_bionemo.configs.modules as m
+import inspect, bionemo_ir.configs.modules as m
 from pydantic import BaseModel
 print([n for n, o in inspect.getmembers(m, inspect.isclass) if issubclass(o, BaseModel)])
 ```
@@ -277,7 +277,7 @@ print([n for n, o in inspect.getmembers(m, inspect.isclass) if issubclass(o, Bas
 
 ```bash
 python -c "
-import tensorrt_bionemo.models.boltz1.convert as m, inspect
+import bionemo_ir.models.boltz1.convert as m, inspect
 print([n for n, _ in inspect.getmembers(m, inspect.isfunction)])
 "
 ```
@@ -302,7 +302,7 @@ import sys, importlib
 checks = {
     # ── Core (required for all phases) ──
     'torch':              'PyTorch (core dependency)',
-    'tensorrt_bionemo':   'TRT-BNM (the framework being onboarded to)',
+    'bionemo_ir':   'BioIR (the framework being onboarded to)',
 
     # ── Torch backend (Phase 1–4) ──
     'triton':             'Triton (fused Triton kernels in _torch/)',
@@ -354,21 +354,21 @@ Record the results. If any critical package is missing:
 
 | Package                    | Install command                                                  | Required for                      |
 | -------------------------- | ---------------------------------------------------------------- | --------------------------------- |
-| `tensorrt_bionemo`         | `pip install --no-build-isolation -v -e .[dev]` (from repo root) | All phases                        |
+| `bionemo_ir`               | `pip install --no-build-isolation -v -e .[dev]` (from repo root) | All phases                        |
 | `safetensors`              | `pip install safetensors`                                        | Optional checkpoint serialization |
 | `triton`                   | `pip install triton==3.5.0`                                      | Triton fused kernels              |
 | `cuequivariance`           | `pip install cuequivariance==0.8.1`                              | CUEQUIV attention backend         |
 | `nvidia-cutlass-dsl[cu13]` | `pip install 'nvidia-cutlass-dsl[cu13]>=4.4.2'`                  | CuTeDSL attention backend         |
 | `pytest`                   | `pip install pytest`                                             | Running equivalence tests         |
 
-### Step 1 — Survey the Torch backend (`tensorrt_bionemo/_torch/`)
+### Step 1 — Survey the Torch backend (`bionemo_ir/_torch/`)
 
 The Torch backend provides optimized `nn.Module` implementations that run in
 PyTorch eager or `torch.compile` mode. They use fused kernels (Triton, CUTLASS
 DSL, cuEquivariance) under the hood but remain standard PyTorch modules with
 `state_dict()`.
 
-1. **Composite modules** — Search `tensorrt_bionemo/_torch/layers/transformers/`
+1. **Composite modules** — Search `bionemo_ir/_torch/layers/transformers/`
    for full module implementations:
 
    - `pairformer.py` — `PairformerLayerV1`, `PairformerLayerV2`,
@@ -378,7 +378,7 @@ DSL, cuEquivariance) under the hood but remain standard PyTorch modules with
    - `atom.py` — `AtomTransformerLayer`, `AtomTransformerModule`
    - Other files in that directory
 
-1. **Primitive layers** — Search `tensorrt_bionemo/_torch/layers/` for
+1. **Primitive layers** — Search `bionemo_ir/_torch/layers/` for
    building-block layers:
 
    - `triangle_nodes.py` — `TriangleMultiplicationNode`,
@@ -388,7 +388,7 @@ DSL, cuEquivariance) under the hood but remain standard PyTorch modules with
    - `normalization.py` — `AdaLN`
    - `linear.py` — `Linear`
 
-1. **Attention backends** — Search `tensorrt_bionemo/_torch/attention_backend/`
+1. **Attention backends** — Search `bionemo_ir/_torch/attention_backend/`
    for available attention implementations:
 
    - **Triangle attention** backends: `"VANILLA"`, `"CUEQUIV"` (cuEquivariance,
@@ -396,11 +396,11 @@ DSL, cuEquivariance) under the hood but remain standard PyTorch modules with
    - **Pairwise attention (AttentionPairBias)** backends: `"VANILLA"`, `"SDPA"`
      (PyTorch scaled dot-product attention, **default**).
 
-1. **Config classes** — Check `tensorrt_bionemo/configs/modules.py` for existing
+1. **Config classes** — Check `bionemo_ir/configs/modules.py` for existing
    `BaseConfig` subclasses (e.g., `PairformerConfig`,
    `DiffusionTransformerConfig`).
 
-1. **Weight conversion helpers** — Check `tensorrt_bionemo/models/*/convert.py`
+1. **Weight conversion helpers** — Check `bionemo_ir/models/*/convert.py`
    for reusable per-component functions (e.g., `get_tri_attn_node_weights`,
    `get_tri_mul_node_weights`, `get_transition_weights`,
    `get_pairwise_attn_weights`).
@@ -422,8 +422,8 @@ the reason:
 | Blocker                           | Description                                                                                                                                                                                                                                                         |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **No primitive match**            | No `nn.Module` in `_torch/layers/` implements the same operation (e.g., a novel gating mechanism or custom geometric layer).                                                                                                                                        |
-| **Incompatible math**             | A TRT-BNM primitive exists but computes a different mathematical operation — for example, the source uses a non-SwiGLU activation in its transition block while TRT-BNM `Transition` hardcodes SwiGLU.                                                              |
-| **Dimensional constraint**        | The source model's dimensions violate TRT-BNM assumptions — e.g., hidden dim not divisible by the required head count, or a non-standard expansion factor that doesn't match the `2 * hidden` fusion layout.                                                        |
+| **Incompatible math**             | A BioIR primitive exists but computes a different mathematical operation — for example, the source uses a non-SwiGLU activation in its transition block while BioIR `Transition` hardcodes SwiGLU.                                                                  |
+| **Dimensional constraint**        | The source model's dimensions violate BioIR assumptions — e.g., hidden dim not divisible by the required head count, or a non-standard expansion factor that doesn't match the `2 * hidden` fusion layout.                                                          |
 | **Unsupported attention pattern** | The source uses an attention variant not covered by any available attention backend (triangle: `VANILLA`, `CUEQUIV`, `CuTeDSL`; pairwise: `VANILLA`, `SDPA`) — e.g., a custom sparse attention pattern, windowed triangle attention, or non-standard masking logic. |
 | **Feature gap**                   | The source requires a feature the Torch backend doesn't support — e.g., custom bias terms, non-standard normalization placement, auxiliary outputs consumed downstream.                                                                                             |
 
@@ -453,18 +453,18 @@ Then determine the overall conversion options:
 
 **Report the support matrix to the user before proceeding.** For any sub-module
 with blockers, include actionable guidance: whether the gap can be closed by
-writing new TRT-BNM code, or whether the sub-module should stay in eager
+writing new BioIR code, or whether the sub-module should stay in eager
 PyTorch.
 
-#### Feasibility report for TRT-BNM developers
+#### Feasibility report for BioIR developers
 
 After completing Steps 1–2, produce a **feasibility report** as a markdown file
 at `$WORKDIR/feasibility_report.md`. This report consolidates all Phase 1
-findings into a single handoff document for TRT-BNM developers. Use the template
+findings into a single handoff document for BioIR developers. Use the template
 below — fill every section, remove nothing, mark empty sections with "None".
 
 ```markdown
-# TRT-BNM Onboarding Feasibility Report
+# BioIR Onboarding Feasibility Report
 
 ## 1. Module Overview
 
@@ -474,7 +474,7 @@ below — fill every section, remove nothing, mark empty sections with "None".
 | Source file | `<path/to/module.py>` |
 | Checkpoint | `<path or "random weights">` |
 | Parameter count | `<N>M` |
-| Closest TRT-BNM equivalent | `<e.g., PairformerModule, DiffusionTransformerModule, or "none">` |
+| Closest BioIR equivalent | `<e.g., PairformerModule, DiffusionTransformerModule, or "none">` |
 | Number of sub-modules | `<N>` |
 | Number of stacked layers | `<N>` |
 | Inference dtype | `<bfloat16 / float16 / float32>` |
@@ -491,14 +491,14 @@ below — fill every section, remove nothing, mark empty sections with "None".
 
 ## 3. Sub-Module Mapping
 
-| # | Source Sub-Module | Source Class | TRT-BNM Torch Class | Notes |
+| # | Source Sub-Module | Source Class | BioIR Torch Class | Notes |
 |---|---|---|---|---|
 | 1 | `<name>` | `<SourceClass>` | `<TorchClass or "GAP">` | `<notes>` |
 | 2 | ... | ... | ... | ... |
 
 ## 4. Hyperparameter Mapping
 
-| Parameter | Source Value | TRT-BNM Field | Match? | Notes |
+| Parameter | Source Value | BioIR Field | Match? | Notes |
 |---|---|---|---|---|
 | hidden_dim | `<value>` | `token_s` / `token_z` | YES / NO | |
 | num_heads | `<value>` | `num_heads` | YES / NO | |
@@ -509,14 +509,14 @@ below — fill every section, remove nothing, mark empty sections with "None".
 
 ## 5. Forward Signature Differences
 
-| Aspect | Source | TRT-BNM | Adapter Needed? |
+| Aspect | Source | BioIR | Adapter Needed? |
 |---|---|---|---|
 | Mask format | `<e.g., bool padding mask>` | `<e.g., float valid mask>` | YES / NO |
-| Extra TRT-BNM args | — | `<e.g., attn_metadatas, precomputed_masks>` | YES |
+| Extra BioIR args | — | `<e.g., attn_metadatas, precomputed_masks>` | YES |
 | Return type | `<e.g., Tensor>` | `<e.g., Tensor>` | YES / NO |
 | ... | ... | ... | ... |
 
-## 6. Blockers Requiring TRT-BNM Development
+## 6. Blockers Requiring BioIR Development
 
 | # | Sub-Module | Blocker Type | Description | Estimated Effort |
 |---|---|---|---|---|
@@ -547,14 +547,14 @@ below — fill every section, remove nothing, mark empty sections with "None".
 
 ### Step 3 — Analyze architectural differences
 
-Compare the source module against the closest TRT-BNM equivalent(s). Document:
+Compare the source module against the closest BioIR equivalent(s). Document:
 
 1. **Sub-module mapping table** — For each source sub-module: source class,
    Torch-backend class (or gap), file paths.
 1. **Forward signature differences** — Compare input/output signatures. Common
    differences:
    - Mask format (bool padding mask vs float valid mask vs precomputed bias)
-   - Extra TRT-BNM args (`attn_metadatas`, `precomputed_masks`, `buffers`)
+   - Extra BioIR args (`attn_metadatas`, `precomputed_masks`, `buffers`)
    - Return type (tuple ordering, extra outputs)
 1. **Hyperparameter mapping** — Map constructor args: hidden dims, head counts,
    expansion factors, epsilon values, etc. Note any without a direct equivalent.
@@ -577,7 +577,7 @@ instantiate the source module with the correct hyperparameters and use
 `model.state_dict().keys()` to get the key names — the values will be
 random-initialized but the names and shapes are what matter here.
 
-### Step 2 — Extract TRT-BNM weight names
+### Step 2 — Extract BioIR weight names
 
 Instantiate the `nn.Module` from `_torch/layers/` with matching hyperparameters
 and print `state_dict().keys()`, or read the source to identify `nn.Parameter` /
@@ -585,13 +585,13 @@ and print `state_dict().keys()`, or read the source to identify `nn.Parameter` /
 
 ### Step 3 — Build the weight name mapping
 
-Create a complete mapping from source keys to TRT-BNM keys. This MUST account
+Create a complete mapping from source keys to BioIR keys. This MUST account
 for:
 
 1. **Name renames** — Different attribute names for the same logical weight
    (e.g., `layer_norm_1` vs `norm`, `to_out` vs `o_proj`).
-1. **Weight fusions** — TRT-BNM fuses certain weights for performance. Check
-   `tensorrt_bionemo/models/*/convert.py` for the established fusion patterns.
+1. **Weight fusions** — BioIR fuses certain weights for performance. Check
+   `bionemo_ir/models/*/convert.py` for the established fusion patterns.
    Common fusions:
    - Separate Q, K, V projections fused into a single `qkv_proj` via
      `torch.cat([q, k, v], dim=0)`
@@ -601,29 +601,29 @@ for:
      `torch.cat([gate, input], dim=0)` (note ordering!)
 1. **Shape transforms** — Transpositions, reshapes, or padding needed due to
    different layout conventions.
-1. **Missing weights** — TRT-BNM weights with no source equivalent (should be
-   initialized, not converted). Source weights with no TRT-BNM equivalent
+1. **Missing weights** — BioIR weights with no source equivalent (should be
+   initialized, not converted). Source weights with no BioIR equivalent
    (should be discarded or flagged).
 
 ### Step 4 — Write the conversion function
 
 Create `$WORKDIR/convert/convert_weights.py` following the established pattern
-in `tensorrt_bionemo/models/*/convert.py`:
+in `bionemo_ir/models/*/convert.py`:
 
 ```python
-def convert_<module>_weights(state_dict, prefix, tbm_prefix, mapping, dtype, ...):
-    """Convert source checkpoint weights to TRT-BNM format.
+def convert_<module>_weights(state_dict, prefix, bioir_prefix, mapping, dtype, ...):
+    """Convert source checkpoint weights to BioIR format.
 
     The returned dict is consumed by the Torch backend via module.load_weights(weights).
     """
     # 1. Read source weights by key
     # 2. Apply fusions (cat, reshape, etc.)
     # 3. Apply dtype conversion
-    # 4. Return dict with TRT-BNM key names
+    # 4. Return dict with BioIR key names
 ```
 
 **Critical: Reuse existing per-component helpers** from
-`tensorrt_bionemo/models/boltz1/convert.py` when the sub-component weight layout
+`bionemo_ir/models/boltz1/convert.py` when the sub-component weight layout
 matches (e.g., `get_tri_mul_node_weights`, `get_tri_attn_node_weights`,
 `get_transition_weights`, `get_pairwise_attn_weights`). Only write new
 conversion code for sub-components whose weight layout genuinely differs from
@@ -643,7 +643,7 @@ backend:
 
 1. **Weight completeness** — compare converted keys against
    `nn_module.state_dict().keys()`:
-   - No missing weights (every TRT-BNM key has a value).
+   - No missing weights (every BioIR key has a value).
    - No extra weights (every source key was consumed or explicitly discarded).
 1. **Shape match** — each converted tensor's shape matches the `nn.Module`
    parameter's shape.
@@ -654,18 +654,18 @@ backend:
 ## Phase 3 — Integration
 
 All integration code goes under `$WORKDIR/integration/`. Import
-`tensorrt_bionemo` as an installed package and the source model's module from its
+`bionemo_ir` as an installed package and the source model's module from its
 source path.
 
 ### Step 1 — Write the adapter wrapper
 
 Create `$WORKDIR/integration/adapter.py` — a thin `nn.Module` that bridges the
-source model's `forward()` signature to the TRT-BNM module's `forward()`. The
+source model's `forward()` signature to the BioIR module's `forward()`. The
 adapter handles:
 
-- **Mask conversion** — Transform the source model's mask format to TRT-BNM's
+- **Mask conversion** — Transform the source model's mask format to BioIR's
   expected format.
-- **Argument bridging** — Supply TRT-BNM-specific args with sensible defaults
+- **Argument bridging** — Supply BioIR-specific args with sensible defaults
   (e.g., `attn_metadatas=None`, `precomputed_masks=None`).
 - **Output reshaping** — Match the source model's expected return type.
 - **Inference-mode stripping** — Do not replicate dropout or training-only
@@ -679,17 +679,17 @@ source module, so the source model's calling code doesn't change.
 Create `$WORKDIR/integration/swap.py` — a function that patches the source model's
 model in-place:
 
-1. Instantiate the TRT-BNM module with a config matching the source model's
+1. Instantiate the BioIR module with a config matching the source model's
    hyperparameters.
 1. Load and convert weights using the function from Phase 2.
-1. Load converted weights into the TRT-BNM module.
+1. Load converted weights into the BioIR module.
 1. Wrap in the adapter from Step 1.
 1. Replace the source model's sub-module attribute (e.g.,
    `model.trunk.pairformer = adapter`).
 
 ### Step 3 — Write or reuse the config
 
-Check `tensorrt_bionemo/configs/modules.py` for an existing `BaseConfig`
+Check `bionemo_ir/configs/modules.py` for an existing `BaseConfig`
 subclass that fits. If one exists, instantiate it with the source model's
 hyperparameters. If not, create a minimal new one — only add fields that the
 source model's module actually needs.
@@ -731,7 +731,7 @@ input → compare output.
 ### Step 2 — Layer equivalence
 
 Test one full layer (e.g., one PairformerBlock / one DiffusionTransformerLayer):
-source layer vs TRT-BNM Torch layer via adapter wrapper.
+source layer vs BioIR Torch layer via adapter wrapper.
 
 - Load identical weights (via conversion function).
 - Feed identical random inputs.
@@ -750,7 +750,7 @@ Test the complete stacked module (e.g., 2-3 layers, not the full depth):
 Verify the conversion is lossless:
 
 ```python
-# source_state -> convert -> load into TRT-BNM -> extract state_dict -> compare shapes/values
+# source_state -> convert -> load into BioIR -> extract state_dict -> compare shapes/values
 ```
 
 ## Phase 5 — Performance Benchmarks (Optional)
@@ -791,7 +791,7 @@ size, report OOM and stop that column — do not skip to larger sizes.
 ### Benchmark columns
 
 All columns use **bfloat16** dtype — both for the source baseline and all
-TRT-BNM configurations.
+BioIR configurations.
 
 | Column                                  | Config                                                                                                                            | Notes                                                                                                                                                            |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -809,7 +809,7 @@ TRT-BNM configurations.
    throughput.
 1. **Shared weights across all configs.** Instantiate the source module stack,
    extract each layer's `state_dict()`, convert via the Phase 2 conversion
-   function, and load the converted weights into every TRT-BNM configuration.
+   function, and load the converted weights into every BioIR configuration.
    This ensures all columns benchmark with identical weights — differences in
    latency are purely from the execution backend, not from weight values.
 1. Sweep `N_res` from 128 to 2048 with step size 128.
@@ -844,30 +844,30 @@ Print (not file) after completion:
 
 ## Key Gotchas
 
-- **Never write into the TRT-BNM codebase.** All generated files (conversion
+- **Never write into the BioIR codebase.** All generated files (conversion
   scripts, checkpoints, adapters, tests, benchmarks) go under `$WORKDIR`. The
-  TRT-BNM repo and install directory are read-only dependencies — import from
+  BioIR repo and install directory are read-only dependencies — import from
   them, never modify them. Same applies to the source repository.
 - **Use the optimized PyTorch backend.** This skill converts source modules to
-  TRT-BNM's `_torch/` implementations. TensorRT engine build is out of scope for
+  BioIR's `_torch/` implementations. TensorRT engine build is out of scope for
   this release.
 - **Weight fusion ordering matters.** When fusing gate + input into
   `fused_fc2_fc1`, the gate weight comes first:
   `torch.cat([gate, input], dim=0)`. Getting this wrong produces silent
   numerical errors, not crashes.
 - **Mask polarity.** Source models often use `is_padding=True` for padded
-  positions. TRT-BNM uses `mask=1.0` for **valid** positions. Invert carefully.
-- **Precomputed masks for performance.** TRT-BNM attention backends support
+  positions. BioIR uses `mask=1.0` for **valid** positions. Invert carefully.
+- **Precomputed masks for performance.** BioIR attention backends support
   precomputed mask biases (`precompute_pair_masks`, `precompute_single_masks`).
   Compute these once outside the layer loop, not per-layer.
 - **Dropout is inference-irrelevant.** Source modules often have dropout in
-  `forward()`. TRT-BNM modules do not apply dropout (they're inference-only). Do
+  `forward()`. BioIR modules do not apply dropout (they're inference-only). Do
   not add dropout to the adapter.
-- **dtype matters.** TRT-BNM modules expect explicit dtype at construction time.
+- **dtype matters.** BioIR modules expect explicit dtype at construction time.
   Some internal paths (e.g., `s_path_dtype`) may use a different precision than
   the main dtype. Match the source model's precision policy.
 - **Reuse existing conversion helpers.** Check
-  `tensorrt_bionemo/models/*/convert.py` — the per-component weight conversion
+  `bionemo_ir/models/*/convert.py` — the per-component weight conversion
   functions (`get_tri_attn_node_weights`, `get_tri_mul_node_weights`,
   `get_transition_weights`, `get_pairwise_attn_weights`) are designed to be
   reusable across models. Only write new ones when the source model's weight layout
@@ -904,7 +904,7 @@ Print (not file) after completion:
      module.load_state_dict(weights, strict=True)
      ```
 
-- **`load_weights` vs `load_state_dict`.** TRT-BNM composite modules (e.g.,
+- **`load_weights` vs `load_state_dict`.** BioIR composite modules (e.g.,
   `PairformerModule`) use `load_weights(weights_dict)` which calls
   `recursive_calling_load_weights` internally. This is NOT the same as PyTorch's
   `load_state_dict` — it handles TP sharding and custom loading logic.

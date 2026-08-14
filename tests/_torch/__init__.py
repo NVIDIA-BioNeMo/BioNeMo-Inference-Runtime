@@ -20,7 +20,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
-from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
+from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
 
 SM_VERSION: int = (
     torch.cuda.get_device_capability()[0] * 10 + torch.cuda.get_device_capability()[1]
@@ -34,7 +34,7 @@ SM_VERSION: int = (
 _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 
 # Per-op CuTeDSL SM overrides. Most kernels run on the generic range from their
-# dispatch / config coverage in ``tensorrt_bionemo/_torch``:
+# dispatch / config coverage in ``bionemo_ir/_torch``:
 #   * gated_sigmoid            -- get_gated_sigmoid_op gates on
 #                                 ``sm in (80, 86, 89, 90)``.
 #   * dual_gemm_x_x / x0_x1     -- get_dual_gemm_*_op use
@@ -56,7 +56,7 @@ _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
     "pair_weighted_averaging": (80, 90, 100, 103),
 }
 
-CUTEDSL_TEST_MODES_ENV = "TRTBNM_TEST_CUTEDSL_MODES"
+CUTEDSL_TEST_MODES_ENV = "BIOIR_TEST_CUTEDSL_MODES"
 _CUTEDSL_TEST_MODES = ("source", "cubin")
 _CUTEDSL_MODE_CACHES: dict[tuple[type, str], dict] = {}
 
@@ -66,7 +66,7 @@ def cutedsl_test_modes(source_module: str | None = None) -> tuple[str, ...]:
 
     A private checkout defaults to ``source`` when ``source_module`` exists.
     A source-free public build defaults to ``cubin``. Private CI should set
-    ``TRTBNM_TEST_CUTEDSL_MODES=source,cubin`` to exercise both paths.
+    ``BIOIR_TEST_CUTEDSL_MODES=source,cubin`` to exercise both paths.
     Requesting ``source`` is strict: tests must fail rather than silently
     falling back to CUBINs when private sources are unavailable.
     """

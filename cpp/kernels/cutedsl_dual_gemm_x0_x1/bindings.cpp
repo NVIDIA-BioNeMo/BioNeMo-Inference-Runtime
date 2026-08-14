@@ -23,7 +23,7 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
-namespace trtbnm::cutedsl::dual_gemm_x0_x1
+namespace bioir::cutedsl::dual_gemm_x0_x1
 {
 
 void bind(nb::module_& parent)
@@ -85,4 +85,4 @@ void bind(nb::module_& parent)
     "Launch using prepacked raw pointers, shapes, strides, and stream.");
 }
 
-} // namespace trtbnm::cutedsl::dual_gemm_x0_x1
+} // namespace bioir::cutedsl::dual_gemm_x0_x1

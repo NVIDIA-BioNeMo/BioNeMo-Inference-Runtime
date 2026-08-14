@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
+from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
 
 
 class _LibraryExecutable(library_runtime.CuTeDSLKernelLibraryExecutable):
@@ -112,7 +112,7 @@ def test_launch_library_executable_does_not_require_tvm_ffi():
 @pytest.mark.parametrize("qkv_packed", [False, True], ids=["separate", "packed"])
 def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv_packed):
     try:
-        importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+        importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
     except ImportError:
         pytest.skip("_cutedsl_kernels extension is not installed")
     if not torch.cuda.is_available():
@@ -123,13 +123,13 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
     if sm_version not in (80, 86, 89, 90):
         pytest.skip(f"no directly launchable D32 CUBIN for SM{sm_version}")
 
-    from tensorrt_bionemo._torch.attention_backend import (
+    from bionemo_ir._torch.attention_backend import (
         AttentionMetadata,
         TriangleAttentionCuTeLeftMask,
         TriangleAttentionCuTeLeftMaskMetadata,
         VanillaTriangleAttention,
     )
-    from tensorrt_bionemo._torch.attention_backend.triangle_attention import _config as triangle_config
+    from bionemo_ir._torch.attention_backend.triangle_attention import _config as triangle_config
     from tests._torch import make_left_aligned_mask
 
     def missing_source(_implementation):

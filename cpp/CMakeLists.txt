@@ -15,17 +15,17 @@
 
 cmake_minimum_required(VERSION 3.27 FATAL_ERROR)
 
-project(tensorrt_bionemo_cutedsl_kernels LANGUAGES CXX)
+project(bionemo_ir_cutedsl_kernels LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-get_filename_component(TRTBNM_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.."
+get_filename_component(BIOIR_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.."
                        ABSOLUTE)
-set(TRTBNM_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-set(TRTBNM_PYTHON_PACKAGE_DIR "${TRTBNM_REPO_ROOT}/tensorrt_bionemo")
+set(BIOIR_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(BIOIR_PYTHON_PACKAGE_DIR "${BIOIR_REPO_ROOT}/bionemo_ir")
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/setup_dependencies.cmake")

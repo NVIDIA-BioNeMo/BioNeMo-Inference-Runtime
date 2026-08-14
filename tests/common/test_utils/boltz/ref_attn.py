@@ -23,8 +23,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo.hubs import load_weights
+from bionemo_ir._torch.attention_backend import AttentionMetadata
+from bionemo_ir.hubs import load_weights
 
 
 def _prep_qkv(

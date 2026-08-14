@@ -17,9 +17,9 @@
 # https://github.com/RosettaCommons/foundry/tree/production/models/rf3
 # Only upstream parameter and module names are reproduced here.
 
-"""TRT-BNM DiffusionTransformerConfig for RF3 DiffusionTransformer hyperparameters."""
+"""BioIR DiffusionTransformerConfig for RF3 DiffusionTransformer hyperparameters."""
 
-from tensorrt_bionemo.configs.modules import DiffusionTransformerConfig
+from bionemo_ir.configs.modules import DiffusionTransformerConfig
 
 
 def make_rf3_dit_config(

@@ -26,8 +26,8 @@ from test_utils.openfold.create_and_load_weights import (
 )
 from test_utils.openfold.ref_layers import RefTemplatePairStackBlock, RefTemplatePointwiseAttention
 
-from tensorrt_bionemo._torch.modules.openfold2.template import TemplatePairBlock, TemplatePointwiseAttention
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock, TemplatePointwiseAttention
+from bionemo_ir.utils import str_dtype_to_torch
 
 
 @dataclass(kw_only=True, frozen=True)

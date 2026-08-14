@@ -17,8 +17,8 @@
 
 /* Outer-product-mean CUBIN configuration, device ABI, and launcher interface. */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_OUTER_PRODUCT_MEAN_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_OUTER_PRODUCT_MEAN_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_OUTER_PRODUCT_MEAN_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_OUTER_PRODUCT_MEAN_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::outer_product_mean::embedded
+namespace bioir::cutedsl::outer_product_mean::embedded
 {
 struct CubinImage;
 }
@@ -54,7 +54,7 @@ struct CubinImage;
  * The layout/tiled-copy/tiled-mma arguments in the @cute.kernel signature are
  * compile-time objects and are traced away; they occupy no parameter slot.
  */
-namespace trtbnm::cutedsl::outer_product_mean::abi
+namespace bioir::cutedsl::outer_product_mean::abi
 {
 
 inline constexpr std::size_t kSM80ParameterCountWithBias = 6;
@@ -105,9 +105,9 @@ static_assert(
   offsetof(SM80Params, output) - sizeof(cute_tensor_s0_d0_t) == 128,
   "outer-product-mean no-bias output ordinal changed");
 
-} // namespace trtbnm::cutedsl::outer_product_mean::abi
+} // namespace bioir::cutedsl::outer_product_mean::abi
 
-namespace trtbnm::cutedsl::outer_product_mean
+namespace bioir::cutedsl::outer_product_mean
 {
 
 enum class DType : std::uint8_t
@@ -180,6 +180,6 @@ make_kernel_config(std::int32_t target_sm, DType dtype, bool has_bias, bool norm
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::outer_product_mean
+} // namespace bioir::cutedsl::outer_product_mean
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_OUTER_PRODUCT_MEAN_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_OUTER_PRODUCT_MEAN_LAUNCHER_H_ */

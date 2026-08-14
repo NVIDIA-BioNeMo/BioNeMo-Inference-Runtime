@@ -15,7 +15,7 @@
  limitations under the License.
 -->
 
-# File Templates for TRT-BNM Data Pipeline
+# File Templates for BioIR Data Pipeline
 
 Replace `<model>` with the model name (e.g., `boltz1`, `openfold3`, `protenix`).
 
@@ -88,11 +88,11 @@ from typing import Optional
 import numpy as np
 import torch
 
-import tensorrt_bionemo.pipeline.models.<model>.const as rc
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.data.parsers import InputParsed, MSAParsed, generate_deletion_matrix
-from tensorrt_bionemo.data.utils import sequence_to_onehot
-from tensorrt_bionemo.pipeline.base import ContextGeneratorBase
+import bionemo_ir.pipeline.models.<model>.const as rc
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.data.parsers import InputParsed, MSAParsed, generate_deletion_matrix
+from bionemo_ir.data.utils import sequence_to_onehot
+from bionemo_ir.pipeline.base import ContextGeneratorBase
 
 
 class FeatureContextGenerator(ContextGeneratorBase):
@@ -148,10 +148,10 @@ from typing import Any, Optional
 
 import numpy as np
 
-import tensorrt_bionemo.pipeline.models.<model>.const as rc
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.data.parsers import InputParsed
-from tensorrt_bionemo.pipeline.base import ContextGeneratorBase
+import bionemo_ir.pipeline.models.<model>.const as rc
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.data.parsers import InputParsed
+from bionemo_ir.pipeline.base import ContextGeneratorBase
 
 
 class ModelContextGenerator(ContextGeneratorBase):
@@ -185,9 +185,9 @@ from typing import Optional
 
 import torch
 
-import tensorrt_bionemo.pipeline.models.<model>.const as rc
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.pipeline.base import TransformBase
+import bionemo_ir.pipeline.models.<model>.const as rc
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.pipeline.base import TransformBase
 
 
 class CastTo64BitInts(TransformBase):
@@ -233,7 +233,7 @@ Wires context generators and transforms into a declarative pipeline.
 from collections import OrderedDict
 from typing import Callable
 
-from tensorrt_bionemo.pipeline.base import (
+from bionemo_ir.pipeline.base import (
     ContextGeneratorSpec, TokenizerBase, TransformSpec, dict_context_merger,
 )
 from .feature_context import FeatureContextGenerator
@@ -288,9 +288,9 @@ from typing import Any, Optional
 
 import torch
 
-import tensorrt_bionemo.pipeline.models.<model>.const as rc
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.pipeline.base import FeatureGeneratorBase
+import bionemo_ir.pipeline.models.<model>.const as rc
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.pipeline.base import FeatureGeneratorBase
 from .common import some_helper  # import model-specific helpers
 
 
@@ -352,8 +352,8 @@ from typing import Any, Optional
 
 import torch
 
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.pipeline.base import FeatureCollatorBase
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.pipeline.base import FeatureCollatorBase
 from .common import some_helper
 
 
@@ -442,7 +442,7 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
-from tensorrt_bionemo.pipeline.base import (
+from bionemo_ir.pipeline.base import (
     FeatureCollatorSpec, FeatureFactoryBase, FeatureGeneratorSpec,
     default_context_and_feature_merger,
 )
@@ -450,7 +450,7 @@ from .feature_collators import (SampleMsa, MakeFixedSize, SelectFeat, ...)
 from .feature_generators import (MakeSequenceMask, MakeMsaMask, ...)
 
 # Import SampleRepeater from openfold2 or reimplement
-from tensorrt_bionemo.pipeline.models.openfold2.feature_factory import SampleRepeater
+from bionemo_ir.pipeline.models.openfold2.feature_factory import SampleRepeater
 
 _FEATURE_KEYS = [
     # List all feature keys the model expects as input
@@ -513,9 +513,9 @@ import numpy as np
 import torch
 from pydantic import BaseModel
 
-import tensorrt_bionemo.pipeline.models.<model>.const as rc
-from tensorrt_bionemo.data.schemas import FoldingOutput
-from tensorrt_bionemo.pipeline.base import PostProcessorBase
+import bionemo_ir.pipeline.models.<model>.const as rc
+from bionemo_ir.data.schemas import FoldingOutput
+from bionemo_ir.pipeline.base import PostProcessorBase
 
 
 class PostProcessorConfig(BaseModel):

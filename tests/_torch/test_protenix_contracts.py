@@ -26,16 +26,16 @@ import pytest
 import torch
 import torch.nn as nn
 
-import tensorrt_bionemo._torch.modules.protenix as protenix_modules
-import tensorrt_bionemo.models.protenix as protenix_models
-from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.models.protenix.config import DiffusionModuleConfig, ProtenixConfig, TemplateEmbedderConfig
-from tensorrt_bionemo.models.protenix.convert import (
+import bionemo_ir._torch.modules.protenix as protenix_modules
+import bionemo_ir.models.protenix as protenix_models
+from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
+from bionemo_ir.models.protenix.config import DiffusionModuleConfig, ProtenixConfig, TemplateEmbedderConfig
+from bionemo_ir.models.protenix.convert import (
     _convert_protenix_atom_dit_block,
     _convert_protenix_token_dit_block,
     convert_template_embedder_torch,
 )
-from tensorrt_bionemo.models.protenix.modeling import Protenix
+from bionemo_ir.models.protenix.modeling import Protenix
 
 # Cache-only features owned by destructive inference.
 _DIFFUSION_CONSUMED_FEATURES = (
@@ -381,8 +381,8 @@ def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch):
 
 def test_diffusion_consumed_feature_constant_locked():
     """Lock the feature-ownership tuple used by cache/destructive drop."""
-    from tensorrt_bionemo._torch.modules.protenix import diffusion as diff_mod
-    from tensorrt_bionemo._torch.modules.protenix._common import DIFFUSION_CONSUMED_FEATURES
+    from bionemo_ir._torch.modules.protenix import diffusion as diff_mod
+    from bionemo_ir._torch.modules.protenix._common import DIFFUSION_CONSUMED_FEATURES
 
     assert tuple(DIFFUSION_CONSUMED_FEATURES) == _DIFFUSION_CONSUMED_FEATURES
     src = inspect.getsource(diff_mod.ProtenixSampleDiffusion.sample_coords)

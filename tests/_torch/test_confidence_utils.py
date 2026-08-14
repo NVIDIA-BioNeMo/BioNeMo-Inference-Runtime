@@ -16,8 +16,8 @@
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
-from tensorrt_bionemo._torch.modules.boltz.confidence_utils import (
+from bionemo_ir._torch.auto_chunk import ChunkPolicy
+from bionemo_ir._torch.modules.boltz.confidence_utils import (
     NUM_CONTACT_BINS,
     compute_contact_prob,
     repeat_with_multiplicity,

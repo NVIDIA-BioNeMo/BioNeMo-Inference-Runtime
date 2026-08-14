@@ -22,8 +22,8 @@
  * family's launcher.h.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_LAUNCH_UTILS_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_LAUNCH_UTILS_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_LAUNCH_UTILS_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_LAUNCH_UTILS_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_tensor_abi.h"
@@ -35,7 +35,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl
+namespace bioir::cutedsl
 {
 
 inline void validate_pointer(std::uint64_t pointer, std::uint64_t alignment, char const* name)
@@ -360,6 +360,6 @@ inline std::uint32_t checked_u32(std::uint64_t value, char const* name)
   return static_cast<std::uint32_t>(value);
 }
 
-} // namespace trtbnm::cutedsl
+} // namespace bioir::cutedsl
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_LAUNCH_UTILS_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_LAUNCH_UTILS_H_ */

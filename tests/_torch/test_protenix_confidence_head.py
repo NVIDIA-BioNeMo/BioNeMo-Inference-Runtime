@@ -24,12 +24,12 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.modules.protenix import ProtenixConfidenceHead
-from tensorrt_bionemo.configs import PairformerConfig
-from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.models.protenix.config import ConfidenceHeadConfig
-from tensorrt_bionemo.models.protenix.convert import convert_confidence_head_torch
+from bionemo_ir._torch.modules.protenix import ProtenixConfidenceHead
+from bionemo_ir.configs import PairformerConfig
+from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
+from bionemo_ir.hubs import load_weights as load_weights_from_hubs
+from bionemo_ir.models.protenix.config import ConfidenceHeadConfig
+from bionemo_ir.models.protenix.convert import convert_confidence_head_torch
 from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixConfidenceHeadFromOSS
 
 

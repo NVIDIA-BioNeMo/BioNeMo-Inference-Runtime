@@ -14,15 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 name: make-data-pipeline
-description: Port an open-source bioinformatics data pipeline into the TensorRT-BioNeMo (TRT-BNM) pipeline architecture. Use when the user asks to create, port, convert, or write a new data pipeline from OSS code, or add a new model's data processing to the TRT-BNM system.
+description: Port an open-source bioinformatics data pipeline into the BioIR pipeline architecture. Use when the user asks to create, port, convert, or write a new data pipeline from OSS code, or add a new model's data processing to the BioIR system.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
 ---
 
-# Port OSS Data Pipeline to TRT-BNM
+# Port OSS Data Pipeline to BioIR
 
-**Input:** OSS model name + source code location. **Output:** Complete TRT-BNM
+**Input:** OSS model name + source code location. **Output:** Complete BioIR
 pipeline module + equivalence tests + summary report.
 
 ## Mandatory Anti-Forgery Gates
@@ -40,8 +40,8 @@ the blocker instead of claiming completion.
    timestamp, and whether the artifact came from OSS inference, OSS
    featurization primitives, or another approved reference path.
 1. **No self-reference.** Reference generation scripts must fail if they import
-   `tensorrt_bionemo.pipeline.models.<model_name>` or write references from
-   TRT-BNM outputs. Equivalence tests must fail if the reference artifact
+   `bionemo_ir.pipeline.models.<model_name>` or write references from
+   BioIR outputs. Equivalence tests must fail if the reference artifact
    provenance does not say `source="oss"`.
 1. **No hidden skips.** Do not use `pytest.skip`, `xfail`, broad `try/except`,
    missing-key allowlists, `continue` on failed samples, or
@@ -59,7 +59,7 @@ the blocker instead of claiming completion.
    unit tests and must never replace OSS equivalence or e2e scoring.
 1. **Exact sample manifest.** Before Phase 7, write
    `$WORKDIR/ref_data/sample_manifest.json` from `examples/data/samples/` and
-   reuse it for OSS baseline, feature equivalence, TRT-BNM e2e, serial
+   reuse it for OSS baseline, feature equivalence, BioIR e2e, serial
    `build_processor`, and Ray `build_processor`. Every phase must assert exact
    set equality against this manifest.
 1. **Failure evidence is required.** When a test fails, preserve the failing
@@ -120,7 +120,7 @@ $WORKDIR/
 ```
 
 **Pipeline implementation** files go directly into the codebase
-(`tensorrt_bionemo/pipeline/models/<model_name>/`) because they must be
+(`bionemo_ir/pipeline/models/<model_name>/`) because they must be
 importable via the package's module system. The WORKDIR holds everything else:
 tests, debug tools, e2e smoke tests, and reference data.
 
@@ -156,7 +156,7 @@ Use this template for each entry:
 
 **Decision / interpretation:** What was chosen or how the OSS behavior was interpreted.
 
-**Reason:** Why this is correct for TRT-BNM, including production constraints or schema limitations.
+**Reason:** Why this is correct for BioIR, including production constraints or schema limitations.
 
 **Alternatives considered:** Other approaches and why they were rejected.
 
@@ -218,10 +218,10 @@ Trace the inference script's call chain to locate the data pipeline files:
 Record each file path. These are your read-only references for all subsequent
 phases.
 
-### Step 4 — Verify TRT-BNM base classes are available
+### Step 4 — Verify BioIR base classes are available
 
 ```bash
-python -c "from tensorrt_bionemo.pipeline.base import ContextGeneratorBase, TransformBase, FeatureGeneratorBase, FeatureCollatorBase; print('OK')"
+python -c "from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase, FeatureGeneratorBase, FeatureCollatorBase; print('OK')"
 ```
 
 If this fails, install first: `pip install --no-build-isolation -v -e .[dev]`
@@ -230,13 +230,13 @@ ______________________________________________________________________
 
 ## Phase 1 — Survey Existing Coverage & Analyze OSS Pipeline
 
-### Step 1 — Check for existing TRT-BNM pipeline
+### Step 1 — Check for existing BioIR pipeline
 
 Before writing anything, check if a pipeline already exists for this model:
 
-1. Search `tensorrt_bionemo/pipeline/models/` for a directory matching the model
+1. Search `bionemo_ir/pipeline/models/` for a directory matching the model
    name.
-1. Check `tensorrt_bionemo/registry.py` for existing factory registrations
+1. Check `bionemo_ir/registry.py` for existing factory registrations
    (`ModelComponentsFactory` subclasses and `register_all_factories()`).
 
 **If existing code is found:**
@@ -272,7 +272,7 @@ a hard failure.
 
 ### Step 2 — Reference ALL existing data pipelines to discover the best fit
 
-**Read every existing pipeline** under `tensorrt_bionemo/pipeline/models/`
+**Read every existing pipeline** under `bionemo_ir/pipeline/models/`
 before writing anything. For each one, catalog:
 
 1. **Pattern** — A (flat tensor dict) or B (mixed context row)
@@ -315,7 +315,7 @@ function/class, record:
 1. **Curried/parameterized?** — takes factory args → maps to `__init__` params
 1. **Ensembled?** — runs per recycling iteration → `FeatureCollatorBase`
 
-| Classification                      | Criteria                                                          | TRT-BNM Target                                    |
+| Classification                      | Criteria                                                          | BioIR Target                                      |
 | ----------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------- |
 | **Raw feature builder**             | Creates numpy arrays from sequences/MSAs/templates                | `ContextGeneratorBase` in `feature_context.py`    |
 | **Non-ensembled, modifies dict**    | Runs once, modifies existing keys (cast, reorder, squeeze)        | `TransformBase` in `transforms.py`                |
@@ -326,7 +326,7 @@ function/class, record:
 
 Save this inventory to `$WORKDIR/NOTES.md` — it is the blueprint for all
 subsequent phases. See [mapping-guide.md](mapping-guide.md) for the full
-OSS→TRT-BNM mapping guide with concrete examples.
+OSS→BioIR mapping guide with concrete examples.
 
 ### Step 4 — Choose pipeline pattern
 
@@ -372,7 +372,7 @@ signatures.
 ### Target directory (in codebase)
 
 ```text
-tensorrt_bionemo/pipeline/models/<model_name>/
+bionemo_ir/pipeline/models/<model_name>/
 ├── __init__.py
 ├── const.py
 ├── common.py
@@ -402,7 +402,7 @@ Copy domain-specific constants from the OSS code:
 - Physical/chemical constants (bond lengths, angles, etc.)
 
 These are **data, not code** — copying constant values is explicitly allowed.
-Reformat to match TRT-BNM style (module-level dicts/lists, no class wrappers
+Reformat to match BioIR style (module-level dicts/lists, no class wrappers
 unless needed).
 
 ### Step 3 — `common.py`
@@ -489,7 +489,7 @@ against OSS before proceeding:
 
 ```python
 # Quick sanity check: run tokenizer on one sample, print keys + shapes
-from tensorrt_bionemo.pipeline.models.<model>.tokenizer import Tokenizer
+from bionemo_ir.pipeline.models.<model>.tokenizer import Tokenizer
 # ... instantiate, run, compare with OSS output
 ```
 
@@ -527,11 +527,11 @@ representations.
 1. **Trace the loading code** — find where the OSS loads metadata: pickle files,
    JSON configs, CSV tables, npz archives, or computed constants. Record the
    format, content, and how it flows into feature generation.
-1. **Check existing TRT-BNM pipelines** — other models may already load the same
+1. **Check existing BioIR pipelines** — other models may already load the same
    or similar metadata. For example, Boltz2 loads CCD as a pickle of
    `dict[str, RDKit.Mol]` and molecule pkls from a directory. See what loaders
    and paths already exist.
-1. **Map the OSS metadata to TRT-BNM config** — add metadata paths (e.g.,
+1. **Map the OSS metadata to BioIR config** — add metadata paths (e.g.,
    `ccd_path`, `mol_dir`, `atom_table_path`) to the model's config. Load lazily
    in the context generator or feature generator `__init__`.
 
@@ -556,9 +556,9 @@ feature generation:
 - `start_atom_index` — cumulative sum of atom counts
 
 **Key principle:** discover how the OSS loads and uses its metadata, then
-reimplement the same loading in TRT-BNM using standard libraries (pickle, json,
+reimplement the same loading in BioIR using standard libraries (pickle, json,
 rdkit, numpy). The metadata itself (data files) can be shared between OSS and
-TRT-BNM — only the loading code is reimplemented.
+BioIR — only the loading code is reimplemented.
 
 ### Cheminformatics-derived feature pitfalls
 
@@ -601,7 +601,7 @@ non-zero — and the most common bugs leave both sides at zero.
    produce the same empty result for these mols), or (b) call the perception
    explicitly and reconcile with OSS. *Do not* call perception in only one of
    the two pipelines — that creates a silent divergence that looks like a
-   TRT-BNM bug.
+   BioIR bug.
 1. **Prep ordering matters for derived properties.** Several RDKit APIs depend
    on prior prep: ring perception (`UpdatePropertyCache` + `GetSymmSSSR`) before
    `GetMoleculeBoundsMatrix`; `AssignStereochemistry` before chiral /
@@ -751,7 +751,7 @@ class FeatureFactory(FeatureFactoryBase):
 ```
 
 **Recycling/ensemble loop:** Use `SampleRepeater` (from
-`tensorrt_bionemo.pipeline.models.openfold2.feature_factory`) to wrap the
+`bionemo_ir.pipeline.models.openfold2.feature_factory`) to wrap the
 ensembled collator specs. Do NOT implement your own recycling loop.
 
 ```python
@@ -774,7 +774,7 @@ Create `postprocessor.py` with a `PostProcessorBase` subclass.
 ### Requirements
 
 - **Must return `FoldingOutput`**
-  (`tensorrt_bionemo.data.schemas.FoldingOutput`) — this is the enforced output
+  (`bionemo_ir.data.schemas.FoldingOutput`) — this is the enforced output
   schema. Every postprocessor must produce a `FoldingOutput` instance, no
   exceptions.
 - **If the model outputs multiple samples** (e.g., multiple diffusion
@@ -784,7 +784,7 @@ Create `postprocessor.py` with a `PostProcessorBase` subclass.
   `FoldingOutput`. Do not return lists of outputs or leave sample selection to
   the caller.
 
-### `FoldingOutput` schema (from `tensorrt_bionemo/data/schemas/basic.py`)
+### `FoldingOutput` schema (from `bionemo_ir/data/schemas/basic.py`)
 
 | Field             | Shape                         | Required | Description                           |
 | ----------------- | ----------------------------- | -------- | ------------------------------------- |
@@ -834,28 +834,28 @@ ______________________________________________________________________
 
 ### Step 1 — Create factory class
 
-Add a `ModelComponentsFactory` subclass in `tensorrt_bionemo/registry.py`:
+Add a `ModelComponentsFactory` subclass in `bionemo_ir/registry.py`:
 
 ```python
 class NewModelFactory(ModelComponentsFactory):
     @classmethod
     def get_model_class(cls) -> Type[nn.Module]:
-        from tensorrt_bionemo.models.newmodel import NewModel
+        from bionemo_ir.models.newmodel import NewModel
         return NewModel
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        from tensorrt_bionemo.pipeline.models.newmodel.tokenizer import Tokenizer
+        from bionemo_ir.pipeline.models.newmodel.tokenizer import Tokenizer
         return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        from tensorrt_bionemo.pipeline.models.newmodel.feature_factory import FeatureFactory
+        from bionemo_ir.pipeline.models.newmodel.feature_factory import FeatureFactory
         return FeatureFactory()
 
     @classmethod
     def get_postprocessor(cls) -> Type["PostProcessorBase"]:
-        from tensorrt_bionemo.pipeline.models.newmodel.postprocessor import PostProcessor
+        from bionemo_ir.pipeline.models.newmodel.postprocessor import PostProcessor
         return PostProcessor
 
     @classmethod
@@ -875,11 +875,11 @@ ______________________________________________________________________
 
 ## Phase 7 — Establish OSS Baseline Metrics (in WORKDIR)
 
-### ⚠️ MANDATORY: OSS baseline MUST be established BEFORE any TRT-BNM testing ⚠️
+### ⚠️ MANDATORY: OSS baseline MUST be established BEFORE any BioIR testing ⚠️
 
 **This phase is a hard prerequisite.** You must run the OSS model on ALL test
 samples and collect metrics vs ground truths BEFORE proceeding to Phase 8 or
-Phase 9. Without OSS baseline metrics, there is nothing to compare TRT-BNM
+Phase 9. Without OSS baseline metrics, there is nothing to compare BioIR
 results against. Do NOT skip, defer, or partially complete this phase.
 
 ### Input data and ground truths
@@ -900,19 +900,19 @@ AND MSAs.
 
 ### Checkpoints
 
-**Always use checkpoints from the TRT-BNM hub system**
-(`tensorrt_bionemo/hubs/`). The hub supports local checkpoints (via environment
+**Always use checkpoints from the BioIR hub system**
+(`bionemo_ir/hubs/`). The hub supports local checkpoints (via environment
 variables like `BOLTZ2_CKPT`) and remote checkpoints (HuggingFace hub). See:
 
-- `tensorrt_bionemo/hubs/support_matrix.py` — `FoldingSupportMatrix` lists all
+- `bionemo_ir/hubs/support_matrix.py` — `FoldingSupportMatrix` lists all
   supported model names
-- `tensorrt_bionemo/hubs/local.py` — `LOCAL_CHECKPOINTS` maps model names to env
+- `bionemo_ir/hubs/local.py` — `LOCAL_CHECKPOINTS` maps model names to env
   vars and loading config
-- `tensorrt_bionemo/hubs/checkpoint.py` — `load_weights(name, hub="local"|"hf")`
+- `bionemo_ir/hubs/checkpoint.py` — `load_weights(name, hub="local"|"hf")`
   loads via either hub
 
 When running the OSS pipeline, the OSS code needs to load the
-**same checkpoint**. If the OSS code cannot load the TRT-BNM hub checkpoint
+**same checkpoint**. If the OSS code cannot load the BioIR hub checkpoint
 directly (different format, different key names, etc.):
 
 1. **Warn the user** — explain the format mismatch and what conversion is
@@ -923,9 +923,9 @@ directly (different format, different key names, etc.):
    used, any conversion steps.
 1. **Never download a separate checkpoint** without asking the user.
 
-### Inference config parity — OSS and TRT-BNM MUST use identical settings
+### Inference config parity — OSS and BioIR MUST use identical settings
 
-**⚠️ The OSS baseline and TRT-BNM runs MUST use the same inference-time
+**⚠️ The OSS baseline and BioIR runs MUST use the same inference-time
 configuration.** A metric comparison is meaningless if the two runs differ in
 any parameter that affects prediction quality or output structure. Before
 running either side, discover and lock down these parameters:
@@ -950,25 +950,25 @@ running either side, discover and lock down these parameters:
 1. **Record the exact values in `$WORKDIR/NOTES.md`** under a
    `## Inference Config` section, in a two-column table:
    `| Parameter | Value |`.
-1. **When running TRT-BNM in Phase 9, use the SAME values.** Cross-check against
-   `oss_config.json` before starting. If the TRT-BNM config uses different names
+1. **When running BioIR in Phase 9, use the SAME values.** Cross-check against
+   `oss_config.json` before starting. If the BioIR config uses different names
    for the same parameter, create a mapping table.
 
 **Common pitfalls:**
 
-- OSS defaults to `num_samples=5` but TRT-BNM defaults to `num_samples=1` →
+- OSS defaults to `num_samples=5` but BioIR defaults to `num_samples=1` →
   different output quality (best-of-5 vs single shot)
-- OSS uses `max_recycling_iters=3` but TRT-BNM config calls it `num_recycles=3`
+- OSS uses `max_recycling_iters=3` but BioIR config calls it `num_recycles=3`
   → off-by-one if one means "3 iterations" and the other means "3 additional
   iterations after the first"
-- OSS runs diffusion with 200 steps by default but TRT-BNM uses 50 →
+- OSS runs diffusion with 200 steps by default but BioIR uses 50 →
   significantly different prediction quality
-- OSS uses `seed=42` but TRT-BNM uses `seed=0` → different diffusion
+- OSS uses `seed=42` but BioIR uses `seed=0` → different diffusion
   trajectories, different "best" sample selected
-- OSS enables `use_msa=True` by default but the TRT-BNM run script forgets to
+- OSS enables `use_msa=True` by default but the BioIR run script forgets to
   pass MSAs → catastrophic accuracy drop
 
-**If a parameter cannot be matched exactly** (e.g., TRT-BNM does not yet support
+**If a parameter cannot be matched exactly** (e.g., BioIR does not yet support
 a feature the OSS model uses), document the difference and its expected impact
 on metrics in `$WORKDIR/NOTES.md`.
 
@@ -1055,7 +1055,7 @@ Install the OSS model's dependencies so the OSS inference script can run:
 
 ```bash
 pip install <oss_package> --no-deps  # or install from $OSS_ROOT
-# Install any additional OSS-only dependencies (not needed for TRT-BNM)
+# Install any additional OSS-only dependencies (not needed for BioIR)
 ```
 
 **⚠️ CRITICAL: Disable accelerated kernels that cannot run on this system.**
@@ -1217,13 +1217,13 @@ and the exact `ost compare-structures` command.
 
 While running the OSS model (Steps 3-4),
 **also dump two sets of tensor artifacts** that are essential for debugging the
-TRT-BNM pipeline in later phases:
+BioIR pipeline in later phases:
 
 **Artifact 1: OSS input features** (from OSS data pipeline) → used in Phase 8 to
-fix TRT-BNM data pipeline
+fix BioIR data pipeline
 
-Run the **OSS featurization code** (NOT TRT-BNM) on each sample input and save
-the feature dict. These are the reference features that the TRT-BNM pipeline
+Run the **OSS featurization code** (NOT BioIR) on each sample input and save
+the feature dict. These are the reference features that the BioIR pipeline
 must reproduce.
 
 ```python
@@ -1254,10 +1254,10 @@ torch.save({
 
 **Why both artifacts are needed:**
 
-- If the TRT-BNM **data pipeline** produces wrong features, you compare
-  `oss_features/{id}.pt` against TRT-BNM output to find which feature key
+- If the BioIR **data pipeline** produces wrong features, you compare
+  `oss_features/{id}.pt` against BioIR output to find which feature key
   diverges.
-- If the TRT-BNM **postprocessor or writer** is broken, you load
+- If the BioIR **postprocessor or writer** is broken, you load
   `oss_model_outputs/{id}.pt`, run the postprocessor on the OSS model output,
   and check if the written CIF/PDB scores correctly with OST. This isolates
   postprocessor/writer bugs from data pipeline bugs.
@@ -1305,35 +1305,35 @@ ______________________________________________________________________
 
 ## Phase 8 — Validate Equivalence — Level 1 (in WORKDIR)
 
-**Level 1 testing: feature-level equivalence.** Compare TRT-BNM pipeline outputs
+**Level 1 testing: feature-level equivalence.** Compare BioIR pipeline outputs
 tensor-by-tensor against **OSS-generated** reference outputs. This must pass
 before Level 2.
 
-### ⚠️ CRITICAL: Reference features come from OSS, not TRT-BNM
+### ⚠️ CRITICAL: Reference features come from OSS, not BioIR
 
 **The reference `.pt` files used for equivalence testing must be generated by
 running the OSS data pipeline** on the same inputs. Do NOT generate references
-by running the TRT-BNM pipeline and saving its output — that only tests
+by running the BioIR pipeline and saving its output — that only tests
 self-consistency, not correctness.
 
-A self-consistent test (TRT-BNM vs TRT-BNM) will always pass, even if the
+A self-consistent test (BioIR vs BioIR) will always pass, even if the
 features are completely wrong. The entire point of equivalence testing is to
-verify that TRT-BNM produces the **same features as OSS**. If you generate
-references from TRT-BNM, you are testing nothing.
+verify that BioIR produces the **same features as OSS**. If you generate
+references from BioIR, you are testing nothing.
 
 **How to generate correct references:**
 
-1. Run the **OSS data pipeline** (not the TRT-BNM pipeline) on each sample
+1. Run the **OSS data pipeline** (not the BioIR pipeline) on each sample
    input.
 1. Save the OSS feature dict as `<input_id>.pt` via `torch.save()`.
-1. The equivalence test then runs the TRT-BNM pipeline on the same input and
+1. The equivalence test then runs the BioIR pipeline on the same input and
    compares against the OSS `.pt` file.
 
 If the OSS pipeline is not runnable in the current environment (dependency
 issues), the reference generation script must use the
 **OSS featurization primitives** (e.g., the OSS's `featurize_structure_of3`,
 `featurize_reference_conformers_of3`, MSA processing) to produce the reference
-features — not TRT-BNM's reimplementation.
+features — not BioIR's reimplementation.
 
 ### ⚠️ CRITICAL: The OSS reference must match the production parser path ⚠️
 
@@ -1344,11 +1344,11 @@ different metadata — annotations, identifiers, masks, alternate states,
 ordering, secondary fields. The downstream featurizer then
 *branches on what the parser produced*. If your reference script feeds OSS via a
 format whose parser drops a field the production parser keeps, the OSS run
-completes "successfully" but its output disagrees with TRT-BNM by design —
-because TRT-BNM matches the production parser and your reference script doesn't.
+completes "successfully" but its output disagrees with BioIR by design —
+because BioIR matches the production parser and your reference script doesn't.
 
 This is one of the highest-leverage debugging mistakes. The symptom looks like a
-TRT-BNM bug (off-by-one rows, a flag in the wrong place, a value that's there in
+BioIR bug (off-by-one rows, a flag in the wrong place, a value that's there in
 one pipeline and not the other) but the root cause is upstream of both
 pipelines: the reference was built from the wrong format.
 
@@ -1363,11 +1363,11 @@ format your reference script must write.**
    modification annotations, alternate locations, numbering offsets, taxonomy /
    clustering metadata, ordering of repeats. Two parsers for "the same file
    kind" frequently produce subtly different downstream features.
-1. **Check what your TRT-BNM stage parser produces.** If TRT-BNM only parses
+1. **Check what your BioIR stage parser produces.** If BioIR only parses
    format A but production OSS routes through format B, your reference dump must
    also go through format B — or you're comparing apples to oranges.
 1. **If the formats differ, synthesise the production format on the fly in your
-   reference dump script.** Convert TRT-BNM's parsed objects back to the
+   reference dump script.** Convert BioIR's parsed objects back to the
    production format and feed *that* to OSS. Cache the converted files under
    `$WORKDIR/ref_data/oss_<format>_inputs/` with provenance entries so the
    conversion is reproducible and auditable. The conversion code itself is part
@@ -1380,12 +1380,12 @@ format your reference script must write.**
 
 **Symptoms that suggest a format-alignment problem rather than a pipeline bug:**
 
-- TRT-BNM produces N more rows than OSS *and* the OSS reference value at the
+- BioIR produces N more rows than OSS *and* the OSS reference value at the
   missing positions is the parser's "missing field" sentinel (e.g. `-1`, `None`,
   all-zeros).
-- A boolean flag in the reference is uniformly `0` for a feature TRT-BNM
+- A boolean flag in the reference is uniformly `0` for a feature BioIR
   produces with mixed `0`/`1`.
-- The OSS reference is unusually small / empty for inputs where TRT-BNM has
+- The OSS reference is unusually small / empty for inputs where BioIR has
   substantial data — and re-running OSS via a richer input format produces
   different (larger / non-empty) output.
 
@@ -1416,7 +1416,7 @@ Create `$WORKDIR/debug/dump_oss_features.py` that runs the
 - Import ONLY from the OSS package (e.g.,
   `from openfold3.core.data.pipelines.featurization...`) or standard libraries
   (biotite, numpy, torch)
-- NOT import anything from `tensorrt_bionemo.pipeline.models.*` — this is the
+- NOT import anything from `bionemo_ir.pipeline.models.*` — this is the
   code under test, not the reference
 - Run the OSS featurization functions (tokenization, structure featurization,
   conformer featurization, MSA featurization) on the same inputs
@@ -1436,9 +1436,9 @@ Create `$WORKDIR/tests/test_equivalence.py`. This test:
 
 - Loads **OSS-generated** reference `.pt` files from
   `$WORKDIR/ref_data/oss_features/`
-- Runs the **TRT-BNM** pipeline (tokenizer → generators → collators) on the same
+- Runs the **BioIR** pipeline (tokenizer → generators → collators) on the same
   inputs
-- Compares TRT-BNM output tensors against OSS reference tensors
+- Compares BioIR output tensors against OSS reference tensors
 - The test must NEVER generate its own reference — it only reads pre-generated
   OSS `.pt` files
 - Verifies every loaded reference has a matching `source="oss"` provenance entry
@@ -1446,8 +1446,8 @@ Create `$WORKDIR/tests/test_equivalence.py`. This test:
 
 **The test fails if:**
 
-- Any feature key is missing in TRT-BNM output that exists in OSS reference
-- TRT-BNM output contains unexpected extra keys not documented in
+- Any feature key is missing in BioIR output that exists in OSS reference
+- BioIR output contains unexpected extra keys not documented in
   `$WORKDIR/NOTES.md`
 - Any deterministic feature tensor differs beyond `atol` tolerance
 - Tensor shapes differ
@@ -1485,7 +1485,7 @@ to the next level until the current level passes.
 
 Some features are inherently stochastic (e.g., `ref_pos` with random
 augmentation, MSA masks, bert masks, random crops). These will **never** match
-exactly between OSS and TRT-BNM runs.
+exactly between OSS and BioIR runs.
 **Do NOT skip them — validate them with statistical and structural tests.**
 
 **Every stochastic feature must be tested. Mark it as stochastic and apply ALL
@@ -1513,7 +1513,7 @@ translation:
 
 - **Intra-residue pairwise distances must match exactly** — rotation/translation
   preserves internal geometry
-- Compare pairwise atom distances within each residue between TRT-BNM and OSS
+- Compare pairwise atom distances within each residue between BioIR and OSS
 
 ```python
 def test_ref_pos_internal_geometry(trt_ref_pos, oss_ref_pos, ref_space_uid):
@@ -1529,7 +1529,7 @@ def test_ref_pos_internal_geometry(trt_ref_pos, oss_ref_pos, ref_space_uid):
 
 #### Test 4: Per-tensor mean & std comparison (single run)
 
-Even from one TRT-BNM and one OSS run with the same seed, the
+Even from one BioIR and one OSS run with the same seed, the
 **summary statistics** of a stochastic tensor should be close. This catches
 subtle bugs (off-by-one slicing, dtype drift, wrong distribution) that the
 geometry/shape tests miss, and it is cheap — no multi-seed sweep needed.
@@ -1611,7 +1611,7 @@ seeds, collect per-run mean/std, and compare:
 
 - **Mean of means**: ≤ `0.05 * |mean_oss|` (looser since you now have a sample
   distribution)
-- **Std of means** (between-run): TRT-BNM std ≤ 1.5× OSS std
+- **Std of means** (between-run): BioIR std ≤ 1.5× OSS std
 - **KS test**: p-value > 0.01 on the flattened element distribution (same
   distribution)
 
@@ -1631,7 +1631,7 @@ its category and PASS/FAIL status:
 
 The categorization table must live in the test file, not in ad-hoc runtime
 logic. It must include a one-line reason for every stochastic classification. If
-a feature was deterministic in OSS but noisy in TRT-BNM, treat that as a bug,
+a feature was deterministic in OSS but noisy in BioIR, treat that as a bug,
 not as a stochastic feature.
 
 ```text
@@ -1669,31 +1669,31 @@ ______________________________________________________________________
 
 ## Phase 9 — Validate E2E Metrics — Level 2 (in WORKDIR)
 
-**Level 2 testing: end-to-end accuracy metrics.** Run the TRT-BNM pipeline on
+**Level 2 testing: end-to-end accuracy metrics.** Run the BioIR pipeline on
 the **same test samples** that the OSS model was scored on in Phase 7, score
-predictions against the **same ground truths**, and compare the TRT-BNM metrics
+predictions against the **same ground truths**, and compare the BioIR metrics
 against the **OSS baseline metrics** saved in
 `$WORKDIR/ref_data/oss_metrics.json`.
 
-### Step 1 — Run TRT-BNM model on test samples and score vs ground truth
+### Step 1 — Run BioIR model on test samples and score vs ground truth
 
 Create `$WORKDIR/e2e/run_trt_e2e.py`. This script does exactly what the OSS
-script in Phase 7 did, but using the TRT-BNM pipeline:
+script in Phase 7 did, but using the BioIR pipeline:
 
 1. Loads the **same test samples** from `examples/data/samples/`.
-1. Runs the **TRT-BNM pipeline** (tokenizer → feature gen → model →
+1. Runs the **BioIR pipeline** (tokenizer → feature gen → model →
    postprocessor) on each sample.
 1. Produces predicted structures via `PostProcessor` → `FoldingOutput`.
-1. **Writes prediction files using TRT-BNM writers** (see below).
+1. **Writes prediction files using BioIR writers** (see below).
 1. Scores each prediction against the **same ground truths** in
    `examples/data/samples/gt/`.
 1. Saves per-sample metrics to `$WORKDIR/ref_data/trt_metrics.json`.
 
-**⚠️ MANDATORY: Use `tensorrt_bionemo.data.writers` — never create custom
+**⚠️ MANDATORY: Use `bionemo_ir.data.writers` — never create custom
 writers.**
 
 When converting `FoldingOutput` to PDB/CIF files for scoring, you **MUST** use
-`PDBWriter` or `CIFWriter` from `tensorrt_bionemo.data.writers`. Do NOT write
+`PDBWriter` or `CIFWriter` from `bionemo_ir.data.writers`. Do NOT write
 custom PDB/CIF writers, ad-hoc formatting code, or model-specific writers — fix
 the existing writers and postprocessor instead. The production code path must
 work for all models.
@@ -1708,8 +1708,8 @@ OST):
 1. File a bug if the writer has a genuine defect that affects multiple models.
 
 ```python
-from tensorrt_bionemo.data.writers.pdb_writer import PDBWriter
-from tensorrt_bionemo.data.writers.cif_writer import CIFWriter
+from bionemo_ir.data.writers.pdb_writer import PDBWriter
+from bionemo_ir.data.writers.cif_writer import CIFWriter
 
 writer = CIFWriter(
     res_type_mapping=res_type_mapping,
@@ -1743,7 +1743,7 @@ used in PDB/CIF records.
 
 **⚠️ Config parity check — do this BEFORE running.** Load
 `$WORKDIR/ref_data/oss_config.json` (saved in Phase 7) and verify that the
-TRT-BNM run uses identical values for: diffusion samples, diffusion steps,
+BioIR run uses identical values for: diffusion samples, diffusion steps,
 recycling/trunk iterations, random seed, MSA depth, precision, and sample
 selection strategy. See the "Inference config parity" section in Phase 7 for the
 full parameter list. Print both configs side-by-side and confirm they match
@@ -1758,7 +1758,7 @@ writer). Create **two scripts** in `$WORKDIR/e2e/`:
 Tests the serial backend on ALL samples:
 
 ```python
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
+from bionemo_ir.pipeline.processor.engine_proc import (
     EngineProcessorConfig, build_processor,
 )
 
@@ -1789,7 +1789,7 @@ Tests the Ray backend on ALL samples:
 
 ```python
 import ray
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
+from bionemo_ir.pipeline.processor.engine_proc import (
     EngineProcessorConfig, build_processor,
 )
 
@@ -1820,7 +1820,7 @@ results = result_ds.take_all()
 1. Score output CIFs with `$OST_CMD compare-structures` (same flags as Phase 7)
 1. Compare against `oss_metrics.json` baseline
 1. Print per-sample table with OSS lDDT, TRT lDDT, diff, status, bad_bonds
-1. PASS only if TRT-BNM satisfies the frozen acceptance thresholds recorded
+1. PASS only if BioIR satisfies the frozen acceptance thresholds recorded
    before debugging
 1. Report ALL SAMPLES PASS or SOME SAMPLES FAILED
 
@@ -1832,7 +1832,7 @@ cd $WORKDIR && python e2e/test_build_processor_serial.py
 cd $WORKDIR && python e2e/test_build_processor_ray.py
 ```
 
-### Step 2 — Compare TRT-BNM metrics against OSS baseline metrics
+### Step 2 — Compare BioIR metrics against OSS baseline metrics
 
 Load **both** metric files and compare per-sample, per-metric:
 
@@ -1842,7 +1842,7 @@ import json
 with open("$WORKDIR/ref_data/oss_metrics.json") as f:
     oss = json.load(f)  # Baseline from Phase 7
 with open("$WORKDIR/ref_data/trt_metrics.json") as f:
-    trt = json.load(f)  # TRT-BNM results from Step 1
+    trt = json.load(f)  # BioIR results from Step 1
 
 for input_id in oss:
     for metric in ["lddt", "dockq"]:
@@ -1857,25 +1857,25 @@ for input_id in oss:
 
 ### Step 3 — Acceptance criteria
 
-| Condition                                    | Status                       | Reason                                                                                                                         |
-| -------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| TRT-BNM score >= OSS score                   | **PASS after parity checks** | Equal or better metrics are acceptable only after feature, config, sample-set, writer, and metric-command parity are confirmed |
-| TRT-BNM score \< OSS score by less than 0.05 | **PASS**                     | Within stochastic variance (diffusion models vary per run)                                                                     |
-| TRT-BNM score \< OSS score by more than 0.05 | **FAIL**                     | TRT-BNM is meaningfully worse — indicates pipeline defect                                                                      |
+| Condition                                  | Status                       | Reason                                                                                                                         |
+| ------------------------------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| BioIR score >= OSS score                   | **PASS after parity checks** | Equal or better metrics are acceptable only after feature, config, sample-set, writer, and metric-command parity are confirmed |
+| BioIR score \< OSS score by less than 0.05 | **PASS**                     | Within stochastic variance (diffusion models vary per run)                                                                     |
+| BioIR score \< OSS score by more than 0.05 | **FAIL**                     | BioIR is meaningfully worse — indicates pipeline defect                                                                        |
 
 Applies to all metrics: lDDT, DockQ, TM-score, GDT-TS.
 
-**If TRT-BNM scores better than OSS, that is not enough by itself.** It may be a
+**If BioIR scores better than OSS, that is not enough by itself.** It may be a
 legitimate stochastic improvement, but it can also signal different sample
 selection, chain mapping, scoring inputs, or config drift. Confirm Phase 8
 feature equivalence, config parity, sample-set equality, writer parity, and
 metric command parity before marking it PASS.
 
-**Only flag metric-regression FAIL when TRT-BNM is worse than OSS by more than
+**Only flag metric-regression FAIL when BioIR is worse than OSS by more than
 the threshold.** Parity failures, missing samples, missing provenance, or
 unvalidated tensors are independent hard failures even if metrics look good.
 
-If TRT-BNM metrics are worse beyond thresholds:
+If BioIR metrics are worse beyond thresholds:
 
 1. Check if Level 1 equivalence tests truly pass — a small feature difference
    can compound through the model.
@@ -1885,7 +1885,7 @@ If TRT-BNM metrics are worse beyond thresholds:
 
 ### Step 4 — Smoke checks
 
-Also verify basic sanity on TRT-BNM outputs:
+Also verify basic sanity on BioIR outputs:
 
 - No NaN/Inf in model outputs
 - Predicted structures have plausible geometry (no atom clashes, reasonable bond
@@ -1897,7 +1897,7 @@ Also verify basic sanity on TRT-BNM outputs:
 
 Run the e2e test on **every in-scope sample** from
 `$WORKDIR/ref_data/sample_manifest.json`. Both OSS baseline (Phase 7) and
-TRT-BNM (Step 1) must cover the full set.
+BioIR (Step 1) must cover the full set.
 
 **Every sample must pass within acceptable thresholds.** Small divergences due
 to stochastic components (diffusion sampling, random seeds) are expected — the
@@ -1914,7 +1914,7 @@ not that the atom coordinates are identical.
    feature-level outputs (Level 1) for that sample to find the root cause.
 1. Fix the pipeline code (feature generation, postprocessor, or model
    integration).
-1. Re-run the failing sample through both OSS and TRT-BNM to confirm the fix.
+1. Re-run the failing sample through both OSS and BioIR to confirm the fix.
 1. Once the failing sample passes, re-run **all** samples to confirm no
    regressions.
 1. Repeat until all samples pass.
@@ -1951,7 +1951,7 @@ handling, or postprocessor invocation.
    `build_processor` disagree, the pipeline integration has a bug.
 
 ```python
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
+from bionemo_ir.pipeline.processor.engine_proc import (
     EngineProcessorConfig, build_processor,
 )
 
@@ -1965,7 +1965,7 @@ processor = build_processor(config)
 for sample_path in all_sample_paths:
     result = processor.process(sample_path)
     # build_processor uses WriterStage internally, which writes PDB/CIF via
-    # tensorrt_bionemo.data.writers (PDBWriter/CIFWriter) — same as Step 1.
+    # bionemo_ir.data.writers (PDBWriter/CIFWriter) — same as Step 1.
     # Score the output files with $OST_CMD, compare vs trt_metrics.json.
 ```
 
@@ -1995,11 +1995,11 @@ Print (not file) after completion:
 
 1. **Model overview** — model name, OSS source location, pipeline pattern (A or
    B), number of OSS functions ported
-1. **Function inventory** — complete OSS function → TRT-BNM class mapping table
+1. **Function inventory** — complete OSS function → BioIR class mapping table
 1. **Files created/modified** — full paths with brief descriptions
 1. **Level 1 results (equivalence)** — per-stage and full-pipeline PASS/FAIL,
    numerical tolerance details, number of features compared
-1. **Level 2 results (e2e metrics)** — OSS vs TRT-BNM metrics table (lDDT, DockQ
+1. **Level 2 results (e2e metrics)** — OSS vs BioIR metrics table (lDDT, DockQ
    per sample), PASS/FAIL per threshold
 1. **Known limitations** — features not ported, approximations made, missing
    edge cases
@@ -2020,7 +2020,7 @@ Confirm the factory is registered and all imports resolve:
 
 ```bash
 python -c "
-from tensorrt_bionemo.registry import get_tokenizer, get_feature_factory
+from bionemo_ir.registry import get_tokenizer, get_feature_factory
 tok = get_tokenizer('<model_name>')
 ff = get_feature_factory('<model_name>')
 print(f'Tokenizer: {type(tok).__name__}')
@@ -2065,7 +2065,7 @@ Ensure the implementation notes include:
   including any model-specific handling for protein, RNA, DNA, CCD ligands,
   SMILES ligands, templates, MSAs, and unsupported fields.
 - **How to parse inputs** — sample formats, required fields, path conventions,
-  and any OSS-to-TRT-BNM mapping decisions.
+  and any OSS-to-BioIR mapping decisions.
 - **How to run each stage** — parser, tokenizer, feature generation, collator,
   engine, postprocessor, writer, and validation commands.
 - **Design decisions and deviations** — the timestamped entries accumulated
@@ -2089,48 +2089,48 @@ maintainability. It often has: deeply nested functions, implicit state via dict
 mutation, copy-paste across models, inconsistent naming, no separation of
 concerns, global random state, and data pipeline logic tangled with model logic.
 
-TRT-BNM is **senior-engineer-style** — a structured pipeline framework designed
+BioIR is **senior-engineer-style** — a structured pipeline framework designed
 to support **any** biology model. The goal is not to replicate the OSS code's
 structure; it is to **understand the algorithm** the OSS code implements, then
-**rewrite it cleanly** within TRT-BNM's architecture.
+**rewrite it cleanly** within BioIR's architecture.
 
 **What this means in practice:**
 
 - **Read the OSS code to understand the math and data flow**, not to copy its
-  structure. A 200-line OSS function may become 3 small, focused TRT-BNM
+  structure. A 200-line OSS function may become 3 small, focused BioIR
   classes.
 - **Name things for clarity**, not to match OSS. If the OSS calls it
-  `_process_features_v2_inner`, name it `MakeAtomFeatures` in TRT-BNM.
+  `_process_features_v2_inner`, name it `MakeAtomFeatures` in BioIR.
 - **Separate concerns** that the OSS code tangles. If one OSS function does MSA
   sampling AND masking AND clustering, split those into `SampleMsa`,
   `MakeMaskedMsa`, and `NearestNeighborClusters`.
-- **Use the type system.** OSS often passes `protein: dict` everywhere. TRT-BNM
+- **Use the type system.** OSS often passes `protein: dict` everywhere. BioIR
   has typed base classes (`TransformBase`, `FeatureGeneratorBase`,
   `FeatureCollatorBase`) — use them correctly to make the pipeline
   self-documenting.
 - **Make each class do one thing.** A generator produces features. A collator
   modifies features. A transform normalizes data. Don't mix responsibilities.
 - **Config over hardcoded values.** OSS may hardcode `max_msa = 512` inside a
-  function. TRT-BNM reads `self.config.max_msa_clusters` — configurable,
+  function. BioIR reads `self.config.max_msa_clusters` — configurable,
   overridable, documented.
-- **Deterministic by default.** OSS may scatter `random.random()` calls. TRT-BNM
+- **Deterministic by default.** OSS may scatter `random.random()` calls. BioIR
   threads `context["ensemble_seed"]` through `torch.Generator` — reproducible,
   testable.
 - **No dead code.** OSS may have training-only branches, backward-compat shims,
   and commented-out experiments. Port only what the inference pipeline needs.
 
-**The OSS code tells you WHAT to compute. TRT-BNM's architecture tells you HOW
+**The OSS code tells you WHAT to compute. BioIR's architecture tells you HOW
 to structure it. You supply the engineering judgment to bridge the two.**
 
 ### No OSS Imports
 
-**DO NOT import or call OSS code directly.** The TRT-BNM pipeline must be a
+**DO NOT import or call OSS code directly.** The BioIR pipeline must be a
 fresh reimplementation. Use OSS code only as a **read-only reference** to
 understand algorithms, data formats, and expected behavior.
 
 - **FORBIDDEN**: `from boltz.data.feature.featurizerv2 import Boltz2Featurizer`
 - **FORBIDDEN**: `from openfold.data.data_transforms import make_seq_mask`
-- **FORBIDDEN**: Wrapping OSS functions inside TRT-BNM classes
+- **FORBIDDEN**: Wrapping OSS functions inside BioIR classes
 - **FORBIDDEN**: Copy-pasting OSS code and just renaming the function to a class
   — you must understand the algorithm and rewrite it with proper structure
 - **ALLOWED**: Reading OSS code to understand algorithms, then reimplementing
@@ -2144,7 +2144,7 @@ understand algorithms, data formats, and expected behavior.
 
 ### Conversion Rules
 
-1. **OSS free functions → TRT-BNM classes**: Each `def foo(protein)` becomes a
+1. **OSS free functions → BioIR classes**: Each `def foo(protein)` becomes a
    class with `__call__(self, batch, context)` (generators/collators) or
    `__call__(self, batch)` (transforms).
 1. **Curried functions → constructor args**: OSS `curry1`-decorated
@@ -2165,9 +2165,9 @@ understand algorithms, data formats, and expected behavior.
 1. **Random seed discipline**: Use `context["ensemble_seed"]` from `pre_init()`,
    not global random state. Pass through `torch.Generator`.
 
-### Current TRT-BNM Basic Schema Scope
+### Current BioIR Basic Schema Scope
 
-The basic input schema (`tensorrt_bionemo.data.schemas.basic`) now supports
+The basic input schema (`bionemo_ir.data.schemas.basic`) now supports
 these polymer/entity types. Port them when the target model and requested
 pipeline need them:
 
@@ -2207,9 +2207,9 @@ pipeline need them:
 - **Glycan-specific semantics** beyond representing a multi-component CCD ligand
   sequence.
 
-Do not skip RNA/DNA or ligand/small-molecule paths just because older TRT-BNM
+Do not skip RNA/DNA or ligand/small-molecule paths just because older BioIR
 ports focused on protein. First check whether the target model's OSS data
-pipeline supports the entity type and whether the requested TRT-BNM pipeline is
+pipeline supports the entity type and whether the requested BioIR pipeline is
 expected to cover it. If a schema-supported type is intentionally not ported for
 a model-specific reason, record the limitation in
 `$WORKDIR/implementation-notes.md` and `$WORKDIR/NOTES.md` with the exact
@@ -2217,7 +2217,7 @@ reason, affected samples, and what would be needed to add it later.
 
 ### Dependencies
 
-**Use pre-existing packages from TRT-BNM's `requirements.txt` first.** Do not
+**Use pre-existing packages from BioIR's `requirements.txt` first.** Do not
 introduce new dependencies without justification. The project already includes
 numpy, torch, pydantic, rdkit, and other common libraries — use them.
 
@@ -2296,7 +2296,7 @@ If the OSS code depends on a library not in `requirements.txt`:
      section: file path, line number, what the bug is, what the correct behavior
      should be, and how it affects outputs.
   1. Alert the user immediately so they can decide whether to report upstream.
-  1. Implement the **correct** behavior in TRT-BNM, not the buggy behavior. Note
+  1. Implement the **correct** behavior in BioIR, not the buggy behavior. Note
      in a code comment:
 
      ```python
@@ -2304,6 +2304,6 @@ If the OSS code depends on a library not in `requirements.txt`:
      # We implement the correct behavior here.
      ```
 
-  1. If the bug affects equivalence testing (TRT-BNM produces different results
-     than OSS because TRT-BNM is correct), document this as an
+  1. If the bug affects equivalence testing (BioIR produces different results
+     than OSS because BioIR is correct), document this as an
      **expected divergence** in the test notes, not a test failure.

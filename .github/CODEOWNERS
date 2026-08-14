@@ -1,4 +1,4 @@
-# CODEOWNERS — review routing for BioNeMo AIR (NVIDIA-BioNeMo/BioNeMoAIR)
+# CODEOWNERS — review routing for BioIR (NVIDIA-BioNeMo/BioNeMo-Inference-Runtime)
 # Syntax: https://docs.github.com/articles/about-code-owners
 #
 # Owners are GitHub teams. A team routes review only if it has WRITE access to

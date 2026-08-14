@@ -27,7 +27,7 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
-namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+namespace bioir::cutedsl::adaln_layernorm_sigmoid
 {
 namespace
 {
@@ -136,4 +136,4 @@ void bind(nb::module_& parent)
     "Launch using prepacked raw pointers, shapes, strides, and stream.");
 }
 
-} // namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+} // namespace bioir::cutedsl::adaln_layernorm_sigmoid

@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.pipeline.models.boltz2.template_logic import (
+from bionemo_ir.pipeline.models.boltz2.template_logic import (
     Alignment,
     TemplateMatch,
     _load_modified_mol,

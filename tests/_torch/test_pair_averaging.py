@@ -24,26 +24,26 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefPairWeightedAveraging
 
-from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
-from tensorrt_bionemo._torch.auto_chunk import ChunkPolicy
-from tensorrt_bionemo._torch.custom_ops import pair_weighted_averaging as pwa_ops
-from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import (
+from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
+from bionemo_ir._torch.auto_chunk import ChunkPolicy
+from bionemo_ir._torch.custom_ops import pair_weighted_averaging as pwa_ops
+from bionemo_ir._torch.custom_ops.pair_weighted_averaging import (
     PairWeightedAveragingCuTe,
     _select_pwa_config_bucket,
     get_pair_weighted_averaging_op,
     is_profitable_pwa_shape,
     select_pwa_config,
 )
-from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging import cutedsl as pwa_cutedsl
-from tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging._config import (
+from bionemo_ir._torch.custom_ops.pair_weighted_averaging import cutedsl as pwa_cutedsl
+from bionemo_ir._torch.custom_ops.pair_weighted_averaging._config import (
     _select_pwa_config_selection_bucket,
 )
-from tensorrt_bionemo._torch.layers.pair_averaging import PairWeightedAveraging
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 90, 100, 103)
-_PWA_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.sm80_pwa"
+_PWA_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_pwa"
 _PWA_TEST_MODES = cutedsl_test_modes(_PWA_SOURCE_MODULE)
 
 # (c_h, c_m) tuples with tuned configs and CUBINs, and the models behind them.
@@ -62,14 +62,12 @@ def _configure_pwa_mode(mode: str, monkeypatch) -> None:
 
     if mode == "cubin":
         try:
-            importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
         except ImportError:
             pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
 
         try:
-            source_module = importlib.import_module(
-                "tensorrt_bionemo._torch.custom_ops.pair_weighted_averaging._source"
-            )
+            source_module = importlib.import_module("bionemo_ir._torch.custom_ops.pair_weighted_averaging._source")
         except ImportError:
             source_module = None
         if source_module is not None:
@@ -289,7 +287,7 @@ def test_pair_weighted_averaging_declines_before_building_inputs(monkeypatch):
     layer = PairWeightedAveraging(c_m=64, c_z=128, c_h=8, num_heads=8, dtype=torch.bfloat16).cuda()
     assert layer._pwa_op_eligible
     monkeypatch.setattr(
-        "tensorrt_bionemo._torch.layers.pair_averaging.is_profitable_pwa_shape",
+        "bionemo_ir._torch.layers.pair_averaging.is_profitable_pwa_shape",
         lambda *_args, **_kwargs: False,
     )
 
@@ -340,7 +338,7 @@ def test_pair_weighted_averaging_config_selects_n_bucket_before_s():
 )
 def test_pwa_cubin_and_python_select_same_rectangular_bucket(D, c_m, I, J, S):
     skip_if_no_cutedsl("pair_weighted_averaging")
-    library = importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
     launcher = library.pair_weighted_averaging
     selected, _ = _select_pwa_config_selection_bucket(
         SM_VERSION,

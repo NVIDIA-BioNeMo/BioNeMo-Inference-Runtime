@@ -27,7 +27,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::gated_sigmoid
+namespace bioir::cutedsl::gated_sigmoid
 {
 namespace
 {
@@ -296,4 +296,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
-} // namespace trtbnm::cutedsl::gated_sigmoid
+} // namespace bioir::cutedsl::gated_sigmoid

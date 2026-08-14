@@ -58,13 +58,13 @@ one side; the pipeline uses the default (both). A key absent from
 
 ## Cache layout
 
-Under `TENSORRT_BIONEMO_CACHE` (default `~/.cache/tensorrt_bionemo`):
+Under `BIOIR_CACHE` (default `~/.cache/bionemo_ir`):
 
-| Path                           | Purpose                                                                |
-| ------------------------------ | ---------------------------------------------------------------------- |
-| `checkpoints/<model key>/`     | staged checkpoints (`TENSORRT_BIONEMO_CHECKPOINTS` relocates the root) |
-| `metadata/<override env name>` | staged metadata (`TENSORRT_BIONEMO_METADATA` relocates)                |
-| `<model key>/`                 | Hub-downloaded metadata for that model (and extracted archives)        |
+| Path                           | Purpose                                                         |
+| ------------------------------ | --------------------------------------------------------------- |
+| `checkpoints/<model key>/`     | staged checkpoints (`BIOIR_CHECKPOINTS` relocates the root)     |
+| `metadata/<override env name>` | staged metadata (`BIOIR_METADATA` relocates)                    |
+| `<model key>/`                 | Hub-downloaded metadata for that model (and extracted archives) |
 
 Hub **checkpoint** downloads go to `~/.cache/hf` (hardcoded `cache_dir` in
 `hubs/hf.py`) — `HF_HOME` / `HF_HUB_CACHE` do not move them.
@@ -72,18 +72,18 @@ Hub **checkpoint** downloads go to `~/.cache/hf` (hardcoded `cache_dir` in
 ## Staging and overrides
 
 ```bash
-export TENSORRT_BIONEMO_CHECKPOINTS=/shared/bionemo-air/checkpoints
-mkdir -p "$TENSORRT_BIONEMO_CHECKPOINTS/boltz-2"
-cp boltz2_conf.ckpt "$TENSORRT_BIONEMO_CHECKPOINTS/boltz-2/"
+export BIOIR_CHECKPOINTS=/shared/bionemo-ir/checkpoints
+mkdir -p "$BIOIR_CHECKPOINTS/boltz-2"
+cp boltz2_conf.ckpt "$BIOIR_CHECKPOINTS/boltz-2/"
 ```
 
 Model keys are the `FoldingSupportMatrix` strings — see
 [support matrix][support]. Extension matters; file name does not.
 
 ```bash
-export TENSORRT_BIONEMO_METADATA=/shared/bionemo-air/metadata
-ln -s /shared/assets/ccd.pkl "$TENSORRT_BIONEMO_METADATA/BOLTZ_CCD_PATH"
-ln -s /shared/assets/mols    "$TENSORRT_BIONEMO_METADATA/BOLTZ_MOL_DIR"
+export BIOIR_METADATA=/shared/bionemo-ir/metadata
+ln -s /shared/assets/ccd.pkl "$BIOIR_METADATA/BOLTZ_CCD_PATH"
+ln -s /shared/assets/mols    "$BIOIR_METADATA/BOLTZ_MOL_DIR"
 ```
 
 Each key has one `<MODEL>_CKPT` in `LOCAL_CHECKPOINTS` (`hubs/local.py`) —
@@ -124,13 +124,13 @@ verification is Hub-download only.
 
 ```bash
 python -c "
-from tensorrt_bionemo.hubs import load_metadata, load_weights
+from bionemo_ir.hubs import load_metadata, load_weights
 print(len(load_weights('boltz-2')), 'entries resolved')
 print(load_metadata('boltz-2'))
 "
 ```
 
-Logs which branch ran at `INFO` (`TENSORRT_BIONEMO_LOG_LEVEL`). For an offline
+Logs which branch ran at `INFO` (`BIOIR_LOG_LEVEL`). For an offline
 pre-flight, pass `local_files_only=True` (not exposed by the pipeline).
 
 ## Downloads
@@ -143,7 +143,7 @@ into the snapshot; re-run to finish. See the [Hugging Face cache guide][hf-cache
 `boltz1_conf.ckpt` has no recorded digest. Checks run on **downloads only**,
 not on env / staged files.
 
-**Authentication.** TRT-BNM does no token handling — that is all
+**Authentication.** BioIR does no token handling — that is all
 `huggingface_hub`. OpenFold3 is gated: accept terms on
 [`OpenFold/OpenFold3`][of3-hf], export `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN` /
 `hf auth login`), then run the verify snippet with `openfold3`. Alternatively
@@ -168,14 +168,14 @@ download; extraction is skipped when the target already exists. Order: override
 
 ## AlphaFold2 parameters
 
-TRT-BNM distributes no AF2 weights. Converting DeepMind's published parameters
+BioIR distributes no AF2 weights. Converting DeepMind's published parameters
 is manual:
 
 1. Obtain `params_model_<N>[_ptm].npz` from the DeepMind
    [AlphaFold repository][af2], under the terms stated there.
 2. Install upstream `openfold` — the converter imports `openfold.config`,
    `openfold.model.model`, and `openfold.utils.import_weights`. It is not a
-   TRT-BNM dependency, so use a throwaway environment.
+   BioIR dependency, so use a throwaway environment.
 3. Run `examples/folding/openfold2/jax_to_pt.py` with `--jax_path`,
    `--config_preset`, `--output_dir`. Preset ↔ parameter mapping is in the
    docstring table in `models/openfold2/config.py` — template and pTM variants

@@ -342,7 +342,7 @@ class RefProtenixMSAModuleFromOSS(ProtenixOSS_MSAModule):
     """OSS ``MSAModule`` (AF3 Algorithm 8) with a seeded builder.
 
     ``msa_configs`` makes the internal row subsampling a no-op (sequential,
-    cutoff above the test MSA depth) — the TRT-BNM port consumes prepared MSA
+    cutoff above the test MSA depth) — the BioIR port consumes prepared MSA
     features, so the reference must not shuffle/drop them.
     """
 

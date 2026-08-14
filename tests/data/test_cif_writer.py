@@ -19,8 +19,8 @@ import tempfile
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.data.utils import get_all_atom_types, get_all_residue_types
-from tensorrt_bionemo.data.writers.cif_writer import CIFWriter
+from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
+from bionemo_ir.data.writers.cif_writer import CIFWriter
 from tests.common.test_utils.data import get_sample_folding_output
 
 

@@ -16,8 +16,8 @@
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
-from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 
 from . import make_left_aligned_pair_mask
 

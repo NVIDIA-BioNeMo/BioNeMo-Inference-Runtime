@@ -18,10 +18,10 @@
 # Only upstream parameter and module names are reproduced here.
 
 """
-Module swap: replace RF3 Recycler's pairformer_stack with TRT-BNM PairformerModule.
+Module swap: replace RF3 Recycler's pairformer_stack with BioIR PairformerModule.
 """
 
-from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
+from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 
 from .adapter import RF3PairformerAdapter
 from .config import make_rf3_pairformer_config
@@ -38,12 +38,12 @@ def swap_pairformer_stack(
     triangle_attention_backend: str = "CUEQUIV",
     pairwise_attention_backend: str = "SDPA",
 ):
-    """Replace recycler.pairformer_stack with a TRT-BNM PairformerModule.
+    """Replace recycler.pairformer_stack with a BioIR PairformerModule.
 
     Args:
         recycler: RF3 Recycler nn.Module instance.
         source_state_dict: Optional state_dict from the source model's pairformer_stack.
-            If None, TRT-BNM module uses default (random) initialization.
+            If None, BioIR module uses default (random) initialization.
         num_blocks: Number of pairformer blocks.
         c_s: Single representation dimension.
         c_z: Pair representation dimension.
@@ -66,13 +66,13 @@ def swap_pairformer_stack(
         triangle_attention_backend=triangle_attention_backend,
         pairwise_attention_backend=pairwise_attention_backend,
     )
-    trtbnm_module = PairformerModule(config)
+    bioir_module = PairformerModule(config)
 
     if source_state_dict is not None:
         converted = convert_pairformer_stack_weights(source_state_dict, num_blocks=num_blocks)
-        trtbnm_module.load_weights(converted)
+        bioir_module.load_weights(converted)
 
-    trtbnm_module = trtbnm_module.to(device)
-    adapter = RF3PairformerAdapter(trtbnm_module)
+    bioir_module = bioir_module.to(device)
+    adapter = RF3PairformerAdapter(bioir_module)
     recycler.pairformer_stack = adapter
     return recycler

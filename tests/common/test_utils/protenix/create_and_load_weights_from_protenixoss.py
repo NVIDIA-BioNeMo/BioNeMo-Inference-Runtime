@@ -12,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Convert OSS Protenix atom-transformer / atom-encoder weights to TRT-BNM.
+"""Convert OSS Protenix atom-transformer / atom-encoder weights to BioIR.
 
-The TRT-BNM ``ProtenixDiffusionTransformer`` reuses fused primitives (``AdaLN``,
+The BioIR ``ProtenixDiffusionTransformer`` reuses fused primitives (``AdaLN``,
 ``ConditionedTransitionBlock``), so parameter layouts differ from OSS and a
 name/shape mapping is required. This mirrors OF3's
 ``create_and_load_weights_from_of3oss.py``.
@@ -26,11 +26,11 @@ import torch
 
 
 def _convert_adaln(oss_adaln, trt_adaln) -> None:
-    """OSS ``AdaptiveLayerNorm`` -> TRT-BNM ``AdaLN``.
+    """OSS ``AdaptiveLayerNorm`` -> BioIR ``AdaLN``.
 
     ``sigmoid(s_scale) * LN(a) + s_bias`` with
     ``s_scale = linear_s(LN_s(s))``, ``s_bias = linear_nobias_s(LN_s(s))``.
-    TRT-BNM fuses ``[s_scale; s_bias]`` into one Linear with a zero bias slot
+    BioIR fuses ``[s_scale; s_bias]`` into one Linear with a zero bias slot
     for the s_bias half.
     """
     trt_adaln.s_norm.weight.data.copy_(oss_adaln.layernorm_s.weight.data)
@@ -90,7 +90,7 @@ def convert_atom_transformer(oss_atom_transformer, trt_atom_transformer) -> None
 
 def convert_atom_attention_encoder(oss, trt) -> None:
     """Copy OSS ``AtomAttentionEncoder(has_coords=False)`` weights into the
-    TRT-BNM ``ProtenixAtomAttentionEncoder``.
+    BioIR ``ProtenixAtomAttentionEncoder``.
     """
     trt.linear_no_bias_ref.weight.data.copy_(
         torch.cat(

@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# BioNeMo AIR Developer Guide
+# BioNeMo Inference Runtime Developer Guide
 
 How to set up a local environment, build from source, and run the tests. This
 is the source of truth for local development;

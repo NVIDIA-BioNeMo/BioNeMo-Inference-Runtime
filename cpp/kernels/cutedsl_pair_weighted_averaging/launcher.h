@@ -18,8 +18,8 @@
 /* Pair-weighted-averaging CUBIN configuration, device ABI, and launcher interface.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_PAIR_WEIGHTED_AVERAGING_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_PAIR_WEIGHTED_AVERAGING_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_PAIR_WEIGHTED_AVERAGING_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_PAIR_WEIGHTED_AVERAGING_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -29,7 +29,7 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace trtbnm::cutedsl::pair_weighted_averaging::embedded
+namespace bioir::cutedsl::pair_weighted_averaging::embedded
 {
 struct CubinImage;
 }
@@ -37,7 +37,7 @@ struct CubinImage;
 /* The five lowered parameters were read from EIATTR_KPARAM_INFO. They are the
  * device-kernel ABI, not the high-level CuTeDSL callable signature.
  */
-namespace trtbnm::cutedsl::pair_weighted_averaging::abi
+namespace bioir::cutedsl::pair_weighted_averaging::abi
 {
 
 inline constexpr std::size_t kParameterCount = 5;
@@ -74,9 +74,9 @@ static_assert(offsetof(SM80Params, output) == 152);
 static_assert(sizeof(SM80Params) == 200);
 static_assert(alignof(SM80Params) == 8);
 
-} // namespace trtbnm::cutedsl::pair_weighted_averaging::abi
+} // namespace bioir::cutedsl::pair_weighted_averaging::abi
 
-namespace trtbnm::cutedsl::pair_weighted_averaging
+namespace bioir::cutedsl::pair_weighted_averaging
 {
 
 enum class DType : std::uint8_t
@@ -120,6 +120,6 @@ std::uint32_t dynamic_smem_bytes(KernelConfig const& config);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::pair_weighted_averaging
+} // namespace bioir::cutedsl::pair_weighted_averaging
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_PAIR_WEIGHTED_AVERAGING_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_PAIR_WEIGHTED_AVERAGING_LAUNCHER_H_ */

@@ -1,0 +1,23 @@
+{
+  "implementation": "bionemo_ir.dsl_kernels.cute.sm90_triangle_attn_left_mask.HopperFusedMultiHeadAttentionForward",
+  "configs": {
+    "S=0": {
+      "mma_tiler_mn": [
+        64,
+        128
+      ],
+      "is_persistent": true,
+      "kv_stage": 3,
+      "raster_factor": 4
+    },
+    "S=384": {
+      "mma_tiler_mn": [
+        64,
+        128
+      ],
+      "is_persistent": true,
+      "kv_stage": 3,
+      "raster_factor": 0
+    }
+  }
+}

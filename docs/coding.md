@@ -27,6 +27,40 @@ We are using the below tools, all of which are installable via `pip`.
 | Line endings         | `.gitattributes` (`eol=lf`, git-native)                          |
 | Commit messages      | Conventional Commits — [`commitizen`][cz] + `validate:mr-title`  |
 
+## Naming
+
+The project is **BioIR**, short for **BioNeMo Inference Runtime**. Spell the
+long form out only in a title or a document's first mention — once per document,
+then `BioIR`.
+
+Anything you add that needs the project in its name takes one of two prefixes.
+The full `bionemo_ir` belongs to the import path and to what a user sees; every
+internal identifier takes the short `bioir`, which keeps declarations readable
+inside the 120-column limit.
+
+| Adding                                 | Prefix        | Example                             |
+| -------------------------------------- | ------------- | ----------------------------------- |
+| Python module or subpackage            | `bionemo_ir/` | `bionemo_ir/hubs/`                  |
+| Distribution / wheel name              | `bionemo-ir`  | `pip install bionemo-ir`            |
+| Path a user sees or configures         | `bionemo_ir`  | `~/.cache/bionemo_ir`               |
+| Environment variable, runtime or build | `BIOIR_`      | `BIOIR_CACHE`, `BIOIR_LOG_LEVEL`    |
+| C++ namespace                          | `bioir::`     | `bioir::cutedsl::gated_sigmoid`     |
+| C++ include guard                      | `BIOIR_`      | `BIOIR_CPP_KERNELS_CUBIN_LAUNCH_H_` |
+| CMake variable                         | `BIOIR_`      | `BIOIR_REPO_ROOT`                   |
+| `make` target                          | `bioir_`      | `bioir_dev`                         |
+| CI job, package or cache namespace     | `bioir-`      | `bioir-kernel-cache`                |
+| Temp or scratch directory              | `bioir_`      | `bioir_templates_`                  |
+
+Name a new environment variable for what it controls, not for the component
+reading it: `BIOIR_CHECKPOINTS`, not `BIOIR_HUBS_CHECKPOINT_DIR`. They are a
+public interface — renaming one is a breaking change.
+
+A handful of names belong to systems outside this repo — the GitLab project and
+its registry, the runner tag, the generic package a downstream repo fetches the
+wheel by, the sibling benchmarking repo, the NGC team holding the checkpoints.
+They keep whatever those systems call them, and each is commented where it
+appears with what breaks if it moves. Don't align them by hand.
+
 ## Python
 
 Follow [PEP 8][pep8] unless noted. Target Python 3.12+.

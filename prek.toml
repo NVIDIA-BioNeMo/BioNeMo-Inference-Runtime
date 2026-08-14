@@ -14,7 +14,7 @@ exclude = '''(?x)^(
   | .*\.(a|lib|so|dll|a3m)
   | examples/data/samples/templates/templates/.*\.cif
   | cpp/kernels/.*/cubins/embedded.*\.h
-  | tensorrt_bionemo/dsl_kernels/.*
+  | bionemo_ir/dsl_kernels/.*
 )$'''
 
 [[repos]]
@@ -78,13 +78,13 @@ hooks = [
     "shell",
     "cmake",
   ], exclude = '''(?x) ^(
-      tensorrt_bionemo/dsl_kernels/cute/.*_left_mask\.py
-    | tensorrt_bionemo/data/writers/pdb_writer\.py
-    | tensorrt_bionemo/_torch/modules/openfold2/utils/feats\.py
-    | tensorrt_bionemo/_torch/modules/openfold3/utils/residues\.py
-    | tensorrt_bionemo/pipeline/models/openfold2/const\.py
-    | tensorrt_bionemo/pipeline/models/openfold2/feature_context\.py
-    | tensorrt_bionemo/pipeline/models/openfold2/msa_pairing\.py
+      bionemo_ir/dsl_kernels/cute/.*_left_mask\.py
+    | bionemo_ir/data/writers/pdb_writer\.py
+    | bionemo_ir/_torch/modules/openfold2/utils/feats\.py
+    | bionemo_ir/_torch/modules/openfold3/utils/residues\.py
+    | bionemo_ir/pipeline/models/openfold2/const\.py
+    | bionemo_ir/pipeline/models/openfold2/feature_context\.py
+    | bionemo_ir/pipeline/models/openfold2/msa_pairing\.py
   )$''', args = [
     "--license-filepath",
     ".license-header.txt",

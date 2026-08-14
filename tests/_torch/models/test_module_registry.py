@@ -24,8 +24,8 @@ tests exercise both layers directly with lightweight specs — no model weights.
 
 import pytest
 
-from tensorrt_bionemo.configs import AcceleratedConfig
-from tensorrt_bionemo.models.optimize_module_setter import ModuleRegistry, ModuleSpec, _module_path
+from bionemo_ir.configs import AcceleratedConfig
+from bionemo_ir.models.optimize_module_setter import ModuleRegistry, ModuleSpec, _module_path
 
 
 def _spec(getter):

@@ -27,7 +27,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+namespace bioir::cutedsl::adaln_layernorm_sigmoid
 {
 namespace
 {
@@ -250,4 +250,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
     "launch_cubin_kernel(adaln_layernorm_sigmoid)");
 }
 
-} // namespace trtbnm::cutedsl::adaln_layernorm_sigmoid
+} // namespace bioir::cutedsl::adaln_layernorm_sigmoid

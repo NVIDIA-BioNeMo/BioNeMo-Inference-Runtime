@@ -20,17 +20,17 @@ dev = { file = ["requirements-dev.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["tensorrt_bionemo*"]
+include = ["bionemo_ir*"]
 
 [tool.setuptools.package-data]
-"tensorrt_bionemo" = [
+"bionemo_ir" = [
   "_torch/custom_ops/configs/**/*.json",
   "_torch/attention_backend/configs/**/*.json",
 ]
 
 [project]
-name = "tensorrt_bionemo"
-description = "TensorRT BioNeMo: GPU accelerated framework for protein folding"
+name = "bionemo-ir"
+description = "BioNeMo Inference Runtime: GPU accelerated framework for protein folding"
 requires-python = ">=3.12,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 readme = "README.md"
@@ -97,7 +97,7 @@ select = [
 ignore = ["E501", "E741", "E731", "UP042"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["tensorrt_bionemo"]
+known-first-party = ["bionemo_ir"]
 
 # Branch coverage over the shipped package. The test job runs two pytest phases
 # (see .gitlab/ci/scripts/run_tests.sh) and phase 1 fans out over xdist workers,
@@ -110,10 +110,10 @@ parallel = true
 # different processes merge cleanly.
 # https://coverage.readthedocs.io/en/latest/config.html#run-relative-files
 relative_files = true
-# The repo root, NOT ["tensorrt_bionemo"]: coverage strips the configured source
+# The repo root, NOT ["bionemo_ir"]: coverage strips the configured source
 # root from the Cobertura filenames, and GitLab only maps coverage onto the MR
-# diff when those filenames are repo-relative (tensorrt_bionemo/foo.py). What
-# actually gets measured is narrowed to the package by `--cov=tensorrt_bionemo`
+# diff when those filenames are repo-relative (bionemo_ir/foo.py). What
+# actually gets measured is narrowed to the package by `--cov=bionemo_ir`
 # in .gitlab/ci/scripts/run_tests.sh; the omits below keep a bare
 # `pytest --cov` honest too.
 source = ["."]

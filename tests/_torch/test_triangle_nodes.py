@@ -25,14 +25,14 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefTriangleAttentionNode, RefTriangleMultiplicationNode
 
-from tensorrt_bionemo._torch.attention_backend import AttentionType, get_attention_backend
-from tensorrt_bionemo._torch.layers.triangle_nodes import (
+from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionNode,
     TriangleAttentionNodeType,
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
 )
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_pair_mask
 
 

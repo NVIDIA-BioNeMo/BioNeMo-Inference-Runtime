@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::pair_weighted_averaging
+namespace bioir::cutedsl::pair_weighted_averaging
 {
 namespace
 {
@@ -434,4 +434,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   launch_sm80(loaded, config, params, config.cubin.dynamic_smem_bytes);
 }
 
-} // namespace trtbnm::cutedsl::pair_weighted_averaging
+} // namespace bioir::cutedsl::pair_weighted_averaging

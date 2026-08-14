@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Architecture
 
-How TensorRT-BioNeMo (TRT-BNM) is put together, from an `InputRequest` to a
-PDB / mmCIF file. Which models and GPUs are supported is in the
+How BioNeMo Inference Runtime (BioIR) is put together, from an `InputRequest`
+to a PDB / mmCIF file. Which models and GPUs are supported is in the
 [support matrix][support-matrix]; the calling surface is in the
 [API reference][api].
 
@@ -83,7 +83,7 @@ conditionals in the stages. Each family has a `ModelComponentsFactory` exposing
 `get_model_class`, `get_tokenizer`, `get_feature_factory`,
 `get_postprocessor`, `get_default_runtime_args`, and
 `get_supported_model_names`. `register_all_factories` runs as an import side
-effect of `import tensorrt_bionemo`, so the registry is populated before any
+effect of `import bionemo_ir`, so the registry is populated before any
 stage runs.
 
 Registered factories: `OpenFold2Factory`, `OpenFold2MultimerFactory`,
@@ -123,13 +123,13 @@ cost?" and Ray to ask "what does the system deliver?".
 
 A family lives in two directories that answer different questions.
 
-`tensorrt_bionemo/pipeline/models/<model>/` is the **data path** — how a
+`bionemo_ir/pipeline/models/<model>/` is the **data path** — how a
 request becomes a feature dict. It holds subclasses of the base classes in
 `pipeline/base.py` (context generators, transforms, feature
 generators, collators, tokenizer, feature factory, postprocessor) plus the
 pydantic `*Spec` objects that declare them in order.
 
-`tensorrt_bionemo/models/<family>/` is the **compute path** — how features
+`bionemo_ir/models/<family>/` is the **compute path** — how features
 become coordinates. It holds `modeling.py` (the top-level module, its
 `load_weights`, `get_optimized_modules`, `get_pretrained_config`), `config.py`
 (the config tree and `PRETRAINED_CONFIG_REGISTRY`), and `convert.py` (upstream
@@ -203,7 +203,7 @@ consequences:
 Checkpoints themselves resolve through `hubs/`: `load_weights` tries
 the local hub, then Hugging Face, unless `hub=` pins one. `hubs/metadata.py`
 handles CCD/mol archives and the cache directory
-(`TENSORRT_BIONEMO_CACHE`). See [model weights][model-weights].
+(`BIOIR_CACHE`). See [model weights][model-weights].
 
 ### Transformer primitives
 
@@ -345,7 +345,7 @@ callable **or** the PyTorch reference, so the call site is unconditional — no
 `if fused:` in `_torch/layers/`, and an unsupported GPU degrades instead of
 failing. Unlike an attention backend, this is decided per call, not by the
 config tree. Per-shape tuning is JSON, overridable with
-`TRTBNM_TUNED_CONFIG_FOLDER`.
+`BIOIR_TUNED_CONFIG_FOLDER`.
 
 The fused implementations ship precompiled, without source.
 `CUTEDSL_FORCE_CUBIN=1` makes a checkout that still has sources take the
@@ -385,18 +385,18 @@ Three things follow:
 
 ## Repository map
 
-| Path                         | What lives there                                                          |
-| ---------------------------- | ------------------------------------------------------------------------- |
-| `tensorrt_bionemo/pipeline/` | stages, processors, engine, per-model data paths                          |
-| `tensorrt_bionemo/models/`   | compute path for `boltz1`, `boltz2`, `openfold2`, `openfold3`, `protenix` |
-| `tensorrt_bionemo/_torch/`   | layers, transformers, attention backends, fused ops, graph optimization   |
-| `tensorrt_bionemo/configs/`  | `BaseConfig`, `AcceleratedConfig`, `EngineConfig`                         |
-| `tensorrt_bionemo/data/`     | schemas, parsers (FASTA/A3M), writers (PDB/CIF)                           |
-| `tensorrt_bionemo/hubs/`     | checkpoint + metadata resolution, `FoldingSupportMatrix`                  |
-| `tensorrt_bionemo/runtime/`  | backend / buffer helpers                                                  |
-| `cpp/`                       | native extension build (CMake)                                            |
-| `3rdparty/`                  | git submodules for upstream refs (`openfold-3`, `protenix`)               |
-| `examples/`, `tests/`        | folding demos + sample data; GPU test suite                               |
+| Path                   | What lives there                                                          |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `bionemo_ir/pipeline/` | stages, processors, engine, per-model data paths                          |
+| `bionemo_ir/models/`   | compute path for `boltz1`, `boltz2`, `openfold2`, `openfold3`, `protenix` |
+| `bionemo_ir/_torch/`   | layers, transformers, attention backends, fused ops, graph optimization   |
+| `bionemo_ir/configs/`  | `BaseConfig`, `AcceleratedConfig`, `EngineConfig`                         |
+| `bionemo_ir/data/`     | schemas, parsers (FASTA/A3M), writers (PDB/CIF)                           |
+| `bionemo_ir/hubs/`     | checkpoint + metadata resolution, `FoldingSupportMatrix`                  |
+| `bionemo_ir/runtime/`  | backend / buffer helpers                                                  |
+| `cpp/`                 | native extension build (CMake)                                            |
+| `3rdparty/`            | git submodules for upstream refs (`openfold-3`, `protenix`)               |
+| `examples/`, `tests/`  | folding demos + sample data; GPU test suite                               |
 
 ## Related
 

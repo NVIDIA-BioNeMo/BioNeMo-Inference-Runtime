@@ -25,16 +25,16 @@ graph replays the exact same kernels on the same inputs, so parity is bitwise.
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     GraphOptimizationMode,
     InputKeyMethod,
 )
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule
+from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule
 from tests.common.test_utils.openfold3.batched_input_tools import (
     AVAILABILITY_EXC,
     capture_and_assemble,

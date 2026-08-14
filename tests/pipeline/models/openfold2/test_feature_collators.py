@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from tensorrt_bionemo.pipeline.models.openfold2.feature_collators import (
+from bionemo_ir.pipeline.models.openfold2.feature_collators import (
     CropExtraMsa,
     DeleteExtraMsa,
     MakeFixedSize,

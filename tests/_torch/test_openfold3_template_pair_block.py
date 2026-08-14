@@ -20,8 +20,8 @@ import pytest
 import torch
 from test_utils.openfold3.ref_layers_from_oss import RefTemplatePairBlockFromOF3OSS
 
-from tensorrt_bionemo._torch.modules.openfold2.template import TemplatePairBlock
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 from tests.common.test_utils.openfold3.create_and_load_weights_from_of3oss import (
@@ -36,8 +36,8 @@ def _assert_pipeline_style_left_aligned_pair_mask(mask_bt_nn: torch.Tensor) -> N
     In production, ``pair_mask = token_mask[..., None] * token_mask[..., None, :]``
     with a collator-left-aligned ``token_mask`` (valid tokens then padding),
     then broadcast over templates as ``pair_mask[..., None, :, :]``
-    (see ``tensorrt_bionemo/models/openfold3/modeling.py`` and
-    ``tensorrt_bionemo/_torch/modules/openfold3/embedders.py`` —
+    (see ``bionemo_ir/models/openfold3/modeling.py`` and
+    ``bionemo_ir/_torch/modules/openfold3/embedders.py`` —
     ``TemplateEmbedderAllAtom.forward``).  Such a mask is **non-increasing**
     along each residue axis (leading ones, then zeros).
     """

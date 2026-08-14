@@ -19,8 +19,8 @@ import tempfile
 import numpy as np
 import pytest
 
-from tensorrt_bionemo.data.utils import get_all_atom_types, get_all_residue_types
-from tensorrt_bionemo.data.writers.pdb_writer import PDBWriter
+from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
+from bionemo_ir.data.writers.pdb_writer import PDBWriter
 from tests.common.test_utils.data import get_sample_folding_output
 
 
@@ -215,7 +215,7 @@ class TestPDBWriter:
 # Multi-polymer test suite (RNA / DNA / non-polymer ligand chains)
 # ---------------------------------------------------------------------------
 
-from tensorrt_bionemo.data.writers.pdb_writer import PDB_MAX_CHAINS  # noqa: E402 (kept beside its suite)
+from bionemo_ir.data.writers.pdb_writer import PDB_MAX_CHAINS  # noqa: E402 (kept beside its suite)
 from tests.common.test_utils.synthetic_folding_outputs import (  # noqa: E402 -- fixtures imported beside the suite that uses them
     dna_only_folding,
     many_chains_folding,

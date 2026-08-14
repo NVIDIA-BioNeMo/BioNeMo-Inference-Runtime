@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::dual_gemm_x0_x1
+namespace bioir::cutedsl::dual_gemm_x0_x1
 {
 namespace
 {
@@ -459,4 +459,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
     launch_sm80(loaded, config, params, context, smem_bytes);
 }
 
-} // namespace trtbnm::cutedsl::dual_gemm_x0_x1
+} // namespace bioir::cutedsl::dual_gemm_x0_x1

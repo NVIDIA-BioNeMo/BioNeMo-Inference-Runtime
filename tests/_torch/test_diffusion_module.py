@@ -24,11 +24,11 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefDiffusionModule
 
-from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
-from tensorrt_bionemo._torch.modules.boltz.structure import DiffusionModule
-from tensorrt_bionemo.configs import DiffusionTransformerConfig
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
+from bionemo_ir._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
+from bionemo_ir._torch.modules.boltz.structure import DiffusionModule
+from bionemo_ir.configs import DiffusionTransformerConfig
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
 

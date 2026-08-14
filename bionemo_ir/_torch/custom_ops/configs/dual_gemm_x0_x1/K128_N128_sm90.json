@@ -1,0 +1,59 @@
+{
+  "implementation": "bionemo_ir.dsl_kernels.cute.sm90_dual_gemm.DualGemmSm90Pingpong",
+  "configs": {
+    "S=128": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 4
+    },
+    "S=384": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 1
+    },
+    "S=512": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 1
+    },
+    "S=768": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 2
+    },
+    "S=1536": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 2
+    },
+    "S=2048": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 4
+    }
+  }
+}

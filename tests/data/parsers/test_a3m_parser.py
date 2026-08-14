@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.data.parsers import parse_a3m_content, read_a3m
-from tensorrt_bionemo.data.schemas import MSAParsed
+from bionemo_ir.data.parsers import parse_a3m_content, read_a3m
+from bionemo_ir.data.schemas import MSAParsed
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 

@@ -25,9 +25,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from test_utils.boltz.ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
 
-from tensorrt_bionemo._torch.attention_backend import AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
-from tensorrt_bionemo.hubs import load_weights
+from bionemo_ir._torch.attention_backend import AttentionMetadata
+from bionemo_ir._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
+from bionemo_ir.hubs import load_weights
 
 
 class RefTriangleMultiplicationNode(nn.Module):
@@ -2343,7 +2343,7 @@ class RefTemplateV2Module(nn.Module):
     """Reference: boltz/model/modules/trunkv2.py::TemplateV2Module.
 
     The reference implementation deliberately mirrors the upstream module
-    so test scripts can compare TRT-BNM's :class:`TemplateV2Module` against
+    so test scripts can compare BioIR's :class:`TemplateV2Module` against
     a plain PyTorch path. The only deviation from upstream is that the
     inner ``pairformer`` is built from :class:`RefPairformerNoSeqModule`.
     """

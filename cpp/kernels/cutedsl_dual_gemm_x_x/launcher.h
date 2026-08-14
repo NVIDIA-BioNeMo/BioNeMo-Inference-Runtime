@@ -18,8 +18,8 @@
 /* Dual-GEMM x_x CUBIN configuration, device ABI, and launcher interface.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X_X_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X_X_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X_X_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X_X_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -29,7 +29,7 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace trtbnm::cutedsl::dual_gemm_x_x::embedded
+namespace bioir::cutedsl::dual_gemm_x_x::embedded
 {
 struct CubinImage;
 }
@@ -38,7 +38,7 @@ struct CubinImage;
  * These are the lowered device-kernel ABIs read from EIATTR_KPARAM_INFO,
  * not the high-level CuTeDSL __call__ signatures.
  */
-namespace trtbnm::cutedsl::dual_gemm_x_x::abi
+namespace bioir::cutedsl::dual_gemm_x_x::abi
 {
 
 inline constexpr std::size_t kSM80MaxParameterCount = 9;
@@ -155,9 +155,9 @@ static_assert(alignof(CoordTensorS2) == alignof(std::int32_t));
 static_assert(offsetof(CoordTensorS2, dynamic_shapes) == 0);
 static_assert(sizeof(std::uint8_t) == 1);
 
-} // namespace trtbnm::cutedsl::dual_gemm_x_x::abi
+} // namespace bioir::cutedsl::dual_gemm_x_x::abi
 
-namespace trtbnm::cutedsl::dual_gemm_x_x
+namespace bioir::cutedsl::dual_gemm_x_x
 {
 
 enum class DType : std::uint8_t
@@ -207,6 +207,6 @@ std::uint32_t dynamic_smem_bytes(KernelConfig const& config);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::dual_gemm_x_x
+} // namespace bioir::cutedsl::dual_gemm_x_x
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X_X_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_DUAL_GEMM_X_X_LAUNCHER_H_ */

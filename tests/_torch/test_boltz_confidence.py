@@ -16,11 +16,11 @@
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.modules.boltz.confidence import Boltz1ConfidenceHeads, Boltz2ConfidenceModule
-from tensorrt_bionemo._torch.modules.boltz.confidence_utils import compute_contact_prob, repeat_with_multiplicity
-from tensorrt_bionemo.models.boltz1.config import ConfidenceHeadsConfig as Boltz1ConfidenceHeadsConfig
-from tensorrt_bionemo.models.boltz2.config import ConfidenceModuleConfig
-from tensorrt_bionemo.pipeline.models.boltz2.const import contact_conditioning_info
+from bionemo_ir._torch.modules.boltz.confidence import Boltz1ConfidenceHeads, Boltz2ConfidenceModule
+from bionemo_ir._torch.modules.boltz.confidence_utils import compute_contact_prob, repeat_with_multiplicity
+from bionemo_ir.models.boltz1.config import ConfidenceHeadsConfig as Boltz1ConfidenceHeadsConfig
+from bionemo_ir.models.boltz2.config import ConfidenceModuleConfig
+from bionemo_ir.pipeline.models.boltz2.const import contact_conditioning_info
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="confidence module builds weights on CUDA")
 

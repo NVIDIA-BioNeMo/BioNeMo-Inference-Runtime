@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
-from tensorrt_bionemo.pipeline.stages.parser_stage import ParserUDF
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.pipeline.stages.parser_stage import ParserUDF
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
 

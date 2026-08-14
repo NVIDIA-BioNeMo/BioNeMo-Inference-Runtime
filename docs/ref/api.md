@@ -3,10 +3,10 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# TensorRT-BioNeMo Python API
+# BioNeMo Inference Runtime Python API
 
-This is the public Python API for structure prediction with TensorRT-BioNeMo
-(TRT-BNM). It covers the two supported ways to run a model:
+This is the public Python API for structure prediction with BioIR. It covers
+the two supported ways to run a model:
 
 1. **`build_processor`** — parse sequences and MSAs, featurize, run inference,
    and write PDB/CIF. This is the production entry point.
@@ -18,9 +18,9 @@ A runnable wrapper around (1) lives at
 Supported models, GPUs, and fused kernels:
 [`support-matrix.md`](support-matrix.md).
 
-`import tensorrt_bionemo` registers every model factory and loads the CUDA
-plugin libraries. Any import that pulls in `tensorrt_bionemo.registry` or
-`tensorrt_bionemo.models.*` does this transitively.
+`import bionemo_ir` registers every model factory and loads the CUDA
+plugin libraries. Any import that pulls in `bionemo_ir.registry` or
+`bionemo_ir.models.*` does this transitively.
 
 ## When to use which API
 
@@ -42,7 +42,7 @@ The processor consumes a list of row dicts. Each row must include `record`,
 an [`InputRequest`][inputrequest]:
 
 ```python
-from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
 
 request = InputRequest(
     input_id="demo",
@@ -68,7 +68,7 @@ request = InputRequest(
 | `sequence`     | `str`                      | 1-letter protein/NA sequence; CCD code or `_`-joined CCD list (`"ATP"`, `"ATP_FAD"`); or a SMILES string             |
 | `msas`         | `list[MSARecord]`          | Unpaired a3m (path and/or inline `content`)                                                                          |
 | `paired_msas`  | `list[MSARecord]`          | Paired a3m, same `MSARecord` as `msas`. One file per chain; pairing is by row index (see below)                      |
-| `templates`    | `list[Template]` or `None` | Protein-only. `format` is `"cif"` or `"pdb"`. Hits you already have — TRT-BNM does not run HHsearch / HMMsearch      |
+| `templates`    | `list[Template]` or `None` | Protein-only. `format` is `"cif"` or `"pdb"`. Hits you already have — BioIR does not run HHsearch / HMMsearch        |
 
 [`MSARecord`][msarecord] / [`Template`][template] take either `path` or inline
 `content`, plus `format` (`"a3m"` for MSAs; `"cif"` or `"pdb"` for templates).
@@ -118,7 +118,7 @@ relative to the JSON file; the Python schema wants `list[MSARecord]`.
 ```
 
 Templates are protein-only. `format` is `"cif"` or `"pdb"`. Pass hits you
-already have — TRT-BNM does not run HHsearch / HMMsearch. `chain_id` selects
+already have — BioIR does not run HHsearch / HMMsearch. `chain_id` selects
 which chain of a multi-chain CIF or PDB to use; omit it (or `null`) to
 auto-select. Bundled sample:
 [`T1047s1_with_template.json`](../../examples/data/samples/monomers/T1047s1_with_template.json)
@@ -126,7 +126,7 @@ with
 [`8wle_A.cif`](../../examples/data/samples/monomers/templates/8wle_A.cif).
 
 ```python
-from tensorrt_bionemo.data.schemas import Template
+from bionemo_ir.data.schemas import Template
 
 templated = InputRequest(
     input_id="T1047s1_with_template",
@@ -277,7 +277,7 @@ Per-model coverage (monomer / MSA / templates / nucleic acids / ligands):
 ## `build_processor`
 
 `build_processor(config)` in
-`tensorrt_bionemo.pipeline.processor.engine_proc` builds a five-stage pipeline:
+`bionemo_ir.pipeline.processor.engine_proc` builds a five-stage pipeline:
 
 ```text
 Parser → Tokenizer → Feature generator → Folding engine → Writer
@@ -292,12 +292,12 @@ automatically if you omit them. User-supplied keys win over registry defaults.
 ### Hello world (serial)
 
 ```python
-from tensorrt_bionemo.data.schemas import InputRequest, MSARecord, Polymer
-from tensorrt_bionemo.pipeline.processor.engine_proc import (
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.pipeline.processor.engine_proc import (
     EngineProcessorConfig,
     build_processor,
 )
-from tensorrt_bionemo.pipeline.stages.configs import (
+from bionemo_ir.pipeline.stages.configs import (
     FeatureGeneratorStageConfig,
     WriterStageConfig,
 )
@@ -357,7 +357,7 @@ measurements; it does not overlap those stages.
 
 ```python
 import ray
-from tensorrt_bionemo.pipeline.stages.configs import (
+from bionemo_ir.pipeline.stages.configs import (
     EngineStageConfig,
     FeatureGeneratorStageConfig,
     ParallelismMode,
@@ -503,8 +503,8 @@ Wire it through `engine_kwargs` (this is what the engine's `optimize()` call
 consumes):
 
 ```python
-from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir.configs import AcceleratedConfig, BaseConfig
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     GraphOptimizationMode,
 )
@@ -556,11 +556,11 @@ A sidecar `{id}_scores.json` is written next to the structure when
 
 With the default `should_continue_on_error=False`, a failed forward raises
 `FoldingPredictionError` from
-`tensorrt_bionemo.pipeline.stages.engine_stage`. The original exception is
+`bionemo_ir.pipeline.stages.engine_stage`. The original exception is
 `__cause__`.
 
 ```python
-from tensorrt_bionemo.pipeline.stages.engine_stage import FoldingPredictionError
+from bionemo_ir.pipeline.stages.engine_stage import FoldingPredictionError
 
 try:
     outputs = processor(rows)
@@ -577,8 +577,8 @@ training API.
 ### Registry
 
 ```python
-import tensorrt_bionemo  # registers factories
-from tensorrt_bionemo.registry import (
+import bionemo_ir  # registers factories
+from bionemo_ir.registry import (
     get_model_class,
     get_tokenizer,
     get_feature_factory,
@@ -603,7 +603,7 @@ Unknown names raise `ValueError` listing registered keys.
 
 ### Constructing a model
 
-Import the class (`from tensorrt_bionemo.models.boltz2 import Boltz2`) or
+Import the class (`from bionemo_ir.models.boltz2 import Boltz2`) or
 get it from [`get_model_class`](#registry): `get_model_class("boltz-2")` is
 `Boltz2`. Then construct it.
 
@@ -614,10 +614,10 @@ All folding classes accept keyword arguments `config`, `model_name`, and
 
 ```python
 import os
-from tensorrt_bionemo.models.boltz2 import Boltz2
-from tensorrt_bionemo.models.openfold2 import OpenFold2
-from tensorrt_bionemo.models.openfold3 import OpenFold3
-from tensorrt_bionemo.models.protenix import Protenix
+from bionemo_ir.models.boltz2 import Boltz2
+from bionemo_ir.models.openfold2 import OpenFold2
+from bionemo_ir.models.openfold3 import OpenFold3
+from bionemo_ir.models.protenix import Protenix
 
 os.environ["ALPHAFOLD2_1_CKPT"] = "/checkpoints/alphafold2_1.pt"
 af2 = OpenFold2(model_name="alphafold2_1").cuda().eval()
@@ -633,7 +633,7 @@ of3 = OpenFold3(model_name="openfold3").cuda().eval()
 px = Protenix(model_name="protenix-v2", include_load_weights=True).cuda().eval()
 ```
 
-`from tensorrt_bionemo.models.boltz1 import Boltz1` follows the same pattern
+`from bionemo_ir.models.boltz1 import Boltz1` follows the same pattern
 as `Boltz2`.
 
 `include_load_weights=True` (default on Boltz / OpenFold2 / OpenFold3) builds
@@ -649,7 +649,7 @@ similar. Default triangle / pairwise backends:
 ### Calling `forward`
 
 ```python
-from tensorrt_bionemo.registry import get_default_runtime_args, get_postprocessor
+from bionemo_ir.registry import get_default_runtime_args, get_postprocessor
 
 runtime_args = get_default_runtime_args("boltz-2")
 # feats: dict[str, Tensor] already on CUDA, batch dim present
@@ -664,7 +664,7 @@ not `(raw, request, output_dir=...)`.
 
 ### `FoldingOutput`
 
-[`FoldingOutput`][foldingoutput] (`tensorrt_bionemo.data.schemas`) is a
+[`FoldingOutput`][foldingoutput] (`bionemo_ir.data.schemas`) is a
 `dict` the post-processor returns. Access fields as
 `folding_output["atom_positions"]`. Coordinates use the 37-atom protein
 layout the PDB/CIF writers expect. Confidence keys are `None` when the
@@ -694,8 +694,8 @@ are not constructor arguments.
 To write a file from a `FoldingOutput` without the processor:
 
 ```python
-from tensorrt_bionemo.data.utils import get_all_atom_types, get_all_residue_types
-from tensorrt_bionemo.data.writers import CIFWriter
+from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
+from bionemo_ir.data.writers import CIFWriter
 
 res_types = get_all_residue_types("boltz-2")
 atom_types = get_all_atom_types("boltz-2")
@@ -712,9 +712,9 @@ writer.write(folding_output)
 Same CUDA-graph config as in the processor, applied yourself:
 
 ```python
-from tensorrt_bionemo.configs import AcceleratedConfig, BaseConfig
-from tensorrt_bionemo.models.boltz2 import Boltz2
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir.configs import AcceleratedConfig, BaseConfig
+from bionemo_ir.models.boltz2 import Boltz2
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     GraphOptimizationMode,
 )
@@ -745,7 +745,7 @@ are not nested and can be requested together.
 
 ## Custom architectures
 
-If you already have a trained PyTorch model and want TRT-BNM's optimized
+If you already have a trained PyTorch model and want BioIR's optimized
 Pairformer, diffusion transformer, or Evoformer in place of your module — not
 the full folding pipeline — construct the layer, remap weights, and swap it
 in. That path does not use `build_processor`.
@@ -756,14 +756,14 @@ Worked RF3 conversions (config, adapter, weight remap, swap) live under
 [`samples/`](../../.agents/skills/module-onboard/samples/).
 
 The same custom-module path can take the **pairwise memory optimizations**
-already used in TRT-BNM (Boltz, OpenFold, Protenix): bf16 pair tensors,
+already used in BioIR (Boltz, OpenFold, Protenix): bf16 pair tensors,
 shorter `[N,N,*]` lifetimes, never-materialize, and row-chunking. The
 playbook is **scan-mem-opt-patterns**:
 [`.agents/skills/scan-mem-opt-patterns/SKILL.md`](../../.agents/skills/scan-mem-opt-patterns/SKILL.md).
 Use it when the swapped layer still OOMs at large `N` or
 `diffusion_samples > 1`.
 
-Layers (under `tensorrt_bionemo._torch.layers.transformers`):
+Layers (under `bionemo_ir._torch.layers.transformers`):
 
 | Layer                                                         | Typical source module       |
 | ------------------------------------------------------------- | --------------------------- |
@@ -773,10 +773,10 @@ Layers (under `tensorrt_bionemo._torch.layers.transformers`):
 
 A typical conversion:
 
-1. Map your hyperparameters onto the matching TRT-BNM `*Config`
+1. Map your hyperparameters onto the matching BioIR `*Config`
    (`PairformerConfig`, `DiffusionTransformerConfig`, `EvoformerStackConfig`
-   from `tensorrt_bionemo.configs`).
-2. Remap `state_dict` keys into the TRT-BNM layout (QKV / KV fusion, AdaLN
+   from `bionemo_ir.configs`).
+2. Remap `state_dict` keys into the BioIR layout (QKV / KV fusion, AdaLN
    gain+bias fusion, gate+input fusion, name renames such as
    `tri_mul_outgoing → tri_mul_out`).
 3. Write a thin `nn.Module` adapter if signatures differ (mask polarity,
@@ -797,11 +797,11 @@ Fused kernels on supported SKUs:
 - Sample JSON / MSA: [`examples/data/samples/`](../../examples/data/samples)
 - Module onboarding (swap Pairformer / DiT / Evoformer into *your* model):
   [`.agents/skills/module-onboard/SKILL.md`](../../.agents/skills/module-onboard/SKILL.md)
-- Pairwise memory optimizations (port TRT-BNM patterns onto *your* module):
+- Pairwise memory optimizations (port BioIR patterns onto *your* module):
   [`.agents/skills/scan-mem-opt-patterns/SKILL.md`](../../.agents/skills/scan-mem-opt-patterns/SKILL.md)
 
-[inputrequest]: ../../tensorrt_bionemo/data/schemas/basic.py
-[polymer]: ../../tensorrt_bionemo/data/schemas/basic.py
-[msarecord]: ../../tensorrt_bionemo/data/schemas/basic.py
-[template]: ../../tensorrt_bionemo/data/schemas/basic.py
-[foldingoutput]: ../../tensorrt_bionemo/data/schemas/basic.py
+[inputrequest]: ../../bionemo_ir/data/schemas/basic.py
+[polymer]: ../../bionemo_ir/data/schemas/basic.py
+[msarecord]: ../../bionemo_ir/data/schemas/basic.py
+[template]: ../../bionemo_ir/data/schemas/basic.py
+[foldingoutput]: ../../bionemo_ir/data/schemas/basic.py

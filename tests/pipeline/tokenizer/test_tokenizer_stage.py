@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorrt_bionemo.pipeline.stages.configs import TokenizerStageConfig
-from tensorrt_bionemo.pipeline.stages.tokenizer_stage import (
+from bionemo_ir.pipeline.stages.configs import TokenizerStageConfig
+from bionemo_ir.pipeline.stages.tokenizer_stage import (
     TokenizerStage,
     TokenizerUDF,
 )

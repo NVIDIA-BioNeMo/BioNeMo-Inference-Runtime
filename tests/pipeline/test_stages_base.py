@@ -19,7 +19,7 @@ import pickle
 import pyarrow
 import pytest
 
-from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF
+from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 
 def _unpack_columnar(output):

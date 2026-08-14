@@ -20,7 +20,7 @@ is tested deterministically without depending on actual free memory.
 
 import torch
 
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph import memory as gc_mem
+from bionemo_ir._torch.graph_optimization.cuda_graph import memory as gc_mem
 
 
 def test_tensor_bytes_nested():

@@ -14,7 +14,7 @@
 # limitations under the License.
 """Equivalence tests for ``convert_pair_atom_to_blocks``.
 
-The TRT-BNM implementation is built to be bit-equivalent to the OSS reference
+The BioIR implementation is built to be bit-equivalent to the OSS reference
 ``convert_trunk_pair_rep_to_blocks`` (in
 ``test_utils.openfold3.atom_attention_block_utils``). Both:
 
@@ -25,7 +25,7 @@ The TRT-BNM implementation is built to be bit-equivalent to the OSS reference
 * gather ``zij_trunk`` with those indices (OOB → token 0, then masked out);
 * multiply by the atom pair mask.
 
-TRT-BNM uses ``query_to_keys_optimized`` to produce the K-side window —
+BioIR uses ``query_to_keys_optimized`` to produce the K-side window —
 its sentinel zero row at flat index ``K*n_query`` makes OOB columns gather
 zeros, exactly matching the OSS ``F.pad(value=0)`` + ``unfold`` approach.
 
@@ -44,13 +44,13 @@ import pytest
 import torch
 from test_utils.openfold3.atom_attention_block_utils import convert_trunk_pair_rep_to_blocks
 
-from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import (
+from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
+from bionemo_ir._torch.layers.sequence_local_atom import (
     create_gather_indices,
     pad_to_multiple_and_divide,
     query_to_keys_optimized,
 )
-from tensorrt_bionemo._torch.modules.openfold3.sequence_local_atom_attention import convert_pair_atom_to_blocks
+from bionemo_ir._torch.modules.openfold3.sequence_local_atom_attention import convert_pair_atom_to_blocks
 
 
 @dataclass(kw_only=True, frozen=True)

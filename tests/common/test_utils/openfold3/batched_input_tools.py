@@ -30,12 +30,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
-from tensorrt_bionemo._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule
-from tensorrt_bionemo._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index
-from tensorrt_bionemo.pipeline.processor.engine_proc import EngineProcessorConfig
-from tensorrt_bionemo.pipeline.stages.configs import WriterStageConfig
+from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
+from bionemo_ir._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
+from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule
+from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index
+from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig
+from bionemo_ir.pipeline.stages.configs import WriterStageConfig
 from tests.common.test_utils.model_forwards import (
     _AVAILABILITY_EXC,
     DIFFUSION_SAMPLES,

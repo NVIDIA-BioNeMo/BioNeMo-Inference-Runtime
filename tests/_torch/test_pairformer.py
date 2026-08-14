@@ -24,14 +24,14 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefPairformerLayer
 
-from tensorrt_bionemo._torch.attention_backend import AttentionType, get_attention_backend
-from tensorrt_bionemo._torch.attention_backend.utils import (
+from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.attention_backend.utils import (
     PrecomputedPairMasks,
     precompute_pair_masks,
     precompute_single_masks,
 )
-from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerLayerV1
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.layers.transformers.pairformer import PairformerLayerV1
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl_single
 
@@ -470,7 +470,7 @@ def test_get_dual_gemm_x_x_op_pair_mask_left_aligned_flag():
     (it applies a per-row prefix-count mask). The flag should route to
     cuEquiv (default fallback) or CUTLASS (SM90) instead.
     """
-    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import _invoke_cute_dual_gemm_x_x, get_dual_gemm_x_x_op
+    from bionemo_ir._torch.custom_ops.dual_gemm_x_x import _invoke_cute_dual_gemm_x_x, get_dual_gemm_x_x_op
 
     op_default = get_dual_gemm_x_x_op(torch.bfloat16, transpose_out=False, N=128, K=128, pair_mask_left_aligned=True)
 
@@ -487,7 +487,7 @@ def test_get_dual_gemm_x_x_op_pair_mask_left_aligned_flag():
 
 def test_pairformer_pair_mask_left_aligned_propagates_to_triangle_nodes():
     """The Pairformer mask contract must reach all triangle nodes."""
-    from tensorrt_bionemo._torch.custom_ops.dual_gemm_x_x import _invoke_cute_dual_gemm_x_x
+    from bionemo_ir._torch.custom_ops.dual_gemm_x_x import _invoke_cute_dual_gemm_x_x
 
     layer_aligned = _make_minimal_pairformer_layer()
     assert layer_aligned.pair_mask_left_aligned is True
@@ -572,7 +572,7 @@ def test_pairformer_no_seq_module_forwards_pair_mask_left_aligned():
     forwarding from ``PairformerLayerV1``: ``pair_mask_left_aligned``
     must reach every layer in the stack (the affinity construction
     relies on this)."""
-    from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerNoSeqModule
+    from bionemo_ir._torch.layers.transformers.pairformer import PairformerNoSeqModule
 
     stack = PairformerNoSeqModule(
         num_blocks=2,

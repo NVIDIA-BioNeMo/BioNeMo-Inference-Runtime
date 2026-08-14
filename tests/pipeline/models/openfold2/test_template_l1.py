@@ -174,7 +174,7 @@ def _encode_string_array(value: np.ndarray) -> np.ndarray:
     return np.asarray(encoded, dtype=f"S{width}").reshape(value.shape)
 
 
-def _assert_generator_has_no_trt_imports() -> None:
+def _assert_generator_has_no_bioir_imports() -> None:
     tree = ast.parse(GENERATOR_PATH.read_text(encoding="utf-8"))
     imported_modules = []
     for node in ast.walk(tree):
@@ -182,12 +182,12 @@ def _assert_generator_has_no_trt_imports() -> None:
             imported_modules.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             imported_modules.append(node.module)
-    assert not [name for name in imported_modules if name == "tensorrt_bionemo" or name.startswith("tensorrt_bionemo.")]
+    assert not [name for name in imported_modules if name == "bionemo_ir" or name.startswith("bionemo_ir.")]
 
 
 def _derive_features(base: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    from tensorrt_bionemo.pipeline.models.openfold2 import common
-    from tensorrt_bionemo.pipeline.models.openfold2 import const as rc
+    from bionemo_ir.pipeline.models.openfold2 import common
+    from bionemo_ir.pipeline.models.openfold2 import const as rc
 
     hhblits_aatype = torch.from_numpy(np.asarray(base["template_aatype"])).argmax(dim=-1)
     new_order = torch.tensor(rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE, dtype=torch.int64).expand(hhblits_aatype.shape[0], -1)
@@ -217,7 +217,7 @@ def test_template_l1_oracle_provenance_is_complete_and_pickle_free():
         _require_real_file(path)
 
     provenance = _load_provenance()
-    _assert_generator_has_no_trt_imports()
+    _assert_generator_has_no_bioir_imports()
     assert provenance["schema_version"] == 1
     assert provenance["sample_id"] == "4zey_A_self_template"
     assert provenance["source"] == "oss"
@@ -281,7 +281,7 @@ def test_template_l1_matches_pinned_openfold_features_without_runtime_oss():
     guard = _BlockOpenFoldImports()
     sys.meta_path.insert(0, guard)
     try:
-        from tensorrt_bionemo.pipeline.models.openfold2.template_logic import build_template_feats
+        from bionemo_ir.pipeline.models.openfold2.template_logic import build_template_feats
 
         actual = build_template_feats(
             QUERY_SEQUENCE,

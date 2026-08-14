@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from tensorrt_bionemo.pipeline.models.openfold2.feature_generators import (
+from bionemo_ir.pipeline.models.openfold2.feature_generators import (
     Atom37ToTorsionAngles,
     MakeAtom14Masks,
     MakeHhblitsProfile,

@@ -24,7 +24,7 @@ from test_utils.boltz.ref_layers import RefAdaLN as BoltzRefAdaLN
 from test_utils.boltz.ref_layers import RefConditionedTransitionBlock as BoltzRefConditionedTransitionBlock
 from test_utils.boltz.ref_layers import RefDiffusionTransformerLayer as BoltzRefDiffusionTransformerLayer
 
-from tensorrt_bionemo.hubs import load_weights
+from bionemo_ir.hubs import load_weights
 
 
 class Openfold3RefPairwiseSelfAttention(BoltzRefPairwiseSelfAttention):

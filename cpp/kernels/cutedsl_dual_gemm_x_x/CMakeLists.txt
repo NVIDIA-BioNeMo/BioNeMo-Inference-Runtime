@@ -13,20 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(TRTBNM_DUAL_GEMM_X_X_CUBIN_HEADER
+set(BIOIR_DUAL_GEMM_X_X_CUBIN_HEADER
     "${CMAKE_CURRENT_LIST_DIR}/cubins/embedded_cubins.h")
-if(NOT EXISTS "${TRTBNM_DUAL_GEMM_X_X_CUBIN_HEADER}")
+if(NOT EXISTS "${BIOIR_DUAL_GEMM_X_X_CUBIN_HEADER}")
   message(
     FATAL_ERROR
-      "Missing ${TRTBNM_DUAL_GEMM_X_X_CUBIN_HEADER}. "
+      "Missing ${BIOIR_DUAL_GEMM_X_X_CUBIN_HEADER}. "
       "Run cpp/tools/prepare_cubins.py --kernel dual_gemm_x_x in the private "
       "CuTeDSL development tree before configuring this public build.")
 endif()
 
 target_sources(
   _cutedsl_kernels PRIVATE bindings.cpp launcher.cpp launcher.h
-                           "${TRTBNM_DUAL_GEMM_X_X_CUBIN_HEADER}")
-set_source_files_properties("${TRTBNM_DUAL_GEMM_X_X_CUBIN_HEADER}"
+                           "${BIOIR_DUAL_GEMM_X_X_CUBIN_HEADER}")
+set_source_files_properties("${BIOIR_DUAL_GEMM_X_X_CUBIN_HEADER}"
                             PROPERTIES HEADER_FILE_ONLY TRUE)
 
 target_include_directories(_cutedsl_kernels PRIVATE "${CMAKE_CURRENT_LIST_DIR}")

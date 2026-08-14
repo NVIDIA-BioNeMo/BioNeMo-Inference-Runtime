@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-_PRIVATE_CUTEDSL_SOURCE_DIR = Path(__file__).resolve().parents[1] / "tensorrt_bionemo" / "dsl_kernels" / "cute"
-_CUTEDSL_LIBRARY_MODULE = "tensorrt_bionemo.libs._cutedsl_kernels"
+_PRIVATE_CUTEDSL_SOURCE_DIR = Path(__file__).resolve().parents[1] / "bionemo_ir" / "dsl_kernels" / "cute"
+_CUTEDSL_LIBRARY_MODULE = "bionemo_ir.libs._cutedsl_kernels"
 _CUTEDSL_BUILD_COMMAND = "pip install --no-build-isolation -v -e '.[dev]'"
 
 
@@ -38,7 +38,7 @@ def require_public_cutedsl_library() -> None:
             "This is a source-free public checkout, so pytest requires "
             f"{_CUTEDSL_LIBRARY_MODULE}. Build the shared library first with:\n"
             f"  {_CUTEDSL_BUILD_COMMAND}\n"
-            "Ensure TRTBNM_BUILD_CUTEDSL_KERNELS is not set to 0."
+            "Ensure BIOIR_BUILD_CUTEDSL_KERNELS is not set to 0."
         )
         warnings.warn(message, RuntimeWarning, stacklevel=2)
         raise pytest.UsageError(message) from error

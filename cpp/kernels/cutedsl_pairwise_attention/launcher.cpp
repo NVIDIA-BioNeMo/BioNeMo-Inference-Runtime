@@ -31,7 +31,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::pairwise_attention
+namespace bioir::cutedsl::pairwise_attention
 {
 namespace
 {
@@ -392,4 +392,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   throw std::invalid_argument("pairwise-attention config has no registered SM launcher");
 }
 
-} // namespace trtbnm::cutedsl::pairwise_attention
+} // namespace bioir::cutedsl::pairwise_attention

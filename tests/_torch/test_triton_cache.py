@@ -17,9 +17,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tensorrt_bionemo.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import FusedLNProjMoveaxisPad
-from tensorrt_bionemo.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
-from tensorrt_bionemo.dsl_kernels.triton_cache import (
+from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import FusedLNProjMoveaxisPad
+from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
+from bionemo_ir.dsl_kernels.triton_cache import (
     _DRIVER_TRITON_OK,
     _SUPPORTED_TRITON_MAJOR_MINOR,
 )

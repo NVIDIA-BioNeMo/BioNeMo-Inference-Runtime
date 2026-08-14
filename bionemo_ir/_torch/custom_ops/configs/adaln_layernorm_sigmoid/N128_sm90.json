@@ -1,0 +1,9 @@
+{
+  "implementation": "bionemo_ir.dsl_kernels.cute.layernorm_sigmoid_fusion.LayerNormSigmoidFusion",
+  "configs": {
+    "0": {
+      "num_threads_override": 256
+    },
+    "257": {}
+  }
+}

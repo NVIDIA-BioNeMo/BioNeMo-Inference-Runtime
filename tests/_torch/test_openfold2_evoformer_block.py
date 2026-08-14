@@ -25,9 +25,9 @@ from test_utils.openfold.create_and_load_weights import (
 )
 from test_utils.openfold.ref_layers import RefEvoformerBlock
 
-from tensorrt_bionemo._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
-from tensorrt_bionemo._torch.layers.transformers.evoformer import EvoformerBlock
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
+from bionemo_ir._torch.layers.transformers.evoformer import EvoformerBlock
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 

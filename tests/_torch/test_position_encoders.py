@@ -16,7 +16,7 @@
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.layers.position_encoders import RelativePositionEncoder
+from bionemo_ir._torch.layers.position_encoders import RelativePositionEncoder
 
 # Boltz2's real RelativePositionEncoder configuration
 # (models/boltz2/modeling.py builds it; models/boltz2/config.py supplies the flags).

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 name: "Bug Report"
-description: Submit a bug report to help us improve BioNeMo AIR
+description: Submit a bug report to help us improve BioIR
 title: "[Bug]: "
 labels: ["bug", "triage"]
 
@@ -10,7 +10,7 @@ body:
     attributes:
       value: >
         #### Before submitting, please search
-        [existing and past issues](https://github.com/NVIDIA-BioNeMo/BioNeMoAIR/issues?q=is%3Aissue+sort%3Acreated-desc)
+        [existing and past issues](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/issues?q=is%3Aissue+sort%3Acreated-desc)
         to check the bug has not already been reported.
   - type: markdown
     attributes:
@@ -23,12 +23,12 @@ body:
   - type: textarea
     id: version
     attributes:
-      label: BioNeMo AIR Version
+      label: BioIR Version
       description: >
         The exact version you are running. Provide a released version or a git
         commit hash — do **not** report against `latest` or an untagged build.
       placeholder: |
-        - BioNeMo AIR version or git commit (e.g. 0.4.0 / a1b2c3d)
+        - BioIR version or git commit (e.g. 0.4.0 / a1b2c3d)
         - Installed from: wheel / source / NGC container (which tag?)
     validations:
       required: true
@@ -51,7 +51,7 @@ body:
         ```bash
         nvidia-smi
         nvcc --version
-        python -c "import torch, bionemo_air; print(torch.__version__)"
+        python -c "import torch, bionemo_ir; print(torch.__version__)"
         ```
     validations:
       required: true

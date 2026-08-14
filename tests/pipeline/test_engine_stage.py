@@ -22,10 +22,10 @@ from unittest.mock import Mock, patch
 import pytest
 import ray
 
-from tensorrt_bionemo.pipeline.processor.utils import get_available_gpu_count
-from tensorrt_bionemo.pipeline.stages.base import StatefulStage, StatefulStageUDF, unpack_pipeline_row
-from tensorrt_bionemo.pipeline.stages.configs import ParallelismMode
-from tensorrt_bionemo.pipeline.stages.engine_stage import (
+from bionemo_ir.pipeline.processor.utils import get_available_gpu_count
+from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF, unpack_pipeline_row
+from bionemo_ir.pipeline.stages.configs import ParallelismMode
+from bionemo_ir.pipeline.stages.engine_stage import (
     FoldingEngineStage,
     FoldingEngineUDF,
     FoldingEngineWrapper,
@@ -40,11 +40,11 @@ MIN_GPUS_FOR_MULTI_GPU_REPLICA = 2
 class TestFoldingEngineWrapper:
     """Test suite for FoldingEngineWrapper class."""
 
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.DeviceConfig")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.EngineConfig")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_model_class")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_postprocessor")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngine")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.DeviceConfig")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.EngineConfig")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.get_model_class")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.get_postprocessor")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngine")
     def test_initialization_creates_engine_with_correct_config(
         self,
         mock_folding_engine,
@@ -103,11 +103,11 @@ class TestFoldingEngineWrapper:
         assert wrapper.max_pending_requests == 10
         assert wrapper.model_config == mock_model_config
 
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.DeviceConfig")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.EngineConfig")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_model_class")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.get_postprocessor")
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngine")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.DeviceConfig")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.EngineConfig")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.get_model_class")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.get_postprocessor")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngine")
     def test_predict_async_executes_single_row(
         self,
         mock_folding_engine,
@@ -164,7 +164,7 @@ class TestFoldingEngineWrapper:
 class TestFoldingEngineUDF:
     """Test suite for FoldingEngineUDF class."""
 
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngineWrapper")
     def test_successful_prediction_returns_correct_output_structure(self, mock_wrapper_class):
         """Test that successful prediction returns correct output structure.
 
@@ -229,7 +229,7 @@ class TestFoldingEngineUDF:
 
         asyncio.run(run_test())
 
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngineWrapper")
     def test_error_handling_raises_when_should_continue_on_error_false(self, mock_wrapper_class):
         """Test that errors raise ValueError when should_continue_on_error is False.
 
@@ -273,7 +273,7 @@ class TestFoldingEngineUDF:
 
         asyncio.run(run_test())
 
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngineWrapper")
     def test_error_handling_continues_when_should_continue_on_error_true(self, mock_wrapper_class):
         """Test that errors are captured but processing continues when should_continue_on_error is True.
 
@@ -330,7 +330,7 @@ class TestFoldingEngineUDF:
 
         asyncio.run(run_test())
 
-    @patch("tensorrt_bionemo.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngineWrapper")
     def test_batching_splits_large_batches_into_sub_batches(self, mock_wrapper_class):
         """Test that large batches are split into sub-batches based on max_batch_size.
 

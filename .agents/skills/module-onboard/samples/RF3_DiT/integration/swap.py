@@ -19,7 +19,7 @@
 
 """
 Module swap: replace RF3 DiffusionModule's diffusion_transformer
-with TRT-BNM DiffusionTransformerLayer stack.
+with BioIR DiffusionTransformerLayer stack.
 """
 
 import os
@@ -27,7 +27,7 @@ import sys
 
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import (
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
     DiffusionTransformerLayer,
 )
 
@@ -50,12 +50,12 @@ def swap_diffusion_transformer(
     device: str = "cuda",
     pairwise_attention_backend: str = "SDPA",
 ):
-    """Replace diffusion_module.diffusion_transformer with TRT-BNM equivalent.
+    """Replace diffusion_module.diffusion_transformer with BioIR equivalent.
 
     Args:
         diffusion_module: RF3 DiffusionModule instance.
         source_state_dict: Optional state_dict from the source model's DiffusionTransformer.
-            If None, TRT-BNM modules use default initialization.
+            If None, BioIR modules use default initialization.
     """
     config = make_rf3_dit_config(
         num_blocks=num_blocks,

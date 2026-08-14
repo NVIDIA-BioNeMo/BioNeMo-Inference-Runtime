@@ -18,8 +18,8 @@
 /* Triangle-attention CUBIN configuration, device ABI, and launcher interface.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_TRIANGLE_ATTENTION_LAUNCHER_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_TRIANGLE_ATTENTION_LAUNCHER_H_
+#ifndef BIOIR_CPP_KERNELS_CUTEDSL_TRIANGLE_ATTENTION_LAUNCHER_H_
+#define BIOIR_CPP_KERNELS_CUTEDSL_TRIANGLE_ATTENTION_LAUNCHER_H_
 
 #include "cubin_runtime.h"
 #include "cutedsl_launch_utils.h"
@@ -32,7 +32,7 @@
 #include <string>
 #include <variant>
 
-namespace trtbnm::cutedsl::triangle_attention::embedded
+namespace bioir::cutedsl::triangle_attention::embedded
 {
 struct CubinImage;
 }
@@ -40,7 +40,7 @@ struct CubinImage;
 /* Direct CUDA Driver launch ABIs for Ampere and Hopper triangle attention.
  * These are device-kernel ABIs, not the high-level CuTeDSL __call__ ABI.
  */
-namespace trtbnm::cutedsl::triangle_attention::abi
+namespace bioir::cutedsl::triangle_attention::abi
 {
 
 inline constexpr std::size_t kSM80ParameterCount = 12;
@@ -159,9 +159,9 @@ inline void pack_sm90_kernel_params(SM90Params* params, void* kernel_params[kSM9
 static_assert(sizeof(CUtensorMap) == 128);
 static_assert(alignof(CUtensorMap) >= 64);
 
-} // namespace trtbnm::cutedsl::triangle_attention::abi
+} // namespace bioir::cutedsl::triangle_attention::abi
 
-namespace trtbnm::cutedsl::triangle_attention
+namespace bioir::cutedsl::triangle_attention
 {
 
 enum class DType : std::uint8_t
@@ -377,6 +377,6 @@ make_kernel_config(std::int32_t target_sm, std::int32_t head_dim, std::int32_t S
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 
-} // namespace trtbnm::cutedsl::triangle_attention
+} // namespace bioir::cutedsl::triangle_attention
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUTEDSL_TRIANGLE_ATTENTION_LAUNCHER_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUTEDSL_TRIANGLE_ATTENTION_LAUNCHER_H_ */

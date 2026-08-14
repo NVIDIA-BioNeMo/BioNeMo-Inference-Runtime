@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace trtbnm::cutedsl::dual_gemm_x_x
+namespace bioir::cutedsl::dual_gemm_x_x
 {
 namespace
 {
@@ -594,4 +594,4 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   throw std::invalid_argument("dual_gemm_x_x config has no registered SM launcher");
 }
 
-} // namespace trtbnm::cutedsl::dual_gemm_x_x
+} // namespace bioir::cutedsl::dual_gemm_x_x

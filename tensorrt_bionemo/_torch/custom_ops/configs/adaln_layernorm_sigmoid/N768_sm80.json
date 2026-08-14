@@ -1,6 +1,0 @@
-{
-  "implementation": "tensorrt_bionemo.dsl_kernels.cute.layernorm_sigmoid_fusion.LayerNormSigmoidFusion",
-  "configs": {
-    "0": {}
-  }
-}

@@ -29,14 +29,14 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     InputKeyMethod,
     InputRoutingConfig,
     InputRoutingConfigFactory,
     NamedDimTies,
 )
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 DIM_LEN = 8  # feature dim of the stand-in token tensor: [B, n_tokens, DIM]
 

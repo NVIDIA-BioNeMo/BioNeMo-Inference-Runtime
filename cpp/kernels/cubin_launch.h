@@ -18,8 +18,8 @@
 /* Common CUDA Driver API state for loading and launching a CUBIN kernel.
  */
 
-#ifndef TENSORRT_BIONEMO_CPP_KERNELS_CUBIN_LAUNCH_H_
-#define TENSORRT_BIONEMO_CPP_KERNELS_CUBIN_LAUNCH_H_
+#ifndef BIOIR_CPP_KERNELS_CUBIN_LAUNCH_H_
+#define BIOIR_CPP_KERNELS_CUBIN_LAUNCH_H_
 
 #include <cuda.h>
 
@@ -115,4 +115,4 @@ extern "C"
 } /* extern "C" */
 #endif
 
-#endif /* TENSORRT_BIONEMO_CPP_KERNELS_CUBIN_LAUNCH_H_ */
+#endif /* BIOIR_CPP_KERNELS_CUBIN_LAUNCH_H_ */

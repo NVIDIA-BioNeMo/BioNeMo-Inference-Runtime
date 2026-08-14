@@ -27,23 +27,23 @@ from types import ModuleType
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import (
+from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import (
     AdaLNLayerNormSigmoidCuTe,
     get_adaln_layernorm_sigmoid_op,
 )
-from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import cutedsl as adaln_cutedsl
-from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid import ops as adaln_ops
-from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import cutedsl as adaln_cutedsl
+from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import ops as adaln_ops
+from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import (
     config_identity as adaln_config_identity,
 )
-from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.ops import (
+from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.ops import (
     _invoke_vanilla_adaln_layernorm_sigmoid,
 )
-from tensorrt_bionemo._torch.layers.normalization import AdaLN
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.layers.normalization import AdaLN
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode
 
-_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.layernorm_sigmoid_fusion"
+_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.layernorm_sigmoid_fusion"
 _CUTEDSL_MODES = cutedsl_test_modes(_SOURCE_MODULE)
 
 
@@ -504,7 +504,7 @@ _SMEM_N = [128, 1024, 8192]
 
 
 def _make_fusion(dtype: torch.dtype, N: int, **kwargs):
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import _TORCH_TO_CUTLASS_DTYPE
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import _TORCH_TO_CUTLASS_DTYPE
 
     source = _require_source()
     return source.LayerNormSigmoidFusion(_TORCH_TO_CUTLASS_DTYPE[dtype], N, **kwargs)
@@ -598,7 +598,7 @@ def test_explicit_staged_flags_are_accounted():
 
 def test_config_identity_separates_every_kernel_knob():
     """Each knob make_kernel forwards must change the identity."""
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import (
         _KERNEL_CFG_DEFAULTS,
         config_identity,
     )
@@ -611,7 +611,7 @@ def test_config_identity_separates_every_kernel_knob():
 
 def test_config_identity_is_default_insensitive_and_extensible():
     """Omitted knobs equal explicit defaults; unknown knobs still participate."""
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import (
         config_identity,
         is_cubin_representable,
     )
@@ -630,7 +630,7 @@ def test_shipped_bucket_configs_stay_cubin_representable():
     that treats *any* non-empty config as unrepresentable breaks the whole CUBIN
     path -- those two knobs resolve into ``geometry``, which the registry keys on.
     """
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import (
         SHIPPED_N,
         SUPPORTED_SMS,
         bucket_variants,
@@ -649,8 +649,8 @@ def test_distinct_configs_do_not_share_a_compiled_cache_entry():
     Exercises ``_compile_bucket`` itself rather than re-deriving the key, so the
     test fails if the key ever drops back to ``(dtype, N, geometry)``.
     """
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import resolve_geometry
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import (
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import resolve_geometry
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import (
         _TORCH_TO_CUTLASS_DTYPE,
         AdaLNLayerNormSigmoidCuTe,
     )
@@ -684,8 +684,8 @@ def test_distinct_configs_do_not_share_a_compiled_cache_entry():
 
 def test_cubin_path_refuses_non_default_knobs():
     """No payload encodes a non-default knob, so loading one must fail loudly."""
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid._config import resolve_geometry
-    from tensorrt_bionemo._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import AdaLNLayerNormSigmoidCuTe
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import resolve_geometry
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import AdaLNLayerNormSigmoidCuTe
 
     N = 768
     cache = AdaLNLayerNormSigmoidCuTe()

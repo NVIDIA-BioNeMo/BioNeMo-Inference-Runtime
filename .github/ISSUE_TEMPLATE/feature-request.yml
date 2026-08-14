@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 name: "Feature Request"
-description: Propose a new feature or enhancement for BioNeMo AIR
+description: Propose a new feature or enhancement for BioIR
 title: "[Feature]: "
 labels: ["enhancement", "needs-discussion"]
 
@@ -11,7 +11,7 @@ body:
       value: >
         New features and API-breaking changes start here. A maintainer reviews
         and approves the request **before** a pull request is opened — see
-        [CONTRIBUTING.md](https://github.com/NVIDIA-BioNeMo/BioNeMoAIR/blob/main/CONTRIBUTING.md).
+        [CONTRIBUTING.md](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/blob/main/CONTRIBUTING.md).
 
   - type: textarea
     id: motivation

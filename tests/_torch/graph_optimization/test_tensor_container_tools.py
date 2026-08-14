@@ -16,8 +16,8 @@
 
 import torch
 
-from tensorrt_bionemo._torch.graph_optimization.config import CUDAGraphOptimizationConfig
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 
 def test_extract_container_tensor_shapes_single_tensor():

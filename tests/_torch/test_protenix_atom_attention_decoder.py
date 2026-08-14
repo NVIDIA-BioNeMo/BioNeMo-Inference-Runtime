@@ -22,10 +22,10 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tensorrt_bionemo._torch.modules.protenix import ProtenixAtomAttentionDecoder
-from tensorrt_bionemo.models.protenix.config import AtomAttentionDecoderConfig
-from tensorrt_bionemo.models.protenix.convert import convert_atom_attention_decoder_torch
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir._torch.modules.protenix import ProtenixAtomAttentionDecoder
+from bionemo_ir.models.protenix.config import AtomAttentionDecoderConfig
+from bionemo_ir.models.protenix.convert import convert_atom_attention_decoder_torch
+from bionemo_ir.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixAtomAttentionDecoderFromOSS
 
 

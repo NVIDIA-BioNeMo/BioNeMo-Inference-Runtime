@@ -35,13 +35,13 @@ needs no CUDA and does not instantiate the module.
 import pytest
 import torch
 
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     InputKeyMethod,
     InputRoutingConfigFactory,
     NamedDimTies,
 )
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
 # Small stand-in feature dims for OpenFold3DiffusionTransformer inputs.
 BS = 1

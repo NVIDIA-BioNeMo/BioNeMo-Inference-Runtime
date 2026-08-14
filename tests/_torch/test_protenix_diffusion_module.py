@@ -25,25 +25,25 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tensorrt_bionemo._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
-from tensorrt_bionemo._torch.graph_optimization.cuda_graph.runtime import (
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
-from tensorrt_bionemo._torch.modules.protenix import ProtenixDiffusionModule, ProtenixSampleDiffusion
-from tensorrt_bionemo.configs import DiffusionTransformerConfig
-from tensorrt_bionemo.hubs import FoldingSupportMatrix as SupMat
-from tensorrt_bionemo.hubs import load_weights as load_weights_from_hubs
-from tensorrt_bionemo.models.protenix.config import (
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
+from bionemo_ir._torch.modules.protenix import ProtenixDiffusionModule, ProtenixSampleDiffusion
+from bionemo_ir.configs import DiffusionTransformerConfig
+from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
+from bionemo_ir.hubs import load_weights as load_weights_from_hubs
+from bionemo_ir.models.protenix.config import (
     AtomAttentionDecoderConfig,
     DiffusionAtomAttentionEncoderConfig,
     DiffusionConditioningConfig,
     DiffusionModuleConfig,
     RelativePositionEncodingConfig,
 )
-from tensorrt_bionemo.models.protenix.convert import convert_diffusion_module_torch
-from tensorrt_bionemo.utils import str_dtype_to_torch
+from bionemo_ir.models.protenix.convert import convert_diffusion_module_torch
+from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import skip_if_cutedsl
 from tests.common.test_utils.protenix.ref_layers_from_oss import (
     RefProtenixDiffusionModuleFromOSS,
@@ -334,7 +334,7 @@ def real_case():
     }
 
 
-def _real_trtbnm_module(sc: Scenario, real_case):
+def _real_bioir_module(sc: Scenario, real_case):
     """Build the ported module and batched inputs from ``real_case``."""
     device = real_case["device"]
     torch_dtype = str_dtype_to_torch(sc.dtype)
@@ -381,7 +381,7 @@ def _real_trtbnm_module(sc: Scenario, real_case):
     ids=["fp32", "bf16", "fp32_bf16_score"],
 )
 def test_protenix_diffusion_module(sc: Scenario, real_case):
-    model, batch, s_inputs, s_trunk, z_trunk, torch_dtype = _real_trtbnm_module(sc, real_case)
+    model, batch, s_inputs, s_trunk, z_trunk, torch_dtype = _real_bioir_module(sc, real_case)
     x_noisy = real_case["x_noisy"].unsqueeze(0).to(torch_dtype)
     t = real_case["t"].unsqueeze(0).to(torch_dtype)
 
@@ -510,7 +510,7 @@ def test_sample_diffusion_smoke():
 def test_sample_diffusion_shared_vars_cache(sc: Scenario, real_case):
     """Match cached and uncached EDM rollouts under identical noise."""
     torch.backends.cuda.matmul.allow_tf32 = False
-    model, batch, s_inputs, s_trunk, z_trunk, _ = _real_trtbnm_module(sc, real_case)
+    model, batch, s_inputs, s_trunk, z_trunk, _ = _real_bioir_module(sc, real_case)
     n_sample = Scenario().n_sample
     uncached = ProtenixSampleDiffusion(model, use_cache=False).eval()
     cached = ProtenixSampleDiffusion(model, use_cache=True).eval()
@@ -537,7 +537,7 @@ def test_sample_coords_drop_consumed_features(real_case):
     """Drop cache-only inputs without changing the rollout."""
     torch.backends.cuda.matmul.allow_tf32 = False
     sc = Scenario(dtype="float32", z_pair_dtype="float32")
-    model, batch, s_inputs, s_trunk, z_trunk, _ = _real_trtbnm_module(sc, real_case)
+    model, batch, s_inputs, s_trunk, z_trunk, _ = _real_bioir_module(sc, real_case)
     n_sample = Scenario().n_sample
     sampler = ProtenixSampleDiffusion(model, use_cache=True).eval()
     consumed = {
@@ -582,7 +582,7 @@ def test_protenix_module_registry_wiring():
     """
     import torch.nn as nn
 
-    from tensorrt_bionemo.models.protenix import Protenix
+    from bionemo_ir.models.protenix import Protenix
 
     model = Protenix(config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
     reg = model.get_optimized_modules({})
@@ -605,8 +605,8 @@ def test_enabled_modules_act_as_cudagraph_whitelist():
     and so are discoverable by qualified path, but their CUDA-graph replay
     produces NaN and they are deliberately not aliased — configuring them must
     be refused rather than silently graphed."""
-    from tensorrt_bionemo.configs import AcceleratedConfig, BackendType
-    from tensorrt_bionemo.models.protenix import Protenix
+    from bionemo_ir.configs import AcceleratedConfig, BackendType
+    from bionemo_ir.models.protenix import Protenix
 
     model = Protenix(config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
 
@@ -630,7 +630,7 @@ def test_token_transformer_cudagraph_parity(real_case):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     sc = Scenario(dtype="float32", token_dtype="bfloat16", enc_dtype="bfloat16", dec_dtype="bfloat16")
-    model, batch, s_inputs, s_trunk, z_trunk, _ = _real_trtbnm_module(sc, real_case)
+    model, batch, s_inputs, s_trunk, z_trunk, _ = _real_bioir_module(sc, real_case)
     n_sample = Scenario().n_sample
 
     def _roll(m, steps=12):

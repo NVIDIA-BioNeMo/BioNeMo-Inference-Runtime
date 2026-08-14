@@ -15,15 +15,15 @@
  limitations under the License.
 -->
 
-# TRT-BNM Pipeline Architecture Reference
+# BioIR Pipeline Architecture Reference
 
 ## Directory Structure
 
 Every model pipeline lives under
-`tensorrt_bionemo/pipeline/models/<model_name>/`:
+`bionemo_ir/pipeline/models/<model_name>/`:
 
 ```text
-tensorrt_bionemo/pipeline/models/<model_name>/
+bionemo_ir/pipeline/models/<model_name>/
 ├── __init__.py                 # empty
 ├── const.py                    # Domain constants (residue types, atom types, etc.)
 ├── common.py                   # Shared math/helper functions
@@ -103,7 +103,7 @@ InputParsed
   → WriterStage (PDB/CIF output)
 ```
 
-## Base Classes (from `tensorrt_bionemo/pipeline/base.py`)
+## Base Classes (from `bionemo_ir/pipeline/base.py`)
 
 ### ContextGeneratorBase
 
@@ -260,7 +260,7 @@ class ModelComponentsFactory(ABC):
 Model-specific configs extend `BaseConfig`:
 
 ```python
-from tensorrt_bionemo.configs.base import BaseConfig
+from bionemo_ir.configs.base import BaseConfig
 
 class NewModelConfig(BaseConfig):
     is_multimer: bool = False
@@ -304,7 +304,7 @@ class SampleRepeater(FeatureCollatorBase):
 
 ```python
 # Base classes
-from tensorrt_bionemo.pipeline.base import (
+from bionemo_ir.pipeline.base import (
     ContextGeneratorBase, ContextGeneratorSpec,
     TransformBase, TransformSpec,
     FeatureGeneratorBase, FeatureGeneratorSpec,
@@ -312,12 +312,12 @@ from tensorrt_bionemo.pipeline.base import (
     FeatureFactoryBase, TokenizerBase, PostProcessorBase,
     dict_context_merger, default_context_and_feature_merger,
 )
-from tensorrt_bionemo.configs.base import BaseConfig
+from bionemo_ir.configs.base import BaseConfig
 
 # Data types
-from tensorrt_bionemo.data.parsers import InputParsed, MSAParsed, generate_deletion_matrix
-from tensorrt_bionemo.data.schemas import FoldingOutput
-from tensorrt_bionemo.data.utils import sequence_to_onehot
+from bionemo_ir.data.parsers import InputParsed, MSAParsed, generate_deletion_matrix
+from bionemo_ir.data.schemas import FoldingOutput
+from bionemo_ir.data.utils import sequence_to_onehot
 ```
 
 ## Conventions

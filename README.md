@@ -1,6 +1,6 @@
 <div align="center">
 
-# TensorRT-BioNemo
+# BioNeMo Inference Runtime
 
 GPU-accelerated structure prediction model inference
 <div align="left">
@@ -12,14 +12,14 @@ GPU-accelerated structure prediction model inference
 Build the development image directly from the NVIDIA PyTorch base:
 
 ```bash
-make -C docker trtbnm_dev REGISTRY_IMAGE=tensorrt-bionemo TAG=dev
+make -C docker bioir_dev REGISTRY_IMAGE=bionemo-ir TAG=dev
 ```
 
 Run the resulting image:
 
 ```bash
 docker run --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --gpus all -it \
-  tensorrt-bionemo:dev
+  bionemo-ir:dev
 ```
 
 The repository and development dependencies are already installed in editable

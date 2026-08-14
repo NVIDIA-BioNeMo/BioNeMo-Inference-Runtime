@@ -19,23 +19,23 @@ import pytest
 import torch
 from test_utils.boltz.ref_attn import plain_mha
 
-from tensorrt_bionemo._torch import _cutedsl_kernel_library as library_runtime
-from tensorrt_bionemo._torch._kernel_config_loader import get_config_file_name, load_kernel_configs
-from tensorrt_bionemo._torch.attention_backend import AttentionType, get_attention_backend
-from tensorrt_bionemo._torch.attention_backend.interface import AttentionMetadata
-from tensorrt_bionemo._torch.attention_backend.pairwise_attention.cutedsl import (
+from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
+from bionemo_ir._torch._kernel_config_loader import get_config_file_name, load_kernel_configs
+from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
+from bionemo_ir._torch.attention_backend.pairwise_attention.cutedsl import (
     PairwiseAttentionCuTeLeftMask,
     PairwiseAttentionCuTeLeftMaskMetadata,
 )
-from tensorrt_bionemo._torch.attention_backend.pairwise_attention.vanilla import VanillaPairwiseAttention
-from tensorrt_bionemo._torch.attention_backend.triangle_attention import _config as triangle_config
-from tensorrt_bionemo._torch.attention_backend.triangle_attention import cutedsl as triangle_cutedsl
-from tensorrt_bionemo._torch.attention_backend.triangle_attention.cutedsl import (
+from bionemo_ir._torch.attention_backend.pairwise_attention.vanilla import VanillaPairwiseAttention
+from bionemo_ir._torch.attention_backend.triangle_attention import _config as triangle_config
+from bionemo_ir._torch.attention_backend.triangle_attention import cutedsl as triangle_cutedsl
+from bionemo_ir._torch.attention_backend.triangle_attention.cutedsl import (
     TriangleAttentionCuTeLeftMask,
     TriangleAttentionCuTeLeftMaskMetadata,
 )
-from tensorrt_bionemo._torch.attention_backend.triangle_attention.sdpa import SDPATriangleAttention
-from tensorrt_bionemo._torch.attention_backend.triangle_attention.vanilla import VanillaTriangleAttention
+from bionemo_ir._torch.attention_backend.triangle_attention.sdpa import SDPATriangleAttention
+from bionemo_ir._torch.attention_backend.triangle_attention.vanilla import VanillaTriangleAttention
 from tests._torch import (
     SM_VERSION,
     cutedsl_test_modes,
@@ -61,7 +61,7 @@ _TRIANGLE_CUTEDSL_MODE_CACHES: dict[str, dict] = {
     "source": {},
     "cubin": {},
 }
-_TRIANGLE_CUTEDSL_SOURCE_MODULE = "tensorrt_bionemo.dsl_kernels.cute.sm80_triangle_attn_left_mask"
+_TRIANGLE_CUTEDSL_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_triangle_attn_left_mask"
 
 
 def _configure_triangle_cutedsl_mode(mode: str, monkeypatch) -> None:
@@ -71,7 +71,7 @@ def _configure_triangle_cutedsl_mode(mode: str, monkeypatch) -> None:
 
     if mode == "cubin":
         try:
-            importlib.import_module("tensorrt_bionemo.libs._cutedsl_kernels")
+            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
         except ImportError:
             pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
 
@@ -322,7 +322,7 @@ def test_triangle_left_mask_vs_vanilla(
     ``pair_mask = seq_mask^T seq_mask`` shape).
 
     Public builds test CUBINs only; private CI sets
-    ``TRTBNM_TEST_CUTEDSL_MODES=source,cubin`` for both.
+    ``BIOIR_TEST_CUTEDSL_MODES=source,cubin`` for both.
     """
     skip_if_no_cutedsl()
     _configure_triangle_cutedsl_mode(cutedsl_mode, monkeypatch)

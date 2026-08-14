@@ -26,7 +26,7 @@ import pytest
 
 # Importing the cache pulls in cutlass; skip cleanly where it is unavailable
 # (e.g. a CPU-only dev box) rather than erroring at collection.
-cute_cache = pytest.importorskip("tensorrt_bionemo.dsl_kernels.cute_cache")
+cute_cache = pytest.importorskip("bionemo_ir.dsl_kernels.cute_cache")
 DiskCache = cute_cache.DiskCache
 
 

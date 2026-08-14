@@ -35,7 +35,7 @@ import pytest
 import torch
 
 import tests._torch.model_forwards.test_model_forward_with_cuda_graph as H
-from tensorrt_bionemo._torch.graph_optimization.config import (
+from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     GraphOptimizationConfig,
     GraphOptimizationMode,
@@ -44,20 +44,20 @@ from tensorrt_bionemo._torch.graph_optimization.config import (
     NamedDimTies,
     effective_ranges,
 )
-from tensorrt_bionemo._torch.graph_optimization.decorator import (
+from bionemo_ir._torch.graph_optimization.decorator import (
     bind_forward_args,
     support_graph_optimization,
     validate_spec_against_forward,
 )
-from tensorrt_bionemo._torch.layers.transformers.diffusion_transformer import (
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
     BoltzDiffusionTransformer,
     OpenFold3DiffusionTransformer,
     ProtenixDiffusionTransformer,
 )
-from tensorrt_bionemo._torch.layers.transformers.pairformer import PairformerModule
-from tensorrt_bionemo._torch.modules.boltz.structure import DiffusionModule as BoltzDiffusionModule
-from tensorrt_bionemo._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
-from tensorrt_bionemo._torch.modules.protenix.diffusion import ProtenixDiffusionModule
+from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
+from bionemo_ir._torch.modules.boltz.structure import DiffusionModule as BoltzDiffusionModule
+from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
+from bionemo_ir._torch.modules.protenix.diffusion import ProtenixDiffusionModule
 from tests.common.test_utils.model_forwards import _CKPT_ENV, _HF_CKPT, _model_weights_available
 
 _SAMPLE_IDS = ("T1047s1",)

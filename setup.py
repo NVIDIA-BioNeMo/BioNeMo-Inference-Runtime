@@ -14,12 +14,12 @@
 # limitations under the License.
 """Build-time packaging shim. pyproject.toml remains the metadata source of truth.
 
-``build_ext`` delegates the ``tensorrt_bionemo.libs`` nanobind extension, which
+``build_ext`` delegates the ``bionemo_ir.libs`` nanobind extension, which
 embeds architecture-specific CuTeDSL CUBINs, to CMake; the local version segment
 (for example ``+cu131``) records the CUDA toolkit that built the wheel, and
-``TRTBNM_VERSION_LOCAL`` appends more segments to it so a wheel built from an
+``BIOIR_VERSION_LOCAL`` appends more segments to it so a wheel built from an
 arbitrary commit is traceable (for example ``+cu131.g1a2b3c4``). Every checkout
-builds the extension, and ``TRTBNM_BUILD_CUTEDSL_KERNELS=0`` opts out from the
+builds the extension, and ``BIOIR_BUILD_CUTEDSL_KERNELS=0`` opts out from the
 environment or an untracked ``build.env``.
 """
 
@@ -37,7 +37,7 @@ ROOT_DIR = Path(__file__).parent.resolve()
 _BUILD_ENV_FILE = ROOT_DIR / "build.env"
 _KERNELS_DIR = ROOT_DIR / "cpp" / "kernels"
 _CUBIN_GENERATOR = ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"
-_BUILD_CUTEDSL_KERNELS_ENV = "TRTBNM_BUILD_CUTEDSL_KERNELS"
+_BUILD_CUTEDSL_KERNELS_ENV = "BIOIR_BUILD_CUTEDSL_KERNELS"
 _KERNEL_LIBRARY_STEM = "_cutedsl_kernels"
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
@@ -123,10 +123,10 @@ def _drop_opted_out_kernel_libraries() -> None:
     ``build_extension`` never runs for a disabled extension, so this is the only
     place a previously built copy gets cleaned up.
     """
-    package_dirs = {ROOT_DIR / "tensorrt_bionemo"}
+    package_dirs = {ROOT_DIR / "bionemo_ir"}
     build_root = ROOT_DIR / "build"
     if build_root.is_dir():
-        package_dirs.update(build_root.glob("lib*/tensorrt_bionemo"))
+        package_dirs.update(build_root.glob("lib*/bionemo_ir"))
     _remove_stale_kernel_libraries(package_dirs | {path / "libs" for path in package_dirs})
 
 
@@ -140,11 +140,11 @@ _BUILD_CUTEDSL_KERNELS = _env_flag(
 def _base_version() -> str:
     """Read ``__version__`` from version.py WITHOUT importing the package.
 
-    ``tensorrt_bionemo/__init__.py`` imports torch/CUDA extensions, which may be
+    ``bionemo_ir/__init__.py`` imports torch/CUDA extensions, which may be
     unavailable (or slow) during metadata resolution — so parse the trivial
     assignment directly, mirroring setuptools' own static ``attr:`` extraction.
     """
-    version_file = ROOT_DIR / "tensorrt_bionemo" / "version.py"
+    version_file = ROOT_DIR / "bionemo_ir" / "version.py"
     for line in version_file.read_text().splitlines():
         if line.startswith("__version__"):
             namespace: dict = {}
@@ -193,7 +193,7 @@ def _extra_local_version() -> str:
 
     A wheel built off a branch has to name the commit it came from — its base
     version cannot, because ``version.py`` only changes at a release. CI sets
-    ``TRTBNM_VERSION_LOCAL`` (for example ``g1a2b3c4`` or ``g1a2b3c4 tai/ci/x``)
+    ``BIOIR_VERSION_LOCAL`` (for example ``g1a2b3c4`` or ``g1a2b3c4 tai/ci/x``)
     and this normalizes it to `PEP 440 local version segments
     <https://packaging.python.org/en/latest/specifications/version-specifiers/#local-version-identifiers>`_
     — lowercase alphanumerics separated by dots, which is all the grammar
@@ -202,13 +202,13 @@ def _extra_local_version() -> str:
     Returns:
         The segments to append, each already dot-prefixed, or ``""``.
     """
-    raw = os.environ.get("TRTBNM_VERSION_LOCAL", "").strip()
+    raw = os.environ.get("BIOIR_VERSION_LOCAL", "").strip()
     if not raw:
         return ""
 
     normalized = re.sub(r"[^A-Za-z0-9]+", ".", raw).strip(".").lower()
     if not normalized:
-        raise ValueError(f"TRTBNM_VERSION_LOCAL has no alphanumeric content: {raw!r}")
+        raise ValueError(f"BIOIR_VERSION_LOCAL has no alphanumeric content: {raw!r}")
     return f".{normalized}"
 
 
@@ -238,8 +238,8 @@ class CMakeBuild(build_ext):
         _prepare_cutedsl_kernel_payloads()
         extension_path = Path(self.get_ext_fullpath(extension.name)).resolve()
         extension_dir = extension_path.parent
-        source_package_dir = ROOT_DIR / "tensorrt_bionemo"
-        build_package_dir = Path(self.build_lib).resolve() / "tensorrt_bionemo"
+        source_package_dir = ROOT_DIR / "bionemo_ir"
+        build_package_dir = Path(self.build_lib).resolve() / "bionemo_ir"
         package_dirs = {
             source_package_dir,
             build_package_dir,
@@ -285,7 +285,7 @@ class CMakeBuild(build_ext):
 setup(
     version=f"{_base_version()}+{_cuda_local_version()}{_extra_local_version()}",
     ext_modules=(
-        [CMakeExtension("tensorrt_bionemo.libs._cutedsl_kernels", ROOT_DIR / "cpp")] if _BUILD_CUTEDSL_KERNELS else []
+        [CMakeExtension("bionemo_ir.libs._cutedsl_kernels", ROOT_DIR / "cpp")] if _BUILD_CUTEDSL_KERNELS else []
     ),
     cmdclass={"build_ext": CMakeBuild},
 )

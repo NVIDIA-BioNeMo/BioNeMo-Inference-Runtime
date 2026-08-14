@@ -38,7 +38,7 @@ python test_pipeline_equivalence.py --reqs reqs.json --samples samples/ --model 
 
 ```python
 """
-Test TRT-BNM data pipeline equivalence against OSS reference outputs.
+Test BioIR data pipeline equivalence against OSS reference outputs.
 
 Usage:
     python test_pipeline_equivalence.py --reqs reqs.json --samples samples/ --model <model_name>
@@ -55,14 +55,14 @@ from typing import Any, Optional
 import numpy as np
 import torch
 
-from tensorrt_bionemo.configs.base import BaseConfig
-from tensorrt_bionemo.data.parsers import parse_a3m_content
-from tensorrt_bionemo.data.schemas.basic import (
+from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.data.parsers import parse_a3m_content
+from bionemo_ir.data.schemas.basic import (
     InputParsed,
     InputRequest,
     PolymerParsed,
 )
-from tensorrt_bionemo.registry import (
+from bionemo_ir.registry import (
     get_feature_factory,
     get_model_class,
     get_tokenizer,
@@ -112,7 +112,7 @@ def generate_feature(
     config: BaseConfig,
     init_env: Optional[dict[str, Any]] = None,
 ) -> dict[str, torch.Tensor]:
-    """Run the full TRT-BNM feature pipeline: tokenizer -> generators -> collators."""
+    """Run the full BioIR feature pipeline: tokenizer -> generators -> collators."""
     tokenizer = get_tokenizer(model_name)
     feature_factory = get_feature_factory(model_name)
 
@@ -216,7 +216,7 @@ def compare_features(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test TRT-BNM data pipeline equivalence against reference"
+        description="Test BioIR data pipeline equivalence against reference"
     )
     parser.add_argument(
         "--reqs", required=True,
@@ -318,7 +318,7 @@ pipeline expects. Handles:
 
 ### `generate_feature(model_name, parsed_req, config, init_env) -> dict`
 
-Runs the complete TRT-BNM feature pipeline manually (outside of Ray Data
+Runs the complete BioIR feature pipeline manually (outside of Ray Data
 stages):
 
 1. **Tokenizer stage**: instantiates `ContextGenerator` from the tokenizer spec,
@@ -351,7 +351,7 @@ multi-seed test is optional.
    intra-residue distances must match within `atol=1e-4` because
    rotation/translation preserves them.
 1. **Per-tensor mean & std (single run)** — element-wise mean and std of the
-   TRT-BNM tensor must be close to the OSS reference. Cast both to `float64`
+   BioIR tensor must be close to the OSS reference. Cast both to `float64`
    first to avoid precision drift.
 1. **Per-axis mean & std (single run)** — for tensors with a known "stochastic
    axis" (e.g. the MSA-row axis for masked-MSA), check the marginal statistics

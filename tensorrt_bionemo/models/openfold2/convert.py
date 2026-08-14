@@ -1168,6 +1168,26 @@ def convert_hf_confidence_module_torch(
     return tbnm_state_dict
 
 
+def get_point_projection_torch_weights(state_dict: dict, prefix: str) -> list[dict]:
+    """Weights for one IPA ``PointProjection``, from either checkpoint layout.
+
+    AlphaFold2-converted checkpoints nest the projection under ``.linear``, the
+    way ``PointProjection`` holds it; OpenFold-trained ones store it flat. The
+    tensors are identical either way, so only the source name differs.
+
+    Args:
+        state_dict: Source checkpoint tensors.
+        prefix: Projection path, e.g. ``structure_module.ipa.linear_q_points``.
+    """
+    src = f"{prefix}.linear" if f"{prefix}.linear.weight" in state_dict else prefix
+    return [
+        {
+            "weight": state_dict[f"{src}.weight"],
+            "bias": state_dict[f"{src}.bias"],
+        }
+    ]
+
+
 def convert_hf_structure_module_torch(
     config: BaseConfig, local_checkpoint: str = None, model_name: str = "openfold2_ptm_1", weights: dict = None
 ):
@@ -1207,42 +1227,21 @@ def convert_hf_structure_module_torch(
         }
     ]
 
-    if not config.is_multimer:
-        tbnm_state_dict["ipa.linear_q_points.linear"] = [
-            {
-                "weight": state_dict[f"{layer_path}ipa.linear_q_points.linear.weight"],
-                "bias": state_dict[f"{layer_path}ipa.linear_q_points.linear.bias"],
-            }
-        ]
+    tbnm_state_dict["ipa.linear_q_points.linear"] = get_point_projection_torch_weights(
+        state_dict, f"{layer_path}ipa.linear_q_points"
+    )
 
+    if not config.is_multimer:
         tbnm_state_dict["ipa.linear_kv"] = [
             {
                 "weight": state_dict[f"{layer_path}ipa.linear_kv.weight"],
                 "bias": state_dict[f"{layer_path}ipa.linear_kv.bias"],
             }
         ]
-        tbnm_state_dict["ipa.linear_kv_points.linear"] = [
-            {
-                "weight": state_dict[f"{layer_path}ipa.linear_kv_points.linear.weight"],
-                "bias": state_dict[f"{layer_path}ipa.linear_kv_points.linear.bias"],
-            }
-        ]
+        tbnm_state_dict["ipa.linear_kv_points.linear"] = get_point_projection_torch_weights(
+            state_dict, f"{layer_path}ipa.linear_kv_points"
+        )
     else:
-        if f"{layer_path}ipa.linear_q_points.linear.weight" in state_dict.keys():
-            tbnm_state_dict["ipa.linear_q_points.linear"] = [
-                {
-                    "weight": state_dict[f"{layer_path}ipa.linear_q_points.linear.weight"],
-                    "bias": state_dict[f"{layer_path}ipa.linear_q_points.linear.bias"],
-                }
-            ]
-        else:
-            tbnm_state_dict["ipa.linear_q_points.linear"] = [
-                {
-                    "weight": state_dict[f"{layer_path}ipa.linear_q_points.weight"],
-                    "bias": state_dict[f"{layer_path}ipa.linear_q_points.bias"],
-                }
-            ]
-
         tbnm_state_dict["ipa.linear_k"] = [
             {
                 "weight": state_dict[f"{layer_path}ipa.linear_k.weight"],
@@ -1256,35 +1255,12 @@ def convert_hf_structure_module_torch(
             }
         ]
 
-        if f"{layer_path}ipa.linear_k_points.linear.weight" in state_dict.keys():
-            tbnm_state_dict["ipa.linear_k_points.linear"] = [
-                {
-                    "weight": state_dict[f"{layer_path}ipa.linear_k_points.linear.weight"],
-                    "bias": state_dict[f"{layer_path}ipa.linear_k_points.linear.bias"],
-                }
-            ]
-        else:
-            tbnm_state_dict["ipa.linear_k_points.linear"] = [
-                {
-                    "weight": state_dict[f"{layer_path}ipa.linear_k_points.weight"],
-                    "bias": state_dict[f"{layer_path}ipa.linear_k_points.bias"],
-                }
-            ]
-
-        if f"{layer_path}ipa.linear_v_points.linear.weight" in state_dict.keys():
-            tbnm_state_dict["ipa.linear_v_points.linear"] = [
-                {
-                    "weight": state_dict[f"{layer_path}ipa.linear_v_points.linear.weight"],
-                    "bias": state_dict[f"{layer_path}ipa.linear_v_points.linear.bias"],
-                }
-            ]
-        else:
-            tbnm_state_dict["ipa.linear_v_points.linear"] = [
-                {
-                    "weight": state_dict[f"{layer_path}ipa.linear_v_points.weight"],
-                    "bias": state_dict[f"{layer_path}ipa.linear_v_points.bias"],
-                }
-            ]
+        tbnm_state_dict["ipa.linear_k_points.linear"] = get_point_projection_torch_weights(
+            state_dict, f"{layer_path}ipa.linear_k_points"
+        )
+        tbnm_state_dict["ipa.linear_v_points.linear"] = get_point_projection_torch_weights(
+            state_dict, f"{layer_path}ipa.linear_v_points"
+        )
 
     tbnm_state_dict["ipa.linear_b"] = [
         {

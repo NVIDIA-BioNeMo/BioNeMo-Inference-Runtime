@@ -49,6 +49,15 @@ CASES = (
         "residue_count": 84,
         "chain_count": 1,
     },
+    # OpenFold-trained lineage: same architecture as alphafold2_1, but its
+    # checkpoint stores the IPA point projections flat rather than nested.
+    {
+        "model_source": "openfold2_ptm_1",
+        "checkpoint_env": "OPENFOLD2_PTM_1_CKPT",
+        "chain_id": "A",
+        "residue_count": 84,
+        "chain_count": 1,
+    },
     {
         "model_source": "alphafold2_multimer_1",
         "checkpoint_env": "ALPHAFOLD2_MULTIMER_1_CKPT",

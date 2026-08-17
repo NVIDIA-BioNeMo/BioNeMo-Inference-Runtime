@@ -46,6 +46,7 @@ from bionemo_ir._torch._cutedsl_kernel_library import (
     launch_compiled_kernel,
     populate_compiled_cache_from_library,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
@@ -59,7 +60,6 @@ from ._config import (
     get_nearest_bucket,
 )
 from ._cubin import PairwiseAttentionCubinExecutable
-from ._source import compile_pairwise_attention_source
 
 __all__ = [
     "PairwiseAttentionCuTeLeftMask",
@@ -299,6 +299,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         variant: _PairwiseAttentionVariant,
         config: PairwiseAttentionLeftMaskKernelConfig,
         kernel,
+        compile_source: Any,
         ct_dtype: type[cutlass.Numeric],
         align_elems: int,
         sm_scale: float,
@@ -323,7 +324,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             f"dtype={variant.dtype}, head_dim={variant.head_dim}, "
             f"bucket={variant.bucket}, kv_packed={variant.kv_packed}"
         )
-        executable = compile_pairwise_attention_source(
+        executable = compile_source(
             self.compile,
             kernel,
             config.arch,
@@ -356,14 +357,16 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             return self._load_cubin_executable(variant)
 
         try:
+            source = load_source_module(__package__)
             config, kernel = self._resolve_source_kernel(variant, ct_dtype)
-        except (ImportError, AttributeError) as source_error:
+        except ImportError as source_error:
             return self._load_cubin_executable(variant, source_error)
 
         return self._load_or_compile_source(
             variant,
             config,
             kernel,
+            source.compile_pairwise_attention_source,
             ct_dtype,
             align_elems,
             sm_scale,

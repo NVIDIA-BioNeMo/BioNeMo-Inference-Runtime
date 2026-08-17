@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "pair_weighted_averaging_registry.h"
 
 #include <cuda.h>
 
@@ -80,13 +80,14 @@ EmbeddedSelection find_embedded_cubin(
 
   bool const is_bfloat16 = dtype_is_bfloat16(dtype);
   double const side = std::sqrt(static_cast<double>(I) * static_cast<double>(J));
+  embedded::RegistryView const registry = embedded::registry();
   bool found_n_anchor = false;
   std::int32_t nearest_n_anchor = 0;
   double nearest_n_distance = 0;
 
-  for (std::size_t image_index = 0; image_index < embedded::kCubinCount; ++image_index)
+  for (std::size_t image_index = 0; image_index < registry.count; ++image_index)
   {
-    embedded::CubinImage const& image = embedded::kCubins[image_index];
+    embedded::CubinImage const& image = registry.images[image_index];
     if (!image_matches_axes(image, target_sm, D, c_m, is_bfloat16))
       continue;
     if (image.aliases == nullptr || image.alias_count == 0)
@@ -120,9 +121,9 @@ EmbeddedSelection find_embedded_cubin(
 
   EmbeddedSelection nearest{};
   double nearest_s_distance = 0;
-  for (std::size_t image_index = 0; image_index < embedded::kCubinCount; ++image_index)
+  for (std::size_t image_index = 0; image_index < registry.count; ++image_index)
   {
-    embedded::CubinImage const& image = embedded::kCubins[image_index];
+    embedded::CubinImage const& image = registry.images[image_index];
     if (!image_matches_axes(image, target_sm, D, c_m, is_bfloat16))
       continue;
 
@@ -374,16 +375,7 @@ bool is_preload_compatible(embedded::CubinImage const& image, std::int32_t devic
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
 {
-  std::size_t loaded = 0;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    embedded::CubinImage const& image = embedded::kCubins[index];
-    if (!is_preload_compatible(image, device_sm))
-      continue;
-    (void) load_embedded_kernel(context, image.cubin, false);
-    ++loaded;
-  }
-  return loaded;
+  return preload_registry_kernels(context, device_sm, embedded::registry(), is_preload_compatible);
 }
 
 CubinPreloadRegistration const kPreloader{

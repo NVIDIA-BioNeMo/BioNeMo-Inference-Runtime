@@ -53,8 +53,6 @@ bioir_reqs:
 			--platform $(BUILD_PLATFORM) \
 			--target ci_stage \
 			--file $(PROJECT_DIR)/docker/Dockerfile.with-source \
-			--build-arg BASE_IMAGE=$(TORCH_BASE_IMAGE) \
-			--build-arg BASE_TAG=$(TORCH_BASE_TAG) \
 			--tag $(REQS_IMAGE_AND_TAG) \
 			$(PROJECT_DIR) \
 		&& popd

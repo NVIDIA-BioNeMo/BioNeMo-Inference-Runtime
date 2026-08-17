@@ -20,6 +20,8 @@ from typing import Any
 
 import torch
 
+from bionemo_ir._torch._kernel_source_loader import load_source_module
+
 from ._config import (
     _CONFIGS_DIR as _CONFIGS_DIR,
 )
@@ -81,9 +83,7 @@ from .ops import (
 
 def _kernel_config_dataclass(kernel_cls: type) -> type:
     """Compatibility wrapper for the source-only config helper."""
-    from ._source import _kernel_config_dataclass as source_helper
-
-    return source_helper(kernel_cls)
+    return load_source_module(__package__)._kernel_config_dataclass(kernel_cls)
 
 
 def _build_kernel_config(
@@ -95,9 +95,7 @@ def _build_kernel_config(
     dtype_str: str,
 ) -> DualGemmXxKernelConfig:
     """Compatibility wrapper for the source-only config builder."""
-    from ._source import _build_kernel_config as source_helper
-
-    return source_helper(
+    return load_source_module(__package__)._build_kernel_config(
         kernel_cls,
         tile_params,
         has_bias,
@@ -109,6 +107,4 @@ def _build_kernel_config(
 
 def _cutlass_dtype(tensor: torch.Tensor) -> type:
     """Compatibility wrapper for the source-only torch-to-CuTe mapping."""
-    from ._source import _cutlass_dtype as source_helper
-
-    return source_helper(tensor)
+    return load_source_module(__package__)._cutlass_dtype(tensor)

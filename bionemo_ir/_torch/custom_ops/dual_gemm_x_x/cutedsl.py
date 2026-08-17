@@ -29,6 +29,7 @@ from bionemo_ir._torch._cutedsl_kernel_library import (
     launch_compiled_kernel,
     populate_compiled_cache_from_library,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
@@ -112,7 +113,7 @@ class DualGemmXxCuTe(CuteKernelCache):
         x: torch.Tensor,
     ) -> tuple[ModuleType, Any]:
         """Import, resolve, and instantiate one development-time source."""
-        from . import _source
+        source_module = load_source_module(__package__)
 
         selection = _get_config_selection(
             self._sm_version,
@@ -121,7 +122,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             variant.bucket,
             variant.transpose_out,
         )
-        source = _source.resolve_source_kernel(
+        source = source_module.resolve_source_kernel(
             selection,
             x,
             has_bias=variant.has_bias,
@@ -129,12 +130,12 @@ class DualGemmXxCuTe(CuteKernelCache):
             transpose_out=variant.transpose_out,
             dtype_str=_dtype_str(variant.dtype),
         )
-        return _source, source
+        return source_module, source
 
     def _load_cubin_executable(
         self,
         variant: _DualGemmXxVariant,
-        source_error: ImportError | AttributeError | None = None,
+        source_error: ImportError | None = None,
     ) -> DualGemmXxCubinExecutable:
         """Populate the shared cache from the packaged kernel library."""
         cache_key = (self._sm_version, variant)
@@ -226,7 +227,7 @@ class DualGemmXxCuTe(CuteKernelCache):
 
         try:
             source_module, source = self._resolve_source_kernel(variant, x)
-        except (ImportError, AttributeError) as source_error:
+        except ImportError as source_error:
             return self._load_cubin_executable(variant, source_error)
 
         return self._load_or_compile_source(variant, source_module, source)

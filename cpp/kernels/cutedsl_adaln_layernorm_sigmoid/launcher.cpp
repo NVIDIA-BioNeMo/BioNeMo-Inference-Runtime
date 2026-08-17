@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "adaln_layernorm_sigmoid_registry.h"
 
 #include <cuda.h>
 
@@ -155,9 +155,10 @@ make_launch_config(KernelSpec const& spec, LaunchParams const& params, std::uint
 embedded::CubinImage const& find_embedded_cubin(
   std::int32_t target_sm, DType dtype, std::int32_t feature_dim, std::int32_t threads_per_row, std::int32_t num_threads)
 {
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
+  embedded::RegistryView const registry = embedded::registry();
+  for (std::size_t index = 0; index < registry.count; ++index)
   {
-    embedded::CubinImage const& image = embedded::kCubins[index];
+    embedded::CubinImage const& image = registry.images[index];
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.dtype == static_cast<std::uint8_t>(dtype)
       && image.feature_dim == feature_dim && image.threads_per_row == threads_per_row
@@ -176,16 +177,7 @@ embedded::CubinImage const& find_embedded_cubin(
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
 {
-  std::size_t loaded = 0;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    EmbeddedCubinImage const& image = embedded::kCubins[index].cubin;
-    if (!cubin_supports_sm(image, device_sm))
-      continue;
-    (void) load_embedded_kernel(context, image, false);
-    ++loaded;
-  }
-  return loaded;
+  return preload_registry_kernels(context, device_sm, embedded::registry());
 }
 
 CubinPreloadRegistration const kPreloader{

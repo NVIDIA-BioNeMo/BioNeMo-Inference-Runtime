@@ -27,6 +27,7 @@ from bionemo_ir._torch._cutedsl_kernel_library import (
     launch_compiled_kernel,
     populate_compiled_cache_from_library,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
@@ -198,10 +199,9 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         variant: _DualGemmX0X1Variant,
         config: DualGemmX0X1KernelConfig,
         kernel: Any,
+        compile_source: Any,
         ct_dtype: type,
     ):
-        from ._source import compile_dual_gemm_x0_x1_source
-
         cache_key = (self._sm_version, variant)
         disk_key = self._disk_cache_key(variant)
         executable = self.load_from_cache(disk_key)
@@ -216,7 +216,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             f"S_anchor~{variant.bucket}, has_bias={variant.has_bias}, "
             f"dt={variant.dtype}, picked={config.chosen_key}, tile={config.tile_params}"
         )
-        executable = compile_dual_gemm_x0_x1_source(
+        executable = compile_source(
             self.compile,
             kernel,
             config.arch,
@@ -238,11 +238,18 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             return self._load_cubin_executable(variant)
 
         try:
+            source = load_source_module(__package__)
             config, kernel = self._resolve_source_kernel(variant, ct_dtype, dtype_str)
-        except (ImportError, AttributeError) as source_error:
+        except ImportError as source_error:
             return self._load_cubin_executable(variant, source_error)
 
-        return self._load_or_compile_source(variant, config, kernel, ct_dtype)
+        return self._load_or_compile_source(
+            variant,
+            config,
+            kernel,
+            source.compile_dual_gemm_x0_x1_source,
+            ct_dtype,
+        )
 
     def __call__(
         self,

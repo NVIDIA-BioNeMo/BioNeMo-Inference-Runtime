@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "outer_product_mean_registry.h"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
@@ -40,33 +40,26 @@ namespace
  */
 std::vector<KernelSpec> all_kernel_specs()
 {
-  std::vector<KernelSpec> specs;
-  specs.reserve(embedded::kCubinCount);
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    embedded::CubinImage const& image = embedded::kCubins[index];
-    specs.push_back(
-      KernelSpec{
+  return map_registry(
+    embedded::registry(),
+    [](embedded::CubinImage const& image)
+    {
+      return KernelSpec{
         image.cubin.target_sm,
         image.tile_i,
         image.tile_j,
         image.raster_factor,
         image.num_threads,
-      });
-  }
-  return specs;
+      };
+    });
 }
 
 std::vector<std::string> all_config_identities()
 {
-  std::vector<std::string> identities;
-  identities.reserve(embedded::kCubinCount);
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    embedded::CubinImage const& image = embedded::kCubins[index];
-    identities.emplace_back(image.config_identity == nullptr ? "" : image.config_identity);
-  }
-  return identities;
+  return map_registry(
+    embedded::registry(),
+    [](embedded::CubinImage const& image)
+    { return std::string{image.config_identity == nullptr ? "" : image.config_identity}; });
 }
 
 } // namespace

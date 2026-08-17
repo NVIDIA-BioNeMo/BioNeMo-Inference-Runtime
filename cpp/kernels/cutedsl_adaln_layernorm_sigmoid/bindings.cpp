@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "adaln_layernorm_sigmoid_registry.h"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/vector.h>
@@ -37,29 +37,27 @@ namespace
  */
 std::vector<KernelSpec> all_kernel_specs()
 {
-  std::vector<KernelSpec> specs;
-  specs.reserve(embedded::kCubinCount);
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    embedded::CubinImage const& image = embedded::kCubins[index];
-    specs.push_back(
-      KernelSpec{
+  return map_registry(
+    embedded::registry(),
+    [](embedded::CubinImage const& image)
+    {
+      return KernelSpec{
         image.cubin.target_sm,
         image.feature_dim,
         image.threads_per_row,
         image.num_threads,
         image.cluster_n,
-      });
-  }
-  return specs;
+      };
+    });
 }
 
 std::vector<std::int32_t> all_feature_dims()
 {
+  embedded::RegistryView const registry = embedded::registry();
   std::vector<std::int32_t> dims;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
+  for (std::size_t index = 0; index < registry.count; ++index)
   {
-    std::int32_t const value = embedded::kCubins[index].feature_dim;
+    std::int32_t const value = registry.images[index].feature_dim;
     bool seen = false;
     for (std::int32_t existing : dims)
       seen = seen || existing == value;

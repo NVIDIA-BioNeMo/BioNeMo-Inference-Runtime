@@ -156,7 +156,7 @@ class PWAConfigParams:
 class PWAConfigSelection:
     """One immutable tuning selection and its private implementation path."""
 
-    implementation: str
+    implementation: str | None
     params: PWAConfigParams
     n_anchor: int | None = None
     s_anchor: int | None = None
@@ -183,7 +183,7 @@ def _default_selection(
     H: int,
     D: int,
     c_m: int,
-    implementation: str = _DEFAULT_IMPLEMENTATION,
+    implementation: str | None = _DEFAULT_IMPLEMENTATION,
 ) -> PWAConfigSelection:
     """Build the historical untuned ``PWAConfig`` defaults without importing it."""
     return PWAConfigSelection(

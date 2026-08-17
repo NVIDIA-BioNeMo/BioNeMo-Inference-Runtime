@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "pair_weighted_averaging_registry.h"
 
 #include <nanobind/nanobind.h>
 

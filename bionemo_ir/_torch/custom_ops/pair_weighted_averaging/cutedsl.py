@@ -27,6 +27,7 @@ from bionemo_ir._torch._cutedsl_kernel_library import (
     launch_compiled_kernel,
     populate_compiled_cache_from_library,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
@@ -88,7 +89,7 @@ class PairWeightedAveragingCuTe(CuteKernelCache):
         J: int,
         S: int,
         dtype: torch.dtype,
-        source_error: ImportError | AttributeError | None = None,
+        source_error: ImportError | None = None,
     ) -> PairWeightedAveragingCubinExecutable:
         """Populate the shared cache from the packaged PWA family."""
         try:
@@ -180,17 +181,17 @@ class PairWeightedAveragingCuTe(CuteKernelCache):
             return cached
 
         try:
-            from . import _source
+            source_module = load_source_module(__package__)
 
             unresolved_sources = [
                 (
                     selection,
-                    _source.resolve_pwa_source(selection, _dtype_str(dtype)),
+                    source_module.resolve_pwa_source(selection, _dtype_str(dtype)),
                 )
                 for selection in bucket_variants
                 if _compile_cache_key(self._sm_version, selection.params, dtype) not in type(self)._compiled_cache
             ]
-        except (ImportError, AttributeError) as source_error:
+        except ImportError as source_error:
             if cached is not None:
                 return cached
             return self._load_cubin_executable(selected_key, selected.params, I, J, S, dtype, source_error)
@@ -199,7 +200,7 @@ class PairWeightedAveragingCuTe(CuteKernelCache):
         # compiler failure is never hidden behind the CUBIN fallback.
         for selection, source in unresolved_sources:
             key = _compile_cache_key(self._sm_version, selection.params, dtype)
-            self._load_or_compile_source(key, selection, _source, source)
+            self._load_or_compile_source(key, selection, source_module, source)
         return type(self)._compiled_cache[selected_key]
 
     @staticmethod

@@ -16,7 +16,7 @@
 
 One JSON file per (problem shape, SM) pair, named
 ``K{K}_N{N}_sm{sm}.json`` for gated sigmoid / dual GEMM and
-``D{D}_sm{sm}.json`` for attention. Each file has::
+``D{D}_sm{sm}.json`` for attention. Private source checkouts use::
 
     {
         "implementation": "<dotted.module.ClassName>",
@@ -26,13 +26,15 @@ One JSON file per (problem shape, SM) pair, named
         }
     }
 
-``implementation`` is the dotted import path of the CuTe kernel class to
-construct. The loader treats config keys as raw strings and leaves parsing to
-the caller. Gated sigmoid uses stringified legacy bucket keys. Pairwise and
-triangle attention use ``"S=<anchor>"`` and select the nearest per-sample
-side-length anchor. Dual GEMM uses a flat pipe-separated key (for example
-``"S=512|t=0"``), filters its non-nearest axes, and likewise selects the
-closest ``S`` anchor.
+Public source-free artifacts replace ``implementation`` with a non-sensitive
+``kernel_arch`` marker (``"sm80"`` or ``"sm90"``). Source-only entry points
+require the private field, while CUBIN selection can still use the public
+architecture marker. The loader treats config keys as raw strings and leaves
+parsing to the caller. Gated sigmoid uses stringified legacy bucket keys.
+Pairwise and triangle attention use ``"S=<anchor>"`` and select the nearest
+per-sample side-length anchor. Dual GEMM uses a flat pipe-separated key (for
+example ``"S=512|t=0"``), filters its non-nearest axes, and likewise selects
+the closest ``S`` anchor.
 
 Override search path: set ``BIOIR_TUNED_CONFIG_FOLDER`` to a directory
 containing the same filenames (checked before the package defaults).
@@ -50,6 +52,7 @@ from typing import Any
 from bionemo_ir.logger import logger
 
 _TUNED_CONFIG_ENV = "BIOIR_TUNED_CONFIG_FOLDER"
+_SUPPORTED_KERNEL_ARCHES = frozenset({"sm80", "sm90"})
 
 
 def get_config_file_name(sm: int, **dims: int) -> str:
@@ -72,14 +75,30 @@ class KernelConfigBundle:
     """Parsed JSON contents for one ``(problem, sm)`` config file.
 
     Attributes:
-        implementation: Dotted import path of the kernel class.
+        implementation: Private dotted kernel class, or ``None`` after strip.
+        kernel_arch: Public source-generation marker used for ABI selection.
         configs: Raw config map; keys and structure are op-specific.
         source_path: Filesystem path the bundle was loaded from.
     """
 
-    implementation: str
+    implementation: str | None
+    kernel_arch: str
     configs: dict[str, Any]
     source_path: str
+
+
+def _implementation_kernel_arch(implementation: str) -> str:
+    """Derive the public source generation from a private implementation path."""
+    return "sm90" if ".sm90_" in implementation else "sm80"
+
+
+def require_source_implementation(implementation: str | None, source_path: str) -> str:
+    """Return a private implementation path or report a source-free config."""
+    if implementation is None:
+        raise ImportError(
+            f"Kernel source metadata was stripped from {source_path}; use the packaged CUBIN runtime instead."
+        )
+    return implementation
 
 
 @functools.cache
@@ -108,13 +127,29 @@ def load_kernel_configs(
             continue
         with open(path) as f:
             raw = json.load(f)
+        implementation = raw.get("implementation")
+        if implementation is not None and (not isinstance(implementation, str) or not implementation):
+            raise ValueError(f"Invalid implementation in {path}: expected a non-empty string")
+        kernel_arch = raw.get("kernel_arch")
+        if kernel_arch is None:
+            if implementation is None:
+                raise ValueError(f"Invalid kernel config {path}: missing implementation and kernel_arch")
+            kernel_arch = _implementation_kernel_arch(implementation)
+        if kernel_arch not in _SUPPORTED_KERNEL_ARCHES:
+            raise ValueError(
+                f"Invalid kernel_arch in {path}: expected one of {sorted(_SUPPORTED_KERNEL_ARCHES)}, "
+                f"got {kernel_arch!r}"
+            )
+        if implementation is not None and kernel_arch != _implementation_kernel_arch(implementation):
+            raise ValueError(f"kernel_arch {kernel_arch!r} disagrees with implementation in {path}")
         logger.info_once(
             "Using kernel configuration from %s",
             path,
             key=("kernel_config", path),
         )
         return KernelConfigBundle(
-            implementation=raw["implementation"],
+            implementation=implementation,
+            kernel_arch=kernel_arch,
             configs=dict(raw["configs"]),
             source_path=path,
         )

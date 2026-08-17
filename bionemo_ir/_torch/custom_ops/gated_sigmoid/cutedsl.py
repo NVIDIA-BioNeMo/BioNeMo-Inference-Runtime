@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 import cutlass
@@ -28,6 +27,7 @@ from bionemo_ir._torch._cutedsl_kernel_library import (
     launch_compiled_kernel,
     populate_compiled_cache_from_library,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
@@ -132,10 +132,10 @@ class GatedSigmoidCuTe(CuteKernelCache):
         return executable
 
     def _resolve_source_kernel(self, ct_dtype: type, has_bias: bool, K: int, N: int, M: int):
+        source = load_source_module(__package__)
         config = get_kernel_config(self._sm_version, K, N, M)
         if not config.can_implement(ct_dtype):
             raise RuntimeError(f"Gated sigmoid kernel cannot implement dtype={ct_dtype}")
-        source = importlib.import_module(f"{__package__}._" + "source")
 
         kernel = config.kernel_factory(ct_dtype, has_bias)
         needed = kernel.dynamic_smem_bytes(

@@ -4,16 +4,15 @@
 #
 # See docs/coding.md for the rules these tools enforce.
 
-# Never touch vendored submodules, the private release bundle, the generated
-# embedded CUBIN headers (multi-MB byte arrays emitted by
-# cpp/tools/prepare_cubins.py; reformatting or license-stamping them would churn
-# the diff and fight the generator), or the CuTeDSL kernels (the DSL resolves
-# names through its own tracing machinery, so ruff reports them as undefined).
+# Never touch vendored submodules, the private release bundle, or the CuTeDSL
+# kernels (the DSL resolves names through its own tracing machinery, so ruff
+# reports them as undefined). Generated CUBIN build inputs are not excluded
+# because they are no longer written into the checkout; the materializer emits
+# them into the build tree.
 exclude = '''(?x)^(
     3rdparty/.*
   | .*\.(a|lib|so|dll|a3m)
   | examples/data/samples/templates/templates/.*\.cif
-  | cpp/kernels/.*/cubins/embedded.*\.h
   | bionemo_ir/dsl_kernels/.*
 )$'''
 

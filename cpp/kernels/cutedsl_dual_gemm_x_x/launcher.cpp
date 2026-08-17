@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "dual_gemm_x_x_registry.h"
 
 #include <cuda.h>
 
@@ -474,11 +474,12 @@ EmbeddedSelection find_embedded_cubin(
     throw std::invalid_argument("dual_gemm_x_x S must be non-negative");
 
   bool const is_bfloat16 = dtype_is_bfloat16(dtype);
+  embedded::RegistryView const registry = embedded::registry();
   EmbeddedSelection nearest{};
   std::uint64_t nearest_distance = 0;
-  for (std::size_t image_index = 0; image_index < embedded::kCubinCount; ++image_index)
+  for (std::size_t image_index = 0; image_index < registry.count; ++image_index)
   {
-    embedded::CubinImage const& image = embedded::kCubins[image_index];
+    embedded::CubinImage const& image = registry.images[image_index];
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.K != K || image.is_bfloat16 != is_bfloat16
       || image.transpose_out != transpose_out || image.has_bias != has_bias || image.has_mask != has_mask)
@@ -515,16 +516,7 @@ EmbeddedSelection find_embedded_cubin(
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
 {
-  std::size_t loaded = 0;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    EmbeddedCubinImage const& image = embedded::kCubins[index].cubin;
-    if (!cubin_supports_sm(image, device_sm))
-      continue;
-    (void) load_embedded_kernel(context, image, false);
-    ++loaded;
-  }
-  return loaded;
+  return preload_registry_kernels(context, device_sm, embedded::registry());
 }
 
 CubinPreloadRegistration const kPreloader{

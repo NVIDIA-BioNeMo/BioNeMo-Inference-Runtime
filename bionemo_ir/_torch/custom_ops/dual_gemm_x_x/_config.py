@@ -27,6 +27,7 @@ from bionemo_ir._torch._kernel_config_loader import (
     get_config_file_name,
     load_kernel_configs,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.logger import logger
 
 # This module moved one directory below ``custom_ops``. The tuning files remain
@@ -51,7 +52,7 @@ class DualGemmXxKernelConfig:
 class _DualGemmXxConfigSelection:
     """Source-independent result of one tuning lookup."""
 
-    implementation: str
+    implementation: str | None
     chosen_key: str
     bucket: int
     tile_params: dict[str, Any]
@@ -160,9 +161,9 @@ def _get_bucket_ranges(
 
 
 def _kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
-    """Whether the selected implementation uses the raw SM90 signature."""
+    """Whether the selected source generation uses the raw SM90 signature."""
     bundle = _optional_config_bundle(sm_version, K, N)
-    return bundle is not None and bundle.implementation.rsplit(".", 1)[-1] == _SM90_KERNEL_NAME
+    return bundle is not None and bundle.kernel_arch == "sm90"
 
 
 def get_nearest_bucket(
@@ -191,10 +192,9 @@ def get_kernel_config(
     Importing the package does not import private source implementations. This
     compatibility entry point resolves them only when explicitly called.
     """
-    from ._source import build_source_kernel_config
-
+    source = load_source_module(__package__)
     selection = _get_config_selection(sm_version, K, N, S, transpose_out)
-    return build_source_kernel_config(
+    return source.build_source_kernel_config(
         selection,
         has_bias=has_bias,
         has_mask=has_mask,

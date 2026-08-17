@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "pairwise_attention_registry.h"
 
 #include <cuda.h>
 
@@ -298,11 +298,12 @@ find_embedded_cubin(std::int32_t target_sm, std::int32_t head_dim, std::int32_t 
     throw std::invalid_argument("pairwise-attention S must be non-negative");
 
   bool const is_bfloat16 = dtype == DType::kBFloat16;
+  embedded::RegistryView const registry = embedded::registry();
   embedded::CubinImage const* nearest = nullptr;
   std::uint64_t nearest_distance = 0;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
+  for (std::size_t index = 0; index < registry.count; ++index)
   {
-    embedded::CubinImage const& image = embedded::kCubins[index];
+    embedded::CubinImage const& image = registry.images[index];
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.head_dim != head_dim || image.is_bfloat16 != is_bfloat16
       || image.packed_output != packed_output)
@@ -328,16 +329,7 @@ find_embedded_cubin(std::int32_t target_sm, std::int32_t head_dim, std::int32_t 
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
 {
-  std::size_t loaded = 0;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    EmbeddedCubinImage const& image = embedded::kCubins[index].cubin;
-    if (!cubin_supports_sm(image, device_sm))
-      continue;
-    (void) load_embedded_kernel(context, image, false);
-    ++loaded;
-  }
-  return loaded;
+  return preload_registry_kernels(context, device_sm, embedded::registry());
 }
 
 CubinPreloadRegistration const kPreloader{

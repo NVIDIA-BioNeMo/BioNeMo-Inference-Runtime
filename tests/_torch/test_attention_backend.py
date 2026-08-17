@@ -109,8 +109,11 @@ def test_public_source_accepts_built_cutedsl_library(monkeypatch, tmp_path):
     require_public_cutedsl_library()
 
 
-def test_public_source_requires_built_cutedsl_library(monkeypatch, tmp_path):
-    monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", tmp_path / "cute")
+def test_public_source_with_only_package_init_requires_built_cutedsl_library(monkeypatch, tmp_path):
+    source_dir = tmp_path / "cute"
+    source_dir.mkdir()
+    (source_dir / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", source_dir)
 
     def missing_library(name: str) -> None:
         raise ModuleNotFoundError(name)
@@ -119,6 +122,19 @@ def test_public_source_requires_built_cutedsl_library(monkeypatch, tmp_path):
     with pytest.warns(RuntimeWarning, match="Build the shared library first"):
         with pytest.raises(pytest.UsageError, match="_cutedsl_kernels"):
             require_public_cutedsl_library()
+
+
+def test_private_source_does_not_require_built_cutedsl_library(monkeypatch, tmp_path):
+    source_dir = tmp_path / "cute"
+    source_dir.mkdir()
+    (source_dir / "kernel.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", source_dir)
+
+    def unexpected_import(name: str) -> None:
+        raise AssertionError(f"private source unexpectedly imported {name}")
+
+    monkeypatch.setattr(importlib, "import_module", unexpected_import)
+    require_public_cutedsl_library()
 
 
 def test_cutedsl_test_modes_parses_explicit_modes(monkeypatch):

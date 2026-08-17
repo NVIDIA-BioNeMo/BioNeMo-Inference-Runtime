@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "outer_product_mean_registry.h"
 
 #include <cuda.h>
 
@@ -183,9 +183,10 @@ find_embedded_cubin(std::int32_t target_sm, DType dtype, bool has_bias, bool nor
     throw std::invalid_argument("outer-product-mean config identity must not be empty");
 
   bool const is_bfloat16 = dtype == DType::kBFloat16;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
+  embedded::RegistryView const registry = embedded::registry();
+  for (std::size_t index = 0; index < registry.count; ++index)
   {
-    embedded::CubinImage const& image = embedded::kCubins[index];
+    embedded::CubinImage const& image = registry.images[index];
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.is_bfloat16 == is_bfloat16 && image.has_bias == has_bias
       && image.norm_before == norm_before && image.config_identity != nullptr
@@ -203,16 +204,7 @@ find_embedded_cubin(std::int32_t target_sm, DType dtype, bool has_bias, bool nor
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
 {
-  std::size_t loaded = 0;
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    EmbeddedCubinImage const& image = embedded::kCubins[index].cubin;
-    if (!cubin_supports_sm(image, device_sm))
-      continue;
-    (void) load_embedded_kernel(context, image, false);
-    ++loaded;
-  }
-  return loaded;
+  return preload_registry_kernels(context, device_sm, embedded::registry());
 }
 
 CubinPreloadRegistration const kPreloader{

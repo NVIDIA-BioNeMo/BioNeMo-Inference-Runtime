@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 import torch
@@ -27,6 +26,7 @@ from bionemo_ir._torch._cutedsl_kernel_library import (
     launch_compiled_kernel,
     populate_compiled_cache_from_library,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
@@ -127,7 +127,7 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
 
     @staticmethod
     def _resolve_source_tools():
-        source = importlib.import_module(f"{__package__}._" + "source")
+        source = load_source_module(__package__)
         return source.make_kernel, source.compile_adaln_source
 
     def _load_or_compile_source(

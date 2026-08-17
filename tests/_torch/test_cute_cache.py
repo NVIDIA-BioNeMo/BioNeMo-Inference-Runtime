@@ -120,3 +120,100 @@ def test_load_purges_corrupt_object(cache_dir, monkeypatch):
 
     assert cache.load_from_cache(key) is None
     assert not o_path.exists(), "corrupt .o was not purged on load failure"
+
+
+def test_source_cache_separates_host_isa(cache_dir, monkeypatch):
+    """A host wrapper compiled for one CPU ISA must miss on another ISA."""
+    monkeypatch.setattr(cute_cache, "_device_sm_count", lambda: 132)
+    host_isa = ["x86_64:avx2"]
+    monkeypatch.setattr(cute_cache, "_host_cpu_isa_signature", lambda: host_isa[0])
+
+    load_calls = []
+    sentinel = object()
+    monkeypatch.setattr(
+        cute_cache.cute.runtime,
+        "load_module",
+        lambda path, enable_tvm_ffi: load_calls.append(path) or {cute_cache.EXPORT_FUNC_NAME: sentinel},
+    )
+
+    cache = cute_cache.CuteKernelCache()
+    key = ("pairwise_attention", "float16", 128)
+    try:
+        cute_cache._compute_source_fingerprint.cache_clear()
+        avx2_fingerprint = cute_cache._compute_source_fingerprint()
+        cache.save_to_cache(key, _FakeArtifact(b"AVX2_OBJECT"))
+
+        host_isa[0] = "x86_64:avx2,avx512f,avx512vl"
+        cute_cache._compute_source_fingerprint.cache_clear()
+        avx512_fingerprint = cute_cache._compute_source_fingerprint()
+        assert cache.load_from_cache(key) is None
+        assert load_calls == []
+
+        host_isa[0] = "x86_64:avx2"
+        cute_cache._compute_source_fingerprint.cache_clear()
+        assert cache.load_from_cache(key) is sentinel
+        assert len(load_calls) == 1
+    finally:
+        cute_cache._compute_source_fingerprint.cache_clear()
+
+    assert avx2_fingerprint != avx512_fingerprint
+
+
+def test_cpuinfo_profiles_are_canonical_and_affinity_scoped():
+    cpuinfo = """\
+processor : 0
+vendor_id : GenuineIntel
+flags : fma avx2 sse4_2
+cpu family : 6
+
+processor : 1
+cpu family : 6
+flags : avx512vl sse4_2 avx2 fma
+vendor_id : GenuineIntel
+"""
+    reordered = """\
+flags : sse4_2 avx2 fma
+processor : 0
+cpu family : 6
+vendor_id : GenuineIntel
+
+vendor_id : GenuineIntel
+flags : fma avx2 sse4_2 avx512vl
+cpu family : 6
+processor : 1
+"""
+
+    assert cute_cache._cpuinfo_isa_profiles(cpuinfo, {0, 1}) == cute_cache._cpuinfo_isa_profiles(reordered, {0, 1})
+    cpu0 = cute_cache._cpuinfo_isa_profiles(cpuinfo, {0})
+    cpu1 = cute_cache._cpuinfo_isa_profiles(cpuinfo, {1})
+    assert len(cpu0) == len(cpu1) == 1
+    assert cpu0 != cpu1
+
+
+def test_host_isa_fallback_is_not_shared(monkeypatch):
+    monkeypatch.setattr(cute_cache.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(cute_cache.os, "sched_getaffinity", lambda pid: {0, 1})
+    process_id = [123]
+    monkeypatch.setattr(cute_cache.os, "getpid", lambda: process_id[0])
+    monkeypatch.setattr(cute_cache, "_HOST_CPU_FALLBACK_NONCE", "process-random-nonce")
+
+    monkeypatch.setattr(cute_cache, "_read_cpuinfo", lambda: None)
+    unavailable = cute_cache._host_cpu_isa_signature()
+    assert unavailable == "machine=x86_64|profiles=unavailable|nonshareable=123-process-random-nonce"
+    process_id[0] = 456
+    assert cute_cache._host_cpu_isa_signature() != unavailable
+
+    heterogeneous = """\
+processor : 0
+flags : avx2
+
+processor : 1
+flags : avx2 avx512f
+"""
+    monkeypatch.setattr(cute_cache, "_read_cpuinfo", lambda: heterogeneous)
+    mixed = cute_cache._host_cpu_isa_signature()
+    assert "nonshareable=456-process-random-nonce" in mixed
+
+    monkeypatch.setattr(cute_cache.os, "sched_getaffinity", lambda pid: {0})
+    uniform = cute_cache._host_cpu_isa_signature()
+    assert "nonshareable=" not in uniform

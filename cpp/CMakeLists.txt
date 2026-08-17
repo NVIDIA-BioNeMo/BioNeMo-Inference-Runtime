@@ -15,7 +15,7 @@
 
 cmake_minimum_required(VERSION 3.27 FATAL_ERROR)
 
-project(bionemo_ir_cutedsl_kernels LANGUAGES CXX)
+project(bionemo_ir_cutedsl_kernels LANGUAGES CXX ASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

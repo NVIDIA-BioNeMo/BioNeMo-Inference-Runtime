@@ -28,6 +28,7 @@ from typing import Any
 from bionemo_ir._torch._kernel_config_loader import (
     get_config_file_name,
     load_kernel_configs,
+    require_source_implementation,
     resolve_implementation,
 )
 from bionemo_ir.logger import logger
@@ -220,7 +221,7 @@ def kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
         bundle = load_bundle(sm_version, K, N)
     except ValueError:
         return False
-    return implementation_is_sm90(bundle.implementation)
+    return bundle.kernel_arch == "sm90"
 
 
 def get_kernel_config(
@@ -243,7 +244,8 @@ def get_kernel_config(
     """
     bundle = load_bundle(sm_version, K, N)
     bucket, chosen_key, tile_params = _nearest_variant(bundle.configs, S, has_bias)
-    kernel_cls = resolve_implementation(bundle.implementation)
+    implementation = require_source_implementation(bundle.implementation, bundle.source_path)
+    kernel_cls = resolve_implementation(implementation)
     return _build_kernel_config(
         kernel_cls,
         tile_params,

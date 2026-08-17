@@ -2,7 +2,7 @@
 ###############################  BUILD CONFIGURATION  ##############################################
 ####################################################################################################
 [build-system]
-requires = ["cmake>=3.27", "setuptools>=77"]
+requires = ["cmake>=3.27", "nanobind==2.10.2", "setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 

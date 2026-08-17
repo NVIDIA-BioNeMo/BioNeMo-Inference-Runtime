@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from bionemo_ir._torch._kernel_source_loader import load_source_module
+
 from ._config import (
     _KERNEL_CM as _KERNEL_CM,
 )
@@ -103,9 +105,7 @@ def make_fake_args(
     N: int | None = None,
 ) -> tuple[object, object, object, object, object]:
     """Lazily build development-time dynamic fake tensors."""
-    from ._source import make_fake_args as source_helper
-
-    return source_helper(config, I, Jp, N)
+    return load_source_module(__package__).make_fake_args(config, I, Jp, N)
 
 
 def compile_kernel(
@@ -115,17 +115,13 @@ def compile_kernel(
     N: int | None = None,
 ) -> object:
     """Lazily compile the development-time dynamic source."""
-    from ._source import compile_kernel as source_helper
-
-    return source_helper(config, I, Jp, N)
+    return load_source_module(__package__).compile_kernel(config, I, Jp, N)
 
 
 def __getattr__(name: str) -> Any:
     """Resolve historical source-only attributes without eager private imports."""
     if name in {"PWAConfig", "PWAFused", "_dt"}:
-        from . import _source
-
-        return getattr(_source, name)
+        return getattr(load_source_module(__package__), name)
     if name == "_compile_cache":
         return PairWeightedAveragingCuTe._compiled_cache
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

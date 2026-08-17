@@ -19,6 +19,17 @@ Compiled kernels are exported as object files (.o) via ``export_to_c``.
 On subsequent runs the .o is loaded (~1 ms) instead of re-generating
 IR + re-JIT'ing (~100 ms per kernel).
 
+An entry is host code, not just device code: the .o embeds the CUBIN image and
+wraps it in native code the compiler emitted for the machine that built it. The
+CUBIN half is reproducible across hosts — the same kernel and target SM give the
+same image bytes wherever it compiles — but the wrapper half is only as portable
+as the CPU that produced it. A cache directory is routinely shared (one volume
+per node pool, one worktree cache across several checkouts), so the disk key
+carries every property a replayed .o could disagree with: kernel sources, the
+CuTe DSL version, the Python ABI, the device SM count, and the host CPU ISA.
+See :func:`_host_cpu_isa_signature` and :func:`_device_sm_count` for why the
+last two are in there.
+
 Inherits from :class:`~.cache_base.KernelCacheBase` for the unified
 compile / save / load interface shared with the Triton backend.
 
@@ -48,6 +59,7 @@ import functools
 import hashlib
 import os
 import pickle
+import platform
 import sys
 import tempfile
 from pathlib import Path
@@ -110,6 +122,9 @@ def _compute_source_fingerprint() -> str:
     h = hashlib.sha256()
     h.update(f"py{sys.version_info.major}.{sys.version_info.minor}".encode())
     h.update(f"cutlass={cutlass.__version__}".encode() if hasattr(cutlass, "__version__") else b"cutlass=unknown")
+    # The exported .o wraps device code in host code built for this CPU, so a
+    # shared cache must not cross ISAs — see _host_cpu_isa_signature.
+    h.update(f"host_isa={_host_cpu_isa_signature()}".encode())
     # Separate SKUs that share a compute capability but differ in SM count
     # (H20's 78 vs H100/H200's 114-144) — see _device_sm_count.
     h.update(f"sm_count={_device_sm_count()}".encode())
@@ -121,6 +136,114 @@ def _compute_source_fingerprint() -> str:
         _hash_source_dir(h, Path(extra_dir).resolve())
 
     return h.hexdigest()
+
+
+_CPUINFO_ISA_FIELDS = frozenset(
+    {
+        "cpu architecture",
+        "cpu family",
+        "cpu implementer",
+        "cpu part",
+        "cpu revision",
+        "cpu variant",
+        "features",
+        "flags",
+        "model",
+        "stepping",
+        "vendor_id",
+    }
+)
+_CPUINFO_FEATURE_FIELDS = frozenset({"features", "flags"})
+_HOST_CPU_FALLBACK_NONCE = os.urandom(16).hex()
+
+
+def _read_cpuinfo() -> str | None:
+    try:
+        return Path("/proc/cpuinfo").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _cpuinfo_isa_profiles(cpuinfo: str, affinity: set[int] | None) -> tuple[str, ...]:
+    """Return the distinct ISA profiles for CPUs on which this process may run."""
+    records: list[dict[str, str]] = []
+    record: dict[str, str] = {}
+    for line in cpuinfo.splitlines():
+        if not line.strip():
+            if record:
+                records.append(record)
+                record = {}
+            continue
+        key, separator, value = line.partition(":")
+        if separator:
+            record[key.strip().lower()] = value.strip().lower()
+    if record:
+        records.append(record)
+
+    indexed_records: list[tuple[int, dict[str, str]]] = []
+    for current in records:
+        try:
+            indexed_records.append((int(current["processor"]), current))
+        except (KeyError, ValueError):
+            indexed_records = []
+            break
+    if affinity is not None and indexed_records:
+        records = [current for cpu, current in indexed_records if cpu in affinity]
+
+    profiles: set[str] = set()
+    for current in records:
+        if not any(current.get(field) for field in _CPUINFO_FEATURE_FIELDS):
+            return ()
+        fields: dict[str, str] = {}
+        for key in _CPUINFO_ISA_FIELDS:
+            value = current.get(key)
+            if not value:
+                continue
+            if key in _CPUINFO_FEATURE_FIELDS:
+                value = " ".join(sorted(set(value.split())))
+            fields[key] = value
+        profiles.add("|".join(f"{key}={fields[key]}" for key in sorted(fields)))
+    return tuple(sorted(profiles))
+
+
+def _host_cpu_isa_signature() -> str:
+    """Return a safe cache partition for the host instructions an ELF may use.
+
+    The GPU side of a cached entry is host-independent: the same kernel compiled
+    for the same target SM yields the same CUBIN image on any builder, which is
+    what lets ``cpp/tools/prepare_cubins.py`` publish content-addressed images
+    without recording where they were compiled. The host wrapper around it is
+    not. ``export_to_c`` runs a native compiler that may use whatever ISA
+    extensions the building CPU advertises, so two runners sharing one cache
+    directory can hold a key that matches in every kernel-visible way and still
+    produce an object the loading CPU cannot execute — a SIGILL in code whose
+    device half was never in question, and the reason this belongs in the key
+    rather than in a comment about being careful with shared volumes.
+
+    The signature is the CPU model and feature set exactly as ``/proc/cpuinfo``
+    reports it, canonicalized (feature flags sorted, fields ordered) so hosts
+    that differ only in reporting order share entries, and scoped to this
+    process's affinity mask because a cgroup may pin it to one socket of a
+    heterogeneous machine. When the features cannot be read, or the affinity
+    spans CPUs with different profiles, no persistent value is trustworthy: the
+    signature then carries a process-unique nonce, which keeps in-process reuse
+    and makes the entry unshareable.
+    """
+    machine = platform.machine().strip().lower()
+    try:
+        affinity = set(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        affinity = None
+
+    cpuinfo = _read_cpuinfo()
+    profiles = _cpuinfo_isa_profiles(cpuinfo, affinity) if cpuinfo is not None else ()
+    if len(profiles) == 1:
+        return f"machine={machine}|{profiles[0]}"
+
+    # No single trustworthy profile: fall back to a process-unique key.
+    profile_summary = "||".join(profiles) if profiles else "unavailable"
+    process_nonce = f"{os.getpid()}-{_HOST_CPU_FALLBACK_NONCE}"
+    return f"machine={machine}|profiles={profile_summary}|nonshareable={process_nonce}"
 
 
 def _device_sm_count() -> int:

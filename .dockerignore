@@ -94,6 +94,14 @@ workdir/
 **/CMakeCache.txt
 **/Makefile.cmake
 
+# CuTeDSL compiler/materializer output is never a Docker build input. Keep only
+# the tracked family indexes and their Git-LFS pack payloads.
+**/cubins/*
+!**/cubins/index.json
+!**/cubins/packs/
+!**/cubins/packs/*.tar.xz
+**/bioir_cubins/
+
 # ---------------------------------------------------------------------------
 # Large artifacts that `COPY .` (docker/Dockerfile.with-source) would otherwise
 # pull into the dev/test image but which nothing there builds or runs. These are

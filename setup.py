@@ -27,8 +27,10 @@ import os
 import re
 import subprocess
 import sys
+from importlib import util as importlib_util
 from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
+from types import ModuleType
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
@@ -36,8 +38,10 @@ from setuptools.command.build_ext import build_ext
 ROOT_DIR = Path(__file__).parent.resolve()
 _BUILD_ENV_FILE = ROOT_DIR / "build.env"
 _KERNELS_DIR = ROOT_DIR / "cpp" / "kernels"
-_CUBIN_GENERATOR = ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"
+_CUBIN_MATERIALIZER = ROOT_DIR / "cpp" / "cmake" / "materialize_cubin_payloads.py"
+_PRIVATE_CUBIN_PREPARER = ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"
 _BUILD_CUTEDSL_KERNELS_ENV = "BIOIR_BUILD_CUTEDSL_KERNELS"
+_ALLOW_STALE_CUBIN_BUILD_ENV = "BIOIR_ALLOW_STALE_CUBIN_BUILD"
 _KERNEL_LIBRARY_STEM = "_cutedsl_kernels"
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
@@ -91,30 +95,66 @@ def _remove_stale_kernel_libraries(directories: set[Path]) -> None:
                 path.unlink()
 
 
-def _missing_payload_headers() -> list[Path]:
-    """Embedded CUBIN headers the CMake build needs but this tree does not have.
+def _cubin_family_indexes() -> tuple[tuple[str, Path], ...]:
+    """Return every CMake CUBIN family's committed public artifact index."""
+    family_indexes: list[tuple[str, Path]] = []
+    missing: list[Path] = []
+    for launcher in sorted(_KERNELS_DIR.glob("cutedsl_*/launcher.cpp")):
+        family = launcher.parent.name.removeprefix("cutedsl_")
+        index = launcher.parent / "cubins" / "index.json"
+        if index.is_file():
+            family_indexes.append((family, index))
+        else:
+            missing.append(index)
+    if missing:
+        formatted = "\n  ".join(str(path) for path in missing)
+        raise RuntimeError(
+            "Missing committed CUBIN family indexes:\n  "
+            f"{formatted}\nRestore the complete public artifact corpus before building."
+        )
+    if not family_indexes:
+        raise RuntimeError(f"No CuTeDSL kernel families found below {_KERNELS_DIR}")
+    return tuple(family_indexes)
 
-    A kernel family is a ``cpp/kernels/cutedsl_*`` subdirectory CMake descends
-    into; anything else under ``cpp/kernels`` embeds no CUBIN payload.
-    """
-    missing = []
-    for cmake_file in sorted(_KERNELS_DIR.glob("cutedsl_*/CMakeLists.txt")):
-        header = cmake_file.parent / "cubins" / "embedded_cubins.h"
-        if not header.is_file():
-            missing.append(header)
-    return missing
+
+def _load_cubin_materializer() -> ModuleType:
+    """Load the source-independent materializer without making ``cpp`` a package."""
+    if not _CUBIN_MATERIALIZER.is_file():
+        raise RuntimeError(f"Missing public CUBIN materializer: {_CUBIN_MATERIALIZER}")
+    spec = importlib_util.spec_from_file_location("_bioir_cubin_materializer", _CUBIN_MATERIALIZER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load public CUBIN materializer: {_CUBIN_MATERIALIZER}")
+    module = importlib_util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _prepare_cutedsl_kernel_payloads() -> None:
-    """Generate the embedded CUBIN headers this tree is missing.
-
-    An existing header is compiled as-is, so refresh it with
-    ``cpp/tools/prepare_cubins.py`` after editing a kernel. CMake reports a
-    header that neither this tree nor the generator can supply.
-    """
-    if not _missing_payload_headers() or not _CUBIN_GENERATOR.is_file():
-        return
-    subprocess.run([sys.executable, str(_CUBIN_GENERATOR)], cwd=ROOT_DIR, check=True)
+def _materialize_cutedsl_kernel_payloads(output_root: Path) -> Path:
+    """Verify committed packs and create CMake inputs below ``output_root``."""
+    # Private checkouts carry the builders and declared source inputs, so reject
+    # a stale family before doing public, source-independent pack validation.
+    # Source distributions deliberately omit cpp/tools and skip this gate. The
+    # one exception is an ordinary internal MR build: post-merge automation owns
+    # fingerprint-only drift, so CI may exercise the still-current public packs
+    # before the protected refresh job updates them.
+    # Release, schedule, public-export, rolling-refresh, and normal local builds
+    # never set this narrowly scoped process variable and remain strict.
+    allow_stale = os.environ.get(_ALLOW_STALE_CUBIN_BUILD_ENV)
+    if allow_stale not in {None, "1"}:
+        raise RuntimeError(f"{_ALLOW_STALE_CUBIN_BUILD_ENV} must be exactly '1' when set")
+    if _PRIVATE_CUBIN_PREPARER.is_file() and allow_stale != "1":
+        subprocess.run(
+            [sys.executable, str(_PRIVATE_CUBIN_PREPARER), "--check-freshness"],
+            cwd=ROOT_DIR,
+            check=True,
+        )
+    module = _load_cubin_materializer()
+    result = module.materialize(_cubin_family_indexes(), output_root.resolve())
+    output_dir = Path(result.output_dir).resolve()
+    if not output_dir.is_relative_to(output_root.resolve()):
+        raise RuntimeError(f"CUBIN materializer returned a path outside its output root: {output_dir}")
+    return output_dir
 
 
 def _drop_opted_out_kernel_libraries() -> None:
@@ -235,7 +275,6 @@ class CMakeBuild(build_ext):
             super().build_extension(extension)
             return
 
-        _prepare_cutedsl_kernel_payloads()
         extension_path = Path(self.get_ext_fullpath(extension.name)).resolve()
         extension_dir = extension_path.parent
         source_package_dir = ROOT_DIR / "bionemo_ir"
@@ -251,6 +290,7 @@ class CMakeBuild(build_ext):
         configuration = "Debug" if self.debug else "Release"
         build_dir = (Path(self.build_temp) / extension.name.replace(".", "_")).resolve()
         build_dir.mkdir(parents=True, exist_ok=True)
+        materialized_dir = _materialize_cutedsl_kernel_payloads(Path(self.build_temp) / "bioir_cubins")
 
         configure_command = [
             "cmake",
@@ -262,6 +302,7 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extension_dir}",
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{configuration.upper()}={extension_dir}",
             f"-DPython_EXECUTABLE={sys.executable}",
+            f"-DBIOIR_CUBIN_MATERIALIZED_DIR={materialized_dir}",
         ]
         subprocess.run(configure_command, cwd=ROOT_DIR, check=True)
 

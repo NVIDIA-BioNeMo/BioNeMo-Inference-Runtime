@@ -24,6 +24,7 @@ from typing import Any
 from bionemo_ir._torch._kernel_config_loader import (
     get_config_file_name,
     load_kernel_configs,
+    require_source_implementation,
     resolve_implementation,
 )
 
@@ -187,7 +188,9 @@ def get_tile_params(sm_version: int, K: int, N: int, M: int) -> dict[str, Any]:
 def get_implementation(sm_version: int, K: int, N: int) -> str:
     """Return the dotted kernel path for one ``(sm, K, N)``."""
     bundle = load_kernel_configs(_GS_CONFIGS_DIR, get_config_file_name(sm_version, K=K, N=N))
-    return _DEFAULT_IMPLEMENTATION if bundle is None else bundle.implementation
+    if bundle is None:
+        return _DEFAULT_IMPLEMENTATION
+    return require_source_implementation(bundle.implementation, bundle.source_path)
 
 
 def get_kernel_config(sm_version: int, K: int, N: int, M: int) -> GatedSigmoidKernelConfig:

@@ -28,7 +28,7 @@ _CUTEDSL_BUILD_COMMAND = "pip install --no-build-isolation -v -e '.[dev]'"
 
 def require_public_cutedsl_library() -> None:
     """Require the CUBIN launcher extension in a source-free checkout."""
-    if _PRIVATE_CUTEDSL_SOURCE_DIR.is_dir():
+    if any(path.is_file() and path.name != "__init__.py" for path in _PRIVATE_CUTEDSL_SOURCE_DIR.glob("*.py")):
         return
 
     try:

@@ -27,6 +27,7 @@ import cutlass
 from bionemo_ir._torch._kernel_config_loader import (
     get_config_file_name,
     load_kernel_configs,
+    require_source_implementation,
     resolve_implementation,
 )
 
@@ -163,7 +164,8 @@ def get_kernel_config(
     """Resolve the source kernel at the nearest tuned ``S`` anchor."""
     bundle = _load_config_bundle(sm_version, head_dim)
     _, tile_params = _nearest_variant(bundle.configs, S)
-    kernel_cls = resolve_implementation(bundle.implementation)
+    implementation = require_source_implementation(bundle.implementation, bundle.source_path)
+    kernel_cls = resolve_implementation(implementation)
     if "mma_tiler_mn" in tile_params:
         return _build_sm90_config(kernel_cls, **tile_params)
     return _build_sm80_config(kernel_cls, sm_version=sm_version, **tile_params)

@@ -16,7 +16,7 @@
 #   - requirements change infrequently, slow download
 # -------------------------------------------------------------------------
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch
-ARG BASE_TAG=26.05-py3
+ARG BASE_TAG=26.05-py3@sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
 FROM ${BASE_IMAGE}:${BASE_TAG} AS requirements_stage
 
 ENV CUDA_HOME=/usr/local/cuda
@@ -30,6 +30,12 @@ ENV _PIP_CACHE_DIR="/root/.cache/pip"
 
 RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install --upgrade pip
+
+# Mirrors pyproject.toml exactly. --no-build-isolation installs below must have
+# every build dependency available before CMake configuration, including when
+# outbound access is disabled.
+RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
+    pip install nanobind==2.10.2
 
 ENV PROJECT_WORKDIR=/workspace/bionemo-ir
 WORKDIR ${PROJECT_WORKDIR}
@@ -45,6 +51,13 @@ RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
 #     pytest and friends.
 # -------------------------------------------------------------------------
 FROM requirements_stage AS ci_stage
+ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
+# The protected rolling-CUBIN job uses this already-built, commit-scoped image.
+# Install its Git transport here, before the credential-bearing job starts,
+# rather than running apt maintainer scripts with the bot token present.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git git-lfs \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements-dev.txt ./
 RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
     pip install -r requirements-dev.txt
@@ -55,20 +68,6 @@ RUN --mount=type=cache,target=${_PIP_CACHE_DIR} \
 # -------------------------------------------------------------------------
 FROM requirements_stage AS copy_source_stage
 COPY . ${PROJECT_WORKDIR}/
-
-# Generate the embedded CUBIN headers required by the CMake build.
-# In CI the headers arrive as artifacts from build:extension (a GPU runner job)
-# and this step is a no-op. For local docker builds without
-# pre-generated artifacts, fall back to the CUDA compile-time stub; note that
-# the sm_90a (Hopper) path needs a live CUDA driver, so pass --gpus all when
-# building locally against a Hopper host.
-RUN if [ ! -f cpp/kernels/cutedsl_triangle_attention/cubins/embedded_cubins.h ] || \
-       [ ! -f cpp/kernels/cutedsl_pairwise_attention/cubins/embedded_cubins.h ]; then \
-      ln -sf /usr/local/cuda/lib64/stubs/libcuda.so \
-             /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
-      LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
-      python cpp/tools/prepare_cubins.py --jobs "$(nproc)"; \
-    fi
 
 # ------------------------------------------------------
 # install bionemo-ir for prod

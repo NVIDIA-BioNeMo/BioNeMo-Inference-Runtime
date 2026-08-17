@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace bioir::cutedsl
 {
@@ -81,6 +82,55 @@ std::int32_t current_cuda_sm();
 
 cubin_kernel_t
 load_embedded_kernel(CUcontext context, EmbeddedCubinImage const& image, bool configure_function_attributes = true);
+
+/* Load every generated-registry image this device can run.
+ *
+ * Each family's generated `embedded::registry()` returns its own
+ * `{images, count}` view over its own `CubinImage` type, but the preload walk
+ * over that view is identical, so it lives here once. Families that need more
+ * than SM compatibility (pair-weighted averaging filters on its runtime axes
+ * too) pass their own predicate.
+ */
+template <typename RegistryView, typename CompatiblePredicate>
+std::size_t preload_registry_kernels(
+  CUcontext context, std::int32_t device_sm, RegistryView const& registry, CompatiblePredicate compatible)
+{
+  std::size_t loaded = 0;
+  for (std::size_t index = 0; index < registry.count; ++index)
+  {
+    auto const& image = registry.images[index];
+    if (!compatible(image, device_sm))
+      continue;
+    (void) load_embedded_kernel(context, image.cubin, false);
+    ++loaded;
+  }
+  return loaded;
+}
+
+template <typename RegistryView>
+std::size_t preload_registry_kernels(CUcontext context, std::int32_t device_sm, RegistryView const& registry)
+{
+  return preload_registry_kernels(
+    context,
+    device_sm,
+    registry,
+    [](auto const& image, std::int32_t sm) { return cubin_supports_sm(image.cubin, sm); });
+}
+
+/* Project every generated-registry image through `transform`, in registry order.
+ *
+ * The nanobind bindings and the launchers publish several per-family views of
+ * the registry (kernel specs, config identities); only the projection differs.
+ */
+template <typename RegistryView, typename Transform>
+auto map_registry(RegistryView const& registry, Transform transform)
+{
+  std::vector<decltype(transform(registry.images[0]))> mapped;
+  mapped.reserve(registry.count);
+  for (std::size_t index = 0; index < registry.count; ++index)
+    mapped.push_back(transform(registry.images[index]));
+  return mapped;
+}
 
 using CubinPreloadFunction = std::size_t (*)(CUcontext context, std::int32_t device_sm);
 

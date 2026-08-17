@@ -113,21 +113,6 @@ def load_requests(path: Path) -> list[InputRequest]:
     return requests
 
 
-def _engine_kwargs(model_source: str) -> dict[str, Any]:
-    if model_source != "openfold3":
-        return {}
-
-    # The published OpenFold3 checkpoint stores per-block atom-transformer
-    # pair LayerNorms. Match the model-forward pipeline tests.
-    from bionemo_ir.registry import get_model_class
-
-    config = get_model_class(model_source).get_pretrained_config(model_source)
-    config.input_embedder_config.atom_transformer_config.shared_pair_norm = False
-    config.diffusion_module_config.atom_transformer_encoder_config.shared_pair_norm = False
-    config.diffusion_module_config.atom_transformer_decoder_config.shared_pair_norm = False
-    return {"config": config}
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a folding model through BioIR build_processor.")
     parser.add_argument("--model-source", default="boltz-2")
@@ -151,7 +136,6 @@ def main() -> None:
     config = EngineProcessorConfig(
         model_source=args.model_source,
         executor_backend=None,
-        engine_kwargs=_engine_kwargs(args.model_source),
         runtime_args=runtime_args,
         writer_stage=WriterStageConfig(
             output_path=str(args.output_dir),

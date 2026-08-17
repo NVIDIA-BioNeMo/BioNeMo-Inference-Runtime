@@ -17,7 +17,7 @@
 
 #include "launcher.h"
 
-#include "cubins/embedded_cubins.h"
+#include "gated_sigmoid_registry.h"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/array.h>
@@ -40,13 +40,11 @@ namespace
  */
 std::vector<KernelSpec> all_kernel_specs()
 {
-  std::vector<KernelSpec> specs;
-  specs.reserve(embedded::kCubinCount);
-  for (std::size_t index = 0; index < embedded::kCubinCount; ++index)
-  {
-    embedded::CubinImage const& image = embedded::kCubins[index];
-    specs.push_back(
-      KernelSpec{
+  return map_registry(
+    embedded::registry(),
+    [](embedded::CubinImage const& image)
+    {
+      return KernelSpec{
         image.cubin.target_sm,
         image.m_block_size,
         image.n_block_size,
@@ -55,9 +53,8 @@ std::vector<KernelSpec> all_kernel_specs()
         image.raster_factor,
         {image.atom_layout_mnk[0], image.atom_layout_mnk[1], image.atom_layout_mnk[2]},
         image.num_threads,
-      });
-  }
-  return specs;
+      };
+    });
 }
 
 } // namespace

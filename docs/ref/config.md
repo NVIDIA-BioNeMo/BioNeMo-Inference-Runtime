@@ -32,37 +32,18 @@ flowchart LR
 in `bionemo_ir/models/<family>/config.py` next to that family's
 `PRETRAINED_CONFIG_REGISTRY`.
 
-A Pairformer is a reusable layer. An MSA module, ExtraMSA stack, or
-affinity head is a family-specific assembly of those layers — that is
-why those three are not in `configs/modules.py`.
+Primitives (`PairformerConfig`, `DiffusionTransformerConfig`,
+`EvoformerStackConfig`) are reusable layers. Family stacks
+(`MSAModuleConfig`, `ExtraMSAStackConfig`, `AffinityModuleConfig`)
+are family-specific assemblies — that is why they are not in
+`configs/modules.py`.
 
 ```mermaid
 classDiagram
-    direction TB
-
-    class BaseConfig
-    class PairformerConfig
-    class DiffusionTransformerConfig
-    class EvoformerStackConfig
-    class Boltz2Config
-    class OpenFold2Config
-    class MSAModuleConfig
-    class AffinityModuleConfig
-    class ExtraMSAStackConfig
-
-    BaseConfig <|-- PairformerConfig
-    BaseConfig <|-- DiffusionTransformerConfig
-    BaseConfig <|-- EvoformerStackConfig
-    BaseConfig <|-- Boltz2Config
-    BaseConfig <|-- OpenFold2Config
-    BaseConfig <|-- MSAModuleConfig
-    BaseConfig <|-- AffinityModuleConfig
-    BaseConfig <|-- ExtraMSAStackConfig
-
-    Boltz2Config *-- MSAModuleConfig : trunk
-    Boltz2Config *-- PairformerConfig
-    OpenFold2Config *-- ExtraMSAStackConfig : trunk
-    OpenFold2Config *-- EvoformerStackConfig : trunk
+    BaseConfig <|-- PrimitiveConfig
+    BaseConfig <|-- FamilyConfig
+    FamilyConfig *-- PrimitiveConfig
+    FamilyConfig *-- FamilyStack
 ```
 
 `Boltz1Config` reuses `MSAModuleConfig` from Boltz-2. Other family
@@ -104,34 +85,15 @@ classDiagram
 
 `ProcessorConfig` is the executor (batch size, Ray vs serial).
 `EngineProcessorConfig` adds the model key, `engine_kwargs`,
-`runtime_args`, and one field per stage. Stage types all inherit
+`runtime_args`, and one field per stage (parser, tokenizer, feature
+generator, engine, writer). Those five types all inherit
 `_StageConfigBase`.
 
 ```mermaid
 classDiagram
-    direction TB
-
-    class ProcessorConfig
-    class EngineProcessorConfig
-    class _StageConfigBase
-    class ParserStageConfig
-    class TokenizerStageConfig
-    class FeatureGeneratorStageConfig
-    class EngineStageConfig
-    class WriterStageConfig
-
     ProcessorConfig <|-- EngineProcessorConfig
-    _StageConfigBase <|-- ParserStageConfig
-    _StageConfigBase <|-- TokenizerStageConfig
-    _StageConfigBase <|-- FeatureGeneratorStageConfig
-    _StageConfigBase <|-- EngineStageConfig
-    _StageConfigBase <|-- WriterStageConfig
-
-    EngineProcessorConfig --> ParserStageConfig : parser_stage
-    EngineProcessorConfig --> TokenizerStageConfig : tokenizer_stage
-    EngineProcessorConfig --> FeatureGeneratorStageConfig : feature_generator_stage
-    EngineProcessorConfig --> EngineStageConfig : engine_stage
-    EngineProcessorConfig --> WriterStageConfig : writer_stage
+    _StageConfigBase <|-- StageConfig
+    EngineProcessorConfig --> StageConfig : five stages
 ```
 
 Each stage field accepts `bool`, `dict`, or a typed `*StageConfig`.

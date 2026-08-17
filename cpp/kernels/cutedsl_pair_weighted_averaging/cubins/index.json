@@ -1,0 +1,4246 @@
+{
+  "compile_fingerprint": "c2877d7a5d541be2be735617bd7f746c5944c028092bb6723dea848dc5d913a2",
+  "family": "pair_weighted_averaging",
+  "format": "bioir-cubin-pack-v1",
+  "packs": {
+    "sm_100a": {
+      "file": "packs/pair_weighted_averaging_sm100a_0c393aff436812c00752be54ad1d4ee970fc94eb05737366a24cee2d3176815c.tar.xz",
+      "image_count": 13,
+      "sha256": "0c393aff436812c00752be54ad1d4ee970fc94eb05737366a24cee2d3176815c",
+      "size": 90252
+    },
+    "sm_103a": {
+      "file": "packs/pair_weighted_averaging_sm103a_a26689dbabfd8646cc88c0ab10355bb49c7788f22acf7116ac0ac20bcb931275.tar.xz",
+      "image_count": 13,
+      "sha256": "a26689dbabfd8646cc88c0ab10355bb49c7788f22acf7116ac0ac20bcb931275",
+      "size": 91056
+    },
+    "sm_80": {
+      "file": "packs/pair_weighted_averaging_sm80_f4f338f454ea31e701dced1a285752864aece3a1344e3c14c707dfda706cbb9b.tar.xz",
+      "image_count": 13,
+      "sha256": "f4f338f454ea31e701dced1a285752864aece3a1344e3c14c707dfda706cbb9b",
+      "size": 57924
+    },
+    "sm_90a": {
+      "file": "packs/pair_weighted_averaging_sm90a_b43a1dce3be7d619dc4622b84c9cb58fb7b7fa5db28186243dcb65d621a77a06.tar.xz",
+      "image_count": 13,
+      "sha256": "b43a1dce3be7d619dc4622b84c9cb58fb7b7fa5db28186243dcb65d621a77a06",
+      "size": 65152
+    }
+  },
+  "registry_version": 2,
+  "toolchain": {
+    "compile_environment": "sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba",
+    "nvidia-cutlass-dsl": "4.5.2"
+  },
+  "variants": [
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "853f40f7abde2df7a2344e58a9a3e17b36e27f4b34bca072785b393db5de7ea3",
+        "size": 90120
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.015575cd09663591db95",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "015575cd09663591db95"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "900c7037c1c2ca4abe5016e43a36a0246f4ac64c2863c73e4609eb5aaa744f03",
+        "size": 57176
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.037b9c75ff8eddcde106",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "037b9c75ff8eddcde106"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "39086787f7c6589f473f63cbb58c583ee9487279f60715618cc9c67b50339251",
+        "size": 41008
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.040d36f083e5fa5202e5",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "040d36f083e5fa5202e5"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "fb939b92da6aac87bff75733384f07db87089382b4fc18cce146f56a4c25d659",
+        "size": 48040
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.073a39e318d289c7b1ae",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "073a39e318d289c7b1ae"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "3640c2bc3b8c793bb22e0182b512410845fa8b725f02476937cfd1379b380cf1",
+        "size": 50336
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.091edb18e8fa08f4c968",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "091edb18e8fa08f4c968"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "af766a6b5ba96e9002e409d5f4a36f055bad1510f398752fa75cb0e03850a359",
+        "size": 48040
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.0e03bfc6045f9b1eab85",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "0e03bfc6045f9b1eab85"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "f075c0ac7e65d56173cdaae167ad1f7b5584f77ac29f16e4825af47266e71e66",
+        "size": 90264
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.13c02f46f6c2d537fea7",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "13c02f46f6c2d537fea7"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 32,
+          "TILE_S": 2,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 4,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "1948028e0ec1eb25ebd79ff744491e86030ff1148af58756f81868f2f7fe12ea",
+        "size": 61472
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k86aaabcb8dba39a0ab5452720205e88ed359a5abfc8b8897771314a11278c6d6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.1deeac1a7699c60230a7",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 61440,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 32,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "1deeac1a7699c60230a7"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "af72f176022b6cc57fc7f671ac829d0c6a5b790710b39a3130cfda4908630d54",
+        "size": 40096
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.2fcbbf5fb11838213e50",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "2fcbbf5fb11838213e50"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "fd2b9bf45bfe8f3c55cbab4f79ed90782b7ed1462461cb100e032233e413460b",
+        "size": 66008
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.30fc2eba4aa04152a4f6",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "30fc2eba4aa04152a4f6"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 32,
+          "TILE_S": 2,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 4,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "82bbdbf93932e76eb316387127c8a873cacc48339354dd39c7c7e74ad4af60f4",
+        "size": 38960
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k86aaabcb8dba39a0ab5452720205e88ed359a5abfc8b8897771314a11278c6d6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.31289c890bb766e20390",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 61440,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 32,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "31289c890bb766e20390"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "26b712ba0242e28c6840ca46d666a3e650ae1396d151a2ebb7673508673713b0",
+        "size": 41008
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.34f447af09153f48ebdf",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "34f447af09153f48ebdf"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "0aba83dc76aad4630762e1ac04100d865bf669875e8f5841daf5b7c64d4bdf19",
+        "size": 65848
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.3f72e671443df417a4ec",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "3f72e671443df417a4ec"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "a6357bc51a468f855835eb142053e101cad82aba5532bcc6f3b1f1d00a5c372e",
+        "size": 37024
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.420bf2a708304297661f",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "420bf2a708304297661f"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "27303be077d06d0023e7dcc8286dbaaffba25cb91c0fc0a859a70eeb8be13f9c",
+        "size": 90264
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.43e1e08bde69a14f8e3b",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "43e1e08bde69a14f8e3b"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "b9da49a17cc00e425df6c1a9b4925a99a759c78f212d435e0e9abd280eb8096b",
+        "size": 65848
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.54063d63003d2090b296",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "54063d63003d2090b296"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "aff5f6447027b5c8e6b070ea3cb5c1bfca36dcd9d367c9e02f0ed634fd914955",
+        "size": 67680
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.547e4209c86975e02174",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "547e4209c86975e02174"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "282bdea48e97eeef0726736c6e9cf49895b8b240f31a6ab1ce8927252b4472f7",
+        "size": 72504
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.55213d7728f38bb80535",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "55213d7728f38bb80535"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "e5602ed943e0cd11aebf51c2f066b6a9fde715d683dc5e4c18aa6c610e35bc81",
+        "size": 44080
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.599bc59dda16c2ae11fe",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "599bc59dda16c2ae11fe"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "94083d70775806c6d90b0ba2fb35387414abe49172c3e33e4d627c546363f57a",
+        "size": 72400
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.5a0f3b52a234d9a80856",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "5a0f3b52a234d9a80856"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "11cba179e8cde251fa004ca0272651e8279749826479ed3195b14b0f356b3285",
+        "size": 32928
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.61a3da3378d7eb7c79fb",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "61a3da3378d7eb7c79fb"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "61d5d2175ebc88eb2dd3fadd788366f18b5a5cd4c3fcfb7601602967a518e149",
+        "size": 53296
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.6366d7f90e2155359d5f",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "6366d7f90e2155359d5f"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "60cc3c63764ecd0d02fb1d9edf3d969823726aa004a9fa45e558243b9f0261f6",
+        "size": 65680
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.63ec8a61650340085a3c",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "63ec8a61650340085a3c"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "ea79a1100a6c51d88610884904a2dddb11f32ea7b75e73a69781b02498b3ce04",
+        "size": 53296
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.657d859139fd59da9215",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "657d859139fd59da9215"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "5813a72ff2ed20260209883c059f51dfbf23d0f2d490618a21ad9199c5b78260",
+        "size": 39984
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.6adcda91b12d10858974",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "6adcda91b12d10858974"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "e65a04364853cd6ac32c1a223292849aec1fa1e33cf60808cee63d4a848de507",
+        "size": 65848
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.6f171293791fe2db0e30",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "6f171293791fe2db0e30"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "65a052ee4a4129e88485aaebacd9b4a91276142acc26a7be58fca3f63775050d",
+        "size": 57176
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.76d2e3a8d6828936cef0",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "76d2e3a8d6828936cef0"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "e4ad1cfdcc475be0b1dd6a665d12687126f6a0a602eeb321975b9cc2352603b0",
+        "size": 27808
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.77c5634e434ad64a70dc",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "77c5634e434ad64a70dc"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "a7934d827822bbda6ec52f378b1a3a6700f8171499e0a98b56d4d508843e1028",
+        "size": 41008
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.7a5550a21056f1d3bff2",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "7a5550a21056f1d3bff2"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "8e7054a6ec6abb99d85ea6e8d08b76ee5a42e7f0d08a9eef599986f951c580b7",
+        "size": 29744
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.854f5ff8603d1159d97f",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "854f5ff8603d1159d97f"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "89d99a0dcd2809b1aeb20f45786d492d8ce94e0d87d3396bc49638dba33e04a7",
+        "size": 90120
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.9558d4bdbb0a219d47ca",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "9558d4bdbb0a219d47ca"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 128,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "b09f46e21ee9affa46e7243f06eb01cd071af26ac7e103aa303bddffa3e77fb0",
+        "size": 67552
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.9651663600999a54470f",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "9651663600999a54470f"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 128,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "d086077a234a8467fa75e32c717fa788e1fad1752a8c6ce556da65b8cd47c07c",
+        "size": 41008
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.9e54f4b4e1d3faf206ff",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "9e54f4b4e1d3faf206ff"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "f4a65039621c19919f22abbcb51754c32fe1b05061967d532dafe8b9f5bc2f72",
+        "size": 72504
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.a12bcfa60359e66272a3",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "a12bcfa60359e66272a3"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "620d27646fccdbd5b820ddfef9560868e20f12f92a276b84fe27dbbcbb9e97db",
+        "size": 37024
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.a759e6d663deb24badf5",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "a759e6d663deb24badf5"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "94cb4b112035ee818cbce29a9ea1d3824a12ee4970fd74a990d60016d638fec3",
+        "size": 72400
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.ad2bcde900d997e41a0c",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "ad2bcde900d997e41a0c"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "deda90f63875c722f9989c032787d9d5a328812dfe14e0bd43654e1ec84240ff",
+        "size": 65680
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.b0987ca24390044d8c39",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "b0987ca24390044d8c39"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "1a0c20a2790dacc8c06632d54626492d69476655847e1d1be39833346b4d9c77",
+        "size": 34864
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.b5d339463e87c0f6014e",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 49152,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "b5d339463e87c0f6014e"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "1e01a7b0ec91f895471db28845be0b8be32ec29d2a607a6d5952fa3c8885f349",
+        "size": 67680
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.b7f861e129ad0c94bf76",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "b7f861e129ad0c94bf76"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "b6e04e3a4bf1f541583b41f13331f527d449d60382a4351a149dce24171b94f2",
+        "size": 41008
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.b9973542062e3f7bff15",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "b9973542062e3f7bff15"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 128,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "b438e635e0d45bf9591f7af0e53b29a04310367297ae0da37f396a5ef4f5688d",
+        "size": 50336
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.bb43ab068bd5bc1df30f",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "bb43ab068bd5bc1df30f"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "0d406f372567598809a78b4c5996b154269d64beedc726d0b2ea13dfde61a8a0",
+        "size": 37024
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.c177c6a27464290ac890",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "c177c6a27464290ac890"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 128,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "9ff2fdd19827815620b0502bc676c7faf04347fad8488170c76d4a34a8fb006a",
+        "size": 67552
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.c43b77476439c7181616",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "c43b77476439c7181616"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 32,
+          "TILE_S": 2,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 4,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "1c4796e83df7a3f3874e014b2a976d013482a44fbac122d497427438f6e3758a",
+        "size": 61472
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k86aaabcb8dba39a0ab5452720205e88ed359a5abfc8b8897771314a11278c6d6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.ce745091e9e4531b85d1",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 61440,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 32,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "ce745091e9e4531b85d1"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_100a",
+        "sha256": "be80c6ccc80ac1ecf764fec6be97de47526aa6dd1e630c6758b059f9ef6d5bae",
+        "size": 66008
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.dc0c92d34c17802f28fb",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        100
+      ],
+      "target_arch": "sm_100a",
+      "target_sm": 100,
+      "variant_id": "dc0c92d34c17802f28fb"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_103a",
+        "sha256": "017ee2ef87b3b0ee59d8e091474f61dd6e049c9cce1716463a74902a654973bd",
+        "size": 65848
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.e4822e4ff3535b2235f6",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        103
+      ],
+      "target_arch": "sm_103a",
+      "target_sm": 103,
+      "variant_id": "e4822e4ff3535b2235f6"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "521b549962ef41dfca6d6c30f857691cc2f1442f4fc79d58fff6119e04a36f53",
+        "size": 40096
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k161455453086fe4cdd8aeba058e8c39e1e37eec53a69e09bf397a04ac8fb1cf6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.e4da39ab1f7b8d547474",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "e4da39ab1f7b8d547474"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 3,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "72f44c2d094f5c8c6857df3bb3a0ed80f9936327af8d9d3a3dedeb8c730e3f82",
+        "size": 37024
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.e5102ef3abb089c19537",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "e5102ef3abb089c19537"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 128,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "b26f4c5baceb3aed9c4a2705b4a308a08c23effdcca0368da221f6f56aad1fe7",
+        "size": 37024
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.fa903396da01d14a5544",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "fa903396da01d14a5544"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 64,
+          "TILE_S": 2,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 4,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "0e351d961a87b97789fd73d057d229cfcf0e47ee2d91644befe3945bbcec5d10",
+        "size": 37024
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k0620f691b6b7d0c1aa19133262d8e5cb72e0ba4b33a9f99f1b2607a1f5f29be0____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.fab3f22e496acfad68c9",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "fab3f22e496acfad68c9"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 1024,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 1024,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1024
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 1536
+        },
+        {
+          "n_anchor": 1536,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 2048
+        },
+        {
+          "n_anchor": 2048,
+          "s_anchor": 8162
+        },
+        {
+          "n_anchor": 256,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 384,
+          "s_anchor": 512
+        },
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "params": {
+          "D": 32,
+          "H": 8,
+          "KO_TILE": 64,
+          "TILE_I": 32,
+          "TILE_J": 32,
+          "TILE_S": 2,
+          "ab_dtype": "fp16",
+          "atom_p": [
+            1,
+            2,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 4,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "e93d16b251bec153e930cc95d6b9f269eab58431ab37d74d33246616cc3bac45",
+        "size": 33952
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k86aaabcb8dba39a0ab5452720205e88ed359a5abfc8b8897771314a11278c6d6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.fbf3722d51dec5ff50ea",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 61440,
+        "is_bfloat16": false,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1536
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 8162
+          }
+        ],
+        "tile_i": 32,
+        "tile_j": 32,
+        "tile_s": 2
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "fbf3722d51dec5ff50ea"
+    },
+    {
+      "aliases": [
+        {
+          "n_anchor": 512,
+          "s_anchor": 512
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "params": {
+          "D": 8,
+          "H": 8,
+          "KO_TILE": 32,
+          "TILE_I": 64,
+          "TILE_J": 64,
+          "TILE_S": 4,
+          "ab_dtype": "bf16",
+          "atom_p": [
+            2,
+            1,
+            1
+          ],
+          "atom_v": [
+            2,
+            1,
+            1
+          ],
+          "c_m": 64,
+          "num_stages": 3,
+          "num_stages_w": 2,
+          "num_threads": 64,
+          "swizzle": true
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "5a78e5ce8a90bb36740cec425c958eaafd0d7ac3f0eba7df5f2d5bb787616215",
+        "size": 44080
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "ke8cbaa16e85bec29bcee0562c45d0771d3d8a2f7c2705766f5a376ecc91138c6____________________________________________________________________________________________________________________________",
+      "label": "pair_weighted_averaging.fc1247afd8d9bfd75df6",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "dynamic_smem_bytes": 73728,
+        "is_bfloat16": true,
+        "non_portable_cluster_size_allowed": false,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "fc1247afd8d9bfd75df6"
+    }
+  ]
+}

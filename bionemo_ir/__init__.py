@@ -27,7 +27,6 @@ CACHE_DIR = Path(os.getenv("BIOIR_CACHE", str(Path.home() / ".cache" / "bionemo_
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
 # Imports intentionally follow the logging/env setup above so submodule loggers inherit the config.
-from ._torch import _load_cuequivariance_lib  # noqa: E402
 from ._torch._cutedsl_kernel_library import require_kernel_backend  # noqa: E402
 from .registry import register_all_factories  # noqa: E402
 from .version import __version__  # noqa: E402
@@ -43,7 +42,6 @@ def _init() -> None:
     # Before anything registers a backend: a build with no way to run a fused
     # kernel should say so here, not on the first op.
     require_kernel_backend()
-    _load_cuequivariance_lib()
     register_all_factories()
 
 

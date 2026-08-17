@@ -14,8 +14,9 @@
 # limitations under the License.
 from pydantic import model_validator
 
-from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, MSAModuleConfig, PairformerConfig
+from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, PairformerConfig
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
+from bionemo_ir.models.boltz2.config import MSAModuleConfig
 from bionemo_ir.pipeline.models.boltz2.const import num_tokens
 
 

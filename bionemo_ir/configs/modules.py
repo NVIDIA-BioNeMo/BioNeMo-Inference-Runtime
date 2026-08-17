@@ -81,18 +81,6 @@ class DiffusionTransformerConfig(BaseConfig):
     precompute_bias: bool = True
 
 
-class MSAModuleConfig(BaseConfig):
-    msa_s: int = None
-    token_z: int = None
-    token_s: int = None
-    msa_blocks: int = None
-    num_tokens: int = None
-    pairwise_head_width: int = None
-    pairwise_num_heads: int = None
-    use_paired_feature: bool = True
-    version: str = "v1"
-
-
 class EvoformerStackConfig(BaseConfig):
     c_m: int = None
     c_z: int = None
@@ -109,32 +97,3 @@ class EvoformerStackConfig(BaseConfig):
     opm_first: bool = False
     n_seq: int = 516
     trimul_high_precision: bool = False
-
-
-class ExtraMSAStackConfig(BaseConfig):
-    c_m: int = None
-    c_z: int = None
-    c_hidden_msa_att: int = None
-    c_hidden_opm: int = None
-    c_hidden_mul: int = None
-    c_hidden_pair_att: int = None
-    no_heads_msa: int = None
-    no_heads_pair: int = None
-    no_blocks: int = None
-    transition_n: int = None
-    opm_first: bool = False
-    support_batch: bool = True
-    max_msa_size: int = 5120
-    padding_inputs: bool = True
-    trimul_high_precision: bool = False
-
-
-# Configuration for the affinity module in Boltz-2.
-class AffinityModuleConfig(BaseConfig):
-    token_s: int = None
-    token_z: int = None
-    num_dist_bins: int = None
-    max_dist: int = None
-    pairformer_num_blocks: int = None
-    pairwise_head_width: int = None
-    pairwise_num_heads: int = None

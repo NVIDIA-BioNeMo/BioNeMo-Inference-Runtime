@@ -14,7 +14,7 @@
 # limitations under the License.
 
 
-from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, MSAModuleConfig, PairformerConfig
+from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, PairformerConfig
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.pipeline.models.boltz2.const import num_tokens
 
@@ -91,6 +91,19 @@ class TemplateV2ModuleConfig(BaseConfig):
         attention_initial_norm=False,
         version="v2",
     )
+
+
+# Shared by Boltz-1 and Boltz-2; `version` selects the layer variant.
+class MSAModuleConfig(BaseConfig):
+    msa_s: int = None
+    token_z: int = None
+    token_s: int = None
+    msa_blocks: int = None
+    num_tokens: int = None
+    pairwise_head_width: int = None
+    pairwise_num_heads: int = None
+    use_paired_feature: bool = True
+    version: str = "v1"
 
 
 class TrunkConfig(BaseConfig):

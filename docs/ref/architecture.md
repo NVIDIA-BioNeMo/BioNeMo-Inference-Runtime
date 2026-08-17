@@ -228,6 +228,11 @@ exports nothing, so primitives are imported from their module directly.
 
 ## Config propagation
 
+Model configs (`BaseConfig`) and pipeline configs (`EngineProcessorConfig`
+and the `*StageConfig` types) are two trees. How they are laid out, what
+propagates, and how they meet at the engine is in
+[config architecture][config].
+
 `BaseConfig` in `configs/base.py` is a pydantic model with
 `extra = "allow"`, so a family adds fields without touching the base. Shared
 settings propagate **by value** down the tree, through `_recursive_set` and the
@@ -401,6 +406,7 @@ Three things follow:
 ## Related
 
 - [API reference][api] — the calling surface these components sit behind.
+- [Config architecture][config] — model configs and pipeline stage configs.
 - [Support matrix][support-matrix] — models, GPUs, scope boundaries.
 - [Model weights][model-weights] — where checkpoints resolve from.
 - [Developer guide][devguide] — environment setup, build, tests.
@@ -411,6 +417,7 @@ Three things follow:
 
 [api]: api.md
 [coding]: ../coding.md
+[config]: config.md
 [devguide]: ../README.md
 [model-weights]: model-weights.md
 [ray-data]: https://docs.ray.io/en/latest/data/data.html

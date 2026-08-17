@@ -14,7 +14,6 @@
 # limitations under the License.
 
 
-import cuequivariance_ops_torch as _cueq_ops  # noqa: F401 – registers torch.ops.cuequivariance
 import torch
 
 from ...tensor_utils import permute_final_dims
@@ -40,6 +39,8 @@ def _invoke_triangle_attention_kernel(
     dispatch keys registered) instead of the Python wrapper avoids graph breaks
     under torch.compile.
     """
+    import cuequivariance_ops_torch as _cueq_ops  # noqa: F401 – registers torch.ops.cuequivariance
+
     actual_s_kv = None
     if kv_lengths is not None:
         # The public API uses [B, N, 1, 1, 1]; the custom op consumes [B, N].

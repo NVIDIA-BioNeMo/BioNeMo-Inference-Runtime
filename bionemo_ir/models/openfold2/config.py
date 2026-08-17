@@ -15,7 +15,7 @@
 
 from pydantic import model_validator
 
-from bionemo_ir.configs import BaseConfig, EvoformerStackConfig, ExtraMSAStackConfig
+from bionemo_ir.configs import BaseConfig, EvoformerStackConfig
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 
 
@@ -141,6 +141,24 @@ class TemplateEmbedderMultimerConfig(BaseConfig):
     template_single_embedder: TemplateSingleEmbedderMultimerConfig = TemplateSingleEmbedderMultimerConfig()
     template_pair_embedder: TemplatePairEmbedderMultimerConfig = TemplatePairEmbedderMultimerConfig()
     template_pair_stack: TemplatePairStackConfig = TemplatePairStackConfig()
+
+
+class ExtraMSAStackConfig(BaseConfig):
+    c_m: int = None
+    c_z: int = None
+    c_hidden_msa_att: int = None
+    c_hidden_opm: int = None
+    c_hidden_mul: int = None
+    c_hidden_pair_att: int = None
+    no_heads_msa: int = None
+    no_heads_pair: int = None
+    no_blocks: int = None
+    transition_n: int = None
+    opm_first: bool = False
+    support_batch: bool = True
+    max_msa_size: int = 5120
+    padding_inputs: bool = True
+    trimul_high_precision: bool = False
 
 
 class TrunkConfig(BaseConfig):

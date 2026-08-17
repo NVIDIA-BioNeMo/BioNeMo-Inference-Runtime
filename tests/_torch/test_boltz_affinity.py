@@ -21,7 +21,7 @@ from test_utils.boltz.create_and_load_weights import create_affinity_module_weig
 from test_utils.boltz.ref_layers import RefAffinityModule
 
 from bionemo_ir._torch.modules.boltz.affinity import AffinityModule
-from bionemo_ir.configs import AffinityModuleConfig
+from bionemo_ir.models.boltz2.config import AffinityModuleConfig
 from bionemo_ir.utils import str_dtype_to_torch
 
 

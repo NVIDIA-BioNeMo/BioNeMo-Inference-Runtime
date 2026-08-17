@@ -19,7 +19,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import torch
-from cuequivariance_ops_torch.gated_gemm_torch import fused_sigmoid_gated_dual_gemm
 
 from bionemo_ir.utils import get_sm_version
 
@@ -60,6 +59,8 @@ def _invoke_cuequiv_dual_gemm_x_x(
     actual_seqlen: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run the cuEquivariance fused fallback."""
+    from cuequivariance_ops_torch.gated_gemm_torch import fused_sigmoid_gated_dual_gemm
+
     del actual_seqlen
     return fused_sigmoid_gated_dual_gemm(
         x,

@@ -180,7 +180,7 @@ class ExtraMSAStack(nn.Module):
         OpenFold2 ExtraMSAModule
         TODO: add support for subsampling, chunking
         Args:
-            config: bionemo_ir.configs.modules.ExtraMSAStackConfig
+            config: bionemo_ir.models.openfold2.config.ExtraMSAStackConfig
                 The configuration of the extra msa stack module.
         """
         super().__init__()

@@ -14,24 +14,14 @@
 # limitations under the License.
 
 from .base import AcceleratedConfig, BackendType, BaseConfig, print_model_tree
-from .modules import (
-    AffinityModuleConfig,
-    DiffusionTransformerConfig,
-    EvoformerStackConfig,
-    ExtraMSAStackConfig,
-    MSAModuleConfig,
-    PairformerConfig,
-)
+from .modules import DiffusionTransformerConfig, EvoformerStackConfig, PairformerConfig
 
 __all__ = [
     "BaseConfig",
     "BackendType",
     "PairformerConfig",
     "DiffusionTransformerConfig",
-    "MSAModuleConfig",
     "EvoformerStackConfig",
-    "ExtraMSAStackConfig",
-    "AffinityModuleConfig",
     "print_model_tree",
     "AcceleratedConfig",
 ]

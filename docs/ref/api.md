@@ -18,9 +18,9 @@ A runnable wrapper around (1) lives at
 Supported models, GPUs, and fused kernels:
 [`support-matrix.md`](support-matrix.md).
 
-`import bionemo_ir` registers every model factory and loads the CUDA
-plugin libraries. Any import that pulls in `bionemo_ir.registry` or
-`bionemo_ir.models.*` does this transitively.
+`import bionemo_ir` registers every model factory. Any import that
+pulls in `bionemo_ir.registry` or `bionemo_ir.models.*` does this
+transitively.
 
 ## When to use which API
 
@@ -791,6 +791,8 @@ Fused kernels on supported SKUs:
 
 ## See also
 
+- Config architecture (model tree vs pipeline stages):
+  [`config.md`](config.md)
 - Support matrix (models, GPUs, fused kernels):
   [`support-matrix.md`](support-matrix.md)
 - Demo CLI: [`examples/folding/run_demo.py`](../../examples/folding/run_demo.py)

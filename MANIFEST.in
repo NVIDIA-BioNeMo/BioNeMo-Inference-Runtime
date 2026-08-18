@@ -4,8 +4,6 @@ recursive-include cpp CMakeLists.txt *.cmake *.cpp *.h
 # artifact inputs that ship in source distributions.
 recursive-include cpp/cmake *.py
 recursive-include cpp/kernels index.json *.tar.xz
-# Private builders enumerate the kernel matrix and import CuTeDSL sources a
-# distribution omits, so they never ship.
 prune cpp/tools
 # recursive-include does not consult .gitignore, and local CMake trees vendor the
 # fetched nanobind sources.

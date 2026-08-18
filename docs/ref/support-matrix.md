@@ -70,22 +70,23 @@ CCD code or `_`-joined list), or `"smiles_ligand"` (a SMILES string in
 
 ## GPUs
 
-Optimized CuTeDSL kernels target Ampere through Hopper. On Blackwell
-**SM100**, **SM103**, **SM120**, and **SM121**, the fused path is
-cuEquivariance only (triangle attention and dual GEMM). The PyTorch
-backend still *runs* on any of these SKUs; rows below describe which
+Optimized CuTeDSL kernels cover Ampere through Hopper, plus SM100 / SM103 for
+pair-weighted averaging, outer-product mean and AdaLN; the kernel table below
+lists the exact SMs per kernel. On **SM100**, **SM103**, **SM120**, and
+**SM121**, triangle attention and dual GEMM fall back to cuEquivariance. The
+PyTorch backend still *runs* on any of these SKUs; rows below describe which
 fused kernels apply.
 
-| Architecture       | Compute capability | Datacenter / client GPUs in scope      | Optimized kernels                                   |
-| ------------------ | ------------------ | -------------------------------------- | --------------------------------------------------- |
-| **Ampere**         | SM80               | A100, A40, A30                         | CuTeDSL CUBIN                                       |
-| **Ampere (GA10x)** | SM86               | A10, A16, RTX A6000                    | CuTeDSL CUBIN                                       |
-| **Ada Lovelace**   | SM89               | L40, L40S                              | CuTeDSL CUBIN                                       |
-| **Hopper**         | SM90               | H100, H200, GH200                      | CuTeDSL CUBIN                                       |
-| **Blackwell**      | SM100              | B100, B200, GB200                      | cuEquivariance only (triangle attention, dual GEMM) |
-| **Blackwell**      | SM103              | B300, GB300                            | cuEquivariance only (triangle attention, dual GEMM) |
-| **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell           | cuEquivariance only (triangle attention, dual GEMM) |
-| **Blackwell**      | SM121              | DGX Spark (GB10)                       | cuEquivariance only (triangle attention, dual GEMM) |
+| Architecture       | Compute capability | Datacenter / client GPUs in scope | Optimized kernels                                                               |
+| ------------------ | ------------------ | --------------------------------- | ------------------------------------------------------------------------------- |
+| **Ampere**         | SM80               | A100, A40, A30                    | CuTeDSL CUBIN                                                                   |
+| **Ampere (GA10x)** | SM86               | A10, A16, RTX A6000               | CuTeDSL CUBIN                                                                   |
+| **Ada Lovelace**   | SM89               | L40, L40S                         | CuTeDSL CUBIN                                                                   |
+| **Hopper**         | SM90               | H100, H200, GH200                 | CuTeDSL CUBIN                                                                   |
+| **Blackwell**      | SM100              | B100, B200, GB200                 | CuTeDSL CUBIN (PWA, OPM, AdaLN); cuEquivariance (triangle attention, dual GEMM) |
+| **Blackwell**      | SM103              | B300, GB300                       | CuTeDSL CUBIN (PWA, OPM, AdaLN); cuEquivariance (triangle attention, dual GEMM) |
+| **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell      | cuEquivariance only (triangle attention, dual GEMM)                             |
+| **Blackwell**      | SM121              | DGX Spark (GB10)                  | cuEquivariance only (triangle attention, dual GEMM)                             |
 
 Check the device:
 
@@ -122,11 +123,11 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | ------------------------------ | ------------------------------------- | ------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Triangle attention             | Pairformer / Evoformer triangle attn  | CuTeDSL → CUBIN; else CUEQUIV / SDPA | 80, 86, 89, 90; CUEQUIV on 100, 103, 120, 121 | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.TRIANGLE`)                                                                                         |
 | Pairwise attention             | Token / atom attention with pair bias | CuTeDSL → CUBIN; else SDPA           | 80, 86, 89, 90                                | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
-| Dual-GEMM `x_x` / `x0_x1`      | Triangle multiplication               | CuTeDSL → CUBIN; else CUEQUIV        | 80, 90; CUEQUIV on 100, 103, 120, 121         | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                   |
-| Pair-weighted averaging (PWA)  | Pair → single update                  | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
-| Outer-product mean (OPM)       | Single → pair update                  | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
+| Dual-GEMM `x_x` / `x0_x1`      | Triangle multiplication               | CuTeDSL → CUBIN; else CUEQUIV        | 80, 86, 89, 90; CUEQUIV on 100, 103, 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                   |
+| Pair-weighted averaging (PWA)  | Pair → single update                  | CuTeDSL → CUBIN                      | 80, 90, 100, 103                              | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
+| Outer-product mean (OPM)       | Single → pair update                  | CuTeDSL → CUBIN                      | 80, 86, 89, 90, 100, 103                      | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
 | Gated sigmoid                  | Attention output gate                 | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
-| AdaLN (LayerNorm + sigmoid)    | Diffusion adaptive LayerNorm          | CuTeDSL → CUBIN                      | 80, 86, 89, 90                                | [`get_adaln_layernorm_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                       |
+| AdaLN (LayerNorm + sigmoid)    | Diffusion adaptive LayerNorm          | CuTeDSL → CUBIN                      | 80, 86, 89, 90, 100, 103                      | [`get_adaln_layernorm_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                       |
 | Fused LN + proj + moveaxis/pad | Pair-bias LayerNorm + linear + layout | Triton                               | all CUDA                                      | [`LNProjMoveaxisPad`](../../bionemo_ir/_torch/custom_ops/fused_ln_proj_moveaxis_pad.py) / [`fused_ln_proj_moveaxis_pad`](../../bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py) |
 | Fused SwiGLU                   | Transition / FFN                      | Triton                               | all CUDA                                      | [`FusedSwiGLU`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py) / [`fused_swiglu`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py)                                                |
 

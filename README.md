@@ -31,7 +31,7 @@ User guides and technical reference live under [`docs/`](docs/):
 | [Architecture](docs/ref/architecture.md)      | Five-stage pipeline and runtime design                |
 | [Config architecture](docs/ref/config.md)     | Model `BaseConfig` tree and pipeline stage configs    |
 | [Support matrix](docs/ref/support-matrix.md)  | Models, GPUs, and fused kernels                       |
-| [Model weights](docs/model-weights.md)        | Checkpoint staging from NGC                           |
+| [Model weights](docs/ref/model-weights.md)    | Checkpoint resolution and staging                     |
 | [Coding guidelines](docs/coding.md)           | Style, naming, and tooling                            |
 | [Folding example](examples/folding/README.md) | Runnable `build_processor` demo                       |
 
@@ -84,8 +84,9 @@ export NGC_API_KEY=<NGC_API_KEY>          # read access to <ngc-org>/<ngc-team>
 .gitlab/ci/scripts/run_tests.sh --download   # just stage weights and exit
 ```
 
-See [`docs/model-weights.md`](docs/model-weights.md) for the design and for how
-to **upload a new model's weights** to `bioair` so CI/benchmarks pick them up.
+See [`docs/ref/model-weights.md`](docs/ref/model-weights.md) for the design and
+for how to **upload a new model's weights** to `bioair` so CI/benchmarks pick
+them up.
 
 ### Release Docker
 

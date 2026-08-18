@@ -18,8 +18,7 @@ limitations under the License.
 # Report a Security Vulnerability
 
 > [!WARNING] Do **not** report security vulnerabilities through public GitHub
-> issues, pull requests, or discussions — and do not report them on any internal
-> GitLab mirror of this project either.
+> issues, pull requests, or discussions.
 
 To report a potential security vulnerability in any NVIDIA product, please use
 either:

@@ -110,6 +110,7 @@ def _triton_supports_driver() -> bool:
 
 _DRIVER_TRITON_OK: bool = _triton_supports_driver()
 
+
 class CachedKernel:
     """Compiled Triton kernel with direct-driver and ``.run()`` launch paths."""
 

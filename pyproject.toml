@@ -43,7 +43,7 @@ license = "Apache-2.0"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-# Vendored trees are never linted (mirrors prek.toml's exclude).
+# 3rdparty is vendored and never linted.
 extend-exclude = ["3rdparty"]
 
 [tool.ruff.lint]

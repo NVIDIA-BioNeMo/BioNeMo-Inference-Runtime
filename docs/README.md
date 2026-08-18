@@ -18,6 +18,15 @@ Build and run the development image (repository and dev dependencies are
 installed in editable mode inside it). See the top-level [README](../README.md)
 for the current Docker build and run commands.
 
+In a checkout with no `bionemo_ir/dsl_kernels/cute/` sources, the CUBIN
+launcher extension must exist before anything imports `bionemo_ir` — the
+package requires a kernel backend at import time, and pytest then aborts the
+session before collection. Build it with
+`pip install --no-build-isolation -v -e '.[dev]'`.
+`BIOIR_BUILD_CUTEDSL_KERNELS=0` (env or an untracked `build.env`) skips that
+build, so use it only where an extension is already installed. `prek run` does
+not import the package, so the lint loop works without it.
+
 <!-- TODO: expand — native build, submodule init (3rdparty/), CUDA/compiler
      matrix, devcontainer usage. -->
 
@@ -35,17 +44,11 @@ pytest -s tests/
 ```
 
 Model weights for tests and benchmarks are staged from NGC — see
-[model-weights.md](model-weights.md). Keep weights and checkpoints off git; they
-live on NGC, never in the repository.
+[ref/model-weights.md](ref/model-weights.md). Keep weights and checkpoints off
+git; they live on NGC, never in the repository.
 
 <!-- TODO: expand — GPU/distributed test markers, ciflow:* CI labels, coverage
      expectations, C++/CUDA test invocation, benchmarking. -->
-
-## Release artifacts
-
-[nv/release.md](nv/release.md) covers how to build a wheel from any branch — for
-testing on a host with no checkout — the version scheme, when to bump it, and
-what a `release/*` push runs.
 
 ## Further development guidelines
 

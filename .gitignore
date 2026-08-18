@@ -1,14 +1,12 @@
 __pycache__/
 .vscode
 
-# tensorrt_bionemo_benchmarking lives entirely in the separate
-# the benchmarking repository repo; nothing from it belongs here.
-tensorrt_bionemo_benchmarking/
 *.engine
 *.engine.config
 *.cache
 *.nsys-rep
 *.npy
+!tests/common/test_utils/*.npy
 .VSCodeCounter
 cpp/build*
 build
@@ -71,17 +69,13 @@ compile_commands.json
 .pip_cache/
 *.pt
 !tests/**/data/*_golden.pt
-boltz/
+/boltz/
 
-# Machine-specific tooling (contains tokens, auth state)
+# Local agent/editor state that can hold tokens. Anything more specific to your
+# own tooling belongs in .git/info/exclude, not here.
 .env
 .mcp.json
-.gsd
-.gsd-id
 .claude/
-.bg-shell/
-schedule.py
 
-# Sibling repos (cloned locally for reference, not part of this repo)
-nfp-core/
-tensorrt-bionemo-benchmarking/
+# Personal, machine-specific agent instructions (see CLAUDE.md)
+CLAUDE.local.md

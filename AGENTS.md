@@ -5,10 +5,9 @@
 - **Read and follow [`docs/coding.md`][coding]**
 - **Run the hooks before committing.** Install once with
   `prek install -t pre-commit -t commit-msg`; they then run on `git commit`. Or
-  run ad hoc with `prek run`. CI enforces the same set via `validate:styles`.
-- **MR/PR titles start with a ticket key** — a GitHub, JIRA, or NVBugs
-  reference — then a Conventional-Commit summary, e.g.
-  `[BNMTRT-xxx] feat: ...`. Types: `feat`, `fix`, `docs`, `style`,
+  run ad hoc with `prek run`. CI enforces the same set.
+- **MR/PR titles start with a tracker reference**, then a Conventional-Commit
+  summary, e.g. `[PROJ-123] feat: ...`. Types: `feat`, `fix`, `docs`, `style`,
   `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert` (scope optional).
 - **Commit titles** should follow the same shape without required ticket key.
 - **License headers.** Every source file carries the NVIDIA SPDX Apache-2.0

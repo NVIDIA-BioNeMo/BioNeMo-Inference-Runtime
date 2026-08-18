@@ -24,6 +24,18 @@ from bionemo_ir.data.writers.cif_writer import CIFWriter
 from tests.common.test_utils.data import get_sample_folding_output
 
 
+@pytest.fixture(autouse=True)
+def _write_outside_the_checkout(tmp_path, monkeypatch):
+    """Run every test in this module from a scratch directory.
+
+    Most tests below hand the writer a bare relative ``output_path`` because
+    they only assert on the returned string — but :meth:`CIFWriter.write` also
+    opens that path for writing, so a run started from the repo root drops a
+    ``test.cif`` next to ``setup.py``.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 class TestCIFWriter:
     """Test suite for CIFWriter class."""
 

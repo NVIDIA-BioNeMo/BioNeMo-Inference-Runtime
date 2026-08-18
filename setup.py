@@ -233,7 +233,7 @@ def _extra_local_version() -> str:
 
     A wheel built off a branch has to name the commit it came from — its base
     version cannot, because ``version.py`` only changes at a release. CI sets
-    ``BIOIR_VERSION_LOCAL`` (for example ``g1a2b3c4`` or ``g1a2b3c4 tai/ci/x``)
+    ``BIOIR_VERSION_LOCAL`` (for example ``g1a2b3c4`` or ``g1a2b3c4 mybranch``)
     and this normalizes it to `PEP 440 local version segments
     <https://packaging.python.org/en/latest/specifications/version-specifiers/#local-version-identifiers>`_
     — lowercase alphanumerics separated by dots, which is all the grammar

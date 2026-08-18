@@ -13,7 +13,7 @@ and in CI, touch only new or changed files.
 - **Local:** `pip install prek`, then `prek install -t pre-commit -t commit-msg`
   (the `commit-msg` shim runs the commit-message linter). Hooks then run on
   `git commit`.
-- **CI:** the `validate:styles` job runs the same hooks on the MR diff.
+- **CI:** the style gate runs the same hooks on the MR/PR diff.
 
 We are using the below tools, all of which are installable via `pip`.
 
@@ -25,7 +25,7 @@ We are using the below tools, all of which are installable via `pip`.
 | Shell lint + format  | [`shellcheck`][shellcheck] + [`shfmt`][shfmt]                    |
 | License headers      | `insert-license` ([Lucas-C/pre-commit-hooks][license-hook])      |
 | Line endings         | `.gitattributes` (`eol=lf`, git-native)                          |
-| Commit messages      | Conventional Commits — [`commitizen`][cz] + `validate:mr-title`  |
+| Commit messages      | Conventional Commits — [`commitizen`][cz]                        |
 
 ## Naming
 
@@ -55,10 +55,9 @@ Name a new environment variable for what it controls, not for the component
 reading it: `BIOIR_CHECKPOINTS`, not `BIOIR_HUBS_CHECKPOINT_DIR`. They are a
 public interface — renaming one is a breaking change.
 
-A handful of names belong to systems outside this repo — the GitLab project and
-its registry, the runner tag, the generic package a downstream repo fetches the
-wheel by, the sibling benchmarking repo, the NGC team holding the checkpoints.
-They keep whatever those systems call them, and each is commented where it
+A handful of names belong to systems outside this repo — CI projects and
+registries, runner tags, and the artifact stores a downstream consumer fetches
+by. They keep whatever those systems call them, and each is commented where it
 appears with what breaks if it moves. Don't align them by hand.
 
 ## Python
@@ -136,11 +135,12 @@ leaves existing headers — including year ranges — untouched.
 Commit messages follow [Conventional Commits][conventional] so history can drive
 changelog generation and other automation.
 
-The project lives in two repos kept in sync by [Copybara][copybara]: GitLab
-(internal, source of truth) and GitHub (open source). Accepted GitLab MRs on
-non-proprietary paths mirror to GitHub; accepted GitHub PRs import back to
-GitLab. A change is a **merge request** (GitLab) or **pull request** (GitHub) —
-**MR/PR** below.
+The project lives in two repos kept in sync by [Copybara][copybara]: an
+internal GitLab (source of truth) and GitHub (open source). Accepted internal
+MRs on non-proprietary paths mirror to GitHub. A GitHub PR, once approved, is
+imported as an internal MR, merged there, and synced back to GitHub; the
+original PR is then closed, so a merged PR shows as closed rather than merged.
+A change is a **merge request** or **pull request** — **MR/PR** below.
 
 Merges are fast-forward (linear history). Squashing is the default and
 recommended, so an MR/PR usually lands as one commit whose subject is the
@@ -149,9 +149,9 @@ enforced unit:
 
 - **Title — ticket key first, then Conventional Commits.** A GitHub, JIRA, or
   NVBugs reference in brackets, then a conventional summary:
-  `[BNMTRT-382] fix: bump deps`. On GitLab, `validate:mr-title` enforces it — a
-  bracketed key, then `cz check` on the summary. Copybara scrubs the leading key
-  when mirroring to GitHub, leaving a clean `fix: ...`.
+  `[PROJ-382] fix: bump deps`. The internal pipeline enforces it — a bracketed
+  key, then `cz check` on the summary. Copybara scrubs the leading key when
+  mirroring to GitHub, leaving a clean `fix: ...`.
 - Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
   `build`, `ci`, `chore`, `revert`. A scope is allowed but not required — we
   don't enforce components.
@@ -166,7 +166,7 @@ Only the **title** is enforced. Body conventions are recommended, not gated:
 - **Body wrap** at ~72–80 cols for readability.
 - **Breaking changes:** `type!:` and/or a `BREAKING CHANGE: <desc>` footer —
   drives a major version bump in the changelog.
-- **Footer trailers** (git-trailer `Token: value`): `Refs: BNMTRT-123`,
+- **Footer trailers** (git-trailer `Token: value`): `Refs: PROJ-123`,
   `Signed-off-by:` (DCO), `Co-authored-by:`. Copybara preserves trailers across
   the sync.
 

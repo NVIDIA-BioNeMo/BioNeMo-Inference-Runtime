@@ -188,8 +188,8 @@ passes it to `import_jax_weights_`; the output is named after the same stem
 (`params_model_1_ptm.pt`). A renamed input silently converts against the wrong
 version.
 
-The converter targets **monomer** presets only; there is no documented multimer
-path for `alphafold2_multimer_*`.
+Multimer presets convert the same way: `--config_preset model_<N>_multimer_v3`
+against `params_model_<N>_multimer_v3.npz`.
 
 ## Related
 

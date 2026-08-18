@@ -270,10 +270,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
                 **common_kwargs,
             )
             result.update(
-                {
-                    (dtype, torch.float32, torch.float32, dtype): kernel
-                    for dtype, kernel in mixed_result.items()
-                }
+                {(dtype, torch.float32, torch.float32, dtype): kernel for dtype, kernel in mixed_result.items()}
             )
             self._kernels = result
             FusedLNProjMoveaxisPad._global_cache[base_key] = result

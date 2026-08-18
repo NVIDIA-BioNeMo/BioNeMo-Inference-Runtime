@@ -1,19 +1,18 @@
 # Style enforcement, run by prek (https://github.com/j178/prek) locally via git
-# hooks (`prek install`) and in CI (`validate:styles` job), only touch new and
-# changed files.
+# hooks (`prek install`) and in CI, only touch new and changed files.
 #
 # See docs/coding.md for the rules these tools enforce.
 
-# Never touch vendored submodules, the private release bundle, or the CuTeDSL
-# kernels (the DSL resolves names through its own tracing machinery, so ruff
-# reports them as undefined). Generated CUBIN build inputs are not excluded
-# because they are no longer written into the checkout; the materializer emits
-# them into the build tree.
+# Never touch vendored submodules or the CuTeDSL kernel package (the DSL
+# resolves names through its own tracing machinery, so ruff reports them as
+# undefined). Generated CUBIN build inputs are not excluded because they are no
+# longer written into the checkout; the materializer emits them into the build
+# tree.
 exclude = '''(?x)^(
     3rdparty/.*
   | .*\.(a|lib|so|dll|a3m)
   | examples/data/samples/templates/templates/.*\.cif
-  | bionemo_ir/dsl_kernels/.*
+  | bionemo_ir/dsl_kernels/cute/.*
 )$'''
 
 [[repos]]
@@ -67,18 +66,16 @@ hooks = [
   # (so existing headers are left alone) and stamps new files with the current
   # year; only inserts where missing. Two entries: `#` comment style for
   # python/shell/cmake, C-block style for c/c++/cuda.
-  # exclude: third-party-derived files keep their upstream license header, not the
-  # NVIDIA Apache one. BSD-3-Clause CUTLASS CuTe kernels can't carry Apache; the
-  # OpenFold-derived files already have an Apache header + upstream attribution
-  # that this hook would otherwise duplicate (it only recognizes a contiguous
-  # canonical SPDX block).
+  # exclude: third-party-derived files keep their upstream license header, not
+  # the NVIDIA Apache one. The OpenFold-derived files already have an Apache
+  # header + upstream attribution that this hook would otherwise duplicate (it
+  # only recognizes a contiguous canonical SPDX block).
   { id = "insert-license", name = "insert license (python, shell, cmake)", types_or = [
     "python",
     "shell",
     "cmake",
   ], exclude = '''(?x) ^(
-      bionemo_ir/dsl_kernels/cute/.*_left_mask\.py
-    | bionemo_ir/data/writers/pdb_writer\.py
+      bionemo_ir/data/writers/pdb_writer\.py
     | bionemo_ir/_torch/modules/openfold2/utils/feats\.py
     | bionemo_ir/_torch/modules/openfold3/utils/residues\.py
     | bionemo_ir/pipeline/models/openfold2/const\.py
@@ -123,8 +120,8 @@ hooks = [
 # Per-commit title linting (commit-msg stage): enforces the Conventional Commits
 # subject via `cz check`. Config in pyproject.toml [tool.commitizen]; the same
 # tool generates the changelog / bumps the version later. Local dev aid — under
-# ff + squash-on the enforced gate is the MR title (validate:mr-title). Requires
-# the commit-msg shim: `prek install -t pre-commit -t commit-msg`.
+# ff + squash-on the enforced gate is the MR/PR title. Requires the commit-msg
+# shim: `prek install -t pre-commit -t commit-msg`.
 repo = "https://github.com/commitizen-tools/commitizen"
 rev = "v4.17.0"
 hooks = [

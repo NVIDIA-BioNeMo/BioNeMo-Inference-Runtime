@@ -1,38 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Build the images defined in docker/Dockerfile. See docker/README.md.
+
 SHELL := /bin/bash
 PWD := $(shell pwd)
 PROJECT_DIR ?= $(PWD)/..
 
-# PyTorch development base
-TORCH_BASE_IMAGE ?= nvcr.io/nvidia/pytorch
-TORCH_BASE_TAG ?= 26.05-py3
+# Base images. Both pull anonymously -- no NGC key, no docker login. Override to
+# build against a different PyTorch/CUDA combination, but check that its torch
+# and triton satisfy requirements.txt without a downgrade (see docker/README.md).
+BASE_IMAGE ?= nvcr.io/nvidia/pytorch
+BASE_TAG ?= 26.05-py3
+RUNTIME_IMAGE ?= nvidia/cuda
+RUNTIME_TAG ?= 13.0.2-base-ubuntu24.04
 
-# BioIR image parameters
 REGISTRY_IMAGE ?= bionemo-ir
 
 COMMIT_SHORT_SHA ?= $(shell git rev-parse --short=7 HEAD)
 BIOIR_BRANCH_ROUGH := $(shell git rev-parse --abbrev-ref HEAD)
 BIOIR_BRANCH := $(subst /,_,$(BIOIR_BRANCH_ROUGH))
-ifdef CI_COMMIT_BRANCH
-TAG ?= bioir$(COMMIT_SHORT_SHA)_from_pytorch$(TORCH_BASE_TAG)
+ifdef CI
+TAG ?= bioir$(COMMIT_SHORT_SHA)
 else
-TAG ?= $(BIOIR_BRANCH)_bioir$(COMMIT_SHORT_SHA)_from_pytorch$(TORCH_BASE_TAG)
+TAG ?= $(BIOIR_BRANCH)_bioir$(COMMIT_SHORT_SHA)
 endif
-REGISTRY_IMAGE_AND_TAG := ${REGISTRY_IMAGE}:${TAG}
 
-# Dependency-only image: the Dockerfile's `ci_stage`, with no source copy, no
-# editable install and no CMake build tree. CI runs build:extension and the test
-# shards on this instead of the full dev image.
-REQS_IMAGE_AND_TAG ?= ${REGISTRY_IMAGE}:reqs-${TORCH_BASE_TAG}
+DEV_IMAGE_AND_TAG := $(REGISTRY_IMAGE):$(TAG)
+# Dependency-only image, keyed by the base it was built from: no source copy, no
+# editable install, no CMake tree. Invalidated only by requirements*.txt, which
+# is what makes it usable as a rolling CI cache.
+DEPS_IMAGE_AND_TAG ?= $(REGISTRY_IMAGE):deps-$(BASE_TAG)
+RUNTIME_IMAGE_AND_TAG ?= $(REGISTRY_IMAGE):runtime-$(TAG)
 
-# Docker layer caching (CI build:image follow-up).
-#   Default: reuse the local BuildKit layer cache. The CI runner talks to a
-#   persistent host docker daemon, so unchanged layers — notably the uv dependency
-#   install in requirements_stage (before COPY .) — survive between builds.
-#   CI also passes DOCKER_CACHE_FROM=<image:tag> to seed from a registry cache
-#   image; BUILDKIT_INLINE_CACHE embeds cache metadata into the built image so a
-#   cold/rotated runner can warm up from that registry image.
+# Match the host UID/GID so the bind-mounted checkout does not collect
+# root-owned build artifacts.
+USER_UID ?= $(shell id -u)
+USER_GID ?= $(shell id -g)
+
+# Layer caching. Default: reuse the local BuildKit cache. CI additionally passes
+# DOCKER_CACHE_FROM=<image:tag> to seed from a registry image;
+# BUILDKIT_INLINE_CACHE embeds the metadata a cold runner needs to warm up.
+#
+# That metadata is asked for in CI only. Preparing it walks every layer of a
+# ~20GB image on each build, so a fully cached local rebuild -- what
+# `docker/dev.sh` does on every attach -- would pay a long export for something
+# no local build reads.
 DOCKER_CACHE_FROM ?=
-_DOCKER_CACHE_ARGS := --build-arg BUILDKIT_INLINE_CACHE=1 $(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM),)
+_CACHE_ARGS := $(if $(or $(CI),$(DOCKER_CACHE_FROM)),--build-arg BUILDKIT_INLINE_CACHE=1,) \
+	$(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM),)
 
 CPU_ARCH := $(shell uname -m)
 ifeq ($(CPU_ARCH),x86_64)
@@ -43,45 +71,58 @@ else
 $(error Unsupported architecture: $(CPU_ARCH))
 endif
 
-.PHONY: submodules bioir_dev bioir_reqs
+_BUILD := docker build $(_CACHE_ARGS) --platform $(BUILD_PLATFORM) \
+	--file $(PROJECT_DIR)/docker/Dockerfile
 
-bioir_reqs:
-	@echo "Build ${REQS_IMAGE_AND_TAG} (ci_stage), begin"
-	pushd $(PROJECT_DIR) \
-		&& docker build \
-			$(_DOCKER_CACHE_ARGS) \
-			--platform $(BUILD_PLATFORM) \
-			--target ci_stage \
-			--file $(PROJECT_DIR)/docker/Dockerfile.with-source \
-			--tag $(REQS_IMAGE_AND_TAG) \
-			$(PROJECT_DIR) \
-		&& popd
-	@echo "Build ${REQS_IMAGE_AND_TAG}, end"
+# Deliberately not part of _BUILD: `deps` must NOT pass them, so that the
+# Dockerfile's digest-pinned BASE_TAG default stands and the image keeps the
+# compile identity the CUBIN publish gate checks.
+_BASE_ARGS := --build-arg BASE_IMAGE=$(BASE_IMAGE) \
+	--build-arg BASE_TAG=$(BASE_TAG)
 
-bioir_dev:
-	@echo "Make target build_with_source, begin"
-	@echo "PROJECT_DIR=${PROJECT_DIR}"
-	pushd $(PROJECT_DIR) \
-		&& echo "pwd=$$(pwd)" \
-		&& printenv \
-		&& echo "Build ${REGISTRY_IMAGE_AND_TAG} with source for commit $(COMMIT_SHORT_SHA), begin" \
-		&& docker build \
-			$(_DOCKER_CACHE_ARGS) \
-			--platform $(BUILD_PLATFORM) \
-			--target dev_stage \
-			--file $(PROJECT_DIR)/docker/Dockerfile.with-source \
-			--build-arg BASE_IMAGE=$(TORCH_BASE_IMAGE) \
-			--build-arg BASE_TAG=$(TORCH_BASE_TAG) \
-			--tag $(REGISTRY_IMAGE_AND_TAG) \
-			$(PROJECT_DIR) \
-		&& echo "Build ${REGISTRY_IMAGE_AND_TAG}, end" \
-		&& popd
-	@echo "Make target build_with_source, end"
+.PHONY: help deps dev wheel runtime submodules print-build-platform
+
+help:
+	@echo "Targets:"
+	@echo "  deps      dependency-only image, no source  -> $(DEPS_IMAGE_AND_TAG)"
+	@echo "  dev       daily dev image, bind-mount source -> $(DEV_IMAGE_AND_TAG)"
+	@echo "  wheel     build the wheel into ./dist"
+	@echo "  runtime   minimal wheel-only runtime image  -> $(RUNTIME_IMAGE_AND_TAG)"
+	@echo "  submodules  git submodule update --init --recursive"
+
+# Builds the Dockerfile's `devdeps` stage: runtime deps plus the dev/test deps
+# the suite imports. Named for what it is used for, not for the stage.
+deps:
+	$(_BUILD) --target devdeps --tag $(DEPS_IMAGE_AND_TAG) $(PROJECT_DIR)
+
+# docker/dev.sh drives this target with its own REGISTRY_IMAGE/TAG, then owns
+# the container and the mounts around it.
+dev:
+	$(_BUILD) $(_BASE_ARGS) --target dev \
+		--build-arg USER_UID=$(USER_UID) \
+		--build-arg USER_GID=$(USER_GID) \
+		--tag $(DEV_IMAGE_AND_TAG) $(PROJECT_DIR)
+
+# Exports the built wheel to ./dist on the host rather than leaving it in an
+# image layer. Targets wheel-export, not wheel: see the Dockerfile.
+wheel:
+	$(_BUILD) $(_BASE_ARGS) --target wheel-export \
+		$(if $(CUDA_TAG),--build-arg CUDA_TAG=$(CUDA_TAG),) \
+		--output type=local,dest=$(PROJECT_DIR)/dist \
+		$(PROJECT_DIR)
+	@echo "wheel written to $(PROJECT_DIR)/dist"
+
+runtime:
+	$(_BUILD) $(_BASE_ARGS) --target runtime \
+		--build-arg RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
+		--build-arg RUNTIME_TAG=$(RUNTIME_TAG) \
+		$(if $(CUDA_TAG),--build-arg CUDA_TAG=$(CUDA_TAG),) \
+		--tag $(RUNTIME_IMAGE_AND_TAG) $(PROJECT_DIR)
 
 submodules:
-	@echo "Initializing and updating Git submodules..."
-	@echo "PROJECT_DIR=${PROJECT_DIR}"
-	pushd $(PROJECT_DIR) \
-		&& git submodule update --init --recursive \
-	 	&& popd
-	@echo "Git submodules updated."
+	git -C $(PROJECT_DIR) submodule update --init --recursive
+
+# The platform the images are built for, so CI can key its layer cache on the
+# same value this file derives rather than re-deriving `uname -m` beside it.
+print-build-platform:
+	@echo $(BUILD_PLATFORM)

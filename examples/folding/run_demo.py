@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -117,7 +118,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a folding model through BioIR build_processor.")
     parser.add_argument("--model-source", default="boltz-2")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
-    parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="write predictions here; without it they are printed to stdout",
+    )
     parser.add_argument("--output-format", choices=("pdb", "cif"), default="cif")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--recycling-steps", type=int, default=3)
@@ -138,7 +144,9 @@ def main() -> None:
         executor_backend=None,
         runtime_args=runtime_args,
         writer_stage=WriterStageConfig(
-            output_path=str(args.output_dir),
+            # No path means the writer serializes without touching the disk and
+            # hands the text back on the row instead.
+            output_path=str(args.output_dir) if args.output_dir else None,
             format=args.output_format,
         ),
     )
@@ -159,7 +167,18 @@ def main() -> None:
         raise RuntimeError(
             f"{len(failed)} of {len(outputs)} predictions failed: {[row.get('__record_id') for row in failed]}"
         )
-    print(f"Wrote {len(outputs)} prediction(s) to {args.output_dir}")
+
+    if args.output_dir:
+        print(f"Wrote {len(outputs)} prediction(s) to {args.output_dir}")
+        return
+
+    # One record per output, each announced on stderr so a single prediction can
+    # be redirected straight into a .cif/.pdb file.
+    for row in outputs:
+        record_id = row.get("__record_id") or "prediction"
+        print(f"# {record_id} ({args.output_format})", file=sys.stderr)
+        print(row["output_raw"])
+        print(f"# {record_id} scores: {row['scores']}", file=sys.stderr)
 
 
 if __name__ == "__main__":

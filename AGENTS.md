@@ -4,7 +4,7 @@
 
 - **Read and follow [`docs/coding.md`][coding]**
 - **Run the hooks before committing.** Install once with
-  `prek install -t pre-commit -t commit-msg`; they then run on `git commit`. Or
+  `prek install`; they then run on `git commit`. Or
   run ad hoc with `prek run`. CI enforces the same set.
 - **MR/PR titles start with a tracker reference**, then a Conventional-Commit
   summary, e.g. `[PROJ-123] feat: ...`. Types: `feat`, `fix`, `docs`, `style`,

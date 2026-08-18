@@ -3,6 +3,11 @@
 #
 # See docs/coding.md for the rules these tools enforce.
 
+# `prek install` installs only the pre-commit shim by default, which would leave
+# the commit-msg hook below silently uninstalled. Naming both here means a plain
+# `prek install` wires up everything this config declares.
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
 # Never touch vendored submodules or the CuTeDSL kernel package (the DSL
 # resolves names through its own tracing machinery, so ruff reports them as
 # undefined). Generated CUBIN build inputs are not excluded because they are no
@@ -120,8 +125,8 @@ hooks = [
 # Per-commit title linting (commit-msg stage): enforces the Conventional Commits
 # subject via `cz check`. Config in pyproject.toml [tool.commitizen]; the same
 # tool generates the changelog / bumps the version later. Local dev aid — under
-# ff + squash-on the enforced gate is the MR/PR title. Requires the commit-msg
-# shim: `prek install -t pre-commit -t commit-msg`.
+# ff + squash-on the enforced gate is the MR/PR title. Runs from the commit-msg
+# shim, which `default_install_hook_types` above installs.
 repo = "https://github.com/commitizen-tools/commitizen"
 rev = "v4.17.0"
 hooks = [

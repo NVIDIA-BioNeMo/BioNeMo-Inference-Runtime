@@ -32,7 +32,10 @@ dump*/
 config.json
 /*.svg
 cpp/cmake-build-*
-cpp/.ccache
+# Where `make -C docker wheel` and `pip wheel` drop build output.
+/dist/
+# examples/folding/run_demo.py writes predictions here by default.
+/output/
 # Per-developer opt-out of the CuTeDSL extension build; committing it would turn
 # the extension off for every checkout.
 build.env

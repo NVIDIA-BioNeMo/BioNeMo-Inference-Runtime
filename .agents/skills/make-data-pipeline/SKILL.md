@@ -224,7 +224,7 @@ phases.
 python -c "from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase, FeatureGeneratorBase, FeatureCollatorBase; print('OK')"
 ```
 
-If this fails, install first: `pip install --no-build-isolation -v -e .[dev]`
+If this fails, install first: `pip install --no-build-isolation -v -e '.[dev]'`
 
 ______________________________________________________________________
 

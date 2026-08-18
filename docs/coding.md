@@ -10,7 +10,7 @@ enforce automatically, whether it's authorized by developers or AI agents.
 [`prek.toml`][prekcfg] defines the hooks. [`prek`][prek] runs them both locally
 and in CI, touch only new or changed files.
 
-- **Local:** `pip install prek`, then `prek install -t pre-commit -t commit-msg`
+- **Local:** `pip install -e '.[dev]'`, then `prek install`
   (the `commit-msg` shim runs the commit-message linter). Hooks then run on
   `git commit`.
 - **CI:** the style gate runs the same hooks on the MR/PR diff.
@@ -47,9 +47,13 @@ inside the 120-column limit.
 | C++ namespace                          | `bioir::`     | `bioir::cutedsl::gated_sigmoid`     |
 | C++ include guard                      | `BIOIR_`      | `BIOIR_CPP_KERNELS_CUBIN_LAUNCH_H_` |
 | CMake variable                         | `BIOIR_`      | `BIOIR_REPO_ROOT`                   |
-| `make` target                          | `bioir_`      | `bioir_dev`                         |
+| `make` target in `docker/`             | —             | `dev`, `wheel`, `runtime`           |
 | CI job, package or cache namespace     | `bioir-`      | `bioir-kernel-cache`                |
 | Temp or scratch directory              | `bioir_`      | `bioir_templates_`                  |
+
+`docker/Makefile` is the one exception to the prefix rule: it is always invoked
+as `make -C docker <target>`, so the directory already supplies the namespace and
+each target is named for the Dockerfile stage it builds.
 
 Name a new environment variable for what it controls, not for the component
 reading it: `BIOIR_CHECKPOINTS`, not `BIOIR_HUBS_CHECKPOINT_DIR`. They are a

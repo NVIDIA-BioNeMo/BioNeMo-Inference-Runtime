@@ -101,7 +101,7 @@ ignore = ["E501", "E741", "E731", "UP042"]
 known-first-party = ["bionemo_ir"]
 
 # Branch coverage over the shipped package. The test job runs two pytest phases
-# (see .gitlab/ci/scripts/run_tests.sh) and phase 1 fans out over xdist workers,
+# (see scripts/run_tests.sh) and phase 1 fans out over xdist workers,
 # so the data has to merge across processes and across runs.
 [tool.coverage.run]
 branch = true
@@ -112,10 +112,10 @@ parallel = true
 # https://coverage.readthedocs.io/en/latest/config.html#run-relative-files
 relative_files = true
 # The repo root, NOT ["bionemo_ir"]: coverage strips the configured source
-# root from the Cobertura filenames, and GitLab only maps coverage onto the MR
+# root from the Cobertura filenames, and CI only maps coverage onto the review
 # diff when those filenames are repo-relative (bionemo_ir/foo.py). What
 # actually gets measured is narrowed to the package by `--cov=bionemo_ir`
-# in .gitlab/ci/scripts/run_tests.sh; the omits below keep a bare
+# in scripts/run_tests.sh; the omits below keep a bare
 # `pytest --cov` honest too.
 source = ["."]
 omit = [

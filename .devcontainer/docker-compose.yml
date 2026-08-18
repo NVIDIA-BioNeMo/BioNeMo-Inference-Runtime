@@ -1,33 +1,41 @@
-version: "3.9"
+# Dev container service. Builds the `dev` target from docker/Dockerfile -- the
+# same image `make -C docker dev` produces -- and bind-mounts the checkout, so
+# there is exactly one image definition in the repo. See docker/README.md.
 services:
-  bionemo_ir-dev:
-    image: <internal-registry-image>:pytorch-25.01-py3-x86_64-ubuntu24.04-trt10.8.0.43-skip-devel-202502131150-8377
+  bionemo-ir-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+      args:
+        # Match the host user so build artifacts on the bind mount are not
+        # root-owned. Set USER_UID/USER_GID in .devcontainer/.env to override
+        # (VS Code reads that file automatically).
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
 
-    network_mode: host
+    # Kernel compilation and the xdist test workers both need far more than the
+    # 64 MB default; PyTorch fails obscurely without this. The ulimits match
+    # what the CI test job passes, so a local run matches CI.
+    shm_size: "10gb"
+    ulimits:
+      memlock: -1
+      stack: 67108864
     ipc: host
 
-    # For GPU usage and profiling
     cap_add:
       - SYS_PTRACE
-      - SYS_ADMIN
-    security_opt:
-      - seccomp:unconfined
 
-    # Delete this section if you don't have a GPU.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # Delete this line if you have no GPU -- everything except the fused
+    # kernels still runs on the PyTorch fallbacks.
+    gpus: all
 
     volumes:
-      - ..:/workspaces/bionemo_ir:cached
+      - ..:/bioir:cached
+      # ccache, pip and the compiled-kernel cache, kept across rebuilds.
+      - bioir-cache:/cache
 
-    environment:
-      - CCACHE_DIR=/workspaces/bionemo_ir/cpp/.ccache
-      - CCACHE_BASEDIR=/workspaces/bionemo_ir
+    command: sleep infinity
 
-    # Overrides default command so things don't shut down after the process ends.
-    command: /bin/sh -c "while sleep 1000; do :; done"
+volumes:
+  bioir-cache:

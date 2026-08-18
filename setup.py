@@ -23,8 +23,10 @@ builds the extension, and ``BIOIR_BUILD_CUTEDSL_KERNELS=0`` opts out from the
 environment or an untracked ``build.env``.
 """
 
+import contextlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 from importlib import util as importlib_util
@@ -136,6 +138,50 @@ def _materialize_cutedsl_kernel_payloads(output_root: Path) -> Path:
     if not output_dir.is_relative_to(output_root.resolve()):
         raise RuntimeError(f"CUBIN materializer returned a path outside its output root: {output_dir}")
     return output_dir
+
+
+def _cmake_build_root(fallback: Path) -> Path:
+    """Return a CMake tree location that outlives the install.
+
+    A PEP 660 editable install puts ``build_temp`` in a temporary directory pip
+    deletes on the way out. That takes the compilation database's ``directory``
+    and the generated CUBIN headers its ``-I`` flags point at with it, leaving
+    clangd with entries it cannot resolve. Keeping the tree in the checkout --
+    ``build`` is already git-ignored -- makes those paths outlive the install and
+    keeps the configured tree warm for the next incremental build.
+
+    Falls back to the caller's path when the checkout is not writable, which is
+    the only case that has to keep working: a read-only source tree must still
+    build, just without a usable database.
+    """
+    root = ROOT_DIR / "build" / "cmake"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return fallback
+    return root if os.access(root, os.W_OK) else fallback
+
+
+def _drop_relocated_cmake_cache(build_dir: Path) -> None:
+    """Discard a cache that CMake would refuse because the tree moved.
+
+    CMake records the binary directory in ``CMakeCache.txt`` and errors out when
+    it no longer matches, which a throwaway build tree could never hit. A
+    persistent one does: the same checkout is reachable under two paths whenever
+    it is bind-mounted into a container -- the host path outside, the workspace
+    path inside -- so building on both sides alternates the directory CMake sees.
+    """
+    cache = build_dir / "CMakeCache.txt"
+    if not cache.is_file():
+        return
+    with contextlib.suppress(OSError, UnicodeDecodeError):
+        for line in cache.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() != "CMAKE_CACHEFILE_DIR:INTERNAL":
+                continue
+            if Path(value.strip()) != build_dir:
+                shutil.rmtree(build_dir, ignore_errors=True)
+            return
 
 
 def _drop_opted_out_kernel_libraries() -> None:
@@ -269,9 +315,11 @@ class CMakeBuild(build_ext):
         extension_dir.mkdir(parents=True, exist_ok=True)
 
         configuration = "Debug" if self.debug else "Release"
-        build_dir = (Path(self.build_temp) / extension.name.replace(".", "_")).resolve()
+        build_root = _cmake_build_root(Path(self.build_temp).resolve())
+        build_dir = (build_root / extension.name.replace(".", "_")).resolve()
+        _drop_relocated_cmake_cache(build_dir)
         build_dir.mkdir(parents=True, exist_ok=True)
-        materialized_dir = _materialize_cutedsl_kernel_payloads(Path(self.build_temp) / "bioir_cubins")
+        materialized_dir = _materialize_cutedsl_kernel_payloads(build_root / "bioir_cubins")
 
         configure_command = [
             "cmake",
@@ -286,6 +334,18 @@ class CMakeBuild(build_ext):
             f"-DBIOIR_CUBIN_MATERIALIZED_DIR={materialized_dir}",
         ]
         subprocess.run(configure_command, cwd=ROOT_DIR, check=True)
+
+        # Surface the compilation database clangd is already configured to read:
+        # `.clangd` sets `CompilationDatabase: .` and `.gitignore` ignores the
+        # file at the root, but nothing ever wrote it there. The paths inside it
+        # stay resolvable because `_cmake_build_root` keeps the tree they point
+        # into out of `build_temp`. Best-effort — a read-only or otherwise
+        # unwritable checkout must not fail the build over an editor
+        # convenience.
+        generated_database = build_dir / "compile_commands.json"
+        if generated_database.is_file():
+            with contextlib.suppress(OSError):
+                shutil.copyfile(generated_database, ROOT_DIR / "compile_commands.json")
 
         build_command = [
             "cmake",

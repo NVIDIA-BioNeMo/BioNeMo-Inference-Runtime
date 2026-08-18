@@ -40,6 +40,52 @@ authoritative. Boltz also needs chemical-component metadata — see
 Downloads are **not revision-pinned** (`hf_hub_download` with no `revision=`).
 Boltz-2 files are digest-checked after download — see [Downloads](#downloads).
 
+## Staging with fetch_weights.sh
+
+`scripts/fetch_weights.sh` downloads checkpoints from their upstream publishers
+and symlinks them into the probe directory, so pytest and the examples resolve
+them with no `*_CKPT` set. This is the normal way to get weights; the manual
+route is [Staging and overrides](#staging-and-overrides).
+
+```bash
+scripts/fetch_weights.sh                    # everything the source covers
+scripts/fetch_weights.sh --model boltz      # one family
+scripts/fetch_weights.sh --model boltz-2    # one checkpoint
+scripts/fetch_weights.sh --help
+```
+
+`--source` selects where they come from. The default `auto` uses NVIDIA's
+internal NGC mirror when `BIOIR_NGC_ORG`, `BIOIR_NGC_TEAM` and NGC credentials
+are all present, and the public upstreams otherwise — so outside NVIDIA it is
+exactly `--source public` and never needs credentials. `--source ngc` forces the
+mirror and fails when it is unusable (CI wants that; see
+[nv/model-weights.md](../nv/model-weights.md)); `--source none` stages nothing
+and only reports what already resolves.
+
+What the public source covers, per family — the per-file list is the
+`PUBLIC_URLS` table in the script, not restated here to avoid drift:
+
+| Family     | Source                                       | Licence    |
+| ---------- | -------------------------------------------- | ---------- |
+| OpenFold2  | `openfold.s3.amazonaws.com`                  | CC BY 4.0  |
+| Boltz      | HuggingFace `boltz-community`, plus metadata | MIT        |
+| OpenFold3  | HuggingFace `OpenFold/OpenFold3` (**gated**) | Apache-2.0 |
+| Protenix   | HuggingFace mirror                           | Apache-2.0 |
+| AlphaFold2 | **conversion required**, see below           | CC BY 4.0  |
+
+Downloads are resumable and skipped when already present. Anything that cannot
+be fetched is reported and skipped, never fatal — so a run with no credentials
+completes, and the tests whose weights are missing skip themselves.
+
+OpenFold3 is gated and needs `HF_TOKEN`; see
+[Authentication](#downloads). AlphaFold2 is not downloadable at all — see
+[AlphaFold2 parameters](#alphafold2-parameters), then point the script at your
+converted files:
+
+```bash
+ALPHAFOLD2_DIR=/path/to/converted scripts/fetch_weights.sh --model alphafold2
+```
+
 ## Resolution order
 
 `load_weights` (`hubs/checkpoint.py`) tries local, then Hugging Face. Local
@@ -64,6 +110,7 @@ Under `BIOIR_CACHE` (default `~/.cache/bionemo_ir`):
 | ------------------------------ | --------------------------------------------------------------- |
 | `checkpoints/<model key>/`     | staged checkpoints (`BIOIR_CHECKPOINTS` relocates the root)     |
 | `metadata/<override env name>` | staged metadata (`BIOIR_METADATA` relocates)                    |
+| `model_cache/`                 | raw downloads before staging (`MODEL_CACHE_DIR` relocates)      |
 | `<model key>/`                 | Hub-downloaded metadata for that model (and extracted archives) |
 
 Hub **checkpoint** downloads go to `~/.cache/hf` (hardcoded `cache_dir` in
@@ -144,11 +191,20 @@ into the snapshot; re-run to finish. See the [Hugging Face cache guide][hf-cache
 not on env / staged files.
 
 **Authentication.** BioIR does no token handling — that is all
-`huggingface_hub`. OpenFold3 is gated: accept terms on
-[`OpenFold/OpenFold3`][of3-hf], export `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN` /
-`hf auth login`), then run the verify snippet with `openfold3`. Alternatively
-stage the file and set `OPENFOLD3_CKPT` so resolution never hits the Hub. The
-grant is per account — CI needs its own.
+`huggingface_hub`. OpenFold3 is gated and an anonymous request gets `401`.
+Registering is free: create a HuggingFace account, accept the terms on
+[`OpenFold/OpenFold3`][of3-hf], then export `HF_TOKEN` (or
+`HUGGING_FACE_HUB_TOKEN` / `hf auth login`).
+
+```bash
+export HF_TOKEN=hf_...
+```
+
+`fetch_weights.sh` passes it to HuggingFace downloads and the library's own Hub
+fallback picks it up too. Without it the OpenFold3 tests skip with
+`GatedRepoError` in the skip reason; nothing else in the suite needs it.
+Alternatively stage the file and set `OPENFOLD3_CKPT` so resolution never hits
+the Hub. The grant is per account — CI needs its own.
 
 ## Metadata assets
 
@@ -177,10 +233,33 @@ is manual:
    `openfold.model.model`, and `openfold.utils.import_weights`. It is not a
    BioIR dependency, so use a throwaway environment.
 3. Run `examples/folding/openfold2/jax_to_pt.py` with `--jax_path`,
-   `--config_preset`, `--output_dir`. Preset ↔ parameter mapping is in the
-   docstring table in `models/openfold2/config.py` — template and pTM variants
-   are **not** interchangeable, so read it before choosing.
-4. Set `ALPHAFOLD2_<N>_CKPT` or stage the result under the model key.
+   `--config_preset`, `--output_dir`. The preset ↔ parameter mapping for the
+   **monomer** presets is the table in `models/openfold2/config.py` — template
+   and pTM variants are **not** interchangeable, so read it before choosing.
+   Multimer presets are not in that table; they follow the
+   `model_<N>_multimer_v3` form.
+4. Set `ALPHAFOLD2_<N>_CKPT` or stage the result under the model key — or hand
+   the output directory to `fetch_weights.sh` via `ALPHAFOLD2_DIR`, which
+   recognises the converter's `params_model_*.pt` names.
+
+End to end, for one preset:
+
+```bash
+curl -O https://storage.googleapis.com/alphafold/alphafold_params_2022-12-06.tar
+tar -xf alphafold_params_2022-12-06.tar -C params/
+# In a throwaway env with upstream `openfold` installed. Repeat for
+# params_model_{1..5}.npz and params_model_{1..5}_multimer_v3.npz, passing the
+# matching --config_preset (model_N / model_N_multimer_v3):
+python examples/folding/openfold2/jax_to_pt.py \
+    --jax_path params/params_model_1.npz --config_preset model_1 \
+    --output_dir converted/
+
+ALPHAFOLD2_DIR=converted scripts/fetch_weights.sh --model alphafold2
+```
+
+That tarball is pinned to `2022-12-06` because that release is **CC BY 4.0**;
+the earlier ones were non-commercial. Review the licence before using these
+weights for anything.
 
 **Do not rename the `.npz` first.** The converter derives the upstream weight
 version from the file name (`params_model_1_ptm.npz` → `model_1_ptm`) and

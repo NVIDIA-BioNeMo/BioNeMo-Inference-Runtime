@@ -11,14 +11,13 @@ prediction models — from FASTA/MSA to PDB/mmCIF.
 
 ## About
 
-BioNeMo Inference Runtime (BioIR) is NVIDIA's library for
-structure-prediction inference. A five-stage GPU pipeline turns
-AlphaFold-lineage and all-atom models into PDB/mmCIF with confidence
-scores. Models stay ordinary `nn.Module`s — no TensorRT engine build.
+BioNeMo Inference Runtime (BioIR) is NVIDIA's library for structure-prediction
+inference. A five-stage GPU pipeline turns AlphaFold-lineage and all-atom models
+into PDB/mmCIF with confidence scores. Models stay ordinary `nn.Module`s — no
+TensorRT engine build.
 
-On H100, BioIR is **2.4–3.8x** faster than the best open-source
-`torch.compile` baselines at matched accuracy. See
-[Benchmarks](#benchmarks).
+On H100, BioIR is **2.4–3.8x** faster than the best open-source `torch.compile`
+baselines at matched accuracy. See [Benchmarks](#benchmarks).
 
 ## Documentation
 
@@ -26,7 +25,7 @@ User guides and technical reference live under [`docs/`](docs/):
 
 | Doc                                           | Description                                           |
 | --------------------------------------------- | ----------------------------------------------------- |
-| [Developer guide](docs/README.md)             | Local setup, build, and testing                       |
+| [Developer guide](docs/dev.md)                | Build, test, stage weights, contribute                |
 | [API reference](docs/ref/api.md)              | `build_processor`, model constructors, inputs/outputs |
 | [Architecture](docs/ref/architecture.md)      | Five-stage pipeline and runtime design                |
 | [Config architecture](docs/ref/config.md)     | Model `BaseConfig` tree and pipeline stage configs    |
@@ -48,59 +47,49 @@ Warm model-forward speedup vs each model's open-source implementation
 
 ## Getting Started
 
-### Develop Docker
-
-Build the development image directly from the NVIDIA PyTorch base:
-
-```bash
-make -C docker bioir_dev REGISTRY_IMAGE=bionemo-ir TAG=dev
-```
-
-Run the resulting image:
+You need a linux machine with a GPU, a driver from the 535 series or newer, and
+Docker and the NVIDIA container runtime. Clone the repo, pull submodules and LFS
+objects.
 
 ```bash
-docker run --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --gpus all -it \
-  bionemo-ir:dev
+git lfs install \
+    && GIT_LFS_SKIP_SMUDGE=0  \
+    git clone --recurse-submodules \
+        https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime.git \
+    && cd BioNeMo-Inference-Runtime
 ```
 
-The repository and development dependencies are already installed in editable
-mode.
-
-#### Testing
+Then, build the dev image and open a shell in it:
 
 ```bash
-pytest -s $(pwd)/tests
+docker/dev.sh
 ```
 
-#### Model weights
-
-Model checkpoints for the test suite and benchmarks are centralized in the NGC
-org `<ngc-org>/<ngc-team>` (the single source of truth for CI, local runs, and
-benchmarking). Stage them — and run the full suite the way CI does — with:
+The image carries the dependencies; your checkout is bind-mounted, so install
+the package once inside and fold something:
 
 ```bash
-export NGC_API_KEY=<NGC_API_KEY>          # read access to <ngc-org>/<ngc-team>
-.gitlab/ci/scripts/run_tests.sh       # download + stage weights, then run tests
-.gitlab/ci/scripts/run_tests.sh --download   # just stage weights and exit
+pip install --no-build-isolation -e '.[dev]'
+scripts/fetch_weights.sh --model boltz-2
+python examples/folding/run_demo.py --output-dir output
 ```
 
-See [`docs/ref/model-weights.md`](docs/ref/model-weights.md) for the design and
-for how to **upload a new model's weights** to `bioair` so CI/benchmarks pick
-them up.
+Checkpoints come from their upstream publishers and need no NVIDIA credentials;
+anything that cannot be fetched is skipped, and the tests needing it skip too.
+Running `scripts/run_tests.sh` stages weights and runs the suite the way CI
+does.
 
-### Release Docker
+Without a container, on a host that already has Python 3.12 and a C++ toolchain,
+`pip install -e '.[dev]'` is the whole build.
 
-Use the same development docker to build the wheel package:
-
-```bash
-pip install build
-python -m build --wheel --no-isolation --outdir packages/
-```
+See [`docs/dev.md`](docs/dev.md) for more details on daily development works.
+See [`docker/README.md`](docker/README.md) describes the images and what
+`docker/dev.sh` mounts.
 
 ## Contributing
 
 We welcome contributions. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for policy
-and [`docs/README.md`](docs/README.md) for local development.
+and [`docs/dev.md`](docs/dev.md) for the development workflow.
 
 ## Citation
 
@@ -109,12 +98,12 @@ If you use BioIR in your research, please cite it via
 
 ## Contact / Support
 
-* Bugs and feature requests:
+- Bugs and feature requests:
   [GitHub Issues](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/issues/new/choose)
-* Usage questions:
+- Usage questions:
   [GitHub Discussions](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/discussions)
-* Security vulnerabilities: see [`SECURITY.md`](SECURITY.md) — do **not** file
-  a public issue
+- Security vulnerabilities: see [`SECURITY.md`](SECURITY.md) — do **not** file a
+  public issue
 
 ## License
 

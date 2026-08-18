@@ -50,9 +50,28 @@ finally:
     else:
         sys.modules["gemmi"] = _previous_gemmi
 
+import pytest
+from huggingface_hub.errors import EntryNotFoundError, GatedRepoError, RepositoryNotFoundError
 from test_utils.checkpoints import load_weights
 
 from tests.common.test_utils.basic import setattr_safe
+
+
+def load_weights_or_skip(model: str) -> dict:
+    """Load OSS reference weights, skipping the test when they are unreachable.
+
+    OpenFold3 publishes its checkpoint in a gated HuggingFace repository, so
+    without an accepted licence and HF_TOKEN the hub raises rather than
+    reporting the checkpoint absent. Every other input in this suite skips when
+    it is missing; match that instead of failing.
+    """
+    try:
+        state_dict = load_weights(model, local_files_only=False)
+    except (EntryNotFoundError, GatedRepoError, RepositoryNotFoundError) as exc:
+        pytest.skip(f"{model} checkpoint unavailable: {exc}. Set HF_TOKEN, or stage it locally.")
+    if state_dict is None:
+        pytest.skip(f"{model} checkpoint unavailable. Set HF_TOKEN, or stage it locally.")
+    return state_dict
 
 
 class RefMSAPairWeightedAveragingFromOF3OSS(OF3OSS_MSAPairWeightedAveraging):
@@ -72,7 +91,7 @@ class RefMSAPairWeightedAveragingFromOF3OSS(OF3OSS_MSAPairWeightedAveraging):
     @classmethod
     def load_weights(cls, model: str = "openfold3", layer_path: str = "msa_module.blocks.0", state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_weights(model, local_files_only=False)
+            state_dict = load_weights_or_skip(model)
 
         # infer class init params from state_dict
         c_in: int = None
@@ -108,7 +127,7 @@ class RefSwiGLUTransitionFromOF3OSS(OF3OSS_SwiGLUTransition):
     @classmethod
     def load_weights(cls, model: str = "openfold3", layer_path: str = "msa_module.blocks.0", state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_weights(model, local_files_only=False)
+            state_dict = load_weights_or_skip(model)
 
         weights_biases_path = [
             (f"{layer_path}.layer_norm.weight", f"{layer_path}.layer_norm.bias"),
@@ -131,7 +150,7 @@ class RefOuterProductMeanFromOF3OSS(OF3OSS_OuterProductMean):
     @classmethod
     def load_weights(cls, model: str = "openfold3", layer_path: str = "msa_module.blocks.0", state_dict: dict = None):
         if state_dict is None:
-            state_dict = load_weights(model, local_files_only=False)
+            state_dict = load_weights_or_skip(model)
 
         c_m: int = None
         c_z: int = None
@@ -167,7 +186,7 @@ class RefTriangleAttentionFromOF3OSS(OF3OSS_TriangleAttention):
         starting: bool = True,
     ):
         if state_dict is None:
-            state_dict = load_weights(model, local_files_only=False)
+            state_dict = load_weights_or_skip(model)
 
         c_in: int = None
         c_hidden: int = None
@@ -204,7 +223,7 @@ class RefTriangleMultiplicationFromOF3OSS(OF3OSS_TriangleMultiplicativeUpdate):
         _outgoing: bool = True,
     ):
         if state_dict is None:
-            state_dict = load_weights(model, local_files_only=False)
+            state_dict = load_weights_or_skip(model)
 
         c_z: int = None
         c_hidden: int = None
@@ -229,7 +248,7 @@ class RefMSAModuleBlockFromOF3OSS(OF3OSS_MSAModuleBlock):
         cls, model: str = "openfold3", layer_path: str = "msa_module.blocks.0", state_dict: dict = None
     ) -> "RefMSAModuleBlockFromOF3OSS":
         if state_dict is None:
-            state_dict = load_weights(model, local_files_only=False)
+            state_dict = load_weights_or_skip(model)
 
         msa_att_row = RefMSAPairWeightedAveragingFromOF3OSS.load_weights(
             model=model, layer_path=f"{layer_path}.msa_att_row", state_dict=state_dict
@@ -300,7 +319,7 @@ class RefTemplatePairBlockFromOF3OSS(OF3OSS_TemplatePairBlock):
         state_dict: dict = None,
     ):
         if state_dict is None:
-            state_dict = load_weights(model, local_files_only=False)
+            state_dict = load_weights_or_skip(model)
 
         tri_mul_out = RefTriangleMultiplicationFromOF3OSS.load_weights(
             model=model, layer_path=f"{layer_path}.tri_mul_out", state_dict=state_dict, _outgoing=True

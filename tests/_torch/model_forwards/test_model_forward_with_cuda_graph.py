@@ -73,6 +73,7 @@ from bionemo_ir._torch.modules.boltz.structure import DiffusionModule as BoltzDi
 from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
 from bionemo_ir._torch.modules.protenix.diffusion import ProtenixDiffusionModule
 from bionemo_ir.configs import AcceleratedConfig, BackendType, BaseConfig
+from bionemo_ir.data.schemas import InputRequest
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig
 from bionemo_ir.pipeline.stages.configs import WriterStageConfig
 from tests.common.test_utils.basic import path_for_package_in_repo
@@ -143,6 +144,38 @@ _HF_CKPT = {
     "boltz-2": ("boltz-community/boltz-2", "boltz-2_conf.ckpt"),
     "protenix-v2": ("TMF001/protenix-v2-weights", "protenix-v2.pt"),
 }
+
+
+@pytest.fixture(scope="module")
+def _eager_baseline_cache(tmp_path_factory):
+    """Cache of run 2's ("original"/eager) pipeline output, keyed by
+    ``(model_source, sample_ids)``.
+
+    Run 2 in :func:`_assert_cuda_graph_parity` is built with
+    ``use_cuda_graph=False``, which gives the engine an empty
+    ``accelerated_configs``, so it depends on neither ``input_key_method`` nor
+    ``module_name`` — the same unaccelerated pipeline for a given
+    ``(model_source, sample_ids)`` is what all three parity tests compare
+    against. Without this cache each of the 6 (test function x key method)
+    combinations reran that identical pipeline. ``tmp_path_factory`` (not a bare
+    ``tempfile.TemporaryDirectory``) keeps each cached run's CIF output alive for
+    the whole module's test session so a later cache hit can still read it back;
+    pytest cleans it up after the session.
+    """
+    cache: dict[tuple[str, tuple[str, ...]], dict[str, Path]] = {}
+
+    def get_or_run(
+        model_source: str, module_name: str, sample_ids: tuple[str, ...], requests: list[InputRequest]
+    ) -> dict[str, Path]:
+        # module_name is accepted (the caller has one) but deliberately NOT part of
+        # the key: nothing is wrapped in the eager run, so it cannot affect output.
+        key = (model_source, sample_ids)
+        if key not in cache:
+            output_dir = tmp_path_factory.mktemp("eager")
+            cache[key] = _run_eager_baseline(model_source, module_name, sample_ids, requests, output_dir)
+        return cache[key]
+
+    return get_or_run
 
 
 @pytest.fixture(autouse=True)
@@ -413,6 +446,15 @@ def _build_processor_config(
     engine applies this via ``model.optimize(...)`` at construction time. The
     ``module_name`` module key is shared by OpenFold3 and boltz-2.
 
+    When it is not set the engine gets an **empty** ``accelerated_configs``, so no
+    module is wrapped and the run is genuinely eager. Passing
+    ``{module_name: AcceleratedConfig(default=BaseConfig(graph_optimization_config=None))}``
+    would NOT be eager: ``OptimizedModuleSetterMixin.optimize`` treats a ``None``
+    graph config as "no explicit config" and falls back to the module's
+    ``@support_graph_optimization`` declared default (``graph_opt_default``), which
+    is ``CUDA_GRAPH_VIA_TORCH`` for every module keyed here — so the baseline would
+    come back graph-optimized and this suite would compare a graph against a graph.
+
     ``input_key_method`` selects how each call is reduced to a graph-cache key:
     ``EXACT`` captures one graph per distinct input-shape signature, while
     ``BUCKETED_SHAPES`` pads inputs into shape buckets so targets in the
@@ -433,12 +475,16 @@ def _build_processor_config(
         use_cuda_graph=use_cuda_graph,
     )
 
-    engine_kwargs["accelerated_configs"] = {
-        module_name: AcceleratedConfig(
-            backend=BackendType.TORCH,
-            default=BaseConfig(graph_optimization_config=graph_optimization_config),
-        ),
-    }
+    engine_kwargs["accelerated_configs"] = (
+        {
+            module_name: AcceleratedConfig(
+                backend=BackendType.TORCH,
+                default=BaseConfig(graph_optimization_config=graph_optimization_config),
+            ),
+        }
+        if graph_optimization_config is not None
+        else {}
+    )
     # insert engine_kwargs, which include the shape configuration
     engine_processor_config = EngineProcessorConfig(
         model_source=model_source,
@@ -659,11 +705,36 @@ def _cuda_graph_parity_marks_pairformer(func):
     return func
 
 
+def _run_eager_baseline(
+    model_source: str, module_name: str, sample_ids: tuple[str, ...], requests: list[InputRequest], output_dir: Path
+) -> dict[str, Path]:
+    """Run 2: the original (eager) model. Factored out so it can be called
+    either directly (a fresh ``TemporaryDirectory`` per call) or through
+    ``_eager_baseline_cache`` (a ``tmp_path_factory`` dir, reused across calls
+    with the same ``(model_source, sample_ids)``).
+
+    ``module_name`` only reaches ``_build_processor_config``'s graph-config
+    branch, which returns ``None`` for ``use_cuda_graph=False`` before it is
+    read, leaving ``accelerated_configs`` empty — so it does not affect the
+    result and is not part of the cache key."""
+    config = _build_processor_config(
+        model_source=model_source,
+        module_name=module_name,
+        output_dir=output_dir,
+        use_cuda_graph=False,
+        sample_ids=sample_ids,
+    )
+    paths, _ = _run_pipeline(config, requests, sample_ids, output_dir)
+    torch.cuda.empty_cache()
+    return paths
+
+
 def _assert_cuda_graph_parity(
     model_source: str,
     module_name: str,
     sample_ids: tuple[str, ...],
     input_key_method: InputKeyMethod = InputKeyMethod.EXACT,
+    eager_baseline_cache=None,
 ) -> None:
     """Run ``model_source`` eager vs cuda-graph on ``module_name`` and assert
     the graph captured/verified for every target and left the prediction
@@ -673,12 +744,17 @@ def _assert_cuda_graph_parity(
     tuples; it is flattened to the per-target sample-id list to fold (each batch
     is size-1, the only form the one-structure-per-forward pipeline can run).
     ``input_key_method`` selects the graph-cache keying used for the cuda-graph
-    run (see :func:`_build_processor_config`)."""
+    run (see :func:`_build_processor_config`); run 2 (eager) does not depend on
+    it. ``eager_baseline_cache`` is the ``_eager_baseline_cache`` fixture,
+    threaded through explicitly since this helper is not itself a test
+    function; other callers (e.g. the decorator GPU-parity smoke test in
+    ``tests/_torch/graph_optimization/test_decorator.py``) that call this
+    directly with a single ``input_key_method`` have nothing to gain from the
+    cache and can omit it, which reruns run 2 fresh as before."""
     sample_ids = _flatten_sample_ids(sample_ids)
     requests = [_load_request(sid) for sid in sample_ids]
 
-    with tempfile.TemporaryDirectory() as original_dir, tempfile.TemporaryDirectory() as cudagraph_dir:
-        original_dir = Path(original_dir)
+    with tempfile.TemporaryDirectory() as cudagraph_dir, tempfile.TemporaryDirectory() as fallback_original_dir:
         cudagraph_dir = Path(cudagraph_dir)
 
         try:
@@ -694,17 +770,13 @@ def _assert_cuda_graph_parity(
             cudagraph_paths, cudagraph_proc = _run_pipeline(cudagraph_config, requests, sample_ids, cudagraph_dir)
             torch.cuda.empty_cache()
 
-            # --- Run 2: original (eager) model -----------------------------
-            original_config = _build_processor_config(
-                model_source=model_source,
-                module_name=module_name,
-                output_dir=original_dir,
-                use_cuda_graph=False,
-                sample_ids=sample_ids,
-                input_key_method=input_key_method,
-            )
-            original_paths, _ = _run_pipeline(original_config, requests, sample_ids, original_dir)
-            torch.cuda.empty_cache()
+            # --- Run 2: original (eager) model, cached across input_key_method --
+            if eager_baseline_cache is not None:
+                original_paths = eager_baseline_cache(model_source, module_name, sample_ids, requests)
+            else:
+                original_paths = _run_eager_baseline(
+                    model_source, module_name, sample_ids, requests, Path(fallback_original_dir)
+                )
 
         except _AVAILABILITY_EXC as exc:
             pytest.skip(f"{model_source}: weights/metadata unavailable ({type(exc).__name__}: {exc})")
@@ -750,23 +822,35 @@ def _assert_cuda_graph_parity(
 
 @_cuda_graph_parity_marks_pairformer
 @pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_ALL)
-def test_cuda_graph_pairformer_parity(model_source, input_key_method, sample_id_tuple):
+def test_cuda_graph_pairformer_parity(model_source, input_key_method, sample_id_tuple, _eager_baseline_cache):
     _assert_cuda_graph_parity(
-        model_source, "structure_pairformer", sample_ids=sample_id_tuple, input_key_method=input_key_method
+        model_source,
+        "structure_pairformer",
+        sample_ids=sample_id_tuple,
+        eager_baseline_cache=_eager_baseline_cache,
+        input_key_method=input_key_method,
     )
 
 
 @_cuda_graph_parity_marks_exact_only
 @pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_MULTI)
-def test_cuda_graph_token_transformer_parity(model_source, input_key_method, sample_id_tuple):
+def test_cuda_graph_token_transformer_parity(model_source, input_key_method, sample_id_tuple, _eager_baseline_cache):
     _assert_cuda_graph_parity(
-        model_source, "token_transformer", sample_ids=sample_id_tuple, input_key_method=input_key_method
+        model_source,
+        "token_transformer",
+        sample_ids=sample_id_tuple,
+        eager_baseline_cache=_eager_baseline_cache,
+        input_key_method=input_key_method,
     )
 
 
 @_cuda_graph_parity_marks_exact_only
 @pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_MULTI)
-def test_cuda_graph_diffusion_module_parity(model_source, input_key_method, sample_id_tuple):
+def test_cuda_graph_diffusion_module_parity(model_source, input_key_method, sample_id_tuple, _eager_baseline_cache):
     _assert_cuda_graph_parity(
-        model_source, "diffusion_module", sample_ids=sample_id_tuple, input_key_method=input_key_method
+        model_source,
+        "diffusion_module",
+        sample_ids=sample_id_tuple,
+        eager_baseline_cache=_eager_baseline_cache,
+        input_key_method=input_key_method,
     )

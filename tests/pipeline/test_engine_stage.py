@@ -546,9 +546,17 @@ class MockFoldingEngineUDF(StatefulStageUDF):
 class TestFoldingEngineStageReplicaMapBatches:
     """Test engine stage replica mode under Ray Dataset map_batches."""
 
-    @pytest.fixture(autouse=True)
+    @pytest.fixture(autouse=True, scope="class")
     def ray_local(self):
-        """Run Ray in worker mode (avoids PeekObjectRefStream bug with async UDF in local_mode)."""
+        """Run Ray in worker mode (avoids PeekObjectRefStream bug with async UDF in local_mode).
+
+        Class-scoped: a cold ``ray.init``/``ray.shutdown`` pair costs tens of seconds,
+        and at function scope every test in this class paid one. The cluster carries no
+        per-test state these tests depend on — each builds its own dataset and its own
+        ``ActorPoolStrategy`` pool, and nothing in the package uses named/detached actors
+        — so one cluster serves the class. Phase 2 runs serial (see run_tests.sh), so
+        there is no xdist worker to fight over it.
+        """
         ray.init(ignore_reinit_error=True, include_dashboard=False)
         yield
         ray.shutdown()

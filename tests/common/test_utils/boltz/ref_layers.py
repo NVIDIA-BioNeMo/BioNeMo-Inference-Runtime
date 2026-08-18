@@ -24,10 +24,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from test_utils.boltz.ref_attn import RefPairwiseSelfAttention, RefTriangleAttention
+from test_utils.checkpoints import load_weights
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.layers.sequence_local_atom import create_indexing_matrix, query_to_keys
-from bionemo_ir.hubs import load_weights
 
 
 class RefTriangleMultiplicationNode(nn.Module):

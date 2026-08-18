@@ -25,9 +25,8 @@ from einops import rearrange
 from test_utils.boltz.ref_layers import RefOuterProductMean as BoltzRefOuterProductMean
 from test_utils.boltz.ref_layers import RefTriangleAttentionNode as BoltzRefTriangleAttentionNode
 from test_utils.boltz.ref_layers import RefTriangleMultiplicationNode as BoltzRefTriangleMultiplicationNode
+from test_utils.checkpoints import load_weights
 from test_utils.openfold.ref_attn import RefGlobalAttention, RefPairwiseSelfAttention, RefTriangleAttention
-
-from bionemo_ir.hubs import load_weights
 
 
 class RefMSAAttention(nn.Module):

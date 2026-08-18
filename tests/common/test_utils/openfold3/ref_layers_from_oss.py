@@ -50,7 +50,8 @@ finally:
     else:
         sys.modules["gemmi"] = _previous_gemmi
 
-from bionemo_ir.hubs import load_weights
+from test_utils.checkpoints import load_weights
+
 from tests.common.test_utils.basic import setattr_safe
 
 

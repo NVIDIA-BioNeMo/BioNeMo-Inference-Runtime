@@ -22,9 +22,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from test_utils.checkpoints import load_weights
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
-from bionemo_ir.hubs import load_weights
 
 
 def _prep_qkv(

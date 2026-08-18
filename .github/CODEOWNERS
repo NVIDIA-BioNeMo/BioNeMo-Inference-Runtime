@@ -5,4 +5,5 @@
 # this repo (Settings -> Collaborators and teams). The last matching rule wins.
 
 # Global owner: the maintainers team.
-* @NVIDIA-BioNeMo/bioair
+# https://github.com/orgs/NVIDIA-BioNeMo/teams/bioir
+* @NVIDIA-BioNeMo/bioir

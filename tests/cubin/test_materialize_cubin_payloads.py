@@ -603,11 +603,14 @@ def _add_duplicate_runtime_key(index: Path) -> None:
 
 
 def test_rejects_private_style_public_label(tmp_path: Path) -> None:
+    # The class name here is invented. Only the *shape* is under test -- any
+    # label that is not f"{family}.{variant_id}" is rejected -- and this module
+    # ships publicly, so naming a real private kernel class would leak one.
     family = "dual_gemm_x_x"
     index = _write_case(tmp_path / "source", family, kernel_sm=90)
     _mutate_index(
         index,
-        lambda value: value["variants"][0].update(label="K128.DualGemmSm90Pingpong.fp16.t0.bias0.mask0"),
+        lambda value: value["variants"][0].update(label="K128.NotARealKernelClass.fp16.t0.bias0.mask0"),
     )
 
     with pytest.raises(materializer.MaterializationError, match="canonical public label"):

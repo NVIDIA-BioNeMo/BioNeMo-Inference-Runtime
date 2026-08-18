@@ -34,22 +34,50 @@ differently across containers.
 """
 
 import os
+from pathlib import Path
 
 os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
 
 import pytest  # noqa: E402
-import torch  # noqa: E402  (imported after the env vars above on purpose)
+
+try:
+    import torch  # noqa: E402  (imported after the env vars above on purpose)
+except ImportError:  # the GPU-free contract suite has no torch to configure
+    torch = None
 
 from tests import require_public_cutedsl_library  # noqa: E402
 
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
-    # torch >= 2.9 precision API; "ieee" == full fp32 (no TF32).
-    torch.backends.cuda.matmul.fp32_precision = "ieee"
+if torch is not None:
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
+        # torch >= 2.9 precision API; "ieee" == full fp32 (no TF32).
+        torch.backends.cuda.matmul.fp32_precision = "ieee"
+
+
+# The two suites that assert on build inputs rather than running a kernel:
+# tests/contract/ reads text, tests/cubin/ drives cpp/cmake/ by file path. Neither
+# imports torch or bionemo_ir, so both must stay collectable with no extension
+# built. Every other suite needs the launcher and has to be told when it is absent.
+_TESTS_DIR = Path(__file__).resolve().parent
+_LAUNCHER_FREE_DIRS = (_TESTS_DIR / "contract", _TESTS_DIR / "cubin")
+
+
+def _is_launcher_free_only(config: pytest.Config) -> bool:
+    """Whether every collection target lies inside a launcher-free suite."""
+    targets = [Path(arg.partition("::")[0]).resolve() for arg in config.args]
+    return bool(targets) and all(
+        any(target == directory or directory in target.parents for directory in _LAUNCHER_FREE_DIRS)
+        for target in targets
+    )
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Require the prebuilt CuTeDSL launcher before collecting public tests."""
+    # Keyed on the suite, not on whether torch imported: a missing torch is why
+    # the launcher check fails, so skipping the check on it would swallow the
+    # one diagnostic a source-free checkout has.
+    if _is_launcher_free_only(session.config):
+        return
     require_public_cutedsl_library()

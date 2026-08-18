@@ -211,10 +211,10 @@ def _host_cpu_isa_signature() -> str:
 
     The GPU side of a cached entry is host-independent: the same kernel compiled
     for the same target SM yields the same CUBIN image on any builder, which is
-    what lets ``cpp/tools/prepare_cubins.py`` publish content-addressed images
-    without recording where they were compiled. The host wrapper around it is
-    not. ``export_to_c`` runs a native compiler that may use whatever ISA
-    extensions the building CPU advertises, so two runners sharing one cache
+    what lets the shipped CUBIN packs be content-addressed without recording
+    where they were compiled. The host wrapper around it is not. ``export_to_c``
+    runs a native compiler that may use whatever ISA extensions the building CPU
+    advertises, so two runners sharing one cache
     directory can hold a key that matches in every kernel-visible way and still
     produce an object the loading CPU cannot execute — a SIGILL in code whose
     device half was never in question, and the reason this belongs in the key
@@ -287,10 +287,10 @@ class CuteKernelCache(KernelCacheBase):
     def force_cubin() -> bool:
         """Whether ``CUTEDSL_FORCE_CUBIN`` demands the packaged CUBIN path.
 
-        Lets a private checkout exercise the CUBINs it ships even though the
+        Lets a source-enabled build exercise the CUBINs it ships even though the
         kernel sources are importable, which is otherwise only reachable in a
-        source-free public build. Read per call rather than at import so a
-        process can flip it; only ops that have a CUBIN launcher honor it.
+        source-free build. Read per call rather than at import so a process can
+        flip it; only ops that have a CUBIN launcher honor it.
 
         Accepts ``1``, ``true``, ``yes``, or ``on`` (case-insensitive).
         """

@@ -43,7 +43,7 @@ from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 90, 100, 103)
-_PWA_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_pwa"
+_PWA_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.pair_weighted_averaging._source"
 _PWA_TEST_MODES = cutedsl_test_modes(_PWA_SOURCE_MODULE)
 
 # (c_h, c_m) tuples with tuned configs and CUBINs, and the models behind them.

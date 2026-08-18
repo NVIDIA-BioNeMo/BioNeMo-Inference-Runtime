@@ -14,9 +14,9 @@
 # limitations under the License.
 """Source/CUBIN parity for the CuTeDSL pairwise-attention backend.
 
-``BIOIR_TEST_CUTEDSL_MODES`` selects which implementations run. A private
-checkout defaults to ``source``; a source-free public build defaults to
-``cubin``; private CI sets ``source,cubin`` so both are covered.
+``BIOIR_TEST_CUTEDSL_MODES`` selects which implementations run. A build
+carrying kernel sources defaults to ``source``; a source-free build defaults to
+``cubin``; setting ``source,cubin`` covers both.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from tests._torch import SM_VERSION, cutedsl_test_modes, skip_cutedsl
 pytestmark = skip_cutedsl
 
 FORCE_CUBIN_ENV = pw_cutedsl.FORCE_CUBIN_ENV
-_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_attn_pb_left_mask"
+_SOURCE_MODULE = "bionemo_ir._torch.attention_backend.pairwise_attention._source"
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 _HEAD_DIMS = (32, 48, 64)
 
@@ -214,7 +214,7 @@ def _forced_backend(head_dim, num_heads=4):
 
 
 def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
-    """The flag must reach the CUBINs without deleting the private sources."""
+    """The flag must reach the CUBINs without deleting the kernel sources."""
     pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
     monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
     PairwiseAttentionCuTeLeftMask._compiled_cache.clear()

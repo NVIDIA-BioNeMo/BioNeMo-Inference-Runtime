@@ -29,9 +29,6 @@ from ._config import (
     _FALLBACK_SM as _FALLBACK_SM,
 )
 from ._config import (
-    _SM90_KERNEL_NAME as _SM90_KERNEL_NAME,
-)
-from ._config import (
     _TUNED_SMS as _TUNED_SMS,
 )
 from ._config import (

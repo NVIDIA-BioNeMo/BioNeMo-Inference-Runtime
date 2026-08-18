@@ -28,12 +28,24 @@ import pytest
 import torch
 
 from bionemo_ir._torch import _cutedsl_kernel_library as library_runtime
-from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import DualGemmX0X1CuTe, get_dual_gemm_x0_x1_op
-from bionemo_ir._torch.custom_ops.dual_gemm_x_x import DualGemmXxCuTe, get_dual_gemm_x_x_op
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import (
+    DualGemmX0X1CuTe,
+    _invoke_cuequiv_dual_gemm_x0_x1,
+    _invoke_vanilla_dual_gemm_x0_x1,
+    get_dual_gemm_x0_x1_op,
+)
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import ops as dual_gemm_x0_x1_ops
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import (
+    DualGemmXxCuTe,
+    _invoke_cuequiv_dual_gemm_x_x,
+    _invoke_vanilla_dual_gemm_x_x,
+    get_dual_gemm_x_x_op,
+)
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import ops as dual_gemm_x_x_ops
 from tests._torch import SM_VERSION, cutedsl_test_modes, make_left_aligned_mask, skip_if_no_cutedsl, skip_if_not_sm90
 
-_DUAL_GEMM_XX_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_dual_gemm_x_x_k128"
+_DUAL_GEMM_XX_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.dual_gemm_x_x._source"
 _DUAL_GEMM_XX_TEST_MODES = cutedsl_test_modes(_DUAL_GEMM_XX_SOURCE_MODULE)
 _DUAL_GEMM_XX_MODE_CACHES: dict[str, dict] = {
     "source": {},
@@ -350,13 +362,38 @@ def test_x0_x1_protenix_sm90_uses_hopper_kernel():
     assert DualGemmX0X1CuTe()._kernel_is_sm90(256, 256) is True
 
 
+@pytest.mark.parametrize(
+    ("N", "K", "expected"),
+    [
+        (128, 128, _invoke_cuequiv_dual_gemm_x0_x1),
+        (256, 256, _invoke_vanilla_dual_gemm_x0_x1),
+    ],
+)
+def test_x0_x1_selector_rejects_unshipped_targets(monkeypatch, N: int, K: int, expected):
+    """Off the tuned SMs the CuTe path is never selected, whatever the shape."""
+    monkeypatch.setattr(dual_gemm_x0_x1_ops, "get_sm_version", lambda: 120)
+    assert get_dual_gemm_x0_x1_op(torch.bfloat16, N=N, K=K) is expected
+
+
+@pytest.mark.parametrize(
+    ("N", "K", "expected"),
+    [
+        (128, 128, _invoke_cuequiv_dual_gemm_x_x),
+        (512, 256, _invoke_vanilla_dual_gemm_x_x),
+    ],
+)
+def test_x_x_selector_rejects_unshipped_targets(monkeypatch, N: int, K: int, expected):
+    """Off the tuned SMs the CuTe path is never selected, whatever the shape."""
+    monkeypatch.setattr(dual_gemm_x_x_ops, "get_sm_version", lambda: 120)
+    assert get_dual_gemm_x_x_op(torch.bfloat16, N=N, K=K) is expected
+
+
 # ---------------------------------------------------------------------------
 # SM90 (Hopper) kernel coverage
 #
-# On Hopper the wrappers resolve the persistent ping-pong kernel
-# (``DualGemmSm90Pingpong``) instead of the SM80/86/89 universal kernel, so on
-# this hardware every test above already exercises it. The tests below add the
-# coverage those don't:
+# On Hopper the wrappers resolve the persistent ping-pong kernel instead of the
+# SM80/86/89 universal kernel, so on this hardware every test above already
+# exercises it. The tests below add the coverage those don't:
 #   * explicit guards that the Hopper path is selected (not a silent SM80 /
 #     cuEquivariance fallback), and
 #   * correctness at the larger ``S=2048`` tuned bucket (``raster_factor=4``),

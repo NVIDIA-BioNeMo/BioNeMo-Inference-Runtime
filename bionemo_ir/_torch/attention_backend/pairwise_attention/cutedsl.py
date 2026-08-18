@@ -14,16 +14,13 @@
 # limitations under the License.
 """Pairwise attention backend using precompiled or source CuTe left-mask kernels.
 
-Dispatches to :class:`FlashAttentionForwardAmpere` (SM80/86/89) or
-:class:`HopperFusedMultiHeadAttentionForward` (SM90) on
-``torch.cuda.get_device_capability()``. If the source implementation is absent,
-the executable cache is populated from the packaged ``_cutedsl_kernels``
-library instead.
+The kernel variant is selected from ``torch.cuda.get_device_capability()`` and
+the tuning bundle's ``kernel_abi``. If the source implementation is absent, the
+executable cache is populated from the packaged ``_cutedsl_kernels`` library
+instead.
 
-Requires the KV-side mask to be left-aligned (``1...1 0...0``). The kernel then
-takes one ``actual_s_kv`` count of leading 1s per batch instead of a ``[B, Sk]``
-mask, so trailing blocks are skipped with no GMEM or SMEM mask traffic. The
-tuned variant is the ``S=<anchor>`` entry nearest ``S = round(sqrt(Sq * Sk))``.
+Requires the KV-side mask to be left-aligned (``1...1 0...0``). The kernel takes
+one ``actual_s_kv`` count of leading 1s per batch instead of a ``[B, Sk]`` mask.
 
 Logical input shapes, and the flattened / padded forms passed to the kernel:
   Q, K, V, O  : [*, S, H, D]      ->  [B*mult, S, H, ceil(D / 16) * 16]

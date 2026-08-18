@@ -31,7 +31,7 @@ from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import cutedsl as dg_cutedsl
 from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1._cubin import DualGemmX0X1CubinExecutable
 from tests._torch import SM_VERSION, cutedsl_test_modes, skip_if_no_cutedsl
 
-_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_dualgemm_x0x1_splitkv1"
+_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.dual_gemm_x0_x1._source"
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 # Configs select Ampere split-K or Hopper ping-pong by device.
 _CUBIN_SMS = (80, 86, 89, 90)

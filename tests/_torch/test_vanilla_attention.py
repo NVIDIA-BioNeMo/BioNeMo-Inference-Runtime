@@ -61,7 +61,7 @@ _TRIANGLE_CUTEDSL_MODE_CACHES: dict[str, dict] = {
     "source": {},
     "cubin": {},
 }
-_TRIANGLE_CUTEDSL_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.sm80_triangle_attn_left_mask"
+_TRIANGLE_CUTEDSL_SOURCE_MODULE = "bionemo_ir._torch.attention_backend.triangle_attention._source"
 
 
 def _configure_triangle_cutedsl_mode(mode: str, monkeypatch) -> None:
@@ -321,8 +321,8 @@ def test_triangle_left_mask_vs_vanilla(
     ``[B*I]``, and one count per batch ``[B]`` broadcast across I (the OpenFold2
     ``pair_mask = seq_mask^T seq_mask`` shape).
 
-    Public builds test CUBINs only; private CI sets
-    ``BIOIR_TEST_CUTEDSL_MODES=source,cubin`` for both.
+    A source-free build tests CUBINs only; set
+    ``BIOIR_TEST_CUTEDSL_MODES=source,cubin`` to cover both.
     """
     skip_if_no_cutedsl()
     _configure_triangle_cutedsl_mode(cutedsl_mode, monkeypatch)

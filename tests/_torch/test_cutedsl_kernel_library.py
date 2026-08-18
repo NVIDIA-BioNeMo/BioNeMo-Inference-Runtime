@@ -87,7 +87,9 @@ def test_kernel_sources_probe_ignores_the_package_marker(monkeypatch, tmp_path):
     (tmp_path / "__init__.py").touch()
     assert not library_runtime._kernel_sources_installed()
 
-    (tmp_path / "sm80_opm.py").touch()
+    # Any non-marker filename does; naming a real private kernel here would put
+    # that name in a file the public sync publishes.
+    (tmp_path / "kernel.py").touch()
     assert library_runtime._kernel_sources_installed()
 
 

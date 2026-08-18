@@ -43,7 +43,7 @@ from bionemo_ir._torch.layers.normalization import AdaLN
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode
 
-_SOURCE_MODULE = "bionemo_ir.dsl_kernels.cute.layernorm_sigmoid_fusion"
+_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._source"
 _CUTEDSL_MODES = cutedsl_test_modes(_SOURCE_MODULE)
 
 
@@ -507,17 +507,17 @@ def _make_fusion(dtype: torch.dtype, N: int, **kwargs):
     from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import _TORCH_TO_CUTLASS_DTYPE
 
     source = _require_source()
-    return source.LayerNormSigmoidFusion(_TORCH_TO_CUTLASS_DTYPE[dtype], N, **kwargs)
+    return source.kernel_cls(_TORCH_TO_CUTLASS_DTYPE[dtype], N, **kwargs)
 
 
 def _reduction_only_bytes(kernel) -> int:
     """The reduction buffer + mbarriers, i.e. the base-class contribution."""
-    return _require_source().ReductionBase.dynamic_smem_bytes(kernel)
+    return _require_source().reduction_base_cls.dynamic_smem_bytes(kernel)
 
 
 def _require_source() -> ModuleType:
-    """Skip source-only checks after the private implementation is stripped."""
-    return pytest.importorskip(_SOURCE_MODULE, reason="private AdaLN CuTeDSL source is unavailable")
+    """Skip source-only checks when the source adapter is absent."""
+    return pytest.importorskip(_SOURCE_MODULE, reason="the AdaLN CuTeDSL source adapter is unavailable")
 
 
 @pytest.mark.parametrize("N", _SMEM_N)

@@ -1,0 +1,19 @@
+{
+  "kernel_abi": "sm80",
+  "configs": {
+    "S=0": {
+      "m_block_size": 128,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 4,
+      "load_bias_before_gemm": true
+    },
+    "S=512": {
+      "m_block_size": 64,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 4,
+      "load_bias_before_gemm": true
+    }
+  }
+}

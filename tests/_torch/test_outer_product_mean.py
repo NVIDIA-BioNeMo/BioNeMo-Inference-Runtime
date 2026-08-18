@@ -38,7 +38,7 @@ from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
-_CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir.dsl_kernels.cute.sm80_opm")
+_CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.outer_product_mean._source")
 
 
 @dataclass(kw_only=True, frozen=True)

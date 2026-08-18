@@ -30,13 +30,10 @@ from bionemo_ir._torch._kernel_config_loader import (
 from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.logger import logger
 
-# This module moved one directory below ``custom_ops``. The tuning files remain
-# siblings of the package under ``custom_ops/configs/dual_gemm_x_x``.
-_CONFIGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "dual_gemm_x_x")
+_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 _TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90)
 _FALLBACK_SM = 80
-_SM90_KERNEL_NAME = "DualGemmSm90Pingpong"
 _VARIANT_KEY_RE = re.compile(r"^S=(\d+)\|t=(\d+)$")
 
 
@@ -52,7 +49,8 @@ class DualGemmXxKernelConfig:
 class _DualGemmXxConfigSelection:
     """Source-independent result of one tuning lookup."""
 
-    implementation: str | None
+    kernel_abi: str
+    kernel_variant: str | None
     chosen_key: str
     bucket: int
     tile_params: dict[str, Any]
@@ -130,7 +128,8 @@ def _get_config_selection(
     if match is None:
         raise ValueError(f"Invalid dual_gemm x_x variant key {chosen_key!r}")
     return _DualGemmXxConfigSelection(
-        implementation=bundle.implementation,
+        kernel_abi=bundle.kernel_abi,
+        kernel_variant=bundle.kernel_variant,
         chosen_key=chosen_key,
         bucket=int(match.group(1)),
         tile_params=tile_params,
@@ -163,7 +162,7 @@ def _get_bucket_ranges(
 def _kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
     """Whether the selected source generation uses the raw SM90 signature."""
     bundle = _optional_config_bundle(sm_version, K, N)
-    return bundle is not None and bundle.kernel_arch == "sm90"
+    return bundle is not None and bundle.kernel_abi == "sm90"
 
 
 def get_nearest_bucket(
@@ -189,7 +188,7 @@ def get_kernel_config(
 ) -> DualGemmXxKernelConfig:
     """Resolve and build the development-time source kernel configuration.
 
-    Importing the package does not import private source implementations. This
+    Importing the package does not import kernel source implementations. This
     compatibility entry point resolves them only when explicitly called.
     """
     source = load_source_module(__package__)

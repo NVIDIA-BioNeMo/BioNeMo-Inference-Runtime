@@ -12,32 +12,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Load CuTe kernel tuning configs from JSON files (vLLM fused_moe pattern).
+"""Load CuTe kernel tuning configs from JSON, one file per (problem shape, SM).
 
-One JSON file per (problem shape, SM) pair, named
-``K{K}_N{N}_sm{sm}.json`` for gated sigmoid / dual GEMM and
-``D{D}_sm{sm}.json`` for attention. Private source checkouts use::
+Named ``K{K}_N{N}_sm{sm}.json`` or ``D{D}_sm{sm}.json``::
 
-    {
-        "implementation": "<dotted.module.ClassName>",
-        "configs": {
-            "<op-specific lookup key>": { ...op-specific value... },
-            ...
-        }
-    }
+    {"kernel_abi": "sm80", "kernel_variant": "full_k", "configs": {...}}
 
-Public source-free artifacts replace ``implementation`` with a non-sensitive
-``kernel_arch`` marker (``"sm80"`` or ``"sm90"``). Source-only entry points
-require the private field, while CUBIN selection can still use the public
-architecture marker. The loader treats config keys as raw strings and leaves
-parsing to the caller. Gated sigmoid uses stringified legacy bucket keys.
-Pairwise and triangle attention use ``"S=<anchor>"`` and select the nearest
-per-sample side-length anchor. Dual GEMM uses a flat pipe-separated key (for
-example ``"S=512|t=0"``), filters its non-nearest axes, and likewise selects
-the closest ``S`` anchor.
+``kernel_abi`` is the ABI family, ``sm{version}``; ``_SUPPORTED_KERNEL_ABIS`` is
+the set that ships. ``kernel_variant`` optionally picks between kernels sharing
+one ABI. Each op package maps the pair to an implementation and parses its own
+``configs`` keys. A legacy ``implementation`` key is accepted only as an
+alternate spelling of the ABI; the path itself selects nothing.
 
-Override search path: set ``BIOIR_TUNED_CONFIG_FOLDER`` to a directory
-containing the same filenames (checked before the package defaults).
+Set ``BIOIR_TUNED_CONFIG_FOLDER`` to override the search path.
 """
 
 from __future__ import annotations
@@ -52,7 +39,7 @@ from typing import Any
 from bionemo_ir.logger import logger
 
 _TUNED_CONFIG_ENV = "BIOIR_TUNED_CONFIG_FOLDER"
-_SUPPORTED_KERNEL_ARCHES = frozenset({"sm80", "sm90"})
+_SUPPORTED_KERNEL_ABIS = frozenset({"sm80", "sm90"})
 
 
 def get_config_file_name(sm: int, **dims: int) -> str:
@@ -75,30 +62,23 @@ class KernelConfigBundle:
     """Parsed JSON contents for one ``(problem, sm)`` config file.
 
     Attributes:
-        implementation: Private dotted kernel class, or ``None`` after strip.
-        kernel_arch: Public source-generation marker used for ABI selection.
+        implementation: Dotted kernel class named by the config, or ``None``.
+        kernel_abi: Kernel ABI family used for implementation selection.
+        kernel_variant: Op-specific choice within ``kernel_abi``, or ``None``.
         configs: Raw config map; keys and structure are op-specific.
         source_path: Filesystem path the bundle was loaded from.
     """
 
     implementation: str | None
-    kernel_arch: str
+    kernel_abi: str
+    kernel_variant: str | None
     configs: dict[str, Any]
     source_path: str
 
 
-def _implementation_kernel_arch(implementation: str) -> str:
-    """Derive the public source generation from a private implementation path."""
+def _implementation_kernel_abi(implementation: str) -> str:
+    """Derive the kernel ABI family from an implementation path."""
     return "sm90" if ".sm90_" in implementation else "sm80"
-
-
-def require_source_implementation(implementation: str | None, source_path: str) -> str:
-    """Return a private implementation path or report a source-free config."""
-    if implementation is None:
-        raise ImportError(
-            f"Kernel source metadata was stripped from {source_path}; use the packaged CUBIN runtime instead."
-        )
-    return implementation
 
 
 @functools.cache
@@ -130,18 +110,24 @@ def load_kernel_configs(
         implementation = raw.get("implementation")
         if implementation is not None and (not isinstance(implementation, str) or not implementation):
             raise ValueError(f"Invalid implementation in {path}: expected a non-empty string")
-        kernel_arch = raw.get("kernel_arch")
-        if kernel_arch is None:
+        kernel_abi = raw.get("kernel_abi")
+        if kernel_abi is None:
             if implementation is None:
-                raise ValueError(f"Invalid kernel config {path}: missing implementation and kernel_arch")
-            kernel_arch = _implementation_kernel_arch(implementation)
-        if kernel_arch not in _SUPPORTED_KERNEL_ARCHES:
+                raise ValueError(f"Invalid kernel config {path}: missing implementation and kernel_abi")
+            kernel_abi = _implementation_kernel_abi(implementation)
+        # Checked before the membership test: a JSON list or object is unhashable,
+        # so `in` against the frozenset raises TypeError instead of this ValueError.
+        if not isinstance(kernel_abi, str) or not kernel_abi:
+            raise ValueError(f"Invalid kernel_abi in {path}: expected a non-empty string, got {kernel_abi!r}")
+        if kernel_abi not in _SUPPORTED_KERNEL_ABIS:
             raise ValueError(
-                f"Invalid kernel_arch in {path}: expected one of {sorted(_SUPPORTED_KERNEL_ARCHES)}, "
-                f"got {kernel_arch!r}"
+                f"Invalid kernel_abi in {path}: expected one of {sorted(_SUPPORTED_KERNEL_ABIS)}, got {kernel_abi!r}"
             )
-        if implementation is not None and kernel_arch != _implementation_kernel_arch(implementation):
-            raise ValueError(f"kernel_arch {kernel_arch!r} disagrees with implementation in {path}")
+        if implementation is not None and kernel_abi != _implementation_kernel_abi(implementation):
+            raise ValueError(f"kernel_abi {kernel_abi!r} disagrees with implementation in {path}")
+        kernel_variant = raw.get("kernel_variant")
+        if kernel_variant is not None and (not isinstance(kernel_variant, str) or not kernel_variant):
+            raise ValueError(f"Invalid kernel_variant in {path}: expected a non-empty string, got {kernel_variant!r}")
         logger.info_once(
             "Using kernel configuration from %s",
             path,
@@ -149,7 +135,8 @@ def load_kernel_configs(
         )
         return KernelConfigBundle(
             implementation=implementation,
-            kernel_arch=kernel_arch,
+            kernel_abi=kernel_abi,
+            kernel_variant=kernel_variant,
             configs=dict(raw["configs"]),
             source_path=path,
         )

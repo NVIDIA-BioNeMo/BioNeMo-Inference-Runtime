@@ -76,9 +76,10 @@ def _dtype_str(dtype: torch.dtype) -> str:
 class DualGemmXxCuTe(CuteKernelCache):
     """Cached CuTeDSL backend for the dual-GEMM ``x_x`` variant.
 
-    Private checkouts resolve and compile the implementation named by the JSON
-    tuning bundle. Source-free builds populate the same executable cache with a
-    direct adapter for ``_cutedsl_kernels.dual_gemm_x_x``.
+    Source-enabled builds resolve and compile the implementation the ``_source``
+    adapter selects for the JSON tuning bundle. Source-free builds populate the
+    same executable cache with a direct adapter for
+    ``_cutedsl_kernels.dual_gemm_x_x``.
     """
 
     _compiled_cache: dict[tuple[int, _DualGemmXxVariant], Any] = {}

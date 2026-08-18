@@ -61,22 +61,31 @@ _CUTEDSL_TEST_MODES = ("source", "cubin")
 _CUTEDSL_MODE_CACHES: dict[tuple[type, str], dict] = {}
 
 
+def source_module_available(source_module: str | None) -> bool:
+    """Whether ``source_module`` can be imported in this build.
+
+    A public checkout has no ``_source`` adapter — the sync withholds
+    ``**/_source.py`` — so anything that reaches one has to be skipped rather
+    than fail there.
+    """
+    try:
+        return source_module is not None and importlib.util.find_spec(source_module) is not None
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+
 def cutedsl_test_modes(source_module: str | None = None) -> tuple[str, ...]:
     """Return the explicitly requested CuTeDSL implementation test modes.
 
-    A private checkout defaults to ``source`` when ``source_module`` exists.
-    A source-free public build defaults to ``cubin``. Private CI should set
+    A build carrying kernel sources defaults to ``source`` when
+    ``source_module`` exists; a source-free build defaults to ``cubin``. Set
     ``BIOIR_TEST_CUTEDSL_MODES=source,cubin`` to exercise both paths.
     Requesting ``source`` is strict: tests must fail rather than silently
-    falling back to CUBINs when private sources are unavailable.
+    falling back to CUBINs when kernel sources are unavailable.
     """
     raw_modes = os.getenv(CUTEDSL_TEST_MODES_ENV)
     if raw_modes is None:
-        try:
-            has_source = source_module is not None and importlib.util.find_spec(source_module) is not None
-        except (ImportError, ModuleNotFoundError):
-            has_source = False
-        return ("source",) if has_source else ("cubin",)
+        return ("source",) if source_module_available(source_module) else ("cubin",)
 
     modes = tuple(dict.fromkeys(mode.strip().lower() for mode in raw_modes.split(",") if mode.strip()))
     if not modes:

@@ -51,7 +51,6 @@ _MAX_FUSED_TOKENS_BY_DIMS: dict[tuple[int, int], int | None] = {
 }
 
 _SUPPORTED_SM = (80, 90, 100, 103)
-_DEFAULT_IMPLEMENTATION = "bionemo_ir.dsl_kernels.cute.sm80_pwa.PWAFused"
 
 
 def is_supported_dims(H: int, D: int, c_m: int) -> bool:
@@ -83,9 +82,7 @@ def config_file_name(sm_version: int, D: int, c_m: int) -> str:
     return get_config_file_name(sm_version, D=D, cm=c_m)
 
 
-# The tuning files remain under ``custom_ops/configs`` after converting the
-# former flat module into a package.
-_PWA_CONFIGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "pair_weighted_averaging")
+_PWA_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,9 +151,8 @@ class PWAConfigParams:
 
 @dataclass(frozen=True, slots=True)
 class PWAConfigSelection:
-    """One immutable tuning selection and its private implementation path."""
+    """One immutable tuning selection."""
 
-    implementation: str | None
     params: PWAConfigParams
     n_anchor: int | None = None
     s_anchor: int | None = None
@@ -183,13 +179,9 @@ def _default_selection(
     H: int,
     D: int,
     c_m: int,
-    implementation: str | None = _DEFAULT_IMPLEMENTATION,
 ) -> PWAConfigSelection:
     """Build the historical untuned ``PWAConfig`` defaults without importing it."""
-    return PWAConfigSelection(
-        implementation=implementation,
-        params=default_params(dtype_str, H, D, c_m),
-    )
+    return PWAConfigSelection(params=default_params(dtype_str, H, D, c_m))
 
 
 def _select_pwa_config_selection_bucket(
@@ -204,7 +196,6 @@ def _select_pwa_config_selection_bucket(
 ) -> tuple[PWAConfigSelection, tuple[PWAConfigSelection, ...]]:
     """Return the nearest selection and unique configs in its nearest-N bucket."""
     bundle = load_kernel_configs(_PWA_CONFIGS_DIR, config_file_name(sm_version, D, c_m))
-    implementation = bundle.implementation if bundle is not None else _DEFAULT_IMPLEMENTATION
 
     # The shipped tuning data is bf16-only. fp16 intentionally retains the
     # original PWAConfig defaults instead of borrowing bf16 tile choices.
@@ -228,7 +219,6 @@ def _select_pwa_config_selection_bucket(
                 n_anchor, s_anchor, _ = _parse_key(key)
                 raw_params = bundle.configs[key]["params"]
                 return PWAConfigSelection(
-                    implementation=implementation,
                     params=PWAConfigParams.from_dict(raw_params),
                     n_anchor=n_anchor,
                     s_anchor=s_anchor,
@@ -241,7 +231,7 @@ def _select_pwa_config_selection_bucket(
                 variants.setdefault(selection.params.config_key(), selection)
             return selected, tuple(variants.values())
 
-    default = _default_selection(dtype_str, H, D, c_m, implementation)
+    default = _default_selection(dtype_str, H, D, c_m)
     return default, (default,)
 
 

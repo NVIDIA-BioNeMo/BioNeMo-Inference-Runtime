@@ -1,0 +1,10 @@
+{
+  "kernel_abi": "sm80",
+  "configs": {
+    "0": {},
+    "2049": {
+      "tpr_override": 128,
+      "num_threads_override": 128
+    }
+  }
+}

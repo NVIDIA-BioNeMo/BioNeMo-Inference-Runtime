@@ -12,15 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Import a kernel family's development-only ``_source`` adapter, if present.
+"""Import a kernel family's optional ``_source`` adapter, if present.
 
-Public source-free distributions omit these adapters, so every caller must
-tolerate :class:`ImportError` and fall back to the packaged CUBIN path. The
-module name is assembled at run time rather than written as a literal import:
-``cpp/tools/strip_cutedsl_sources.py`` scans released artifacts for exactly the
-private module names it removes, and a static ``from ._source import ...`` edge
-would both fail that scan and turn a stripped release into an import error at
-package-import time instead of a recoverable one at kernel-resolution time.
+Source-free distributions omit these adapters, so every caller must tolerate
+:class:`ImportError` and fall back to the packaged CUBIN path.
+
+The module name is assembled at run time rather than written as a literal
+``from ._source import ...``, so that a missing adapter surfaces as a
+recoverable error at kernel-resolution time rather than an import error at
+package-import time.
 """
 
 from __future__ import annotations

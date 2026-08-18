@@ -120,8 +120,12 @@ def compile_kernel(
 
 def __getattr__(name: str) -> Any:
     """Resolve historical source-only attributes without eager private imports."""
-    if name in {"PWAConfig", "PWAFused", "_dt"}:
-        return getattr(load_source_module(__package__), name)
     if name == "_compile_cache":
         return PairWeightedAveragingCuTe._compiled_cache
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        return getattr(load_source_module(__package__), name)
+    except ImportError as error:
+        # A source-free build has no adapter to delegate to, and module
+        # ``__getattr__`` must still raise AttributeError there: hasattr() and
+        # getattr(default) swallow nothing else.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error

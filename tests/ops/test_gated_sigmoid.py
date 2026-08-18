@@ -29,7 +29,7 @@ from bionemo_ir._torch.custom_ops.gated_sigmoid import cutedsl as gated_cutedsl
 from bionemo_ir._torch.custom_ops.gated_sigmoid._cubin import GatedSigmoidCubinExecutable
 from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode, skip_if_no_cutedsl
 
-_CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir.dsl_kernels.cute.sm80_gated_sigmoid")
+_CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.gated_sigmoid._source")
 
 
 def _ref_gated_sigmoid(

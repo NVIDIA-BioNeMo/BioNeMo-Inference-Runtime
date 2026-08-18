@@ -15,9 +15,9 @@
 """Fused Outer-Product-Mean custom op with a PyTorch fallback.
 
 Public surface of the package. The import path is unchanged from when this was
-a flat module, so callers need no edits. A source-free build deletes
-``_source.py`` and the private CuTeDSL kernel; everything re-exported here must
-keep working with that file absent.
+a flat module, so callers need no edits. A source-free build carries no
+``_source.py``; everything re-exported here must keep working with that module
+absent.
 """
 
 from ._config import (

@@ -88,7 +88,7 @@ _KERNEL_C = 32
 _KERNEL_D = 32
 _KERNEL_CZ = 128
 
-_OPM_CONFIGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "outer_product_mean")
+_OPM_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 
 # The default tile exceeds SM86/89 shared memory. KO=32 is validated on SM86;

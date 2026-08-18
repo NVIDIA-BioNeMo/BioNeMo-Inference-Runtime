@@ -32,7 +32,6 @@ from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
 from ._config import (
-    _DEFAULT_IMPLEMENTATION,
     _SUPPORTED_SM,
     PWAConfigParams,
     PWAConfigSelection,
@@ -319,7 +318,7 @@ class PairWeightedAveragingCuTe(CuteKernelCache):
             if config_dtype != dtype_str:
                 raise TypeError(f"PWA config dtype {config_dtype!r} does not match tensor dtype {w.dtype}")
             params = PWAConfigParams.from_config(config)
-        selection = PWAConfigSelection(implementation=_DEFAULT_IMPLEMENTATION, params=params)
+        selection = PWAConfigSelection(params=params)
         return self._launch_selection(w, v, g, Wo, selection, (selection,))
 
 

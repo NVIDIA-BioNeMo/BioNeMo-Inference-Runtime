@@ -28,19 +28,12 @@ from typing import Any
 from bionemo_ir._torch._kernel_config_loader import (
     get_config_file_name,
     load_kernel_configs,
-    require_source_implementation,
     resolve_implementation,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 from bionemo_ir.logger import logger
 
-_CONFIGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "dual_gemm_x0_x1")
-
-# Compare implementation paths without importing private kernels.
-_SM80_IMPLEMENTATION = "bionemo_ir.dsl_kernels.cute.sm80_dualgemm_x0x1_splitkv1._DualGemmX0X1KernelSplitKv1"
-_SM90_IMPLEMENTATION = "bionemo_ir.dsl_kernels.cute.sm90_dual_gemm.DualGemmSm90Pingpong"
-
-# Hopper uses a distinct call ABI and is shared with the x_x variant.
-_SM90_KERNEL_NAME = "DualGemmSm90Pingpong"
+_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 # N/K/SM are in the filename; keys are ``S=<anchor>[|b=<0|1>]``.
 _VARIANT_KEY_RE = re.compile(r"^S=(?P<s>\d+)(?:\|b=(?P<b>[01]))?$")
@@ -91,11 +84,6 @@ def _kernel_config_dataclass(kernel_cls: type) -> type:
     return dataclass_type
 
 
-def implementation_is_sm90(implementation: str) -> bool:
-    """Whether a JSON ``implementation`` path names the Hopper kernel."""
-    return implementation.rsplit(".", 1)[-1] == _SM90_KERNEL_NAME
-
-
 def _build_kernel_config(
     kernel_cls: type,
     tile_params: dict[str, Any],
@@ -105,11 +93,12 @@ def _build_kernel_config(
     bucket: int,
     *,
     sm_version: int,
+    kernel_abi: str,
 ) -> DualGemmX0X1KernelConfig:
     """Bind one implementation and tile to runtime dtype and bias flags."""
     full_params = dict(tile_params)
     full_params["ab_dtype"] = dtype_str
-    is_sm90 = kernel_cls.__name__ == _SM90_KERNEL_NAME
+    is_sm90 = kernel_abi == "sm90"
     kernel_config = _kernel_config_dataclass(kernel_cls).from_dict(full_params)
 
     def factory():
@@ -221,7 +210,7 @@ def kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
         bundle = load_bundle(sm_version, K, N)
     except ValueError:
         return False
-    return bundle.kernel_arch == "sm90"
+    return bundle.kernel_abi == "sm90"
 
 
 def get_kernel_config(
@@ -244,7 +233,9 @@ def get_kernel_config(
     """
     bundle = load_bundle(sm_version, K, N)
     bucket, chosen_key, tile_params = _nearest_variant(bundle.configs, S, has_bias)
-    implementation = require_source_implementation(bundle.implementation, bundle.source_path)
+    implementation = load_source_module(__package__).source_implementation(
+        bundle.kernel_abi, None, bundle.kernel_variant
+    )
     kernel_cls = resolve_implementation(implementation)
     return _build_kernel_config(
         kernel_cls,
@@ -254,4 +245,5 @@ def get_kernel_config(
         chosen_key=chosen_key,
         bucket=bucket,
         sm_version=sm_version,
+        kernel_abi=bundle.kernel_abi,
     )

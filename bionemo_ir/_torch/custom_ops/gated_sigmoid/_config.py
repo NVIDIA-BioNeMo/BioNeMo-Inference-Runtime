@@ -24,14 +24,14 @@ from typing import Any
 from bionemo_ir._torch._kernel_config_loader import (
     get_config_file_name,
     load_kernel_configs,
-    require_source_implementation,
     resolve_implementation,
 )
+from bionemo_ir._torch._kernel_source_loader import load_source_module
 
 M_SHORT_THRESHOLD = 1024
 M_MEDIUM_THRESHOLD = 2048
 
-_GS_CONFIGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "gated_sigmoid")
+_GS_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 # JSON configs are keyed by (K, N, SM) and M-bucket left edge.
 _M_BUCKET_KEY = {
@@ -93,14 +93,15 @@ def _build_kernel_config(
 
 def _make_sm80_config(**tile_params) -> GatedSigmoidKernelConfig:
     """Build a config entry using the default SM80 kernel class."""
-    return _build_lazy_kernel_config(_DEFAULT_IMPLEMENTATION, **tile_params)
+    return _build_lazy_kernel_config(_DEFAULT_KERNEL_ABI, **tile_params)
 
 
-def _build_lazy_kernel_config(implementation: str, **tile_params) -> GatedSigmoidKernelConfig:
-    """Build a config whose private kernel class resolves only when executed."""
+def _build_lazy_kernel_config(kernel_abi: str, **tile_params) -> GatedSigmoidKernelConfig:
+    """Build a config whose kernel class resolves only when executed."""
 
     def kernel_cls() -> type:
-        return resolve_implementation(implementation)
+        source = load_source_module(__package__)
+        return resolve_implementation(source.source_implementation(kernel_abi))
 
     config = _build_kernel_config(object, **tile_params)
     return GatedSigmoidKernelConfig(
@@ -129,7 +130,7 @@ def _params_from_json(raw: dict) -> dict:
     return params
 
 
-_DEFAULT_IMPLEMENTATION = "bionemo_ir.dsl_kernels.cute.sm80_gated_sigmoid.GatedSigmoidGemm"
+_DEFAULT_KERNEL_ABI = "sm80"
 
 # Heuristic tiles must also appear in the builder's shipped tile set.
 _SMALL_N_THRESHOLD = 128
@@ -185,17 +186,17 @@ def get_tile_params(sm_version: int, K: int, N: int, M: int) -> dict[str, Any]:
     return _heuristic_tile_params(sm_version, N, m_range)
 
 
-def get_implementation(sm_version: int, K: int, N: int) -> str:
-    """Return the dotted kernel path for one ``(sm, K, N)``."""
+def get_kernel_abi(sm_version: int, K: int, N: int) -> str:
+    """Return the tuned source generation for one ``(sm, K, N)``."""
     bundle = load_kernel_configs(_GS_CONFIGS_DIR, get_config_file_name(sm_version, K=K, N=N))
     if bundle is None:
-        return _DEFAULT_IMPLEMENTATION
-    return require_source_implementation(bundle.implementation, bundle.source_path)
+        return _DEFAULT_KERNEL_ABI
+    return bundle.kernel_abi
 
 
 def get_kernel_config(sm_version: int, K: int, N: int, M: int) -> GatedSigmoidKernelConfig:
     """Resolve the source-kernel config for one runtime key."""
     return _build_lazy_kernel_config(
-        get_implementation(sm_version, K, N),
+        get_kernel_abi(sm_version, K, N),
         **get_tile_params(sm_version, K, N, M),
     )

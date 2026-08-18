@@ -21,11 +21,12 @@ dev = { file = ["requirements-dev.txt"] }
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bionemo_ir*"]
+namespaces = true
 
 [tool.setuptools.package-data]
 "bionemo_ir" = [
-  "_torch/custom_ops/configs/**/*.json",
-  "_torch/attention_backend/configs/**/*.json",
+  "_torch/custom_ops/*/configs/*.json",
+  "_torch/attention_backend/*/configs/*.json",
 ]
 
 [project]

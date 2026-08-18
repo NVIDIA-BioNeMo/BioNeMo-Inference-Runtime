@@ -35,7 +35,7 @@ SUPPORTED_SMS = (80, 86, 89, 90, 100, 103)
 # N is compile-time and must have a shipped payload.
 SHIPPED_N = (128, 256, 384, 512, 768, 1024)
 
-_ADALN_CONFIGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "adaln_layernorm_sigmoid")
+_ADALN_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 # JSON keys are inclusive M-bucket left edges; the shipping table is closed.
 _BUCKET_BIG_M: dict = {"tpr_override": 128, "num_threads_override": 128}
@@ -108,7 +108,7 @@ def bucket_variants(sm_version: int, N: int) -> list[tuple[int | None, dict, tup
             raise RuntimeError(
                 f"no AdaLN bucket schedule for SM{sm_version}, N={N}. The table is closed over the "
                 f"shipping matrix, so every (SM, N) in SUPPORTED_SMS x SHIPPED_N needs a "
-                f"configs/adaln_layernorm_sigmoid/{get_config_file_name(sm_version, N=N)}"
+                f"adaln_layernorm_sigmoid/configs/{get_config_file_name(sm_version, N=N)}"
             )
         return [(m_max, cfg, resolve_geometry(N, cfg)) for m_max, cfg in _unshipped_n_schedule(sm_version, N)]
     edges = sorted(int(key) for key in bundle.configs)

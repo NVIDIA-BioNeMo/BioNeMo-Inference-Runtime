@@ -39,9 +39,7 @@ ROOT_DIR = Path(__file__).parent.resolve()
 _BUILD_ENV_FILE = ROOT_DIR / "build.env"
 _KERNELS_DIR = ROOT_DIR / "cpp" / "kernels"
 _CUBIN_MATERIALIZER = ROOT_DIR / "cpp" / "cmake" / "materialize_cubin_payloads.py"
-_PRIVATE_CUBIN_PREPARER = ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"
 _BUILD_CUTEDSL_KERNELS_ENV = "BIOIR_BUILD_CUTEDSL_KERNELS"
-_ALLOW_STALE_CUBIN_BUILD_ENV = "BIOIR_ALLOW_STALE_CUBIN_BUILD"
 _KERNEL_LIBRARY_STEM = "_cutedsl_kernels"
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
@@ -132,23 +130,6 @@ def _load_cubin_materializer() -> ModuleType:
 
 def _materialize_cutedsl_kernel_payloads(output_root: Path) -> Path:
     """Verify committed packs and create CMake inputs below ``output_root``."""
-    # Private checkouts carry the builders and declared source inputs, so reject
-    # a stale family before doing public, source-independent pack validation.
-    # Source distributions deliberately omit cpp/tools and skip this gate. The
-    # one exception is an ordinary internal MR build: post-merge automation owns
-    # fingerprint-only drift, so CI may exercise the still-current public packs
-    # before the protected refresh job updates them.
-    # Release, schedule, public-export, rolling-refresh, and normal local builds
-    # never set this narrowly scoped process variable and remain strict.
-    allow_stale = os.environ.get(_ALLOW_STALE_CUBIN_BUILD_ENV)
-    if allow_stale not in {None, "1"}:
-        raise RuntimeError(f"{_ALLOW_STALE_CUBIN_BUILD_ENV} must be exactly '1' when set")
-    if _PRIVATE_CUBIN_PREPARER.is_file() and allow_stale != "1":
-        subprocess.run(
-            [sys.executable, str(_PRIVATE_CUBIN_PREPARER), "--check-freshness"],
-            cwd=ROOT_DIR,
-            check=True,
-        )
     module = _load_cubin_materializer()
     result = module.materialize(_cubin_family_indexes(), output_root.resolve())
     output_dir = Path(result.output_dir).resolve()

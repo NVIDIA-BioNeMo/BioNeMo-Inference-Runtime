@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Set up Python
+description: >
+  Install the oldest Python pyproject.toml supports, so every job agrees on one
+  interpreter and none of them repeats the version.
+
+runs:
+  using: composite
+  steps:
+    # The floor, not `python-version-file: pyproject.toml`. That input resolves a
+    # range to the *highest* match, and `requires-python` is ">=3.12,<4.0", so it
+    # would build the extension against whatever 3.x the runner ships. The wheel
+    # this repo publishes is cp312 -- docker/Dockerfile builds it on
+    # nvcr.io/nvidia/pytorch, whose python is 3.12 -- and a gate that compiles a
+    # different ABI than the one shipped is not the gate docs/dev.md promises.
+    - name: Resolve the requires-python floor
+      id: floor
+      shell: bash
+      run: |
+        version=$(sed -n 's/^requires-python *= *"[^0-9]*\([0-9]*\.[0-9]*\).*/\1/p' pyproject.toml)
+        if [[ -z "${version}" ]]; then
+          echo "::error file=pyproject.toml::no 'requires-python' floor found"
+          exit 1
+        fi
+        echo "version=${version}" >>"${GITHUB_OUTPUT}"
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ steps.floor.outputs.version }}

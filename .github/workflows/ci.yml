@@ -64,8 +64,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           lfs: false
-      - name: Fetch the CUBIN packs
-        run: git lfs pull --include="cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz"
+      - uses: ./.github/actions/cubin-packs
 
       - uses: ./.github/actions/python
 

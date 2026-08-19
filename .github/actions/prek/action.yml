@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Set up prek
+description: >
+  Install the prek pinned in requirements-dev.txt and restore its hook
+  environments, so a job runs the same hook versions a contributor gets from
+  `pip install -e '.[dev]'`.
+
+inputs:
+  cache:
+    description: >
+      Restore and save the hook environments. Worth it for a job that builds
+      every hook in prek.toml; for one that builds a single hook the round trip
+      costs about what the build does.
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    # requirements-dev.txt owns the pin; reading it here keeps CI from drifting
+    # away from what `.[dev]` installs.
+    - name: Resolve the pinned prek version
+      id: pin
+      shell: bash
+      run: |
+        version=$(sed -n 's/^prek==\([^ #]*\).*/\1/p' requirements-dev.txt)
+        if [[ -z "${version}" ]]; then
+          echo "::error file=requirements-dev.txt::no 'prek==<version>' pin found"
+          exit 1
+        fi
+        echo "version=${version}" >>"${GITHUB_OUTPUT}"
+
+    - uses: ./.github/actions/python
+
+    # prek builds one environment per hook repo under its cache root. Keying on
+    # prek.toml means a bumped `rev` builds fresh environments instead of reusing
+    # the ones pinned to the old revision, and `restore-keys` then hands that
+    # build the environments for the hooks that did *not* move -- prek's cache is
+    # keyed per repo+rev on disk, so a partial restore is additive, never stale.
+    # Without it, editing one `exclude` line rebuilds all nine.
+    - uses: actions/cache@v6
+      if: inputs.cache == 'true'
+      with:
+        path: ~/.cache/prek
+        key: prek-${{ runner.os }}-${{ steps.pin.outputs.version }}-${{ hashFiles('prek.toml') }}
+        restore-keys: |
+          prek-${{ runner.os }}-${{ steps.pin.outputs.version }}-
+
+    # Through the environment, never interpolated into the script: this value is
+    # read out of the pull request's own requirements-dev.txt, and `${{ }}`
+    # expands before bash ever sees it.
+    # https://docs.github.com/en/actions/reference/security/secure-use
+    - shell: bash
+      env:
+        PREK_VERSION: ${{ steps.pin.outputs.version }}
+      run: pip install "prek==${PREK_VERSION}"

@@ -9,8 +9,9 @@ services:
       target: dev
       args:
         # Match the host user so build artifacts on the bind mount are not
-        # root-owned. Set USER_UID/USER_GID in .devcontainer/.env to override
-        # (VS Code reads that file automatically).
+        # root-owned. init.sh writes both to .devcontainer/.env from `id -u`
+        # and `id -g` before Compose runs, so do not set them by hand there --
+        # they are rewritten on every start.
         USER_UID: ${USER_UID:-1000}
         USER_GID: ${USER_GID:-1000}
 

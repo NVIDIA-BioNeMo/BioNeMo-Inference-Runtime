@@ -20,7 +20,11 @@ import sys
 from unittest.mock import MagicMock
 
 import tests
-from tests.common.test_utils.basic import path_for_package_in_repo
+from tests.common.test_utils.basic import path_for_package_in_repo, require_vendored_submodule
+
+# Resolved before the gemmi stub below: skipping once that is installed
+# would leave the MagicMock in sys.modules for every later test.
+_VENDORED_ROOT = require_vendored_submodule(path_for_package_in_repo(tests).parent / "3rdparty/openfold-3")
 
 # OpenFold3 only checks gemmi while importing these model layers. Keep the stub
 # scoped to the OSS imports so later parser tests receive the real module.
@@ -31,7 +35,7 @@ _gemmi_stub.__version__ = "0.7.3"
 sys.modules["gemmi"] = _gemmi_stub
 
 # Now add 3rdparty to path and import
-sys.path.insert(0, str(path_for_package_in_repo(tests).parent / "3rdparty/openfold-3"))
+sys.path.insert(0, _VENDORED_ROOT)
 
 try:
     import openfold3.core.config.default_linear_init_config as lin_init

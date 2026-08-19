@@ -28,7 +28,11 @@ from unittest.mock import MagicMock
 import torch
 
 import tests
-from tests.common.test_utils.basic import path_for_package_in_repo
+from tests.common.test_utils.basic import path_for_package_in_repo, require_vendored_submodule
+
+# Resolved before the gemmi stub below: skipping once that is installed
+# would leave the MagicMock in sys.modules for every later test.
+_VENDORED_ROOT = require_vendored_submodule(path_for_package_in_repo(tests).parent / "3rdparty/protenix")
 
 # Force the torch LayerNorm path: Protenix's default ``fast_layernorm`` triggers
 # a blocking JIT CUDA-extension build on import.
@@ -42,7 +46,7 @@ _gemmi_stub = MagicMock()
 _gemmi_stub.__version__ = "0.7.3"
 sys.modules["gemmi"] = _gemmi_stub
 
-sys.path.insert(0, str(path_for_package_in_repo(tests).parent / "3rdparty/protenix"))
+sys.path.insert(0, _VENDORED_ROOT)
 
 try:
     from protenix.model.modules.confidence import ConfidenceHead as ProtenixOSS_ConfidenceHead  # noqa: E402

@@ -3,8 +3,9 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 
 PR title must follow Conventional Commits (feat:, fix:, docs:, perf:, refactor:,
-chore:). Add "BREAKING CHANGE:" to the title for API-breaking changes. The title
-becomes the changelog line. NVIDIA developers: include the JIRA key / NVBug ID.
+chore:). Mark API-breaking changes with "!" after the type (e.g. "feat!:") and
+describe them in a "BREAKING CHANGE:" footer. The title becomes the changelog
+line. NVIDIA developers: include the JIRA key / NVBug ID.
 -->
 
 <!-- rumdl-disable-next-line MD041 -->
@@ -26,7 +27,8 @@ becomes the changelog line. NVIDIA developers: include the JIRA key / NVBug ID.
 
 - [ ] Bug fix (non-breaking)
 - [ ] New feature (non-breaking)
-- [ ] Breaking change (API-breaking — `BREAKING CHANGE:` in title)
+- [ ] Breaking change (API-breaking — `type!:` in title, `BREAKING CHANGE:`
+      footer)
 - [ ] Refactor
 - [ ] Documentation
 - [ ] Build / CI

@@ -21,6 +21,9 @@ dev = { file = ["requirements-dev.txt"] }
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bionemo_ir*"]
+# Test-only support, imported from the checkout. Excluded so it never reaches
+# an installed wheel and never becomes public API.
+exclude = ["bionemo_ir.hubs._testing*"]
 namespaces = true
 
 [tool.setuptools.package-data]

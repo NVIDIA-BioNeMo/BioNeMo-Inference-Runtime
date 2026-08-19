@@ -62,10 +62,15 @@ DOCKER_CACHE_FROM ?=
 _CACHE_ARGS := $(if $(or $(CI),$(DOCKER_CACHE_FROM)),--build-arg BUILDKIT_INLINE_CACHE=1,) \
 	$(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM),)
 
-# Compile jobs for the wheel stage. Left empty the Dockerfile asks the machine,
-# which is right locally; in a CI job container nproc reports 1 whatever the
-# scheduler granted, so pass the allocation through when there is one.
+# Compile jobs for the wheel stage. In a CI job container nproc reports 1
+# whatever the scheduler granted, so pass the scheduler's allocation through
+# when there is one. Locally, cap at 32 rather than letting the Dockerfile ask
+# the machine; override BUILD_JOBS on a host with fewer cores or less RAM.
+ifdef CI
 BUILD_JOBS ?= $(CI_SLURM_CPUS_PER_TASK)
+else
+BUILD_JOBS ?= 32
+endif
 _JOBS_ARG := $(if $(BUILD_JOBS),--build-arg BUILD_JOBS=$(BUILD_JOBS),)
 
 CPU_ARCH := $(shell uname -m)

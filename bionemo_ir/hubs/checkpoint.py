@@ -26,7 +26,7 @@ def load_weights(
     return_raw: bool = False,
     local_files_only: bool = False,
     cache_path: str | Path | None = None,
-    repo_id: str | Path | None = None,
+    repo_id: str | None = None,
     hub: str = None,
 ) -> dict | str:
 

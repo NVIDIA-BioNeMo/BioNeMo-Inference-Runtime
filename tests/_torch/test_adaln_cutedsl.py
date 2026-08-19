@@ -34,6 +34,9 @@ from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import (
 from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import cutedsl as adaln_cutedsl
 from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import ops as adaln_ops
 from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import (
+    SUPPORTED_SMS as ADALN_SMS,
+)
+from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import (
     config_identity as adaln_config_identity,
 )
 from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.ops import (
@@ -61,6 +64,17 @@ def _torch_adaln_layernorm_sigmoid(x, s_scale, s_bias, eps=1e-5):
     N = x.shape[-1]
     normed = torch.nn.functional.layer_norm(x, (N,), eps=eps)
     return torch.sigmoid(s_scale) * normed + s_bias
+
+
+def _skip_without_adaln_cubin() -> None:
+    """Skip unless AdaLN ships a CUBIN for this GPU.
+
+    Where it does not -- SM120 among them -- AdaLN falls back to the torch
+    path by design, so a test that requires the fused kernel is asserting
+    something the support matrix never claimed.
+    """
+    if SM_VERSION not in ADALN_SMS:
+        pytest.skip(f"AdaLN CUBINs do not target SM{SM_VERSION}")
 
 
 def _init_adaln_weights(m: AdaLN) -> None:
@@ -174,8 +188,7 @@ def test_adaln_cutedsl_matches_torch(sc: Scenario):
     ids=["fp16_small", "bf16_second_bucket", "fp32_big_m"],
 )
 def test_adaln_source_and_cubin(mode, dtype, M, N, monkeypatch):
-    if SM_VERSION not in (80, 86, 89, 90, 100, 103):
-        pytest.skip(f"AdaLN CUBINs do not target SM{SM_VERSION}")
+    _skip_without_adaln_cubin()
     torch.manual_seed(11)
     x = torch.randn(M, N, device="cuda", dtype=dtype)
     scale = torch.randn(M, N, device="cuda", dtype=dtype)
@@ -407,6 +420,7 @@ def test_adaln_multisample_does_not_fall_back():
     actually run rather than get disabled inside ``AdaLN.forward``."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
+    _skip_without_adaln_cubin()
 
     torch.manual_seed(0)
     device = torch.device("cuda")
@@ -441,6 +455,8 @@ def test_adaln_multisample_matches_torch(dtype: torch.dtype, num_samples: int):
     via CuteDSL backend as via torch backend."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
+    # Without a CUBIN there is no CuTeDSL side to compare the torch side to.
+    _skip_without_adaln_cubin()
 
     torch.manual_seed(0)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"

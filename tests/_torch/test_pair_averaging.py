@@ -278,7 +278,11 @@ def test_pair_weighted_averaging_token_limit(D, c_m, tokens, expected):
     w = torch.zeros(1, H, tokens, tokens, dtype=torch.bfloat16, device="cuda")
     v = torch.zeros(1, 2, tokens, H * D, dtype=torch.bfloat16, device="cuda")
     weight = torch.zeros(c_m, H * D, dtype=torch.bfloat16, device="cuda")
-    assert PairWeightedAveragingCuTe().is_supported(w, v, weight) is expected
+    # is_supported() answers for the GPU it runs on, and PWA ships CUBINs for
+    # _CUTEDSL_SM alone, so elsewhere it declines whatever the shape. The
+    # crossover rule below is dimensions only and holds everywhere.
+    fused_here = expected and SM_VERSION in _CUTEDSL_SM
+    assert PairWeightedAveragingCuTe().is_supported(w, v, weight) is fused_here
     assert is_profitable_pwa_shape(H, D, c_m, tokens) is expected
 
 

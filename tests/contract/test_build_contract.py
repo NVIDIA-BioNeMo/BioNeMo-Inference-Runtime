@@ -180,3 +180,20 @@ def test_committed_corpus_materializes(tmp_path: Path) -> None:
 
     indexes = [(family, KERNELS_DIR / f"cutedsl_{family}" / "cubins" / "index.json") for family in FAMILIES]
     materializer.materialize(indexes, tmp_path)
+
+
+def test_test_only_support_stays_out_of_the_wheel() -> None:
+    """`hubs._testing` is importable from the checkout but never installed.
+
+    It holds a predicate the suite needs that is deliberately not in
+    `hubs.__all__`. The exclusion is what keeps that true for anyone who
+    installs the wheel, so it is a contract rather than a tidiness preference.
+    """
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    find = pyproject["tool"]["setuptools"]["packages"]["find"]
+    assert "bionemo_ir.hubs._testing*" in find.get("exclude", [])
+
+    setuptools_find = pytest.importorskip("setuptools").find_namespace_packages
+    discovered = setuptools_find(where=str(REPO_ROOT), include=find["include"], exclude=find["exclude"])
+    assert "bionemo_ir.hubs" in discovered, "the exclusion must not take the package it sits in with it"
+    assert not [name for name in discovered if "_testing" in name]

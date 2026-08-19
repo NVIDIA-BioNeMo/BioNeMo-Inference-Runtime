@@ -280,33 +280,51 @@ def verify_boltz_checkpoint_md5(path: str | Path, filename: str) -> None:
         )
 
 
+def _resolve_local_checkpoint(
+    name: str,
+    cache_path: str | Path | None = None,
+    repo_id: str | None = None,
+) -> tuple[str | Path | None, str]:
+    """The local file :func:`load_local_weights` would read for *name*, if any.
+
+    Returns the path and the environment variable consulted, so a caller can
+    name the one that went unset. Split out so that asking whether a checkpoint
+    resolves does not mean loading it (``hubs._testing.checkpoint_available``).
+
+    *repo_id* overrides which environment variable is read here, and names a
+    HuggingFace repo in :func:`hubs.load_hf_weights`. Either way it is a name,
+    never a path: a `Path` would be read as an env var and silently miss.
+    """
+    default_repo_id = LOCAL_CHECKPOINTS[name].env
+    if cache_path is not None:
+        return cache_path, default_repo_id
+    if repo_id is not None:
+        default_repo_id = repo_id
+    filepath = os.getenv(default_repo_id)
+    if filepath and not Path(filepath).is_file():
+        logger.warning(f"Ignoring invalid local checkpoint path from {default_repo_id}: {filepath}")
+        filepath = None
+    if not filepath:  # unset, empty, or invalid path
+        # Fall back to a checkpoint staged in the local cache before
+        # giving up to the HuggingFace hub.
+        filepath = resolve_cached_checkpoint(name)
+        if filepath is not None:
+            logger.info(f"Using staged local checkpoint for {name}: {filepath}")
+    return filepath, default_repo_id
+
+
 def load_local_weights(
     name: str,
     return_raw: bool = False,
     local_files_only: bool = False,
     cache_path: str | Path | None = None,
-    repo_id: str | Path | None = None,
+    repo_id: str | None = None,
 ) -> io.BytesIO | dict[str]:
     """Load a checkpoint from the local filesystem"""
     checkpoint = LOCAL_CHECKPOINTS[name]
     state_dict_key = checkpoint.state_dict_key
     weights_only = checkpoint.weights_only
-    default_repo_id = checkpoint.env
-    if cache_path is not None:
-        filepath = cache_path
-    else:
-        if repo_id is not None:
-            default_repo_id = repo_id
-        filepath = os.getenv(default_repo_id)
-        if filepath and not Path(filepath).is_file():
-            logger.warning(f"Ignoring invalid local checkpoint path from {default_repo_id}: {filepath}")
-            filepath = None
-        if not filepath:  # unset, empty, or invalid path
-            # Fall back to a checkpoint staged in the local cache before
-            # giving up to the HuggingFace hub.
-            filepath = resolve_cached_checkpoint(name)
-            if filepath is not None:
-                logger.info(f"Using staged local checkpoint for {name}: {filepath}")
+    filepath, default_repo_id = _resolve_local_checkpoint(name, cache_path, repo_id)
     if not filepath:
         logger.info(f"Not found local checkpoint for {name}, using default repo id {default_repo_id}")
         return None

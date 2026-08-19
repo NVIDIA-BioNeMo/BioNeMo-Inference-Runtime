@@ -21,16 +21,28 @@ import biotite.structure.io.pdb as pdb
 import biotite.structure.io.pdbx as pdbx
 import numpy as np
 import numpy.testing as npt
+import pytest
 import ray
 from biotite.structure import AtomArrayStack
 
 from bionemo_ir.data.parsers import read_fasta
 from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.hubs._testing import checkpoint_available
 from bionemo_ir.pipeline.processor.base import SerialProcessor
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, Processor, build_processor
 from bionemo_ir.pipeline.stages.configs import FeatureGeneratorStageConfig, ParserStageConfig, WriterStageConfig
 
 SAMPLE_DIR = Path("examples") / "data" / "samples" / "monomers"
+
+# The writers are what these tests exercise; the model only has to load.
+MODEL_SOURCE = "alphafold2_1"
+
+# Gated at module scope: the UDF loads the checkpoint inside the Ray worker, so
+# an unprovisioned family would surface as ActorDiedError, not a missing file.
+pytestmark = pytest.mark.skipif(
+    not checkpoint_available(MODEL_SOURCE),
+    reason=f"{MODEL_SOURCE} checkpoint not provisioned",
+)
 
 
 def create_sample_requests(repeat: int = 1):
@@ -67,7 +79,7 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
     """
 
     # (0) settings
-    model_source = "alphafold2_1"
+    model_source = MODEL_SOURCE
 
     # (1) Create a scratch-space directory
     run_label = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -126,7 +138,7 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
 def test_serial_processor_pdb_cif_match(tmp_path: Path):
     """PDB-vs-CIF check using multi-format writer in one serial pass."""
 
-    model_source = "alphafold2_1"
+    model_source = MODEL_SOURCE
     run_label = datetime.now().strftime("%Y%m%dT%H%M%S")
     output_path = os.path.join(
         tmp_path, "output/tests/pipeline/stages", f"test_serial_processor_{run_label}", f"writer_output_{run_label}"
@@ -166,7 +178,7 @@ def test_serial_processor_pdb_cif_match(tmp_path: Path):
 def test_serial_processor_returns_output_paths(tmp_path: Path):
     """Verify serial processor returns expected output_path and record_id."""
 
-    model_source = "alphafold2_1"
+    model_source = MODEL_SOURCE
     output_path = str(tmp_path / "serial_outputs")
 
     requests = create_sample_requests()

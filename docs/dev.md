@@ -16,8 +16,11 @@ How to build, run, test and lint BioIR. For coding style and conventions, see
   extension from source. CMake and nanobind are declared build dependencies, so
   pip supplies them.
 
-The kernels are **precompiled**. Neither building the wheel nor running it needs
-`nvcc` — only the driver's `libcuda.so.1`.
+The kernels are **precompiled**: nothing in the build compiles CUDA, and running
+the wheel needs only the driver's `libcuda.so.1`. Building it does read a CUDA
+version, though — from `nvcc`, else from torch, else from `CUDA_TAG` — purely to
+stamp the wheel's `+cuXYZ` local version. With none of the three the build fails
+early rather than mislabel the wheel.
 
 Everything below works equally in a container or on a host that already has the
 prerequisites.
@@ -135,10 +138,10 @@ python examples/folding/run_demo.py \
 python examples/folding/run_demo.py --help
 ```
 
-The default run writes `T1031.cif` and `T1031_scores.json` to the output
-directory, and takes a few minutes on an A100. Which model sources the demo can
-drive is in [`../examples/folding/README.md`](../examples/folding/README.md) —
-it is narrower than the support matrix.
+With no `--output-dir` the demo prints the structure to stdout and the record id
+and scores to stderr; with one it writes `T1031.cif` and `T1031_scores.json`
+there. Which model sources the demo can drive is in
+[`../examples/folding/README.md`](../examples/folding/README.md)
 
 ## Test
 
@@ -190,7 +193,8 @@ tree, plus the SPDX licence header every source file carries.
 Ensure all three pass:
 
 - **Style** — `prek run --all-files`
-- **Build** — `pip install -e '.[dev]'`, then import the extension
+- **Build** — `pip install --no-build-isolation -e '.[dev]'`, then import
+  the extension
 - **Tests** — `scripts/run_tests.sh`
 
 PRs will be squash-merged. The title and description will become commit message

@@ -570,6 +570,14 @@ def _get_device_uuid(device_id: int):
         return None
 
 
+def _get_actor_id() -> str | None:
+    """Identify the Ray actor running this UDF, or None outside one."""
+    try:
+        return ray.get_runtime_context().get_actor_id()
+    except Exception:
+        return None
+
+
 def _get_current_device_id() -> int:
     """Return current GPU device id for the calling process (e.g. Ray worker)."""
     try:
@@ -628,6 +636,7 @@ class MockFoldingEngineUDF(StatefulStageUDF):
                     "time_taken": 0.01,
                     "device_id": device_id,
                     "device_uuid": device_uuid,
+                    "actor_id": _get_actor_id(),
                     "__inference_error__": {"error_msg": None, "traceback": None},
                     "__idx_in_batch": idx,
                 }
@@ -782,7 +791,9 @@ class TestFoldingEngineStageReplicaMapBatches:
         )
         kwargs = stage.get_dataset_map_batches_kwargs(batch_size=2)
 
-        num_rows = 4
+        # More rows than one actor holds at once, so the pool is normally
+        # exercised on both GPUs. Nothing asserted below depends on that.
+        num_rows = 16
         ds = ray.data.from_items([{"key": f"row_{i}", "__record_id": f"id_{i}"} for i in range(num_rows)])
         result = ds.map_batches(stage.fn, **kwargs)
         result = result.materialize()
@@ -790,13 +801,23 @@ class TestFoldingEngineStageReplicaMapBatches:
 
         assert len(out) == num_rows
         device_ids = {row["device_id"] for row in out}
-        # When Ray pins each actor to a different GPU, we see num_replicas distinct device_ids.
-        # When Ray does not (e.g. same CUDA_VISIBLE_DEVICES per worker), all rows may have the same device_id.
         assert len(device_ids) >= 1, f"Expected at least one device_id, got {device_ids}"
-        device_uuids = {row["device_uuid"] for row in out}
-        assert len(device_uuids) == num_replicas, (
-            f"Expected {num_replicas} distinct device_uuids, got {len(device_uuids)}: {device_uuids}"
-        )
+
+        # Replica mode promises placement, not spread: num_gpus=1 gives each
+        # actor its own GPU, asserted here as a bijection between the actors
+        # that ran and the GPUs they ran on.
+        #
+        # Requiring every actor to receive work is what made this test flaky --
+        # an actor may hold max_tasks_in_flight_per_actor tasks, so one taking
+        # every batch is scheduling, not a placement bug (measured 11/20, 13/20).
+        placements = {(row["actor_id"], row["device_uuid"]) for row in out}
+        actors = {actor for actor, _ in placements}
+        uuids = {uuid for _, uuid in placements}
+        assert len(actors) <= num_replicas, f"Pool ran more actors than it was sized for: {placements}"
+        if None not in uuids:  # pynvml unavailable; nothing to compare
+            assert len(placements) == len(actors) == len(uuids), (
+                f"Each replica must own exactly one GPU, and no two may share one: {placements}"
+            )
         for row in out:
             assert "structure" in row
             assert row["structure"] == "MOCK_ATOM"

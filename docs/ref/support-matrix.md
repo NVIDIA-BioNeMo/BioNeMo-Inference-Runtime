@@ -79,8 +79,8 @@ fused kernels apply.
 
 | Architecture       | Compute capability | Datacenter / client GPUs in scope | Optimized kernels                                                               |
 | ------------------ | ------------------ | --------------------------------- | ------------------------------------------------------------------------------- |
-| **Ampere**         | SM80               | A100, A40, A30                    | CuTeDSL CUBIN                                                                   |
-| **Ampere (GA10x)** | SM86               | A10, A16, RTX A6000               | CuTeDSL CUBIN                                                                   |
+| **Ampere**         | SM80               | A100, A30                         | CuTeDSL CUBIN                                                                   |
+| **Ampere (GA10x)** | SM86               | A10, A16, A40, RTX A6000          | CuTeDSL CUBIN                                                                   |
 | **Ada Lovelace**   | SM89               | L40, L40S                         | CuTeDSL CUBIN                                                                   |
 | **Hopper**         | SM90               | H100, H200, GH200                 | CuTeDSL CUBIN                                                                   |
 | **Blackwell**      | SM100              | B100, B200, GB200                 | CuTeDSL CUBIN (PWA, OPM, AdaLN); cuEquivariance (triangle attention, dual GEMM) |

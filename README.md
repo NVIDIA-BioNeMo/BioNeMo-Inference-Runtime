@@ -79,11 +79,10 @@ anything that cannot be fetched is skipped, and the tests needing it skip too.
 Running `scripts/run_tests.sh` stages weights and runs the suite the way CI
 does.
 
-Without a container, on a host that already has Python 3.12 and a C++ toolchain,
-`pip install -e '.[dev]'` is the whole build.
-
-See [`docs/dev.md`](docs/dev.md) for more details on daily development works.
-See [`docker/README.md`](docker/README.md) describes the images and what
+Building without a container needs more than a Python environment — see
+[`docs/dev.md`](docs/dev.md#prerequisites) for the prerequisites and the wheel
+build. The rest of that page covers daily development;
+[`docker/README.md`](docker/README.md) covers the images and what
 `docker/dev.sh` mounts.
 
 ## Contributing

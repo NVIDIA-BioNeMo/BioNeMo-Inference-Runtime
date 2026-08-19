@@ -20,15 +20,16 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
-import os
 from pathlib import Path
 
 import biotite.structure as bio_structure
 import numpy as np
+import pytest
 import torch
 from biotite.structure.io import pdbx
 
 from bionemo_ir.data.schemas import InputRequest, Polymer, Template
+from bionemo_ir.hubs._testing import checkpoint_available
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
 from bionemo_ir.pipeline.stages.configs import FeatureGeneratorStageConfig, WriterStageConfig
 from bionemo_ir.pipeline.stages.parser_stage import ParserUDF
@@ -44,7 +45,6 @@ SEED = 0
 CASES = (
     {
         "model_source": "alphafold2_1",
-        "checkpoint_env": "ALPHAFOLD2_1_CKPT",
         "chain_id": "A",
         "residue_count": 84,
         "chain_count": 1,
@@ -53,14 +53,12 @@ CASES = (
     # checkpoint stores the IPA point projections flat rather than nested.
     {
         "model_source": "openfold2_ptm_1",
-        "checkpoint_env": "OPENFOLD2_PTM_1_CKPT",
         "chain_id": "A",
         "residue_count": 84,
         "chain_count": 1,
     },
     {
         "model_source": "alphafold2_multimer_1",
-        "checkpoint_env": "ALPHAFOLD2_MULTIMER_1_CKPT",
         "chain_id": ["A", "B"],
         "residue_count": 168,
         "chain_count": 2,
@@ -142,13 +140,16 @@ def _assert_output(row: dict, expected_residues: int, expected_chains: int) -> n
 
 def test_real_template_pipelines_monomer_and_multimer(tmp_path: Path):
     """Exercise both model presets with paired template/no-template inputs."""
-    assert torch.cuda.is_available(), "OpenFold2 integration requires CUDA"
-    assert TEMPLATE_PATH.is_file(), f"Missing 4ZEY fixture: {TEMPLATE_PATH}"
-    for case in CASES:
-        checkpoint_value = os.environ.get(case["checkpoint_env"])
-        assert checkpoint_value, f"{case['checkpoint_env']} must be provisioned for GPU CI"
-        checkpoint = Path(checkpoint_value)
-        assert checkpoint.is_file(), f"Missing checkpoint: {checkpoint}"
+    # Preconditions skip rather than fail: a missing GPU or checkpoint is not a
+    # defect in the code under test, and docs/dev.md promises a green run whose
+    # misses show up as skips.
+    if not torch.cuda.is_available():
+        pytest.skip("OpenFold2 template pipelines need a GPU")
+    if not TEMPLATE_PATH.is_file():
+        pytest.skip(f"missing 4ZEY template fixture: {TEMPLATE_PATH}")
+    unprovisioned = [case["model_source"] for case in CASES if not checkpoint_available(case["model_source"])]
+    if unprovisioned:
+        pytest.skip(f"checkpoints not provisioned: {', '.join(unprovisioned)}")
 
     for case in CASES:
         model_source = case["model_source"]

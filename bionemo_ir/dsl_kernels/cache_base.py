@@ -23,8 +23,8 @@ Provides shared abstractions used by both Triton and CuTe DSL backends:
   ``save_to_cache``, and ``load_from_cache`` methods.
 * :class:`FileLock` — advisory file locking for concurrent cache access.
 * :class:`DiskCache` — persistent artifact cache with file locking.
-* :class:`DriverLauncher` — ``cuda.bindings`` ``cuLaunchKernel`` for
-  minimal Python dispatch overhead (~17 µs vs ~25 µs for Triton's ``.run()``).
+* :class:`DriverLauncher` — ``cuda.bindings`` ``cuLaunchKernel`` for lower Python
+  dispatch overhead than Triton's ``.run()``.
 * :func:`parse_ptx_params` — auto-discover kernel parameter layouts from PTX.
 * :func:`make_driver_launcher` — factory that builds a
   :class:`DriverLauncher` from a Triton ``CompiledKernel``.
@@ -92,14 +92,11 @@ def _ensure_cuda_init():
         _cuda_initialized = True
 
 
-# CUmodules loaded by make_driver_launcher are deliberately NOT unloaded at
-# interpreter exit. Calling cuModuleUnload from an atexit handler runs CUDA
-# driver code during interpreter shutdown, when the driver and other native
-# libraries (cutlass, TVM-FFI, Ray) may already be tearing down — a documented
-# SIGSEGV hazard (a "Segmentation fault: invalid permissions for mapped object"
-# on a JIT code page, which surfaces as a core dump on an otherwise-green run).
-# Modules live for the process lifetime and the OS reclaims them on exit, so an
-# explicit teardown unload buys nothing and only adds a shutdown crash surface.
+# CUmodules loaded by make_driver_launcher are deliberately never unloaded. An
+# atexit cuModuleUnload runs driver code while the driver and other native libraries
+# (cutlass, TVM-FFI, Ray) may already be tearing down, which segfaults on a JIT code
+# page and turns an otherwise-green run into a core dump. The OS reclaims the modules
+# at exit anyway, so unloading buys nothing.
 
 
 def has_cuda_bindings() -> bool:
@@ -300,10 +297,10 @@ _CTYPES_MAP = {
 class DriverLauncher:
     """Low-overhead kernel launcher using ``cuda.bindings`` ``cuLaunchKernel``.
 
-    Pre-allocates ``ctypes`` parameter storage at construction time.
-    On each :meth:`launch`, only the parameter *values* are updated before
-    calling ``cuLaunchKernel`` — achieving ~17 µs total dispatch overhead
-    vs ~25 µs for Triton's C-level ``.run()`` path.
+    Pre-allocates ``ctypes`` parameter storage at construction time. On each
+    :meth:`launch`, only the parameter *values* are updated before calling
+    ``cuLaunchKernel``, which dispatches with less overhead than Triton's C-level
+    ``.run()`` path.
 
     Parameters are exposed via the :attr:`params` list for direct value
     assignment on the hot path::
@@ -315,7 +312,18 @@ class DriverLauncher:
     Requires ``pip install cuda-python`` (the ``cuda.bindings`` package).
     """
 
-    __slots__ = ("_func", "_module", "_block_x", "_shmem", "_stream", "_stream_handle", "params", "_kp", "_n_params")
+    __slots__ = (
+        "_func",
+        "_module",
+        "_block_x",
+        "_shmem",
+        "_stream",
+        "_stream_handle",
+        "params",
+        "_kp",
+        "_n_params",
+        "_name",
+    )
 
     def __init__(
         self,
@@ -325,6 +333,7 @@ class DriverLauncher:
         param_types: list[str],
         cu_stream: Any = None,
         cu_module: Any = None,
+        name: str = "<unknown>",
     ):
         if not _HAS_CUDA_BINDINGS:
             raise ImportError("cuda.bindings required for DriverLauncher (pip install cuda-python)")
@@ -333,6 +342,7 @@ class DriverLauncher:
         self._module = cu_module
         self._block_x = num_warps * 32
         self._shmem = shared_mem
+        self._name = name
 
         if shared_mem > 48 * 1024:
             attr = _drv.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
@@ -349,11 +359,9 @@ class DriverLauncher:
 
             cu_stream = _drv.CUstream(torch.cuda.current_stream().cuda_stream)
         self._stream = cu_stream
-        # Raw handle backing self._stream. launch() compares the current
-        # stream's handle against this to detect a stream switch and refresh
-        # self._stream, so the kernel always runs on the active stream rather
-        # than a stream cached at construction. Initialized to None so the
-        # first launch always re-reads the current stream.
+        # Raw handle backing self._stream. launch() refreshes self._stream whenever
+        # the current stream's handle differs, so kernels follow the active stream
+        # instead of one cached here. None forces the first launch to read it.
         self._stream_handle = None
 
         self.params: list = []
@@ -368,10 +376,9 @@ class DriverLauncher:
 
     def launch(self, grid_x: int, grid_y: int = 1, grid_z: int = 1) -> None:
         """Launch the kernel.  Caller must set ``params[i].value`` first."""
-        # Honor the CURRENT stream at launch time. Only rebuild the CUstream
-        # wrapper when the active stream actually changes, so the common
-        # single-stream case stays cheap while side/capture streams (CUDA-graph
-        # warmup/capture) are still respected.
+        # Rebuild the CUstream wrapper only when the active stream changes: the
+        # single-stream case stays cheap, and CUDA-graph warmup/capture streams are
+        # still honored.
         import torch
 
         cur = torch.cuda.current_stream().cuda_stream
@@ -392,7 +399,12 @@ class DriverLauncher:
             0,
         )
         if err != _drv.CUresult.CUDA_SUCCESS:
-            raise RuntimeError(f"cuLaunchKernel failed: {err}")
+            raise RuntimeError(
+                f"cuLaunchKernel failed for {self._name} "
+                f"grid=({grid_x}, {grid_y}, {grid_z}) block={self._block_x}: {err}. "
+                "The context may already have been poisoned by an earlier asynchronous "
+                "launch; re-run with CUDA_LAUNCH_BLOCKING=1 to attribute the fault."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -460,4 +472,5 @@ def make_driver_launcher(
         param_types=param_types,
         cu_stream=cu_stream,
         cu_module=cu_module,
+        name=name,
     )

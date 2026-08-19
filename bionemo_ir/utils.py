@@ -51,4 +51,40 @@ def get_sm_version() -> int:
     return properties.major * 10 + properties.minor
 
 
-__all__ = ["get_sm_version", "str_dtype_to_torch", "torch_dtype_to_str"]
+# CUDA marks these errors sticky: every later call on the context returns the same
+# error, so no amount of retrying, falling back to eager, or emptying the cache can
+# recover -- only tearing the process down can. Markers are matched against the
+# message with underscores and hyphens flattened to spaces, so one entry covers both
+# the runtime spelling ("an illegal memory access was encountered") and the driver
+# enum ("CUDA_ERROR_ILLEGAL_ADDRESS") that a cuLaunchKernel failure reports.
+_STICKY_CUDA_ERRORS = (
+    "illegal memory access",
+    "illegal address",
+    "illegal instruction",
+    "misaligned address",
+    "invalid address space",
+    "unspecified launch failure",
+    "cuda error launch failed",
+    "device side assert",
+    "cuda error assert",
+    "uncorrectable ecc",
+    "ecc uncorrectable",
+    "hardware stack error",
+)
+
+
+def is_device_fatal(exc: BaseException) -> bool:
+    """Return whether an exception means the CUDA context is unrecoverable.
+
+    A sticky CUDA error poisons the context, so continuing masks the real fault and
+    reports it at unrelated call sites later. Callers should propagate instead of
+    retrying, and must not touch the device (``empty_cache`` included) first.
+
+    Args:
+        exc: The exception to classify.
+    """
+    message = str(exc).lower().replace("_", " ").replace("-", " ")
+    return any(marker in message for marker in _STICKY_CUDA_ERRORS)
+
+
+__all__ = ["get_sm_version", "is_device_fatal", "str_dtype_to_torch", "torch_dtype_to_str"]

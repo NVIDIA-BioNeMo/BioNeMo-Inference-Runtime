@@ -13,64 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-"""Triton kernel: fused moveaxis(-1, -3) + zero-pad J to multiple of 8.
+"""Triton kernel: fused moveaxis(-1, -3) + zero-pad J.
 
-Problem
--------
-After proj_z (a Linear over the pairwise tensor), we have:
+``proj_z`` produces pair bias as ``[B, I, J, H]`` but the attention kernels want
+``[B, H, I, J_padded]``, where ``J_padded = ceil(J / multiple) * multiple`` (or
+``J`` when ``multiple <= 0``). In PyTorch that is ``moveaxis`` then ``pad`` then
+``contiguous`` -- three launches and two passes over HBM. This does it in one.
 
-    pair_bias : [B, I, J, H]   (contiguous, H is the inner/fastest dim)
+Grid ``(B, I, ceil_div(J_padded, BLOCK_J))`` keeps I and J dynamic without
+recovering ``(b, i)`` from a flat pid. Each program loads a ``[BLOCK_J, BLOCK_H]``
+tile, which is contiguous because H is the fastest input dimension, transposes it
+in registers and stores it transposed. Columns in ``[J, J_padded)`` get zero from
+the masked load's ``other=``.
 
-The custom attention kernel wants:
+:class:`MoveaxisPad` launches through
+:class:`~bionemo_ir.dsl_kernels.cache_base.DriverLauncher` when ``cuda.bindings``
+is available and otherwise through Triton's ``.run()``::
 
-    pair_bias : [B, H, I, J_padded]   (contiguous)
+    op = MoveaxisPad(H=16)      # preferred: pre-compiled, reused across calls
+    out = op(pair_bias, multiple=8)
 
-where J_padded = ceil(J / 8) * 8. or J_padded = J if multiple <= 0.
-
-The naive PyTorch sequence:
-    pair_bias = torch.moveaxis(pair_bias, -1, -3)   # non-contiguous view
-    pair_bias = F.pad(pair_bias, (0, J_padded - J)) # still non-contiguous
-    pair_bias = pair_bias.contiguous()              # copy
-
-does this in three kernel launches and touches HBM twice (once for the copy,
-once for the pad).  The fused kernel does it in a single pass.
-
-Launch strategy
----------------
-When ``cuda.bindings`` is available, :class:`MoveaxisPad` launches via
-:class:`~bionemo_ir.dsl_kernels.cache_base.DriverLauncher`
-(``cuLaunchKernel`` — ~17 µs overhead).  Otherwise it falls back to
-Triton's C-level ``.run()`` path (~20 µs overhead).
-
-Tiling strategy
----------------
-Grid: (B, I, ceil_div(J_padded, BLOCK_J))
-
-Using a 3D grid makes I and J fully dynamic: each axis is an independent
-program dimension so no integer division is needed inside the kernel to
-recover (b, i) from a flat pid.
-
-Each program loads a [BLOCK_J, BLOCK_H] tile of inp[b, i, j0:j0+BLOCK_J, 0:H].
-Because H is the fastest dimension in the input, this tile is a contiguous block
-in memory -> coalesced loads.
-
-The tile is then transposed in registers (tl.trans) and stored as a
-[BLOCK_H, BLOCK_J] tile at out[b, 0:H, i, j0:j0+BLOCK_J].
-J positions in [J, J_padded) receive 0 (other= in masked load).
-
-Usage
------
-    from bionemo_ir.dsl_kernels.triton.moveaxis_pad import (
-        MoveaxisPad, moveaxis_pad)
-
-    # Class-based (preferred for repeated calls with same H):
-    op = MoveaxisPad(H=16)
-    out = op(pair_bias)
-
-    # Functional:
-    pair_bias = moveaxis_pad(pair_bias)   # [B, H, I, J_padded]  -- contiguous
+    out = moveaxis_pad(pair_bias, multiple=8)   # functional, compiles per call
 """
 
 import math
@@ -90,6 +53,7 @@ from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
     do_not_specialize=[
         "J",
         "J_padded",
+        "H",
         "inp_stride_b",
         "inp_stride_i",
         "inp_stride_j",
@@ -103,6 +67,7 @@ def _moveaxis_pad_kernel(
     out_ptr,  # [B, H, I, J_padded]  contiguous (pre-allocated)
     J,
     J_padded,  # I and B are implicit in the 3D grid; only J/J_padded needed for masks
+    H,  # BLOCK_H rounds H up to a power of two, so the h axis needs a mask
     # input strides  (H=innermost so inp_stride_h=1 — not passed)
     inp_stride_b,  # = I * J * H
     inp_stride_i,  # = J * H
@@ -114,31 +79,27 @@ def _moveaxis_pad_kernel(
     BLOCK_J: tl.constexpr,
     BLOCK_H: tl.constexpr,
 ):
-    # 3D grid: axis-0 = b, axis-1 = i, axis-2 = J tile
-    # Promote b_idx/i_idx to i64 for pointer arithmetic. Today's
-    # OF3 token-level shape (B=1, I=J=4832, H=16) keeps every term
-    # below 2^31, but
-    #   inp_stride_b = I * J * H
-    # already reaches 3.74e8 at this size and crosses INT32_MAX once
-    # any of (B>5, H>=64, I/J>=8k) holds. Defensive i64 promotion is
-    # a no-op when the offset already fits.
+    # i64 so the base offsets cannot wrap: inp_stride_b = I * J * H already reaches
+    # 3.74e8 at OF3 scale (I=J=4832, H=16) and crosses INT32_MAX once any of
+    # (B>5, H>=64, I/J>=8k) holds. Free when the offset already fits.
     b_idx = tl.program_id(0).to(tl.int64)
     i_idx = tl.program_id(1).to(tl.int64)
     pid_j = tl.program_id(2)
 
     j_off = pid_j * BLOCK_J + tl.arange(0, BLOCK_J)  # [BLOCK_J]
     h_off = tl.arange(0, BLOCK_H)  # [BLOCK_H]
+    h_mask = h_off < H  # [BLOCK_H]
 
     inp_base = inp_ptr + b_idx * inp_stride_b + i_idx * inp_stride_i
     inp_ptrs = inp_base + j_off[:, None] * inp_stride_j + h_off[None, :]
 
-    load_mask = j_off[:, None] < J  # [BLOCK_J, BLOCK_H]
+    load_mask = (j_off[:, None] < J) & h_mask[None, :]  # [BLOCK_J, BLOCK_H]
     vals = tl.load(inp_ptrs, mask=load_mask, other=0.0)  # [BLOCK_J, BLOCK_H]
 
     out_base = out_ptr + b_idx * out_stride_b + i_idx * out_stride_i
     out_ptrs = out_base + h_off[:, None] * out_stride_h + j_off[None, :]
 
-    store_mask = j_off[None, :] < J_padded  # [BLOCK_H, BLOCK_J]
+    store_mask = (j_off[None, :] < J_padded) & h_mask[:, None]  # [BLOCK_H, BLOCK_J]
     tl.store(out_ptrs, tl.trans(vals), mask=store_mask)
 
 
@@ -152,16 +113,9 @@ _BLOCK_J_DEFAULT = 128
 class MoveaxisPad(TritonKernelCache):
     """Pre-compiled fused moveaxis(-1, -3) + pad with ``cuda.bindings`` launch.
 
-    Inherits from :class:`~bionemo_ir.dsl_kernels.triton_cache.TritonKernelCache`
-    for the unified compile / save / load interface.
-
-    Pre-compiles the kernel for a known ``H`` (number of heads) and
-    common dtypes, enabling fast dispatch via
-    :class:`~bionemo_ir.dsl_kernels.cache_base.DriverLauncher`
-    with fallback to Triton's C-level ``.run()``.
-
-    A class-level cache ensures that multiple instances with the same
-    ``(BLOCK_H, BLOCK_J)`` share compiled kernels.
+    Compiles once for a known ``H`` (number of heads) across the common dtypes so
+    each call is a bare launch. Instances sharing ``(BLOCK_H, BLOCK_J)`` reuse one
+    compilation through a class-level cache.
     """
 
     _global_cache: dict[tuple, dict] = {}
@@ -207,6 +161,7 @@ class MoveaxisPad(TritonKernelCache):
             dummy_out,
             bj,
             bj,
+            bh,
             dummy_inp.stride(0),
             dummy_inp.stride(1),
             dummy_inp.stride(2),
@@ -224,8 +179,16 @@ class MoveaxisPad(TritonKernelCache):
 
         Returns:
             contiguous tensor ``[..., H, I, J_padded]``
+
+        Raises:
+            ValueError: If ``x`` has more heads than the instance was compiled for.
         """
         *lead, I, J, H = x.shape
+        if H > self._block_h:
+            raise ValueError(
+                f"input has {H} heads but this MoveaxisPad was built for at most {self._block_h}; "
+                f"construct it with H={H}"
+            )
         B = math.prod(lead) if lead else 1
         x3 = x.reshape(B, I, J, H)
 
@@ -242,12 +205,13 @@ class MoveaxisPad(TritonKernelCache):
             drv.params[1].value = out.data_ptr()
             drv.params[2].value = J
             drv.params[3].value = J_padded
-            drv.params[4].value = x3.stride(0)
-            drv.params[5].value = x3.stride(1)
-            drv.params[6].value = x3.stride(2)
-            drv.params[7].value = out.stride(0)
-            drv.params[8].value = out.stride(1)
-            drv.params[9].value = out.stride(2)
+            drv.params[4].value = H
+            drv.params[5].value = x3.stride(0)
+            drv.params[6].value = x3.stride(1)
+            drv.params[7].value = x3.stride(2)
+            drv.params[8].value = out.stride(0)
+            drv.params[9].value = out.stride(1)
+            drv.params[10].value = out.stride(2)
             drv.launch(B, I, grid_z)
         else:
             kernel.launch(
@@ -256,6 +220,7 @@ class MoveaxisPad(TritonKernelCache):
                 out,
                 J,
                 J_padded,
+                H,
                 x3.stride(0),
                 x3.stride(1),
                 x3.stride(2),
@@ -276,18 +241,15 @@ class MoveaxisPad(TritonKernelCache):
 
 
 def moveaxis_pad(x: torch.Tensor, multiple: int = -1, BLOCK_J: int = _BLOCK_J_DEFAULT) -> torch.Tensor:
-    """Fused moveaxis(-1, -3) + optional zero-pad last dim to a multiple.
+    """Fused moveaxis(-1, -3) + optional zero-pad of J.
 
     Args:
-        x: contiguous tensor of shape [..., I, J, H]
-        multiple: pad J to the next multiple of this value.
-                  If multiple <= 0, no padding is applied (J_padded = J).
-        BLOCK_J: tile size along J (must be power-of-two, default 128)
+        x: contiguous ``[..., I, J, H]``.
+        multiple: pad J up to this multiple; ``<= 0`` leaves J unpadded.
+        BLOCK_J: power-of-two tile size along J.
 
     Returns:
-        contiguous tensor of shape [..., H, I, J_padded]  where:
-          multiple >  0 -> J_padded = ceil(J / multiple) * multiple
-          multiple <= 0 -> J_padded = J  (no padding)
+        Contiguous ``[..., H, I, J_padded]``.
     """
     assert x.is_contiguous(), "input must be contiguous"
     *lead, I, J, H = x.shape
@@ -305,6 +267,7 @@ def moveaxis_pad(x: torch.Tensor, multiple: int = -1, BLOCK_J: int = _BLOCK_J_DE
         out,
         J,
         J_padded,
+        H,
         x3.stride(0),
         x3.stride(1),
         x3.stride(2),

@@ -29,6 +29,7 @@ from bionemo_ir.pipeline.engine import FoldingEngine
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 from bionemo_ir.pipeline.stages.configs import ParallelismMode
 from bionemo_ir.registry import get_model_class, get_postprocessor
+from bionemo_ir.utils import is_device_fatal
 
 
 class FoldingPredictionError(RuntimeError):
@@ -179,8 +180,18 @@ class FoldingEngineUDF(StatefulStageUDF):
             logger.error("=== Exception in _predict_with_error_handling ===")
             logger.error(traceback_str)
             logger.error("================================================")
+            record_ids = [row.get(self.RECORD_ID_IN_BATCH_COLUMN) for row in sub_batch]
+
+            # A sticky CUDA error leaves the context unusable, so this worker cannot
+            # produce a valid result for any later record. Propagate immediately and
+            # do not touch the device on the way out: cleanup's ``empty_cache`` would
+            # raise the same sticky error and bury the original traceback, which is
+            # what made these failures report at unrelated call sites.
+            if is_device_fatal(e):
+                logger.error("CUDA context is unrecoverable; failing the worker instead of continuing")
+                raise FoldingPredictionError(record_ids, e) from e
+
             if not self.should_continue_on_error:
-                record_ids = [row.get(self.RECORD_ID_IN_BATCH_COLUMN) for row in sub_batch]
                 raise FoldingPredictionError(record_ids, e) from e
 
             self.folding.cleanup()
@@ -204,10 +215,17 @@ class FoldingEngineUDF(StatefulStageUDF):
             task = asyncio.create_task(self._predict_with_error_handling(sub_batch))
             tasks.append(task)
 
-        for task in asyncio.as_completed(tasks):
-            results: list[dict[str, Any]] = await task
-            for item in results:
-                yield item
+        try:
+            for task in asyncio.as_completed(tasks):
+                results: list[dict[str, Any]] = await task
+                for item in results:
+                    yield item
+        except FoldingPredictionError as err:
+            if is_device_fatal(err.__cause__ or err):
+                for pending in tasks:
+                    pending.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
         batch_time_taken = time.perf_counter() - batch_start_time
         logger.debug(

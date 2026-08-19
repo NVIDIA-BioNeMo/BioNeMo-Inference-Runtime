@@ -93,26 +93,58 @@ if _knobs is not None:
 else:
     ENTER_HOOK = EXIT_HOOK = None
 
-# The direct launcher depends on Triton's private CompiledKernel ABI.
-
-_SUPPORTED_TRITON_MAJOR_MINOR = (3, 6)
+# The direct launcher reads Triton's private CompiledKernel ABI, so only validated
+# versions get it; keep in step with the ``triton`` bound in requirements.txt. An
+# omitted version still runs, just without the fast path.
+_SUPPORTED_TRITON_VERSIONS: tuple[tuple[int, int], ...] = ((3, 6), (3, 7))
 
 
 def _triton_supports_driver() -> bool:
-    """True only when the installed Triton matches the pinned 3.6 ABI."""
+    """True only when the installed Triton exposes a validated CompiledKernel ABI."""
     raw = getattr(triton, "__version__", "0.0.0")
     try:
         major, minor = (int(p) for p in raw.split(".")[:2])
     except (ValueError, AttributeError):
         return False
-    return (major, minor) == _SUPPORTED_TRITON_MAJOR_MINOR
+    return (major, minor) in _SUPPORTED_TRITON_VERSIONS
 
 
 _DRIVER_TRITON_OK: bool = _triton_supports_driver()
 
 
+def value_specialized_params(jit_fn: JITFunction, dummy_args: Sequence[Any]) -> list[str] | None:
+    """Return scalar parameters Triton may specialize on their compile-time value.
+
+    ``DriverLauncher`` reuses one CUBIN for every runtime shape, so the CUBIN must
+    not depend on the values the dummy arguments held. Triton specializes a
+    non-constexpr scalar two ways, both fatal for a reused CUBIN: ``value % 16 == 0``
+    adds a divisible_by_16 alignment assumption that a non-multiple runtime value
+    violates, and ``value == 1`` folds the argument away entirely, shifting every
+    later ``params[i]`` assignment. ``do_not_specialize`` suppresses both. Pointers
+    are exempt -- their marker reflects allocator alignment, which always holds.
+
+    Args:
+        jit_fn: The ``@triton.jit`` function being compiled.
+        dummy_args: Positional compile arguments; tensors mark pointer parameters.
+
+    Returns:
+        Names of unprotected scalar parameters, empty when the CUBIN is safe to
+        reuse, or ``None`` when the parameters cannot be introspected.
+    """
+    params = getattr(jit_fn, "params", None)
+    if not params or len(params) < len(dummy_args):
+        return None
+    unprotected: list[str] = []
+    for param, arg in zip(params, dummy_args, strict=False):
+        if param.is_constexpr or isinstance(arg, torch.Tensor):
+            continue
+        if not getattr(param, "do_not_specialize", False):
+            unprotected.append(param.name)
+    return unprotected
+
+
 class CachedKernel:
-    """Compiled Triton kernel with direct-driver and ``.run()`` launch paths."""
+    """Compiled Triton kernel with direct-driver, ``.run()``, and JIT launch paths."""
 
     __slots__ = ("_kernel", "_stream", "_driver")
 
@@ -147,13 +179,19 @@ class CachedKernel:
         return self._kernel
 
     def launch(self, grid: tuple[int, ...], *args: Any) -> None:
-        """Launch through Triton's C-level ``.run()`` fallback.
+        """Launch the kernel.
+
+        A ``JITFunction`` goes through Triton's dispatch, which recompiles per
+        specialization. A compiled CUBIN uses Triton's C-level ``.run()``.
 
         Args:
             grid: (grid_x,) or (grid_x, grid_y) or (grid_x, grid_y, grid_z).
             *args: Kernel arguments in declaration order, including constexprs.
         """
         kernel = self._kernel
+        if isinstance(kernel, JITFunction):
+            kernel[grid](*args)
+            return
         gs = len(grid)
         gx = grid[0]
         gy = grid[1] if gs > 1 else 1
@@ -316,7 +354,27 @@ class TritonKernelCache(KernelCacheBase):
 
         if not _looks_like_compiled_kernel(compiled):
             compiled = self._lookup_compiled(jit_fn, dummy_args, constexpr_kwargs)
-        return CachedKernel(compiled, stream=stream)
+
+        # A value-specialized CUBIN is only valid for the dummy arguments. Do not
+        # wrap it: DriverLauncher and CachedKernel.launch()/.run() would both reuse
+        # it. Hand the JIT function through so launch() recompiles per specialization.
+        name = f"{jit_fn.fn.__module__}.{jit_fn.fn.__name__}"
+        unprotected = value_specialized_params(jit_fn, dummy_args)
+        if unprotected is None:
+            logger.warning(
+                "Cannot introspect parameters of %s; disabling the direct CUBIN launcher because value "
+                "specialization cannot be ruled out",
+                name,
+            )
+        elif unprotected:
+            logger.warning(
+                "%s has scalar parameter(s) %s without do_not_specialize; disabling the direct CUBIN "
+                "launcher because the compiled kernel is only valid for the compile-time values",
+                name,
+                ", ".join(unprotected),
+            )
+        enable_driver = unprotected == []
+        return CachedKernel(compiled if enable_driver else jit_fn, stream=stream, enable_driver=enable_driver)
 
     @staticmethod
     def _lookup_compiled(

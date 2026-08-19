@@ -15,44 +15,25 @@
 
 """Triton kernel: fused SwiGLU activation.
 
-Computes one of two patterns in a single kernel launch, selected by
-the compile-time flag ``THREE_WAY``:
+One launch computes either pattern, selected by the ``THREE_WAY`` constexpr::
 
-    2-way:  out = silu(gate) * x            (standard SwiGLU)
-    3-way:  out = silu(gate) * x * n        (gated SwiGLU with extra multiplier - Boltz DiT)
+    2-way:  out = silu(gate) * x          z = [x | gate]      [..., 2*d]
+    3-way:  out = silu(gate) * x * n      z = [x | gate | n]  [..., 3*d]
 
-The input ``z`` is a contiguous tensor whose last dimension packs the
-components end-to-end:
-
-    2-way:  z[..., 0:d] = x,   z[..., d:2d] = gate          → shape [..., 2*d]
-    3-way:  z[..., 0:d] = x,   z[..., d:2d] = gate,
-            z[..., 2d:3d] = n                                 → shape [..., 3*d]
-
-By reading from the packed buffer directly the kernel avoids the
-non-contiguous views that ``z.split(...)`` would produce and eliminates
-two extra kernel launches (silu + mul / mul).
+Reading the packed ``z`` directly avoids the non-contiguous views that
+``z.split(...)`` would create and folds away two launches (silu, mul).
 
 Adapted from vLLM's ``_silu_and_mul_kernel`` (Apache-2.0).
 
-Launch strategy
----------------
-When ``cuda.bindings`` is available, :class:`FusedSwiGLU` launches via
-:class:`~bionemo_ir.dsl_kernels.cache_base.DriverLauncher`
-(``cuLaunchKernel`` — ~17 µs overhead).  Otherwise it falls back to
-Triton's C-level ``.run()`` path (~20 µs overhead).
+:class:`FusedSwiGLU` launches through
+:class:`~bionemo_ir.dsl_kernels.cache_base.DriverLauncher` when ``cuda.bindings``
+is available and otherwise through Triton's ``.run()``::
 
-Usage
------
-    from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
-
-    # Class-based (preferred — pre-compiled, ~17 µs total with cuda.bindings):
-    swiglu = FusedSwiGLU(d=768, three_way=False)
+    swiglu = FusedSwiGLU(d=768, three_way=False)   # preferred: pre-compiled
     out = swiglu(z)
-    swiglu(z, output=buf)                  # with pre-allocated buffer
+    swiglu(z, output=buf)                          # into a pre-allocated buffer
 
-    # Functional (convenience, ~30 µs overhead):
-    from bionemo_ir.dsl_kernels.triton.fused_swiglu import fused_swiglu
-    out = fused_swiglu(z, three_way=False)
+    out = fused_swiglu(z, three_way=False)         # functional, compiles per call
 """
 
 import torch
@@ -123,18 +104,10 @@ def _pick_block_size(d: int) -> int:
 class FusedSwiGLU(TritonKernelCache):
     """Fused SwiGLU with pre-compiled kernel and ``cuda.bindings`` launch.
 
-    Inherits from :class:`~bionemo_ir.dsl_kernels.triton_cache.TritonKernelCache`
-    for the unified compile / save / load interface.
-
-    At construction the kernel is compiled for ``(d, three_way, block_size)``
-    across multiple dtypes.  ``__call__`` dispatches via
-    :class:`~bionemo_ir.dsl_kernels.cache_base.DriverLauncher`
-    (cuda.bindings ``cuLaunchKernel``) when available, falling back to
-    Triton's C-level ``.run()`` (~20 µs vs ~17 µs).
-
-    A class-level cache ensures that multiple instances with the same
-    ``(d, three_way)`` share compiled kernels — avoiding redundant
-    kernel launches and GPU syncs during model construction.
+    Compiles once for ``(d, three_way, block_size)`` across the common dtypes so
+    each call is a bare launch. Instances sharing ``(d, three_way)`` reuse one
+    compilation through a class-level cache, which keeps model construction from
+    paying repeated compiles and GPU syncs.
     """
 
     _global_cache: dict[tuple, dict] = {}

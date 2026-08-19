@@ -16,8 +16,7 @@
 """Persistent .o cache for CuTe DSL compiled kernels.
 
 Compiled kernels are exported as object files (.o) via ``export_to_c``.
-On subsequent runs the .o is loaded (~1 ms) instead of re-generating
-IR + re-JIT'ing (~100 ms per kernel).
+On subsequent runs the .o is loaded instead of regenerating IR and re-JIT'ing.
 
 An entry is host code, not just device code: the .o embeds the CUBIN image and
 wraps it in native code the compiler emitted for the machine that built it. The
@@ -125,8 +124,7 @@ def _compute_source_fingerprint() -> str:
     # The exported .o wraps device code in host code built for this CPU, so a
     # shared cache must not cross ISAs — see _host_cpu_isa_signature.
     h.update(f"host_isa={_host_cpu_isa_signature()}".encode())
-    # Separate SKUs that share a compute capability but differ in SM count
-    # (H20's 78 vs H100/H200's 114-144) — see _device_sm_count.
+    # Separate SKUs that share a compute capability but differ in SM count.
     h.update(f"sm_count={_device_sm_count()}".encode())
 
     dsl_kernels_dir = Path(__file__).resolve().parent
@@ -252,9 +250,8 @@ def _device_sm_count() -> int:
     Folded into the cache fingerprint so a kernel compiled for one SKU isn't
     reused on another with a different SM count: CuTe persistent kernels bake
     launch geometry (grid / cluster sizing) from the runtime SM count at compile
-    time, so an H20 (78 SMs) replaying an H100/H200 (114-144) kernel breaks bf16
-    parity. Compute capability (sm90) can't separate them; SM count can. Assumes
-    one device per process (the fingerprint is lru_cached on first use).
+    time. Compute capability alone cannot separate those SKUs; SM count can.
+    Assumes one device per process (the fingerprint is lru_cached on first use).
     """
     try:
         import torch

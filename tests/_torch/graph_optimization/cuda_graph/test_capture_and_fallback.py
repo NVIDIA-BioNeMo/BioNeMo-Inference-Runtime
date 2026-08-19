@@ -34,6 +34,7 @@ from bionemo_ir._torch.graph_optimization.cuda_graph import memory as gc_mem
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
+    CUDAGraphState,
 )
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-graph tests require CUDA")
@@ -273,6 +274,135 @@ class _MutatesScratchBuffers(nn.Module):
         if buffers is not None:
             buffers["pw"] = torch.zeros(x.shape[0], 768, device=x.device, dtype=x.dtype)
         return x * 2.0 + 1.0
+
+
+def test_release_frees_graph_and_buffers_and_is_idempotent():
+    m, _ = _make()
+    x = torch.randn(2, 8, device="cuda")
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            m(x)
+    state = m.graph_state_by_key[_key(m, x)]
+    assert state.graph is not None
+
+    state.release()
+    # ``graph`` must still resolve to None rather than raise: several call sites
+    # read it after a failed capture or replay.
+    assert state.graph is None
+    assert state.static_output is None
+    assert state.static_input_arg is None
+    assert state.warmup_stream is None
+    assert state.preparation_state == CUDAGraphPreparationState.WARMUP
+    state.release()
+
+
+def test_release_cleans_up_after_a_warmup_that_raised():
+    class _Raises(nn.Module):
+        def forward(self, x):
+            return (x * 2).sum() + _boom()
+
+    def _boom():
+        raise RuntimeError("warmup blew up")
+
+    tracker = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(), inner_module=_Raises().cuda()).eval()
+    x = torch.randn(8, 8, device="cuda")
+    with torch.no_grad(), pytest.raises(RuntimeError, match="warmup blew up"):
+        tracker(x)
+
+    state = next(iter(tracker.graph_state_by_key.values()))
+    assert state.graph is None
+    assert state.static_output is None
+    assert state.warmup_stream is not None
+    assert state.static_unadjusted_input_tensor_shapes is not None
+
+    state.release()
+    assert state.warmup_stream is None
+    assert state.static_unadjusted_input_tensor_shapes is None
+    state.release()
+
+
+def test_release_skips_a_state_that_holds_nothing():
+    # The synchronize is a device-wide barrier, so an untouched state must not pay it.
+    state = CUDAGraphState()
+    state.release()
+    assert state.graph is None
+    assert state.warmup_stream is None
+
+
+def test_lru_overflow_releases_the_evicted_graph():
+    # With one graph per module, each new shape evicts the previous one. The
+    # eviction must tear the graph down, not leave it to an arbitrary later
+    # garbage collection.
+    config = CUDAGraphOptimizationConfig(num_graphs_max_for_this_module=1)
+    net = nn.Sequential(nn.Linear(8, 8), nn.ReLU()).cuda().eval()
+    tracker = CUDAGraphOptimizationTracker(config, inner_module=net).eval()
+
+    first = torch.randn(2, 8, device="cuda")
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            tracker(first)
+    evicted = tracker.graph_state_by_key[_key(tracker, first)]
+    assert evicted.graph is not None
+
+    second = torch.randn(3, 8, device="cuda")
+    with torch.no_grad():
+        tracker(second)
+
+    assert _key(tracker, first) not in tracker.graph_state_by_key
+    assert evicted.graph is None
+    assert evicted.static_output is None
+
+
+def test_evict_key_tolerates_an_already_evicted_key():
+    # Overlapping failure paths must not turn one fault into a KeyError.
+    m, _ = _make()
+    x = torch.randn(2, 8, device="cuda")
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            m(x)
+    key = _key(m, x)
+    m._revert_to_eager(key)
+    m._revert_to_eager(key)
+    assert key not in m.graph_state_by_key
+
+
+def test_device_fatal_capture_error_propagates(monkeypatch):
+    # A poisoned CUDA context cannot be recovered by falling back to eager, and
+    # swallowing it reports the fault at an unrelated call site later.
+    m, _ = _make()
+    x = torch.randn(2, 8, device="cuda")
+
+    class _IllegalAccessGraph:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(torch.cuda, "graph", lambda *a, **k: _IllegalAccessGraph())
+    with torch.no_grad(), pytest.raises(RuntimeError, match="illegal memory access"):
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            m(x)
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is None
+
+
+def test_device_fatal_replay_error_propagates():
+    m, _ = _make()
+    x = torch.randn(2, 8, device="cuda")
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            m(x)
+    state = m.graph_state_by_key[_key(m, x)]
+
+    def _illegal_access():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    state.graph.replay = _illegal_access
+    with torch.no_grad(), pytest.raises(RuntimeError, match="illegal memory access"):
+        m(x)
 
 
 def test_input_key_ignores_scratch_buffers():

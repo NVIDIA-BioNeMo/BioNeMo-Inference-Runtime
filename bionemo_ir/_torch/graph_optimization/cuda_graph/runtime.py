@@ -46,6 +46,7 @@ from bionemo_ir._torch.graph_optimization.tracker import (
     TensorContainerShapes,
 )
 from bionemo_ir.logger import logger
+from bionemo_ir.utils import is_device_fatal
 
 
 class CUDAGraphPreparationState(enum.Enum):
@@ -78,21 +79,61 @@ class CUDAGraphState:
         # Peak warmup activations later retained by the graph mempool.
         self.warmup_peak_activation_bytes: int = 0
 
+    def release(self) -> None:
+        """Drain the device, then drop this key's buffers and graph. Idempotent.
+
+        Leaving teardown to refcounting fires whenever the last reference happens
+        to drop, possibly mid-forward or during a later capture, and destroys the
+        graph without draining the replays still in flight.
+        """
+        if not any(
+            resource is not None
+            for resource in (
+                self.graph,
+                self.warmup_stream,
+                self.static_input_arg,
+                self.static_input_kwargs,
+                self.static_output,
+                self.static_unadjusted_input_tensor_shapes,
+                self.static_unadjusted_output_tensor_shapes,
+            )
+        ):
+            return
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        # Static outputs live in the graph's private pool, so they go before it does.
+        _delete_tensors_in_container(self.static_input_arg)
+        _delete_tensors_in_container(self.static_input_kwargs)
+        _delete_tensors_in_container(self.static_output)
+        _delete_tensors_in_container(self.static_unadjusted_input_tensor_shapes)
+        _delete_tensors_in_container(self.static_unadjusted_output_tensor_shapes)
+        self.static_input_arg = None
+        self.static_input_kwargs = None
+        self.static_output = None
+        self.static_unadjusted_input_tensor_shapes = None
+        self.static_unadjusted_output_tensor_shapes = None
+
+        # Assign rather than ``del``: later reads must see None, not AttributeError.
+        self.graph = None
+        self.warmup_stream = None
+        self.preparation_state = CUDAGraphPreparationState.WARMUP
+
     def __del__(self) -> None:
-        """Release buffers without raising during partial init or shutdown."""
+        """Release resources without raising during partial init or shutdown."""
         try:
-            _delete_tensors_in_container(getattr(self, "static_input_arg", None))
-            _delete_tensors_in_container(getattr(self, "static_input_kwargs", None))
-            _delete_tensors_in_container(getattr(self, "static_output", None))
-            _delete_tensors_in_container(getattr(self, "static_unadjusted_input_tensor_shapes", None))
-            _delete_tensors_in_container(getattr(self, "static_unadjusted_output_tensor_shapes", None))
+            self.release()
         except Exception:
             pass
 
 
 def cudagraph_delete_callback(_input_key: str, value: CUDAGraphState) -> None:
-    """Drop an LRU-evicted graph state and its resources."""
-    del value
+    """Release an LRU-evicted graph state.
+
+    The LRU drops its reference after this returns, so the state is collected either
+    way; releasing here makes the teardown ordered and prompt.
+    """
+    value.release()
 
 
 class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
@@ -122,6 +163,8 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
     def __del__(self) -> None:
         """Drop cached states without raising during shutdown."""
         try:
+            for state in self.graph_state_by_key.values():
+                state.release()
             self.graph_state_by_key.clear()
             del self.graph_state_by_key
         except Exception:
@@ -135,6 +178,8 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         """
         graph_state_by_key = getattr(self, "graph_state_by_key", None)
         if graph_state_by_key is not None:
+            for state in graph_state_by_key.values():
+                state.release()
             graph_state_by_key.clear()
         fallback_to_eager_by_key = getattr(self, "fallback_to_eager_by_key", None)
         if fallback_to_eager_by_key is not None:
@@ -370,6 +415,10 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                 )
 
         except Exception as exc:  # noqa: BLE001 - any capture failure -> eager
+            # A sticky CUDA error is not a capture problem: eager execution would hit
+            # the same poisoned context and report the fault somewhere unrelated.
+            if is_device_fatal(exc):
+                raise
             logger.info(f"{type(self).__name__}: capture failed, revert to eager ({exc})")
             self._revert_to_eager(input_key)
             return self.inner_module(*args, **kwargs)
@@ -432,12 +481,14 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
     def _evict_key(self, key: str) -> None:
         """Free and remove a key's cached graph state.
 
-        Explicit LRU deletion does not invoke the overflow callback, so the
-        graph is deleted directly.
+        Explicit LRU deletion does not invoke the overflow callback, so the state
+        is released directly. Tolerates an already-evicted key so that overlapping
+        failure paths cannot turn one fault into a ``KeyError``.
         """
-        state = self.graph_state_by_key[key]
-        if state.graph is not None:
-            del state.graph
+        state = self.graph_state_by_key.get(key)
+        if state is None:
+            return
+        state.release()
         del self.graph_state_by_key[key]
 
     def _revert_to_eager(self, key: str) -> None:
@@ -452,6 +503,10 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         try:
             state.graph.replay()
         except Exception as exc:  # noqa: BLE001 - any replay failure -> evict
+            # Same reasoning as capture: a poisoned context cannot be recovered by
+            # evicting the graph and retrying eagerly.
+            if is_device_fatal(exc):
+                raise
             logger.info(f"{type(self).__name__}: replay failed, evicting cached graph for key {input_key!r} ({exc})")
             self._revert_to_eager(input_key)
             return False

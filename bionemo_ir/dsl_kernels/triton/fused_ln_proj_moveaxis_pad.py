@@ -13,50 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
 """Triton kernel: fused LayerNorm + Linear projection + moveaxis + pad.
 
-Problem
--------
-The pair bias path in AttentionPairBias does:
+The pair bias path in ``AttentionPairBias`` normalizes, projects and transposes::
 
-    z: [B, I, J, D]  ->  LayerNorm(z)  ->  Linear(z) -> [B, I, J, H]  ->  moveaxis+pad -> [B, H, I, J_padded]
+    z: [B, I, J, D] -> LayerNorm -> Linear -> [B, I, J, H] -> [B, H, I, J_padded]
 
-Unfused, this is 3 separate kernels:
-    1. LayerNorm: read [B,I,J,D], write [B,I,J,D]       -- 2 passes over O(N^2*D) data
-    2. Linear:    read [B,I,J,D], write [B,I,J,H]       -- 1 pass
-    3. Moveaxis+pad: read [B,I,J,H], write [B,H,I,J_pad] -- 1 pass
+Unfused that is three kernels over an O(N^2) tensor, dominated by the
+bandwidth-bound LayerNorm. This reads ``z`` once, keeps the LayerNorm statistics in
+registers, folds the affine transform into a tiled matmul against the projection
+weight, and writes straight into the padded transposed layout.
 
-The LayerNorm alone accounts for 85-89% of total attention time because the pair
-tensor is O(N^2) and memory-bandwidth-bound.
+Grid: ``(ceil_div(J_padded, TILE_J), I, ceil_div(H, HEADS_PER_BLK) * B)``, one
+``[TILE_J, D]`` tile per program accumulated into ``[TILE_J, HEADS_PER_BLK]``.
 
-This fused kernel does it all in one pass:
-    - Reads z [B, I, J, D] once
-    - Computes LayerNorm statistics in registers
-    - Applies LayerNorm affine transform + Linear projection (tiled matmul)
-    - Writes output directly in [B, H, I, J_padded] layout with padding
-
-Based on cuequivariance's pair_bias_norm_linear_mask_forward_kernel, adapted
-for BioIR's layout conventions (no mask application — mask is handled by
-the downstream attention kernel).
-
-Launch strategy
----------------
-Grid: (ceil_div(J_padded, TILE_J), I, ceil_div(H, HEADS_PER_BLK) * B)
-
-Each program handles a tile of [TILE_J, D] input, computes LN stats,
-then accumulates the projection in [TILE_J, HEADS_PER_BLK] tiles over D,
-and writes the transposed result to [HEADS_PER_BLK, TILE_J] in the output.
-
-Alignment note
---------------
-This kernel is only used when the caller passes ``multiple >= 0`` (i.e. the
-CuTeDSL path, typically ``multiple=8``).  In that case J_padded is always a
-multiple of 8, so out_stride_h = I * J_padded is divisible by 8, satisfying
-the 16-byte alignment required by Triton's vectorised 128-bit stores for every
-head h >= 1.  When ``multiple < 0`` callers fall back to the unfused sequence
-to avoid potential misalignment for arbitrary sequence lengths.
+Based on cuequivariance's ``pair_bias_norm_linear_mask_forward_kernel``, adapted to
+BioIR layouts; the mask is left to the downstream attention kernel.
 """
 
 import math
@@ -72,7 +44,22 @@ from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
 # ---------------------------------------------------------------------------
 
 
-@triton.jit
+# One CUBIN serves every runtime shape, so no argument may carry a specialization
+# from the value it held at compile time. ``_make_dummy_args`` makes J, J_padded and
+# all six strides multiples of 16, which Triton turns into a divisible_by_16
+# assumption; launching that CUBIN with J=30 then corrupts and overruns the output.
+@triton.jit(
+    do_not_specialize=[
+        "J",
+        "J_padded",
+        "z_stride_b",
+        "z_stride_i",
+        "z_stride_j",
+        "out_stride_b",
+        "out_stride_h",
+        "out_stride_i",
+    ]
+)
 def _fused_ln_proj_moveaxis_pad_kernel(
     # Pointers
     z_ptr,  # input:  [B, I, J, D] contiguous
@@ -118,13 +105,10 @@ def _fused_ln_proj_moveaxis_pad_kernel(
     offs_j = pid_j * TILE_J + tl.arange(0, TILE_J)
     offs_d = tl.arange(0, DIM_D)
     offs_h = head_blk_idx * HEADS_PER_BLK + tl.arange(0, HEADS_PER_BLK)
-    # ``pid_i`` and ``batch_idx`` are promoted to i64 above because at
-    # OF3 token-transformer scale (I=J=4832, D=128) the per-row offset
-    #   pid_i * z_stride_i = 4831 * (J*D) = 2.99e9
-    # overflows i32 (INT32_MAX = 2.15e9). The same applies to
-    #   batch_idx * z_stride_b
-    # for B>1 or H growth on the output side. ``pid_j`` and offsets in
-    # the J/D/H dims stay i32 (max ~5k) — no overflow risk there.
+    # ``pid_i`` and ``batch_idx`` are i64 above because at OF3 token-transformer
+    # scale (I=J=4832, D=128) the per-row offset pid_i * z_stride_i reaches 2.99e9
+    # and overflows i32; ``batch_idx * z_stride_b`` does the same for B>1 or more
+    # heads. Offsets along J/D/H stay i32 -- they never exceed ~5k.
 
     mask_j = offs_j < J
     mask_h = offs_h < NUM_HEADS
@@ -205,21 +189,16 @@ _TILE_J_DEFAULT = 32
 class FusedLNProjMoveaxisPad(TritonKernelCache):
     """Fused LayerNorm + Linear projection + moveaxis(-1,-3) + pad.
 
-    Replaces the sequence:
-        z_normed = layer_norm(z)           # [B, I, J, D]
-        proj = linear(z_normed)            # [B, I, J, H]
-        out = moveaxis_pad(proj)           # [B, H, I, J_padded]
-
-    with a single kernel that reads z once and writes the transposed output.
-
-    Only used when ``multiple >= 0`` (CuTeDSL path) so that J_padded is
-    always a multiple of 8, guaranteeing 16-byte aligned stores in the kernel.
+    Compiles once for ``(D, H, tile_j, ...)`` across the common dtypes so each call
+    is a bare launch; instances sharing that key reuse one compilation through a
+    class-level cache. Callers reach it via ``LNProjMoveaxisPad``, which only
+    selects this path for ``multiple >= 0`` (the CuTeDSL layout).
 
     Args:
-        D: pair feature dimension (e.g. 64 or 128)
-        H: number of attention heads
-        tile_j: J-dimension tile size (default 64)
-        dtype: compute dtype
+        D: Pair feature dimension, e.g. 64 or 128.
+        H: Number of attention heads.
+        tile_j: Tile size along J.
+        dtype: Compute dtype.
     """
 
     _global_cache: dict[tuple, dict] = {}

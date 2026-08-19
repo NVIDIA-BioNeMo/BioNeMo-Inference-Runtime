@@ -3,7 +3,7 @@ torch>=2.11
 cuequivariance==0.11.1
 cuequivariance-ops-cu13==0.11.1
 cuequivariance-ops-torch-cu13==0.11.1
-triton==3.6.0
+triton>=3.6.0,<3.7.1
 biopython>=1.87
 ray[serve,data]==2.56.1  # installs pandas, pyarrow
 uvloop==0.21.0  # >=0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992

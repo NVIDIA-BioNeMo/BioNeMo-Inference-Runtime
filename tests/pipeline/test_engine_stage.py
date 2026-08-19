@@ -331,6 +331,96 @@ class TestFoldingEngineUDF:
         asyncio.run(run_test())
 
     @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    def test_sticky_cuda_error_fails_the_worker_without_touching_the_device(self, mock_wrapper_class):
+        """A sticky CUDA error leaves the context unusable for every later record.
+
+        Continuing produces a cascade of misleading failures at unrelated call sites,
+        and ``cleanup``'s ``empty_cache`` raises the same sticky error, burying the
+        original traceback. So it must propagate even with
+        ``should_continue_on_error=True``, and cleanup must not run.
+        """
+        mock_wrapper = Mock()
+        mock_wrapper.get_max_batch_size.return_value = 2
+        mock_wrapper_class.return_value = mock_wrapper
+
+        async def mock_predict_async_with_ima(rows):
+            raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+        mock_wrapper.predict_async = mock_predict_async_with_ima
+
+        udf = FoldingEngineUDF(
+            compute_by_rows=True,
+            drop_keys=[],
+            expected_input_keys=["sequence"],
+            update_row=False,
+            model="test_model",
+            engine_kwargs={},
+            should_continue_on_error=True,
+        )
+
+        async def run_test():
+            batch = [{"sequence": "ACGT", "__idx_in_batch": 0}]
+            with pytest.raises(FoldingPredictionError) as exc_info:
+                async for _ in udf.udf_for_rows(batch):
+                    pass
+            assert "illegal memory access" in str(exc_info.value.__cause__)
+
+        asyncio.run(run_test())
+        mock_wrapper.cleanup.assert_not_called()
+
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngineWrapper")
+    def test_sticky_cuda_error_cancels_pending_sub_batches(self, mock_wrapper_class):
+        """A poisoned CUDA context must not keep running later sub-batches.
+
+        ``udf_for_rows`` fans each sub-batch out with ``create_task``. If one of
+        them hits a sticky CUDA error, the remaining tasks would otherwise keep
+        launching work on that context after ``FoldingPredictionError`` has
+        already left ``predict_async``.
+        """
+        mock_wrapper = Mock()
+        mock_wrapper.get_max_batch_size.return_value = 1
+        mock_wrapper_class.return_value = mock_wrapper
+
+        release_siblings = asyncio.Event()
+        finished_later: list[int] = []
+
+        async def mock_predict_async(rows):
+            idx = rows[0]["__idx_in_batch"]
+            if idx == 0:
+                await asyncio.sleep(0)
+                raise RuntimeError("CUDA error: an illegal memory access was encountered")
+            await release_siblings.wait()
+            finished_later.append(idx)
+            return [{"structure": "ATOM..."}], [0.0]
+
+        mock_wrapper.predict_async = mock_predict_async
+
+        udf = FoldingEngineUDF(
+            compute_by_rows=True,
+            drop_keys=[],
+            expected_input_keys=["sequence"],
+            update_row=False,
+            model="test_model",
+            engine_kwargs={},
+            should_continue_on_error=True,
+        )
+
+        async def run_test():
+            batch = [{"sequence": f"SEQ{i}", "__idx_in_batch": i} for i in range(3)]
+            with pytest.raises(FoldingPredictionError) as exc_info:
+                async for _ in udf.udf_for_rows(batch):
+                    pass
+            assert "illegal memory access" in str(exc_info.value.__cause__)
+            # The worker loop stays up. Releasing the gate would let any still
+            # pending sibling finish if cancellation did not settle them first.
+            release_siblings.set()
+            await asyncio.sleep(0)
+            assert finished_later == []
+
+        asyncio.run(run_test())
+        mock_wrapper.cleanup.assert_not_called()
+
+    @patch("bionemo_ir.pipeline.stages.engine_stage.FoldingEngineWrapper")
     def test_batching_splits_large_batches_into_sub_batches(self, mock_wrapper_class):
         """Test that large batches are split into sub-batches based on max_batch_size.
 

@@ -62,6 +62,12 @@ DOCKER_CACHE_FROM ?=
 _CACHE_ARGS := $(if $(or $(CI),$(DOCKER_CACHE_FROM)),--build-arg BUILDKIT_INLINE_CACHE=1,) \
 	$(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM),)
 
+# Compile jobs for the wheel stage. Left empty the Dockerfile asks the machine,
+# which is right locally; in a CI job container nproc reports 1 whatever the
+# scheduler granted, so pass the allocation through when there is one.
+BUILD_JOBS ?= $(CI_SLURM_CPUS_PER_TASK)
+_JOBS_ARG := $(if $(BUILD_JOBS),--build-arg BUILD_JOBS=$(BUILD_JOBS),)
+
 CPU_ARCH := $(shell uname -m)
 ifeq ($(CPU_ARCH),x86_64)
 BUILD_PLATFORM := linux/amd64
@@ -76,7 +82,7 @@ _BUILD := docker build $(_CACHE_ARGS) --platform $(BUILD_PLATFORM) \
 
 # Deliberately not part of _BUILD: `deps` must NOT pass them, so that the
 # Dockerfile's digest-pinned BASE_TAG default stands and the image keeps the
-# compile identity the CUBIN publish gate checks.
+# compile identity the tracked CUBIN packs were built against.
 _BASE_ARGS := --build-arg BASE_IMAGE=$(BASE_IMAGE) \
 	--build-arg BASE_TAG=$(BASE_TAG)
 
@@ -106,14 +112,14 @@ dev:
 # Exports the built wheel to ./dist on the host rather than leaving it in an
 # image layer. Targets wheel-export, not wheel: see the Dockerfile.
 wheel:
-	$(_BUILD) $(_BASE_ARGS) --target wheel-export \
+	$(_BUILD) $(_BASE_ARGS) --target wheel-export $(_JOBS_ARG) \
 		$(if $(CUDA_TAG),--build-arg CUDA_TAG=$(CUDA_TAG),) \
 		--output type=local,dest=$(PROJECT_DIR)/dist \
 		$(PROJECT_DIR)
 	@echo "wheel written to $(PROJECT_DIR)/dist"
 
 runtime:
-	$(_BUILD) $(_BASE_ARGS) --target runtime \
+	$(_BUILD) $(_BASE_ARGS) --target runtime $(_JOBS_ARG) \
 		--build-arg RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
 		--build-arg RUNTIME_TAG=$(RUNTIME_TAG) \
 		$(if $(CUDA_TAG),--build-arg CUDA_TAG=$(CUDA_TAG),) \

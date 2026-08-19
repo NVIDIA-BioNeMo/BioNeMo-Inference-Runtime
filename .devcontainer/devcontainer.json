@@ -4,6 +4,7 @@
   "service": "bionemo-ir-dev",
   "workspaceFolder": "/bioir",
   "remoteUser": "dev",
+  "initializeCommand": "${localWorkspaceFolder}/.devcontainer/init.sh",
   "postCreateCommand": "git config --global --add safe.directory /bioir && pip install --no-build-isolation -e '.[dev]' && prek install",
   "customizations": {
     "vscode": {

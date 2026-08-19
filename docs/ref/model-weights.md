@@ -58,9 +58,8 @@ scripts/fetch_weights.sh --help
 internal NGC mirror when `BIOIR_NGC_ORG`, `BIOIR_NGC_TEAM` and NGC credentials
 are all present, and the public upstreams otherwise — so outside NVIDIA it is
 exactly `--source public` and never needs credentials. `--source ngc` forces the
-mirror and fails when it is unusable (CI wants that; see
-[nv/model-weights.md](../nv/model-weights.md)); `--source none` stages nothing
-and only reports what already resolves.
+mirror and fails when it is unusable; `--source none` stages nothing and only
+reports what already resolves.
 
 What the public source covers, per family — the per-file list is the
 `PUBLIC_URLS` table in the script, not restated here to avoid drift:

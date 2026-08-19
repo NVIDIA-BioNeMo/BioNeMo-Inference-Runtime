@@ -119,6 +119,12 @@ workdir/
 # Dockerfile COPYs it, so keep it out of the build context.
 docs/
 
+# Sample structures and fixtures. Nothing packages them -- the wheel ships
+# bionemo_ir* only -- so in the wheel stage's `COPY .` they are pure weight, and
+# editing one would rebuild the extension for nothing. The tests that read
+# examples/data run against the checkout, which this file does not affect.
+examples/
+
 # openfold-3: only the openfold3/ python package is imported by tests.
 3rdparty/openfold-3/assets/
 3rdparty/openfold-3/docs/

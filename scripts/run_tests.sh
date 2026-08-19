@@ -26,7 +26,7 @@
 # instrumentation costs wall-clock and nothing local reads the report. COVERAGE=1
 # turns it on: both phases then share one data file, and the combined branch
 # coverage is rendered as a terminal summary and HTML under REPORT_DIR. CI sets
-# it (see .gitlab/ci/test.yml), which is what feeds the published number.
+# it, which is what feeds the published number.
 #
 # Weight download and staging live in scripts/fetch_weights.sh; this script
 # invokes it and sources the env file it writes. Weights it cannot supply are
@@ -198,10 +198,9 @@ report_coverage() {
 
 # Which GPU ran this, and how warm its kernel cache was, as an OpenMetrics
 # report CI can render alongside the run. Both change what the suite exercises:
-# the CuTeDSL kernel sources under dsl_kernels/cute/ only count as covered when
-# a kernel is JIT-traced, which needs a matching arch AND a cold cache — so the
-# same commit measures several points apart on an H100 with a warm cache versus
-# a cold A100.
+# the CuTeDSL kernel sources only count as covered when a kernel is JIT-traced,
+# which needs a matching arch AND a cold cache — so the same commit measures
+# several points apart on an H100 with a warm cache versus a cold A100.
 write_metrics() {
   local gpu_name gpu_cap gpu_mem host kcache pct
   IFS=, read -r gpu_name gpu_cap gpu_mem < <(

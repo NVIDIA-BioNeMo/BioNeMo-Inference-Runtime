@@ -30,12 +30,28 @@ services:
     # kernels still runs on the PyTorch fallbacks.
     gpus: all
 
+    environment:
+      # The library's weight cache, at the same absolute path the host has.
+      # Staging symlinks the probe directories at the raw downloads using
+      # absolute paths, so both sides must agree on the path or every staged
+      # link dangles across the mount. See docker/README.md.
+      BIOIR_CACHE: ${BIOIR_CACHE:-${HOME}/.cache/bionemo_ir}
+
+    # The same host directories docker/dev.sh mounts, resolved the same way
+    # (XDG_CACHE_HOME included), so a Compose session and a docker/dev.sh shell
+    # share one set of caches and neither re-downloads what the other already
+    # has -- and init.sh creates the directories Compose actually mounts. Set
+    # BIOIR_HOST_CACHE/BIOIR_CACHE in .devcontainer/.env to move them (VS Code
+    # and Compose both read that file).
     volumes:
       - ..:/bioir:cached
       # ccache, pip and the compiled-kernel cache, kept across rebuilds.
-      - bioir-cache:/cache
+      - ${BIOIR_HOST_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/bionemo-ir-dev}/cache:/cache
+      # The container user's ~/.cache: HuggingFace hub checkpoints (~/.cache/hf,
+      # a path hardcoded in hubs/hf.py), torch hub, the prek hook environments.
+      # `dev` is the USERNAME the Dockerfile's dev stage builds.
+      - ${BIOIR_HOST_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/bionemo-ir-dev}/home-cache:/home/dev/.cache
+      # Staged checkpoints and raw downloads, shared with the host.
+      - ${BIOIR_CACHE:-${HOME}/.cache/bionemo_ir}:${BIOIR_CACHE:-${HOME}/.cache/bionemo_ir}
 
     command: sleep infinity
-
-volumes:
-  bioir-cache:

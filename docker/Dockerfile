@@ -29,7 +29,7 @@
 # downgrade.
 #
 # The default tag is digest-pinned because `devdeps` bakes that same digest in as
-# the approved CUBIN compile identity; see the ENV below.
+# the compile identity of the tracked CUBIN packs; see the ENV below.
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch
 ARG BASE_TAG=26.05-py3@sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
 ARG RUNTIME_IMAGE=nvidia/cuda
@@ -54,9 +54,9 @@ ENV CUDA_HOME=/usr/local/cuda \
 RUN test -f "${CUDA_HOME}/include/cuda.h" \
     && test -f "${CUDA_HOME}/lib64/stubs/libcuda.so"
 
-# A protected CI job publishes CUBIN packs from the `devdeps` target below.
-# Install its Git transport here, so no apt maintainer script runs once that
-# job's credentials are in the environment.
+# Install Git and its LFS transport here, ahead of any stage that may carry
+# credentials in the environment, so no apt maintainer script ever runs beside
+# them.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         git git-lfs ccache curl ca-certificates \
@@ -96,8 +96,9 @@ FROM deps AS devdeps
 # what makes it usable as CI's rolling build cache.
 #
 # The immutable compile identity of the tracked CUBIN packs: the digest of the
-# anonymously pullable base above, which the CUBIN publish gate asserts before it
-# may publish.
+# anonymously pullable base above. Regenerating a pack is only reproducible from
+# that exact base, so the digest is pinned here rather than derived at build
+# time.
 ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
 COPY requirements-dev.txt ./
 RUN --mount=type=cache,target=/cache/pip \
@@ -110,7 +111,7 @@ ARG USER_UID=1000
 ARG USER_GID=${USER_UID}
 
 # A dev image may be rebuilt on any BASE_TAG, so it must not inherit devdeps'
-# claim to the approved compile identity; empty refuses the publish gate.
+# claim to that identity. Empty means "not built from the pinned base".
 ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=
 
 # Match the host UID so files written to the bind mount are owned by the user
@@ -148,8 +149,27 @@ COPY . /src
 # nvcc being present or on which toolkit the base image happens to carry.
 ARG CUDA_TAG=
 ENV CUDA_TAG=${CUDA_TAG}
+# Compile jobs. Empty means "ask the machine", which is right locally and on a
+# runner whose daemon sees the host CPUs; docker/Makefile fills it from the
+# CI allocation, where nproc inside a job container reports 1 and would compile
+# the extension serially.
+ARG BUILD_JOBS=
+# The CMake tree and the materialized CUBIN payloads both live under build/cmake
+# -- setup.py keeps them out of build_temp so they outlive the install -- and
+# .dockerignore excludes build/, so without this cache every rebuild re-configures
+# CMake, re-materializes the packs and re-links from scratch. ccache only ever
+# covered the compile step. Mounted at build/cmake, not build/, so build_lib
+# stays fresh: setuptools copies changed sources into it but never deletes
+# removed ones, and a persistent copy would carry a deleted module into the
+# wheel. sharing=locked because one CMake tree cannot take two concurrent builds.
+#
+# CMAKE_BUILD_PARALLEL_LEVEL because the default generator is Unix Makefiles,
+# which builds serially unless told otherwise: setup.py passes `--parallel` only
+# when setuptools' own `parallel` option is set, and pip never sets it.
 RUN --mount=type=cache,target=/cache/pip \
     --mount=type=cache,target=/cache/ccache \
+    --mount=type=cache,target=/src/build/cmake,sharing=locked \
+    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
     pip wheel --no-build-isolation --no-deps --wheel-dir /dist .
 
 # ------------------------------------------------------------- wheel-export
@@ -158,17 +178,6 @@ RUN --mount=type=cache,target=/cache/pip \
 # This is the target `make -C docker wheel` builds; it holds the wheel alone.
 FROM scratch AS wheel-export
 COPY --from=wheel /dist/ /
-
-# --------------------------------------------------------------- prod_stage
-# Retained for an out-of-band downstream consumer that builds this target
-# directly; delete it once that is confirmed gone. It is off the devdeps chain
-# so it never ships pytest and friends.
-FROM deps AS prod_stage
-WORKDIR /workspace/bionemo-ir
-COPY . /workspace/bionemo-ir
-# --no-deps because requirements.txt is already installed in `deps`.
-RUN --mount=type=cache,target=/cache/pip \
-    pip install --no-build-isolation --no-deps -v .
 
 # ------------------------------------------------------------------ runtime
 FROM ${RUNTIME_IMAGE}:${RUNTIME_TAG} AS runtime
@@ -180,21 +189,42 @@ FROM ${RUNTIME_IMAGE}:${RUNTIME_TAG} AS runtime
 #     JITs and neither nvrtc nor nvJitLink is needed;
 #   * torch brings its own cudart/cublas/cudnn as PyPI wheels, so a CUDA
 #     `runtime` base would ship a second copy of all of them.
+#
+# The Triton kernels do compile at run time: their launcher stubs are host C
+# extensions, so gcc and python3.12-dev below are what make the model buildable.
 ENV NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:${PATH} \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_CACHE_DIR=/cache/pip
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        python3.12 python3.12-venv ca-certificates \
+        python3.12 python3.12-venv python3.12-dev gcc ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && python3.12 -m venv /opt/venv
 
-COPY --from=wheel /dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
+# Installed ahead of the wheel and on its own, so this layer is keyed by
+# requirements.txt alone. Bundled into the wheel install it was invalidated by
+# every source change and re-resolved the whole closure -- torch, ray, rdkit --
+# from PyPI each rebuild. requirements.txt is exactly the wheel's Requires-Dist:
+# pyproject.toml derives the dynamic dependencies from this file. This stage
+# shares nothing with the deps chain -- different base, different interpreter --
+# so it installs them itself.
+COPY requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=/cache/pip \
+    pip install -r /tmp/requirements.txt && rm -f /tmp/requirements.txt
+
+# Bind-mounted rather than COPYed: a COPY keeps the wheel in a layer for the life
+# of the image, and deleting it afterwards only writes a whiteout. `wheel-export`
+# holds nothing but the wheel, so mounting it keys this layer on the wheel's bytes
+# alone -- mounting `wheel` would key it on that stage's whole filesystem.
+# --no-deps because requirements.txt is installed above; --no-cache-dir rather
+# than a cache mount because there is nothing to cache for a local file.
+RUN --mount=type=bind,from=wheel-export,target=/wheel \
+    pip install --no-deps --no-cache-dir /wheel/*.whl
 
 # Check what can actually be checked without a GPU: that the wheel carried the
 # compiled extension, and that the only CUDA library it needs is the driver's

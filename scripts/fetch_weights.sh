@@ -40,11 +40,9 @@ cache_root() {
   printf '%s\n' "${BIOIR_CACHE:-${HOME}/.cache/bionemo_ir}"
 }
 
-# Raw download staging area (the probe cache symlinks into it). On CI it's
-# /packages/model_cache (an on-node path, off the container home — not a shared
-# cache, so it is re-fetched each job); off-CI it lands under cache_root so a dev
-# box stages without a writable /packages. An explicit MODEL_CACHE_DIR always wins.
-MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-${CI:+/packages/model_cache}}"
+# Raw download staging area (the probe cache symlinks into it). Lands under
+# cache_root by default. A CI job that wants an on-node path off the container
+# home, re-fetched each run rather than shared, sets MODEL_CACHE_DIR itself.
 MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-$(cache_root)/model_cache}"
 
 # The NGC org/team holding these weights is deployment-specific and has no
@@ -166,6 +164,14 @@ public_url() {
 NGC_RETRY_ATTEMPTS=3
 NGC_RETRY_DELAY_SECONDS=5
 
+# Concurrent downloads. The files are large and the link is the bottleneck, so
+# this is about keeping it saturated, not about CPU.
+FETCH_JOBS="${BIOIR_FETCH_JOBS:-8}"
+[[ "${FETCH_JOBS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "BIOIR_FETCH_JOBS must be a positive integer (got '${FETCH_JOBS}')" >&2
+  exit 2
+}
+
 print_help() {
   cat <<EOF
 fetch_weights.sh — download model checkpoints and stage them for the test suite.
@@ -189,6 +195,7 @@ skip themselves.
 
 Environment:
   MODEL_CACHE_DIR   where raw downloads land (default: <cache>/model_cache)
+  BIOIR_FETCH_JOBS  concurrent downloads (default: 8)
   BIOIR_CACHE       cache root (default: ~/.cache/bionemo_ir)
   BIOIR_CHECKPOINTS checkpoint probe dir override
   BIOIR_METADATA    metadata probe dir override
@@ -412,9 +419,9 @@ family_needed_files() {
 }
 
 # True only if DIR holds every file this run needs from FAMILY (no filename has
-# spaces). Target-aware on purpose: MODEL_CACHE_DIR persists (an on-node path on
-# CI, the user's cache off it), so a dir populated by an earlier, narrower target
-# must not be trusted for a later, wider one.
+# spaces). Target-aware on purpose: MODEL_CACHE_DIR persists across runs, so a
+# dir populated by an earlier, narrower target must not be trusted for a later,
+# wider one.
 family_dir_complete() {
   local family=$1 dir=$2 f
   for f in $(family_needed_files "${family}"); do
@@ -479,19 +486,26 @@ fetch_family_ngc() {
 
 PUBLIC_ROOT="${MODEL_CACHE_DIR}/public"
 
-# Download one public file, skipping when it is already complete. curl -C - so an
-# interrupted multi-GB transfer resumes instead of restarting.
-fetch_public_file() {
-  local family=$1 filename=$2 url dest
-  if ! url=$(public_url "${family}/${filename}"); then
-    return 2 # no public source for this file
-  fi
-  dest="${PUBLIC_ROOT}/${family}/${filename}"
-  mkdir -p "$(dirname "${dest}")"
-  if [[ -s "${dest}" ]]; then
-    echo "have ${family}/${filename}"
-    return 0
-  fi
+# `curl -C -` resumes into a .part named after the destination, so every process
+# staging that file shares one path -- concurrent workers here, and a dev shell
+# beside a CI shard on a shared MODEL_CACHE_DIR. Two writers interleave into the
+# same .part and the second `mv` fails over a file the winner already moved, so
+# a lock directory (mkdir is atomic) keeps it single-writer. A holder that dies
+# would wedge every later run, so a lock whose .part has been idle for
+# PART_LOCK_IDLE_MINUTES is taken over -- curl gives up under 1 KiB/s (see
+# --speed-time), so it writes continuously while alive.
+PART_LOCK_IDLE_MINUTES=10
+PART_LOCK_POLL_SECONDS=15
+
+# True when $1 is missing or has not been written to for PART_LOCK_IDLE_MINUTES.
+_idle_or_absent() {
+  [[ -e "$1" ]] || return 0
+  [[ -z "$(find "$1" -maxdepth 0 -mmin "-${PART_LOCK_IDLE_MINUTES}" 2>/dev/null)" ]]
+}
+
+# Fetch URL into DEST. The caller holds DEST's lock, so this .part has one writer.
+download_public_file() {
+  local family=$1 filename=$2 url=$3 dest=$4
   echo "downloading ${family}/${filename}"
   local -a auth=()
   # HuggingFace gated repos need a token; sending one to S3 would be pointless
@@ -512,26 +526,107 @@ fetch_public_file() {
     --connect-timeout 30 --speed-limit 1024 --speed-time 120 \
     ${auth[@]+"${auth[@]}"} \
     -o "${dest}.part" "${url}"; then
-    rm -f "${dest}.part"
+    # Keep the .part: it is what the next run resumes. A refusal writes no body,
+    # so nothing accumulates for a file that will never download.
     echo "could not download ${family}/${filename} (gated, or network) — skipping" >&2
     return 2
   fi
   mv "${dest}.part" "${dest}"
 }
 
-fetch_family_public() {
-  local family=$1 row f rc
-  local -a missing=()
-  echo "==== ${family} (public) ===="
-  for row in "${ACTIVE_ROWS[@]}" "${METADATA[@]}"; do
-    [[ "$(row_family "${row}")" == "${family}" ]] || continue
-    f=$(row_file "${row}")
-    rc=0
-    fetch_public_file "${family}" "${f}" || rc=$?
-    ((rc == 0)) || missing+=("${f}")
+# Download one public file, skipping it when it is already complete or when
+# another worker or run holds it.
+fetch_public_file() {
+  local family=$1 filename=$2 url dest lock stale rc waited=0
+  if ! url=$(public_url "${family}/${filename}"); then
+    return 2 # no public source for this file
+  fi
+  dest="${PUBLIC_ROOT}/${family}/${filename}"
+  lock="${dest}.lock"
+  mkdir -p "$(dirname "${dest}")"
+  # Re-check every pass: the run being waited on may be the one that completes
+  # this file, leaving nothing to download.
+  while :; do
+    if [[ -s "${dest}" ]]; then
+      echo "have ${family}/${filename}"
+      return 0
+    fi
+    if mkdir "${lock}" 2>/dev/null; then
+      break
+    fi
+    if _idle_or_absent "${lock}" && _idle_or_absent "${dest}.part"; then
+      # Claim the abandoned lock by renaming it, then delete what was claimed.
+      # Two waiters can both pass the idle check, and a plain `rm -rf "${lock}"`
+      # lets the second one delete a lock the first had already retaken. mv is
+      # a rename: exactly one waiter carries the directory away, the loser fails
+      # and goes back to the top. The target is per-process, and cleared first
+      # in case a previous run with this pid died holding it.
+      stale="${lock}.stale.$$"
+      rm -rf "${stale}"
+      if mv "${lock}" "${stale}" 2>/dev/null; then
+        echo "clearing an abandoned download lock for ${family}/${filename}" >&2
+        rm -rf "${stale}"
+      fi
+      continue
+    fi
+    ((waited)) || echo "another run is fetching ${family}/${filename} — waiting"
+    waited=$((waited + PART_LOCK_POLL_SECONDS))
+    sleep "${PART_LOCK_POLL_SECONDS}"
   done
+  rc=0
+  download_public_file "${family}" "${filename}" "${url}" "${dest}" || rc=$?
+  rmdir "${lock}" 2>/dev/null || true
+  return "${rc}"
+}
+
+# Every "<family>|<filename>" this run needs from the public sources.
+public_targets() {
+  local family row
+  for family in "${ACTIVE_FAMILIES[@]}"; do
+    for row in "${ACTIVE_ROWS[@]}" "${METADATA[@]}"; do
+      [[ "$(row_family "${row}")" == "${family}" ]] || continue
+      printf '%s|%s\n' "${family}" "$(row_file "${row}")"
+    done
+  done
+}
+
+# Download every needed file, FETCH_JOBS at a time. Per file, not per family:
+# openfold2 has 9 files where boltz has 3, so a job-per-family run finishes its
+# tail on one worker while the rest idle. Workers take a strided slice of one
+# list, which needs no `wait -n` (bash 4.3+; macOS ships 3.2). Missing files are
+# reported, not fatal — their tests skip themselves.
+fetch_public_all() {
+  local -a targets=()
+  local line
+  while IFS= read -r line; do targets+=("${line}"); done < <(public_targets)
+  ((${#targets[@]})) || return 0
+
+  local jobs=${FETCH_JOBS}
+  ((jobs > ${#targets[@]})) && jobs=${#targets[@]}
+  # Each worker appends the files it could not get; a shared file would interleave.
+  local miss_dir="${MODEL_CACHE_DIR}/.missing.$$"
+  rm -rf "${miss_dir}"
+  mkdir -p "${miss_dir}"
+
+  local w
+  for ((w = 0; w < jobs; w++)); do
+    (
+      local i target rc
+      for ((i = w; i < ${#targets[@]}; i += jobs)); do
+        target="${targets[$i]}"
+        rc=0
+        fetch_public_file "${target%%|*}" "${target#*|}" || rc=$?
+        ((rc == 0)) || printf '%s/%s\n' "${target%%|*}" "${target#*|}" >>"${miss_dir}/${w}"
+      done
+    ) &
+  done
+  wait
+
+  local -a missing=()
+  while IFS= read -r line; do missing+=("${line}"); done < <(cat "${miss_dir}"/* 2>/dev/null)
+  rm -rf "${miss_dir}"
   if ((${#missing[@]})); then
-    echo "not staged for ${family}: ${missing[*]} — see docs/ref/model-weights.md"
+    echo "not staged: ${missing[*]} — see docs/ref/model-weights.md"
   fi
   return 0
 }
@@ -722,17 +817,13 @@ stage_metadata() {
 mkdir -p "${MODEL_CACHE_DIR}"
 : >"${WEIGHTS_ENV_FILE}"
 
-if [[ "${FETCH_SOURCE}" != "none" ]]; then
-  # Fetch all families concurrently to saturate the network — each family is
-  # independent, so a serial loop just idles the link. Collect PIDs and fail if
-  # any fetch fails.
+if [[ "${FETCH_SOURCE}" == "ngc" ]]; then
+  # One background job per family: the NGC CLI pulls a whole family in one call,
+  # so a family is the smallest unit here. Each has its own cache files, so
+  # concurrent invocations share no writes.
   fetch_pids=()
   for i in "${!ACTIVE_FAMILIES[@]}"; do
-    if [[ "${FETCH_SOURCE}" == "ngc" ]]; then
-      fetch_family_ngc "${ACTIVE_FAMILIES[$i]}" &
-    else
-      fetch_family_public "${ACTIVE_FAMILIES[$i]}" &
-    fi
+    fetch_family_ngc "${ACTIVE_FAMILIES[$i]}" &
     fetch_pids["$i"]=$!
   done
   fetch_failed=0
@@ -743,6 +834,8 @@ if [[ "${FETCH_SOURCE}" != "none" ]]; then
     fi
   done
   ((fetch_failed)) && exit 1
+elif [[ "${FETCH_SOURCE}" != "none" ]]; then
+  fetch_public_all
 fi
 
 echo "Staging checkpoints into the local cache probe dir..."

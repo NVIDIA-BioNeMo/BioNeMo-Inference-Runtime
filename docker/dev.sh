@@ -36,6 +36,12 @@ DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # cache is the difference between a minute and an hour.
 HOST_CACHE="${BIOIR_HOST_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/bionemo-ir-dev}"
 
+# The library's own weight cache, resolved exactly as bionemo_ir.CACHE_DIR and
+# scripts/fetch_weights.sh resolve it, so a stage run on the host and one run in
+# here address the same directory. Deliberately not under HOST_CACHE: it is the
+# package's cache, not this script's, and host-side tooling reads it too.
+WEIGHT_CACHE="${BIOIR_CACHE:-${HOME}/.cache/bionemo_ir}"
+
 # Where the checkout is mounted, and where every shell starts.
 WORKDIR=/bioir
 
@@ -58,6 +64,9 @@ Options:
 
 Environment:
   BIOIR_HOST_CACHE  host cache root (default: ~/.cache/bionemo-ir-dev)
+  BIOIR_CACHE       weight cache, shared with the host (default:
+                    ~/.cache/bionemo_ir). Baked into the container at create
+                    time, so changing it needs --reset.
   BIOIR_DEV_IMAGE   image:tag to run instead of the one this script builds
                     (implies --no-build)
   BIOIR_CONTAINER   container name (default: derived from the worktree dir)
@@ -165,7 +174,7 @@ if ! container_exists; then
 
   # Create the host directories first. A bind mount whose source is missing is
   # created by the daemon as root, which the container user cannot then write.
-  mkdir -p "${HOST_CACHE}/cache" "${HOST_CACHE}/home-cache"
+  mkdir -p "${HOST_CACHE}/cache" "${HOST_CACHE}/home-cache" "${WEIGHT_CACHE}"
 
   # One array, appended to throughout: an empty array expanded under `set -u`
   # is an error on bash 3.2, which is what macOS ships.
@@ -187,10 +196,17 @@ if ! container_exists; then
     # placed here by the Dockerfile's CCACHE_DIR / PIP_CACHE_DIR /
     # BIOIR_KERNEL_CACHE_DIR, plus the bash history.
     --volume "${HOST_CACHE}/cache:/cache"
-    # The container user's ~/.cache: staged checkpoints and raw downloads
-    # (~/.cache/bionemo_ir), HuggingFace hub checkpoints (~/.cache/hf, a path
-    # hardcoded in hubs/hf.py), torch hub, and the prek hook environments.
+    # The container user's ~/.cache: HuggingFace hub checkpoints (~/.cache/hf,
+    # a path hardcoded in hubs/hf.py), torch hub, and the prek hook environments.
     --volume "${HOST_CACHE}/home-cache:${container_home}/.cache"
+    # Staged checkpoints and raw downloads, at the SAME absolute path it has on
+    # the host, with BIOIR_CACHE pointing both sides at it. The path has to
+    # match: fetch_weights.sh stages by symlinking the probe dirs at the raw
+    # downloads, and an absolute symlink written on one side dangles on the
+    # other as soon as the two disagree. So weights fetched on the host are
+    # usable in here, and vice versa, with no second download.
+    --volume "${WEIGHT_CACHE}:${WEIGHT_CACHE}"
+    --env "BIOIR_CACHE=${WEIGHT_CACHE}"
   )
 
   # A linked worktree's .git is a file pointing at an absolute path inside the
@@ -223,6 +239,7 @@ if ! container_exists; then
 
   cat <<EOF
 Caches on the host, shared by every worktree, under ${HOST_CACHE}
+Weights: ${WEIGHT_CACHE}, the same path here and on the host
 The checkout is bind-mounted, so the package is not installed yet:
     pip install --no-build-isolation -e '.[dev]'
 EOF

@@ -53,6 +53,21 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _cache_owner() -> str:
+    """Name the cache directory after the current user, or its UID.
+
+    ``getuser()`` reads LOGNAME/USER/LNAME/USERNAME and otherwise falls back to
+    the password database, which raises for a UID that has no entry there --
+    ``docker run --user "$(id -u)"`` against an image that baked a different UID,
+    or a Kubernetes ``runAsUser``. The UID alone separates users just as well.
+    """
+    try:
+        return getuser()
+    except (KeyError, OSError):
+        return str(os.getuid())
+
+
 # ---------------------------------------------------------------------------
 # Optional cuda.bindings import
 # ---------------------------------------------------------------------------
@@ -156,7 +171,7 @@ class DiskCache:
         if DiskCache._CACHE_DIR is not None:
             d = Path(DiskCache._CACHE_DIR)
         else:
-            d = Path(tempfile.gettempdir()) / getuser() / "bioir_kernel_cache"
+            d = Path(tempfile.gettempdir()) / _cache_owner() / "bioir_kernel_cache"
         d.mkdir(parents=True, exist_ok=True)
         return d
 

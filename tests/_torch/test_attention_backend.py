@@ -114,6 +114,12 @@ def test_public_source_with_only_package_init_requires_built_cutedsl_library(mon
     source_dir.mkdir()
     (source_dir / "__init__.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", source_dir)
+    # Nothing built: the advice to build is the right advice. Pointed at an empty
+    # directory rather than the real one, which holds a built extension whenever
+    # the suite is runnable at all.
+    library_dir = tmp_path / "libs"
+    library_dir.mkdir()
+    monkeypatch.setattr(tests_package, "_CUTEDSL_LIBRARY_DIR", library_dir)
 
     def missing_library(name: str) -> None:
         raise ModuleNotFoundError(name)
@@ -122,6 +128,49 @@ def test_public_source_with_only_package_init_requires_built_cutedsl_library(mon
     with pytest.warns(RuntimeWarning, match="Build the shared library first"):
         with pytest.raises(pytest.UsageError, match="_cutedsl_kernels"):
             require_public_cutedsl_library()
+
+
+def test_public_source_with_built_library_blames_the_driver(monkeypatch, tmp_path):
+    """A built extension that will not load is a driver problem, not a build one."""
+    source_dir = tmp_path / "cute"
+    source_dir.mkdir()
+    (source_dir / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", source_dir)
+    library_dir = tmp_path / "libs"
+    library_dir.mkdir()
+    (library_dir / "_cutedsl_kernels.cpython-312-x86_64-linux-gnu.so").write_bytes(b"")
+    monkeypatch.setattr(tests_package, "_CUTEDSL_LIBRARY_DIR", library_dir)
+
+    def unloadable_library(name: str) -> None:
+        # What CPython raises when a DT_NEEDED library is missing: an ImportError,
+        # indistinguishable by type from the module simply not being there.
+        raise ImportError("libcuda.so.1: cannot open shared object file: No such file or directory")
+
+    monkeypatch.setattr(importlib, "import_module", unloadable_library)
+    with pytest.warns(RuntimeWarning, match="libcuda.so.1"):
+        with pytest.raises(pytest.UsageError, match="will not load"):
+            require_public_cutedsl_library()
+
+
+def test_public_source_with_built_library_does_not_blame_the_driver_for_other_errors(monkeypatch, tmp_path):
+    """A load failure the driver did not cause must not send the reader after the driver."""
+    source_dir = tmp_path / "cute"
+    source_dir.mkdir()
+    (source_dir / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(tests_package, "_PRIVATE_CUTEDSL_SOURCE_DIR", source_dir)
+    library_dir = tmp_path / "libs"
+    library_dir.mkdir()
+    (library_dir / "_cutedsl_kernels.cpython-312-x86_64-linux-gnu.so").write_bytes(b"")
+    monkeypatch.setattr(tests_package, "_CUTEDSL_LIBRARY_DIR", library_dir)
+
+    def wrong_abi(name: str) -> None:
+        raise ImportError("libstdc++.so.6: version `GLIBCXX_3.4.32' not found")
+
+    monkeypatch.setattr(importlib, "import_module", wrong_abi)
+    with pytest.warns(RuntimeWarning, match="the build is not what failed") as warning:
+        with pytest.raises(pytest.UsageError, match="will not load"):
+            require_public_cutedsl_library()
+    assert "libcuda.so.1" not in str(warning.list[0].message)
 
 
 def test_private_source_does_not_require_built_cutedsl_library(monkeypatch, tmp_path):

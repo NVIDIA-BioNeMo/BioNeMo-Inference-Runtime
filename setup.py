@@ -162,6 +162,17 @@ def _cmake_build_root(fallback: Path) -> Path:
     return root if os.access(root, os.W_OK) else fallback
 
 
+def _extension_platform_tag() -> str:
+    """Interpreter and platform the extension is built for.
+
+    ``cpython-312-x86_64-linux-gnu`` and the like, taken from the extension
+    suffix so it carries exactly what makes two builds incompatible: the
+    interpreter version, the architecture and the platform ABI.
+    """
+    tag = EXTENSION_SUFFIXES[0].rsplit(".", 1)[0].strip(".")
+    return tag or "native"
+
+
 def _drop_relocated_cmake_cache(build_dir: Path) -> None:
     """Discard a cache that CMake would refuse because the tree moved.
 
@@ -316,7 +327,13 @@ class CMakeBuild(build_ext):
 
         configuration = "Debug" if self.debug else "Release"
         build_root = _cmake_build_root(Path(self.build_temp).resolve())
-        build_dir = (build_root / extension.name.replace(".", "_")).resolve()
+        # Keyed by platform, not just by extension name: one checkout is often
+        # reachable from several machines -- a network mount, a synced worktree,
+        # an x86_64 node and an aarch64 one -- all bind-mounting it at the same
+        # path. CMake refuses to reuse a tree whose compiler changed, and
+        # _drop_relocated_cmake_cache cannot catch that because the path did not
+        # move. Separate trees let each platform stay warm instead.
+        build_dir = (build_root / f"{extension.name.replace('.', '_')}-{_extension_platform_tag()}").resolve()
         _drop_relocated_cmake_cache(build_dir)
         build_dir.mkdir(parents=True, exist_ok=True)
         materialized_dir = _materialize_cutedsl_kernel_payloads(build_root / "bioir_cubins")

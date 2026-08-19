@@ -16,7 +16,7 @@
 
 Public surface of the package. The import path is unchanged from when this was
 a flat module, so callers need no edits. A source-free build carries no
-``_source.py``; everything re-exported here must keep working with that module
+private kernel adapter; everything re-exported here must keep working with it
 absent.
 """
 

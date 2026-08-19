@@ -1,29 +1,23 @@
 # Development workflow
 
-This doc discusses how to build, run, test and check BioIR. For coding style and
-conventions, see [coding.md](coding.md). Explore the [reference docs](./ref) for
-advanced topics.
-
-## Contents
-
-- [Prerequisites](#prerequisites)
-- [Build](#build)
-- [Run](#run)
-- [Test](#test)
-- [Lint and format](#lint-and-format)
-- [Before you open a pull request](#before-you-open-a-pull-request)
+How to build, run, test and lint BioIR. For coding style and conventions, see
+[coding.md](coding.md); the [reference docs](./ref) cover everything else.
 
 ## Prerequisites
 
-|           | Requirement                                      | Why                                                                                                                             |
-| --------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| GPU       | NVIDIA GPU, compute capability `8.0/8.6/8.9/9.0` | The fused kernels ship as precompiled CUBINs for these architectures. Other GPUs fall back to portable PyTorch implementations. |
-| Driver    | 535 or newer                                     | Enforced at `docker run` by the container toolkit.                                                                              |
-| Python    | 3.12+                                            | `requires-python`; the extension is built `cp312`.                                                                              |
-| Toolchain | A C++17 compiler and CUDA toolkit headers        | Only to build the extension from source. CMake and nanobind are declared build dependencies, so pip supplies them.              |
+- **GPU** — an NVIDIA GPU. Which architectures the fused kernels cover, and what
+  the rest fall back to, is in [`ref/support-matrix.md`](ref/support-matrix.md).
+- **Driver** — new enough for the CUDA the base image carries. The container
+  toolkit reads that requirement off the image label and enforces it at
+  `docker run`.
+- **Python** — 3.12 or newer (`requires-python`); the extension is built
+  `cp312`.
+- **Toolchain** — a C++17 compiler and CUDA toolkit headers, only to build the
+  extension from source. CMake and nanobind are declared build dependencies, so
+  pip supplies them.
 
-The kernels are **precompiled**. Neither building the wheel nor running it
-needs `nvcc` — only the driver's `libcuda.so.1`.
+The kernels are **precompiled**. Neither building the wheel nor running it needs
+`nvcc` — only the driver's `libcuda.so.1`.
 
 Everything below works equally in a container or on a host that already has the
 prerequisites.
@@ -42,9 +36,8 @@ so your checkout is untouched and only `dist/` is written.
 ```bash
 $ make -C docker wheel
 
-# example wheel name
 $ ls dist
-bionemo_ir-0.6.0.dev0+cu132-cp312-cp312-linux_aarch64.whl
+bionemo_ir-<version>+cu<xyz>-cp312-cp312-linux_<arch>.whl
 ```
 
 The host build lands in the same place:
@@ -56,7 +49,9 @@ pip wheel --no-deps --wheel-dir dist .
 It shares `build/` with the [editable install](#editable-install), and it
 deletes the extension from the source tree on its way through — every real build
 does, so a stale copy cannot shadow the fresh one — but only an editable install
-puts one back. Until you reinstall, the kernel tests quietly skip.
+puts one back. Until you reinstall, `pytest` refuses to collect: the session
+starts by requiring the extension and stops with the reason it could not load
+it.
 
 ### Editable install
 
@@ -79,7 +74,7 @@ On a host without those three, drop the flag and let pip fetch them.
 
 ## Run
 
-To run the project, we need:
+Two things are needed:
 
 - **Inputs**: `examples/data/samples/` carries small, real inputs — monomers,
   heterooligomers, `RNA/DNA/ligand` complexes, MSAs and templates — so both
@@ -118,16 +113,14 @@ python -m venv /tmp/venv
 ```
 
 That is the slower path and the stricter one: `--no-deps` above says nothing
-about whether the wheel's dependencies are declared correctly. So does the
-[minimal runtime image](../docker/README.md#minimal-runtime-image), on a CUDA
-base with nothing else on it.
+about whether the wheel's dependencies are declared correctly.
 
 Python puts the script's own directory on `sys.path`, not the repo root, so this
 imports the installed package even when run from the checkout. That makes it the
 check that a change survives packaging: a module that only imports because the
-source tree happened to be on `sys.path` fails here. The minimal runtime image
-applies the same check on a CUDA base with no toolkit installed — see
-[`../docker/README.md`](../docker/README.md).
+source tree happened to be on `sys.path` fails here. The
+[minimal runtime image](../docker/README.md#minimal-runtime-image) applies both
+checks at once, on a CUDA base carrying nothing else.
 
 ### From the code
 
@@ -153,38 +146,24 @@ it is narrower than the support matrix.
 scripts/run_tests.sh
 ```
 
-This stages model weights, then runs pytest in two phases: an xdist-parallel
-bulk phase, then the trees that must run serially. It writes JUnit XML under
-`tmp/reports/`. Coverage is off by default because nothing local reads the
-report; `COVERAGE=1` turns it on, which is what CI does.
+This stages missing model weights, then runs pytest in two phases: an
+xdist-parallel bulk phase, then the trees that must run serially.
 
-Expect a green run with a large number of skips: every test whose checkpoint is
-unstaged skips itself, so what you actually run depends on what staged. Read the
-pass/skip counts the run prints at the end — those, not a green exit on its own,
-are what tell you how much you covered.
+Expect a green run with a large number of skips, from missing checkpoints or
+inputs — what actually runs depends on what you staged.
 
 ```bash
 scripts/run_tests.sh --no-weights   # skip staging; run whatever already resolves
 scripts/run_tests.sh --help
 ```
 
-For one tree, file or case, call pytest directly:
+For one tree, file or case, call `pytest` directly:
 
 ```bash
 pytest -q tests/ops                     # kernel-level tests
 pytest -q tests/_torch                  # module and backend tests
 pytest -q tests/ops/test_gated_sigmoid.py::test_gated_sigmoid_config_selection_is_source_free
 ```
-
-**Tests skip rather than fail when their inputs are missing.** A test needing a
-checkpoint you have not staged skips itself, so a run with no weights at all
-still exercises the kernels, the config loaders and the pipeline scaffolding. A
-green run with many skips is expected; check the skip reasons to see what
-staging would unlock. That includes the OpenFold3 module tests, whose checkpoint
-is gated — see [`ref/model-weights.md`](ref/model-weights.md).
-
-Tests that read CuTeDSL kernel _sources_ assert on a kernel class's tile schema.
-Where those sources are absent, these tests skip.
 
 ## Lint and format
 
@@ -202,26 +181,19 @@ prek run              # staged files
 prek run --all-files  # everything
 ```
 
-A clean `prek run --all-files` is the whole style gate — nothing runs it for you
-after you push. `prek.toml` lists the hooks: a formatter and a linter per
-language in the tree, plus the SPDX licence header every source file carries.
+A clean `prek run --all-files` is required for every PR, and CI runs the same
+hooks. `prek.toml` lists them: a formatter and a linter per language in the
+tree, plus the SPDX licence header every source file carries.
 
-## Before you open a pull request
+## Open a pull request
 
-Nothing runs automatically on a pull request yet, so no check will catch a break
-for you. Run all three yourself:
+Ensure all three pass:
 
-| Check | Command                                              |
-| ----- | ---------------------------------------------------- |
-| Style | `prek run --all-files`                               |
-| Build | `pip install -e '.[dev]'` then import the extension  |
-| Tests | `scripts/run_tests.sh`                               |
+- **Style** — `prek run --all-files`
+- **Build** — `pip install -e '.[dev]'`, then import the extension
+- **Tests** — `scripts/run_tests.sh`
 
-The first two need no GPU. The suite does, and no part of it is GPU-free — if
-you have none, say so in the pull request and a maintainer runs it on the
-internal pipeline, which is where the GPU runners are.
+PRs will be squash-merged. The title and description will become commit message
+and body. So, write them the way you want the squashed commit to read.
 
-Title your PR the way you want the squashed commit to read — see
-[coding.md](coding.md#commits). Merged PRs are imported internally, merged
-there, and synced back, so your PR is closed rather than showing as merged. Your
-authorship and trailers are preserved.
+See also [coding.md](coding.md#commits).

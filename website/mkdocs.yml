@@ -1,0 +1,81 @@
+# MkDocs configuration for the BioIR documentation website.
+# Preview from the repo root:  mkdocs serve -f website/mkdocs.yml
+site_name: BioNeMo Inference Runtime
+site_description: GPU-accelerated inference for biomolecular structure prediction
+site_url: https://nvidia-bionemo.github.io/BioNeMo-Inference-Runtime/
+repo_url: https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime
+# Pages come from two sources (website/docs and the repo's docs/ tree), so a
+# single "edit this page" target would be wrong half the time. Disabled.
+edit_uri: ""
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: green
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: green
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/import_docs.py
+        - scripts/gen_ref_pages.py
+  - literate-nav
+  - mkdocstrings:
+      handlers:
+        python:
+          # Resolved against this config file's directory: the repo root,
+          # where the bionemo_ir package lives. Griffe parses the sources
+          # statically — torch/CUDA/Ray are never imported during the build.
+          paths: [".."]
+          options:
+            docstring_style: google
+            members_order: source
+            separate_signature: true
+            show_root_heading: true
+            show_signature_annotations: true
+            show_source: false
+
+# literate-nav expands directory references via their generated SUMMARY.md.
+nav:
+  - Home: index.md
+  - Guides:
+      - Quickstart: guides/quickstart.md
+  - API Reference: reference/
+  - Developer Docs: development/
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        # Mermaid.js ships with Material; this makes ```mermaid fences render.
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true

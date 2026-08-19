@@ -1,0 +1,25 @@
+# Markdown lint config for the MkDocs sources under website/. Separate from
+# the root .rumdl.toml because the site links to pages that are generated at
+# build time (mkdocs-gen-files) and never exist on disk.
+[global]
+flavor = "gfm"
+
+[MD013]
+# Line length applies to prose, not to fenced code blocks.
+code-blocks = false
+
+[MD057]
+# API Reference and Developer Docs pages are virtual (generated at build
+# time), so relative links to them cannot exist on disk.
+enabled = false
+
+[MD060]
+# Align table cells and delimiter rows.
+enabled = true
+style = "aligned"
+
+[MD033]
+allowed-elements = ["div", "details", "summary"]
+
+[MD041]
+allow-preamble = true

@@ -82,3 +82,6 @@ compile_commands.json
 
 # Personal, machine-specific agent instructions (see CLAUDE.md)
 CLAUDE.local.md
+
+# MkDocs build output (`mkdocs build -f website/mkdocs.yml`)
+website/site/

@@ -1,0 +1,5 @@
+mkdocs-material>=9.5
+mkdocstrings[python]>=0.26
+mkdocs-gen-files>=0.5
+mkdocs-literate-nav>=0.6
+ruff>=0.6  # mkdocstrings uses it to format signatures

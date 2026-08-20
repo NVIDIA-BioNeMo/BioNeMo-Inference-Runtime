@@ -40,6 +40,8 @@ on:
 # on the pull request head, and comment the Jenkins log link back. Narrow it
 # further once a run has succeeded and the audit log shows what it really used;
 # widen it only against a specific failure, never speculatively.
+#
+# `Vulnerability-scan` overrides this with a narrower set of its own -- see there.
 permissions:
   contents: read
   statuses: write
@@ -101,6 +103,14 @@ jobs:
     needs: [Authorization]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The one job here that checks out unreviewed contributor code, so it does
+    # not inherit the workflow-level set. A job-level block replaces that set
+    # rather than adding to it: blossom-action posts a commit status on the head,
+    # and the comment back is Upload-Log's job, so `pull-requests: write` has no
+    # reader in this job and is dropped.
+    permissions:
+      contents: read
+      statuses: write
     steps:
       # The pull request head, named by the Authorization output rather than by
       # the event, so the scan reads the code the maintainer approved for a run.
@@ -159,6 +169,13 @@ jobs:
   # workflow button appears for anyone with write access all the same, so guard
   # on the payload Jenkins always sends -- otherwise a curious click starts a job
   # on the self-hosted runner with nothing to post.
+  #
+  # Not `github.actor == '<jenkins bot>'`: the login Jenkins dispatches as is not
+  # published anywhere, and a wrong guess fails closed and silent -- the run
+  # succeeds, the log link never appears. The sibling repos (NVIDIA/spark-rapids,
+  # NVIDIA-BioNeMo/nvMolKit) gate on `github.event_name` alone, so the `args`
+  # check here is already the stricter one. Pin the actor once a real callback
+  # has run and the audit log names it.
   Upload-Log:
     name: Upload log
     runs-on: blossom

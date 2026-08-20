@@ -37,7 +37,8 @@ jobs:
       # `lfs: true` would pull every LFS object in the repo -- measured at
       # 88.2 MB, of which the 36 CUBIN packs are 2.5 MB. The build reads only
       # the packs, so fetch only those. The credentials stay for the same reason
-      # as in ci.yml: `git lfs pull` needs them on an internal repo.
+      # as in ci.yml: `git lfs pull` needs them on an internal repo, and the
+      # action drops the header again before `setup.py` runs.
       - uses: actions/checkout@v7
         with:
           lfs: false

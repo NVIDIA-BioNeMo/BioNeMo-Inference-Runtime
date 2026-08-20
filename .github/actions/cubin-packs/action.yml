@@ -23,3 +23,22 @@ runs:
       run: |
         git lfs pull --include="${PACKS}"
         echo "materialized $(git lfs ls-files -I "${PACKS}" | wc -l) packs"
+
+    # That pull is the last thing in either caller that talks to the remote, and
+    # everything after it -- `setup.py`, the test suite -- is code the pull
+    # request controls. actions/checkout clears the header in its own post step,
+    # which runs after all of that, so clear it here instead of leaving a usable
+    # token in `.git/config` for the length of the job. Dropping it in the action
+    # rather than in each caller keeps this paired with the pull that needs it.
+    #
+    # `--unset-all` exits 5 when the key is absent, which is the case whenever a
+    # caller checked out with `persist-credentials: false`; `if` swallows that
+    # without tripping the `-e` that `shell: bash` sets.
+    - name: Drop the checkout credentials the pull needed
+      shell: bash
+      run: |
+        if git config --local --unset-all "http.https://github.com/.extraheader"; then
+          echo "dropped the checkout auth header"
+        else
+          echo "no checkout auth header to drop"
+        fi

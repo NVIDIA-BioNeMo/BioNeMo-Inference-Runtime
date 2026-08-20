@@ -57,8 +57,10 @@ jobs:
       # against the 2.5 MB of packs these suites read; the rest is sample MSAs
       # and structures nothing here opens. So fetch the packs by pattern.
       #
-      # The credentials stay: this is an internal repo, and `git lfs pull` below
-      # authenticates with the header checkout leaves in the local git config.
+      # The credentials stay for the checkout: this is an internal repo, and
+      # `git lfs pull` authenticates with the header checkout leaves in the local
+      # git config. The action drops that header once the pull is done, before
+      # any step below runs code the pull request controls.
       #
       # No submodules: neither suite imports bionemo_ir or reads 3rdparty/.
       - uses: actions/checkout@v7

@@ -26,19 +26,44 @@ runs:
 
     # That pull is the last thing in either caller that talks to the remote, and
     # everything after it -- `setup.py`, the test suite -- is code the pull
-    # request controls. actions/checkout clears the header in its own post step,
-    # which runs after all of that, so clear it here instead of leaving a usable
-    # token in `.git/config` for the length of the job. Dropping it in the action
-    # rather than in each caller keeps this paired with the pull that needs it.
+    # request controls. actions/checkout only revokes the token in its own post
+    # step, which runs after all of that, so drop it here instead of leaving it
+    # usable for the length of the job. Dropping it in the action rather than in
+    # each caller keeps this paired with the pull that is its only reader.
     #
-    # `--unset-all` exits 5 when the key is absent, which is the case whenever a
-    # caller checked out with `persist-credentials: false`; `if` swallows that
-    # without tripping the `-e` that `shell: bash` sets.
+    # Where the token lives depends on the checkout version, and getting this
+    # wrong is silent: v5 and earlier wrote the header straight into
+    # `.git/config`, while v7 writes it to a file under RUNNER_TEMP and points
+    # `.git/config` at that file with `includeIf.gitdir:`. Clear both shapes --
+    # the file is what actually holds the credential, so it is removed rather
+    # than just unlinked from the config.
     - name: Drop the checkout credentials the pull needed
       shell: bash
+      env:
+        HEADER_KEY: http.https://github.com/.extraheader
       run: |
-        if git config --local --unset-all "http.https://github.com/.extraheader"; then
-          echo "dropped the checkout auth header"
-        else
-          echo "no checkout auth header to drop"
+        # v5 and earlier.
+        git config --local --unset-all "${HEADER_KEY}" 2>/dev/null || true
+
+        # v7. `--get-regexp` exits 1 when nothing matches, which `|| true` keeps
+        # from tripping the `-e` that `shell: bash` sets.
+        while read -r key cred; do
+          case "${cred}" in
+            */git-credentials-*.config)
+              git config --local --unset-all "${key}" 2>/dev/null || true
+              rm -f "${cred}"
+              ;;
+          esac
+        done < <(git config --local --get-regexp '^includeIf\.gitdir:.*\.path$' || true)
+
+        # The point of the step, asserted rather than assumed. Plain `git config`
+        # reads the effective configuration, following any `includeIf` still in
+        # place, so this fails if either branch above missed. Without it a
+        # checkout version bump that moves the credential again turns this step
+        # back into a silent no-op -- which is exactly how v7 slipped past a
+        # first attempt at this.
+        if git config --get-all "${HEADER_KEY}" >/dev/null 2>&1; then
+          echo "::error::checkout credentials still readable after cleanup"
+          exit 1
         fi
+        echo "checkout credentials dropped"

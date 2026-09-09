@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# yaml-language-server: $schema=https://schema.buildwithfern.dev/docs-yml.json
+
+instances:
+  - url: nvidia-bionemo.docs.buildwithfern.com/bionemo/inference-runtime
+    custom-domain: docs.nvidia.com/bionemo/inference-runtime
+    multi-source: true
+
+title: BioNeMo Inference Runtime
+
+global-theme: nvidia
+
+ai-search:
+  location:
+    - docs
+
+settings:
+  search-text: Search
+  disable-search: false
+  search:
+    prioritize-current-product: true
+    default-filter-by-current-product: true
+
+logo:
+  href: /bionemo/inference-runtime/overview
+  right-text: BioNeMo Inference Runtime
+
+navbar-links:
+  - type: github
+    value: https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime
+
+versions:
+  # The generated site publishes the development documentation from main.
+  - display-name: latest
+    path: index.yml
+    slug: latest
+    availability: beta
+
+redirects:
+  # Paths include the multi-source site prefix so these rules cannot capture
+  # pages owned by another NVIDIA documentation source.
+  - source: "/bionemo/inference-runtime/index.html"
+    destination: "/bionemo/inference-runtime/overview"
+  - source: "/bionemo/inference-runtime/index"
+    destination: "/bionemo/inference-runtime/overview"
+  - source: "/bionemo/inference-runtime/getting-started"
+    destination: "/bionemo/inference-runtime/install"
+  - source: "/bionemo/inference-runtime/getting-started/overview"
+    destination: "/bionemo/inference-runtime/overview"
+  - source: "/bionemo/inference-runtime/getting-started/system-requirements"
+    destination: "/bionemo/inference-runtime/install"
+  - source: "/bionemo/inference-runtime/getting-started/install-bioir"
+    destination: "/bionemo/inference-runtime/install"
+  - source: "/bionemo/inference-runtime/guides/quickstart"
+    destination: "/bionemo/inference-runtime/quickstart"
+  - source: "/bionemo/inference-runtime/user-guide/api"
+    destination: "/bionemo/inference-runtime/references/api"
+  - source: "/bionemo/inference-runtime/user-guide/model-weights"
+    destination: "/bionemo/inference-runtime/references/model-weights"
+  - source: "/bionemo/inference-runtime/concepts/architecture"
+    destination: "/bionemo/inference-runtime/references/architecture"
+  - source: "/bionemo/inference-runtime/reference/configuration"
+    destination: "/bionemo/inference-runtime/references/config"
+  - source: "/bionemo/inference-runtime/reference/support-matrix"
+    destination: "/bionemo/inference-runtime/references/support-matrix"
+  - source: "/bionemo/inference-runtime/reference/api-stability"
+    destination: "/bionemo/inference-runtime/references/api"
+  - source: "/bionemo/inference-runtime/development"
+    destination: "/bionemo/inference-runtime/references/dev"
+  - source: "/bionemo/inference-runtime/dev"
+    destination: "/bionemo/inference-runtime/references/dev"
+  - source: "/bionemo/inference-runtime/performance"
+    destination: "/bionemo/inference-runtime/references/benchmark"
+  - source: "/bionemo/inference-runtime/api-reference/:path*"
+    destination: "/bionemo/inference-runtime/references/api"
+  - source: "/bionemo/inference-runtime/:path*/index.html"
+    destination: "/bionemo/inference-runtime/:path*"
+  # Preserve former Sphinx page URLs (foo.html).
+  - source: "/bionemo/inference-runtime/:path*.html"
+    destination: "/bionemo/inference-runtime/:path*"

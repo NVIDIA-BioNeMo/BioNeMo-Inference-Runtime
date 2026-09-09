@@ -1,0 +1,16 @@
+include LICENSE
+include THIRD_PARTY_NOTICES.md
+recursive-include LICENSES *.txt
+recursive-include cpp CMakeLists.txt *.cmake *.cpp *.h
+# The public materializer is standard-library-only and is required to build a
+# wheel from an sdist. Family indexes and their Git-LFS packs are the only CUBIN
+# artifact inputs that ship in source distributions.
+recursive-include cpp/cmake *.py
+recursive-include cpp/kernels index.json *.tar.xz
+prune cpp/tools
+# recursive-include does not consult .gitignore, and local CMake trees vendor the
+# fetched nanobind sources.
+prune cpp/build*
+prune cpp/cmake-build-*
+prune cpp/kernels/cutedsl_*/cubins/.cache
+exclude build.env

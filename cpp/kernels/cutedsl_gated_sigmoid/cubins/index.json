@@ -1,0 +1,6458 @@
+{
+  "compile_fingerprint": "f7a2eee0d4d43bc899e35c0f737098239267c6e8bc716faf4670efdcfb20b777",
+  "family": "gated_sigmoid",
+  "format": "bioir-cubin-pack-v1",
+  "packs": {
+    "sm_80": {
+      "file": "packs/gated_sigmoid_sm80_89839d6a599c3b5380ee260d1edc649f1ce31f8896f6d20d7ced27415c9c827d.tar.xz",
+      "image_count": 12,
+      "sha256": "89839d6a599c3b5380ee260d1edc649f1ce31f8896f6d20d7ced27415c9c827d",
+      "size": 33720
+    },
+    "sm_86": {
+      "file": "packs/gated_sigmoid_sm86_1c221d5bc2fc7f5e1ed6baa6722058f2b2c8c67c43c4704854becd090bb9fcf4.tar.xz",
+      "image_count": 12,
+      "sha256": "1c221d5bc2fc7f5e1ed6baa6722058f2b2c8c67c43c4704854becd090bb9fcf4",
+      "size": 33284
+    },
+    "sm_89": {
+      "file": "packs/gated_sigmoid_sm89_ef67973a5ae16f5db48e64139b35e6aa1f7e881c03755726ec8527b691231d53.tar.xz",
+      "image_count": 40,
+      "sha256": "ef67973a5ae16f5db48e64139b35e6aa1f7e881c03755726ec8527b691231d53",
+      "size": 64140
+    },
+    "sm_90a": {
+      "file": "packs/gated_sigmoid_sm90a_b264b1d6d5c6225edb1825e73013607ff5e683feea3e2d1cc83d0f476790944c.tar.xz",
+      "image_count": 8,
+      "sha256": "b264b1d6d5c6225edb1825e73013607ff5e683feea3e2d1cc83d0f476790944c",
+      "size": 25560
+    }
+  },
+  "registry_version": 2,
+  "toolchain": {
+    "compile_environment": "sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba",
+    "nvidia-cutlass-dsl": "4.5.2"
+  },
+  "variants": [
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "1d78f5fbee8e0a53e5e6cd7192220fbd99d0b48885bc55d55883f470fafac4de",
+        "size": 16544
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.04acf29e8585801eaa16",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "04acf29e8585801eaa16"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "f97e5c5c5c73215c863e44e87d6993c233fc9b7342d2a5fa2d39d9bbaac768ba",
+        "size": 21664
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.0d59be6376f90a40d75d",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 73728,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "0d59be6376f90a40d75d"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "e7c4afff57f20d7cd8e1954f3c609dd97e85f21f125520a1abcb4be882a25276",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.0fa8e495e496c4b4a994",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "0fa8e495e496c4b4a994"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "c150822a50d0b77d36c5be82ed6777cf8912eb06f49780e443b6aed71f7320c7",
+        "size": 26784
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.10ab21816853e78d857d",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "10ab21816853e78d857d"
+    },
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "78be7c39e166c831b16170b0dd28ff1d8e0e6508eabcf44dc82d7a49f158ceef",
+        "size": 15520
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.11f1307cfaddd9f65207",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "11f1307cfaddd9f65207"
+    },
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "732579fbea44cc6068dd81046d5c80562373633740abd1e57b13de417b0bb9a1",
+        "size": 16544
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.17ab498dbf2176a2eee1",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "17ab498dbf2176a2eee1"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "889a0f9022992b875d1c5560f7295c44eef67f590d57c22399d50f30a2ee7f6a",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.18fd2217ad6669c9e64e",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "18fd2217ad6669c9e64e"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "7d10c41eae4b241a19c382a675fae56268483738de128e1098953de05c436fe1",
+        "size": 14496
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.1bcc615d26e6c8fb195a",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "1bcc615d26e6c8fb195a"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "e2f043990f5984bf7530365c17277438f14e37cb1f8e587747a3d39bf465ff8a",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.2739c17f9bc92db89f45",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "2739c17f9bc92db89f45"
+    },
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "191436e9f4e3e769b1c5d7040130129a344d13fd54839984d5ed1b82a1462880",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.27aa81f9c4176973d2f1",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "27aa81f9c4176973d2f1"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "222b3bcffc20056fa73e5713a37f0342ad27338db1b69a431b772fe3dd590bd7",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.27d6585db60207246189",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "27d6585db60207246189"
+    },
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "12e941e0c460614dbe09750469a5c997e9e935b09f34f3237a875e0a537bf6ea",
+        "size": 16544
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.296413c9ccd44a9ef8f7",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "296413c9ccd44a9ef8f7"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "2f46f6170768fa0233dd43c53ffbf84045e3abfd2c40d8ea8a8869e5e2954773",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.2a061533be9bee7ef69c",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "2a061533be9bee7ef69c"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "f4bd333ae4558196945e7eb920a0107e0d4d39a6906226dc8c4614c1d1c90b82",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.2f1c63530089fd6a7bfc",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "2f1c63530089fd6a7bfc"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "c5e5e740b19ea9a7f6373dbf61930722650fab48f5e7690ecea2f193ec075643",
+        "size": 20640
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.2fc65006e1da17c58a84",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 73728,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "2fc65006e1da17c58a84"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "1b093a5cae6d30759d886f1041852606b3162bc5f16b9bc4cf78fe85176bb43c",
+        "size": 14496
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.32193187436803efa06c",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "32193187436803efa06c"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "6b90722aa491365ec11e86890f2da929a992b8da9630019f3ceff50fdc98a090",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.352372a5cda8fcd2236b",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "352372a5cda8fcd2236b"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "3977551056f0918d6563e3be573f0b0acef643a65e71460d5330784015b3e1d6",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.3cef20849f76802daa2f",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "3cef20849f76802daa2f"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "b8b2799ec803c0b2d38cb71902dd85c7e76da3544442e8aea67f27e7bc7ee800",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.3eed202aa4d75d6716e6",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "3eed202aa4d75d6716e6"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "70ad18d0e3e39fea4a00e20ef4ed842398d88c87f3c43d5887f70ac20f16d68c",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.3f63fb1e450fe944b3cc",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "3f63fb1e450fe944b3cc"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "fb795809dd8a79b729677b443f7ffa7a4e14c946689ec2d94ebcaeabb93ea033",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4044faa574b2c20637a3",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "4044faa574b2c20637a3"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "01fc08a61a8c7dd3ab3bf82ffcacf2fe7692ac918ba23d32ae25bfb729c3a572",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4162a7010be780c4d2ee",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "4162a7010be780c4d2ee"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "0e6333fe7e4f5474e0aee25738f616eac71d8479d7c73dec98b69bdb5e497de8",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.468d993a4ea5b00467df",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "468d993a4ea5b00467df"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "3705417f71325e491de842336bea47ced42c59810de29ec48dea023d45c0c756",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4934eb94b8b5399ebe36",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "4934eb94b8b5399ebe36"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "f33d7e51df773e8f4604ee6db60f1b32b9094eb85c6e6b05c24359bab7c26742",
+        "size": 15520
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.494d191f862fc3676a4f",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "494d191f862fc3676a4f"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "cc420e03c54ecf923ce876d8c9351a5f52f37f02f4c5f57f19bfe243a9ecdecb",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4b205384153c89b81e40",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "4b205384153c89b81e40"
+    },
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "7ae23dba08f83ee89377bb0b354d8d2ef79227e1e7d0059944acae8132891db0",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4c25ccd13ef0a1ac5c6d",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "4c25ccd13ef0a1ac5c6d"
+    },
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "3c1c8b2126a53fe220bd93600864f1e63c4ba80f897baa48e8f8ebb5ceb42014",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4da844fa6874a81e7371",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "4da844fa6874a81e7371"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "64629a40a994ba69d302605b5e498601dbb28d2c5c2cb8107194b7c4f6836b35",
+        "size": 20440
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4f8c007173810e393fc0",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "4f8c007173810e393fc0"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "9dcf5e6fbd9f929b11655798875cf0bbb4bba5c3e2bbed884b983c5441fb152e",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.4ff1a23a1d92f8289b1f",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "4ff1a23a1d92f8289b1f"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "900a9b2d778a5334c9865503fa184e5a6126e4856a3c72809f15dceb74800af3",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.51d119955b6b6b0c6486",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "51d119955b6b6b0c6486"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "f4bd333ae4558196945e7eb920a0107e0d4d39a6906226dc8c4614c1d1c90b82",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.5331e16db9a8f8e06911",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "5331e16db9a8f8e06911"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "d5b2cfc819911ff9a4a6b38e7c213b50adcf736ff6d907ee7c996bd13eea59fa",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.538233f25cec174374c6",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 73728,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "538233f25cec174374c6"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "582cfeded0f4625a6d9aa46fd8cc2f19fc8ac65f6b30f9b414a928b9229f5108",
+        "size": 26784
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.54636446826795e7f1b3",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "54636446826795e7f1b3"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "66cf4d63c352b8d25ca266e29e6ac4df3eb9906ec5875e4e31c13f8a92f6a35f",
+        "size": 15520
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.55fabc347434ca63ec8b",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "55fabc347434ca63ec8b"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "c932da90347c6967aee9a6a39606b90e7040132ab8fa8ee7d1c01631ccb3eb7e",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.5951efcd05b5cabf0e09",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "5951efcd05b5cabf0e09"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "bad4d97273caf729ee076367d32fb2dc0e0c4fff0fdcbb83399e14610ae84e47",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.5c93912a48e711661f02",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "5c93912a48e711661f02"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "13540a860ccae1a5a1d6c408faff7ae63e44cb206757ebff74a9a81c7e136f38",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.5d8759549b7c8bf9ad8e",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "5d8759549b7c8bf9ad8e"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "6cac6f5f759207b86fd6ca0b6fe84c9286468dc10fe2016cb93c6b029be3e3ae",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.6302153a0e02f71547c3",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "6302153a0e02f71547c3"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "673cdca1533d0548db693509849aba0173e90cbc0b027187b761822e14b8f4f5",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.6444fad9db541b22add4",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "6444fad9db541b22add4"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "6f76493d695ee439bd655de424cb2b2f23cb30efdc0d8948540c89a32354cee5",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.669e4f1ab3e41d7394d2",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "669e4f1ab3e41d7394d2"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "97838198b31eebae6f7224635fd063105d95eacbecbad7b656889adf057fc346",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.6aa54e69bed65130b73c",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "6aa54e69bed65130b73c"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "2f43d4cbe81c42ab68a9208649bf37dd21e9633e4c79d92de7b34ef1e67e4399",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.74d6adc1f1ff290948fa",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "74d6adc1f1ff290948fa"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "03fe09b2319f318dda536255762a36f28deaceb8925722a2bd2e5e361ee86be3",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.76361ae6c28822458006",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "76361ae6c28822458006"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "0823bccc25042acb317e5da5a666892ffd0d94d9e56487d5ee80f3697394082b",
+        "size": 15520
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.78939b6817e349f31e0d",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "78939b6817e349f31e0d"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "2347f9c6c4fdb40a560cc178a59ba939becbe8c8186b4fb883be5eb573a45c18",
+        "size": 20440
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.7b154e4a2e50f42811ca",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "7b154e4a2e50f42811ca"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "4582d18427c6ed276fcfa292131fa5cdbff91c4c5969bcc2ca3989237f51611c",
+        "size": 14496
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.7d4866bc198bc6b7d151",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "7d4866bc198bc6b7d151"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "cfb8ae0a1a7f344ee58981e771ea9c126ef5e62d1b9a5d4fe2880ccddf204ba8",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.7e93248a3f5d73aeebbd",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "7e93248a3f5d73aeebbd"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "df53ecaff564984de02195d91a30e12bcff76b58b538eadfb9640eaa0ea5b9c2",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.831bad0be23f130791d7",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "831bad0be23f130791d7"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "8681fe1e37857f4dd3a294a928366043286be46062ae1246fda73336b57759b6",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.83d6e12b7c0e882ad5b2",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "83d6e12b7c0e882ad5b2"
+    },
+    {
+      "aliases": [
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            4,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "5fe06c6a6d689cd8f3ec04de218604d258aba50d2737720eac2ea8b6b943283d",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.85feb1ebe885863b76c2",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          4,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "85feb1ebe885863b76c2"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "125f71519560a5154a2ddd862b8a1ee9de43bd616a50b1347e6682aa206eeba7",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.89393f3759534b23a68b",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "89393f3759534b23a68b"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "8febf9fbe313015f66570fbaba80a16039175fb5ade63ee921ec87429e03fa1d",
+        "size": 14496
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.8efc5cb1b10784aa66bc",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "8efc5cb1b10784aa66bc"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "6b90722aa491365ec11e86890f2da929a992b8da9630019f3ceff50fdc98a090",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.920233b01182e7aa7c60",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "920233b01182e7aa7c60"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "d7ceab26e57f4a20eadae1af50cf23560bbaac479c2a7ea01ff74dae87edf612",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.9e032a029c6b1f11dcff",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "9e032a029c6b1f11dcff"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "186bdd5faff3dab72a6fa1373f6875e0d7899eeff577a5b53ac724f7a9338f4e",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.a11f9c117366fbc88475",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "a11f9c117366fbc88475"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "7aeda13ed4595ed7222ef50cfe0ba0285731f94b1e78206045ea742cbd0da514",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.a21bba6dc2c82ccc99a7",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "a21bba6dc2c82ccc99a7"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 2,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "3f7d549deea4c095519ec94552e96e2eee79f51b045c13b420c189717989c7c0",
+        "size": 29672
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.a2a0e8044a0bb2d7ce64",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 2,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "a2a0e8044a0bb2d7ce64"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "673cdca1533d0548db693509849aba0173e90cbc0b027187b761822e14b8f4f5",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.a3bd096b75445c07c6e1",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "a3bd096b75445c07c6e1"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "cd4085561dfa8a66715b43a179f9610ccc27c6e3c6be165fe2c9431870b8b7c9",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.a3f047c9f3c380163e58",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "a3f047c9f3c380163e58"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "d1f1ab746b82d14f94fd1359cf82920cdeedf3cb298afe0d494805e9b067809c",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.a4d8bc7f4f60d6ab5566",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "a4d8bc7f4f60d6ab5566"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 2,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "98765bc7808965f15d0156975eec4debd3c739bc5df862ad7a5b1e94b078193a",
+        "size": 27608
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.a6f844f534c2b3e4b312",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 2,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "a6f844f534c2b3e4b312"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "2f46f6170768fa0233dd43c53ffbf84045e3abfd2c40d8ea8a8869e5e2954773",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.ad06e18e9a95e783dd7c",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "ad06e18e9a95e783dd7c"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "ea4894c60374c6ca0013cb6d6cde3147637be4c26a53d0f200e6faf18fd58ad5",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.b5c579cb5c95244db1b4",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "b5c579cb5c95244db1b4"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_86",
+        "sha256": "071653594b3e5fe05abc08feb3a08eba65de547a23a1e96befa11cd3f8b0d603",
+        "size": 25760
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.b79dd2c22607129d4741",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        86
+      ],
+      "target_arch": "sm_86",
+      "target_sm": 86,
+      "variant_id": "b79dd2c22607129d4741"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "889a0f9022992b875d1c5560f7295c44eef67f590d57c22399d50f30a2ee7f6a",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.bca4b88c3c9e91ebe7d0",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "bca4b88c3c9e91ebe7d0"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "d7ceab26e57f4a20eadae1af50cf23560bbaac479c2a7ea01ff74dae87edf612",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.c289d6e67e7900356aad",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "c289d6e67e7900356aad"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "9dcf5e6fbd9f929b11655798875cf0bbb4bba5c3e2bbed884b983c5441fb152e",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.cb8da9df5ce677d7a134",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "cb8da9df5ce677d7a134"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "b382de0f8fe90fa4686e8f67bc6eddbdc6d521008ea3c9cbb973bb8540b54aaf",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.d2e69ec8a4e4091b19f0",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "d2e69ec8a4e4091b19f0"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "36e0f692acb3cc285bbe4e675194758597c9803bf27d88293ee50b2826e593e4",
+        "size": 26784
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.d4b0a8aa25865b4b4770",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "d4b0a8aa25865b4b4770"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "03fe09b2319f318dda536255762a36f28deaceb8925722a2bd2e5e361ee86be3",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.d7483184c87983c325f9",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "d7483184c87983c325f9"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "8fc776cf2d59d6ac56c02037c56f77ec30ea5efa0844152d1efa544619c85af3",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.d771fac200d5a81954cb",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "d771fac200d5a81954cb"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "2dd82a4ba71c5814df26dc6518b8633db847348569d1a0d76aacaca89cec8f45",
+        "size": 20456
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.dcf6f4fb015f73b16068",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "dcf6f4fb015f73b16068"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "962141b9ded5eab8cc67dd82ec9a621c3617549ee5dee1166ad767739ed8dd70",
+        "size": 20640
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.e413fb8a202857e3a685",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 73728,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "e413fb8a202857e3a685"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 4,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "8fc776cf2d59d6ac56c02037c56f77ec30ea5efa0844152d1efa544619c85af3",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k030fbbbd8e076a659cce4b55292c5dc7b2096d346ee06d9c9753fc30e29c3f1d____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.e5f60f61b1ca59387fe3",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 32768,
+        "has_bias": false,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 4,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "e5f60f61b1ca59387fe3"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 128,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "bc26de4928e811ee31bdbdf283f514c4012fc6c4ea611a76682483192121a7de",
+        "size": 24736
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.e7a83f8a6213c6d4cb25",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 36864,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 128,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "e7a83f8a6213c6d4cb25"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 2,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "5629573b56254d82e5c072186626c6bdb98b405093f0a3ce4ba8da1d453147f7",
+        "size": 28632
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.e93ce5c0717a0c5bcfec",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 2,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "e93ce5c0717a0c5bcfec"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_80",
+        "sha256": "50a4a8a875e89d611491d365255ee19bf66707d8f01dee64eca13a08e4d1bb78",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.efe5e552bc434da6cbce",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        80
+      ],
+      "target_arch": "sm_80",
+      "target_sm": 80,
+      "variant_id": "efe5e552bc434da6cbce"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 1025
+        },
+        {
+          "K": 128,
+          "N": 128,
+          "m_bucket": 2049
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 256,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 1025
+        },
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 0
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 1025
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "946d40557393dd6faa4626798b31884780602a9e41e4493882b1740343192038",
+        "size": 20456
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.f10d1779415d2c48a980",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "f10d1779415d2c48a980"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 256,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 5,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "3977551056f0918d6563e3be573f0b0acef643a65e71460d5330784015b3e1d6",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k7f9551a8971a9ec328bb67c54fe2cda2b14c7323c164a0563e20ade64923ff00____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.f131b0371791abed8105",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 40960,
+        "has_bias": true,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 5,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "f131b0371791abed8105"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "0e6333fe7e4f5474e0aee25738f616eac71d8479d7c73dec98b69bdb5e497de8",
+        "size": 19616
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.f3b6e6967fd2c3d22ac8",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "f3b6e6967fd2c3d22ac8"
+    },
+    {
+      "aliases": [
+        {
+          "K": 64,
+          "N": 64,
+          "m_bucket": 0
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            4,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "d11bdd5d18d0bd72c09bd06b579a934b1884d2bf9bf5ef41ce3eaeebc5d19c4e",
+        "size": 15520
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.f702b8676d1e45c22a93",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          4,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 256,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "f702b8676d1e45c22a93"
+    },
+    {
+      "aliases": [
+        {
+          "K": 128,
+          "N": 256,
+          "m_bucket": 2049
+        },
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 2049
+        },
+        {
+          "K": 768,
+          "N": 768,
+          "m_bucket": 2049
+        },
+        {
+          "fallback_tile": true
+        }
+      ],
+      "dtype": "fp16",
+      "identity_spec": {
+        "has_bias": true,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 64,
+          "m_block_size": 64,
+          "n_block_size": 128,
+          "num_stages": 2,
+          "raster_factor": 1
+        }
+      },
+      "image": {
+        "pack": "sm_90a",
+        "sha256": "22dbea885756f7e5c94464c00d2e49421c9d6a43c8435c9ccb95faacd085df77",
+        "size": 29672
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "k3b2e010c70ab03deb7e82aa586f049ff33e2c7faf26ba80049e8cf814b2a2b57____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.f73cd041afa2173a324c",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 49152,
+        "has_bias": true,
+        "is_bfloat16": false,
+        "k_block_size": 64,
+        "m_block_size": 64,
+        "n_block_size": 128,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 2,
+        "num_threads": 128,
+        "raster_factor": 1
+      },
+      "supported_sms": [
+        90
+      ],
+      "target_arch": "sm_90a",
+      "target_sm": 90,
+      "variant_id": "f73cd041afa2173a324c"
+    },
+    {
+      "aliases": [
+        {
+          "K": 384,
+          "N": 384,
+          "m_bucket": 0
+        },
+        {
+          "K": 384,
+          "N": 768,
+          "m_bucket": 1025
+        }
+      ],
+      "dtype": "bf16",
+      "identity_spec": {
+        "has_bias": false,
+        "tile_params": {
+          "atom_layout_mnk": [
+            2,
+            2,
+            1
+          ],
+          "k_block_size": 32,
+          "m_block_size": 64,
+          "n_block_size": 64,
+          "num_stages": 3,
+          "raster_factor": 2
+        }
+      },
+      "image": {
+        "pack": "sm_89",
+        "sha256": "01fc08a61a8c7dd3ab3bf82ffcacf2fe7692ac918ba23d32ae25bfb729c3a572",
+        "size": 18592
+      },
+      "kernel_sm": 80,
+      "kernel_symbol": "kf9bb7f0b96a749d5195894813dd09d4a623373381870ac5f52a6b9d60b78ef0a____________________________________________________________________________________________________________________________",
+      "label": "gated_sigmoid.f9241043357c4c241e39",
+      "launch_abi": "gated_sigmoid_sm80",
+      "runtime_metadata": {
+        "atom_layout_mnk": [
+          2,
+          2,
+          1
+        ],
+        "dynamic_smem_bytes": 24576,
+        "has_bias": false,
+        "is_bfloat16": true,
+        "k_block_size": 32,
+        "m_block_size": 64,
+        "n_block_size": 64,
+        "non_portable_cluster_size_allowed": false,
+        "num_stages": 3,
+        "num_threads": 128,
+        "raster_factor": 2
+      },
+      "supported_sms": [
+        89
+      ],
+      "target_arch": "sm_89",
+      "target_sm": 89,
+      "variant_id": "f9241043357c4c241e39"
+    }
+  ]
+}

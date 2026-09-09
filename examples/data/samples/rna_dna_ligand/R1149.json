@@ -1,0 +1,15 @@
+[
+    {
+        "input_id": "R1149",
+        "polymers": [
+          {
+            "polymer_type": "rna",
+            "chain_id": ["A"],
+            "sequence": "GGACACGAGUAACUCGUCUAUCUUCUGCAGGCUGCUUACGGUUUCGUCCGUGUUGCAGCCGAUCAUCAGCACAUCUAGGUUUCGUCCGGGUGUGACCGAAAGGUAAGAUGGAGAGCCUUGUCC",
+            "msas": null,
+            "paired_msas": null,
+            "templates": null
+          }
+        ]
+    }
+]

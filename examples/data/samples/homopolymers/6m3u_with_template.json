@@ -1,0 +1,21 @@
+[
+    {
+        "input_id": "6m3u_with_template",
+        "polymers": [
+          {
+            "polymer_type": "protein",
+            "chain_id": ["A1", "B1"],
+            "sequence": "ELAKYGLPGVAQLRSRESYVLSYDPRTRGALWVLEQLRPERLRGDGDRSAADFREDDSVHAYHRATNADYRGSGFDRGALAAAANHRWSQRAMDDTFYLSNVAPQVPHLNQNAWNNLERYSRSLTRTYQNVYVCTGPLFLPRTEADGKSYVKYQVIGKNHVAVPTHFFKVLILEAAGGQIELRSYVMPNAPVDETIPLERFLVPIESIERASGLLFVPNILARAGNLKAI",
+            "msas": "msas/6m3u.a3m",
+            "paired_msas": null,
+            "templates": [
+              {
+                "path": "templates/9m0g_A.cif",
+                "format": "cif",
+                "chain_id": "A"
+              }
+            ]
+          }
+        ]
+    }
+]

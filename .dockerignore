@@ -1,0 +1,127 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+
+# CI
+.codeclimate.yml
+.travis.yml
+.taskcluster.yml
+
+# Docker
+docker-compose.yml
+Dockerfile
+.docker
+.dockerignore
+
+# Byte-compiled / optimized / DLL files
+**/__pycache__/
+**/*.py[cod]
+
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+
+# PyBuilder
+target/
+
+# Virtual environment
+.env
+.venv/
+venv/
+
+# PyCharm
+.idea
+
+# Python mode for VIM
+.ropeproject
+**/.ropeproject
+
+# Vim swap files
+**/*.swp
+
+# VS Code
+.vscode/
+
+# Project-specific build artifacts
+job.log
+workdir/
+
+# C++ build artifacts
+**/CMakeFiles/
+**/cmake_install.cmake
+**/CMakeCache.txt
+**/Makefile.cmake
+
+# Pipeline definitions and editor/CI assets. No image stage reads them, and
+# they are the largest thing `COPY .` pulls in that nothing builds.
+.gitlab/
+.gitlab-ci.yml
+.github/
+.devcontainer/
+
+# CuTeDSL compiler/materializer output is never a Docker build input. Keep only
+# the tracked family indexes and their Git-LFS pack payloads.
+**/cubins/*
+!**/cubins/index.json
+!**/cubins/packs/
+!**/cubins/packs/*.tar.xz
+**/bioir_cubins/
+
+# ---------------------------------------------------------------------------
+# Large artifacts that `COPY .` (docker/Dockerfile) would otherwise
+# pull into the dev/test image but which nothing there builds or runs. These are
+# the biggest build-context contributors.
+# ---------------------------------------------------------------------------
+
+# Documentation. Nothing in the dev/test image builds or runs docs/, and no
+# Dockerfile COPYs it, so keep it out of the build context.
+docs/
+
+# Sample structures and fixtures. Nothing packages them -- the wheel ships
+# bionemo_ir* only -- so in the wheel stage's `COPY .` they are pure weight, and
+# editing one would rebuild the extension for nothing. The tests that read
+# examples/data run against the checkout, which this file does not affect.
+examples/
+
+# openfold-3: only the openfold3/ python package is imported by tests.
+3rdparty/openfold-3/assets/
+3rdparty/openfold-3/docs/

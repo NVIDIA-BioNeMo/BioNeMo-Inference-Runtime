@@ -1,0 +1,20 @@
+# Schema / how to write this file:
+#   https://nvidia.atlassian.net/wiki/spaces/PRODSEC/pages/2569284526
+# Validate before committing:
+#   https://nspect.nvidia.com/tools/validate/allowlist
+version = "1.0.0"
+
+[oss]
+
+# biopython 1.87 is flagged for CVE-2025-68463 (Bio.Entrez XXE/SSRF), but the
+# fix landed in 1.87 (biopython#5109 / PR #5148), so this is a scanner false
+# positive. requirements.txt pins biopython>=1.87.
+# See https://github.com/biopython/biopython/issues/5109
+[[oss.allowlist]]
+cve-id = "CVE-2025-68463"
+package = "biopython"
+versions = ["1.87"]
+jira = "BNMTRT-425"
+exception_status = "approved"
+exception_expiration = 2027-08-05
+comment = "Fixed in 1.87 (biopython#5148)"

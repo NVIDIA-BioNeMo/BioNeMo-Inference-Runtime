@@ -1,0 +1,145 @@
+####################################################################################################
+###############################  BUILD CONFIGURATION  ##############################################
+####################################################################################################
+[build-system]
+requires = ["cmake>=3.27", "nanobind==2.10.2", "setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.setuptools]
+include-package-data = true
+package-dir = { "" = "." }
+
+# version is supplied by setup.py so the CUDA local segment (e.g. 0.4.0+cu131)
+# lands in the wheel METADATA — see setup.py. It stays in [project].dynamic below.
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.dynamic.optional-dependencies]
+dev = { file = ["requirements-dev.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bionemo_ir*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"bionemo_ir" = [
+  "_torch/custom_ops/*/configs/*.json",
+  "_torch/attention_backend/*/configs/*.json",
+]
+
+[project]
+name = "bionemo-ir"
+description = "BioNeMo Inference Runtime: GPU accelerated framework for protein folding"
+requires-python = ">=3.12,<4.0"
+authors = [{ name = "NVIDIA-BioNeMo team" }]
+readme = "README.md"
+dynamic = ["dependencies", "version", "optional-dependencies"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
+
+####################################################################################################
+###############################  LINTING, FORMATTING AND TESTING CONFIGURATION  ####################
+####################################################################################################
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+# 3rdparty is vendored and never linted.
+extend-exclude = ["3rdparty"]
+
+[tool.ruff.lint]
+# Enforced on changed files only, so the set stays low-noise: rules with little
+# existing debt and mostly auto-fixable, to avoid bloating small MRs.
+select = [
+  # pycodestyle errors — PEP 8 violations (indentation, syntax-y style).
+  # https://docs.astral.sh/ruff/rules/#pycodestyle-e-w
+  "E",
+  # Pyflakes — real bugs: unused imports/vars, undefined names, f-string issues.
+  # https://docs.astral.sh/ruff/rules/#pyflakes-f
+  "F",
+  # pycodestyle warnings — whitespace, blank lines, deprecated constructs.
+  # https://docs.astral.sh/ruff/rules/#pycodestyle-e-w
+  "W",
+  # isort — import ordering and grouping (auto-fixed).
+  # https://docs.astral.sh/ruff/rules/#isort-i
+  "I",
+  # pyupgrade — modernize syntax for the target Python (e.g. `list` over `List`).
+  # https://docs.astral.sh/ruff/rules/#pyupgrade-up
+  "UP",
+  # flake8-bugbear — likely bugs and footguns (mutable defaults, `raise` from).
+  # https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
+  "B",
+  # flake8-debugger — leftover `breakpoint()` / `pdb` calls.
+  # https://docs.astral.sh/ruff/rules/#flake8-debugger-t10
+  "T10",
+  # flake8-comprehensions — simpler, faster list/dict/set comprehensions.
+  # https://docs.astral.sh/ruff/rules/#flake8-comprehensions-c4
+  "C4",
+  # flake8-pie — remove redundant/dead constructs (dup dict keys, no-op code).
+  # https://docs.astral.sh/ruff/rules/#flake8-pie-pie
+  "PIE",
+  # flynt — prefer f-strings over `str.join` / `%` / `.format`.
+  # https://docs.astral.sh/ruff/rules/#flynt-fly
+  "FLY",
+  # pygrep-hooks — ban blanket `# noqa` / `# type: ignore` (enforces the
+  # "avoid # type: ignore" rule in docs/coding.md).
+  # https://docs.astral.sh/ruff/rules/#pygrep-hooks-pgh
+  "PGH",
+]
+# The formatter owns line wrapping; long strings/URLs/comments shouldn't fail lint.
+# E741: single-letter names like B/I/J/H/D and l are the domain's tensor
+# shape-dim convention here; renaming would obscure the math and ripple across
+# call sites for no readability gain.
+# E731: assigning a lambda to a name is used deliberately for small local
+# helpers; rewriting to def is low-value churn.
+# UP042: rewriting `class X(str, Enum)` to `enum.StrEnum` is a behaviour change,
+# not a style fix. New enums should still subclass `enum.StrEnum`.
+# https://docs.astral.sh/ruff/rules/replace-str-enum/
+ignore = ["E501", "E741", "E731", "UP042"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bionemo_ir"]
+
+# Branch coverage over the shipped package. The test job runs two pytest phases
+# (see scripts/run_tests.sh) and phase 1 fans out over xdist workers,
+# so the data has to merge across processes and across runs.
+[tool.coverage.run]
+branch = true
+# One data file per process (xdist worker, phase), combined before reporting.
+parallel = true
+# Store paths relative to the measurement root, so data files produced by
+# different processes merge cleanly.
+# https://coverage.readthedocs.io/en/latest/config.html#run-relative-files
+relative_files = true
+# The repo root, NOT ["bionemo_ir"]: coverage strips the configured source
+# root from the Cobertura filenames, and CI only maps coverage onto the review
+# diff when those filenames are repo-relative (bionemo_ir/foo.py). What
+# actually gets measured is narrowed to the package by `--cov=bionemo_ir`
+# in scripts/run_tests.sh; the omits below keep a bare
+# `pytest --cov` honest too.
+source = ["."]
+omit = [
+  # Vendored third-party trees (mirrors ruff's extend-exclude and prek.toml).
+  "*/3rdparty/*",
+  # The suite measures the shipped package, not itself.
+  "tests/*",
+  # Packaging script, not shipped package code.
+  "setup.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+precision = 2
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+  "if __name__ == .__main__.:",
+]
+
+[tool.commitizen]
+# Conventional Commits. Used now only to lint commit/MR titles (`cz check`).
+# Changelog generation (`cz changelog`) and version bumps (`cz bump`) are a
+# follow-up — that's why the version config below is intentionally minimal.
+name = "cz_conventional_commits"

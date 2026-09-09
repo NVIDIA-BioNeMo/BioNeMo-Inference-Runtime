@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the wheel, which needs no GPU and no driver. `cpp/CMakeLists.txt`
+# declares `LANGUAGES CXX ASM`, so nvcc compiles nothing here -- the kernels are
+# precompiled CUBINs assembled in as `.incbin` shards, and the only CUDA
+# dependency is `CUDA::cuda_driver`, resolved against the libcuda stub the
+# toolkit ships. Nothing links PyTorch.
+#
+# Its own file rather than a third job in ci.yml, because it is the one gate
+# worth starting by hand: `workflow_dispatch` builds a wheel from any branch or
+# tag and leaves it as an artifact, with no pull request to open first.
+name: Wheel
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # The Run workflow button, and `gh workflow run Wheel --ref <branch>`. Nothing
+  # in this file reads the pull_request payload, so it needs no inputs. It only
+  # appears once this file is on the default branch.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # `lfs: true` would pull every LFS object in the repo -- measured at
+      # 88.2 MB, of which the 36 CUBIN packs are 2.5 MB. The build reads only
+      # the packs, so fetch only those. The credentials stay for the same reason
+      # as in ci.yml: `git lfs pull` needs them on an internal repo.
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: ./.github/actions/cubin-packs
+
+      - uses: ./.github/actions/python
+
+      # Not a literal, for the same reason the Python floor is not one. `setup.py`
+      # turns the toolkit's `nvcc --version` into the wheel's `+cuXYZ` local
+      # version segment, so a toolkit chosen independently of the runtime image
+      # publishes a wheel labelled for a CUDA no other build path here produces.
+      # docker/Dockerfile's RUNTIME_TAG is where that version is declared.
+      - name: Resolve the CUDA version from the runtime image tag
+        id: cuda
+        shell: bash
+        run: |
+          version=$(sed -n 's/^ARG RUNTIME_TAG=\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' docker/Dockerfile)
+          if [[ -z "${version}" ]]; then
+            echo "::error file=docker/Dockerfile::no 'ARG RUNTIME_TAG=<x.y.z>-...' found"
+            exit 1
+          fi
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+
+      # Headers and the libcuda stub, nothing more. `setup.py` reads the
+      # toolkit version for the wheel's `+cuXYZ` local version segment, so nvcc
+      # has to be on PATH rather than just the headers being present.
+      #
+      # The only third-party action here, so it is pinned to a commit rather
+      # than a tag, which is what NVIDIA ProdSec asks for and what NVIDIA/warp
+      # does across its workflows. The org allowlist carries
+      # `jimver/cuda-toolkit@*`, which a SHA satisfies.
+      #
+      # There is no first-party alternative: NVIDIA publishes no setup-CUDA
+      # action. The org pattern is to run the job inside `nvcr.io/nvidia/cuda`
+      # (NVIDIA-BioNeMo/nvMolKit does exactly that), which does not fit here --
+      # that image ships neither git-lfs for the packs above nor a Python the
+      # setup-python tool cache recognises.
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: ${{ steps.cuda.outputs.version }}
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Build the wheel
+        run: |
+          pip install --upgrade build
+          python -m build --wheel
+          ls -l dist/
+
+      # Prove the extension in the wheel actually loads, not just that it
+      # compiled. Two things make this fiddly:
+      #
+      # - The module is loaded straight from its file rather than as
+      #   `bionemo_ir.libs._cutedsl_kernels`, because that would execute
+      #   `bionemo_ir/__init__.py`, which imports torch. Nothing in this job
+      #   installs torch and the extension does not link it.
+      # - At load time the shared object wants a real `libcuda.so.1`, which a
+      #   runner with no GPU has not got. Point the loader at the toolkit's
+      #   stub, the same trick the repo's own CPU harness uses.
+      - name: Load the extension out of the wheel
+        run: |
+          mkdir -p /tmp/cudastub
+          ln -sf "${CUDA_PATH}/lib64/stubs/libcuda.so" /tmp/cudastub/libcuda.so.1
+          LD_LIBRARY_PATH="/tmp/cudastub:${LD_LIBRARY_PATH:-}" python - <<'PY'
+          import glob, importlib.util, tempfile, zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          unpacked = tempfile.mkdtemp()
+          zipfile.ZipFile(wheel).extractall(unpacked)
+
+          found = glob.glob(f"{unpacked}/bionemo_ir/libs/_cutedsl_kernels*.so")
+          if not found:
+              raise SystemExit(f"{wheel} carries no _cutedsl_kernels extension")
+
+          spec = importlib.util.spec_from_file_location("_cutedsl_kernels", found[0])
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          print(f"loaded {found[0].removeprefix(unpacked)} from {wheel}")
+          PY
+
+      # A month, not the 90-day default: this is a debugging aid and a dispatch
+      # deliverable, not a release artifact.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ github.sha }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30

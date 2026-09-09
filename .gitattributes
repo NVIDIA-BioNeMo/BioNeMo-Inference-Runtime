@@ -1,0 +1,25 @@
+# Normalize line endings to LF on add/checkout for everyone who clones — this
+# is the git-native, config-free way to enforce it (replaces the old
+# remove-crlf / mixed-line-ending hooks). Git has no equivalent for a
+# final-newline-at-EOF; formatters (ruff/rumdl/shfmt) handle that.
+* text=auto eol=lf
+
+# Non-LFS binary/data files: mark binary so git never rewrites their bytes.
+*.cif -text
+*.pdb -text
+*.npy -text
+*.npz -text
+*.pt -text
+*.fasta -text
+
+*.a filter=lfs diff=lfs merge=lfs -text
+*.lib filter=lfs diff=lfs merge=lfs -text
+*.so filter=lfs diff=lfs merge=lfs -text
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.a3m filter=lfs diff=lfs merge=lfs -text
+examples/data/samples/gt/*.cif filter=lfs diff=lfs merge=lfs -text
+examples/data/samples/templates/templates/*.cif filter=lfs diff=lfs merge=lfs -text
+
+# One deterministic pack per CuTeDSL family and target architecture. Family
+# indexes remain reviewable ordinary Git text.
+cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz filter=lfs diff=lfs merge=lfs -text

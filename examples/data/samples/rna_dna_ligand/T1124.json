@@ -1,0 +1,39 @@
+[
+    {
+        "input_id": "T1124",
+        "polymers": [
+          {
+            "polymer_type": "protein",
+            "chain_id": ["A"],
+            "sequence": "MVTPEGNVSLVDESLLVGVTDEDRAVRSAHQFYERLIGLWAPAVMEAAHELGVFAALAEAPADSGELARRLDCDARAMRVLLDALYAYDVIDRIHDTNGFRYLLSAEARECLLPGTLFSLVGKFMHDINVAWPAWRNLAEVVRHGARDTSGAESPNGIAQEDYESLVGGINFWAPPIVTTLSRKLRASGRSGDATASVLDVGCGTGLYSQLLLREFPRWTATGLDVERIATLANAQALRLGVEERFATRAGDFWRGGWGTGYDLVLFANIFHLQTPASAVRLMRHAAACLAPDGLVAVVDQIVDADREPKTPQDRFALLFAASMTNTGGGDAYTFQEYEEWFTAAGLQRIETLDTPMHRILLARRATEPSAVPEGQASENLYFQ",
+            "msas": [{"path": "msas/T1124_0.a3m", "format": "a3m"}],
+            "paired_msas": [{"path": "msas/T1124_0_paired.a3m", "format": "a3m"}],
+            "templates": null
+          },
+          {
+            "polymer_type": "protein",
+            "chain_id": ["B"],
+            "sequence": "MVTPEGNVSLVDESLLVGVTDEDRAVRSAHQFYERLIGLWAPAVMEAAHELGVFAALAEAPADSGELARRLDCDARAMRVLLDALYAYDVIDRIHDTNGFRYLLSAEARECLLPGTLFSLVGKFMHDINVAWPAWRNLAEVVRHGARDTSGAESPNGIAQEDYESLVGGINFWAPPIVTTLSRKLRASGRSGDATASVLDVGCGTGLYSQLLLREFPRWTATGLDVERIATLANAQALRLGVEERFATRAGDFWRGGWGTGYDLVLFANIFHLQTPASAVRLMRHAAACLAPDGLVAVVDQIVDADREPKTPQDRFALLFAASMTNTGGGDAYTFQEYEEWFTAAGLQRIETLDTPMHRILLARRATEPSAVPEGQASENLY",
+            "msas": [{"path": "msas/T1124_1.a3m", "format": "a3m"}],
+            "paired_msas": [{"path": "msas/T1124_1_paired.a3m", "format": "a3m"}],
+            "templates": null
+          },
+          {
+            "polymer_type": "ccd_ligand",
+            "chain_id": ["C", "D"],
+            "sequence": "SAH",
+            "msas": null,
+            "paired_msas": null,
+            "templates": null
+          },
+          {
+            "polymer_type": "ccd_ligand",
+            "chain_id": ["E", "F"],
+            "sequence": "TYR",
+            "msas": null,
+            "paired_msas": null,
+            "templates": null
+          }
+        ]
+    }
+]

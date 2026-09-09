@@ -1,0 +1,38 @@
+[
+  {
+    "input_id": "7tpu",
+    "polymers": [
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "A"
+        ],
+        "sequence": "EFLPNQRRSNVTSHVETYYSVDGATHAEKSKALKADGYRIVSLSSYGSPDSANYAAIWVQEEGPSFEIIHDADEATYNSWLQTWKSRGYVSTQVSATGPAENAVFAGVMENINVANWFQSCELENPWAFSNTTGNVDVVVKGFRMFGTPEERRYCILGHENVGNEQTTIQYSTPSFTVNFASTFEAETTKRFWRPSRLFLSEDHIITPSFADTSVGKWSHAVDLTKAELKEKIETERAKGLYPIDIQGGGSGSSERFTVVFAERTSPKPRQWNVRGEITGFEDNKAAEEEVDSIMRRFMEKNGVRQAQFAVALEGKTIAERSYTWAEDDRAIVEPDDIFLLASVSKMFLHASIDWLVSHDMLNFSTPVYDLLGYKPADSRANDINVQHLLDHSAGYDRSMSGDPSFMFREIAQSLPTKGAKAATLRDVIEYVVAKPLDFTPGDYSAYSNYCPMLLSYVVTNITGVPYLDFLEKNILDGLNVRLYETAASKHTEDRIVQESKNTGQDPVHPQSAKLVPGPHGGDGAVKEECAGTFAMAASASSLAKFIGSHAVWGTGGRVSSNRDGSLSGARAYVESRGTIDWALTLNTREYISETEFDELRWYSLPDFLSAFPIAG",
+        "msas": "msas/7tpu_A.a3m",
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/d558ae8b.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/f50a04ae.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/aaf049e5.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/2ecc943e.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      }
+    ]
+  }
+]

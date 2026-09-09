@@ -1,0 +1,48 @@
+[
+  {
+    "input_id": "8c4d",
+    "polymers": [
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "A"
+        ],
+        "sequence": "MVNIINNSVCRGVAGRRVGDVKGVVIHNTWTNTTAEQEMNRLAGMTDKQLEAGFAHYYCDENTIIRTEDTYNRAWHVANSDGNNSYIGYEVRGNRETPKAVFLQAEQNAFWQAAEDLRFYGLPVNRNTVKCHHQFSATECPKRSLMEHCGYDSTLAVPAAITVQMQDYFISQIKKYYDNPALKPDGSTEDQNHDDKVSASTPTHQGNAYGKLDIFKEVTDKTVRVAGWLVPDKPQGAIGTYAYVLVMEHGTPKELTRIQSQGIARPDVKKAYGYQGGDALGFDVTFDSSWMKGKKIDIILRRCNQSNGEGSVNDVRISDIYLILHHHHHH",
+        "msas": "msas/8c4d_A.a3m",
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/5444a86c.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/2484a764.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/c8cdf4b7.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/4bbe9a43.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "ccd_ligand",
+        "chain_id": [
+          "C"
+        ],
+        "sequence": "ZN",
+        "msas": null,
+        "paired_msas": null,
+        "templates": null
+      }
+    ]
+  }
+]

@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The two gates that run on every push and need nothing but a checkout: the
+# hooks prek.toml pins, and the slice of the suite that needs no GPU, no CUDA
+# driver and no built extension. The wheel is wheel.yml, kept apart because it
+# is the only one worth starting by hand.
+#
+# Everything heavier runs on internal hardware through Blossom, which a
+# maintainer has to ask for by comment -- this is the signal a contributor gets
+# without waiting.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Only for pull requests: a superseded push to a branch is wasted work, but
+  # cancelling a run on main would leave that commit with no result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Named `prek`, not `style`: the job name is the context the ruleset requires.
+  prek:
+    name: prek
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # No `lfs: true` and no submodules. Every hook reads text: the LFS-tracked
+      # binaries and the 3rdparty trees are either excluded in prek.toml or match
+      # no hook's file types, so the pointer files left behind are never opened.
+      # Nothing here talks to the remote after checkout, so drop the token too.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/prek
+      - run: prek run --all-files --show-diff-on-failure --color=always
+
+  contract:
+    name: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The LFS content is load-bearing, but only a slice of it.
+      # test_committed_corpus_materializes materializes the real committed CUBIN
+      # packs and says why: "An LFS pointer or a corrupt pack fails here, not at
+      # pip install time." Verified by rewriting the packs as pointers -- the
+      # test fails with "is a Git LFS pointer", which is it doing its job.
+      #
+      # `lfs: true` would fetch every object in the repo, measured at 88.2 MB
+      # against the 2.5 MB of packs these suites read; the rest is sample MSAs
+      # and structures nothing here opens. So fetch the packs by pattern.
+      #
+      # The credentials stay: this is an internal repo, and `git lfs pull` below
+      # authenticates with the header checkout leaves in the local git config.
+      #
+      # No submodules: neither suite imports bionemo_ir or reads 3rdparty/.
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: ./.github/actions/cubin-packs
+
+      - uses: ./.github/actions/python
+
+      # requirements-dev.txt owns the floor, the same way the prek action reads
+      # its pin, so a bump there moves CI with it. `shell: bash` sets pipefail,
+      # which turns a pattern that stops matching into a failed step rather than
+      # a silent no-op install.
+      - name: Install the declared pytest
+        shell: bash
+        run: grep -E '^pytest[<>=!~]' requirements-dev.txt | pip install -r /dev/stdin
+
+      # Nothing here imports torch or the package itself, so there is no install
+      # step and no build. tests/pytest.ini supplies the options.
+      - run: pytest tests/contract tests/cubin

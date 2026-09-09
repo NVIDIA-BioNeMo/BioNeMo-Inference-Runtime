@@ -1,0 +1,23 @@
+[
+    {
+        "input_id": "R1117v2",
+        "polymers": [
+          {
+            "polymer_type": "rna",
+            "chain_id": ["A"],
+            "sequence": "UUGGGUUCCCUCACCCCAAUCAUAAAAA",
+            "msas": null,
+            "paired_msas": null,
+            "templates": null
+          },
+          {
+            "polymer_type": "ccd_ligand",
+            "chain_id": ["B"],
+            "sequence": "PRF",
+            "msas": null,
+            "paired_msas": null,
+            "templates": null
+          }
+        ]
+    }
+]

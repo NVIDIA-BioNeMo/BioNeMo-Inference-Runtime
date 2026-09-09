@@ -1,0 +1,32 @@
+{
+  "name": "BioIR",
+  "dockerComposeFile": ["docker-compose.yml"],
+  "service": "bionemo-ir-dev",
+  "workspaceFolder": "/bioir",
+  "remoteUser": "dev",
+  "initializeCommand": "${localWorkspaceFolder}/.devcontainer/init.sh",
+  "postCreateCommand": "git config --global --add safe.directory /bioir && pip install --no-build-isolation -e '.[dev]' && prek install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-vscode.cmake-tools"
+      ],
+      "settings": {
+        "C_Cpp.intelliSenseEngine": "disabled",
+        "python.defaultInterpreterPath": "/usr/bin/python",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.formatOnSave": true
+        },
+        "[cpp]": {
+          "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+        },
+        "cmake.sourceDirectory": "${workspaceFolder}/cpp",
+        "cmake.configureOnOpen": false
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "BioNeMo Inference Runtime: GPU-accelerated structure prediction model inference"
+abstract: >-
+  BioIR is a GPU-accelerated framework for protein-structure prediction
+  model inference.
+authors:
+  - name: "NVIDIA Corporation"
+url: "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
+repository-code: "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
+license: Apache-2.0

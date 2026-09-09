@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: "Bug Report"
+description: Submit a bug report to help us improve BioIR
+title: "[Bug]: "
+labels: ["bug", "triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        #### Before submitting, please search
+        [existing and past issues](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/issues?q=is%3Aissue+sort%3Acreated-desc)
+        to check the bug has not already been reported.
+  - type: markdown
+    attributes:
+      value: |
+        **SECURITY WARNING:** Review any text you paste to ensure it does not
+        contain sensitive information such as API tokens or keys (e.g. NGC or
+        Hugging Face tokens), passwords, private URLs, or confidential data.
+        Redact secrets with placeholders like `<YOUR_TOKEN_HERE>`.
+
+  - type: textarea
+    id: version
+    attributes:
+      label: BioIR Version
+      description: >
+        The exact version you are running. Provide a released version or a git
+        commit hash — do **not** report against `latest` or an untagged build.
+      placeholder: |
+        - BioIR version or git commit (e.g. 0.4.0 / a1b2c3d)
+        - Installed from: wheel / source / NGC container (which tag?)
+    validations:
+      required: true
+
+  - type: textarea
+    id: system-info
+    attributes:
+      label: System Info
+      description: Please share your system information.
+      placeholder: |
+        - GPU (e.g. NVIDIA H100, A100, L40S) and memory size
+        - GPU architecture (Hopper / Ampere / Blackwell)
+        - NVIDIA driver version
+        - CUDA / cuDNN / TensorRT / PyTorch versions
+        - CPU architecture (x86_64, aarch64)
+        - OS (e.g. Ubuntu 24.04)
+        - Container image + tag, if used
+
+        Commands to gather info:
+        ```bash
+        nvidia-smi
+        nvcc --version
+        python -c "import torch, bionemo_ir; print(torch.__version__)"
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps / code to reproduce
+      description: Minimal, self-contained steps or code that reproduce the issue.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Relevant log output or traceback. This is rendered as code.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that would help us reproduce or understand the bug.
+    validations:
+      required: false

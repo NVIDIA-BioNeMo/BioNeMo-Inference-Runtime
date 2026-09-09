@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+navigation:
+  - section: Get Started
+    skip-slug: true
+    contents:
+      - page: Overview
+        path: ./pages/overview.mdx
+        slug: overview
+      - page: Installation
+        path: ../install.md
+        slug: install
+      - page: Quickstart
+        path: ../quickstart.md
+        slug: quickstart
+  - section: Documentation
+    slug: references
+    contents:
+      - section: Inference Runtime
+        skip-slug: true
+        collapsed: true
+        contents:
+          - page: Architecture
+            path: ../ref/architecture.md
+          - page: Support Matrix
+            path: ../ref/support-matrix.md
+          - page: Model Weights
+            path: ../ref/model-weights.md
+          - page: Configuration
+            path: ../ref/config.md
+            slug: config
+      - section: Performance and Scaling
+        skip-slug: true
+        collapsed: true
+        contents:
+          - page: Ray Quickstart
+            path: ../ray.md
+            slug: ray
+          - page: Benchmarks
+            path: ../ref/benchmark.md
+            slug: benchmark
+      - section: API Reference
+        skip-slug: true
+        collapsed: true
+        contents:
+          - page: Python API
+            path: ../ref/api.md
+            slug: api
+      - section: Developer Reference
+        skip-slug: true
+        collapsed: true
+        contents:
+          - page: Development Workflow
+            path: ../dev.md
+            slug: dev
+          - page: Docker Images
+            path: ../ref/docker-images.md
+          - page: Coding Guidelines
+            path: ../coding.md
+            slug: coding
+          - page: Collecting system information
+            path: ../ref/system-information.md
+            slug: system-information
+          - page: GPU Stack
+            path: ../ref/gpu-stack.md
+            slug: gpu-stack
+  - section: Community
+    slug: community
+    contents:
+      - page: Contributing
+        path: ../contributing.md
+      - page: Code of Conduct
+        path: ../CODE_OF_CONDUCT.md
+        slug: code-of-conduct
+      - page: Security Policy
+        path: ../SECURITY.md
+        slug: security

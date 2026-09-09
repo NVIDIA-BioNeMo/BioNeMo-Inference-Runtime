@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Checks on the pull request itself rather than its diff: the title, which
+# becomes the squashed commit subject, and the sign-off docs/contributing.md
+# requires on every commit.
+name: Pull request
+
+on:
+  pull_request:
+    # `edited` so retitling a PR re-runs the title check; without it a rejected
+    # title stays red after the author fixes it. Both jobs share this list, so
+    # each carries an `if` for the events it has nothing to say about -- a job
+    # skipped by a conditional reports success and satisfies a required check.
+    # https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    name: Title
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `edited` also fires on a body edit, which cannot change the title.
+    if: github.event.action != 'edited' || github.event.changes.title
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # No hook cache: this builds commitizen's environment and nothing else,
+      # and saving one environment costs about what building it does.
+      - uses: ./.github/actions/prek
+        with:
+          cache: 'false'
+      # Through the environment, never interpolated into the script: a PR title
+      # is untrusted input and `${{ }}` expands before bash ever sees it.
+      # https://docs.github.com/en/actions/reference/security/secure-use
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: .github/scripts/check-pr-title.sh "${PR_TITLE}"
+
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The commits only change on synchronize; the rest re-check the same range.
+    if: github.event.action != 'edited'
+    steps:
+      # The full history. The check walks the range this branch adds to the
+      # base, and a shallow clone carries neither end of it. The default ref is
+      # the merge commit, whose parents are exactly the two SHAs below, so both
+      # are present without asking for either by name.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/check-dco.sh "${BASE_SHA}" "${HEAD_SHA}"

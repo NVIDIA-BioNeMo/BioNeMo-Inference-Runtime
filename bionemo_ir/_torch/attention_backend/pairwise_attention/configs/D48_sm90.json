@@ -1,0 +1,23 @@
+{
+  "kernel_abi": "sm90",
+  "configs": {
+    "S=0": {
+      "mma_tiler_mn": [
+        64,
+        64
+      ],
+      "is_persistent": true,
+      "kv_stage": 7,
+      "raster_factor": 1
+    },
+    "S=512": {
+      "mma_tiler_mn": [
+        64,
+        192
+      ],
+      "is_persistent": true,
+      "kv_stage": 5,
+      "raster_factor": 2
+    }
+  }
+}

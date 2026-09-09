@@ -1,0 +1,91 @@
+__pycache__/
+.vscode
+.DS_Store
+
+*.engine
+*.engine.config
+*.cache
+*.nsys-rep
+*.npy
+!tests/common/test_utils/*.npy
+.VSCodeCounter
+cpp/build*
+build
+!bionemo_ir/bench/build
+!builders/
+*.egg-info/
+.coverage
+*.onnx
+tmp/
+venv/
+.venv/
+.python-version
+.local/
+.hypothesis/
+.idea/
+dump*/
+*.dot
+*.prof
+*.log
+*.pkl
+*.hdf5
+*.lock
+config.json
+/*.svg
+cpp/cmake-build-*
+# Where `make -C docker wheel` and `pip wheel` drop build output.
+/dist/
+# examples/folding/run_demo.py writes predictions here by default.
+/output/
+# Per-developer opt-out of the CuTeDSL extension build; committing it would turn
+# the extension off for every checkout.
+build.env
+# Keep only the authoritative public indexes and Git-LFS packs from CuTeDSL
+# artifacts. Compiler caches and legacy/generated payloads remain local.
+cpp/kernels/cutedsl_*/cubins/*
+!cpp/kernels/cutedsl_*/cubins/index.json
+!cpp/kernels/cutedsl_*/cubins/packs/
+!cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz
+# Default output-root name used by setup.py and materializer diagnostics.
+bioir_cubins/
+bionemo_ir/bin
+bionemo_ir/libs/*
+!bionemo_ir/libs/__init__.py
+bionemo_ir/bindings.*.so
+bionemo_ir/bindings.pyi
+bionemo_ir/bindings/**/*.pyi
+*docs/cpp_docs*
+*docs/source/_cpp_gen*
+*.swp
+
+# Testing
+.coverage.*
+
+# build/debug
+*.safetensors
+*.patch
+!.agents/skills/bench-perf-oss/models/misc/*.patch
+
+# User config files
+CMakeUserPresets.json
+compile_commands.json
+*.bin
+.dir-locals.el
+.pip_cache/
+*.pt
+!tests/**/data/*_golden.pt
+/boltz/
+
+# Local agent/editor state that can hold tokens. Anything more specific to your
+# own tooling belongs in .git/info/exclude, not here.
+.env
+.mcp.json
+.claude/
+
+# Personal, machine-specific agent instructions (see CLAUDE.md)
+CLAUDE.local.md
+
+# Fern CLI local state.
+docs/.fern/
+docs/.build/
+node_modules/

@@ -1,0 +1,173 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The bridge to internal CI. GitHub owns the trigger, the authorization and the
+# result; everything that needs a GPU, the internal registry or a secret runs on
+# the Blossom Jenkins master behind the firewall.
+#
+# A maintainer comments `/build-ci` on a pull request. `Authorization` checks the
+# actor against the list below and then against Blossom's own database plus Duo
+# MFA; `Vulnerability scan` runs the security scan on the PR head; `Job trigger`
+# webhooks Jenkins; Jenkins calls back with `workflow_dispatch`, which is what
+# `Upload log` answers.
+#
+# This chain is advisory, never a required check: it only reports once someone
+# asks for it, so requiring it would block every pull request until a maintainer
+# types the command. See .ai.dump/github-prep/plan.md for the full split.
+#
+# The comment is the only trigger, and it is also the API: `gh pr comment <n>
+# --body '/build-ci'` fires the same event with the same `github.actor`, so a
+# script can start a run without anyone opening a browser. The Run workflow
+# button is *not* a second trigger -- see `Upload log` below.
+name: Blossom-CI
+
+on:
+  issue_comment:
+    types: [created]
+  # Jenkins dispatches this back at the end of the run to publish its log.
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'runs-on argument'
+        required: false
+      args:
+        description: 'argument'
+        required: false
+
+# The repository default is `read`, so the scopes `blossom-ci` needs have to be
+# named. They are not documented -- it is an opaque binary on the self-hosted
+# runner -- so this is read off what it demonstrably does: post a commit status
+# on the pull request head, and comment the Jenkins log link back. Narrow it
+# further once a run has succeeded and the audit log shows what it really used;
+# widen it only against a specific failure, never speculatively.
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
+
+# No `concurrency:` either. Cancelling a superseded run would drop the callback
+# that publishes the Jenkins log while the Jenkins job itself keeps running.
+
+jobs:
+  # Two gates, in this order: the allowlist decides who may spend GPU hours, and
+  # `blossom-ci` AUTH then re-checks the actor against Blossom's own database and
+  # Duo MFA. Onboarding is therefore two steps either way -- the variable below,
+  # and the Blossom service desk. Someone added here but not there gets past the
+  # first gate and is stopped at the second.
+  #
+  # The list lives in the repository variable `BLOSSOM_AUTHORIZED_USERS`
+  # (Settings -> Secrets and variables -> Actions -> Variables), holding a JSON
+  # array of GitHub logins. It is seeded from the `bioir` team but is not the
+  # team: approving a run spends GPU hours on internal hardware, and not every
+  # maintainer needs that. Expect the two lists to diverge, and do not wire this
+  # to team membership.
+  #
+  #     ["letientai299", "thanhnamitit", ...]
+  #
+  # A variable, not a secret: `secrets` is not one of the contexts available to
+  # a job-level `if:`, and `vars` is.
+  # https://docs.github.com/actions/reference/workflows-and-actions/contexts#context-availability
+  #
+  # `|| '[]'` makes an unset variable fail closed -- nobody is authorized --
+  # rather than erroring on every comment. A malformed value still errors, which
+  # is what should happen to a typo in an authorization list.
+  Authorization:
+    name: Authorization
+    runs-on: blossom
+    # Short by design. This job talks to the Blossom database and Duo; if that
+    # round trip has not finished in five minutes it is broken, not slow, and
+    # the self-hosted runner has one executor to spare.
+    timeout-minutes: 5
+    outputs:
+      args: ${{ env.args }}
+
+    # `github.event.issue.pull_request` is what distinguishes a comment on a PR
+    # from a comment on an issue; without it the job starts on issues and fails
+    # with no ref to check out.
+    if: |
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/build-ci' &&
+      contains(fromJSON(vars.BLOSSOM_AUTHORIZED_USERS || '[]'), github.actor)
+    steps:
+      - name: Check if comment is issued by authorized person
+        run: blossom-ci
+        env:
+          OPERATION: 'AUTH'
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_KEY_DATA: ${{ secrets.BLOSSOM_KEY }}
+
+  Vulnerability-scan:
+    name: Vulnerability scan
+    needs: [Authorization]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The pull request head, named by the Authorization output rather than by
+      # the event, so the scan reads the code the maintainer approved for a run.
+      #
+      # No `lfs: true`: the tracked binaries are CUBIN packs, sample MSAs and
+      # structures -- 88.2 MB the scan does not read. It looks at declared
+      # dependencies and source.
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # Nothing here talks to the remote after checkout, and this is the one
+          # job that runs unreviewed contributor code.
+          persist-credentials: false
+          repository: ${{ fromJson(needs.Authorization.outputs.args).repo }}
+          ref: ${{ fromJson(needs.Authorization.outputs.args).ref }}
+
+      - name: Run blossom action
+        # SHA-pinned like every third-party action here, per NVIDIA ProdSec.
+        # The sibling repos all track `@main`; if Blossom SRE says the action
+        # must move in lockstep with their server side, this reverts to `@main`
+        # in one line.
+        uses: NVIDIA/blossom-action@2b0c950b993808dc31f80a1ccc32615902e39032 # main, 2026-07-13
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_KEY_DATA: ${{ secrets.BLOSSOM_KEY }}
+        with:
+          args1: ${{ fromJson(needs.Authorization.outputs.args).args1 }}
+          args2: ${{ fromJson(needs.Authorization.outputs.args).args2 }}
+          args3: ${{ fromJson(needs.Authorization.outputs.args).args3 }}
+
+  # CI_SERVER holds one `<jenkins-url>@<job-name>` pair, which is why one
+  # command maps to one Jenkins job. What that job runs is decided on the
+  # Jenkins side, not here.
+  Job-trigger:
+    name: Start ci job
+    needs: [Vulnerability-scan]
+    runs-on: blossom
+    # The webhook out, not the Jenkins run behind it. Jenkins owns its own
+    # timeout; this job is done once the trigger is acknowledged.
+    timeout-minutes: 5
+    steps:
+      - name: Start ci job
+        run: blossom-ci
+        env:
+          OPERATION: 'START-CI-JOB'
+          CI_SERVER: ${{ secrets.CI_SERVER }}
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The callback half: Jenkins finishes, dispatches this workflow, and this job
+  # publishes the log link onto the pull request. It is deliberately not part of
+  # the chain above -- it runs on a different event.
+  #
+  # `workflow_dispatch` is Jenkins' channel back, not a way for a human to start
+  # a run: the three jobs above need the `args` that `blossom-ci` AUTH builds
+  # from the comment payload, and a dispatch carries no comment. But the Run
+  # workflow button appears for anyone with write access all the same, so guard
+  # on the payload Jenkins always sends -- otherwise a curious click starts a job
+  # on the self-hosted runner with nothing to post.
+  Upload-Log:
+    name: Upload log
+    runs-on: blossom
+    timeout-minutes: 5
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.args
+    steps:
+      - name: Jenkins log for pull request ${{ fromJson(github.event.inputs.args).pr }} (click here)
+        run: blossom-ci
+        env:
+          OPERATION: 'POST-PROCESSING'
+          CI_SERVER: ${{ secrets.CI_SERVER }}
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

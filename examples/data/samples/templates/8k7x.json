@@ -1,0 +1,58 @@
+[
+  {
+    "input_id": "8k7x",
+    "polymers": [
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "A"
+        ],
+        "sequence": "MENVTVADEYLQNAGKKEVEYLLSFEPDRLLVEFRAQAGLDTKGAKNYGGWENGPDESRNPDGSSKPGRFTGHFVGHWISAASQAQRSTFATADQKAQLSANLTAVVKGIREAQEAYAKKDTANAGFFPAFSASVVPNGGGGLIVPFYNLHKVEAGMVQAYDYSTDAETRETAKAAAVDFAKWVVNWKSAHASTDMLRTEYGGMNDALYQVAEIADASDKQTVLTAAHLFDETALFQKLANGQDPLNGLHANTTIPKLTGAMQRYVAYTEDEDLYNSLSADERGKLTSLYLKAAQNFFDIVVKDHTYVNGGNSQSEHFHVAGELWKDATQNGDQNGGYRNFSTVETCNEYNMLKLARILFQVTKDSKYSEYYEHTFINAIVASQNPETGMTTYFQPMKAGYPKVFGITGTDYDADWFGGAIGEYWCCQGTGIENFAKLNDSFYFTDENNVYVNMFWSSTYTDTRHNLTITQTANVPKTEDVTFEVSGTGSANLKLRVPDWAITNGVKLVVDGTEQALTKDENGWVTVAIKDGAKITYTLPAKLQAIDAADNKDWVAFQYGPVVLAGALTDTNYKTNYSYGGVKVRVANYDSEANAKAAVIPTSGSVTDWLKGIKEDASEGSNLVRTDDPNTGNRETLSFKFANVDGDAADLTLQPYYSTYKTTYAIYWDMAEVDSETYQNNIFKKKTDAATQSIIIDAVDAFDNEFQQELAHNAAKSDDSNAGTYEDKQYRDAKADGWFSYDLKVNTEADAKNYLSVQYQSADAGRTFSMIVDPTPVADNSKGEVSANAKTYTVTIENKGLKAFYWDVQQLPADLIAEAKDGKVRVLFKSTGGLVGGVYGVRMQNAAALEHHHHHH",
+        "msas": "msas/8k7x_A.a3m",
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/343f9d92.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/f46b1f9c.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/5195c50d.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/7f6a124f.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "ccd_ligand",
+        "chain_id": [
+          "B"
+        ],
+        "sequence": "ZN",
+        "msas": null,
+        "paired_msas": null,
+        "templates": null
+      },
+      {
+        "polymer_type": "ccd_ligand",
+        "chain_id": [
+          "J"
+        ],
+        "sequence": "MG",
+        "msas": null,
+        "paired_msas": null,
+        "templates": null
+      }
+    ]
+  }
+]

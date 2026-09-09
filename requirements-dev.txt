@@ -1,0 +1,7 @@
+prek==0.4.12  # pinned for reproducible hook runs; hook runner — `prek install`. See prek.toml.
+pytest>=9.0.3  # <9.0.3: PYSEC-2026-1845 (tmpdir symlink)
+pytest-cov>=7.1.0  # coverage reporting; pulls coverage[toml] (the `coverage` CLI)
+pytest-xdist>=3.8.0  # run_tests.sh phase 1 is `-n <workers>`
+parameterized
+biotraj==1.2.2  # used for tests
+ml_collections==1.1.0  # used for tests

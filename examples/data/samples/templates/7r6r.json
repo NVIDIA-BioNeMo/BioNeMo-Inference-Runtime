@@ -1,0 +1,58 @@
+[
+  {
+    "input_id": "7r6r",
+    "polymers": [
+      {
+        "polymer_type": "protein",
+        "chain_id": [
+          "A"
+        ],
+        "sequence": "MGSSHHHHHHSSGLVPRGSHMSGKIQHKAVVPAPSRIPLTLSEIEDLRRKGFNQTEIAELYGVTRQAVSWHKKTYGGRLTTRQIVQQNWPWDTRKPHDKSKAFQRLRDHGEYMRVGSFRTMSEDKKKRLLSWWKMLRDNDLVLEFDPSIEPYEGMAGGGFRYVPRDISDDDLLIRVNEHTQLTAEGELLWSWPDDIEELLSEP",
+        "msas": "msas/7r6r_A.a3m",
+        "paired_msas": null,
+        "templates": [
+          {
+            "path": "templates/552ae5db.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/8fd6df98.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/2c80499d.cif",
+            "format": "cif",
+            "chain_id": "A"
+          },
+          {
+            "path": "templates/868a3021.cif",
+            "format": "cif",
+            "chain_id": "A"
+          }
+        ]
+      },
+      {
+        "polymer_type": "dna",
+        "chain_id": [
+          "B"
+        ],
+        "sequence": "TTTCGGTGGCTGTCAAGCGGG",
+        "msas": null,
+        "paired_msas": null,
+        "templates": null
+      },
+      {
+        "polymer_type": "dna",
+        "chain_id": [
+          "C"
+        ],
+        "sequence": "CCCGCTTGACAGCCACCGAAA",
+        "msas": null,
+        "paired_msas": null,
+        "templates": null
+      }
+    ]
+  }
+]

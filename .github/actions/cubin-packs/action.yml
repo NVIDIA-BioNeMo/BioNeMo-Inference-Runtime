@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Fetch the CUBIN packs
+description: >
+  Pull the LFS-tracked CUBIN packs and nothing else, so a job that needs them
+  does not pay for the whole LFS store and no workflow repeats the pattern.
+
+runs:
+  using: composite
+  steps:
+    # One home for the pattern. `.gitattributes` is the source of truth -- it is
+    # what marks these paths as LFS, and tests/contract/test_build_contract.py
+    # asserts the line -- and a copy that drifts from it fails quietly: the pull
+    # matches nothing, the packs stay pointers, and the error surfaces later as
+    # "is a Git LFS pointer" rather than as a stale glob.
+    #
+    # Callers check out with `lfs: false` and keep their credentials: this is an
+    # internal repo and the pull authenticates with the header checkout leaves in
+    # the local git config.
+    - shell: bash
+      env:
+        PACKS: cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz
+      run: |
+        git lfs pull --include="${PACKS}"
+        echo "materialized $(git lfs ls-files -I "${PACKS}" | wc -l) packs"

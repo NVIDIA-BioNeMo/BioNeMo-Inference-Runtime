@@ -231,6 +231,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
     def _disk_cache_key(self, variant: _PairwiseAttentionVariant) -> tuple:
         return (
             "attn_pair_bias_cute_left_mask",
+            2,
             self._sm_version,
             variant.dtype,
             variant.head_dim,

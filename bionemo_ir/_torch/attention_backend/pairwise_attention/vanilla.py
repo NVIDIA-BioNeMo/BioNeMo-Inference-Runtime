@@ -66,8 +66,8 @@ class VanillaPairwiseAttention(AttentionBackend[VanillaAttentionMetadata]):
                 a += biases[0][:, None, None, :]
             else:
                 a += biases[0]
-            # Add pair bias
-            a += biases[1]
+            for bias in biases[1:]:
+                a += bias
         a = torch.nn.functional.softmax(a, dim=-1)
 
         a = torch.matmul(a, v)  # [*, H, s_q, D]

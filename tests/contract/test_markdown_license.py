@@ -53,6 +53,9 @@ description:
   models."
 layout: overview
 """
+_SKILL_FIELDS = """name: hiding-kernel
+description: Port a private CuTeDSL kernel into BioIR's CUBIN-pack pipeline.
+"""
 
 
 @pytest.mark.parametrize("suffix", (".md", ".mdx"))
@@ -88,8 +91,8 @@ def test_comment_only_frontmatter_gets_empty_mapping(tmp_path: Path, suffix: str
 
 
 @pytest.mark.parametrize("suffix", (".md", ".mdx"))
-def test_yaml_fields_without_license_keep_mapping(tmp_path: Path, suffix: str) -> None:
-    fields = _FERN_FIELDS
+@pytest.mark.parametrize("fields", (_FERN_FIELDS, _SKILL_FIELDS), ids=("fern", "skill"))
+def test_yaml_fields_without_license_keep_mapping(tmp_path: Path, suffix: str, fields: str) -> None:
     document = tmp_path / f"fields{suffix}"
     document.write_text(f"---\n{fields}---\n\n# Existing document\n", encoding="utf-8")
 
@@ -111,8 +114,8 @@ def test_yaml_fields_without_license_keep_mapping(tmp_path: Path, suffix: str) -
 
 
 @pytest.mark.parametrize("suffix", (".md", ".mdx"))
-def test_yaml_fields_with_license_are_unchanged(tmp_path: Path, suffix: str) -> None:
-    fields = _FERN_FIELDS
+@pytest.mark.parametrize("fields", (_FERN_FIELDS, _SKILL_FIELDS), ids=("fern", "skill"))
+def test_yaml_fields_with_license_are_unchanged(tmp_path: Path, suffix: str, fields: str) -> None:
     content = f"---\n# SPDX-License-Identifier: Apache-2.0\n{fields}---\n\n# Existing document\n"
     document = tmp_path / f"licensed_fields{suffix}"
     document.write_text(content, encoding="utf-8")

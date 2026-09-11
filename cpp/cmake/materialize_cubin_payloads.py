@@ -1266,6 +1266,11 @@ def prune_unreferenced_packs(family_indexes: Sequence[tuple[str, Path]]) -> tupl
     then removes the old generation, and two of them in one directory is exactly
     what ``_verify_exact_pack_set`` refuses.
 
+    That collision is not hypothetical, it is how CI hands a rebuilt corpus on:
+    GitLab extracts a job's artifacts ON TOP OF the checkout, never in place of
+    it, so a wheel job inheriting a ``BIOIR_CUBIN_REBUILD`` corpus holds both the
+    packs its index names and the committed ones that revision invalidated.
+
     The index is the authority and the filename is a content hash, so a pack no
     index references is superseded by construction. Removing those is what keeps
     the exact-set check meaningful; relaxing it to a subset test would instead let

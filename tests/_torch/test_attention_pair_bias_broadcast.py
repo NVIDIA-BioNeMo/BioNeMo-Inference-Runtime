@@ -27,9 +27,11 @@ from dataclasses import dataclass
 
 import pytest
 import torch
+import torch.nn.functional as F
 
+from bionemo_ir._torch.custom_ops import fused_ln_proj_moveaxis_pad
 from bionemo_ir._torch.layers.attention import AttentionPairBias
-from tests._torch import skip_if_cutedsl
+from tests._torch import init_module_weights, skip_if_cutedsl
 
 SEED = 42
 
@@ -163,6 +165,18 @@ _SIMPLE_CUTEDSL = Scenario(
     s_shape=(1, 31, 128),
     z_shape=(1, 31, 31, 16),
     mask_shape=(1, 31),
+    dtype=torch.bfloat16,
+)
+
+_VELOCITY_CUTEDSL = Scenario(
+    name="rms_qk_bias_cutedsl",
+    backend="CuTeDSL",
+    s_shape=(1, 17, 768),
+    z_shape=(1, 17, 17, 384),
+    mask_shape=(1, 17),
+    c_s=768,
+    c_z=384,
+    num_heads=12,
     dtype=torch.bfloat16,
 )
 
@@ -309,6 +323,7 @@ def test_full_forward_sdpa(sc: Scenario):
         _SIMPLE_CUTEDSL,
         _TOKEN_CUTEDSL_S1,
         _TOKEN_CUTEDSL_S5,
+        _VELOCITY_CUTEDSL,
     ],
     ids=lambda sc: sc.name,
 )
@@ -347,6 +362,7 @@ def test_full_forward_cutedsl(sc: Scenario):
         _SIMPLE_CUTEDSL,
         _TOKEN_CUTEDSL_S1,
         _TOKEN_CUTEDSL_S5,
+        _VELOCITY_CUTEDSL,
     ],
     ids=lambda sc: sc.name,
 )
@@ -400,6 +416,72 @@ def test_cutedsl_uses_fused_triton_kernel(sc: Scenario):
 
     assert call_count > 0, "LNProjMoveaxisPad._fused_kernel was never called — the fused Triton path was not exercised"
     assert out.shape == s.shape
+
+
+@pytest.mark.parametrize(
+    ("rms_norm", "with_weight", "with_bias"),
+    [
+        (False, False, False),
+        (False, True, False),
+        (False, True, True),
+        (True, False, False),
+        (True, True, False),
+    ],
+    ids=["layer-no-affine", "layer-weight", "layer-weight-bias", "rms-no-affine", "rms-weight"],
+)
+def test_ln_proj_moveaxis_pad_split_fallback_uses_fused_norm(
+    monkeypatch: pytest.MonkeyPatch,
+    rms_norm: bool,
+    with_weight: bool,
+    with_bias: bool,
+) -> None:
+    """The split fallback never dispatches normalization through ATen."""
+    batch, tokens, channels, heads = 1, 19, 16, 4
+    dtype = torch.bfloat16
+    z = torch.randn(batch, tokens, tokens, channels, device="cuda", dtype=dtype)
+    norm_weight = torch.randn(channels, device="cuda", dtype=dtype) if with_weight else None
+    norm_bias = torch.randn(channels, device="cuda", dtype=dtype) if with_bias else None
+    proj_weight = torch.randn(heads, channels, device="cuda", dtype=dtype) * 0.1
+    operation = fused_ln_proj_moveaxis_pad.LNProjMoveaxisPad(
+        D=channels,
+        H=heads,
+        dtype=dtype,
+        rms_norm=rms_norm,
+    )
+    operation._fused_kernel = None
+
+    if rms_norm:
+        normalized = F.rms_norm(z, [channels], norm_weight, eps=1e-5)
+    else:
+        normalized = F.layer_norm(z, [channels], norm_weight, norm_bias, eps=1e-5)
+    expected = F.linear(normalized, proj_weight).movedim(-1, -3)
+    expected = F.pad(expected, (0, 5))
+
+    calls = 0
+    norm_function = fused_ln_proj_moveaxis_pad.layer_norm_transpose
+
+    def tracked_norm(*args: object, **kwargs: object) -> torch.Tensor:
+        nonlocal calls
+        calls += 1
+        return norm_function(*args, **kwargs)
+
+    def unexpected_torch_norm(*args: object, **kwargs: object) -> torch.Tensor:
+        raise AssertionError("ATen normalization fallback must not run")
+
+    monkeypatch.setattr(fused_ln_proj_moveaxis_pad, "layer_norm_transpose", tracked_norm)
+    monkeypatch.setattr(F, "layer_norm", unexpected_torch_norm)
+    monkeypatch.setattr(F, "rms_norm", unexpected_torch_norm)
+    actual = operation(
+        z,
+        norm_weight,
+        norm_bias,
+        proj_weight,
+        pad_multiple=8,
+    )
+
+    assert calls == 1
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+    assert torch.count_nonzero(actual[..., tokens:]) == 0
 
 
 @pytest.mark.parametrize(
@@ -487,3 +569,119 @@ def test_prep_mask_bias_no_bias_proj(sc: Scenario):
     assert pair_bias.ndim == expected_ndim
     assert mask_bias.ndim == pair_bias.ndim
     _ = mask_bias + pair_bias
+
+
+def _rms_qk_bias_attention(
+    token_dim: int, pair_dim: int, num_heads: int, backend: str, dtype: torch.dtype, use_qk_norm: bool = True
+) -> AttentionPairBias:
+    """Build AttentionPairBias with RMSNorm / QK-norm / fused-bias flags."""
+    return AttentionPairBias(
+        layer_idx=0,
+        c_s=token_dim,
+        c_z=pair_dim,
+        num_heads=num_heads,
+        initial_norm=True,
+        norm_type="rms_norm",
+        bias_proj=True,
+        pair_norm=True,
+        pair_norm_type="rms_norm",
+        use_qk_norm=use_qk_norm,
+        kv_bias=True,
+        out_bias=True,
+        gate_bias=True,
+        use_ada_layer_norm=False,
+        inf=1e4,
+        eps=1e-5,
+        dtype=dtype,
+        attn_backend=backend,
+    )
+
+
+def test_rms_qk_bias_pair_bias_attention_matches_sdpa_reference() -> None:
+    torch.manual_seed(7)
+    device = torch.device("cuda")
+    token_dim, pair_dim, num_heads = 32, 16, 4
+    head_dim = token_dim // num_heads
+    module = _rms_qk_bias_attention(token_dim, pair_dim, num_heads, "SDPA", torch.float32).to(device)
+    init_module_weights(module)
+    b, n = 2, 11
+    node = torch.randn(b, n, token_dim, device=device)
+    pair = torch.randn(b, n, n, pair_dim, device=device)
+    mask = torch.tensor([[1] * n, [1] * 7 + [0] * 4], device=device, dtype=torch.bool)
+
+    s = module.norm_s(node)
+    q = module.q_norm(module.proj_q(s)).view(b, n, num_heads, head_dim).transpose(1, 2)
+    k, v = module.proj_kv(s).split([token_dim, token_dim], dim=-1)
+    k = module.k_norm(k).view(b, n, num_heads, head_dim).transpose(1, 2)
+    v = v.reshape(b, n, num_heads, head_dim).transpose(1, 2)
+    pair_bias = module.proj_z(pair).movedim(-1, 1)
+    mask_bias = (1.0 - mask.float())[:, None, None, :] * -1e4
+    reference = F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        attn_mask=mask_bias + pair_bias,
+    )
+    reference = reference.transpose(1, 2).reshape_as(s)
+    reference = module.proj_o(torch.sigmoid(module.proj_g(s)) * reference)
+
+    with torch.inference_mode():
+        actual = module(node, pair, mask)
+    torch.testing.assert_close(actual, reference, atol=2e-5, rtol=2e-5)
+
+
+def test_rms_qk_bias_cutedsl_attention_matches_sdpa() -> None:
+    skip_if_cutedsl("CuTeDSL", "pairwise_attention")
+    torch.manual_seed(11)
+    device = torch.device("cuda")
+    token_dim, pair_dim, num_heads = 64, 16, 1
+    reference = _rms_qk_bias_attention(token_dim, pair_dim, num_heads, "SDPA", torch.bfloat16).to(device)
+    init_module_weights(reference)
+    actual_module = _rms_qk_bias_attention(token_dim, pair_dim, num_heads, "CuTeDSL", torch.bfloat16).to(device)
+    actual_module.load_state_dict(reference.state_dict())
+    node = torch.randn(2, 17, token_dim, device=device, dtype=torch.bfloat16)
+    pair = torch.randn(2, 17, 17, pair_dim, device=device, dtype=torch.bfloat16)
+    mask = torch.tensor([[1] * 17, [1] * 13 + [0] * 4], device=device, dtype=torch.bool)
+
+    with torch.inference_mode():
+        expected = reference(node, pair, mask)
+        actual = actual_module(node, pair, mask)
+    torch.testing.assert_close(actual, expected, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.parametrize(
+    "sc",
+    [
+        _SIMPLE,
+        _TOKEN_XFORMER,
+        _ATOM_XFORMER,
+        _ATOM_XFORMER_DIFFUSION,
+        _ATOM_VANILLA,
+    ],
+    ids=lambda sc: sc.name,
+)
+def test_prep_mask_bias_without_pair_representation(sc: Scenario) -> None:
+    """``z=None`` is mask-only attention; SDPA/VANILLA still rank-match q."""
+    device = torch.device("cuda")
+    attn = AttentionPairBias(
+        layer_idx=0,
+        c_s=sc.c_s,
+        c_z=sc.c_z,
+        num_heads=sc.num_heads,
+        dtype=sc.dtype,
+        bias_proj=True,
+        initial_norm=False,
+        attn_backend=sc.backend,
+    )
+    _bounded_init(attn)
+    attn = attn.to(device)
+    s = torch.randn(*sc.s_shape, device=device, dtype=sc.dtype)
+    mask = torch.ones(*sc.mask_shape, device=device, dtype=sc.dtype)
+
+    biases = attn._prep_mask_bias(s, None, mask, mask_bias=None)
+    assert len(biases) == 1
+    assert biases[0].ndim == s.ndim + 1
+    with torch.no_grad():
+        out = attn(s, None, mask)
+    assert out.shape == s.shape
+    assert torch.isfinite(out).all()

@@ -21,11 +21,20 @@ from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveax
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.layers.normalization import AdaLN
-from bionemo_ir._torch.utils.tensor import permute_final_dims
+from bionemo_ir._torch.utils import permute_final_dims
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 from ..attention_backend import AttentionMetadata, AttentionType
 from ..attention_backend.utils import create_attention
+
+
+def _make_norm(norm_type: str, dim: int, eps: float = 1e-5, dtype: torch.dtype = None, bias: bool = True) -> nn.Module:
+    """Build a LayerNorm or RMSNorm by name (RMSNorm has weight only)."""
+    if norm_type == "rms_norm":
+        return nn.RMSNorm(dim, eps=eps, dtype=dtype)
+    if norm_type == "layer_norm":
+        return nn.LayerNorm(dim, eps=eps, dtype=dtype, bias=bias)
+    raise ValueError(f"Unsupported norm_type={norm_type!r}; expected 'layer_norm' or 'rms_norm'")
 
 
 class TriangleAttention(nn.Module):
@@ -348,9 +357,27 @@ class AttentionPairBias(nn.Module):
         use_ada_layer_norm: bool = True,
         chain_kv_norm: bool = False,
         gate_bias: bool = False,
+        norm_type: str = "layer_norm",
+        use_qk_norm: bool = False,
+        kv_bias: bool = False,
+        out_bias: bool = False,
+        pair_norm_type: str = "layer_norm",
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
     ):
+        """Self-attention with pair bias.
+
+        Args (beyond the base Boltz/OF variants):
+            norm_type: node input norm — ``"layer_norm"`` or ``"rms_norm"``.
+                Also used for the QK norm.
+            use_qk_norm: apply a whole-vector norm to Q and K after
+                projection.
+            kv_bias: add a bias to the fused K/V projection when the fused
+                QKV is fully biased.
+            out_bias: add a bias to the output projection.
+            pair_norm_type: pair-bias norm — ``"layer_norm"`` or
+                ``"rms_norm"``.
+        """
         super().__init__()
         self.layer_idx = layer_idx
         self.c_s = c_s
@@ -362,6 +389,8 @@ class AttentionPairBias(nn.Module):
         self.use_separate_layer_norm = use_separate_layer_norm
         self.use_ada_layer_norm = use_ada_layer_norm
         self.chain_kv_norm = chain_kv_norm
+        self.use_qk_norm = use_qk_norm
+        self.norm_type = norm_type
         self.inf = inf
 
         self.num_key_value_heads = num_heads
@@ -374,7 +403,13 @@ class AttentionPairBias(nn.Module):
 
         self.norm_s = None
         if initial_norm:
-            self.norm_s = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
+            self.norm_s = _make_norm(norm_type, c_s, eps=eps, dtype=dtype)
+
+        self.q_norm = None
+        self.k_norm = None
+        if self.use_qk_norm:
+            self.q_norm = _make_norm(norm_type, self.q_size, eps=eps, dtype=dtype)
+            self.k_norm = _make_norm(norm_type, self.kv_size, eps=eps, dtype=dtype)
 
         if self.use_separate_layer_norm:
             if self.use_ada_layer_norm:
@@ -398,7 +433,7 @@ class AttentionPairBias(nn.Module):
         self.proj_kv = Linear(
             self.c_s,
             2 * self.kv_size,
-            bias=False,
+            bias=kv_bias,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
@@ -425,7 +460,7 @@ class AttentionPairBias(nn.Module):
             )
             if pair_norm:
                 self.proj_z = nn.Sequential(
-                    nn.LayerNorm(c_z, dtype=dtype, eps=eps),
+                    _make_norm(pair_norm_type, c_z, dtype=dtype, eps=eps),
                     linear_z,
                 )
             else:
@@ -433,7 +468,7 @@ class AttentionPairBias(nn.Module):
         self.proj_o = Linear(
             self.q_size,
             self.c_s,
-            bias=False,
+            bias=out_bias,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
         )
@@ -448,7 +483,15 @@ class AttentionPairBias(nn.Module):
         self.attn_backend = attn_backend
         self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
         self._ln_proj_moveaxis_pad = (
-            LNProjMoveaxisPad(D=c_z, H=self.num_heads, dtype=dtype or torch.bfloat16) if self.bias_proj else None
+            LNProjMoveaxisPad(
+                D=c_z,
+                H=self.num_heads,
+                dtype=dtype or torch.bfloat16,
+                rms_norm=(pair_norm_type == "rms_norm"),
+                eps=eps,
+            )
+            if self.bias_proj
+            else None
         )
 
     def _prep_inputs(
@@ -539,17 +582,23 @@ class AttentionPairBias(nn.Module):
         """Project Q from *s* and packed K/V from *kv_in*.
 
         Returns:
-            (q, k, v) — k and v are non-contiguous views of the fused KV buffer.
+            (q, k, v) — v is a non-contiguous view of the fused KV buffer
+            (the CuTeDSL / SDPA kernels accept strided v). When ``use_qk_norm``
+            is set, q and k are whole-vector normed, which also
+            makes them contiguous.
         """
         q = self.proj_q(s)
         kv = self.proj_kv(kv_in)
         k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
+        if self.use_qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
         return q, k, v
 
     def _prep_mask_bias(
         self,
         s: torch.Tensor,
-        z: torch.Tensor,
+        z: torch.Tensor | None,
         mask: torch.Tensor,
         mask_bias: torch.Tensor | None,
     ) -> list[torch.Tensor]:
@@ -559,10 +608,11 @@ class AttentionPairBias(nn.Module):
             s: Token or atom embedding.
                 - Token transformer: ``[B, N, C_s]`` or ``[B, S, N, C_s]``.
                 - Atom transformer: ``[B, 1, K, N_q, C_s]`` or ``[B, S, K, N_q, C_s]``.
-            z: Pair representation.
+            z: Optional pair representation.
                 - With ``bias_proj``: ``[B, (*), N_q, N_k, C_z]`` — projected
                   by ``LNProjMoveaxisPad`` to ``[B, (*), H, N_q, N_k_padded]``.
                 - Without ``bias_proj``: already ``[B, (*), H, N_q, N_k]``.
+                - ``None``: mask-only attention with no pair bias.
             mask: Sequence mask.
                 - Token path: ``[B, N]``.
                 - Atom path: ``[B, K, N_q]``.
@@ -589,7 +639,8 @@ class AttentionPairBias(nn.Module):
                   q ``[B, mult, K, H, N_q, D]``.
 
         Returns:
-            ``[mask_bias, pair_bias]`` — list of length 2.
+            ``[mask_bias, pair_bias]``, or ``[mask_bias]`` when ``z`` is
+            ``None``.
         """
         if mask_bias is None:
             if self.attn_backend == "CuTeDSL":
@@ -597,6 +648,12 @@ class AttentionPairBias(nn.Module):
             else:
                 mask = mask[..., None, None, :]
                 mask_bias = (1 - mask.float()) * -self.inf
+
+        if z is None:
+            if self.attn_backend != "CuTeDSL":
+                while mask_bias.ndim < s.ndim + 1:
+                    mask_bias = mask_bias.unsqueeze(1)
+            return [mask_bias]
 
         pair_bias = z
         if self.bias_proj:
@@ -627,7 +684,7 @@ class AttentionPairBias(nn.Module):
     def forward(
         self,
         s: torch.Tensor,
-        z: torch.Tensor,
+        z: torch.Tensor | None,
         mask: torch.Tensor,
         single_embedding: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
@@ -644,7 +701,8 @@ class AttentionPairBias(nn.Module):
                 - Atom transformer: ``[B, 1, K, N_q, C_s]`` or
                   ``[B, mult, K, N_q, C_s]`` where *K* is the number of
                   local-attention blocks.
-            z: Pair representation or pre-projected pair bias.
+            z: Pair representation or pre-projected pair bias. ``None`` runs
+                mask-only attention.
                 - With ``bias_proj=True``: ``[B, (*), N_q, N_k, C_z]`` —
                   internally projected to ``[B, (*), H, N_q, N_k_padded]``.
                 - With ``bias_proj=False``: ``[B, (*), H, N_q, N_k]``,
@@ -686,6 +744,16 @@ class AttentionPairBias(nn.Module):
 
         biases = self._prep_mask_bias(s, z, mask, mask_bias)
 
+        # CuTeDSL kernels are fp16/bf16 only; restore attn_in_dtype after the kernel.
+        attn_in_dtype = q.dtype
+        if self.attn_backend == "CuTeDSL":
+            kernel_dtype = attn_in_dtype if attn_in_dtype in (torch.float16, torch.bfloat16) else torch.bfloat16
+            q = q.to(dtype=kernel_dtype)
+            k = k.to(dtype=kernel_dtype)
+            v = v.to(dtype=kernel_dtype)
+            if len(biases) > 1:
+                biases = [biases[0], biases[1].to(dtype=kernel_dtype)]
+
         _b_flat = 1
         for _d in q.shape[:-2]:
             _b_flat *= _d
@@ -708,6 +776,8 @@ class AttentionPairBias(nn.Module):
         mha_o = self.attn.forward(
             q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf, output_lse=attn_lse_buf
         )
+        if mha_o.dtype != attn_in_dtype:
+            mha_o = mha_o.to(dtype=attn_in_dtype)
         batch_dims = mha_o.shape[:-2]
         o = mha_o.reshape(-1, self.num_heads * self.head_dim)
 
@@ -757,7 +827,12 @@ class MSAAttention(nn.Module):
         self.proj_z = None
         self._ln_proj_moveaxis_pad = None
         if need_project_z:
-            self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(D=c_z, H=self.num_heads, dtype=dtype or torch.bfloat16)
+            self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(
+                D=c_z,
+                H=self.num_heads,
+                dtype=dtype or torch.bfloat16,
+                eps=eps,
+            )
             self.proj_z_norm = nn.LayerNorm(c_z, dtype=dtype, eps=eps)
             self.proj_z = Linear(
                 self.c_z,

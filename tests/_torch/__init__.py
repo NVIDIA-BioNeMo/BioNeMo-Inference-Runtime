@@ -28,6 +28,32 @@ SM_VERSION: int = (
     else 0
 )
 
+
+def init_module_weights(module: "torch.nn.Module", std: float = 0.02) -> "torch.nn.Module":
+    """Fill a module's parameters with finite values in-place.
+
+    TRT-BNM ``Linear`` allocates its weights with ``torch.empty`` and defers
+    real initialization to a checkpoint load. Tests that build a module but
+    never load weights therefore run on uninitialized memory: it reads as
+    zeros on a fresh CUDA context (benign), but as arbitrary garbage once a
+    prior test has dirtied the allocator — which then overflows downstream
+    kernels (e.g. attention softmax) to NaN. Initializing here makes such
+    tests deterministic and independent of execution order.
+
+    Norm scales (1-D ``*.weight``) are set to 1, biases to 0, and matrix
+    weights to a small normal.
+    """
+    with torch.no_grad():
+        for name, p in module.named_parameters():
+            if p.dim() >= 2:
+                p.normal_(0.0, std)
+            elif name.endswith("weight"):
+                p.fill_(1.0)
+            else:
+                p.zero_()
+    return module
+
+
 # The generic CuTeDSL SM range (Ampere through Hopper). Most kernels run on
 # the whole range; ``skip_if_no_cutedsl`` / ``skip_if_cutedsl`` look up an
 # op-specific override below by op name when one is supplied.

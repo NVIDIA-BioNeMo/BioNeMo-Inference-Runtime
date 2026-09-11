@@ -57,7 +57,11 @@ def _invoke_vanilla_gated_sigmoid(
 
 
 def get_gated_sigmoid_op(dtype: torch.dtype, N: int = 128, K: int = 128) -> Callable:
-    """Return the fused CuTeDSL op when this GPU, dtype, and shape are supported."""
+    """Return the fused CuTeDSL op when this GPU, dtype, and shape are supported.
+
+    Anything else -- including fp32 -- falls back to the vanilla PyTorch
+    implementation, which keeps fp32 exact.
+    """
     if (
         get_sm_version() not in _SUPPORTED_SM
         or dtype not in (torch.float16, torch.bfloat16)

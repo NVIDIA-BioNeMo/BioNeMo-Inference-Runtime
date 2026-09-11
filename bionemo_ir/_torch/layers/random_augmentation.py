@@ -79,20 +79,17 @@ def _copysign(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.where(signs_differ, -a, a)
 
 
-def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
+def _quaternion_components_to_matrix(
+    r: torch.Tensor,
+    i: torch.Tensor,
+    j: torch.Tensor,
+    k: torch.Tensor,
+    two_s: torch.Tensor | float,
+) -> torch.Tensor:
+    """Build ``(..., 3, 3)`` rotation matrices from quaternion components.
+
+    ``two_s`` is ``2 / ||q||^2``. For unit quaternions it is ``2``.
     """
-    Convert rotations given as quaternions to rotation matrices.
-
-    Args:
-        quaternions: quaternions with real part first,
-            as tensor of shape (..., 4).
-
-    Returns:
-        Rotation matrices as tensor of shape (..., 3, 3).
-    """
-    r, i, j, k = torch.unbind(quaternions, -1)
-    two_s = 2.0 / (quaternions * quaternions).sum(-1)
-
     o = torch.stack(
         (
             1 - two_s * (j * j + k * k),
@@ -107,7 +104,23 @@ def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
         ),
         -1,
     )
-    return o.reshape(quaternions.shape[:-1] + (3, 3))
+    return o.reshape(r.shape + (3, 3))
+
+
+def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
+    """
+    Convert rotations given as quaternions to rotation matrices.
+
+    Args:
+        quaternions: quaternions with real part first,
+            as tensor of shape (..., 4).
+
+    Returns:
+        Rotation matrices as tensor of shape (..., 3, 3).
+    """
+    r, i, j, k = torch.unbind(quaternions, -1)
+    two_s = 2.0 / (quaternions * quaternions).sum(-1)
+    return _quaternion_components_to_matrix(r, i, j, k, two_s)
 
 
 def random_quaternions(
@@ -146,6 +159,8 @@ def random_rotations(
     dtype: torch.dtype | None = None,
     device: torch.device | None = None,
     generator: torch.Generator | None = None,
+    *,
+    normalize_quaternions_first: bool = False,
 ) -> torch.Tensor:
     """
     Generate random rotations as 3x3 rotation matrices.
@@ -156,10 +171,22 @@ def random_rotations(
         device: Device of returned tensor. Default: if None,
             uses the current device for the default tensor type.
         generator: Optional explicit random-number generator.
+        normalize_quaternions_first: If True, L2-normalize ``randn``
+            quaternions and convert with the unit-quaternion formula
+            (``two_s = 2``). Matches OpenFold3 / AF3 Algorithm 19.
+            The default path uses PyTorch3D versors with a nonnegative
+            real part.
 
     Returns:
         Rotation matrices as tensor of shape (n, 3, 3).
     """
+    if isinstance(device, str):
+        device = torch.device(device)
+    if normalize_quaternions_first:
+        quaternions = torch.randn((n, 4), dtype=dtype, device=device, generator=generator)
+        quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
+        r, i, j, k = torch.unbind(quaternions, -1)
+        return _quaternion_components_to_matrix(r, i, j, k, 2.0)
     quaternions = random_quaternions(n, dtype=dtype, device=device, generator=generator)
     return quaternion_to_matrix(quaternions)
 
@@ -190,22 +217,32 @@ def centre_random_augmentation(
     mask: torch.Tensor | None = None,
     s_trans: float = 1.0,
     generator: torch.Generator | None = None,
+    normalize_quaternions_first: bool = False,
+    mask_denominator_min: float = 1e-7,
 ) -> torch.Tensor:
     """Center, rotate, and translate ``[..., N_atom, 3]`` coordinates.
 
     ``mask`` may carry fewer dims than ``x`` -- the EDM rollout augments
     ``[B, S, N_atom, 3]`` coordinates under a ``[B, N_atom]`` atom mask -- so it
     is broadcast rather than merely unsqueezed.
+
+    ``normalize_quaternions_first`` is forwarded to :func:`random_rotations`.
     """
     lead = x.shape[:-2]
     n = math.prod(lead) if lead else 1
-    rots = random_rotations(n, dtype=x.dtype, device=x.device, generator=generator).reshape(*lead, 3, 3)
+    rots = random_rotations(
+        n,
+        dtype=x.dtype,
+        device=x.device,
+        generator=generator,
+        normalize_quaternions_first=normalize_quaternions_first,
+    ).reshape(*lead, 3, 3)
     trans = s_trans * torch.randn((*lead, 3), dtype=x.dtype, device=x.device, generator=generator)
     if mask is None:
         centre = x.mean(dim=-2, keepdim=True)
     else:
         m = broadcast_atom_mask(x, mask)
-        centre = (x * m).sum(dim=-2, keepdim=True) / m.sum(dim=-2, keepdim=True).clamp(min=1e-7)
+        centre = (x * m).sum(dim=-2, keepdim=True) / m.sum(dim=-2, keepdim=True).clamp(min=mask_denominator_min)
     x = (x - centre) @ rots.transpose(-1, -2) + trans[..., None, :]
     if mask is not None:
         x = x * broadcast_atom_mask(x, mask)

@@ -17,12 +17,10 @@
 import math
 
 import torch
-import torch.nn.functional as F
 
-from .const import (
-    NUM_ATOM_NAME_CHARS,
-    NUM_CHAR_CLASSES,
-)
+from bionemo_ir._torch.layers.random_augmentation import centre_random_augmentation as _centre_random_augmentation
+from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars as _encode_atom_name_chars
+from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot as _encode_atom_name_chars_one_hot
 
 
 def encode_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
@@ -57,8 +55,7 @@ def encode_atom_name_chars(atom_name: str) -> list[int]:
     Returns:
         List of NUM_ATOM_NAME_CHARS integer codes.
     """
-    padded = atom_name.ljust(NUM_ATOM_NAME_CHARS)[:NUM_ATOM_NAME_CHARS]
-    return [ord(c) - 32 for c in padded]
+    return _encode_atom_name_chars(atom_name)
 
 
 def encode_atom_name_chars_one_hot(atom_names: list[str]) -> torch.Tensor:
@@ -70,9 +67,7 @@ def encode_atom_name_chars_one_hot(atom_names: list[str]) -> torch.Tensor:
     Returns:
         [N_atoms, NUM_ATOM_NAME_CHARS, NUM_CHAR_CLASSES] int32 tensor.
     """
-    codes = [encode_atom_name_chars(name) for name in atom_names]
-    codes_tensor = torch.tensor(codes, dtype=torch.long)
-    return F.one_hot(codes_tensor, NUM_CHAR_CLASSES).to(torch.int32)
+    return _encode_atom_name_chars_one_hot(atom_names)
 
 
 def compute_deletion_value(deletion_matrix: torch.Tensor) -> torch.Tensor:
@@ -103,32 +98,6 @@ def compute_deletion_value(deletion_matrix: torch.Tensor) -> torch.Tensor:
     return (torch.atan(deletion_matrix.float() / 3.0) * (8.0 / math.pi)).to(torch.float32)
 
 
-def _sample_rotations(shape: tuple, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
-    """Sample uniform random rotations via quaternion → rotation matrix.
-
-    Matches AF3 Algorithm 19 / OSS sample_rotations().
-    """
-    quats = torch.randn(*shape, 4, dtype=dtype, device=device)
-    quats = quats / quats.norm(dim=-1, keepdim=True)
-    # Quaternion to rotation matrix
-    w, x, y, z = quats.unbind(-1)
-    rots = torch.stack(
-        [
-            1 - 2 * (y * y + z * z),
-            2 * (x * y - w * z),
-            2 * (x * z + w * y),
-            2 * (x * y + w * z),
-            1 - 2 * (x * x + z * z),
-            2 * (y * z - w * x),
-            2 * (x * z - w * y),
-            2 * (y * z + w * x),
-            1 - 2 * (x * x + y * y),
-        ],
-        dim=-1,
-    ).reshape(*shape, 3, 3)
-    return rots
-
-
 def centre_random_augmentation(pos: torch.Tensor, mask: torch.Tensor, scale_trans: float = 1.0) -> torch.Tensor:
     """Centre, randomly rotate and translate conformer coordinates.
 
@@ -142,19 +111,13 @@ def centre_random_augmentation(pos: torch.Tensor, mask: torch.Tensor, scale_tran
     Returns:
         [*, N_atoms, 3] augmented positions.
     """
-    rots = _sample_rotations(shape=pos.shape[:-2], dtype=pos.dtype, device=pos.device)
-    trans = scale_trans * torch.randn((*pos.shape[:-2], 3), dtype=pos.dtype, device=pos.device)
-
-    mean_pos = torch.sum(
-        pos * mask[..., None],
-        dim=-2,
-        keepdim=True,
-    ) / torch.sum(mask[..., None], dim=-2, keepdim=True).clamp(min=1)
-
-    pos_centered = pos - mean_pos
-    pos_out = pos_centered @ rots.transpose(-1, -2) + trans[..., None, :]
-    pos_out = pos_out * mask[..., None]
-    return pos_out
+    return _centre_random_augmentation(
+        pos,
+        mask,
+        s_trans=scale_trans,
+        normalize_quaternions_first=True,
+        mask_denominator_min=1.0,
+    )
 
 
 # ---------------------------------------------------------------------------

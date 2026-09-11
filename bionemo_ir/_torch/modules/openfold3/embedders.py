@@ -26,10 +26,10 @@ from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingCo
 from bionemo_ir._torch.modules.openfold2.template import TemplatePairStack
 from bionemo_ir._torch.modules.openfold3.sequence_local_atom_attention import AtomAttentionEncoder
 from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
-from bionemo_ir._torch.utils import (
+from bionemo_ir._torch.utils import recursive_calling_load_weights
+from bionemo_ir._torch.utils.common import (
     commit_graph_safe_generator,
     make_graph_safe_generator,
-    recursive_calling_load_weights,
 )
 from bionemo_ir.configs.base import BaseConfig
 

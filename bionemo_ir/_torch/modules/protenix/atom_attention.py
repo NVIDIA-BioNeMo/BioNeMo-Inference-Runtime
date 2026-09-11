@@ -23,15 +23,18 @@ import torch.nn.functional as F
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
-from bionemo_ir._torch.layers.sequence_local_atom import to_blocks
+from bionemo_ir._torch.layers.sequence_local_atom import (
+    aggregate_indexed_atom_features,
+    gather_token_features_to_atoms,
+    to_blocks,
+)
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
 from bionemo_ir.configs import BaseConfig
 
 
 def _broadcast_token_to_atom(x_token: torch.Tensor, atom_to_token_idx: torch.Tensor) -> torch.Tensor:
     """Gather per-token features to per-atom (OSS ``broadcast_token_to_atom``)."""
-    idx = atom_to_token_idx.unsqueeze(-1).expand(*atom_to_token_idx.shape, x_token.shape[-1])
-    return torch.gather(x_token, -2, idx)
+    return gather_token_features_to_atoms(x_token, atom_to_token_idx)
 
 
 def _broadcast_token_pair_to_blocks(
@@ -408,13 +411,12 @@ class ProtenixAtomAttentionEncoder(nn.Module):
 
     @staticmethod
     def _aggregate_atom_to_token(x_atom: torch.Tensor, atom_to_token_idx: torch.Tensor, n_token: int) -> torch.Tensor:
-        idx = atom_to_token_idx.unsqueeze(-1).expand_as(x_atom)
-        out = x_atom.new_zeros(*x_atom.shape[:-2], n_token, x_atom.shape[-1])
-        out.scatter_add_(-2, idx, x_atom)
-        counts = x_atom.new_zeros(*x_atom.shape[:-2], n_token, 1)
-        ones = x_atom.new_ones(*x_atom.shape[:-1], 1)
-        counts.scatter_add_(-2, atom_to_token_idx.unsqueeze(-1), ones)
-        return out / counts.clamp(min=1)
+        return aggregate_indexed_atom_features(
+            x_atom,
+            atom_to_token_idx,
+            n_token,
+            deterministic=False,
+        )
 
 
 class ProtenixAtomAttentionDecoder(nn.Module):

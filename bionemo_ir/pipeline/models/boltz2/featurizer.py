@@ -26,6 +26,7 @@ from torch.nn.functional import one_hot
 
 from bionemo_ir._torch.layers.random_augmentation import random_rotations
 from bionemo_ir._torch.utils import pad_dim
+from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars
 
 from .const import (
     Structure,
@@ -188,10 +189,7 @@ def _compute_collinear_mask(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
 
 
 def _convert_atom_name(name: str) -> tuple[int, int, int, int]:
-    name = str(name).strip()
-    name = [ord(c) - 32 for c in name][:4]
-    name = name + [0] * (4 - len(name))
-    return tuple(name)
+    return tuple(encode_atom_name_chars(name, strip=True))
 
 
 def process_token_features(

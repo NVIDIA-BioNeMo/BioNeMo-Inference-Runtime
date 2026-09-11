@@ -26,12 +26,14 @@ import torch
 from pydantic import BaseModel
 
 from bionemo_ir.data.schemas import FoldingOutput
-from bionemo_ir.data.schemas.basic import AtomTypes
 from bionemo_ir.pipeline.base import PostProcessorBase
+from bionemo_ir.pipeline.utils.atom import (
+    NUM_FOLDING_ATOM_TYPES,
+    decode_atom_name_chars,
+    scatter_flat_atoms_to_folding_layout,
+)
 
-NUM_ATOM_TYPES = len(AtomTypes.all_types())
-
-_ATOM_NAME_TO_IDX: dict[str, int] = {at.name: i for i, at in enumerate(AtomTypes.all_types())}
+NUM_ATOM_TYPES = NUM_FOLDING_ATOM_TYPES
 
 
 class PostProcessorConfig(BaseModel):
@@ -83,7 +85,10 @@ class PostProcessor(PostProcessorBase):
         atom_to_token = _cpu(batch["atom_to_token_index"]).squeeze(0).numpy()  # (N_atoms,)
 
         # --- Decode atom names ---
-        flat_atom_names = _decode_flat_atom_names(batch, atom_mask_bool)
+        raw_atom_names = batch.get("ref_atom_name_chars")
+        if raw_atom_names is not None:
+            raw_atom_names = _cpu(raw_atom_names).squeeze(0)
+        flat_atom_names = decode_atom_name_chars(raw_atom_names, atom_mask_bool)
 
         # --- Remap into the shared atom layout ---
         # The universe covers protein backbone+sidechain, nucleic backbone,
@@ -92,30 +97,24 @@ class PostProcessor(PostProcessorBase):
         # writing each atom to its own (token, atom-name-slot) does not
         # collide with neighbouring tokens: there's no shared vocabulary
         # problem here because each ligand atom owns its own row.
-        atom_positions = np.zeros((n_tokens, NUM_ATOM_TYPES, 3), dtype=np.float32)
-        atom_mask_out = np.zeros((n_tokens, NUM_ATOM_TYPES), dtype=np.float32)
-
-        for ai in np.where(atom_mask_bool)[0]:
-            t = atom_to_token[ai]
-            if t >= n_tokens:
-                continue
-            name = flat_atom_names[ai]
-            slot = _ATOM_NAME_TO_IDX.get(name)
-            if slot is None:
-                continue
-            atom_positions[t, slot] = best_pos[ai]
-            atom_mask_out[t, slot] = 1.0
+        atom_positions, atom_mask_out = scatter_flat_atoms_to_folding_layout(
+            best_pos,
+            atom_to_token,
+            flat_atom_names,
+            atom_mask_bool,
+            n_tokens,
+        )
 
         # --- Residue metadata ---
         restype_onehot = _cpu(batch["restype"]).squeeze(0).numpy()  # (N_tokens, 32)
         residue_types = restype_onehot[:n_tokens].argmax(axis=-1).astype(np.int64)
         residue_indices = _cpu(batch["residue_index"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
-        # OF3 asym_id is 1-indexed per the upstream contract (see
-        # ``_renumber_chain_ids`` in feature_context.py → chains numbered
-        # 1..N alphabetically). The FoldingOutput / CIF-writer chain_indices
-        # contract expects 0-indexed chain IDs (chain_tags[0] == 'A').
-        # Subtract 1 to convert so chain A writes as 'A' rather than 'B' in
-        # the produced CIF.
+        # OF3 asym_id is 1-indexed per OSS contract (see feature_context.py
+        # _renumber_chain_ids → chains numbered 1..N alphabetically). The
+        # FoldingOutput / CIF-writer chain_indices contract expects 0-indexed
+        # chain IDs (chain_tags[0] == 'A'). Subtract 1 to convert so chain A
+        # writes as 'A' rather than 'B' in the produced CIF.
+        # (Surfaced by Plan 07 e2e — OST_CMD chain_mapping was offset by 1.)
         chain_indices = _cpu(batch["asym_id"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
         chain_indices = chain_indices - 1
 
@@ -298,35 +297,3 @@ def _compute_pae(output: dict, best_idx: int, n_tokens: int) -> np.ndarray | Non
     bin_centers = torch.linspace(0, 32, n_bins)
     pae = (probs * bin_centers).sum(dim=-1).numpy()
     return np.round(pae, 3)
-
-
-def _decode_flat_atom_names(
-    batch: dict[str, Any],
-    atom_mask_bool: np.ndarray,
-) -> list[str]:
-    """Decode atom name strings from ref_atom_name_chars.
-
-    The featurizer encodes each atom name as 4 integers via ord(c) - 32,
-    then one-hot encodes into 64 classes. We reverse that here.
-    """
-    raw = batch.get("ref_atom_name_chars")
-    n_atoms = atom_mask_bool.shape[0]
-    if raw is None:
-        return [""] * n_atoms
-
-    chars = _cpu(raw).squeeze(0)  # (N_atoms, 4, 64)
-    char_indices = chars.argmax(dim=-1).numpy()  # (N_atoms, 4)
-
-    names: list[str] = []
-    for ai in range(n_atoms):
-        if not atom_mask_bool[ai]:
-            names.append("")
-            continue
-        name = ""
-        for c in range(4):
-            v = char_indices[ai, c]
-            if v == 0:
-                break
-            name += chr(v + 32)
-        names.append(name.strip())
-    return names

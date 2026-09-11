@@ -15,16 +15,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from typing import Literal
 
 import torch
 
+from bionemo_ir._torch.layers.sequence_local_atom import (
+    aggregate_atom_features_to_tokens as _aggregate_atom_features_to_tokens,
+)
+from bionemo_ir._torch.layers.sequence_local_atom import (
+    broadcast_token_features_to_atoms as _broadcast_token_features_to_atoms,
+)
+from bionemo_ir._torch.layers.sequence_local_atom import (
+    compute_atom_broadcast_index as _compute_atom_broadcast_index,
+)
+from bionemo_ir._torch.layers.sequence_local_atom import (
+    select_atoms_from_padded_tokens as _select_atoms_from_padded_tokens,
+)
 from bionemo_ir._torch.modules.openfold3.utils.residues import STANDARD_PROTEIN_RESIDUES_ORDER
 from bionemo_ir._torch.modules.openfold3.utils.token_atom_constants import (
     TOKEN_TYPES_WITH_GAP,
     atom_name_to_index_by_restype,
 )
-from bionemo_ir._torch.utils import _deterministic_algorithms
+from bionemo_ir._torch.utils.common import _deterministic_algorithms as _shared_deterministic_algorithms
+
+
+def _deterministic_algorithms():
+    """Compatibility export for existing OpenFold3 determinism tests."""
+    return _shared_deterministic_algorithms()
 
 
 def compute_atom_broadcast_index(
@@ -48,18 +66,7 @@ def compute_atom_broadcast_index(
     values point into the flattened ``[*, n_token + 1, ...]`` padded token
     features (the final row per batch element is the zero padding row).
     """
-    counts = num_atoms_per_token * token_mask.int()
-    max_num_atoms = torch.max(torch.sum(counts, dim=-1)).int()
-    padded_counts = (
-        torch.concat(
-            [counts, max_num_atoms - torch.sum(counts, dim=-1, keepdim=True)],
-            dim=-1,
-        )
-        .reshape(-1)
-        .int()
-    )
-    row_ids = torch.arange(padded_counts.numel(), device=token_mask.device)
-    return torch.repeat_interleave(row_ids, padded_counts)
+    return _compute_atom_broadcast_index(token_mask, num_atoms_per_token)
 
 
 def broadcast_token_feat_to_atoms(
@@ -89,102 +96,14 @@ def broadcast_token_feat_to_atoms(
             [*, N_atom] Broadcasted atom-level feature (if max_num_atoms_per_token
             is provided, the output would be [*, N_token * max_num_atoms_per_token])
     """
-    n_token = token_mask.shape[-1]
-    batch_dims = token_mask.shape[:-1]
-    feat_batch_dims = token_feat.shape[:token_dim]
-    feat_dims = token_feat.shape[token_dim:][1:]
-
-    # Apply token mask
-    num_atoms_per_token = num_atoms_per_token * token_mask.int()
-    token_feat = token_feat * token_mask.reshape((*batch_dims, n_token, *((1,) * len(feat_dims))))
-
-    # Pad atoms at token level
-    if max_num_atoms_per_token is not None:
-        num_atoms_per_token = torch.stack(
-            [num_atoms_per_token, max_num_atoms_per_token - num_atoms_per_token], dim=-1
-        ).reshape((*batch_dims, 2 * n_token))
-        normalized_token_dim = token_dim if token_dim >= 0 else token_dim + token_feat.ndim
-        token_feat = token_feat.unsqueeze(normalized_token_dim + 1)
-        pad = [0, 0] * token_feat.ndim
-        pad[2 * (token_feat.ndim - normalized_token_dim - 2) + 1] = 1
-        token_feat = torch.nn.functional.pad(token_feat, pad).reshape((*batch_dims, 2 * n_token, *feat_dims))
-
-    # Pad token features with a trailing zero row (absorbs leftover atom slots),
-    # then flatten batch and token dimensions.
-    padded_token_feat = torch.concat(
-        [
-            token_feat,
-            torch.zeros(
-                (*feat_batch_dims, 1, *feat_dims),
-                dtype=token_feat.dtype,
-                device=token_feat.device,
-            ),
-        ],
-        dim=token_dim,
-    ).reshape(-1, *feat_dims)
-
-    # CUDA-graph-capturable fast path: a precomputed expansion index
-    # (compute_atom_broadcast_index) replaces the data-dependent
-    # repeat_interleave with a static index_select.
-    #
-    # ``expand_index`` is the *base* index for ``batch_dims`` (length
-    # prod(batch_dims) * max_num_atoms), indexing the flattened
-    # [prod(batch_dims) * (n_token + 1), ...] padded token rows. When the
-    # features carry extra repeat groups per batch element (e.g. the diffusion
-    # multiplicity S, where feat_batch_dims is batch_dims with an added trailing
-    # group axis so ``n_feat_batch == n_batch * n_groups``), tile the base index
-    # across those groups: rebase each batch element's rows from the
-    # [n_batch, n_token + 1] stride onto the [n_batch, n_groups, n_token + 1]
-    # stride (group 0), then offset each group by (n_token + 1). Uses only
-    # arange/add/reshape, so it stays graph-capturable, and reduces exactly to
-    # the single-batch tiling when n_batch == 1 (any batch size is supported).
-    n_batch = 1
-    for d in batch_dims:
-        n_batch *= int(d)
-    n_feat_batch = 1
-    for d in feat_batch_dims:
-        n_feat_batch *= int(d)
-    can_tile = feat_batch_dims == batch_dims or n_feat_batch % n_batch == 0
-    if expand_index is not None and can_tile:
-        max_num_atoms = expand_index.numel() // n_batch
-        if n_feat_batch != n_batch:
-            n_groups = n_feat_batch // n_batch
-            # Batch id of each ``expand_index`` entry (batch-major layout).
-            batch_of = torch.arange(expand_index.numel(), device=expand_index.device) // max_num_atoms
-            base = (expand_index + batch_of * (n_groups - 1) * (n_token + 1)).reshape(n_batch, max_num_atoms)
-            group_off = (torch.arange(n_groups, device=expand_index.device) * (n_token + 1)).reshape(1, n_groups, 1)
-            full_index = (base.unsqueeze(1) + group_off).reshape(-1)
-        else:
-            full_index = expand_index
-        atom_feat = padded_token_feat.index_select(0, full_index)
-        return atom_feat.reshape((*feat_batch_dims, max_num_atoms, *feat_dims))
-
-    # Dynamic path (eager only): the output length depends on the summed atom
-    # counts, which forces a device->host sync -> not graph-capturable.
-    max_num_atoms = torch.max(torch.sum(num_atoms_per_token, dim=-1)).int()
-
-    # Pad number of atoms per token; flatten batch and token dimensions.
-    padded_num_atoms_per_token = torch.concat(
-        [
-            num_atoms_per_token,
-            max_num_atoms - torch.sum(num_atoms_per_token, dim=-1, keepdim=True),
-        ],
-        dim=-1,
+    return _broadcast_token_features_to_atoms(
+        token_mask,
+        num_atoms_per_token,
+        token_feat,
+        token_dim=token_dim,
+        max_num_atoms_per_token=max_num_atoms_per_token,
+        expand_index=expand_index,
     )
-    if batch_dims != feat_batch_dims:
-        batch_n_repeat = feat_batch_dims[-1]
-        padded_num_atoms_per_token = padded_num_atoms_per_token.repeat(
-            *((1,) * len(batch_dims[:-1]) + (batch_n_repeat,) + (1,))
-        )
-    padded_num_atoms_per_token = padded_num_atoms_per_token.reshape(-1).int()
-
-    # Create atom-level features
-    atom_feat = torch.repeat_interleave(input=padded_token_feat, repeats=padded_num_atoms_per_token, dim=0)
-
-    # Unflatten batch and token dimensions
-    atom_feat = atom_feat.reshape((*feat_batch_dims, max_num_atoms, *feat_dims))
-
-    return atom_feat
 
 
 def aggregate_atom_feat_to_tokens(
@@ -226,64 +145,15 @@ def aggregate_atom_feat_to_tokens(
         token_feat:
             [*, N_token, *feat_dims] Token-level features
     """
-    n_token = token_mask.shape[-1]
-    batch_dims = token_mask.shape[:-1]
-    feat_batch_dims = atom_feat.shape[:atom_dim]
-    feat_dims = atom_feat.shape[atom_dim:][1:]
-    # Accumulate the atom->token scatter under deterministic algorithms
-    # (see ``_deterministic_algorithms``): CUDA ``scatter_add_`` is otherwise
-    # non-deterministic run-to-run, and that per-call noise amplifies over the
-    # diffusion rollout into divergent structures.
-    atom_feat = atom_feat * atom_mask.reshape(atom_mask.shape + (1,) * len(feat_dims))
-
-    # Mask out atoms that are not part of the structure
-    # Padding value must be greater than the largest index so that it
-    # is properly excluded from the aggregation
-    atom_to_token_index = torch.where(atom_mask.bool(), atom_to_token_index, n_token)
-    # Prepare atom to token index for aggregation
-    # Check for broadcasting and repeat accordingly
-    if batch_dims == feat_batch_dims:
-        repeated_atom_to_token_index = atom_to_token_index.reshape(
-            *atom_to_token_index.shape + (1,) * len(feat_dims)
-        ).repeat(*((1,) * (len(batch_dims) + 1) + feat_dims))
-    else:
-        batch_n_repeat = feat_batch_dims[-1]
-        repeated_atom_to_token_index = atom_to_token_index.reshape(
-            *atom_to_token_index.shape + (1,) * len(feat_dims)
-        ).repeat(*((1,) * (len(batch_dims) - 1) + (batch_n_repeat,) + (1,) + feat_dims))
-
-    if aggregate_fn not in ["mean", "sum"]:
-        raise ValueError(f"Invalid aggregation function: {aggregate_fn}")
-
-    # Compute summed token-level feature (deterministic scatter -- see note above)
-    token_feat = torch.zeros(
-        (*feat_batch_dims, n_token + 1, *feat_dims),
-        device=atom_feat.device,
-        dtype=atom_feat.dtype,
+    return _aggregate_atom_features_to_tokens(
+        token_mask,
+        atom_to_token_index,
+        atom_mask,
+        atom_feat,
+        atom_dim=atom_dim,
+        aggregate_fn=aggregate_fn,
+        eps=eps,
     )
-    with _deterministic_algorithms():
-        token_feat.scatter_add_(index=repeated_atom_to_token_index.long(), src=atom_feat, dim=atom_dim)
-    token_feat = token_feat.reshape((*feat_batch_dims, n_token + 1, -1))[..., :n_token, :].reshape(
-        (*feat_batch_dims, n_token, *feat_dims)
-    )
-
-    # Compute mean token-level feature
-    if aggregate_fn == "mean":
-        # Compute number of atoms (non-masked) per token (int32 accumulation;
-        # integer addition is associative, so no need for deterministic scatter)
-        INTEGER_ADDITION_DTYPE = torch.int32
-        token_num_atoms = torch.zeros(
-            (*batch_dims, n_token + 1), device=atom_feat.device, dtype=INTEGER_ADDITION_DTYPE
-        ).scatter_add_(
-            index=atom_to_token_index.to(torch.int64),
-            src=atom_mask.to(INTEGER_ADDITION_DTYPE),
-            dim=-1,
-        )
-        token_num_atoms = token_num_atoms[..., :n_token]
-
-        token_feat = token_feat / (token_num_atoms.reshape(token_num_atoms.shape + (1,) * len(feat_dims)) + eps)
-
-    return token_feat
 
 
 def max_atom_per_token_masked_select(
@@ -302,36 +172,7 @@ def max_atom_per_token_masked_select(
         atom_feat:
             [*, N_atom, c_out] Selected valid atom features
     """
-    batch_dims = atom_feat.shape[:-2]
-    c_out = atom_feat.shape[-1]
-    max_atoms_in_batch = torch.max(torch.sum(max_atom_per_token_mask.int(), dim=-1))
-    atom_feat = atom_feat.view(-1, *atom_feat.shape[-2:])
-    max_atom_per_token_mask = max_atom_per_token_mask.repeat(atom_feat.shape[1], 1)
-
-    def select_atoms(l: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """
-        Select atoms from max-atom padded feature based on max_atoms_in_batch.
-        Add padding to max number of atoms in the batch.
-        """
-        out = torch.masked_select(l, mask[..., None].bool()).reshape(-1, c_out)
-        out_padded = torch.nn.functional.pad(out, (0, 0, 0, max_atoms_in_batch - out.shape[-2]))
-        return out_padded
-
-    # Unbind batch dim if it exists, and select atom feats per batch
-    if len(batch_dims) > 0:
-        per_batch_logits = torch.unbind(atom_feat, dim=0)
-        per_batch_mask = torch.unbind(max_atom_per_token_mask, dim=0)
-
-        atom_feat = torch.stack(
-            [select_atoms(l, m) for l, m in zip(per_batch_logits, per_batch_mask, strict=False)],
-            dim=0,
-        )
-    else:
-        atom_feat = select_atoms(atom_feat, max_atom_per_token_mask)
-
-    # Expand flattened batch dims
-    atom_feat = atom_feat.reshape(*batch_dims, -1, c_out)
-    return atom_feat
+    return _select_atoms_from_padded_tokens(atom_feat, max_atom_per_token_mask)
 
 
 def get_token_representative_atoms(batch: dict, x: torch.Tensor, atom_mask: torch.Tensor):
@@ -452,3 +293,175 @@ def get_token_atom_index_offset(atom_name: str, restype: torch.Tensor):
         ).float(),
     ).long()
     return token_atom_index_offset, token_atom_mask
+
+
+def get_token_frame_atoms(
+    batch: dict,
+    x: torch.Tensor,
+    atom_mask: torch.Tensor,
+    angle_threshold: float = 25.0,
+    eps: float = 1e-8,
+    inf: float = 1e9,
+):
+    """
+    Extract frame atoms per token, which returns
+        -   (N, Ca, C) for standard amino acid residues
+        -   (C3', C1', C4') for standard nucleotide residues
+        -   closest neighbors for atomized tokens (modified residues and ligands),
+            subject to additional angle and chain constraints from Subsection 4.3.2
+
+    Args:
+        batch:
+            Feature dictionary
+        x:
+            [*, N_atom, 3] Atom positions
+        atom_mask:
+            [*, N_atom] Atom mask
+        angle_threshold:
+            Angle threshold imposed on frame atom selections for atomized tokens
+        eps:
+            Small constant for numerical stability
+        inf:
+            Large constant for numerical stability
+    Returns:
+        phi:
+            ([*, N_token, 3], [*, N_token, 3], [*, N_token, 3])
+            Tuple of three frame atoms
+        valid_frame_mask:
+            [*, N_token] Mask denoting valid frames
+    """
+    # Create pairwise atom mask
+    pair_mask = atom_mask[..., None] * atom_mask[..., None, :]
+
+    # Update pairwise atom mask
+    # Restrict to atoms within the same chain
+    atom_asym_id = broadcast_token_feat_to_atoms(
+        token_mask=batch["token_mask"],
+        num_atoms_per_token=batch["num_atoms_per_token"],
+        token_feat=batch["asym_id"],
+    )
+    atom_asym_id_mask = atom_asym_id[..., None] == atom_asym_id[..., None, :]
+    pair_mask = pair_mask * atom_asym_id_mask
+
+    # Compute distance matrix
+    # [*, N_atom, N_atom]
+    d = torch.sum(eps + (x[..., None, :] - x[..., None, :, :]) ** 2, dim=-1) ** 0.5
+    d = d * pair_mask + inf * (1 - pair_mask)
+
+    # Find indices of two closest atoms for start atoms
+    # [*, N_token]
+    start_atom_index = batch["start_atom_index"].long()
+    start_atom_index = start_atom_index.expand(*x.shape[:-2], start_atom_index.shape[-1])
+    _, closest_atom_index = torch.topk(d, k=3, dim=-1, largest=False)
+    a_index = torch.gather(closest_atom_index[..., 1], dim=-1, index=start_atom_index)
+    c_index = torch.gather(closest_atom_index[..., 2], dim=-1, index=start_atom_index)
+
+    # Construct indices of atoms used for frame construction
+    # [*, N_token]
+    is_standard_protein = batch["is_protein"] * (1 - batch["is_atomized"])
+    is_standard_nucleotide = (batch["is_dna"] + batch["is_rna"]) * (1 - batch["is_atomized"])
+
+    restype = batch["restype"].float()
+    n_atom_index_offset, n_atom_mask = get_token_atom_index_offset(atom_name="N", restype=restype)
+    ca_atom_index_offset, ca_atom_mask = get_token_atom_index_offset(atom_name="CA", restype=restype)
+    c_atom_index_offset, c_atom_mask = get_token_atom_index_offset(atom_name="C", restype=restype)
+    c3p_atom_index_offset, c3p_atom_mask = get_token_atom_index_offset(atom_name="C3'", restype=restype)
+    c1p_atom_index_offset, c1p_atom_mask = get_token_atom_index_offset(atom_name="C1'", restype=restype)
+    c4p_atom_index_offset, c4p_atom_mask = get_token_atom_index_offset(atom_name="C4'", restype=restype)
+    frame_atoms = {
+        "a": {
+            "index": (
+                a_index * batch["is_atomized"]
+                + (start_atom_index + n_atom_index_offset) * is_standard_protein
+                + (start_atom_index + c3p_atom_index_offset) * is_standard_nucleotide
+            ),
+            "token_atom_mask": (
+                batch["is_atomized"] + n_atom_mask * is_standard_protein + c3p_atom_mask * is_standard_nucleotide
+            ),
+        },
+        "b": {
+            "index": (
+                start_atom_index * batch["is_atomized"]
+                + (start_atom_index + ca_atom_index_offset) * is_standard_protein
+                + (start_atom_index + c1p_atom_index_offset) * is_standard_nucleotide
+            ),
+            "token_atom_mask": (
+                batch["is_atomized"] + ca_atom_mask * is_standard_protein + c1p_atom_mask * is_standard_nucleotide
+            ),
+        },
+        "c": {
+            "index": (
+                c_index * batch["is_atomized"]
+                + (start_atom_index + c_atom_index_offset) * is_standard_protein
+                + (start_atom_index + c4p_atom_index_offset) * is_standard_nucleotide
+            ),
+            "token_atom_mask": (
+                batch["is_atomized"] + c_atom_mask * is_standard_protein + c4p_atom_mask * is_standard_nucleotide
+            ),
+        },
+    }
+
+    # Extract coordinates
+    for key in frame_atoms:
+        frame_atoms[key].update(
+            {
+                "atom_positions": torch.gather(
+                    x,
+                    dim=-2,
+                    index=frame_atoms[key]["index"]
+                    .unsqueeze(-1)
+                    .expand(*(x.shape[:-2] + (frame_atoms[key]["index"].shape[-1], 3)))
+                    .long(),
+                ),
+                "asym_id": torch.gather(
+                    atom_asym_id.expand(*x.shape[:-2], atom_asym_id.shape[-1]),
+                    dim=-1,
+                    index=frame_atoms[key]["index"].long(),
+                ),
+                "atom_mask": torch.gather(
+                    atom_mask.expand(*x.shape[:-2], atom_mask.shape[-1]),
+                    dim=-1,
+                    index=frame_atoms[key]["index"].long(),
+                )
+                * batch["token_mask"]
+                * frame_atoms[key]["token_atom_mask"],
+            }
+        )
+
+    # Compute cosine of angles
+    u = frame_atoms["a"]["atom_positions"] - frame_atoms["b"]["atom_positions"]
+    v = frame_atoms["c"]["atom_positions"] - frame_atoms["b"]["atom_positions"]
+    uv = torch.einsum("...i,...i->...", u, v)
+    u_norm = (eps + torch.sum(u**2, dim=-1)) ** 0.5
+    v_norm = (eps + torch.sum(v**2, dim=-1)) ** 0.5
+    cos_angle = uv / (u_norm * v_norm)
+
+    # Compute valid frame mask from angle constraints
+    # (for ligand and non-standard residues)
+    cos_angle_min_bound = math.cos((180 - angle_threshold) * math.pi / 180)
+    cos_angle_max_bound = math.cos(angle_threshold * math.pi / 180)
+    valid_frame_mask_angle = (cos_angle < cos_angle_max_bound) * (cos_angle > cos_angle_min_bound)
+    valid_frame_mask_angle = (
+        valid_frame_mask_angle * batch["is_atomized"]
+        + torch.ones_like(valid_frame_mask_angle) * (1 - batch["is_atomized"])
+    ) * batch["token_mask"]
+
+    # Compute valid frame mask from atom mask constraints
+    valid_frame_mask_atom = (
+        frame_atoms["a"]["atom_mask"] * frame_atoms["b"]["atom_mask"] * frame_atoms["c"]["atom_mask"]
+    )
+
+    # Compute valid frame mask from chain constraints
+    valid_frame_mask_asym_id = (frame_atoms["a"]["asym_id"] == frame_atoms["b"]["asym_id"]) * (
+        frame_atoms["b"]["asym_id"] == frame_atoms["c"]["asym_id"]
+    )
+
+    # Compute final valid frame mask
+    valid_frame_mask = valid_frame_mask_angle * valid_frame_mask_atom * valid_frame_mask_asym_id
+    phi = (
+        frame_atoms["a"]["atom_positions"],
+        frame_atoms["b"]["atom_positions"],
+        frame_atoms["c"]["atom_positions"],
+    )
+
+    return phi, valid_frame_mask

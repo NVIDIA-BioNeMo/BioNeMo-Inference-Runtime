@@ -28,13 +28,16 @@ import torch
 from pydantic import BaseModel
 
 from bionemo_ir.data.schemas import FoldingOutput
-from bionemo_ir.data.schemas.basic import MOL_TYPE_DNA, MOL_TYPE_LIGAND, MOL_TYPE_PROTEIN, MOL_TYPE_RNA, AtomTypes
+from bionemo_ir.data.schemas.basic import MOL_TYPE_DNA, MOL_TYPE_LIGAND, MOL_TYPE_PROTEIN, MOL_TYPE_RNA
 from bionemo_ir.pipeline.base import PostProcessorBase
 from bionemo_ir.pipeline.models.boltz2.const import chain_type_ids, tokens
+from bionemo_ir.pipeline.utils.atom import (
+    NUM_FOLDING_ATOM_TYPES,
+    decode_atom_name_chars,
+    scatter_flat_atoms_to_folding_layout,
+)
 
-NUM_ATOM_TYPES = len(AtomTypes.all_types())
-
-_ATOM_NAME_TO_IDX: dict[str, int] = {at.name: i for i, at in enumerate(AtomTypes.all_types())}
+NUM_ATOM_TYPES = NUM_FOLDING_ATOM_TYPES
 
 # Remap Boltz2's internal chain_type_ids (PROTEIN=0, DNA=1, RNA=2, NONPOLYMER=3)
 # to FoldingOutput's canonical mol-type convention (PROTEIN=0, RNA=1, DNA=2,
@@ -101,22 +104,19 @@ class PostProcessor(PostProcessorBase):
         token_per_atom = atom_to_token.argmax(dim=-1).numpy()  # (N_atoms_pad,)
 
         # --- Decode atom names --------------------------------------------------
-        flat_atom_names = _decode_flat_atom_names(batch, atom_mask_bool)
+        raw_atom_names = batch.get("ref_atom_name_chars")
+        if raw_atom_names is not None:
+            raw_atom_names = _cpu(raw_atom_names)[0]
+        flat_atom_names = decode_atom_name_chars(raw_atom_names, atom_mask_bool)
 
-        # --- Remap into the shared atom-type layout -----------------------------
-        atom_positions = np.zeros((n_tokens, NUM_ATOM_TYPES, 3), dtype=np.float32)
-        atom_mask_out = np.zeros((n_tokens, NUM_ATOM_TYPES), dtype=np.float32)
-
-        for ai in np.where(atom_mask_bool)[0]:
-            t = token_per_atom[ai]
-            if t >= n_tokens:
-                continue
-            name = flat_atom_names[ai]
-            slot = _ATOM_NAME_TO_IDX.get(name)
-            if slot is None:
-                continue
-            atom_positions[t, slot] = best_coords_flat[ai]
-            atom_mask_out[t, slot] = 1.0
+        # --- Remap into the canonical atom layout -------------------------------
+        atom_positions, atom_mask_out = scatter_flat_atoms_to_folding_layout(
+            best_coords_flat,
+            token_per_atom,
+            flat_atom_names,
+            atom_mask_bool,
+            n_tokens,
+        )
 
         # --- Residue metadata from batch ----------------------------------------
         res_type_onehot = _cpu(batch["res_type"])[0].numpy()  # (N_tokens_pad, C)
@@ -251,40 +251,3 @@ def _extract_pair_matrix(
         raw = raw.cpu().numpy()
     mat = raw[0, best_idx][:n_tokens, :n_tokens]
     return np.round(mat, 3)
-
-
-def _decode_flat_atom_names(
-    batch: dict[str, Any],
-    atom_mask_bool: np.ndarray,
-) -> list[str]:
-    """Decode atom name strings for every padded atom position.
-
-    The OSS featurizer encodes each atom name as 4 integers via
-    ``ord(c) - 32``, then one-hot encodes into 64 classes.  We reverse
-    that here.
-
-    Returns:
-        List of length ``N_atoms_pad`` with decoded names (empty string
-        for padded positions).
-    """
-    raw = batch.get("ref_atom_name_chars")
-    n_atoms_pad = atom_mask_bool.shape[0]
-    if raw is None:
-        return [""] * n_atoms_pad
-
-    chars = _cpu(raw)[0]  # (N_atoms_pad, 4, 64)
-    char_indices = chars.argmax(dim=-1).numpy()  # (N_atoms_pad, 4)
-
-    names: list[str] = []
-    for ai in range(n_atoms_pad):
-        if not atom_mask_bool[ai]:
-            names.append("")
-            continue
-        name = ""
-        for c in range(4):
-            v = char_indices[ai, c]
-            if v == 0:
-                break
-            name += chr(v + 32)
-        names.append(name)
-    return names

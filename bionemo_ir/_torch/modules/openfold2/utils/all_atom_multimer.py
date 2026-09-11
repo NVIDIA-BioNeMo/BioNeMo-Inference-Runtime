@@ -23,7 +23,7 @@ import torch
 
 import bionemo_ir.pipeline.models.openfold2.const as rc
 from bionemo_ir._torch.modules.openfold2.utils import geometry
-from bionemo_ir._torch.utils import tensor as tensor_utils
+from bionemo_ir._torch.utils import batched_gather
 
 
 def get_chi_atom_indices(device: torch.device):
@@ -91,7 +91,7 @@ def compute_chi_angles(positions: geometry.Vec3Array, mask: torch.Tensor, aatype
     atom_indices = chi_atom_indices[aatype_gapless]
     # Gather atom positions. Shape: [num_res, chis=4, atoms=4, xyz=3].
     chi_angle_atoms = positions.map_tensor_fn(
-        partial(tensor_utils.batched_gather, inds=atom_indices, dim=-1, no_batch_dims=no_batch_dims + 1)
+        partial(batched_gather, inds=atom_indices, dim=-1, no_batch_dims=no_batch_dims + 1)
     )
 
     a, b, c, d = [chi_angle_atoms[..., i] for i in range(4)]
@@ -107,7 +107,7 @@ def compute_chi_angles(positions: geometry.Vec3Array, mask: torch.Tensor, aatype
 
     # The chi_mask is set to 1 only when all necessary chi angle atoms were set.
     # Gather the chi angle atoms mask. Shape: [num_res, chis=4, atoms=4].
-    chi_angle_atoms_mask = tensor_utils.batched_gather(mask, atom_indices, dim=-1, no_batch_dims=no_batch_dims + 1)
+    chi_angle_atoms_mask = batched_gather(mask, atom_indices, dim=-1, no_batch_dims=no_batch_dims + 1)
     # Check if all 4 chi angle atoms were set. Shape: [num_res, chis=4].
     chi_angle_atoms_mask = torch.prod(chi_angle_atoms_mask, dim=-1)
     chi_mask = chi_mask * chi_angle_atoms_mask.to(chi_angles.dtype)

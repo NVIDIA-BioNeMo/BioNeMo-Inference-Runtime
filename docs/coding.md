@@ -28,6 +28,7 @@ The tools below are all installable with `pip`.
 | Python format + lint | [`ruff`][ruff] (line length **120**, config in `pyproject.toml`) |
 | C/C++/CUDA format    | [`clang-format`][clang-format] (`.clang-format`, in the gate)    |
 | Markdown             | [`rumdl`][rumdl]                                                 |
+| Documentation        | `docs/fern/src/check.py` (hook `docs-check`, CI `docs:check`)    |
 | Shell lint + format  | [`shellcheck`][shellcheck] + [`shfmt`][shfmt]                    |
 | License headers      | `insert-license` ([Lucas-C/pre-commit-hooks][license-hook])      |
 | Line endings         | `.gitattributes` (`eol=lf`, git-native)                          |

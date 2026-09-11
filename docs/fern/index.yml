@@ -23,6 +23,8 @@ navigation:
         contents:
           - page: Architecture
             path: ../ref/architecture.md
+          - page: Sampling
+            path: ../ref/sampling.md
           - page: Support Matrix
             path: ../ref/support-matrix.md
           - page: Model Weights

@@ -141,15 +141,15 @@ Models](https://arxiv.org/pdf/2206.00364):
 
 The initial coordinates are sampled at the largest noise level:
 
-```math
+$$
 \boldsymbol{x}_0 \sim
 \mathcal{N}\!\left(\boldsymbol{0}, \sigma_0^2 \boldsymbol{I}\right).
-```
+$$
 
 Each sampling step temporarily adds noise, invokes the denoiser, and advances
 toward the next noise level:
 
-```math
+$$
 \begin{aligned}
 \hat{\sigma}_i
     &= \sigma_i \left(1 + \gamma_i\right), \\
@@ -161,7 +161,7 @@ toward the next noise level:
          \sqrt{\hat{\sigma}_i^2 - \sigma_i^2}\,
          \boldsymbol{\epsilon}_i, \\
 \boldsymbol{x}^{\mathrm{denoised}}_i
-    &= \operatorname{predict}
+    &= \mathrm{predict}
        \left(\hat{\boldsymbol{x}}_i, \hat{\sigma}_i\right), \\
 \boldsymbol{d}_i
     &= \frac{
@@ -174,7 +174,7 @@ toward the next noise level:
          \left(\sigma_{i+1} - \hat{\sigma}_i\right)
          \boldsymbol{d}_i .
 \end{aligned}
-```
+$$
 
 In the implementation, `noise_scale` supplies the noise multiplier and
 `step_scale` supplies the Euler-step multiplier.
@@ -215,25 +215,25 @@ Flow matching transports a reference sample to a data sample along a
 time-parameterized path. For the linear (conditional optimal-transport)
 interpolant used here,
 
-```math
+$$
 \boldsymbol{x}_t = t\,\boldsymbol{x}_1 + (1 - t)\,\boldsymbol{x}_0 ,
-```
+$$
 
 the network predicts the velocity `v = dx_t/dt`. One interval is an Euler step,
 and the clean endpoint implied by a velocity follows from differentiating the
 interpolant:
 
-```math
+$$
 \begin{aligned}
 \boldsymbol{v}_i
-    &= \operatorname{predict}\left(\boldsymbol{x}_i, t_i\right), \\
+    &= \mathrm{predict}\left(\boldsymbol{x}_i, t_i\right), \\
 \boldsymbol{x}^{\mathrm{clean}}_i
     &= \boldsymbol{x}_i + \left(1 - t_i\right) \boldsymbol{v}_i, \\
 \boldsymbol{x}_{i+1}
     &= \boldsymbol{x}_i
        + s_{\mathrm{step}} \left(t_{i+1} - t_i\right) \boldsymbol{v}_i .
 \end{aligned}
-```
+$$
 
 Time *increases* toward data at `t = 1`, the opposite direction to EDM's
 decreasing noise levels. The clean endpoint is both a rollout output and, when

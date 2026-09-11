@@ -3,3 +3,13 @@
 reviews:
   high_level_summary: true
   high_level_summary_in_walkthrough: true
+  path_instructions:
+    - path: docs/**
+      instructions: >-
+        If the diff adds or edits math notation (a $$ ... $$ block, a ```math
+        fence, or inline $...$), post a review comment requiring the author to
+        attach a screenshot of the affected page rendered on github.com.
+        GitHub's math pipeline runs an unpublished macro allowlist (for
+        example \operatorname is rejected), so CI cannot prove the math
+        renders; only a rendered-page capture does. Post nothing when the diff
+        touches no math.

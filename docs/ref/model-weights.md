@@ -28,8 +28,11 @@ authoritative. Boltz also needs chemical-component metadata — refer to
 | Protenix   | `protenix-v2`                           | `TMF001/protenix-v2-weights` | `protenix-v2.pt`                             |
 | AlphaFold2 | `alphafold2_*`, `alphafold2_multimer_*` | none                         | local file only                              |
 
-- **`nz/OpenFold` is a third-party mirror**, not `aqlaboratory/openfold`. Prefer
-  upstream parameters + local resolve if provenance matters.
+- **OpenFold2 Hub downloads come from a third-party mirror.** `nz/OpenFold` is
+  not `aqlaboratory/openfold`, and downloads are not pinned to a revision, so
+  a re-uploaded file silently changes what you get. If provenance matters, use
+  `scripts/fetch_weights.sh` — it pulls the same parameters from OpenFold's
+  own S3 bucket — or [stage the files yourself](#staging-and-overrides).
 - **AlphaFold2 has no `HF_CHECKPOINTS` entry**, so those keys resolve locally
   only. With nothing staged, the Hub fallback raises `AssertionError` from
   `load_hf_weights` naming the key. Refer to

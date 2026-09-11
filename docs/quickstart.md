@@ -58,6 +58,7 @@ request = InputRequest(
     input_id="T1031",
     polymers=[
         Polymer(
+            polymer_type="protein",
             chain_id=["A1"],
             sequence=SEQUENCE,
             msas=[MSARecord(content=f">T1031\n{SEQUENCE}\n")],

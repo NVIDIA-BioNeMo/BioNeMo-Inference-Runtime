@@ -324,6 +324,7 @@ request = InputRequest(
     input_id="T1031",
     polymers=[
         Polymer(
+            polymer_type="protein",
             chain_id=["A1"],
             sequence=SEQUENCE,
             msas=[MSARecord(content=f">T1031\n{SEQUENCE}\n")],
@@ -351,7 +352,7 @@ Each input row:
 
 | Key           | Required    | Meaning                                                                                                 |
 | ------------- | ----------- | ------------------------------------------------------------------------------------------------------- |
-| `record`      | yes         | `InputRequest` (or a dict with the same keys)                                                           |
+| `record`      | yes         | `InputRequest` — itself a `dict`, so `request["input_id"]` reads the id — or a dict with the same keys  |
 | `__record_id` | recommended | Becomes the output filename stem (`output/{id}.cif`)                                                    |
 | `random_seed` | no          | Not read by the tokenizer/feature `pre_init` hooks. Seed with `init_context` (below) or the process RNG |
 

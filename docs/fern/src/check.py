@@ -24,6 +24,7 @@ from pathlib import Path
 
 import check_doc_links
 import check_fern_versions
+import check_math
 import check_public_api
 from common import DEFAULT_SITE_ROOT, REPO_ROOT, report
 
@@ -33,6 +34,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--site-root", type=Path, default=DEFAULT_SITE_ROOT)
+    parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="run checks only; do not compose the generated Fern tree",
+    )
     return parser
 
 
@@ -45,12 +51,13 @@ def main() -> int:
         findings = [
             *check_public_api.check(source_root),
             *check_doc_links.check(source_root / "docs", source_root / "docs" / "fern"),
+            *check_math.check(source_root),
         ]
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     status = report(findings)
-    if status:
+    if status or args.no_sync:
         return status
 
     try:

@@ -59,6 +59,11 @@ Daily loop is in [`docs/dev.md`][dev]. See also
   generated Fern site; a file anywhere else is rewritten to a GitHub blob URL
   and renders as a broken image, so `docs/fern/src/check_doc_links.py` rejects
   it. Do not add a per-page `img/` directory.
+- **Write display math as `$$ ... $$`.** It renders on both GitHub and the
+  Fern site; a ```` ```math ```` fence renders as a code block on Fern.
+  GitHub's math renderer runs an unpublished macro allowlist — observed
+  failures like `\operatorname` (use `\mathrm{...}`) are listed in
+  `docs/fern/src/check_math.py`, which `docs-check` enforces.
 
 ## Agent skills
 

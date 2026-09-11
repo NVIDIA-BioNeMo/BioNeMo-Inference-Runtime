@@ -51,6 +51,7 @@ PAGE_ROUTES = {
     Path("ref/docker-images.md"): "references/docker-images",
     Path("ref/gpu-stack.md"): "references/gpu-stack",
     Path("ref/model-weights.md"): "references/model-weights",
+    Path("ref/sampling.md"): "references/sampling",
     Path("ref/support-matrix.md"): "references/support-matrix",
     Path("ref/system-information.md"): "references/system-information",
     Path("SECURITY.md"): "community/security",

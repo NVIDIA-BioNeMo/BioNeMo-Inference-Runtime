@@ -108,6 +108,25 @@ language = "system"
 files = '''(?i)\.mdx?$'''
 exclude = '''^\.github/(PULL_REQUEST_TEMPLATE\.md|ISSUE_TEMPLATE/.*\.md)$'''
 
+# Canonical docs checks: Fern nav coverage, link policy, public-API examples,
+# and dual-target (GitHub + Fern) math style. CI's docs:check runs the same
+# script and then `fern check` on the generated site; the Fern CLI step stays
+# CI-only. Whole-docset, not per-file — coverage and anchor checks cannot be
+# answered from the changed files alone.
+[[repos.hooks]]
+id = "docs-check"
+name = "docs checks (fern coverage, links, math)"
+entry = "python3 docs/fern/src/check.py --no-sync"
+language = "system"
+pass_filenames = false
+files = '''(?x)^(
+    bionemo_ir/.*\.py$
+  | docs/.*
+  | \.agents/.*\.mdx?$
+  | [^/]+\.mdx?$
+  | \.rumdl\.toml$
+)'''
+
 [[repos]]
 # Per-commit title linting (commit-msg stage): enforces the Conventional Commits
 # subject via `cz check`. Config in pyproject.toml [tool.commitizen]; the same

@@ -121,8 +121,9 @@ class PostProcessor(PostProcessorBase):
 
         # --- Confidence scores from logits ---
         plddt = _compute_plddt(output, best_idx, n_tokens, atom_to_token, atom_mask_bool)
-        ptm = _compute_ptm(output, best_idx, n_tokens)
-        iptm = _compute_iptm(output, best_idx, n_tokens, chain_indices)
+        has_frame = _aligned_token_mask(batch, n_tokens)
+        ptm = _compute_ptm(output, best_idx, n_tokens, has_frame=has_frame)
+        iptm = _compute_iptm(output, best_idx, n_tokens, chain_indices, has_frame=has_frame)
         pae = _compute_pae(output, best_idx, n_tokens)
         max_pae = float(np.max(pae)) if pae is not None else None
 
@@ -160,6 +161,10 @@ class PostProcessor(PostProcessorBase):
             residue_names=residue_names,
             mol_types=mol_types_out,
         )
+        # Convention of the aligned-token (frame) mask behind ptm / iptm, carried
+        # into get_scores(): "polymer_tokens" = interim ~is_atomized mask,
+        # "none" = every token eligible (is_atomized absent from the batch).
+        result["ptm_frame_mask"] = "none" if has_frame is None else "polymer_tokens"
 
         return result
 
@@ -173,6 +178,37 @@ def _cpu(t: Any) -> torch.Tensor:
     if isinstance(t, torch.Tensor):
         return t.cpu()
     return torch.as_tensor(t)
+
+
+def _bin_centers(n_bins: int, bin_min: float, bin_max: float) -> torch.Tensor:
+    """Midpoints of ``n_bins`` equal-width bins on ``[bin_min, bin_max]``.
+
+    Matches AF3 and upstream OpenFold3 (``openfold3/core/metrics/confidence.py::
+    get_bin_centers``): 0.25, 0.75, ..., 31.75 Å for the 64-bin PAE head and
+    0.01, 0.03, ..., 0.99 for the 50-bin pLDDT head -- not the end-point-inclusive
+    positions of ``torch.linspace(bin_min, bin_max, n_bins)``.
+    """
+    width = (bin_max - bin_min) / n_bins
+    return bin_min + width * (torch.arange(n_bins, dtype=torch.float32) + 0.5)
+
+
+def _aligned_token_mask(batch: dict[str, Any], n_tokens: int) -> torch.Tensor | None:
+    """Tokens eligible as the aligned token ``i`` in the pTM / ipTM max (``has_frame``).
+
+    Interim stand-in for the coordinate-based frame validity of upstream OpenFold3
+    (``openfold3/core/utils/atomize_utils.py::get_token_frame_atoms``): polymer
+    tokens are eligible; atomized tokens (``batch["is_atomized"]``: ligand atoms,
+    ions) are scored as ``j`` but never used as aligned tokens. Upstream additionally
+    admits atomized tokens whose nearest-neighbour local frame is valid and requires
+    the backbone frame atoms of polymer residues to be present. Returns ``None``
+    (every token eligible) only when the flag is absent from the batch; an input
+    without polymer tokens (ligand-only query) yields an all-False mask, for which
+    pTM / ipTM are reported as NaN (see ``_tm_score_from_pae_logits``).
+    """
+    is_atomized = batch.get("is_atomized")
+    if is_atomized is None:
+        return None
+    return ~_cpu(is_atomized).reshape(-1)[:n_tokens].bool()
 
 
 def _select_best_sample(output: dict) -> int:
@@ -221,7 +257,12 @@ def _compute_plddt(
     return plddt / counts
 
 
-def _compute_ptm(output: dict, best_idx: int, n_tokens: int) -> float:
+def _compute_ptm(
+    output: dict,
+    best_idx: int,
+    n_tokens: int,
+    has_frame: torch.Tensor | None = None,
+) -> float:
     """Compute predicted TM-score from PAE logits."""
     logits = output.get("pae_logits")
     if logits is None:
@@ -232,10 +273,16 @@ def _compute_ptm(output: dict, best_idx: int, n_tokens: int) -> float:
     elif logits.dim() == 4:
         logits = logits[0]
     logits = logits[:n_tokens, :n_tokens]
-    return float(_tm_score_from_pae_logits(logits, n_tokens))
+    return float(_tm_score_from_pae_logits(logits, n_tokens, has_frame=has_frame))
 
 
-def _compute_iptm(output: dict, best_idx: int, n_tokens: int, chain_indices: np.ndarray) -> float:
+def _compute_iptm(
+    output: dict,
+    best_idx: int,
+    n_tokens: int,
+    chain_indices: np.ndarray,
+    has_frame: torch.Tensor | None = None,
+) -> float:
     """Compute interface pTM from PAE logits (inter-chain pairs only)."""
     logits = output.get("pae_logits")
     if logits is None:
@@ -256,30 +303,66 @@ def _compute_iptm(output: dict, best_idx: int, n_tokens: int, chain_indices: np.
     if inter_mask.sum() == 0:
         return float("nan")
 
-    return float(_tm_score_from_pae_logits(logits, n_tokens, mask=inter_mask))
+    return float(_tm_score_from_pae_logits(logits, n_tokens, mask=inter_mask, has_frame=has_frame))
 
 
 def _tm_score_from_pae_logits(
     logits: torch.Tensor,
     n_tokens: int,
-    mask: torch.Tensor = None,
+    mask: torch.Tensor | None = None,
+    has_frame: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Compute TM-score from PAE logits using AF2/AF3 formula."""
-    probs = torch.softmax(logits, dim=-1)
+    """Compute pTM / ipTM from PAE logits (AF3 SI §5.9.1, eqs. 17-18).
+
+    For every aligned token ``i`` the expected pairwise TM term
+    ``E[1 / (1 + (e_ij / d0)^2)]`` is averaged over the scored tokens ``j``
+    (all tokens for pTM; tokens of other chains for ipTM, selected through
+    ``mask[i, j]``), and the score is the *maximum* of these per-aligned-token
+    means over ``i`` -- the reduction used by AlphaFold2/3 and by upstream
+    OpenFold3 (``openfold3/core/metrics/confidence.py::compute_ptm``). A mean
+    over ``i`` (or over all pairs) is a lower bound of that value and is not
+    comparable with AF3-calibrated pTM / ipTM thresholds.
+
+    Args:
+        logits: (N, N, n_bins) PAE logits; row ``i`` is the aligned token.
+        n_tokens: number of tokens N used for ``d0`` (full complex).
+        mask: optional (N, N) 0/1 mask of scored pairs; ``None`` scores all pairs (pTM).
+        has_frame: optional (N,) bool mask restricting the max over ``i`` to
+            tokens with a valid frame (upstream derives it from the predicted
+            coordinates); ``None`` treats every token as a valid aligned token.
+
+    Returns NaN when no aligned token is eligible (``has_frame`` given with no True
+    entry, e.g. a ligand-only query under the interim mask, or no scored pair):
+    there is no frame-eligible token to align on. Upstream OpenFold3 returns 0.0 in
+    that case (``masked_fill`` then ``max``) and Protenix returns zeros; NaN is used
+    here so that ``FoldingOutput.get_scores()`` reports ``None`` rather than a
+    misleading 0, as it already does for the ipTM of single-chain inputs.
+    """
+    probs = torch.softmax(logits.float(), dim=-1)
     n_bins = probs.shape[-1]
-    bin_centers = torch.linspace(0, 32, n_bins)  # 64 bins, 0-32 Å
+    bin_centers = _bin_centers(n_bins, 0.0, 32.0)  # 64 bins on [0, 32] Å -> 0.25 ... 31.75
 
     # d0 = 1.24 * (max(N, 19) - 15)^(1/3) - 1.8
     d0 = 1.24 * (max(n_tokens, 19) - 15) ** (1.0 / 3.0) - 1.8
     d0 = max(d0, 0.01)
 
-    # TM-score per pair: 1 / (1 + (d/d0)^2)
+    # TM-score term per pair: E_bins[1 / (1 + (e/d0)^2)]
     tm_per_bin = 1.0 / (1.0 + (bin_centers / d0) ** 2)
     tm_per_pair = (probs * tm_per_bin).sum(dim=-1)  # (N, N)
 
-    if mask is not None:
-        return (tm_per_pair * mask).sum() / mask.sum().clamp(min=1)
-    return tm_per_pair.mean()
+    if mask is None:
+        mask = torch.ones_like(tm_per_pair)
+    mask = mask.to(dtype=tm_per_pair.dtype)
+
+    # Mean over scored tokens j for each aligned token i, then max over i.
+    n_scored = mask.sum(dim=-1)  # (N,)
+    tm_per_aligned = (tm_per_pair * mask).sum(dim=-1) / n_scored.clamp(min=1)
+    valid = n_scored > 0
+    if has_frame is not None:
+        valid = valid & has_frame.to(device=valid.device, dtype=torch.bool)
+    if not bool(valid.any()):
+        return torch.tensor(float("nan"))
+    return tm_per_aligned[valid].max()
 
 
 def _compute_pae(output: dict, best_idx: int, n_tokens: int) -> np.ndarray | None:

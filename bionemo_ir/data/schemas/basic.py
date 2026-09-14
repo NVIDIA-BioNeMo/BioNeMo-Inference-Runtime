@@ -833,10 +833,15 @@ class FoldingOutput(dict):
             iptm = float(self["iptm"])
         if self["max_pae"] is not None and not np.isnan(self["max_pae"]):
             max_pae = float(self["max_pae"])
-        return {
+        scores = {
             "plddt": plddt,
             "ptm": ptm,
             "iptm": iptm,
             "pae": pae,
             "max_pae": max_pae,
         }
+        # Optional scalar metadata set by a model post-processor, e.g. the
+        # aligned-token mask convention behind ptm / iptm (OpenFold3).
+        if self.get("ptm_frame_mask") is not None:
+            scores["ptm_frame_mask"] = str(self["ptm_frame_mask"])
+        return scores

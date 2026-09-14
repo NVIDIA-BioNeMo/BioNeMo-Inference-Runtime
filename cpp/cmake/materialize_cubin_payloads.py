@@ -98,14 +98,20 @@ _NO_DEFAULT = object()
 class _Field:
     """One runtime-metadata value and the C++ member it materializes into.
 
-    ``default`` supplies the value for an axis that predates the tracked
-    artifact corpus. The generated C++ member is always present.
+    ``default_from`` copies a sibling key when this field is absent, so an
+    implementation MR still builds against a corpus that predates the field.
+    ``default`` does the same from a constant, which is what a field with no
+    sibling to copy needs: an axis added to a family is absent from every
+    already-published image, and the value those images actually carry is the
+    one the axis had before it was nameable. The generated C++ member is always
+    present.
     """
 
     name: str
     kind: str
     declaration: str
     suffix: str = ""
+    default_from: str | None = None
     default: object = _NO_DEFAULT
 
     @property
@@ -239,19 +245,31 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("transpose_out", _BOOL, "bool transpose_out;"),
             _Field("has_bias", _BOOL, "bool has_bias;"),
             _Field("has_mask", _BOOL, "bool has_mask;"),
+            # Every image published before the gate axis existed is sigmoid.
+            _Field("is_silu_gate", _BOOL, "bool is_silu_gate;", default=False),
             _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U"),
             _Field("tile_n", _POSITIVE, "std::uint32_t tile_n;", suffix="U"),
             _Field("tile_k", _POSITIVE, "std::uint32_t tile_k;", suffix="U"),
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
             _Field("raster_factor", _COUNT, "std::uint32_t raster_factor;", suffix="U"),
         ),
-        runtime_key=("K", "@N", "@bucket", "is_bfloat16", "transpose_out", "has_bias", "has_mask"),
+        runtime_key=(
+            "K",
+            "@N",
+            "@bucket",
+            "is_bfloat16",
+            "transpose_out",
+            "has_bias",
+            "has_mask",
+            "is_silu_gate",
+        ),
         alias=_AliasSpec(("N", "bucket"), ("std::int32_t N;", "std::int32_t bucket;")),
         sm90=_Sm90Spec("enabled", ("x0", "x1", "w0", "w1", "output")),
     ),
     "dual_gemm_x0_x1": _FamilySpec(
         fields=(
             _Field("K", _POSITIVE, "std::int32_t K;"),
+            _Field("K1", _POSITIVE, "std::int32_t K1;", default_from="K"),
             _Field("N", _POSITIVE, "std::int32_t N;"),
             _Field("bucket", _INDEX, "std::int32_t bucket;"),
             _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
@@ -261,7 +279,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
             _Field("raster_factor", _COUNT, "std::uint32_t raster_factor;", suffix="U"),
         ),
-        runtime_key=("K", "N", "bucket", "is_bfloat16", "has_bias"),
+        runtime_key=("K", "K1", "N", "bucket", "is_bfloat16", "has_bias"),
         sm90=_Sm90Spec("is_native", ("x0", "x1", "w0", "w1", "output")),
     ),
 }
@@ -270,13 +288,20 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
 # declares its own key set, and two carry a "everything else" sentinel form.
 _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
     "adaln_layernorm_sigmoid": (("feature_dim", 1), ("num_threads", 1)),
-    "dual_gemm_x0_x1": (("K", 1), ("N", 1), ("has_bias", None)),
+    "dual_gemm_x0_x1": (("K", 1), ("K1", 1), ("N", 1), ("has_bias", None)),
     "dual_gemm_x_x": (("N", 1), ("bucket", 0)),
     "gated_sigmoid": (("K", 1), ("N", 1), ("m_bucket", 0)),
     "outer_product_mean": (("N", 1), ("S", 1)),
     "pair_weighted_averaging": (("n_anchor", 1), ("s_anchor", 1)),
     "pairwise_attention": (("head_dim", 1), ("packed", None)),
     "triangle_attention": (("head_dim", 1), ("packed", None)),
+}
+# Implementation changes must remain buildable with the last protected artifact
+# corpus. The previous dual-GEMM index predates asymmetric K1: public aliases
+# omit it, and runtime_metadata has no K1 (K1 defaults to K via default_from).
+# After that default, K1 is a runtime-dispatch axis for the asymmetric tunings.
+_PUBLIC_LEGACY_ALIAS_FIELDS = {
+    "dual_gemm_x0_x1": ((("K", 1), ("N", 1), ("has_bias", None)),),
 }
 _PUBLIC_ALIAS_SENTINELS = {"gated_sigmoid": "fallback_tile", "outer_product_mean": "default_config"}
 _DTYPE_CODES = {"fp16": 0, "bf16": 1, "fp32": 2}
@@ -556,7 +581,7 @@ def _validate_public_aliases(family: str, aliases: tuple[dict[str, object], ...]
     encoded = [_json_bytes(alias) for alias in aliases]
     if encoded != sorted(set(encoded)):
         _fail(f"{where} must be unique and sorted by canonical JSON")
-    fields = _PUBLIC_ALIAS_FIELDS[family]
+    candidates = (_PUBLIC_ALIAS_FIELDS[family], *_PUBLIC_LEGACY_ALIAS_FIELDS.get(family, ()))
     sentinel = _PUBLIC_ALIAS_SENTINELS.get(family)
     for index, alias in enumerate(aliases):
         alias_where = f"{where}[{index}]"
@@ -564,6 +589,14 @@ def _validate_public_aliases(family: str, aliases: tuple[dict[str, object], ...]
             if alias[sentinel] is not True:
                 _fail(f"{alias_where}.{sentinel} must be true")
             continue
+        # Match on this record's own keys rather than the first record's, which
+        # may be a sentinel. Keys matching no candidate fall through to the
+        # family's current schema, so _exact_keys reports them against it.
+        observed = set(alias)
+        fields = next(
+            (candidate for candidate in candidates if observed == {key for key, _ in candidate}),
+            candidates[0],
+        )
         _exact_keys(alias, {key for key, _ in fields}, alias_where)
         for key, minimum in fields:
             if minimum is None:
@@ -592,9 +625,15 @@ def _validate_field(field: _Field, metadata: Mapping[str, object], where: str) -
 
 
 def _apply_metadata_defaults(spec: _FamilySpec, metadata: dict[str, object]) -> None:
-    """Fill fields whose artifact corpus predates them."""
+    """Fill fields whose corpus predates them, from a sibling or a constant."""
     for field in spec.fields:
-        if field.from_metadata and field.name not in metadata and field.default is not _NO_DEFAULT:
+        if not field.from_metadata or field.name in metadata:
+            continue
+        if field.default_from is not None:
+            source = field.default_from
+            if source in metadata:
+                metadata[field.name] = metadata[source]
+        elif field.default is not _NO_DEFAULT:
             metadata[field.name] = field.default
 
 

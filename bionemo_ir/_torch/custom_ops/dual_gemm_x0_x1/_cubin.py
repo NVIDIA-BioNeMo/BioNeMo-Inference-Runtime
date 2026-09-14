@@ -42,7 +42,9 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         bucket: int,
         dtype: torch.dtype,
         has_bias: bool,
+        K1: int | None = None,
     ):
+        K1 = K if K1 is None else K1
         dtype_map = {
             torch.float16: launcher.DType.FLOAT16,
             torch.bfloat16: launcher.DType.BFLOAT16,
@@ -53,10 +55,10 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
             raise CuTeDSLKernelVariantUnavailable(f"dual_gemm x0_x1 CUBINs do not support {dtype}") from error
 
         try:
-            config = launcher.make_kernel_config(target_sm, K, N, bucket, library_dtype, has_bias)
+            config = launcher.make_kernel_config(target_sm, K, N, bucket, library_dtype, has_bias, K1=K1)
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
-                f"No dual_gemm x0_x1 CUBIN for SM{target_sm}, K={K}, N={N}, "
+                f"No dual_gemm x0_x1 CUBIN for SM{target_sm}, K0={K}, K1={K1}, N={N}, "
                 f"bucket={bucket}, dtype={dtype}, has_bias={has_bias}"
             ) from error
 

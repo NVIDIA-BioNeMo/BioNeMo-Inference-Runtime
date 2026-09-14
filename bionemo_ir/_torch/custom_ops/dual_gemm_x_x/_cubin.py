@@ -28,6 +28,9 @@ from bionemo_ir._torch.utils.kernel import (
     tensor_s2_d1,
 )
 
+_SILU_GATE = "silu"
+_GATES = ("sigmoid", _SILU_GATE)
+
 
 def _same_tensor_reference(x0: torch.Tensor, x1: torch.Tensor) -> bool:
     """Whether two arguments describe the same tensor operand."""
@@ -55,7 +58,12 @@ class DualGemmXxCubinExecutable(CuTeDSLKernelLibraryExecutable):
         transpose_out: bool,
         has_bias: bool,
         has_mask: bool,
+        gate: str = "sigmoid",
     ):
+        # Gate is a compiled axis; a missing image raises below.
+        if gate not in _GATES:
+            raise CuTeDSLKernelVariantUnavailable(f"dual_gemm_x_x CUBINs do not implement the {gate!r} gate")
+
         dtype_map = {
             torch.float16: launcher.DType.FLOAT16,
             torch.bfloat16: launcher.DType.BFLOAT16,
@@ -75,12 +83,13 @@ class DualGemmXxCubinExecutable(CuTeDSLKernelLibraryExecutable):
                 transpose_out,
                 has_bias,
                 has_mask,
+                gate == _SILU_GATE,
             )
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
                 f"No dual_gemm_x_x CUBIN for SM{target_sm}, K={K}, N={N}, "
                 f"bucket={bucket}, dtype={dtype}, transpose_out={transpose_out}, "
-                f"has_bias={has_bias}, has_mask={has_mask}"
+                f"has_bias={has_bias}, has_mask={has_mask}, gate={gate}"
             ) from error
 
         self._kernel_library = kernel_library

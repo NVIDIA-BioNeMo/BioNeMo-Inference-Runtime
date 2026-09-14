@@ -176,6 +176,11 @@ struct KernelConfig
   bool transpose_out;
   bool has_bias;
   bool has_mask;
+  /* Epilogue activation. Selects the image and nothing else: silu costs one
+   * extra fused multiply inside the epilogue, so it changes machine code while
+   * leaving the device parameter bank and its packing identical.
+   */
+  bool silu_gate;
   EmbeddedCubinImage cubin;
   embedded::CubinImage const* embedded_image;
 };
@@ -201,7 +206,8 @@ KernelConfig make_kernel_config(
   DType dtype,
   bool transpose_out,
   bool has_bias,
-  bool has_mask);
+  bool has_mask,
+  bool silu_gate = false);
 
 std::uint32_t dynamic_smem_bytes(KernelConfig const& config);
 

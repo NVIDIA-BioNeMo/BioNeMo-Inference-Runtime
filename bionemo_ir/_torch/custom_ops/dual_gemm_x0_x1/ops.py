@@ -114,20 +114,58 @@ def get_dual_gemm_x0_x1_op(
     transpose_out: bool = False,
     N: int = 128,
     K: int = 128,
+    K0: int | None = None,
+    K1: int | None = None,
 ) -> Callable:
-    """Return the best backend for one dtype, shape, and device."""
+    """Return the best backend for one dtype, shape, and device.
+
+    ``K`` stays the equal-width default. Supplying ``K0`` / ``K1`` selects a
+    genuinely asymmetric projection with pair width gating a
+    trimul-hidden-width projection.
+    """
     sm = get_sm_version()
-    cute_shapes = {(128, 128)}
+    K0 = K if K0 is None else K0
+    K1 = K if K1 is None else K1
+    # Keyed on ``(N, K0, K1)``:
+    #   * (128, 128, 128) -- OpenFold3 / Boltz; SM80/86/89/90
+    #   * (256, 256, 256) -- ProtenixV2; SM80/86/89/90
+    #   * (256, 256, 200) / (384, 384, 200 | 256) -- asymmetric trimul; SM80/86/89/90
+    cute_shapes = {(128, 128, 128)}
     if sm in (80, 86, 89, 90):
-        cute_shapes = cute_shapes | {(256, 256)}
-    cuequiv_shapes = {(256, 128)}
+        cute_shapes = cute_shapes | {(256, 256, 256)}
+    if sm in (80, 86, 89, 90):
+        # 200 is trimul hidden width 196 padded to a 128-bit copy atom.
+        cute_shapes = cute_shapes | {
+            (256, 256, 200),
+            (384, 384, 200),
+            (384, 384, 256),
+        }
+    if sm in (80, 86, 89, 90):
+        cute_shapes = cute_shapes | {
+            # Template-level trimul in OpenFold2/3 and Protenix.
+            (64, 64, 64),
+            # Legacy out-projection whose wide output needs independent strides.
+            (256, 128, 128),
+        }
+    if sm in (80, 86, 89, 90):
+        # z12 hero trimul, pair_dim 512 / tri_mult_c 256.
+        cute_shapes.add((512, 512, 256))
+    # The legacy OpenFold3-width out-projection now has direct CuTe tuning on
+    # every shipped SM.
+    cuequiv_shapes: set[tuple[int, int]] = set() if sm in (80, 86, 89, 90) else {(256, 128)}
 
     if dtype not in (torch.float16, torch.bfloat16):
         return _invoke_vanilla_dual_gemm_x0_x1
-    if (N, K) not in cute_shapes and (N, K) not in cuequiv_shapes:
+    if (N, K0, K1) not in cute_shapes and (N, K0) not in cuequiv_shapes:
         return _invoke_vanilla_dual_gemm_x0_x1
-    if transpose_out or (N, K) in cuequiv_shapes:
+    # cuEquivariance requires equal inner dims and owns the transposed-output
+    # path; asymmetric widths and every other transpose go to vanilla.
+    if K0 == K1 and (transpose_out or (N, K0) in cuequiv_shapes):
         return _invoke_cuequiv_dual_gemm_x0_x1
+    if transpose_out:
+        return _invoke_vanilla_dual_gemm_x0_x1
     if sm in (80, 86, 89, 90):
         return _invoke_cute_dual_gemm_x0_x1
-    return _invoke_cuequiv_dual_gemm_x0_x1
+    if K0 == K1:
+        return _invoke_cuequiv_dual_gemm_x0_x1
+    return _invoke_vanilla_dual_gemm_x0_x1

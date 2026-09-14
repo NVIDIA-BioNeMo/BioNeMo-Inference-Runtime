@@ -65,7 +65,7 @@ def _stable_json(value: object) -> bytes:
 def _aliases(family: str) -> list[dict[str, object]]:
     return {
         "adaln_layernorm_sigmoid": [{"feature_dim": 128, "num_threads": 128}],
-        "dual_gemm_x0_x1": [{"K": 64, "N": 32, "has_bias": False}],
+        "dual_gemm_x0_x1": [{"K": 64, "K1": 64, "N": 32, "has_bias": False}],
         "dual_gemm_x_x": [{"N": 32, "bucket": 64}],
         "gated_sigmoid": [{"K": 64, "N": 32, "m_bucket": 0}],
         "outer_product_mean": [{"default_config": True}],
@@ -178,6 +178,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
     else:
         concrete = {
             "K": 64,
+            "K1": 64,
             "N": 32,
             "bucket": 64,
             "is_bfloat16": dtype == "bf16",
@@ -331,6 +332,12 @@ def test_materializes_every_family_registry_shape(tmp_path: Path, family: str) -
     assert "RegistryView registry() noexcept;" in header
     assert "RegistryView registry() noexcept" in source
     assert "CubinImage const kImages[]" in source
+    if family == "dual_gemm_x_x":
+        # The synthetic record deliberately omits this newly added axis. Its
+        # successful materialization proves the legacy corpus defaults to the
+        # sigmoid image, while the generated registry always exposes the field
+        # the current launcher selects on.
+        assert "bool is_silu_gate;" in header
     if family == "adaln_layernorm_sigmoid":
         # The legacy corpus contains only LayerNorm images and predates the
         # explicit norm axis.
@@ -340,6 +347,35 @@ def test_materializes_every_family_registry_shape(tmp_path: Path, family: str) -
     assert public_label not in source
     objects = list((result.output_dir / "objects").glob("*.cubin"))
     assert len(objects) == 1 and objects[0].read_bytes().startswith(b"\x7fELF")
+
+
+def test_dual_gemm_x_x_gate_is_a_distinct_runtime_key(tmp_path: Path) -> None:
+    family = "dual_gemm_x_x"
+    index = _write_case(tmp_path / "source", family)
+
+    def add_silu_variant(value: dict[str, object]) -> None:
+        variants = value["variants"]
+        assert isinstance(variants, list)
+        silu = json.loads(json.dumps(variants[0]))
+        silu["identity_spec"]["gate"] = "silu"
+        silu["runtime_metadata"]["is_silu_gate"] = True
+        canonical = {
+            "registry_version": 2,
+            "family": family,
+            "target_sm": silu["target_sm"],
+            "dtype": silu["dtype"],
+            "spec": silu["identity_spec"],
+        }
+        silu["variant_id"] = hashlib.sha256(_stable_json(canonical)).hexdigest()[:20]
+        silu["label"] = f"{family}.{silu['variant_id']}"
+        variants.append(silu)
+        variants.sort(key=lambda variant: variant["variant_id"])
+
+    _mutate_index(index, add_silu_variant)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert source.count('"dual_gemm_x_x_sm80"') == 2
 
 
 def test_adaln_norm_kind_is_a_distinct_runtime_key(tmp_path: Path) -> None:
@@ -421,6 +457,76 @@ def test_verify_packs_is_write_free_and_reports_global_counts(tmp_path: Path) ->
     assert summary.image_count == 1
     assert summary.total_image_bytes == len(image)
     assert not list(tmp_path.rglob("materialization.json"))
+
+
+def test_dual_gemm_x0_x1_accepts_previous_artifact_alias_schema(tmp_path: Path) -> None:
+    """An implementation MR must still build with the last protected corpus."""
+    family = "dual_gemm_x0_x1"
+    index = _write_case(tmp_path / "source", family)
+
+    def drop_legacy_k1(value: dict[str, object]) -> None:
+        variant = value["variants"][0]
+        variant["aliases"][0].pop("K1")
+        variant["runtime_metadata"].pop("K1")
+
+    _mutate_index(index, drop_legacy_k1)
+
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "std::int32_t K1;" in header
+    # K, K1, N, bucket: missing K1 copies K, so both inner dims are 64.
+    assert "    64,\n    64,\n    32,\n    64," in source
+
+
+def test_dual_gemm_x0_x1_asymmetric_k1_is_a_runtime_axis(tmp_path: Path) -> None:
+    """Asymmetric tunings keep K1 distinct from K in the generated registry."""
+    family = "dual_gemm_x0_x1"
+    index = _write_case(tmp_path / "source", family)
+
+    def set_asymmetric_k1(value: dict[str, object]) -> None:
+        variant = value["variants"][0]
+        variant["aliases"][0]["K1"] = 200
+        variant["runtime_metadata"]["K1"] = 200
+
+    _mutate_index(index, set_asymmetric_k1)
+
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "    64,\n    200,\n    32,\n    64," in source
+
+
+def test_dual_gemm_x0_x1_selects_alias_schema_per_record(tmp_path: Path) -> None:
+    """Legacy and asymmetric aliases may coexist while a corpus migrates."""
+    family = "dual_gemm_x0_x1"
+    index = _write_case(tmp_path / "source", family)
+
+    def add_legacy_alias(value: dict[str, object]) -> None:
+        # Canonical JSON sorts "K":128 before "K":64, so the K1-less record
+        # lands first and the schema cannot be read off aliases[0].
+        value["variants"][0]["aliases"].insert(0, {"K": 128, "N": 32, "has_bias": False})
+
+    _mutate_index(index, add_legacy_alias)
+
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+
+    assert (result.output_dir / f"{family}_registry.cpp").is_file()
+
+
+def test_committed_dual_gemm_x0_x1_index_parses() -> None:
+    """pip install materializes the tracked corpus; it must survive a K1-less index."""
+    index = REPO_ROOT / "cpp" / "kernels" / "cutedsl_dual_gemm_x0_x1" / "cubins" / "index.json"
+    families = materializer._load_families([("dual_gemm_x0_x1", index)])
+
+    assert families[0].variants
+    corpus_has_k1 = any("K1" in variant["runtime_metadata"] for variant in json.loads(index.read_text())["variants"])
+    for variant in families[0].variants:
+        k1 = int(variant.runtime_metadata["K1"])
+        assert k1 >= 1
+        if not corpus_has_k1:
+            assert k1 == int(variant.runtime_metadata["K"])
 
 
 def test_materialization_is_stable_and_reuses_completion_stamp(tmp_path: Path) -> None:

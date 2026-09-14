@@ -10,6 +10,7 @@ uvloop==0.21.0  # >=0.22 breaks Ray Serve: https://github.com/ray-project/ray/is
 modelcif==1.6  # needed for CIFWriter
 rdkit==2025.9.6 # needed for Boltz2 Data pipeline
 nvidia-cutlass-dsl[cu13]==4.5.2
+nvidia-cudnn-frontend==1.23.0
 apache-tvm-ffi>=0.1.6,<0.2
 biotite==1.6.0
 datasets==4.8.4 # https://github.com/huggingface/datasets/issues/7344

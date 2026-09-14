@@ -68,5 +68,8 @@ from .ops import (
     _invoke_vanilla_dual_gemm_x_x as _invoke_vanilla_dual_gemm_x_x,
 )
 from .ops import (
+    get_cute_dual_gemm_x_x_op as get_cute_dual_gemm_x_x_op,
+)
+from .ops import (
     get_dual_gemm_x_x_op as get_dual_gemm_x_x_op,
 )

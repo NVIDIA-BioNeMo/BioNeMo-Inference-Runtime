@@ -132,6 +132,8 @@ inline cubin_launch_config_t sm80_launch_config(
  *   ord 13  0x3ac  0x01  tiled_mma     std::uint8_t
  *
  * x0_x1 coordinates use two dynamic extents (CoordTensorS2), unlike x_x.
+ * For launch ABI dual_gemm_x0_x1_sm90_asym, each 0x80 TMA slot carries
+ * CuTe's 0x40-byte non-executable CopyAtom payload followed by zero padding.
  *
  * Without bias, i_dim moves to 0x388 and tiled_mma to 0x38c.
  */
@@ -233,6 +235,8 @@ struct KernelSpec
   /* Device ABI generation, distinct from target_sm. */
   std::int32_t kernel_sm;
   std::int32_t K;
+  /* Second inner dim; equal to K for the symmetric tunings. */
+  std::int32_t K1;
   std::int32_t N;
   std::int32_t bucket;
   bool has_bias;
@@ -273,8 +277,9 @@ struct LaunchParams
 
 std::vector<KernelSpec> kernel_specs();
 
-KernelConfig
-make_kernel_config(std::int32_t target_sm, std::int32_t K, std::int32_t N, std::int32_t S, DType dtype, bool has_bias);
+/* K1 selects the asymmetric tunings; pass K for the symmetric ones. */
+KernelConfig make_kernel_config(
+  std::int32_t target_sm, std::int32_t K, std::int32_t K1, std::int32_t N, std::int32_t S, DType dtype, bool has_bias);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 

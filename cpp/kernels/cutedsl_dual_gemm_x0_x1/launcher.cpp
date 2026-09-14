@@ -36,9 +36,65 @@ namespace
 
 constexpr char kSM80LaunchAbi[] = "dual_gemm_x0_x1_sm80";
 constexpr char kSM90LaunchAbi[] = "dual_gemm_x0_x1_sm90";
+constexpr char kSM90AsymmetricLaunchAbi[] = "dual_gemm_x0_x1_sm90_asym";
 
 /* Matches the source path's unused I_dim value. */
 constexpr std::int32_t kSM90UnusedIDim = 1;
+
+enum class AsymmetricTmaAtomKind : std::uint8_t
+{
+  kMulticastLoad,
+  kLoad,
+  kStore,
+};
+
+void finalize_asymmetric_tma_atom(CUtensorMap& descriptor, AsymmetricTmaAtomKind kind)
+{
+  /* CuTe DSL 4.5.2 lowers each by-value non-executable TMA CopyAtom into a
+   * 64-byte Hopper atom payload carried in a 128-byte kernel parameter slot.
+   * cuTensorMapEncodeTiled returns the standalone CUDA tensor-map form, which
+   * differs only in the atom and operation tags. Add them and clear the unused
+   * upper half before the Driver copies the parameter bank. Everything else,
+   * the multicast box extent included, belongs in the encoded descriptor.
+   *
+   * These offsets are part of launch ABI dual_gemm_x0_x1_sm90_asym. The
+   * builder pins the CuTe DSL toolchain and checks the corresponding CUBIN
+   * parameter sizes, so a compiler encoding change requires a new launch ABI.
+   */
+  constexpr std::size_t kAtomTagOffset = 8;
+  constexpr std::size_t kOperationTagOffset = 10;
+  constexpr std::size_t kAtomPayloadBytes = 64;
+  constexpr std::uint8_t kNonExecutableAtom = 0x02U;
+  constexpr std::uint8_t kNonMulticastLoad = 0x20U;
+  static_assert(sizeof(CUtensorMap) == 128);
+
+  auto* bytes = reinterpret_cast<std::uint8_t*>(&descriptor);
+  bytes[kAtomTagOffset] |= kNonExecutableAtom;
+  if (kind == AsymmetricTmaAtomKind::kLoad)
+    bytes[kOperationTagOffset] |= kNonMulticastLoad;
+  std::fill(bytes + kAtomPayloadBytes, bytes + sizeof(CUtensorMap), 0U);
+}
+
+/* A multicast load splits the tile across the cluster: every CTA fetches an
+ * equal share of the outer box extent and multicasts it to its peers, so the
+ * descriptor box is that much shorter than the tile the metadata records.
+ */
+TmaDescriptorInfo multicast_tma_descriptor(TmaDescriptorInfo info, std::uint32_t num_multicast, char const* name)
+{
+  if (num_multicast <= 1)
+    return info;
+  if (info.rank < 2)
+    throw std::invalid_argument(std::string(name) + " TMA descriptor is too low-rank to multicast");
+  std::uint32_t& outer_box = info.box_dims[info.rank - 1];
+  if (outer_box % num_multicast != 0)
+  {
+    throw std::invalid_argument(
+      std::string(name) + " TMA box extent " + std::to_string(outer_box) + " does not divide across "
+      + std::to_string(num_multicast) + " multicasting CTAs");
+  }
+  outer_box /= num_multicast;
+  return info;
+}
 
 /* Bare device pointers require explicit cross-device validation. */
 void validate_operand_devices(KernelConfig const& config, LaunchParams const& params, std::int32_t device)
@@ -79,10 +135,10 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
   bool const is_sm90 = config.cubin.kernel_sm == 90;
-  char const* const expected_abi = is_sm90 ? kSM90LaunchAbi : kSM80LaunchAbi;
-  if (
-    (config.cubin.kernel_sm != 80 && config.cubin.kernel_sm != 90) || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)
+  bool const launch_abi_matches = config.cubin.launch_abi != nullptr
+    && ((!is_sm90 && std::strcmp(config.cubin.launch_abi, kSM80LaunchAbi) == 0)
+        || (is_sm90 && (std::strcmp(config.cubin.launch_abi, kSM90LaunchAbi) == 0 || std::strcmp(config.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0)));
+  if ((config.cubin.kernel_sm != 80 && config.cubin.kernel_sm != 90) || !launch_abi_matches)
   {
     throw std::invalid_argument("dual-GEMM x0_x1 CUBIN has an incompatible launch ABI");
   }
@@ -112,33 +168,46 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
 
   std::int32_t const M = params.x0.shape[0];
   std::int32_t const K = params.x0.shape[1];
+  std::int32_t const K1 = params.x1.shape[1];
   std::int32_t const N = params.w0.shape[0];
-  if (K != config.spec.K || N != config.spec.N)
+  if (K != config.spec.K || K1 != config.spec.K1 || N != config.spec.N)
   {
     throw std::invalid_argument(
-      "dual-GEMM x0_x1 operands are K=" + std::to_string(K) + ", N=" + std::to_string(N)
-      + " but the CUBIN is K=" + std::to_string(config.spec.K) + ", N=" + std::to_string(config.spec.N));
+      "dual-GEMM x0_x1 operands are K0=" + std::to_string(K) + ", K1=" + std::to_string(K1) + ", N=" + std::to_string(N)
+      + " but the CUBIN is K0=" + std::to_string(config.spec.K) + ", K1=" + std::to_string(config.spec.K1)
+      + ", N=" + std::to_string(config.spec.N));
   }
-  if (params.x1.shape != params.x0.shape)
-    throw std::invalid_argument("x0 and x1 must have the same shape");
-  if (params.w1.shape != params.w0.shape)
-    throw std::invalid_argument("w0 and w1 must have the same shape");
+  if (params.x1.shape[0] != M)
+    throw std::invalid_argument("x0 and x1 must have the same row count");
+  if (params.w1.shape[0] != N)
+    throw std::invalid_argument("w0 and w1 must have the same output extent");
   if (params.w0.shape[1] != K)
-    throw std::invalid_argument("w0 must be [N, K] with K matching the activations");
+    throw std::invalid_argument("w0 must be [N, K0] with K0 matching x0");
+  if (params.w1.shape[1] != K1)
+    throw std::invalid_argument("w1 must be [N, K1] with K1 matching x1");
   if (params.out.shape[0] != M || params.out.shape[1] != N)
     throw std::invalid_argument("out must be [M, N]");
-  /* K/N must cover full 128-bit copy vectors. */
-  if (K % 8 != 0 || N % 8 != 0)
-    throw std::invalid_argument("dual-GEMM x0_x1 requires K and N to be multiples of 8");
+  /* K0/K1/N must cover full 128-bit copy vectors. Callers zero-extend a
+   * narrower operand, so the 196-wide gate arrives padded to 200.
+   */
+  if (K % 8 != 0 || K1 % 8 != 0 || N % 8 != 0)
+    throw std::invalid_argument("dual-GEMM x0_x1 requires K0, K1 and N to be multiples of 8");
+  if (params.x0.strides[0] < K || params.x1.strides[0] < K1 || params.out.strides[0] < N)
+    throw std::invalid_argument("dual-GEMM x0_x1 row strides must cover their logical inner extents");
+  if (params.x0.strides[0] % 8 != 0 || params.x1.strides[0] % 8 != 0 || params.out.strides[0] % 8 != 0)
+    throw std::invalid_argument("dual-GEMM x0_x1 row strides must preserve 16-byte vector alignment");
   /* w0/w1 are compiled with a row stride equal to their K extent. */
-  if (params.w0.strides[0] != K || params.w1.strides[0] != K)
+  if (params.w0.strides[0] != K || params.w1.strides[0] != K1)
     throw std::invalid_argument("w0 and w1 must be contiguous [N, K] row-major");
-  /* The compiled ABI shares one row-stride symbol across x0, x1, and out. */
-  if (params.x1.strides[0] != params.x0.strides[0] || params.out.strides[0] != params.x0.strides[0])
+  /* The compact signature is valid only when K0 == K1 == N; it shares one
+   * row-stride symbol across x0, x1 and out. Any unequal extent selects the
+   * wide signature with three independent strides.
+   */
+  if (
+    config.spec.K1 == config.spec.K && config.spec.N == config.spec.K
+    && (params.x1.strides[0] != params.x0.strides[0] || params.out.strides[0] != params.x0.strides[0]))
   {
-    throw std::invalid_argument(
-      "dual-GEMM x0_x1 requires x0, x1 and out to share one row stride; got " + std::to_string(params.x0.strides[0])
-      + ", " + std::to_string(params.x1.strides[0]) + ", " + std::to_string(params.out.strides[0]));
+    throw std::invalid_argument("compact dual-GEMM x0_x1 requires x0, x1 and out to share one row stride");
   }
 
   if (config.has_bias)
@@ -223,18 +292,59 @@ std::uint32_t checked_u32(std::uint64_t value, char const* name)
   return static_cast<std::uint32_t>(value);
 }
 
-/* Hopper persistent grid, flattened onto x with cluster [x, 1, 1]. */
-cubin_launch_config_t make_sm90_launch_config(
-  embedded::CubinImage const& image, LaunchParams const& params, CUcontext context, std::uint32_t smem_bytes)
+/* Resident-weight asymmetric grid: x is the row-worker slot and y is the
+ * fixed output-column tile. Two consumer warp groups cover two rows per CTA.
+ */
+cubin_launch_config_t make_sm90_asymmetric_launch_config(
+  embedded::CubinImage const& image,
+  LaunchParams const& params,
+  std::uint32_t smem_bytes,
+  std::int32_t multiprocessor_count)
 {
   embedded::SM90LaunchInfo const& metadata = image.sm90;
-  if (!metadata.is_native)
-    throw std::invalid_argument("dual-GEMM x0_x1 SM90 CUBIN is missing its Hopper launch metadata");
-  for (std::uint32_t dimension : metadata.cluster_dims)
+  std::uint64_t const gm
+    = ceil_div_u64(static_cast<std::uint64_t>(params.out.shape[0]), static_cast<std::uint64_t>(image.tile_m), "grid.m");
+  std::uint64_t const gn
+    = ceil_div_u64(static_cast<std::uint64_t>(params.out.shape[1]), static_cast<std::uint64_t>(image.tile_n), "grid.n");
+  if (metadata.cluster_dims[0] != 1 || metadata.cluster_dims[2] != 1 || gn % metadata.cluster_dims[1] != 0)
   {
-    if (dimension == 0)
-      throw std::invalid_argument("dual-GEMM x0_x1 SM90 CUBIN has an invalid cluster dimension");
+    throw std::invalid_argument(
+      "dual-GEMM x0_x1 asymmetric SM90 grid requires cluster [1, y, 1] with y dividing grid.n");
   }
+  std::uint64_t const per_column_cap
+    = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(multiprocessor_count) / gn);
+  constexpr std::uint64_t kConsumerWarpGroups = 2;
+  std::uint64_t const full_workers
+    = checked_multiply(kConsumerWarpGroups, per_column_cap, "asymmetric SM90 full row workers");
+  std::uint64_t const target_iterations = ceil_div_u64(gm, full_workers, "asymmetric SM90 target iterations");
+  std::uint64_t const row_workers_per_cta
+    = checked_multiply(kConsumerWarpGroups, target_iterations, "asymmetric SM90 row workers per CTA");
+  std::uint64_t const ctas_per_column = ceil_div_u64(gm, row_workers_per_cta, "asymmetric SM90 CTAs per column");
+
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(ctas_per_column, "dual-GEMM x0_x1 asymmetric SM90 grid.x");
+  launch_config.grid_y = checked_u32(gn, "dual-GEMM x0_x1 asymmetric SM90 grid.y");
+  launch_config.grid_z = 1;
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  return launch_config;
+}
+
+/* Original Hopper persistent grid, flattened onto x with cluster [x, 1, 1]. */
+cubin_launch_config_t make_sm90_pingpong_launch_config(
+  embedded::CubinImage const& image,
+  LaunchParams const& params,
+  std::uint32_t smem_bytes,
+  std::int32_t multiprocessor_count)
+{
+  embedded::SM90LaunchInfo const& metadata = image.sm90;
   if (metadata.cluster_dims[1] != 1 || metadata.cluster_dims[2] != 1)
     throw std::invalid_argument("dual-GEMM x0_x1 SM90 flattened persistent grid requires cluster dimensions [x, 1, 1]");
 
@@ -254,9 +364,6 @@ cubin_launch_config_t make_sm90_launch_config(
     static_cast<std::uint64_t>(metadata.cluster_dims[2]),
     "dual-GEMM x0_x1 SM90 cluster size");
 
-  std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
-  if (multiprocessor_count <= 0)
-    throw std::invalid_argument("current CUDA device has no active multiprocessors");
   std::uint64_t const max_clusters = static_cast<std::uint64_t>(multiprocessor_count) / cluster_size;
   if (max_clusters == 0)
     throw std::invalid_argument("dual-GEMM x0_x1 SM90 cluster size exceeds the device's multiprocessor count");
@@ -293,6 +400,28 @@ cubin_launch_config_t make_sm90_launch_config(
   return launch_config;
 }
 
+cubin_launch_config_t make_sm90_launch_config(
+  embedded::CubinImage const& image, LaunchParams const& params, CUcontext context, std::uint32_t smem_bytes)
+{
+  embedded::SM90LaunchInfo const& metadata = image.sm90;
+  if (!metadata.is_native)
+    throw std::invalid_argument("dual-GEMM x0_x1 SM90 CUBIN is missing its Hopper launch metadata");
+  for (std::uint32_t dimension : metadata.cluster_dims)
+  {
+    if (dimension == 0)
+      throw std::invalid_argument("dual-GEMM x0_x1 SM90 CUBIN has an invalid cluster dimension");
+  }
+  std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
+  if (multiprocessor_count <= 0)
+    throw std::invalid_argument("current CUDA device has no active multiprocessors");
+
+  if (image.cubin.launch_abi != nullptr && std::strcmp(image.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0)
+  {
+    return make_sm90_asymmetric_launch_config(image, params, smem_bytes, multiprocessor_count);
+  }
+  return make_sm90_pingpong_launch_config(image, params, smem_bytes, multiprocessor_count);
+}
+
 void launch_sm90(
   cubin_kernel_t loaded,
   KernelConfig const& config,
@@ -314,11 +443,30 @@ void launch_sm90(
   TmaTensorSource const w1_source = make_tma_tensor2_source(params.w1, false);
   /* Output is always N-major. */
   TmaTensorSource const out_source = make_tma_tensor2_source(params.out, false);
-  encode_tma_descriptor(device_params.x0_tma, metadata.x0, expected_dtype, x0_source, "x0");
-  encode_tma_descriptor(device_params.x1_tma, metadata.x1, expected_dtype, x1_source, "x1");
+  bool const is_asymmetric
+    = config.cubin.launch_abi != nullptr && std::strcmp(config.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0;
+  /* The asymmetric kernel multicasts the activation tiles over its N cluster
+   * and keeps the resident weights and the output per-CTA. A unit cluster
+   * leaves every operand on the plain load atom.
+   */
+  std::uint32_t const x_multicast = is_asymmetric ? metadata.cluster_dims[1] : 1;
+  encode_tma_descriptor(
+    device_params.x0_tma, multicast_tma_descriptor(metadata.x0, x_multicast, "x0"), expected_dtype, x0_source, "x0");
+  encode_tma_descriptor(
+    device_params.x1_tma, multicast_tma_descriptor(metadata.x1, x_multicast, "x1"), expected_dtype, x1_source, "x1");
   encode_tma_descriptor(device_params.w0_tma, metadata.w0, expected_dtype, w0_source, "w0");
   encode_tma_descriptor(device_params.w1_tma, metadata.w1, expected_dtype, w1_source, "w1");
   encode_tma_descriptor(device_params.output_tma, metadata.output, expected_dtype, out_source, "out");
+  if (is_asymmetric)
+  {
+    AsymmetricTmaAtomKind const x_kind
+      = x_multicast > 1 ? AsymmetricTmaAtomKind::kMulticastLoad : AsymmetricTmaAtomKind::kLoad;
+    finalize_asymmetric_tma_atom(device_params.x0_tma, x_kind);
+    finalize_asymmetric_tma_atom(device_params.x1_tma, x_kind);
+    finalize_asymmetric_tma_atom(device_params.w0_tma, AsymmetricTmaAtomKind::kLoad);
+    finalize_asymmetric_tma_atom(device_params.w1_tma, AsymmetricTmaAtomKind::kLoad);
+    finalize_asymmetric_tma_atom(device_params.output_tma, AsymmetricTmaAtomKind::kStore);
+  }
 
   device_params.x0_coord = make_tensor2_s2_coord(params.x0);
   device_params.x1_coord = make_tensor2_s2_coord(params.x1);
@@ -349,6 +497,7 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.cubin.target_sm,
     image.cubin.kernel_sm,
     image.K,
+    image.K1,
     image.N,
     image.bucket,
     image.has_bias,
@@ -360,8 +509,8 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
 }
 
 /* Select the nearest S anchor; ties choose the lower anchor. */
-embedded::CubinImage const&
-find_embedded_cubin(std::int32_t target_sm, std::int32_t K, std::int32_t N, std::int32_t S, DType dtype, bool has_bias)
+embedded::CubinImage const& find_embedded_cubin(
+  std::int32_t target_sm, std::int32_t K, std::int32_t K1, std::int32_t N, std::int32_t S, DType dtype, bool has_bias)
 {
   if (S < 0)
     throw std::invalid_argument("dual-GEMM x0_x1 S must be non-negative");
@@ -374,8 +523,8 @@ find_embedded_cubin(std::int32_t target_sm, std::int32_t K, std::int32_t N, std:
   {
     embedded::CubinImage const& image = registry.images[index];
     if (
-      !cubin_supports_sm(image.cubin, target_sm) || image.K != K || image.N != N || image.is_bfloat16 != is_bfloat16
-      || image.has_bias != has_bias)
+      !cubin_supports_sm(image.cubin, target_sm) || image.K != K || image.K1 != K1 || image.N != N
+      || image.is_bfloat16 != is_bfloat16 || image.has_bias != has_bias)
       continue;
 
     std::int64_t const delta = static_cast<std::int64_t>(image.bucket) - static_cast<std::int64_t>(S);
@@ -392,8 +541,9 @@ find_embedded_cubin(std::int32_t target_sm, std::int32_t K, std::int32_t N, std:
     return *nearest;
 
   throw std::invalid_argument(
-    "No embedded dual-GEMM x0_x1 CUBIN for SM" + std::to_string(target_sm) + ", K=" + std::to_string(K)
-    + ", N=" + std::to_string(N) + ", S=" + std::to_string(S) + ", has_bias=" + (has_bias ? "true" : "false"));
+    "No embedded dual-GEMM x0_x1 CUBIN for SM" + std::to_string(target_sm) + ", K0=" + std::to_string(K)
+    + ", K1=" + std::to_string(K1) + ", N=" + std::to_string(N) + ", S=" + std::to_string(S)
+    + ", has_bias=" + (has_bias ? "true" : "false"));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -413,10 +563,10 @@ std::vector<KernelSpec> kernel_specs()
   return map_registry(embedded::registry(), make_kernel_spec);
 }
 
-KernelConfig
-make_kernel_config(std::int32_t target_sm, std::int32_t K, std::int32_t N, std::int32_t S, DType dtype, bool has_bias)
+KernelConfig make_kernel_config(
+  std::int32_t target_sm, std::int32_t K, std::int32_t K1, std::int32_t N, std::int32_t S, DType dtype, bool has_bias)
 {
-  embedded::CubinImage const& image = find_embedded_cubin(target_sm, K, N, S, dtype, has_bias);
+  embedded::CubinImage const& image = find_embedded_cubin(target_sm, K, K1, N, S, dtype, has_bias);
   return KernelConfig{
     make_kernel_spec(image),
     dtype,

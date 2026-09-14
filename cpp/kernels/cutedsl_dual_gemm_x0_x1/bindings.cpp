@@ -18,7 +18,11 @@
 #include "launcher.h"
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/vector.h>
+
+#include <cstdint>
+#include <optional>
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -37,6 +41,7 @@ void bind(nb::module_& parent)
     .def_ro("target_sm", &KernelSpec::target_sm)
     .def_ro("kernel_sm", &KernelSpec::kernel_sm)
     .def_ro("K", &KernelSpec::K)
+    .def_ro("K1", &KernelSpec::K1)
     .def_ro("N", &KernelSpec::N)
     .def_ro("bucket", &KernelSpec::bucket)
     .def_ro("has_bias", &KernelSpec::has_bias)
@@ -69,7 +74,25 @@ void bind(nb::module_& parent)
 
   module.def("kernel_specs", &kernel_specs, "Return every registered SM/shape/bucket/bias launch configuration.");
 
-  module.def("make_kernel_config", &make_kernel_config, "target_sm"_a, "K"_a, "N"_a, "S"_a, "dtype"_a, "has_bias"_a);
+  /* K1 trails the symmetric signature and defaults to K. */
+  module.def(
+    "make_kernel_config",
+    [](
+      std::int32_t target_sm,
+      std::int32_t K,
+      std::int32_t N,
+      std::int32_t S,
+      DType dtype,
+      bool has_bias,
+      std::optional<std::int32_t> K1)
+    { return make_kernel_config(target_sm, K, K1.value_or(K), N, S, dtype, has_bias); },
+    "target_sm"_a,
+    "K"_a,
+    "N"_a,
+    "S"_a,
+    "dtype"_a,
+    "has_bias"_a,
+    "K1"_a = nb::none());
 
   module.def("current_cuda_sm", &current_cuda_sm);
 

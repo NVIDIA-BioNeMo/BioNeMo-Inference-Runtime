@@ -161,7 +161,7 @@ void validate_config(KernelConfig const& config)
   if (
     config.K != image.K || image.is_bfloat16 != dtype_is_bfloat16(config.dtype)
     || config.transpose_out != image.transpose_out || config.has_bias != image.has_bias
-    || config.has_mask != image.has_mask)
+    || config.has_mask != image.has_mask || config.silu_gate != image.is_silu_gate)
   {
     throw std::invalid_argument("dual_gemm_x_x config axes disagree with the generated CUBIN image");
   }
@@ -466,7 +466,8 @@ EmbeddedSelection find_embedded_cubin(
   DType dtype,
   bool transpose_out,
   bool has_bias,
-  bool has_mask)
+  bool has_mask,
+  bool silu_gate)
 {
   if (target_sm <= 0 || K <= 0 || N <= 0)
     throw std::invalid_argument("dual_gemm_x_x target SM, K, and N must be positive");
@@ -482,7 +483,8 @@ EmbeddedSelection find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[image_index];
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.K != K || image.is_bfloat16 != is_bfloat16
-      || image.transpose_out != transpose_out || image.has_bias != has_bias || image.has_mask != has_mask)
+      || image.transpose_out != transpose_out || image.has_bias != has_bias || image.has_mask != has_mask
+      || image.is_silu_gate != silu_gate)
     {
       continue;
     }
@@ -534,9 +536,11 @@ KernelConfig make_kernel_config(
   DType dtype,
   bool transpose_out,
   bool has_bias,
-  bool has_mask)
+  bool has_mask,
+  bool silu_gate)
 {
-  EmbeddedSelection const selection = find_embedded_cubin(target_sm, K, N, S, dtype, transpose_out, has_bias, has_mask);
+  EmbeddedSelection const selection
+    = find_embedded_cubin(target_sm, K, N, S, dtype, transpose_out, has_bias, has_mask, silu_gate);
   return KernelConfig{
     target_sm,
     selection.image->K,
@@ -546,6 +550,7 @@ KernelConfig make_kernel_config(
     transpose_out,
     has_bias,
     has_mask,
+    silu_gate,
     selection.image->cubin,
     selection.image,
   };

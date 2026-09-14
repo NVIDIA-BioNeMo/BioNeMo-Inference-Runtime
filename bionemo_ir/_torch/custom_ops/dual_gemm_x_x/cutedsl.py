@@ -36,6 +36,7 @@ from bionemo_ir.logger import logger
 from ._config import (
     _get_bucket_ranges,
     _get_config_selection,
+    _has_direct_config_for_gate,
     _kernel_is_sm90,
     _variant_key,
 )
@@ -58,6 +59,7 @@ class _DualGemmXxVariant:
     transpose_out: bool
     has_bias: bool
     has_mask: bool
+    gate: str = "sigmoid"
 
 
 def _compute_S(I_dim: int) -> int:
@@ -92,7 +94,12 @@ class DualGemmXxCuTe(CuteKernelCache):
         self._bucket_ranges: dict[tuple[int, int, bool], list[tuple[int, str]] | None] = {}
 
     def _disk_cache_key(self, variant: _DualGemmXxVariant) -> tuple:
-        """Return the unchanged source-object disk cache key."""
+        """Return the source-object disk cache key.
+
+        The gate joins the key at v3 because it changes the epilogue's machine
+        code; a v2 entry compiled before the axis existed is always sigmoid, and
+        reusing one for a silu request would return the wrong activation.
+        """
         source_key = (
             variant.dtype,
             variant.K,
@@ -101,8 +108,9 @@ class DualGemmXxCuTe(CuteKernelCache):
             variant.transpose_out,
             variant.has_bias,
             variant.has_mask,
+            variant.gate,
         )
-        return ("dual_gemm_x_x_cute_v2", self._sm_version) + source_key
+        return ("dual_gemm_x_x_cute_v3", self._sm_version) + source_key
 
     def _kernel_is_sm90(self, K: int, N: int) -> bool:
         """Whether this shape uses the duplicated-X SM90 source signature."""
@@ -130,6 +138,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             has_mask=variant.has_mask,
             transpose_out=variant.transpose_out,
             dtype_str=_dtype_str(variant.dtype),
+            gate=variant.gate,
         )
         return source_module, source
 
@@ -156,6 +165,7 @@ class DualGemmXxCuTe(CuteKernelCache):
                     variant.transpose_out,
                     variant.has_bias,
                     variant.has_mask,
+                    variant.gate,
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
@@ -173,7 +183,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             f"CuTeDSL dual_gemm x_x: using precompiled CUBIN for SM{self._sm_version}, "
             f"K={variant.K}, N={variant.N}, bucket={variant.bucket}, "
             f"transpose_out={variant.transpose_out}, has_bias={variant.has_bias}, "
-            f"has_mask={variant.has_mask}, dtype={variant.dtype}"
+            f"has_mask={variant.has_mask}, gate={variant.gate}, dtype={variant.dtype}"
         )
         return executable
 
@@ -243,44 +253,44 @@ class DualGemmXxCuTe(CuteKernelCache):
         mask: torch.Tensor | None = None,
         transpose_out: bool = False,
         actual_seqlen: torch.Tensor | None = None,
+        gate: str = "sigmoid",
     ) -> torch.Tensor:
-        """Run a sigmoid-gated dual GEMM with an optional left-aligned mask.
+        """Run a gated dual GEMM with an optional left-aligned mask.
 
         Args:
-            x: ``[B, I, J, K]``, ``[B, I, K]``, or ``[M, K]`` activation.
-            w0: ``[N, K]`` sigmoid-gate weight.
-            w1: ``[N, K]`` value-gate weight.
-            bias0: Optional ``[N]`` sigmoid-gate bias.
-            bias1: Optional ``[N]`` value-gate bias.
+            x: ``[..., I, K]`` activation with one or more leading dimensions.
+            w0: ``[N, K]`` gate weight.
+            w1: ``[N, K]`` value weight.
+            bias0: Optional ``[N]`` gate bias.
+            bias1: Optional ``[N]`` value bias.
             mask: Optional binary mask reduced to int32 leading lengths.
             transpose_out: Move the output ``N`` dimension to the front.
             actual_seqlen: Optional precomputed int32 leading lengths.
+            gate: ``"sigmoid"`` for ``sigmoid(a0) * a1``, or ``"silu"`` for
+                ``silu(a0) * a1``, which makes this a fused SwiGLU.
 
         Returns:
             The gated output with the same layout as the existing backend.
         """
         x = x.contiguous()
+        if x.ndim < 2:
+            raise ValueError(f"x must be at least 2-D, got shape {tuple(x.shape)}")
+
+        leading = x.shape[:-1]
         if x.ndim == 2:
             kernel_B, I_dim = 1, x.shape[0]
             S = _compute_S(I_dim)
-            leading = (x.shape[0],)
-        elif x.ndim == 3:
-            kernel_B, I_dim, _ = x.shape
-            S = _compute_S(I_dim)
-            leading = x.shape[:-1]
-        elif x.ndim == 4:
-            batch, i_outer, j_outer, _ = x.shape
-            kernel_B = batch * i_outer
-            I_dim = j_outer
-            S = j_outer
-            leading = x.shape[:-1]
         else:
-            raise ValueError(f"x must be 2-D / 3-D / 4-D, got shape {tuple(x.shape)}")
+            I_dim = leading[-1]
+            kernel_B = math.prod(leading[:-1])
+            S = I_dim
 
         K = x.shape[-1]
         N = w0.shape[0]
         M = kernel_B * I_dim
         device = x.device
+        if gate == "silu" and not _has_direct_config_for_gate(self._sm_version, K, N, gate):
+            raise ValueError(f"No dual_gemm x_x silu tuning for SM{self._sm_version}, K={K}, N={N}")
 
         if (bias0 is None) != (bias1 is None):
             raise ValueError("bias0 and bias1 must both be supplied or both None.")
@@ -298,6 +308,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             transpose_out=transpose_out,
             has_bias=has_bias,
             has_mask=has_mask,
+            gate=gate,
         )
 
         force_cubin = self.force_cubin()

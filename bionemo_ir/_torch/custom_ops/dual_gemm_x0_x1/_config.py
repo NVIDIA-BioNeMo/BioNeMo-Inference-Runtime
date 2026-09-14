@@ -25,6 +25,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import cutlass.utils as utils
+
 from bionemo_ir._torch.utils.kernel import (
     get_config_file_name,
     load_kernel_configs,
@@ -94,12 +96,30 @@ def _build_kernel_config(
     *,
     sm_version: int,
     kernel_abi: str,
+    asymmetric: bool = False,
+    K: int | None = None,
+    K1: int | None = None,
+    N: int | None = None,
 ) -> DualGemmX0X1KernelConfig:
-    """Bind one implementation and tile to runtime dtype and bias flags."""
+    """Bind one implementation and tile to runtime dtype, bias flags, and shape.
+
+    ``K``/``K1``/``N`` are the widths the caller will run. The SM90 asymmetric
+    kernel bakes them into its tile counts and shared-memory budget, so it has
+    to be told; they are passed to the kernel config rather than added to
+    ``tile_params`` so the tuning JSON stays the single source of tile choices
+    and the CUBIN variant identity, which already carries the shape, does not
+    change for tunings that predate this.
+    """
     full_params = dict(tile_params)
     full_params["ab_dtype"] = dtype_str
     is_sm90 = kernel_abi == "sm90"
-    kernel_config = _kernel_config_dataclass(kernel_cls).from_dict(full_params)
+    kernel_params = dict(full_params)
+    if N is not None:
+        kernel_params["n"] = int(N)
+    if K is not None:
+        kernel_params["k0"] = int(K)
+        kernel_params["k1"] = int(K if K1 is None else K1)
+    kernel_config = _kernel_config_dataclass(kernel_cls).from_dict(kernel_params)
 
     def factory():
         # x0_x1 is always N-major and unmasked.
@@ -117,6 +137,16 @@ def _build_kernel_config(
         if is_sm90:
             # Hopper derives its stage count from SM90 shared-memory capacity.
             return True
+        if asymmetric:
+            vector_elements = 128 // ct_dtype.width
+            if K % vector_elements != 0 or N % vector_elements != 0:
+                return False
+            smem_bytes = kernel_cls.dynamic_smem_bytes(
+                ct_dtype,
+                tuple(full_params["cta_tiler"]),
+                int(full_params["num_stages"]),
+            )
+            return smem_bytes <= int(utils.get_smem_capacity_in_bytes(f"sm_{sm_version}"))
         return bool(
             kernel_cls.can_implement(
                 ct_dtype,
@@ -146,19 +176,56 @@ def _fallback_sm(sm_version: int) -> int:
     return _FALLBACK_SM
 
 
-def load_bundle(sm_version: int, K: int, N: int):
-    """Load the tuned bundle for ``(sm_version, K, N)``, falling back to SM80."""
-    bundle = load_kernel_configs(_CONFIGS_DIR, get_config_file_name(sm_version, K=K, N=N))
+def needs_independent_operand_strides(K0: int, K1: int, N: int) -> bool:
+    """Whether ``X1`` and the output need their own extents and row strides.
+
+    The compact operand signature shares one row-stride symbol across ``X0``,
+    ``X1`` and ``out``, which constrains both ``K1`` and ``N`` to equal ``K0``
+    at launch. Unequal ``K1`` is not the only way to break that, so this keys
+    on the output extent too: the 128x256 out-projection has ``K0 == K1`` with
+    ``N != K0`` and needs the wide signature just as much.
+
+    This decides the traced signature only, never variant identity. Every shape
+    tuned before that out-projection has ``N == K0`` whenever ``K0 == K1``, so
+    it agrees with the old ``K1 != K0`` test on all of them and leaves their
+    identities, disk cache keys, and shipped CUBINs untouched.
+    """
+    return K1 != K0 or N != K0
+
+
+def config_file_name(sm: int, K0: int, K1: int, N: int) -> str:
+    """Return the equal-width or explicit asymmetric config filename.
+
+    Equal widths keep the legacy ``K{K}_N{N}`` name so existing tunings stay
+    addressable; asymmetric widths use
+    ``K0{K0}_K1{K1}_N{N}``.
+    """
+    if K0 == K1:
+        return get_config_file_name(sm, K=K0, N=N)
+    return get_config_file_name(sm, K0=K0, K1=K1, N=N)
+
+
+def load_bundle(sm_version: int, K: int, N: int, K1: int | None = None):
+    """Load the tuned bundle for ``(sm_version, K, N)``, falling back to SM80.
+
+    ``K`` is the first inner dimension; ``K1`` defaults to ``K`` for the
+    equal-width case.
+    """
+    K1 = K if K1 is None else K1
+    name = config_file_name(sm_version, K, K1, N)
+    bundle = load_kernel_configs(_CONFIGS_DIR, name)
     if bundle is not None:
         return bundle
     fallback = _fallback_sm(sm_version)
-    logger.warning(f"No dual_gemm x0_x1 config for SM{sm_version} K={K} N={N}; falling back to SM{fallback} tuning.")
-    bundle = load_kernel_configs(_CONFIGS_DIR, get_config_file_name(fallback, K=K, N=N))
+    logger.warning(
+        f"No dual_gemm x0_x1 config for SM{sm_version} K0={K} K1={K1} N={N}; falling back to SM{fallback} tuning."
+    )
+    bundle = load_kernel_configs(_CONFIGS_DIR, config_file_name(fallback, K, K1, N))
     if bundle is None:
         raise ValueError(
             f"No dual_gemm x0_x1 config file for SM{sm_version} or fallback "
-            f"SM{fallback} for K={K}, N={N}; expected "
-            f"{_CONFIGS_DIR}/{get_config_file_name(sm_version, K=K, N=N)}"
+            f"SM{fallback} for K0={K}, K1={K1}, N={N}; expected "
+            f"{_CONFIGS_DIR}/{name}"
         )
     return bundle
 
@@ -197,17 +264,17 @@ def compute_S(M_rows: int) -> int:
     return int(round(math.sqrt(max(M_rows, 1))))
 
 
-def get_nearest_bucket(sm_version: int, K: int, N: int, S: int, has_bias: bool) -> int:
+def get_nearest_bucket(sm_version: int, K: int, N: int, S: int, has_bias: bool, K1: int | None = None) -> int:
     """Return the nearest tuned per-sample side-length anchor."""
-    bundle = load_bundle(sm_version, K, N)
+    bundle = load_bundle(sm_version, K, N, K1)
     bucket, _, _ = _nearest_variant(bundle.configs, S, has_bias)
     return bucket
 
 
-def kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
+def kernel_is_sm90(sm_version: int, K: int, N: int, K1: int | None = None) -> bool:
     """Whether this config bundle selects the Hopper call ABI."""
     try:
-        bundle = load_bundle(sm_version, K, N)
+        bundle = load_bundle(sm_version, K, N, K1)
     except ValueError:
         return False
     return bundle.kernel_abi == "sm90"
@@ -220,21 +287,27 @@ def get_kernel_config(
     S: int,
     has_bias: bool,
     dtype_str: str,
+    K1: int | None = None,
+    K0: int | None = None,
 ) -> DualGemmX0X1KernelConfig:
     """Resolve the nearest tuned source kernel.
 
     Args:
         sm_version: Device SM as ``major * 10 + minor``.
-        K: GEMM inner dimension.
+        K: First GEMM inner dimension (``K0``).
         N: GEMM output dimension.
         S: Side-length tuning anchor.
         has_bias: Whether both bias operands are present.
         dtype_str: ``"fp16"`` or ``"bf16"``.
+        K1: Second GEMM inner dimension; defaults to ``K``.
+        K0: Explicit alias for ``K``; when provided, it must match.
     """
-    bundle = load_bundle(sm_version, K, N)
+    if K0 is not None and K0 != K:
+        raise ValueError(f"K={K} and K0={K0} must match")
+    bundle = load_bundle(sm_version, K, N, K1)
     bucket, chosen_key, tile_params = _nearest_variant(bundle.configs, S, has_bias)
     implementation = load_source_module(__package__).source_implementation(
-        bundle.kernel_abi, None, bundle.kernel_variant
+        bundle.kernel_abi, tile_params, bundle.kernel_variant
     )
     kernel_cls = resolve_implementation(implementation)
     return _build_kernel_config(
@@ -246,4 +319,8 @@ def get_kernel_config(
         bucket=bucket,
         sm_version=sm_version,
         kernel_abi=bundle.kernel_abi,
+        asymmetric=K1 is not None and K1 != K,
+        K=K,
+        K1=K1,
+        N=N,
     )

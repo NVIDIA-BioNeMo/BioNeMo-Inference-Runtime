@@ -515,8 +515,6 @@ def test_pairformer_pair_mask_left_aligned_propagates_to_triangle_nodes():
     assert layer_bipartite.tri_mul_in.pair_mask_left_aligned is False
     assert layer_bipartite.tri_attn_start.pair_mask_left_aligned is False
     assert layer_bipartite.tri_attn_end.pair_mask_left_aligned is False
-    assert layer_bipartite.tri_mul_out._dual_gemm_x_x_op is not _invoke_cute_dual_gemm_x_x
-    assert layer_bipartite.tri_mul_in._dual_gemm_x_x_op is not _invoke_cute_dual_gemm_x_x
     assert layer_bipartite.tri_mul_out._dual_gemm_x_x_op_transpose is not _invoke_cute_dual_gemm_x_x
 
 

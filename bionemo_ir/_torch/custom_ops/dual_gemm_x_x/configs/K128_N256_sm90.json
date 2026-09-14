@@ -1,5 +1,9 @@
 {
   "kernel_abi": "sm90",
+  "gates": [
+    "sigmoid",
+    "silu"
+  ],
   "configs": {
     "S=128|t=0": {
       "tile_shape_mn": [

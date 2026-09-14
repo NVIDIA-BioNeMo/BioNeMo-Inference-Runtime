@@ -39,6 +39,7 @@ from ._config import (
     get_kernel_config,
     kernel_is_sm90,
     load_bundle,
+    needs_independent_operand_strides,
 )
 from ._cubin import DualGemmX0X1CubinExecutable
 
@@ -82,6 +83,8 @@ class _DualGemmX0X1Variant:
     N: int
     bucket: int
     has_bias: bool
+    # Second GEMM inner dim; equal to ``K`` for the symmetric case.
+    K1: int
 
 
 class DualGemmX0X1CuTe(CuteKernelCache):
@@ -94,37 +97,41 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         self._sm_version = major * 10 + minor
         self._last_exe = None
         self._last_variant: _DualGemmX0X1Variant | None = None
-        # Parsed tuning anchors by (K, N, has_bias).
+        # Parsed tuning anchors by (K0, K1, N, has_bias).
         self._bucket_ranges: dict[tuple, list[tuple[int, str]] | None] = {}
-        self._is_sm90: dict[tuple[int, int], bool] = {}
+        self._is_sm90: dict[tuple[int, int, int], bool] = {}
 
     def _disk_cache_key(self, variant: _DualGemmX0X1Variant) -> tuple:
-        # v2 uses 64-bit activation/output row strides; bump on ABI changes.
+        # Bump when the compiled ABI changes; a stale entry would reuse a
+        # kernel with shared ``K0``/``K1`` layout or the old SM90 path.
         return (
-            "dual_gemm_x0_x1_cute_asym_v2",
+            "dual_gemm_x0_x1_cute_asym_v8",
             self._sm_version,
             variant.dtype,
             variant.K,
+            variant.K1,
             variant.N,
             variant.bucket,
             variant.has_bias,
         )
 
-    def _kernel_is_sm90(self, K: int, N: int) -> bool:
-        """Whether ``(K, N)`` resolves to the Hopper calling convention."""
-        cached = self._is_sm90.get((K, N))
+    def _kernel_is_sm90(self, K: int, N: int, K1: int | None = None) -> bool:
+        """Whether ``(K, K1, N)`` resolves to the Hopper calling convention."""
+        K1 = K if K1 is None else K1
+        cached = self._is_sm90.get((K, K1, N))
         if cached is None:
-            cached = kernel_is_sm90(self._sm_version, K, N)
-            self._is_sm90[(K, N)] = cached
+            cached = kernel_is_sm90(self._sm_version, K, N, K1)
+            self._is_sm90[(K, K1, N)] = cached
         return cached
 
-    def _nearest_bucket(self, S: int, K: int, N: int, has_bias: bool) -> int:
+    def _nearest_bucket(self, S: int, K: int, N: int, has_bias: bool, K1: int | None = None) -> int:
         """Return the tuned ``S`` anchor nearest ``S`` for this call site."""
-        cache_key = (K, N, bool(has_bias))
+        K1 = K if K1 is None else K1
+        cache_key = (K, K1, N, bool(has_bias))
         ranges = self._bucket_ranges.get(cache_key)
         if cache_key not in self._bucket_ranges:
             try:
-                bundle = load_bundle(self._sm_version, K, N)
+                bundle = load_bundle(self._sm_version, K, N, K1)
             except ValueError:
                 ranges = None
             else:
@@ -147,11 +154,16 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             S=variant.bucket,
             has_bias=variant.has_bias,
             dtype_str=dtype_str,
+            K1=variant.K1,
         )
-        if not config.can_implement(ct_dtype, variant.K, variant.N):
-            raise RuntimeError(
-                f"dual_gemm x0_x1 kernel cannot implement: dtype={ct_dtype}, K={variant.K}, N={variant.N}"
-            )
+        # Both inner dims share one tile, so each must satisfy the kernel's
+        # alignment and shared-memory limits.
+        for inner in {variant.K, variant.K1}:
+            if not config.can_implement(ct_dtype, inner, variant.N):
+                raise RuntimeError(
+                    f"dual_gemm x0_x1 kernel cannot implement: dtype={ct_dtype}, "
+                    f"K0={variant.K}, K1={variant.K1}, N={variant.N}"
+                )
         return config, config.kernel_factory()
 
     def _load_cubin_executable(
@@ -174,6 +186,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
                     variant.bucket,
                     variant.dtype,
                     variant.has_bias,
+                    variant.K1,
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
@@ -222,6 +235,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             config.arch,
             ct_dtype,
             variant.has_bias,
+            asymmetric=needs_independent_operand_strides(variant.K, variant.K1, variant.N),
         )
         DualGemmX0X1CuTe._compiled_cache[cache_key] = executable
         self.save_to_cache(disk_key, executable)
@@ -263,33 +277,74 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         """Return the fused output.
 
         Args:
-            X0: First activation [*, K].
-            X1: Second activation [*, K], matching ``X0``.
-            W0: First weight [N, K].
-            W1: Second weight [N, K], matching ``W0``.
+            X0: First activation [*, K0].
+            X1: Second activation [*, K1]; leading dims must match ``X0``.
+            W0: First weight [N, K0].
+            W1: Second weight [N, K1].
             bias0: Optional first bias [N].
             bias1: Optional second bias [N].
 
         Returns:
             Output [*, N].
         """
-        w0_shape = W0.shape
-        N, K = w0_shape  # dim_out, dim_in
-        x0_orig_shape = X0.shape  # e.g. [B, R, R, K]
+        if X0.ndim < 1 or X1.ndim < 1:
+            raise ValueError("X0 and X1 must each have at least one dimension")
+        if W0.ndim != 2 or W1.ndim != 2:
+            raise ValueError(f"W0 and W1 must be rank 2, got {W0.ndim} and {W1.ndim}")
+
+        N, K = W0.shape  # dim_out, first dim_in (K0)
+        N1, K1 = W1.shape  # second dim_in may differ from K0
+        x0_orig_shape = X0.shape  # e.g. [B, R, R, K0]
         x0_ndim = X0.ndim
         device = X0.device
         dtype = X0.dtype
 
-        if W1.shape != w0_shape:
-            raise ValueError(f"W1.shape expected {w0_shape}, got {W1.shape}")
-        if X1.shape != x0_orig_shape:
-            raise ValueError(f"X1.shape expected {x0_orig_shape}, got {X1.shape}")
+        if not X0.is_cuda:
+            raise ValueError("dual_gemm x0_x1 CuTe operands must be CUDA tensors")
+        if N1 != N:
+            raise ValueError(f"W1 output dimension must be {N}, got {tuple(W1.shape)}")
+        if x0_orig_shape[-1] != K:
+            raise ValueError(f"X0 trailing dimension must match W0 K0={K}, got {tuple(x0_orig_shape)}")
+        if X1.shape[-1] != K1 or X1.shape[:-1] != x0_orig_shape[:-1]:
+            raise ValueError(
+                f"X1 expected leading shape {tuple(x0_orig_shape[:-1])} and K1={K1}, got {tuple(X1.shape)}"
+            )
+        if X1.dtype != dtype or X1.device != device:
+            raise ValueError("X0 and X1 must have matching dtype and device")
+        for name, tensor in (("W0", W0), ("W1", W1)):
+            if tensor.dtype != dtype or tensor.device != device:
+                raise ValueError(f"{name} must match X0 dtype and device")
+            if not tensor.is_contiguous():
+                raise ValueError(f"{name} must be contiguous")
         if (bias0 is None) != (bias1 is None):
             raise ValueError("bias0 and bias1 must both be supplied or both None.")
+        if bias0 is not None and bias1 is not None:
+            for name, bias in (("bias0", bias0), ("bias1", bias1)):
+                if bias.shape != (N,):
+                    raise ValueError(f"{name} must have shape ({N},), got {tuple(bias.shape)}")
+                if bias.dtype != dtype or bias.device != device:
+                    raise ValueError(f"{name} must match X0 dtype and device")
+                if not bias.is_contiguous():
+                    raise ValueError(f"{name} must be contiguous")
+        if K % 8 != 0 or K1 % 8 != 0 or N % 8 != 0:
+            raise ValueError("dual_gemm x0_x1 requires K0, K1 and N to be multiples of 8")
 
         X0_2d = X0.reshape(-1, K) if x0_ndim != 2 else X0
-        X1_2d = X1.reshape(-1, K) if x0_ndim != 2 else X1
+        X1_2d = X1.reshape(-1, K1) if x0_ndim != 2 else X1
         M = X0_2d.shape[0]
+        if M == 0:
+            raise ValueError("dual_gemm x0_x1 requires at least one row")
+        for name, tensor, width in (("X0", X0_2d, K), ("X1", X1_2d, K1)):
+            if tensor.stride(1) != 1 or tensor.stride(0) < width:
+                raise ValueError(f"{name} must have contiguous rows")
+            if tensor.stride(0) % 8 != 0:
+                raise ValueError(f"{name} row stride must be a multiple of 8 elements")
+        # The compact signature was traced with one row-stride symbol for both
+        # inputs and the output, so it can only bind inputs whose row stride is
+        # already N. Shapes on the wide signature carry three independent
+        # strides and may therefore consume aligned row-padded inputs.
+        if not needs_independent_operand_strides(K, K1, N) and X0_2d.stride(0) != N:
+            raise ValueError(f"X0 row stride must equal output width N={N}, got {X0_2d.stride(0)}")
         has_bias = bias0 is not None
 
         dtype_str = _dtype_str(dtype)
@@ -297,8 +352,9 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             dtype=dtype,
             K=K,
             N=N,
-            bucket=self._nearest_bucket(compute_S(M), K, N, has_bias),
+            bucket=self._nearest_bucket(compute_S(M), K, N, has_bias, K1),
             has_bias=has_bias,
+            K1=K1,
         )
 
         if variant == self._last_variant:
@@ -309,7 +365,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             self._last_exe = exe
 
         out_2d = torch.empty((M, N), dtype=dtype, device=device)
-        if self._kernel_is_sm90(K, N):
+        if self._kernel_is_sm90(K, N, K1):
             # Hopper carries unused mask and I_dim slots.
             launch_compiled_kernel(exe, X0_2d, X1_2d, W0, W1, bias0, bias1, None, out_2d, 1)
         else:

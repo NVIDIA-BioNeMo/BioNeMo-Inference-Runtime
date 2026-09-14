@@ -22,7 +22,12 @@ import torch
 
 from bionemo_ir.utils import get_sm_version
 
+from ._config import _has_direct_config_for_gate
 from .cutedsl import DualGemmXxCuTe
+
+_GATES = ("sigmoid", "silu")
+_CUTE_SMS = (80, 86, 89, 90)
+_CUEQUIV_FALLBACK_SHAPES = {(128, 128), (256, 128)}
 
 
 def _invoke_vanilla_dual_gemm_x_x(
@@ -34,13 +39,17 @@ def _invoke_vanilla_dual_gemm_x_x(
     mask: torch.Tensor | None = None,
     transpose_out: bool = False,
     actual_seqlen: torch.Tensor | None = None,
+    gate: str = "sigmoid",
 ) -> torch.Tensor:
     """Run the unfused PyTorch fallback."""
     del actual_seqlen
+    if gate not in _GATES:
+        raise ValueError(f"Unsupported dual_gemm x_x gate {gate!r}; expected one of {_GATES}")
+    gate_fn = torch.sigmoid if gate == "sigmoid" else torch.nn.functional.silu
     if bias1 is not None and bias2 is not None:
-        result = (x @ w1.T + bias1).sigmoid() * (x @ w2.T + bias2)
+        result = gate_fn(x @ w1.T + bias1) * (x @ w2.T + bias2)
     else:
-        result = (x @ w1.T).sigmoid() * (x @ w2.T)
+        result = gate_fn(x @ w1.T) * (x @ w2.T)
     if mask is not None:
         result = result * mask.unsqueeze(-1)
     if transpose_out:
@@ -57,11 +66,14 @@ def _invoke_cuequiv_dual_gemm_x_x(
     mask: torch.Tensor | None = None,
     transpose_out: bool = False,
     actual_seqlen: torch.Tensor | None = None,
+    gate: str = "sigmoid",
 ) -> torch.Tensor:
     """Run the cuEquivariance fused fallback."""
     from cuequivariance_ops_torch.gated_gemm_torch import fused_sigmoid_gated_dual_gemm
 
     del actual_seqlen
+    if gate != "sigmoid":
+        raise ValueError(f"cuEquivariance fuses only the sigmoid gate; {gate!r} needs the CuTe or torch backend")
     return fused_sigmoid_gated_dual_gemm(
         x,
         w1,
@@ -94,6 +106,7 @@ def _invoke_cute_dual_gemm_x_x(
     mask: torch.Tensor | None = None,
     transpose_out: bool = False,
     actual_seqlen: torch.Tensor | None = None,
+    gate: str = "sigmoid",
 ) -> torch.Tensor:
     """Run the source-or-CUBIN CuTe backend."""
     return _get_cute_dual_gemm_x_x()(
@@ -105,6 +118,7 @@ def _invoke_cute_dual_gemm_x_x(
         mask=mask,
         transpose_out=transpose_out,
         actual_seqlen=actual_seqlen,
+        gate=gate,
     )
 
 
@@ -114,15 +128,39 @@ def get_dual_gemm_x_x_op(
     N: int = 128,
     K: int = 128,
     pair_mask_left_aligned: bool = True,
+    gate: str = "sigmoid",
 ) -> Callable:
-    """Return the best backend for one dtype, shape, and device."""
-    sm = get_sm_version()
-    cute_shapes = {(128, 128), (256, 128)}
-    if sm in (80, 86, 89, 90):
-        cute_shapes = cute_shapes | {(512, 256)}
-    if (N, K) not in cute_shapes or dtype not in (torch.float16, torch.bfloat16):
-        return _invoke_vanilla_dual_gemm_x_x
+    """Return the best backend for one dtype, shape, and device.
 
-    if pair_mask_left_aligned and sm in (80, 86, 89, 90):
+    ``gate`` selects the epilogue activation. Every backend here accepts it,
+    but only the CuTe kernels and the torch fallback implement ``"silu"``, so
+    a silu request never routes to cuEquivariance.
+    """
+    if gate not in _GATES:
+        raise ValueError(f"Unsupported dual_gemm x_x gate {gate!r}; expected one of {_GATES}")
+    if dtype not in (torch.float16, torch.bfloat16):
+        return _invoke_vanilla_dual_gemm_x_x
+    sm = get_sm_version()
+    has_cute_config = sm in _CUTE_SMS and _has_direct_config_for_gate(sm, K, N, gate)
+    if has_cute_config and pair_mask_left_aligned:
         return _invoke_cute_dual_gemm_x_x
-    return _invoke_cuequiv_dual_gemm_x_x
+    if gate != "sigmoid":
+        return _invoke_vanilla_dual_gemm_x_x
+    if has_cute_config or (N, K) in _CUEQUIV_FALLBACK_SHAPES:
+        return _invoke_cuequiv_dual_gemm_x_x
+    return _invoke_vanilla_dual_gemm_x_x
+
+
+def get_cute_dual_gemm_x_x_op(
+    dtype: torch.dtype,
+    *,
+    N: int,
+    K: int,
+    gate: str,
+) -> Callable | None:
+    """Return the CuTe implementation only when this exact variant ships.
+
+    Returns ``None`` instead of the generic two-GEMM fallback.
+    """
+    op = get_dual_gemm_x_x_op(dtype, N=N, K=K, gate=gate)
+    return op if op is _invoke_cute_dual_gemm_x_x else None

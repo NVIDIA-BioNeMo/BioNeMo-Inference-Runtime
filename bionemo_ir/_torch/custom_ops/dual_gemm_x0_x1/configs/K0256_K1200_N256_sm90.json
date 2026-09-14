@@ -1,0 +1,95 @@
+{
+  "kernel_abi": "sm90",
+  "configs": {
+    "S=128|b=0": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 1
+    },
+    "S=128|b=1": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 1
+    },
+    "S=256|b=0": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 1
+    },
+    "S=256|b=1": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 8,
+      "raster_factor": 1
+    },
+    "S=512|b=0": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 4,
+      "raster_factor": 4
+    },
+    "S=512|b=1": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 4,
+      "raster_factor": 4
+    },
+    "S=768|b=0": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 4,
+      "raster_factor": 4
+    },
+    "S=768|b=1": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 4,
+      "raster_factor": 4
+    },
+    "S=1536|b=0": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 4,
+      "raster_factor": 4
+    },
+    "S=1536|b=1": {
+      "tile_shape_mn": [
+        64,
+        128
+      ],
+      "num_stages": 0,
+      "tile_k_multiplier": 4,
+      "raster_factor": 4
+    }
+  }
+}

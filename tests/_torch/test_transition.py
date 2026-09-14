@@ -23,7 +23,7 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
-from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, Transition
+from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, MSATransition, PairTransition, Transition
 from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir.utils import str_dtype_to_torch
 
@@ -173,3 +173,166 @@ def test_transition_auto_chunk(torch_dtype: str, chunk_rows: int):
     assert not policy.should_chunk(s)
     with torch.inference_mode():
         torch.testing.assert_close(transition(s), transition._forward_impl(s), **tol)
+
+
+@pytest.mark.parametrize(
+    ("transition_type", "kwargs"),
+    [
+        (PairTransition, {"c_z": 32, "n": 4}),
+        (MSATransition, {"c_m": 32, "n": 4}),
+    ],
+    ids=["pair", "msa"],
+)
+def test_relu_transition_skip_create_weights_defers_linears(
+    transition_type: type[PairTransition] | type[MSATransition],
+    kwargs: dict[str, int],
+) -> None:
+    transition = transition_type(
+        **kwargs,
+        skip_create_weights=True,
+        enable_cudnn_graph=True,
+    )
+
+    for linear in (transition.linear_1, transition.linear_2):
+        assert not linear._weights_created
+        assert dict(linear.named_parameters()) == {}
+    assert transition._cudnn_graph_plans == {}
+
+    transition.to(dtype=torch.bfloat16)
+    assert transition._cudnn_graph_plans == {}
+
+
+@pytest.mark.parametrize("chunk_rows", [8, 7], ids=["even", "partial"])
+def test_pair_transition_auto_chunk(chunk_rows: int):
+    """PairTransition chunks pair rows without changing its ReLU FFN."""
+    torch.manual_seed(1)
+    device = torch.device("cuda")
+    dim, expansion, n = 32, 4, 24
+    policy = ChunkPolicy(chunk_size=chunk_rows, min_size=1, dim=1, min_rank=4)
+    transition = PairTransition(c_z=dim, n=expansion, dtype=torch.float32, auto_chunk_policy=policy).to(device).eval()
+    with torch.no_grad():
+        for parameter in transition.parameters():
+            parameter.normal_(mean=0.0, std=0.1)
+
+    z = torch.randn(1, n, n, dim, device=device)
+    mask = torch.ones(1, n, n, dtype=torch.bool, device=device)
+    mask[:, -3:, :] = False
+    with torch.inference_mode():
+        dense = transition._forward_impl(z, mask)
+        chunked = transition(z, mask)
+
+    torch.testing.assert_close(chunked, dense, atol=1e-5, rtol=1e-5)
+    assert torch.count_nonzero(chunked[:, -3:]) == 0
+
+
+def test_msa_transition_cudnn_graph_matches_vanilla() -> None:
+    torch.manual_seed(2)
+    device = torch.device("cuda")
+    channels, expansion = 256, 4
+    vanilla = MSATransition(
+        c_m=channels,
+        n=expansion,
+        dtype=torch.bfloat16,
+        enable_cudnn_graph=False,
+    ).to(device)
+    fused = MSATransition(
+        c_m=channels,
+        n=expansion,
+        dtype=torch.bfloat16,
+        enable_cudnn_graph=True,
+    ).to(device)
+    assert set(fused._cudnn_graph_plans) == {"linear_relu", "linear_mask"}
+    with torch.no_grad():
+        for parameter in vanilla.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+    fused.load_state_dict(vanilla.state_dict())
+
+    m = torch.randn(1, 3, 17, channels, device=device, dtype=torch.bfloat16)
+    mask = torch.ones(1, 3, 17, device=device, dtype=torch.bool)
+    mask[:, 1, -3:] = False
+    with torch.inference_mode():
+        expected = vanilla(m, mask)
+        actual = fused(m, mask)
+
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+    assert torch.count_nonzero(actual[:, 1, -3:]) == 0
+
+
+def test_transition_normalize_false_skips_layernorm():
+    torch.manual_seed(5)
+    device = torch.device("cuda")
+    dim, hidden = 32, 64
+    module = Transition(dim, hidden, dtype=torch.float32, normalize=False).to(device)
+    assert module.norm is None
+    assert "norm.weight" not in module.state_dict()
+
+    x = torch.randn(2, 9, dim, device=device)
+    mask = torch.ones(2, 9, device=device, dtype=torch.bool)
+    mask[1, 6:] = False
+    with torch.inference_mode():
+        out = module(x, mask)
+        expected = module.fc3(module._swiglu(module.fused_fc2_fc1(x)))
+        expected = expected * mask.unsqueeze(-1)
+    torch.testing.assert_close(out, expected)
+    assert torch.count_nonzero(out[1, 6:]) == 0
+
+
+def test_transition_silu_dual_gemm_matches_split_projection():
+    torch.manual_seed(6)
+    module = Transition(128, 512, dtype=torch.bfloat16).cuda().eval()
+    if module._dual_gemm_silu_op is None:
+        pytest.skip("K128_N512 silu dual GEMM is not tuned for this GPU")
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+
+    x = torch.randn(1, 32, 32, 128, device="cuda", dtype=torch.bfloat16)
+    mask = torch.ones(1, 32, 32, device="cuda", dtype=torch.bool)
+    mask[:, -3:] = False
+    with torch.inference_mode():
+        fused = module(x, mask)
+        fused_op = module._dual_gemm_silu_op
+        module._dual_gemm_silu_op = None
+        split = module(x, mask)
+        module._dual_gemm_silu_op = fused_op
+
+    torch.testing.assert_close(fused, split, atol=2e-2, rtol=2e-2)
+    assert torch.count_nonzero(fused[:, -3:]) == 0
+
+
+@pytest.mark.parametrize(
+    "leading_shape",
+    [(2, 64), (2, 1, 2, 32)],
+    ids=["3d", "protenix-5d"],
+)
+def test_conditioned_transition_silu_dual_gemm_matches_split_projection(
+    leading_shape: tuple[int, ...],
+) -> None:
+    torch.manual_seed(7)
+    module = (
+        ConditionedTransitionBlock(
+            dim_single=128,
+            dim_single_cond=128,
+            expansion_factor=2,
+            using_silu=True,
+            dtype=torch.bfloat16,
+        )
+        .cuda()
+        .eval()
+    )
+    if module._dual_gemm_silu_op is None:
+        pytest.skip("K128_N256 silu dual GEMM is not tuned for this GPU")
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+
+    a = torch.randn(*leading_shape, 128, device="cuda", dtype=torch.bfloat16)
+    s = torch.randn(*leading_shape, 128, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        fused = module(a, s)
+        fused_op = module._dual_gemm_silu_op
+        module._dual_gemm_silu_op = None
+        split = module(a, s)
+        module._dual_gemm_silu_op = fused_op
+
+    torch.testing.assert_close(fused, split, atol=2e-2, rtol=2e-2)

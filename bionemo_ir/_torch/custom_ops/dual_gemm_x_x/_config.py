@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import functools
+import json
 import os
 import re
 from collections.abc import Callable
@@ -35,6 +37,8 @@ _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 _TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90)
 _FALLBACK_SM = 80
 _VARIANT_KEY_RE = re.compile(r"^S=(\d+)\|t=(\d+)$")
+_DEFAULT_GATES = ("sigmoid",)
+_SUPPORTED_GATES = frozenset({"sigmoid", "silu"})
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,33 @@ def _optional_config_bundle(sm_version: int, K: int, N: int) -> KernelConfigBund
     if bundle is None:
         bundle = load_kernel_configs(_CONFIGS_DIR, get_config_file_name(_fallback_sm(sm_version), K=K, N=N))
     return bundle
+
+
+@functools.cache
+def _declared_gates(source_path: str) -> tuple[str, ...]:
+    """Return the machine-code epilogues declared by one shape bundle."""
+    with open(source_path) as config_file:
+        raw = json.load(config_file)
+    gates = raw.get("gates", list(_DEFAULT_GATES))
+    if not isinstance(gates, list) or not gates:
+        raise ValueError(f"Invalid dual_gemm x_x gates in {source_path}: expected a non-empty list")
+    if len(set(gates)) != len(gates) or any(gate not in _SUPPORTED_GATES for gate in gates):
+        raise ValueError(
+            f"Invalid dual_gemm x_x gates in {source_path}: expected unique values from {sorted(_SUPPORTED_GATES)}"
+        )
+    return tuple(gates)
+
+
+def _has_direct_config_for_gate(sm_version: int, K: int, N: int, gate: str) -> bool:
+    """Whether this exact target ships a tuning bundle for ``gate``.
+
+    Source lookup can fall back from an unknown target to SM80 tuning, but the
+    CUBIN corpus cannot: each target has its own SASS image. Backend dispatch
+    therefore requires a direct file so source and source-free builds select
+    the same implementation.
+    """
+    bundle = load_kernel_configs(_CONFIGS_DIR, get_config_file_name(sm_version, K=K, N=N))
+    return bundle is not None and gate in _declared_gates(bundle.source_path)
 
 
 def _load_config_bundle(sm_version: int, K: int, N: int) -> KernelConfigBundle:
@@ -185,6 +216,7 @@ def get_kernel_config(
     has_bias: bool,
     has_mask: bool,
     dtype_str: str,
+    gate: str = "sigmoid",
 ) -> DualGemmXxKernelConfig:
     """Resolve and build the development-time source kernel configuration.
 
@@ -199,4 +231,5 @@ def get_kernel_config(
         has_mask=has_mask,
         transpose_out=transpose_out,
         dtype_str=dtype_str,
+        gate=gate,
     )

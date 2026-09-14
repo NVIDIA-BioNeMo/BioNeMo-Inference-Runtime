@@ -1,5 +1,9 @@
 {
   "kernel_abi": "sm80",
+  "gates": [
+    "sigmoid",
+    "silu"
+  ],
   "configs": {
     "S=128|t=0": {
       "cta_tiler": [

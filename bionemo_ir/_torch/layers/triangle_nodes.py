@@ -13,22 +13,50 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
 from enum import IntEnum
+from functools import lru_cache
+from importlib import import_module
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy, chunk_apply
 from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_transpose
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
+from bionemo_ir.utils import get_sm_version
 
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
 from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
 from ..custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 from .attention import TriangleAttention
+
+
+def _round_up(value: int, multiple: int) -> int:
+    return -(-value // multiple) * multiple
+
+
+_CUEQ_TRIMUL_PAIR_DIM = 384
+_CUEQ_TRIMUL_HIDDEN_DIM = 256
+_CUEQ_TRIMUL_SEQUENCE_THRESHOLD = 256
+
+
+@lru_cache(maxsize=1)
+def _get_cueq_trimul_api() -> tuple[Callable[..., torch.Tensor], Callable[..., bool]] | None:
+    """Return the optional internal cuEquivariance TriMul API."""
+    try:
+        module = import_module("cuequivariance_ops_torch")
+    except (ImportError, OSError):
+        return None
+    operation = getattr(module, "triangle_multiplicative_update", None)
+    is_supported = getattr(module, "triangle_multiplicative_update_is_supported", None)
+    if not callable(operation) or not callable(is_supported):
+        return None
+    return operation, is_supported
 
 
 class TriangleAttentionNodeType(IntEnum):
@@ -66,7 +94,7 @@ class TriangleAttentionNode(nn.Module):
             node_type (TriangleAttentionNodeType): whether this is the starting node
             inf (float): infinity value
             dtype (torch.dtype): data type
-            chunk_policy (Optional[ChunkPolicy]): query-row chunking policy; ``None`` uses the
+            chunk_policy (ChunkPolicy | None): query-row chunking policy; ``None`` uses the
                 shared ``triangle_attention`` policy from ``CHUNK_REGISTRY``.
             skip_create_weights (bool): whether to skip creating weights
             attn_backend (str): attention backend
@@ -118,7 +146,11 @@ class TriangleAttentionNode(nn.Module):
         self.J_padded_multiple = -1
         if self.attn_backend == "CuTeDSL":
             self.J_padded_multiple = 8
-        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(D=self.c_in, H=self.num_heads, dtype=dtype or torch.bfloat16)
+        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(
+            D=self.c_in,
+            H=self.num_heads,
+            dtype=dtype or torch.bfloat16,
+        )
 
     @staticmethod
     def _ensure_contiguous(x: torch.Tensor, mask_bias: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -196,12 +228,12 @@ class TriangleAttentionNode(nn.Module):
 
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
-            mask (Optional[torch.Tensor]): mask tensor [B, I, J].
+            mask (torch.Tensor | None): mask tensor [B, I, J].
                 Ignored when *mask_bias* is provided.
-            mask_bias (Optional[torch.Tensor]): precomputed additive mask bias
+            mask_bias (torch.Tensor | None): precomputed additive mask bias
                 ([B, I, 1, 1, J] for starting, [B, J, 1, 1, I] for ending).
                 When supplied, the per-layer mask->bias computation is skipped.
-            attn_metadata (Optional[AttentionMetadata]): attention metadata
+            attn_metadata (AttentionMetadata | None): attention metadata
             buffers: Shared pre-allocated buffer dict.
         """
         if x.dtype != self.dtype:
@@ -270,6 +302,12 @@ class TriangleMultiplicationNode(nn.Module):
     ):
         """Triangle multiplication node.
 
+        The internal cuEquivariance 384x256 TriMul owner is selected only for
+        BF16 ``dim=384`` / ``hidden_dim=256`` inference on SM90 when both its
+        operation and support-query APIs are installed. Runtime dispatch also
+        requires a supported input with more than 256 residues. Public
+        cuEquivariance releases without the support-query API retain BioIR.
+
         Args:
             pair_mask_left_aligned: Whether the runtime ``mask`` passed to
                 ``forward`` is guaranteed to be left-aligned along its
@@ -336,29 +374,21 @@ class TriangleMultiplicationNode(nn.Module):
             skip_create_weights=skip_create_weights,
         )
 
-        # TODO: Make this threshold configurable
-        self._forward_impl_v2_threshold = 384
-        # Dedicated x0_x1 dispatcher: routes to CuTe (SM 80/86/89/90) or
-        # cuEquiv / vanilla otherwise, based on
-        # ``(high_precision_dtype, N=self.dim, K=self.hidden_dim)``. Note
-        # that ``high_precision=True`` -> fp32 -> vanilla fallback (the
-        # CuTe / cuEquiv paths only accept fp16 / bf16).
+        # Fused half-precision gates require K divisible by 8. The 196-wide
+        # operand is padded to 200; LayerNorm emits the zero tail.
+        k_align = 8 if self.high_precision_dtype in (torch.float16, torch.bfloat16) else 1
+        self._k_align_or_off = k_align if k_align > 1 else -1
+        self._x0_k = _round_up(self.dim, k_align)
+        self._x1_k = _round_up(self.hidden_dim, k_align)
+        self._k_pad_cache: dict[str, tuple[tuple, torch.Tensor]] = {}
         self._dual_gemm_x0_x1_op = get_dual_gemm_x0_x1_op(
             self.high_precision_dtype,
             transpose_out=False,
             N=self.dim,
-            K=self.hidden_dim,
+            K0=self._x0_k,
+            K1=self._x1_k,
         )
-        # ``pair_mask_left_aligned`` must propagate so a bipartite /
-        # interior-zero pair mask routes around the CuTe LM kernel (which
-        # masks via a per-row prefix count and is silently wrong otherwise).
-        self._dual_gemm_x_x_op = get_dual_gemm_x_x_op(
-            self.dtype,
-            transpose_out=False,
-            N=2 * self.hidden_dim,
-            K=self.dim,
-            pair_mask_left_aligned=self.pair_mask_left_aligned,
-        )
+        # Route interior-zero masks around CuTe's prefix-mask kernel.
         self._dual_gemm_x_x_op_transpose = get_dual_gemm_x_x_op(
             self.dtype,
             transpose_out=True,
@@ -366,11 +396,83 @@ class TriangleMultiplicationNode(nn.Module):
             K=self.dim,
             pair_mask_left_aligned=self.pair_mask_left_aligned,
         )
+        self._cueq_trimul_api: tuple[Callable[..., torch.Tensor], Callable[..., bool]] | None = None
+        if (
+            not skip_create_weights
+            and self.dim == _CUEQ_TRIMUL_PAIR_DIM
+            and self.hidden_dim == _CUEQ_TRIMUL_HIDDEN_DIM
+            and self.dtype == torch.bfloat16
+            and not self.high_precision
+            and not self.mean_normalization
+            and self.p_in.bias is not None
+            and self.g_in.bias is not None
+            and self.p_out.bias is not None
+            and self.g_out.bias is not None
+        ):
+            cueq_trimul_api = _get_cueq_trimul_api()
+            if cueq_trimul_api is not None and torch.cuda.is_available() and get_sm_version() == 90:
+                self._cueq_trimul_api = cueq_trimul_api
 
     def _einsum_compute(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
             return torch.einsum("bikd,bjkd->bijd", a, b)
         return torch.einsum("bkid,bkjd->bijd", a, b)
+
+    def _contract_projection(self, projected: torch.Tensor, mask: torch.Tensor, *, transposed: bool) -> torch.Tensor:
+        """Contract a dual-GEMM projection in a lifetime-bounded scope.
+
+        ``projected`` and its two views are O(N²) temporaries. Keeping them
+        local to this helper releases their references as soon as the
+        contraction is returned, before the caller allocates output
+        normalization and gating tensors.
+        """
+        split_dim = 0 if transposed else -1
+        a, b = torch.chunk(projected, 2, dim=split_dim)
+        if self.mean_normalization:
+            n_valid = mask[:, 0, :].sum(dim=-1)
+            denominator = n_valid[None, :, None, None] if transposed else n_valid[:, None, None, None]
+            b = b / (denominator + 1e-3)
+
+        if not transposed:
+            return self._einsum_compute(a, b)
+        if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
+            return torch.einsum("dbik,dbjk->dbij", a, b)
+        return torch.einsum("dbki,dbkj->dbij", a, b)
+
+    def _k_padded_weight(self, slot: str, weight: torch.Tensor, k_padded: int) -> torch.Tensor:
+        """Zero-extend a ``[N, K]`` weight to match a padded K operand.
+
+        Cached across calls and rebuilt whenever the source weight is
+        rewritten, which covers ``load_state_dict``, an in-place ``copy_``
+        and a ``.data`` reassignment.
+        """
+        if weight.shape[-1] >= k_padded:
+            return weight
+        key = (weight.data_ptr(), weight._version, weight.dtype)
+        cached = self._k_pad_cache.get(slot)
+        if cached is None or cached[0] != key:
+            padded = weight.new_zeros((*weight.shape[:-1], k_padded))
+            padded[..., : weight.shape[-1]] = weight
+            cached = (key, padded)
+            self._k_pad_cache[slot] = cached
+        return cached[1]
+
+    @staticmethod
+    def _zero_extend_k(x: torch.Tensor, k_padded: int) -> torch.Tensor:
+        """Widen the last dim to ``k_padded``, leaving wider inputs alone."""
+        pad = k_padded - x.shape[-1]
+        return x if pad <= 0 else F.pad(x, (0, pad))
+
+    def _output_gate(self, x0: torch.Tensor, x1: torch.Tensor) -> torch.Tensor:
+        """Run the fused output gate, zero-extending K where required."""
+        return self._dual_gemm_x0_x1_op(
+            self._zero_extend_k(x0, self._x0_k),
+            self._zero_extend_k(x1, self._x1_k),
+            self._k_padded_weight("g_out", self.g_out.weight, self._x0_k),
+            self._k_padded_weight("p_out", self.p_out.weight, self._x1_k),
+            self.g_out.bias,
+            self.p_out.bias,
+        )
 
     def _ensure_dtype(self, x: torch.Tensor) -> torch.Tensor:
         """Ensure the dtype of the input"""
@@ -378,105 +480,85 @@ class TriangleMultiplicationNode(nn.Module):
             x = x.to(self.dtype)
         return x
 
-    def _forward_impl_v1(
+    def _cueq_forward_if_supported(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
+        """Run the optional internal SM90 384x256 TriMul owner."""
+        if self._cueq_trimul_api is None or x.shape[-2] <= _CUEQ_TRIMUL_SEQUENCE_THRESHOLD or torch.is_grad_enabled():
+            return None
+
+        x = self._ensure_dtype(x)
+        mask_value = mask.to(dtype=x.dtype).contiguous()
+        operation, is_supported = self._cueq_trimul_api
+        direction = "outgoing" if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else "incoming"
+        if not is_supported(
+            x,
+            direction=direction,
+            mask=mask_value,
+            c_hidden=self.hidden_dim,
+        ):
+            return None
+        return operation(
+            x,
+            direction=direction,
+            mask=mask_value,
+            norm_in_weight=self.norm_in.weight,
+            norm_in_bias=self.norm_in.bias,
+            p_in_weight=self.p_in.weight,
+            p_in_bias=self.p_in.bias,
+            g_in_weight=self.g_in.weight,
+            g_in_bias=self.g_in.bias,
+            norm_out_weight=self.norm_out.weight,
+            norm_out_bias=self.norm_out.bias,
+            p_out_weight=self.p_out.weight,
+            p_out_bias=self.p_out.bias,
+            g_out_weight=self.g_out.weight,
+            g_out_bias=self.g_out.bias,
+            eps=self.eps,
+        )
+
+    def _forward_impl(
         self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """This version is used for short sequences in eager mode
+        """Run triangle multiplication with feature-major intermediates.
+
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
-            actual_seqlen (Optional[torch.Tensor]): precomputed ``int32[B, I]``
-                per-row valid-J count for the CuTe dual_gemm_x_x backend
-                (same as ``actual_s_kv`` from CuTeDSL precompute).
-        """
-        x = self._ensure_dtype(x)
-        x = self.norm_in(x)
-
-        dg_actual_seqlen = actual_seqlen
-        x_in = x
-        x = self._dual_gemm_x_x_op(
-            x, self.g_in.weight, self.p_in.weight, self.g_in.bias, self.p_in.bias, mask, actual_seqlen=dg_actual_seqlen
-        )
-        x = x.to(self.high_precision_dtype)
-
-        a, b = x.split([self.dim, self.dim], dim=-1)
-        if self.mean_normalization:
-            # Divide right branch by number of valid tokens (mean over contraction axis).
-            # mask is [B, I, J] where 1.0=valid; any row gives the valid count.
-            n_valid = mask[:, 0, :].sum(dim=-1)  # [B]
-            b = b / (n_valid[:, None, None, None] + 1e-3)
-        x = self._einsum_compute(a, b)
-        x_0_out = self.norm_out(x)
-        x_1_out = x_in.to(self.high_precision_dtype)
-
-        x = self._dual_gemm_x0_x1_op(
-            x_1_out, x_0_out, self.g_out.weight, self.p_out.weight, self.g_out.bias, self.p_out.bias
-        )
-        x = self._ensure_dtype(x)
-        return x
-
-    def _forward_impl_v2(
-        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        """This version is used for long sequences and in the compile mode.
-        Args:
-            x (torch.Tensor): input tensor, shape [B, I, J, c_in]
-            mask (torch.Tensor): mask tensor [B, I, J]
-            actual_seqlen (Optional[torch.Tensor]): precomputed ``int32[B, I]``
+            actual_seqlen (torch.Tensor | None): precomputed ``int32[B, I]``
                 per-row valid-J count for the CuTe dual_gemm_x_x backend
                 (same as ``actual_s_kv`` from CuTeDSL precompute).
         """
         x = self._ensure_dtype(x)
         x = layer_norm_transpose(x, self.norm_in.weight, self.norm_in.bias, eps=self.eps, layout="bijd->bijd")
-
         x_in = x
         # Gated dual gemm
-        ab = self._dual_gemm_x_x_op_transpose(
-            x,
-            self.g_in.weight,
-            self.p_in.weight,
-            self.g_in.bias,
-            self.p_in.bias,
+        x = self._contract_projection(
+            self._dual_gemm_x_x_op_transpose(
+                x,
+                self.g_in.weight,
+                self.p_in.weight,
+                self.g_in.bias,
+                self.p_in.bias,
+                mask,
+                transpose_out=True,
+                actual_seqlen=actual_seqlen,
+            ),
             mask,
-            transpose_out=True,
-            actual_seqlen=actual_seqlen,
+            transposed=True,
         )
 
-        a, b = torch.chunk(ab, 2, dim=0)
-        if self.mean_normalization:
-            # Divide right branch by number of valid tokens (mean over contraction axis).
-            # mask is [B, I, J]; b is [d, B, I, K] (transposed layout).
-            n_valid = mask[:, 0, :].sum(dim=-1)  # [B]
-            b = b / (n_valid[None, :, None, None] + 1e-3)
-        # Triangular projection
-        if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
-            x = torch.einsum("dbik,dbjk->dbij", a, b)
-        else:
-            x = torch.einsum("dbki,dbkj->dbij", a, b)
-
-        # Output normalization
-        x_out = layer_norm_transpose(x, self.norm_out.weight, self.norm_out.bias, eps=self.eps, layout="dbij->bijd")
+        # Output normalization. The gate wants a K that is a multiple of 8,
+        # and this norm can emit the zero tail without an extra pass.
+        x = layer_norm_transpose(
+            x,
+            self.norm_out.weight,
+            self.norm_out.bias,
+            eps=self.eps,
+            layout="dbij->bijd",
+            pad_multiple=self._k_align_or_off,
+        )
 
         # Output gating
-        x_out = x_out.to(self.high_precision_dtype)
-        x_in = x_in.to(self.high_precision_dtype)
-        x = self._dual_gemm_x0_x1_op(
-            x_in, x_out, self.g_out.weight, self.p_out.weight, self.g_out.bias, self.p_out.bias
-        )
-        return x
-
-    def _eager_mode_forward(
-        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        seq_len = x.shape[-2]
-        if seq_len < self._forward_impl_v2_threshold:
-            return self._forward_impl_v1(x, mask, actual_seqlen=actual_seqlen)
-        return self._forward_impl_v2(x, mask, actual_seqlen=actual_seqlen)
-
-    def _compile_mode_forward(
-        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        return self._forward_impl_v2(x, mask, actual_seqlen=actual_seqlen)
+        return self._output_gate(x_in.to(self.high_precision_dtype), x.to(self.high_precision_dtype))
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None) -> torch.Tensor:
         """
@@ -501,6 +583,7 @@ class TriangleMultiplicationNode(nn.Module):
                 backends store an additive bias in those fields and
                 callers must pass ``None`` instead.
         """
-        if not torch.compiler.is_compiling():
-            return self._eager_mode_forward(x, mask, actual_seqlen=actual_seqlen)
-        return self._compile_mode_forward(x, mask, actual_seqlen=actual_seqlen)
+        cueq_output = self._cueq_forward_if_supported(x, mask)
+        if cueq_output is not None:
+            return cueq_output
+        return self._forward_impl(x, mask, actual_seqlen=actual_seqlen)

@@ -28,6 +28,7 @@ from test_utils.openfold.ref_layers import RefTemplatePairStackBlock, RefTemplat
 
 from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock, TemplatePointwiseAttention
 from bionemo_ir.utils import str_dtype_to_torch
+from tests._torch import make_left_aligned_mask
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -62,7 +63,15 @@ def test_template_pair_stack_block(sc: Scenario):
 
     weights_and_biases = create_template_pair_stack_block_weights(from_ref=ref_module)
     t = torch.randn(bs, sc.n_templ, sc.n_res, sc.n_res, ref_module.c_t, dtype=torch.float32).cuda()
-    mask = torch.randint(0, 2, (bs, sc.n_templ, sc.n_res, sc.n_res), dtype=torch.float32).cuda()
+    # Same layout the pipeline feeds this block: an outer product of a
+    # left-aligned sequence mask (valid residues then padding). An arbitrary
+    # interior-zero mask is outside the contract TriangleMultiplicationNode
+    # declares via pair_mask_left_aligned, under which the CuTe dual_gemm_x_x
+    # kernel masks by a per-row prefix count.
+    seq_mask = make_left_aligned_mask(
+        bs, sc.n_templ, sc.n_res, dtype=torch.float32, device=device, min_valid=max(sc.n_res - 4, 1)
+    )
+    mask = seq_mask[..., None] * seq_mask[..., None, :]
 
     module = TemplatePairBlock(
         local_layer_idx=0,

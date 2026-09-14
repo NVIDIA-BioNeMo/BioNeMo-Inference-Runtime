@@ -173,6 +173,15 @@ def test_template_pair_stack_block(sc: Scenario):
                     f"CuTeDSL bf16 mean drift: diff_ours={diff0_mean}, diff_autocast_ref={diff1_mean}"
                 )
             else:
-                assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5
-                assert abs(diff0_mean - diff1_mean) <= 0.2
+                # One-sided: the bound is on being *less* accurate than the
+                # autocast reference. These backends still reach CuTe kernels
+                # for the sigmoid-gated trimul dual GEMM, which keeps more
+                # intermediate precision than the OSS bf16 path, so drifting
+                # below diff1 is an improvement rather than a mismatch.
+                assert (diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5, (
+                    f"bf16 drift vs fp32 ref: diff_ours={diff0_max}, diff_autocast_ref={diff1_max}"
+                )
+                assert diff0_mean - diff1_mean <= 0.2, (
+                    f"bf16 mean drift: diff_ours={diff0_mean}, diff_autocast_ref={diff1_mean}"
+                )
             print(f"after test for test_dtype={test_dtype}")

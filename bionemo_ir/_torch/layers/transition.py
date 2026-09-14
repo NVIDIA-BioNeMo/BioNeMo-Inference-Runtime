@@ -14,15 +14,36 @@
 # limitations under the License.
 
 
+from collections.abc import Callable
+
 import torch
 import torch.nn as nn
 
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
+from bionemo_ir._torch.graph_optimization.cudnn_graph import (
+    CudnnGraphModule,
+    can_use_cudnn_graph,
+    cudnn_linear_mask,
+    cudnn_linear_relu,
+    prepare_cudnn_linear_mask,
+    prepare_cudnn_linear_relu,
+)
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
-from bionemo_ir._torch.layers.normalization import AdaLN
+from bionemo_ir._torch.layers.normalization import AdaLN, AdaLNNormType
 from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
+
+type _CudnnPlan = Callable[..., torch.Tensor | None]
+
+
+def _get_silu_projection_op(dtype: torch.dtype | None, K: int, N: int):
+    """Resolve the no-intermediate SwiGLU projection when it ships."""
+    resolved_dtype = dtype or torch.get_default_dtype()
+    if resolved_dtype not in (torch.float16, torch.bfloat16) or not torch.cuda.is_available():
+        return None
+    return get_cute_dual_gemm_x_x_op(resolved_dtype, K=K, N=N, gate="silu")
 
 
 class Transition(nn.Module):
@@ -36,16 +57,25 @@ class Transition(nn.Module):
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         auto_chunk_policy: ChunkPolicy | None = None,
+        normalize: bool = True,
     ):
+        """SwiGLU feed-forward transition.
+
+        Args:
+            normalize: If True (default), apply LayerNorm before the FFN.
+                Set this to False when AdaLN (or no pre-norm)
+                already ran outside the block.
+        """
         super().__init__()
         if out_dim is None:
             out_dim = dim
 
         self.auto_chunk_policy = auto_chunk_policy
+        self.normalize = normalize
 
         self.dtype = dtype
         self.hidden = hidden
-        self.norm = nn.LayerNorm(dim, eps=eps, dtype=dtype)
+        self.norm = nn.LayerNorm(dim, eps=eps, dtype=dtype) if normalize else None
 
         self.fused_fc2_fc1 = Linear(
             dim,
@@ -56,6 +86,7 @@ class Transition(nn.Module):
             weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
         self._swiglu = FusedSwiGLU(d=self.hidden, three_way=False, dtype=dtype or torch.bfloat16)
+        self._dual_gemm_silu_op = _get_silu_projection_op(dtype, K=dim, N=hidden)
         self.fc3 = Linear(hidden, out_dim, dtype=dtype, bias=False, skip_create_weights=skip_create_weights)
 
     def forward(
@@ -73,15 +104,24 @@ class Transition(nn.Module):
         x: torch.Tensor,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = self.norm(x)
-        z = self.fused_fc2_fc1(x)
-        x = self._swiglu(z)
+        if self.norm is not None:
+            x = self.norm(x)
+        if self._dual_gemm_silu_op is not None:
+            weight = self.fused_fc2_fc1.weight
+            x = self._dual_gemm_silu_op(
+                x,
+                weight[self.hidden :],
+                weight[: self.hidden],
+                gate="silu",
+            )
+        else:
+            x = self._swiglu(self.fused_fc2_fc1(x))
         x = self.fc3(x)
 
         if mask is not None:
             if mask.ndim == x.ndim - 1:
                 mask = mask.unsqueeze(-1)
-            x = x * mask
+            x = x * mask.to(dtype=x.dtype)
         return x
 
 
@@ -95,7 +135,20 @@ class ConditionedTransitionBlock(nn.Module):
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         using_silu: bool = False,
+        norm_type: AdaLNNormType = "layer_norm",
+        cond_norm_bias: bool = False,
+        output_gate_bias_init: float | None = None,
     ):
+        """Conditioned SwiGLU transition with AdaLN and gated output.
+
+        Args:
+            using_silu: If True, use 2-way SwiGLU; otherwise use 3-way.
+            norm_type: AdaLN primary/condition norm (``layer_norm`` or
+                ``rms_norm``).
+            cond_norm_bias: Give the AdaLN condition norm a bias.
+            output_gate_bias_init: If set, zero the output-gate weight and
+                fill its bias (AdaLN-zero variants use ``-2.0``).
+        """
         super().__init__()
         self.dtype = dtype
 
@@ -103,7 +156,9 @@ class ConditionedTransitionBlock(nn.Module):
         self.dim_single_cond = dim_single_cond
         self.expansion_factor = expansion_factor
 
-        self.adaln = AdaLN(dim_single, dim_single_cond, eps=eps, dtype=dtype)
+        self.adaln = AdaLN(
+            dim_single, dim_single_cond, eps=eps, dtype=dtype, norm_type=norm_type, cond_norm_bias=cond_norm_bias
+        )
         self.dim_inner = int(dim_single * expansion_factor)
         # Fused swiglu_gate linear and a_to_b
         self.using_silu = using_silu
@@ -126,6 +181,9 @@ class ConditionedTransitionBlock(nn.Module):
                 skip_create_weights=skip_create_weights,
                 weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
             )
+        self._dual_gemm_silu_op = (
+            _get_silu_projection_op(dtype, K=self.dim_single, N=self.dim_inner) if using_silu else None
+        )
 
         self.b_to_a = Linear(
             self.dim_inner, self.dim_single, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
@@ -134,6 +192,9 @@ class ConditionedTransitionBlock(nn.Module):
         self.output_projection = Linear(
             self.dim_single_cond, self.dim_single, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
         )
+        if output_gate_bias_init is not None and not skip_create_weights:
+            nn.init.zeros_(self.output_projection.weight)
+            nn.init.constant_(self.output_projection.bias, output_gate_bias_init)
         self._gated_sigmoid_op = get_gated_sigmoid_op(
             dtype or torch.get_default_dtype(),
             N=self.dim_single,
@@ -146,6 +207,7 @@ class ConditionedTransitionBlock(nn.Module):
         s: torch.Tensor,
         buffers: PreallocatedBuffers | None = None,
         buffer_key: str = "cond_trans_adaln",
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -153,13 +215,23 @@ class ConditionedTransitionBlock(nn.Module):
             s: [B, I, d_cond]
             buffers: optional preallocated buffer dict, forwarded to AdaLN.
             buffer_key: key into ``buffers`` for the AdaLN output tensor.
+            mask: optional binary mask ``[B, I]`` applied after AdaLN and
+                after the output gate.
 
         Returns:
             a: [B, I, d]
         """
-        a = self.adaln(a, s, buffers=buffers, buffer_key=buffer_key)
-        z = self.fused_swl_a_to_b(a)
-        b = self._swiglu(z)
+        a = self.adaln(a, s, buffers=buffers, buffer_key=buffer_key, mask=mask)
+        if self._dual_gemm_silu_op is not None:
+            weight = self.fused_swl_a_to_b.weight
+            b = self._dual_gemm_silu_op(
+                a,
+                weight[self.dim_inner :],
+                weight[: self.dim_inner],
+                gate="silu",
+            )
+        else:
+            b = self._swiglu(self.fused_swl_a_to_b(a))
         a = self.b_to_a(b)
 
         # The gated-sigmoid op broadcasts `s` (gate) across the multiplicity
@@ -167,7 +239,7 @@ class ConditionedTransitionBlock(nn.Module):
         # internally for unsupported patterns. Reuse the AdaLN output buffer —
         # fused_swl_a_to_b consumed it above, same shape as the gated_sigmoid
         # output.
-        return self._gated_sigmoid_op(
+        a = self._gated_sigmoid_op(
             s,
             self.output_projection.weight,
             a,
@@ -175,22 +247,102 @@ class ConditionedTransitionBlock(nn.Module):
             output=buffers.get(buffer_key) if buffers is not None else None,
         )
 
+        if mask is not None:
+            if mask.ndim == a.ndim - 1:
+                mask = mask.unsqueeze(-1)
+            a = a * mask.to(dtype=a.dtype)
+        return a
 
-class PairTransition(nn.Module):
+
+class PairTransition(CudnnGraphModule):
     def __init__(
-        self, c_z: int, n: int, eps: float = 1e-5, dtype: torch.dtype = None, skip_create_weights: bool = False
+        self,
+        c_z: int,
+        n: int,
+        eps: float = 1e-5,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        auto_chunk_policy: ChunkPolicy | None = None,
+        enable_cudnn_graph: bool = False,
     ):
         super().__init__()
+        self.auto_chunk_policy = auto_chunk_policy
+        self.enable_cudnn_graph = enable_cudnn_graph
         self.dtype = dtype
         self.c_z = c_z
         self.n = n
+        self._cudnn_graph_plans: dict[str, _CudnnPlan] = {}
 
         self.layer_norm = nn.LayerNorm(c_z, eps=eps, dtype=dtype)
-        self.linear_1 = Linear(c_z, n * c_z, bias=True, dtype=dtype)
-        self.linear_2 = Linear(n * c_z, c_z, bias=True, dtype=dtype)
+        self.linear_1 = Linear(c_z, n * c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
+        self.linear_2 = Linear(n * c_z, c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.relu = nn.ReLU()
+        self._prepare_cudnn_graphs()
+
+    def _prepare_cudnn_graphs(self) -> None:
+        self._cudnn_graph_plans.clear()
+        if not self.linear_1._weights_created or not self.linear_2._weights_created:
+            return
+        if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
+            return
+        hidden_dim = self.n * self.c_z
+        linear_relu = prepare_cudnn_linear_relu(
+            self.linear_1.weight.device,
+            self.linear_1.weight.dtype,
+            self.c_z,
+            hidden_dim,
+        )
+        linear_mask = prepare_cudnn_linear_mask(
+            self.linear_2.weight.device,
+            self.linear_2.weight.dtype,
+            hidden_dim,
+            self.c_z,
+        )
+        if linear_relu is not None:
+            self._cudnn_graph_plans["linear_relu"] = linear_relu
+        if linear_mask is not None:
+            self._cudnn_graph_plans["linear_mask"] = linear_mask
 
     def forward(self, z: torch.Tensor, mask: torch.Tensor):
+        if self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(z):
+            return chunk_apply(self._forward_impl, z, mask, policy=self.auto_chunk_policy)
+        if can_use_cudnn_graph(z, enabled=self.enable_cudnn_graph):
+            output = self._forward_cudnn(z, mask)
+            if output is not None:
+                return output
+        return self._forward_impl(z, mask)
+
+    def _forward_cudnn(self, z: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
+        z = self.layer_norm(z)
+        rows = z.numel() // self.c_z
+        hidden_dim = self.n * self.c_z
+        z_flat = z.reshape(1, rows, self.c_z).contiguous()
+        mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype).contiguous()
+        weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
+        bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
+        linear_relu = self._cudnn_graph_plans.get("linear_relu")
+        hidden = (
+            cudnn_linear_relu(z_flat, weight_1_t, bias_1)
+            if linear_relu is None
+            else linear_relu(z_flat, weight_1_t, bias_1)
+        )
+        if hidden is None and linear_relu is not None:
+            hidden = cudnn_linear_relu(z_flat, weight_1_t, bias_1)
+        if hidden is None:
+            return None
+        weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
+        bias_2 = self.linear_2.bias.reshape(1, 1, self.c_z)
+        linear_mask = self._cudnn_graph_plans.get("linear_mask")
+        output = (
+            cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+            if linear_mask is None
+            else linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+        )
+        if output is None and linear_mask is not None:
+            output = cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+        return None if output is None else output.view_as(z)
+
+    def _forward_impl(self, z: torch.Tensor, mask: torch.Tensor):
         mask = mask.unsqueeze(-1)
         # [*, N_res, N_res, C_z]
         z = self.layer_norm(z)
@@ -206,22 +358,91 @@ class PairTransition(nn.Module):
         return z
 
 
-class MSATransition(nn.Module):
+class MSATransition(CudnnGraphModule):
     def __init__(
-        self, c_m: int, n: int, eps: float = 1e-5, dtype: torch.dtype = None, skip_create_weights: bool = False
-    ):
+        self,
+        c_m: int,
+        n: int,
+        eps: float = 1e-5,
+        dtype: torch.dtype = None,
+        skip_create_weights: bool = False,
+        enable_cudnn_graph: bool = False,
+    ) -> None:
         super().__init__()
+        self.enable_cudnn_graph = enable_cudnn_graph
         self.dtype = dtype
         self.c_m = c_m
         self.n = n
+        self._cudnn_graph_plans: dict[str, _CudnnPlan] = {}
 
         self.layer_norm = nn.LayerNorm(c_m, eps=eps, dtype=dtype)
-        self.linear_1 = Linear(c_m, n * c_m, bias=True, dtype=dtype)
-        self.linear_2 = Linear(n * c_m, c_m, bias=True, dtype=dtype)
+        self.linear_1 = Linear(c_m, n * c_m, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
+        self.linear_2 = Linear(n * c_m, c_m, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.relu = nn.ReLU()
+        self._prepare_cudnn_graphs()
 
-    def forward(self, m: torch.Tensor, mask: torch.Tensor):
-        # Similar to PairTransition, but with different names
+    def _prepare_cudnn_graphs(self) -> None:
+        self._cudnn_graph_plans.clear()
+        if not self.linear_1._weights_created or not self.linear_2._weights_created:
+            return
+        if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
+            return
+        hidden_dim = self.n * self.c_m
+        linear_relu = prepare_cudnn_linear_relu(
+            self.linear_1.weight.device,
+            self.linear_1.weight.dtype,
+            self.c_m,
+            hidden_dim,
+        )
+        linear_mask = prepare_cudnn_linear_mask(
+            self.linear_2.weight.device,
+            self.linear_2.weight.dtype,
+            hidden_dim,
+            self.c_m,
+        )
+        if linear_relu is not None:
+            self._cudnn_graph_plans["linear_relu"] = linear_relu
+        if linear_mask is not None:
+            self._cudnn_graph_plans["linear_mask"] = linear_mask
+
+    def forward(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if can_use_cudnn_graph(m, enabled=self.enable_cudnn_graph):
+            output = self._forward_cudnn(m, mask)
+            if output is not None:
+                return output
+        return self._forward_impl(m, mask)
+
+    def _forward_cudnn(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
+        m = self.layer_norm(m)
+        rows = m.numel() // self.c_m
+        hidden_dim = self.n * self.c_m
+        m_flat = m.reshape(1, rows, self.c_m).contiguous()
+        mask_flat = mask.reshape(1, rows, 1).to(dtype=m.dtype).contiguous()
+        weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
+        bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
+        linear_relu = self._cudnn_graph_plans.get("linear_relu")
+        hidden = (
+            cudnn_linear_relu(m_flat, weight_1_t, bias_1)
+            if linear_relu is None
+            else linear_relu(m_flat, weight_1_t, bias_1)
+        )
+        if hidden is None and linear_relu is not None:
+            hidden = cudnn_linear_relu(m_flat, weight_1_t, bias_1)
+        if hidden is None:
+            return None
+        weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
+        bias_2 = self.linear_2.bias.reshape(1, 1, self.c_m)
+        linear_mask = self._cudnn_graph_plans.get("linear_mask")
+        output = (
+            cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+            if linear_mask is None
+            else linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+        )
+        if output is None and linear_mask is not None:
+            output = cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+        return None if output is None else output.view_as(m)
+
+    def _forward_impl(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask = mask.unsqueeze(-1)
         m = self.layer_norm(m)
         m = self.linear_1(m)

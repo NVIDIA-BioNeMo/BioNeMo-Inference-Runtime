@@ -1,0 +1,64 @@
+{
+  "executables": {
+    "fccc87ae480e39a5a2339cb07155303cdde39bf1e6a9e49d0bd3380d7766df28": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 81920,
+      "image_sha256": "d27f518416e653807e52d08100ae7ad927fa694f4a3b548456c97c41f5983855",
+      "image_size": 39072,
+      "kernel_sm": 80,
+      "kernel_symbol": "8e849ee735f85210b2f7c6a569d1a0dd405aabe0833c89b7a1df572c22844c82",
+      "launch_abi": "triangle_attention_sm80",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "72ee84d79c214865a92e753d44f88ae971b78e96237f39a8b33a7490bf2a7e02",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 64,
+        "packed_output": true
+      },
+      "variant_id": "f30123cd52e437ec6895"
+    },
+    {
+      "executable": "733ca579ae9dc5a8acd9557b9331944a9492bc4ff0aa00d9da7c4aa8c30287bf",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 32,
+        "packed_output": true
+      },
+      "variant_id": "f5e16ff3e9f02ff933f0"
+    },
+    {
+      "executable": "75e1b3d5e54bbacd512cf47e16ad9500df70d67b939fb08c81ba193c5efe139f",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 32,
+        "packed_output": false
+      },
+      "variant_id": "f9b1c75a63b89a3f590a"
+    },
+    {
+      "executable": "fccc87ae480e39a5a2339cb07155303cdde39bf1e6a9e49d0bd3380d7766df28",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 128,
+        "packed_output": true
+      },
+      "variant_id": "fd6488dfb8ebf5ea80e7"
+    },
+    {
+      "executable": "bfde42a6ea1d248f35fe8a452f6444162bc7abe76985c1e154aa391eaf6621de",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 128,
+        "packed_output": false
+      },
+      "variant_id": "fe48ad8ee87621149313"
+    }
+  ]
+}

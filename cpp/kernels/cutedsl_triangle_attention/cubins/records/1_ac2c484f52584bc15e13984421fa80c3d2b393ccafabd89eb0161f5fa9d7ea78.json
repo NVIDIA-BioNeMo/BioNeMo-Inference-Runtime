@@ -1,0 +1,73 @@
+{
+  "executables": {
+    "1295da0e45eb2e1b8752d63d412b7312048c61626d956a4e3155c84569dfacf8": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 86016,
+      "image_sha256": "d266b7e07cf7451a5d4aaf454a9dec907df72fdfcad28be2c571b9c832536d7e",
+      "image_size": 58528,
+      "kernel_sm": 80,
+      "kernel_symbol": "2399620d37e9b1a60c6825b0c9fe5feeaa0de639a1396f802a6ef6504d4a21fe",
+      "launch_abi": "triangle_attention_sm80",
+      "target_arch": "sm_89",
+      "target_sm": 89
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "74f06b3d86e6f1ddebefde4e2ebefa05f37b193bf87933502ca5e35747a89b1b",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 64,
+        "packed_output": true
+      },
+      "variant_id": "1066f063aa6a9c0d5d65"
+    },
+    {
+      "executable": "b0ab5e4e47c4393e465f559a40041f07386713907ebb93dbda6b8182ab3bfb27",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": false
+      },
+      "variant_id": "16fded109f14bc466308"
+    },
+    {
+      "executable": "6a99e7ec3818f01db707f88b6f2bebee486a4a31edec51950f410f38e17ddfa7",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": true
+      },
+      "variant_id": "177af328364f0af6e46c"
+    },
+    {
+      "executable": "955445673540bcf5f7eee420a326b8908df8a36c0d03ddb86a7f2ad5aa59b5d2",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 32,
+        "packed_output": true
+      },
+      "variant_id": "18af548bf9387f5fbf18"
+    },
+    {
+      "executable": "7be3cdc271ab6092136f48e9d653c97a728b261ca9170d35632120fd540d0f7e",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": true
+      },
+      "variant_id": "18dcf84b4859c0945010"
+    },
+    {
+      "executable": "580419f420fb2b2447d7a0defebbd1e5ed07975f2451b0df91a2fad61e6f176d",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": false
+      },
+      "variant_id": "1d24e02ca97dfad7f4a9"
+    }
+  ]
+}

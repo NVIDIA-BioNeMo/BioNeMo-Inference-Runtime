@@ -1,0 +1,354 @@
+{
+  "executables": {
+    "248fa6d0f83b0a180b5afd3759f7bb5d24ffc14b843869b0570180c1ede7f182": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "1af3688e3b778f392653829b0b1a23d54a60f34882cea3102eb52ca6abfe1134",
+      "image_size": 33952,
+      "kernel_sm": 80,
+      "kernel_symbol": "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_80",
+      "target_sm": 80
+    },
+    "25569c13e9523c34661922016ecc6f41d7241f3b228f7095694d55cbd12ec96e": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 90240,
+      "image_sha256": "f594d93b855508a148688a4337097acc2e5342ea71d43ed93434b4c78d6f76c9",
+      "image_size": 31904,
+      "kernel_sm": 80,
+      "kernel_symbol": "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    },
+    "26991bfab2b9dc10f435a5e65c730b84dfc025dda6f0924cc12c87c2d2a1e053": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "a05a80ccd9d9ba9e4b916446275b4cbd98f057f5f34ed058e9d38c0f3afe4248",
+      "image_size": 68096,
+      "kernel_sm": 80,
+      "kernel_symbol": "55874140b657341945a7f9a7135a7efc9e1d43ade580d8678eaa5e61e3e9be00",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "27141682d6f8631e3f7686d08e9dcfbb47823282a4a20f88b0b85356ccc05893": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 90240,
+      "image_sha256": "f3dfd57a88efadebddc6841760fa5232031b0910bda556aa993f1c0eaed89371",
+      "image_size": 41120,
+      "kernel_sm": 80,
+      "kernel_symbol": "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    },
+    "2893976332705cc9fecf96e440a5a1b1d1cee23c1fae3b7679baf98578454820": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "f00d5b7e4452f7537a408b2a300f86332f2a8b379c83c75f98596c661673f77d",
+      "image_size": 39952,
+      "kernel_sm": 80,
+      "kernel_symbol": "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "2d13dc72394e1273b31e213d94b089932b3cf9d3d0d0d7c1e2cf92e7ab77d16c": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "c7145534af6e699de84a564fbc28d9e9f40686b5cf93c1a2d05e4a49fac546b4",
+      "image_size": 59904,
+      "kernel_sm": 80,
+      "kernel_symbol": "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
+    "2d23e7b20a70d1002f55a10136837d70560403d35d651cc07210b64f271c4127": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "1385067edd37c977bc4f40f1fb599680826c01959177b871133b3e1676727c92",
+      "image_size": 59904,
+      "kernel_sm": 80,
+      "kernel_symbol": "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "2e6a29f0da51d53126ad7d7508cc573b5cabf8da76c0ded3f57c6a8828510b4a": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "8bcf2bc92eac2c6464e88118a0a90e3b13c63a9ca71b9f388ed2d725ad7ee04b",
+      "image_size": 43024,
+      "kernel_sm": 80,
+      "kernel_symbol": "55874140b657341945a7f9a7135a7efc9e1d43ade580d8678eaa5e61e3e9be00",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "2ecc94cd67e83a20d1adea636f6eb0457f014e22d74a2ad9914cae41bd0cc0d5": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "dea1167ace36f9fb84b69adb289d49f8e5428f2178db217be20fa237eaead885",
+      "image_size": 68376,
+      "kernel_sm": 80,
+      "kernel_symbol": "55874140b657341945a7f9a7135a7efc9e1d43ade580d8678eaa5e61e3e9be00",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
+    "2ef752ab313859885ae5d376c1da03a819d0f5e669da9fa696b792e9ea38cc9e": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 139392,
+      "image_sha256": "8fd5a491c7c1397b574a66bdde84e8f939e28cbcebbea37553e787c90f8abbfd",
+      "image_size": 67912,
+      "kernel_sm": 80,
+      "kernel_symbol": "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0",
+      "launch_abi": "outer_product_mean_sm80",
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    }
+  },
+  "kernel_symbols": {
+    "2bcc51a4de107299e56a0e11c8c54912714b7608e01a467cd1a88b51fa687fa0": "k2acdb4d8237ca9f5ee5612b854a01bdc51c11b08bbda87de2bd007378e1f8a19____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "fe43871602088aefd6b8b96cd50b007657160ececb268e1de4a48523bae012d7",
+      "runtime_metadata": {
+        "config_identity": "fp16|4|8|32|32|64|3|2|True|True|True|True|8|32|32|128|256|4,2,1|2,4,1",
+        "has_bias": true,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 4,
+        "tile_j": 8
+      },
+      "variant_id": "200fb32d6025244e54ba"
+    },
+    {
+      "executable": "b11952aaa5f9f66715c10b82c273bdd44070244891e8e413d95171129b4463c1",
+      "runtime_metadata": {
+        "config_identity": "bf16|8|4|32|16|32|2|2|True|True|True|True|8|32|32|128|256|4,2,1|1,8,1",
+        "has_bias": false,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "208645e5760b5e8195aa"
+    },
+    {
+      "executable": "4f43a773b15c2316c131a4f42a14cb1da64d06648e4478a599ddb113563680f9",
+      "runtime_metadata": {
+        "config_identity": "bf16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|4,2,1|1,8,1",
+        "has_bias": false,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "20a832527d0cc03dc6c6"
+    },
+    {
+      "executable": "151f43bc61d9323b429e339a8fcd74cf293bd0c0713f05cf03dc2d894fbaab67",
+      "runtime_metadata": {
+        "config_identity": "fp16|4|8|32|16|32|2|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": true,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 4,
+        "tile_j": 8
+      },
+      "variant_id": "22964edd186b8393dd05"
+    },
+    {
+      "executable": "2ecc94cd67e83a20d1adea636f6eb0457f014e22d74a2ad9914cae41bd0cc0d5",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|4,2,1|1,8,1",
+        "has_bias": true,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2487dfa1ed2068f0f9e2"
+    },
+    {
+      "executable": "54f6cb1700df56b1ccc0d3b7ffd15c1815194e2a3324eccd3a2df9627415841d",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": false,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "24bcc2a3ecc2b45d76e1"
+    },
+    {
+      "executable": "0fb56d2055e36b415d6234b6976a30f1ebefdb52b789b42700f078c3a6cc35d4",
+      "runtime_metadata": {
+        "config_identity": "fp16|4|8|32|16|32|2|2|True|True|True|True|8|32|32|128|256|4,2,1|2,4,1",
+        "has_bias": false,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 4,
+        "tile_j": 8
+      },
+      "variant_id": "250a979eeeaab5fc52b7"
+    },
+    {
+      "executable": "6d1d2c308721a3b2a557b1b4d9d94fa3d3953367ee0cea32561662aa3669cc14",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|4,2,1|2,4,1",
+        "has_bias": false,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "264eda63a0b45d092525"
+    },
+    {
+      "executable": "a0c3ef39a461f39d75ea9ef351b92721a30cbc7bf140a3c018d1b3ff1921ff89",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|16|32|2|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": false,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2705b5ba9abd186ff39a"
+    },
+    {
+      "executable": "477322009efc2d6e4bb35d91ea37159138afda3f281679de80aaec55cd52948c",
+      "runtime_metadata": {
+        "config_identity": "fp16|4|8|32|16|32|2|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": false,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 4,
+        "tile_j": 8
+      },
+      "variant_id": "277aba2d64b71396ee0f"
+    },
+    {
+      "executable": "0fd408207e4718b9292d52025e9d6591f8b3975e7d4f780ad6768595633c2bd9",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": true,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "280826fc4ad335089297"
+    },
+    {
+      "executable": "1580dfb6450544c17309434ac2f8effc4d67b96c864c53c388331eca5ee4576a",
+      "runtime_metadata": {
+        "config_identity": "fp16|4|8|32|32|64|3|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": false,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 4,
+        "tile_j": 8
+      },
+      "variant_id": "290b3215d9b10310de40"
+    },
+    {
+      "executable": "72f70b2103aefd4474fd196ae02a92cd24dee32f82ed1b1618fc2e67e98861f8",
+      "runtime_metadata": {
+        "config_identity": "bf16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": true,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2a59384740e00cd23508"
+    },
+    {
+      "executable": "9944994798466cf63ba54984133485bde04ff6885cde5c71bec72cd683e9088c",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|4,2,1|2,4,1",
+        "has_bias": false,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2b0b7ea49c35805dd503"
+    },
+    {
+      "executable": "a39b0df0ab5842bb12367c680abeed97af7a04cb894a1977887812b2a9ba3762",
+      "runtime_metadata": {
+        "config_identity": "bf16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|4,2,1|1,8,1",
+        "has_bias": false,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2d6a87b6219833e9bc74"
+    },
+    {
+      "executable": "a0c3ef39a461f39d75ea9ef351b92721a30cbc7bf140a3c018d1b3ff1921ff89",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|16|32|2|2|True|True|True|True|8|32|32|128|256|2,4,1|2,4,1",
+        "has_bias": false,
+        "norm_before": false,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2d91e5057232a771a6c0"
+    },
+    {
+      "executable": "6972c835fa3481737c7f7cf7f1bd91848c7e0c03e6c10cf596cfe6e9e738f3bf",
+      "runtime_metadata": {
+        "config_identity": "fp16|8|4|32|32|64|3|2|True|True|True|True|8|32|32|128|256|4,2,1|2,4,1",
+        "has_bias": true,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2dea8383ef0582bd3cb2"
+    },
+    {
+      "executable": "3651ad4f305c281ae92d4516e6ce4dffe9526a259ca787494543f40e4acfdd32",
+      "runtime_metadata": {
+        "config_identity": "bf16|8|4|32|16|32|2|2|True|True|True|True|8|32|32|128|256|4,2,1|1,8,1",
+        "has_bias": true,
+        "norm_before": true,
+        "num_threads": 256,
+        "raster_factor": 8,
+        "tile_i": 8,
+        "tile_j": 4
+      },
+      "variant_id": "2dfd90a8ac5208556af5"
+    }
+  ]
+}

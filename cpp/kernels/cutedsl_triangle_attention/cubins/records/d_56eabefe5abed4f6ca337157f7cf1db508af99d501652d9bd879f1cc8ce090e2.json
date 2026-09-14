@@ -1,0 +1,129 @@
+{
+  "executables": {
+    "d34704537304ad916a27d500fe1728a53ded24f50d2c7ca6d508cbcc1d61c704": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 147456,
+      "image_sha256": "add68bd76a610a96d9430a64b023dc7f0fdf412d501c3d126cf369391bb554e3",
+      "image_size": 51360,
+      "kernel_sm": 80,
+      "kernel_symbol": "2399620d37e9b1a60c6825b0c9fe5feeaa0de639a1396f802a6ef6504d4a21fe",
+      "launch_abi": "triangle_attention_sm80",
+      "target_arch": "sm_80",
+      "target_sm": 80
+    },
+    "d9c1ca27c12ab32f27b68f86edf71bac4e8f71b2a9b83680228816f731a4f9da": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 20480,
+      "image_sha256": "ac06915e2a00409498becddce88ebdc55978db1e6976abbf79d3921462ed4e90",
+      "image_size": 29856,
+      "kernel_sm": 80,
+      "kernel_symbol": "2f343f6978e66dd22ef17ee91b9c3f2f04ed5f674b48f198ac4983e9f64d60cf",
+      "launch_abi": "triangle_attention_sm80",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "6f06419b61eb450ae0d37b3087fe79ec5db40dbd8f12e8dbf498066c7b1c9c79",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 32,
+        "packed_output": false
+      },
+      "variant_id": "d141f641b86b85b27eed"
+    },
+    {
+      "executable": "74f06b3d86e6f1ddebefde4e2ebefa05f37b193bf87933502ca5e35747a89b1b",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": true
+      },
+      "variant_id": "d1fee651c907337120b7"
+    },
+    {
+      "executable": "a4dafa6937bc5eee97553c6dbdffa32594aee7d9eb0a21c22d6debedb2ac3145",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": true
+      },
+      "variant_id": "d41987cf95f5a2ec5bbe"
+    },
+    {
+      "executable": "c502a5e11dbdaad0e5f7bda9ecdce2afcdf2f2526c5c7bf7c1fd6cf30e6490ff",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": true
+      },
+      "variant_id": "d42a3d5d011b402758d5"
+    },
+    {
+      "executable": "50787d23d13e0dfad2c4cbfe48fab85b55819235b09c8f81b703fd982ceee9a7",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": true
+      },
+      "variant_id": "d484d3b963b32dc9a5d1"
+    },
+    {
+      "executable": "fccc87ae480e39a5a2339cb07155303cdde39bf1e6a9e49d0bd3380d7766df28",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": false
+      },
+      "variant_id": "d7939b9621b431d2d1a6"
+    },
+    {
+      "executable": "3e9e7a85171e1abda8950baa02a56d53dca8a2d76ee43777ef6ffbaa93b57368",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 128,
+        "packed_output": true
+      },
+      "variant_id": "d83e29b6657c692e3e09"
+    },
+    {
+      "executable": "ee0ca5781d554b85b9f70e5d6202d82c44c1c1e71c9eb8c1a127909533679c71",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": true
+      },
+      "variant_id": "db7ce4a0181254df8875"
+    },
+    {
+      "executable": "c502a5e11dbdaad0e5f7bda9ecdce2afcdf2f2526c5c7bf7c1fd6cf30e6490ff",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": false
+      },
+      "variant_id": "dbc70bb1135413139df5"
+    },
+    {
+      "executable": "4506e2a854ae669b7a1d0029acbdf90e1896ff43d24e620b49d574fb09d10197",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 64,
+        "packed_output": false
+      },
+      "variant_id": "dce4cae476e01a83a55f"
+    },
+    {
+      "executable": "580419f420fb2b2447d7a0defebbd1e5ed07975f2451b0df91a2fad61e6f176d",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": true
+      },
+      "variant_id": "de7f08c2746452ecd641"
+    }
+  ]
+}

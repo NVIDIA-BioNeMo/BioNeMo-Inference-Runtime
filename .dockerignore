@@ -102,6 +102,8 @@ workdir/
 # the tracked family indexes and their Git-LFS pack payloads.
 **/cubins/*
 !**/cubins/index.json
+!**/cubins/records/
+!**/cubins/records/*.json
 !**/cubins/packs/
 !**/cubins/packs/*.tar.xz
 **/bioir_cubins/

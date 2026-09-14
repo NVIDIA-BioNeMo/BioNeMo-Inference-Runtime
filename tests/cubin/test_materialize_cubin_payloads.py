@@ -271,8 +271,52 @@ def _write_case(
     packs.mkdir(parents=True)
     pack_name = f"{family}_{target_arch.replace('_', '')}_{pack_hash}.tar.xz"
     (packs / pack_name).write_bytes(compressed)
+    symbol = f"k{hashlib.sha256(family.encode()).hexdigest()}"
+    symbol_id = hashlib.sha256(_stable_json(symbol)).hexdigest()
+    metadata = _metadata(family, dtype, kernel_sm)
+    sm90_launch = metadata.pop("sm90_launch", None)
+    sm90_launches = {}
+    executable = {
+        "image_sha256": image_hash,
+        "image_size": len(indexed_image),
+        "target_sm": target_sm,
+        "target_arch": target_arch,
+        "kernel_sm": kernel_sm,
+        "launch_abi": f"{family}_sm{kernel_sm}",
+        "dtype": dtype,
+        "kernel_symbol": symbol_id,
+        "dynamic_smem_bytes": metadata.pop("dynamic_smem_bytes"),
+    }
+    nonportable = metadata.pop("non_portable_cluster_size_allowed")
+    if nonportable:
+        executable["non_portable_cluster_size_allowed"] = True
+    if sm90_launch is not None:
+        launch_id = hashlib.sha256(_stable_json(sm90_launch)).hexdigest()
+        sm90_launches[launch_id] = sm90_launch
+        executable["sm90_launch"] = launch_id
+    metadata.pop("is_bfloat16", None)
+    metadata.pop("dtype_name", None)
+    executable_id = hashlib.sha256(_stable_json(executable)).hexdigest()
+    variant = {"variant_id": variant_id, "executable": executable_id, "runtime_metadata": metadata}
+    shards = {
+        digit: {"kernel_symbols": {}, "sm90_launches": {}, "executables": {}, "variants": []}
+        for digit in "0123456789abcdef"
+    }
+    shards[symbol_id[0]]["kernel_symbols"][symbol_id] = symbol
+    for launch_id, launch in sm90_launches.items():
+        shards[launch_id[0]]["sm90_launches"][launch_id] = launch
+    shards[executable_id[0]]["executables"][executable_id] = executable
+    shards[variant_id[0]]["variants"].append(variant)
+    shard_records = {}
+    records = cubins / "records"
+    records.mkdir()
+    for digit, shard in shards.items():
+        shard_bytes = json.dumps(shard, indent=2, sort_keys=True).encode() + b"\n"
+        shard_hash = hashlib.sha256(shard_bytes).hexdigest()
+        (records / f"{digit}_{shard_hash}.json").write_bytes(shard_bytes)
+        shard_records[digit] = {"sha256": shard_hash, "size": len(shard_bytes)}
     index = {
-        "format": "bioir-cubin-pack-v1",
+        "format": "bioir-cubin-pack-v2",
         "family": family,
         "registry_version": 2,
         "compile_fingerprint": "1" * 64,
@@ -282,29 +326,11 @@ def _write_case(
         },
         "packs": {
             target_arch: {
-                "file": f"packs/{pack_name}",
                 "sha256": pack_hash,
                 "size": len(compressed),
-                "image_count": 1,
             }
         },
-        "variants": [
-            {
-                "variant_id": variant_id,
-                "target_sm": target_sm,
-                "target_arch": target_arch,
-                "kernel_sm": kernel_sm,
-                "launch_abi": f"{family}_sm{kernel_sm}",
-                "supported_sms": [target_sm],
-                "dtype": dtype,
-                "label": f"{family}.{variant_id}",
-                "identity_spec": identity_spec,
-                "aliases": _aliases(family),
-                "runtime_metadata": _metadata(family, dtype, kernel_sm),
-                "kernel_symbol": f"k{hashlib.sha256(family.encode()).hexdigest()}",
-                "image": {"sha256": image_hash, "size": len(indexed_image), "pack": target_arch},
-            }
-        ],
+        "shards": shard_records,
     }
     index_path = cubins / "index.json"
     index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
@@ -313,8 +339,8 @@ def _write_case(
 
 def _pack_for_index(index_path: Path) -> Path:
     index = json.loads(index_path.read_text())
-    pack = next(iter(index["packs"].values()))
-    return index_path.parent / pack["file"]
+    target_arch, pack = next(iter(index["packs"].items()))
+    return index_path.parent / "packs" / (f"{index['family']}_{target_arch.replace('_', '')}_{pack['sha256']}.tar.xz")
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -342,9 +368,8 @@ def test_materializes_every_family_registry_shape(tmp_path: Path, family: str) -
         # The legacy corpus contains only LayerNorm images and predates the
         # explicit norm axis.
         assert "bool is_rms_norm;" in header
-    public_label = json.loads(index.read_text())["variants"][0]["label"]
-    assert public_label not in header
-    assert public_label not in source
+    assert '"label"' not in index.read_text()
+    assert all('"label"' not in path.read_text() for path in (index.parent / "records").glob("*.json"))
     objects = list((result.output_dir / "objects").glob("*.cubin"))
     assert len(objects) == 1 and objects[0].read_bytes().startswith(b"\x7fELF")
 
@@ -357,21 +382,12 @@ def test_dual_gemm_x_x_gate_is_a_distinct_runtime_key(tmp_path: Path) -> None:
         variants = value["variants"]
         assert isinstance(variants, list)
         silu = json.loads(json.dumps(variants[0]))
-        silu["identity_spec"]["gate"] = "silu"
         silu["runtime_metadata"]["is_silu_gate"] = True
-        canonical = {
-            "registry_version": 2,
-            "family": family,
-            "target_sm": silu["target_sm"],
-            "dtype": silu["dtype"],
-            "spec": silu["identity_spec"],
-        }
-        silu["variant_id"] = hashlib.sha256(_stable_json(canonical)).hexdigest()[:20]
-        silu["label"] = f"{family}.{silu['variant_id']}"
+        silu["variant_id"] = hashlib.sha256(b"silu").hexdigest()[:20]
         variants.append(silu)
         variants.sort(key=lambda variant: variant["variant_id"])
 
-    _mutate_index(index, add_silu_variant)
+    _mutate_records(index, add_silu_variant)
     result = materializer.materialize([(family, index)], tmp_path / "build")
 
     source = (result.output_dir / f"{family}_registry.cpp").read_text()
@@ -386,21 +402,12 @@ def test_adaln_norm_kind_is_a_distinct_runtime_key(tmp_path: Path) -> None:
         variants = value["variants"]
         assert isinstance(variants, list)
         rms_norm = json.loads(json.dumps(variants[0]))
-        rms_norm["identity_spec"]["rms_norm"] = True
         rms_norm["runtime_metadata"]["is_rms_norm"] = True
-        canonical = {
-            "registry_version": 2,
-            "family": family,
-            "target_sm": rms_norm["target_sm"],
-            "dtype": rms_norm["dtype"],
-            "spec": rms_norm["identity_spec"],
-        }
-        rms_norm["variant_id"] = hashlib.sha256(_stable_json(canonical)).hexdigest()[:20]
-        rms_norm["label"] = f"{family}.{rms_norm['variant_id']}"
+        rms_norm["variant_id"] = hashlib.sha256(b"rms-norm").hexdigest()[:20]
         variants.append(rms_norm)
         variants.sort(key=lambda variant: variant["variant_id"])
 
-    _mutate_index(index, add_rms_norm_variant)
+    _mutate_records(index, add_rms_norm_variant)
     result = materializer.materialize([(family, index)], tmp_path / "build")
 
     source = (result.output_dir / f"{family}_registry.cpp").read_text()
@@ -466,10 +473,9 @@ def test_dual_gemm_x0_x1_accepts_previous_artifact_alias_schema(tmp_path: Path) 
 
     def drop_legacy_k1(value: dict[str, object]) -> None:
         variant = value["variants"][0]
-        variant["aliases"][0].pop("K1")
         variant["runtime_metadata"].pop("K1")
 
-    _mutate_index(index, drop_legacy_k1)
+    _mutate_records(index, drop_legacy_k1)
 
     result = materializer.materialize([(family, index)], tmp_path / "build")
     header = (result.output_dir / f"{family}_registry.h").read_text()
@@ -487,32 +493,14 @@ def test_dual_gemm_x0_x1_asymmetric_k1_is_a_runtime_axis(tmp_path: Path) -> None
 
     def set_asymmetric_k1(value: dict[str, object]) -> None:
         variant = value["variants"][0]
-        variant["aliases"][0]["K1"] = 200
         variant["runtime_metadata"]["K1"] = 200
 
-    _mutate_index(index, set_asymmetric_k1)
+    _mutate_records(index, set_asymmetric_k1)
 
     result = materializer.materialize([(family, index)], tmp_path / "build")
     source = (result.output_dir / f"{family}_registry.cpp").read_text()
 
     assert "    64,\n    200,\n    32,\n    64," in source
-
-
-def test_dual_gemm_x0_x1_selects_alias_schema_per_record(tmp_path: Path) -> None:
-    """Legacy and asymmetric aliases may coexist while a corpus migrates."""
-    family = "dual_gemm_x0_x1"
-    index = _write_case(tmp_path / "source", family)
-
-    def add_legacy_alias(value: dict[str, object]) -> None:
-        # Canonical JSON sorts "K":128 before "K":64, so the K1-less record
-        # lands first and the schema cannot be read off aliases[0].
-        value["variants"][0]["aliases"].insert(0, {"K": 128, "N": 32, "has_bias": False})
-
-    _mutate_index(index, add_legacy_alias)
-
-    result = materializer.materialize([(family, index)], tmp_path / "build")
-
-    assert (result.output_dir / f"{family}_registry.cpp").is_file()
 
 
 def test_committed_dual_gemm_x0_x1_index_parses() -> None:
@@ -521,7 +509,7 @@ def test_committed_dual_gemm_x0_x1_index_parses() -> None:
     families = materializer._load_families([("dual_gemm_x0_x1", index)])
 
     assert families[0].variants
-    corpus_has_k1 = any("K1" in variant["runtime_metadata"] for variant in json.loads(index.read_text())["variants"])
+    corpus_has_k1 = any("K1" in variant.runtime_metadata for variant in families[0].variants)
     for variant in families[0].variants:
         k1 = int(variant.runtime_metadata["K1"])
         assert k1 >= 1
@@ -677,7 +665,9 @@ def test_all_generated_registry_sources_compile_as_cpp17(tmp_path: Path) -> None
         ),
         (
             "bad-alias-shape",
-            lambda index: _mutate_index(index, lambda value: value["variants"][0]["aliases"][0].update(extra=1)),
+            lambda index: _mutate_records(
+                index, lambda value: value["variants"][0]["runtime_metadata"].update(extra=1)
+            ),
             "invalid keys",
         ),
         (
@@ -720,39 +710,61 @@ def _mutate_index(index: Path, mutation: Callable[[dict[str, object]], object]) 
     index.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def _mutate_records(index: Path, mutation: Callable[[dict[str, object]], object]) -> None:
+    header = json.loads(index.read_text())
+    merged: dict[str, object] = {"kernel_symbols": {}, "sm90_launches": {}, "executables": {}, "variants": []}
+    records_dir = index.parent / "records"
+    for digit, record in header["shards"].items():
+        path = records_dir / f"{digit}_{record['sha256']}.json"
+        shard = json.loads(path.read_text())
+        merged["kernel_symbols"].update(shard["kernel_symbols"])
+        merged["sm90_launches"].update(shard["sm90_launches"])
+        merged["executables"].update(shard["executables"])
+        merged["variants"].extend(shard["variants"])
+        path.unlink()
+    mutation(merged)
+    merged["variants"].sort(key=lambda variant: variant["variant_id"])
+    shards = {
+        digit: {"kernel_symbols": {}, "sm90_launches": {}, "executables": {}, "variants": []}
+        for digit in "0123456789abcdef"
+    }
+    for symbol_id, symbol in merged["kernel_symbols"].items():
+        shards[symbol_id[0]]["kernel_symbols"][symbol_id] = symbol
+    for launch_id, launch in merged["sm90_launches"].items():
+        shards[launch_id[0]]["sm90_launches"][launch_id] = launch
+    for executable_id, executable in merged["executables"].items():
+        shards[executable_id[0]]["executables"][executable_id] = executable
+    for variant in merged["variants"]:
+        shards[variant["variant_id"][0]]["variants"].append(variant)
+    for digit, shard in shards.items():
+        raw = json.dumps(shard, indent=2, sort_keys=True).encode() + b"\n"
+        digest = hashlib.sha256(raw).hexdigest()
+        (records_dir / f"{digit}_{digest}.json").write_bytes(raw)
+        header["shards"][digit] = {"sha256": digest, "size": len(raw)}
+    index.write_text(json.dumps(header, indent=2, sort_keys=True) + "\n")
+
+
 def _add_duplicate_runtime_key(index: Path) -> None:
     def mutate(value: dict[str, object]) -> None:
         variants = value["variants"]
         assert isinstance(variants, list)
         duplicate = json.loads(json.dumps(variants[0]))
-        duplicate["identity_spec"]["duplicate"] = True
-        canonical = {
-            "registry_version": 2,
-            "family": value["family"],
-            "target_sm": duplicate["target_sm"],
-            "dtype": duplicate["dtype"],
-            "spec": duplicate["identity_spec"],
-        }
-        duplicate["variant_id"] = hashlib.sha256(_stable_json(canonical)).hexdigest()[:20]
-        duplicate["label"] = f"{value['family']}.{duplicate['variant_id']}"
+        duplicate["variant_id"] = hashlib.sha256(b"duplicate-runtime-key").hexdigest()[:20]
         variants.append(duplicate)
         variants.sort(key=lambda variant: variant["variant_id"])
 
-    _mutate_index(index, mutate)
+    _mutate_records(index, mutate)
 
 
-def test_rejects_private_style_public_label(tmp_path: Path) -> None:
-    # The class name here is invented. Only the *shape* is under test -- any
-    # label that is not f"{family}.{variant_id}" is rejected -- and this module
-    # ships publicly, so naming a real private kernel class would leak one.
+def test_rejects_extra_variant_field(tmp_path: Path) -> None:
     family = "dual_gemm_x_x"
     index = _write_case(tmp_path / "source", family, kernel_sm=90)
-    _mutate_index(
+    _mutate_records(
         index,
-        lambda value: value["variants"][0].update(label="K128.NotARealKernelClass.fp16.t0.bias0.mask0"),
+        lambda value: value["variants"][0].update(label="not-public"),
     )
 
-    with pytest.raises(materializer.MaterializationError, match="canonical public label"):
+    with pytest.raises(materializer.MaterializationError, match="invalid keys"):
         materializer.verify_packs([(family, index)])
 
 
@@ -811,7 +823,6 @@ def test_rejects_concatenated_xz_stream(tmp_path: Path) -> None:
 
     def mutate(value: dict[str, object]) -> None:
         pack = value["packs"][target_arch]
-        pack["file"] = f"packs/{new_name}"
         pack["sha256"] = pack_hash
         pack["size"] = len(concatenated)
 
@@ -838,7 +849,6 @@ def test_rejects_noncanonical_xz_dictionary_profile(tmp_path: Path) -> None:
 
     def mutate(value: dict[str, object]) -> None:
         pack = value["packs"]["sm_80"]
-        pack["file"] = f"packs/{new_name}"
         pack["sha256"] = pack_hash
         pack["size"] = len(compressed)
 
@@ -861,6 +871,28 @@ def test_rejects_unreferenced_sibling_pack(tmp_path: Path, operation: str) -> No
             materializer.verify_packs([(family, index)])
         else:
             materializer.materialize([(family, index)], tmp_path / "build")
+
+
+def test_rejects_unreferenced_sibling_record_shard(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family)
+    extra = index.parent / "records" / f"0_{'0' * 64}.json"
+    extra.write_text("{}\n")
+
+    with pytest.raises(materializer.MaterializationError, match="does not exactly match.*unreferenced"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_rejects_record_shard_hash_mismatch(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family)
+    header = json.loads(index.read_text())
+    digit, record = next(iter(header["shards"].items()))
+    shard = index.parent / "records" / f"{digit}_{record['sha256']}.json"
+    shard.write_bytes(shard.read_bytes().replace(b"  ", b" \t", 1))
+
+    with pytest.raises(materializer.MaterializationError, match="does not match its index record"):
+        materializer.verify_packs([(family, index)])
 
 
 def test_rejects_indexed_pack_size_before_decompression(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

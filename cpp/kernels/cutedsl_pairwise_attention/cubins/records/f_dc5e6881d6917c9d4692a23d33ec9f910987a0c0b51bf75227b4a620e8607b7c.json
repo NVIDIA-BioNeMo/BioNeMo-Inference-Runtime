@@ -1,0 +1,112 @@
+{
+  "executables": {
+    "f1b8a0d0a3c4b18882cd0c1e13475dc3af8a249884f4a8a6ba72967cd1a61c3b": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 88064,
+      "image_sha256": "80cb24d44568f50338971c8170c3186f4cdc1a2a8ecabae7c30534f46500c493",
+      "image_size": 73888,
+      "kernel_sm": 80,
+      "kernel_symbol": "dc76db2bd0c38eee5af5446deb15459c295358fa81871ddf1c0aa353b8d6cc5f",
+      "launch_abi": "pairwise_attention_sm80",
+      "target_arch": "sm_89",
+      "target_sm": 89
+    },
+    "f62be77d072cbc285b0b42a6c1a8983f3ea9c3f7787298f953dea39f3967eb46": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 32768,
+      "image_sha256": "1a1e8f2d12b8086f180fcba225311b5e259b74e24d9b404e4064ca5082551500",
+      "image_size": 44192,
+      "kernel_sm": 80,
+      "kernel_symbol": "24995ada98ab0db9ab7e8d337910fce7d13ad94cf09dd0dfeb296fa5e74d7c44",
+      "launch_abi": "pairwise_attention_sm80",
+      "target_arch": "sm_89",
+      "target_sm": 89
+    },
+    "f6475318baa99be97168e942086afac37a7820b0ca10a2b958284fbb5a93f170": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 69632,
+      "image_sha256": "43831effb4522fee6cc3afdcd9829c4b4082b455557493006baa5456ae091399",
+      "image_size": 42144,
+      "kernel_sm": 80,
+      "kernel_symbol": "dc76db2bd0c38eee5af5446deb15459c295358fa81871ddf1c0aa353b8d6cc5f",
+      "launch_abi": "pairwise_attention_sm80",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    },
+    "f9e735e1891d435dd6ad7e8d660f12af8965e2bd827befa370a48013af3018ab": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 49152,
+      "image_sha256": "d10989a0ad36e64b37fde69d4eb9ec956d59e267aa7d69a0d457bc09e6204f9d",
+      "image_size": 53408,
+      "kernel_sm": 80,
+      "kernel_symbol": "f2815d718eede462c311b48d9e1b666b3ca9a0b5c2eb237f264e1bf75fef14c7",
+      "launch_abi": "pairwise_attention_sm80",
+      "target_arch": "sm_89",
+      "target_sm": 89
+    },
+    "fc1ef09a19cd50d5aa020873e9fefe03763dadbf93f140a7cbd1c8ea14841197": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 220160,
+      "image_sha256": "39e62ce27eb654b287021804b163d8986b00e40d9c4db972cbf01401ffdf87cd",
+      "image_size": 90992,
+      "kernel_sm": 90,
+      "kernel_symbol": "a2d777d50cefbb49fd0eb52a496b0240eb366f520acf8de90a367947e351be69",
+      "launch_abi": "pairwise_attention_sm90",
+      "non_portable_cluster_size_allowed": true,
+      "sm90_launch": "be21c205a2f429bcb5b3f4da06fc03eacf610364411e4bebcec499dcd19d0653",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {
+    "f2815d718eede462c311b48d9e1b666b3ca9a0b5c2eb237f264e1bf75fef14c7": "k7464f2e04e6021c73491519083b11d75cd677e7a0972500a72475b0cbc9d26fe____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "17e11936a01712670e432da818ef00411b94688fb17f4352b4523bf2cc929944",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 32,
+        "packed_output": false
+      },
+      "variant_id": "f496506d78f88c1233df"
+    },
+    {
+      "executable": "c12933dba2626172a041ed5cbfaea5cbd2dafabf2f1aa7e15e14708244525351",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 48,
+        "packed_output": true
+      },
+      "variant_id": "f6c876b08cdb3900a1a5"
+    },
+    {
+      "executable": "5d54a6bd0d2a516f198b70613dea86094085f4e0839690ccfd13c5138e40a313",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 32,
+        "packed_output": false
+      },
+      "variant_id": "f82903b57617950b18af"
+    },
+    {
+      "executable": "2373b726ad559ac9601e5f775cf874a05a47180b13480d03393df77e9fa70bbc",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": false
+      },
+      "variant_id": "f99342c41c937259c1a0"
+    },
+    {
+      "executable": "7d249f022899dbd6262409d8d3b78dd01e50ddc5fe7180dcf59f21b597ffa57b",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": false
+      },
+      "variant_id": "fbf1246bac2ac6e4fe34"
+    }
+  ]
+}

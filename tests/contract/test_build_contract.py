@@ -72,28 +72,23 @@ def test_family_consumes_materialized_registry(family: str) -> None:
     assert "embedded::kCubinCount" not in launcher
 
 
-def test_git_rules_track_only_indexes_and_packs() -> None:
-    git = ["git", "-c", f"safe.directory={REPO_ROOT}"]
-    probe = subprocess.run(
-        [*git, "rev-parse", "--is-inside-work-tree"],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-    )
-    if probe.returncode != 0:
-        pytest.skip("Git ignore rules require checkout metadata")
+def test_git_rules_track_only_indexes_records_and_packs(tmp_path: Path) -> None:
+    shutil.copyfile(REPO_ROOT / ".gitignore", tmp_path / ".gitignore")
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    git = ["git"]
     family = FAMILIES[0]
     prefix = f"cpp/kernels/cutedsl_{family}/cubins"
 
     def ignored(path: str) -> bool:
         result = subprocess.run(
             [*git, "check-ignore", "--no-index", "--quiet", path],
-            cwd=REPO_ROOT,
+            cwd=tmp_path,
             check=False,
         )
         return result.returncode == 0
 
     assert not ignored(f"{prefix}/index.json")
+    assert not ignored(f"{prefix}/records/0_{'0' * 64}.json")
     assert not ignored(f"{prefix}/packs/{family}_sm80_deadbeef.tar.xz")
     assert ignored(f"{prefix}/.cache/objects/deadbeef.cubin")
     assert ignored(f"{prefix}/embedded_cubins.h")
@@ -106,6 +101,7 @@ def test_sdist_manifest_includes_only_public_build_inputs() -> None:
     manifest = (REPO_ROOT / "MANIFEST.in").read_text()
     assert "recursive-include cpp/cmake *.py" in manifest
     assert "recursive-include cpp/kernels index.json *.tar.xz" in manifest
+    assert "recursive-include cpp/kernels/cutedsl_*/cubins/records *.json" in manifest
     assert "prune cpp/tools" in manifest
 
 
@@ -127,6 +123,8 @@ def test_docker_context_excludes_raw_and_materialized_cubins() -> None:
     dockerignore = (REPO_ROOT / ".dockerignore").read_text()
     assert "**/cubins/*" in dockerignore
     assert "!**/cubins/index.json" in dockerignore
+    assert "!**/cubins/records/" in dockerignore
+    assert "!**/cubins/records/*.json" in dockerignore
     assert "!**/cubins/packs/" in dockerignore
     assert "!**/cubins/packs/*.tar.xz" in dockerignore
     assert "**/bioir_cubins/" in dockerignore
@@ -176,7 +174,7 @@ def test_full_cmake_build_consumes_synthetic_materialization(tmp_path: Path) -> 
 
 
 def _stage_indexed_corpus(staging: Path) -> list[tuple[str, Path]]:
-    """Copy each family index and the packs it names.
+    """Copy each family index and the artifacts it names.
 
     ``packs/`` can also hold leftover builder tarballs: a refresh writes new
     content-addressed names next to the previous LFS objects. This test
@@ -188,20 +186,29 @@ def _stage_indexed_corpus(staging: Path) -> list[tuple[str, Path]]:
         source_index = source / "index.json"
         destination = staging / family
         (destination / "packs").mkdir(parents=True)
+        (destination / "records").mkdir()
         staged_index = destination / "index.json"
         shutil.copyfile(source_index, staged_index)
         payload = json.loads(source_index.read_text())
         packs = payload.get("packs") if isinstance(payload, dict) else None
         if isinstance(packs, dict):
-            for record in packs.values():
+            for target_arch, record in packs.items():
                 if not isinstance(record, dict):
                     continue
-                relative = PurePosixPath(str(record.get("file", "")))
-                if len(relative.parts) != 2 or relative.parts[0] != "packs":
+                digest = record.get("sha256")
+                if not isinstance(digest, str):
                     continue
+                relative = PurePosixPath("packs") / f"{family}_{target_arch.replace('_', '')}_{digest}.tar.xz"
                 src_pack = source / relative.as_posix()
                 if src_pack.is_file():
                     shutil.copyfile(src_pack, destination / relative.as_posix())
+        shards = payload.get("shards") if isinstance(payload, dict) else None
+        if isinstance(shards, dict):
+            for digit, record in shards.items():
+                if not isinstance(record, dict) or not isinstance(record.get("sha256"), str):
+                    continue
+                name = f"{digit}_{record['sha256']}.json"
+                shutil.copyfile(source / "records" / name, destination / "records" / name)
         indexes.append((family, staged_index))
     return indexes
 
@@ -220,7 +227,7 @@ def test_stage_indexed_corpus_ignores_unreferenced_builder_packs(
     (packs / indexed_name).write_bytes(b"indexed")
     (packs / f"{family}_sm80_{'b' * 64}.tar.xz").write_bytes(b"builder leftover")
     (cubins / "index.json").write_text(
-        json.dumps({"family": family, "packs": {"sm_80": {"file": f"packs/{indexed_name}"}}})
+        json.dumps({"family": family, "packs": {"sm_80": {"sha256": "a" * 64}}, "shards": {}})
     )
 
     staged_index = _stage_indexed_corpus(tmp_path / "staged")[0][1]

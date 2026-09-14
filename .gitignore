@@ -44,6 +44,8 @@ build.env
 # artifacts. Compiler caches and legacy/generated payloads remain local.
 cpp/kernels/cutedsl_*/cubins/*
 !cpp/kernels/cutedsl_*/cubins/index.json
+!cpp/kernels/cutedsl_*/cubins/records/
+!cpp/kernels/cutedsl_*/cubins/records/*.json
 !cpp/kernels/cutedsl_*/cubins/packs/
 !cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz
 # Default output-root name used by setup.py and materializer diagnostics.

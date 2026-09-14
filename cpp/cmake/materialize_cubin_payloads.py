@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import NoReturn, cast
 
-INDEX_FORMAT = "bioir-cubin-pack-v1"
+INDEX_FORMAT = "bioir-cubin-pack-v2"
 REGISTRY_VERSION = 2
 MATERIALIZATION_FORMAT = "bioir-cubin-materialization-v1"
 ASSEMBLY_FORMAT = "bioir-cubin-assembly-v1"
@@ -62,7 +62,8 @@ _ABI_RE = re.compile(r"[a-z][a-z0-9_]{0,127}")
 _SYMBOL_RE = re.compile(r"k[0-9a-f_]{1,511}")
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
 
-_MAX_INDEX_BYTES = 64 * 1024 * 1024
+_MAX_INDEX_BYTES = 4 * 1024 * 1024
+_SHARD_DIGITS = "0123456789abcdef"
 _MAX_PACK_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_IMAGE_BYTES = 256 * 1024 * 1024
 _MAX_FAMILY_IMAGES = 65_536
@@ -351,7 +352,6 @@ class PackRecord:
     file: str
     sha256: str
     size: int
-    image_count: int
 
 
 @dataclass(frozen=True)
@@ -370,9 +370,6 @@ class VariantRecord:
     launch_abi: str
     supported_sms: tuple[int, ...]
     dtype: str
-    label: str
-    identity_spec: dict[str, object]
-    aliases: tuple[dict[str, object], ...]
     runtime_metadata: dict[str, object]
     kernel_symbol: str
     image: ImageRecord
@@ -386,6 +383,7 @@ class FamilyIndex:
     compile_fingerprint: str
     packs: tuple[PackRecord, ...]
     variants: tuple[VariantRecord, ...]
+    shard_paths: tuple[Path, ...]
 
 
 def _fail(message: str) -> NoReturn:
@@ -464,6 +462,10 @@ def _integer_array(
 
 def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _content_id(value: object) -> str:
+    return hashlib.sha256(_json_bytes(value)).hexdigest()
 
 
 def _read_index(path: Path) -> tuple[dict[str, object], bytes]:
@@ -688,30 +690,34 @@ def _runtime_keys(family: str, variant: VariantRecord) -> tuple[tuple[object, ..
     )
 
 
-def _parse_variant(family: str, registry_version: int, value: object, where: str) -> VariantRecord:
+def _parse_executable(
+    family: str,
+    executable_id: str,
+    value: object,
+    kernel_symbols: Mapping[str, str],
+    sm90_launches: Mapping[str, object],
+    where: str,
+) -> dict[str, object]:
     raw = _as_object(value, where)
-    _exact_keys(
-        raw,
-        {
-            "variant_id",
-            "target_sm",
-            "target_arch",
-            "kernel_sm",
-            "launch_abi",
-            "supported_sms",
-            "dtype",
-            "label",
-            "identity_spec",
-            "aliases",
-            "runtime_metadata",
-            "kernel_symbol",
-            "image",
-        },
-        where,
-    )
-    variant_id = _string(raw["variant_id"], f"{where}.variant_id", maximum=20)
-    if _HEX20_RE.fullmatch(variant_id) is None:
-        _fail(f"{where}.variant_id must be 20 lowercase hexadecimal characters")
+    required = {
+        "image_sha256",
+        "image_size",
+        "target_sm",
+        "target_arch",
+        "kernel_sm",
+        "launch_abi",
+        "dtype",
+        "kernel_symbol",
+        "dynamic_smem_bytes",
+    }
+    optional = {"supported_sms", "non_portable_cluster_size_allowed", "sm90_launch"}
+    if not required.issubset(raw) or not set(raw).issubset(required | optional):
+        _fail(f"{where} keys differ: required {sorted(required)}, optional {sorted(optional)}, got {sorted(raw)}")
+    if _content_id(raw) != executable_id:
+        _fail(f"{where} content does not match executable ID {executable_id}")
+    image_hash = _string(raw["image_sha256"], f"{where}.image_sha256", maximum=64)
+    if _HEX64_RE.fullmatch(image_hash) is None:
+        _fail(f"{where}.image_sha256 must be a full lowercase SHA-256")
     target_sm = _integer(raw["target_sm"], f"{where}.target_sm", minimum=10, maximum=999)
     target_arch = _string(raw["target_arch"], f"{where}.target_arch", maximum=16)
     arch_match = _ARCH_RE.fullmatch(target_arch)
@@ -721,62 +727,87 @@ def _parse_variant(family: str, registry_version: int, value: object, where: str
     launch_abi = _string(raw["launch_abi"], f"{where}.launch_abi", maximum=128)
     if _ABI_RE.fullmatch(launch_abi) is None or not launch_abi.startswith(family):
         _fail(f"{where}.launch_abi is not a canonical {family} ABI")
-    supported_sms = _integer_array(raw["supported_sms"], f"{where}.supported_sms", minimum=10, maximum=999)
+    supported_sms = _integer_array(
+        raw.get("supported_sms", [target_sm]), f"{where}.supported_sms", minimum=10, maximum=999
+    )
     if not supported_sms or tuple(sorted(set(supported_sms))) != supported_sms or target_sm not in supported_sms:
         _fail(f"{where}.supported_sms must be sorted, unique, non-empty, and include target_sm")
     dtype = _string(raw["dtype"], f"{where}.dtype", maximum=8)
     if dtype not in _DTYPES[family]:
         _fail(f"{where}.dtype {dtype!r} is unsupported for {family}")
-    label = _string(raw["label"], f"{where}.label", maximum=256)
-    expected_label = f"{family}.{variant_id}"
-    if label != expected_label:
-        _fail(f"{where}.label must equal canonical public label {expected_label!r}")
-    identity_spec = _as_object(raw["identity_spec"], f"{where}.identity_spec")
-    aliases = tuple(
-        _as_object(alias, f"{where}.aliases[{index}]")
-        for index, alias in enumerate(_as_list(raw["aliases"], f"{where}.aliases"))
-    )
-    _validate_public_aliases(family, aliases, f"{where}.aliases")
-    runtime_metadata = _as_object(raw["runtime_metadata"], f"{where}.runtime_metadata")
-    kernel_symbol = _string(raw["kernel_symbol"], f"{where}.kernel_symbol", maximum=512)
-    if _SYMBOL_RE.fullmatch(kernel_symbol) is None:
-        _fail(f"{where}.kernel_symbol is not a neutralized symbol")
-    image_raw = _as_object(raw["image"], f"{where}.image")
-    _exact_keys(image_raw, {"sha256", "size", "pack"}, f"{where}.image")
-    image_hash = _string(image_raw["sha256"], f"{where}.image.sha256", maximum=64)
-    if _HEX64_RE.fullmatch(image_hash) is None:
-        _fail(f"{where}.image.sha256 must be a full lowercase SHA-256")
-    image = ImageRecord(
-        sha256=image_hash,
-        size=_integer(image_raw["size"], f"{where}.image.size", minimum=4, maximum=_MAX_IMAGE_BYTES),
-        pack=_string(image_raw["pack"], f"{where}.image.pack", maximum=16),
-    )
-    if image.pack != target_arch:
-        _fail(f"{where}.image.pack must equal target_arch")
-    canonical = {
-        "registry_version": registry_version,
-        "family": family,
+    symbol_id = _string(raw["kernel_symbol"], f"{where}.kernel_symbol", maximum=64)
+    if symbol_id not in kernel_symbols:
+        _fail(f"{where}.kernel_symbol references an unknown symbol")
+    launch_id = raw.get("sm90_launch")
+    if launch_id is not None:
+        launch_id = _string(launch_id, f"{where}.sm90_launch", maximum=64)
+        if launch_id not in sm90_launches:
+            _fail(f"{where}.sm90_launch references unknown metadata")
+    return {
         "target_sm": target_sm,
+        "target_arch": target_arch,
+        "kernel_sm": kernel_sm,
+        "launch_abi": launch_abi,
+        "supported_sms": supported_sms,
         "dtype": dtype,
-        "spec": identity_spec,
+        "kernel_symbol": kernel_symbols[symbol_id],
+        "dynamic_smem_bytes": _integer(raw["dynamic_smem_bytes"], f"{where}.dynamic_smem_bytes", maximum=_UINT32_MAX),
+        "non_portable_cluster_size_allowed": _boolean(
+            raw.get("non_portable_cluster_size_allowed", False), f"{where}.non_portable_cluster_size_allowed"
+        ),
+        "sm90_launch": None if launch_id is None else sm90_launches[launch_id],
+        "image": ImageRecord(
+            sha256=image_hash,
+            size=_integer(raw["image_size"], f"{where}.image_size", minimum=4, maximum=_MAX_IMAGE_BYTES),
+            pack=target_arch,
+        ),
     }
-    expected_id = hashlib.sha256(_json_bytes(canonical)).hexdigest()[:20]
-    if variant_id != expected_id:
-        _fail(f"{where}.variant_id does not match identity_spec (expected {expected_id})")
+
+
+def _parse_variant(
+    family: str, value: object, executables: Mapping[str, dict[str, object]], where: str
+) -> VariantRecord:
+    raw = _as_object(value, where)
+    _exact_keys(raw, {"variant_id", "executable", "runtime_metadata"}, where)
+    variant_id = _string(raw["variant_id"], f"{where}.variant_id", maximum=20)
+    if _HEX20_RE.fullmatch(variant_id) is None:
+        _fail(f"{where}.variant_id must be 20 lowercase hexadecimal characters")
+    executable_id = _string(raw["executable"], f"{where}.executable", maximum=64)
+    if executable_id not in executables:
+        _fail(f"{where}.executable references an unknown executable")
+    executable = executables[executable_id]
+    runtime_metadata = _as_object(raw["runtime_metadata"], f"{where}.runtime_metadata")
+    moved = {
+        "dynamic_smem_bytes",
+        "non_portable_cluster_size_allowed",
+        "sm90_launch",
+        "is_bfloat16",
+        "dtype_name",
+    }
+    if moved & set(runtime_metadata):
+        _fail(f"{where}.runtime_metadata repeats executable metadata")
+    runtime_metadata.update(
+        {
+            "dynamic_smem_bytes": executable["dynamic_smem_bytes"],
+            "non_portable_cluster_size_allowed": executable["non_portable_cluster_size_allowed"],
+        }
+    )
+    spec = _FAMILY_SPECS[family]
+    dtype = cast(str, executable["dtype"])
+    runtime_metadata[spec.dtype_key] = dtype if spec.dtype_key == "dtype_name" else dtype == "bf16"
+    if spec.sm90 is not None:
+        runtime_metadata["sm90_launch"] = executable["sm90_launch"]
     variant = VariantRecord(
         variant_id=variant_id,
-        target_sm=target_sm,
-        target_arch=target_arch,
-        kernel_sm=kernel_sm,
-        launch_abi=launch_abi,
-        supported_sms=supported_sms,
+        target_sm=cast(int, executable["target_sm"]),
+        target_arch=cast(str, executable["target_arch"]),
+        kernel_sm=cast(int, executable["kernel_sm"]),
+        launch_abi=cast(str, executable["launch_abi"]),
+        supported_sms=cast(tuple[int, ...], executable["supported_sms"]),
         dtype=dtype,
-        label=label,
-        identity_spec=identity_spec,
-        aliases=aliases,
         runtime_metadata=runtime_metadata,
-        kernel_symbol=kernel_symbol,
-        image=image,
+        kernel_symbol=cast(str, executable["kernel_symbol"]),
+        image=cast(ImageRecord, executable["image"]),
     )
     _validate_metadata(family, variant, f"{where}.runtime_metadata")
     return variant
@@ -791,7 +822,15 @@ def _parse_family(expected_family: str, index_path: Path) -> FamilyIndex:
     root, raw_bytes = _read_index(path)
     _exact_keys(
         root,
-        {"format", "family", "registry_version", "compile_fingerprint", "toolchain", "packs", "variants"},
+        {
+            "format",
+            "family",
+            "registry_version",
+            "compile_fingerprint",
+            "toolchain",
+            "packs",
+            "shards",
+        },
         str(path),
     )
     if root["format"] != INDEX_FORMAT:
@@ -822,31 +861,103 @@ def _parse_family(expected_family: str, index_path: Path) -> FamilyIndex:
         if arch_match is None:
             _fail(f"{pack_where} has an invalid target architecture key")
         pack = _as_object(pack_value, pack_where)
-        _exact_keys(pack, {"file", "sha256", "size", "image_count"}, pack_where)
+        _exact_keys(pack, {"sha256", "size"}, pack_where)
         digest = _string(pack["sha256"], f"{pack_where}.sha256", maximum=64)
         if _HEX64_RE.fullmatch(digest) is None:
             _fail(f"{pack_where}.sha256 must be a full lowercase SHA-256")
-        expected_file = f"packs/{family}_{target_arch.replace('_', '')}_{digest}.tar.xz"
-        file = _string(pack["file"], f"{pack_where}.file", maximum=512)
-        if file != expected_file or PurePosixPath(file).parts != ("packs", expected_file.removeprefix("packs/")):
-            _fail(f"{pack_where}.file must be {expected_file!r}")
+        file = f"packs/{family}_{target_arch.replace('_', '')}_{digest}.tar.xz"
         packs.append(
             PackRecord(
                 target_arch=target_arch,
                 file=file,
                 sha256=digest,
                 size=_integer(pack["size"], f"{pack_where}.size", minimum=1, maximum=_MAX_PACK_BYTES),
-                image_count=_integer(
-                    pack["image_count"], f"{pack_where}.image_count", minimum=1, maximum=_MAX_FAMILY_IMAGES
-                ),
             )
         )
 
-    variants_raw = _as_list(root["variants"], f"{path}.variants")
+    kernel_symbols: dict[str, str] = {}
+    sm90_launches: dict[str, object] = {}
+    shards_raw = _as_object(root["shards"], f"{path}.shards")
+    if list(shards_raw) != list(_SHARD_DIGITS):
+        _fail(f"{path}.shards must contain all hexadecimal partitions in order")
+    executables: dict[str, dict[str, object]] = {}
+    referenced_symbol_ids: set[str] = set()
+    referenced_launch_ids: set[str] = set()
+    variants_raw: list[object] = []
+    shard_paths: list[Path] = []
+    shard_documents: list[tuple[str, Path, dict[str, object]]] = []
+    aggregate = bytearray(raw_bytes)
+    for digit, value in shards_raw.items():
+        shard_where = f"{path}.shards.{digit}"
+        record = _as_object(value, shard_where)
+        _exact_keys(record, {"sha256", "size"}, shard_where)
+        digest = _string(record["sha256"], f"{shard_where}.sha256", maximum=64)
+        if _HEX64_RE.fullmatch(digest) is None:
+            _fail(f"{shard_where}.sha256 must be a full lowercase SHA-256")
+        size = _integer(record["size"], f"{shard_where}.size", minimum=1, maximum=_MAX_INDEX_BYTES)
+        shard_path = path.parent / "records" / f"{digit}_{digest}.json"
+        shard, shard_bytes = _read_index(shard_path)
+        if len(shard_bytes) != size or hashlib.sha256(shard_bytes).hexdigest() != digest:
+            _fail(f"{shard_path} does not match its index record")
+        _exact_keys(shard, {"kernel_symbols", "sm90_launches", "executables", "variants"}, str(shard_path))
+        symbols = _as_object(shard["kernel_symbols"], f"{shard_path}.kernel_symbols")
+        launches = _as_object(shard["sm90_launches"], f"{shard_path}.sm90_launches")
+        if list(symbols) != sorted(symbols) or list(launches) != sorted(launches):
+            _fail(f"{shard_path} content-addressed tables must be sorted")
+        for symbol_id, symbol_value in symbols.items():
+            symbol = _string(symbol_value, f"{shard_path}.kernel_symbols.{symbol_id}", maximum=512)
+            if (
+                not symbol_id.startswith(digit)
+                or _HEX64_RE.fullmatch(symbol_id) is None
+                or _content_id(symbol) != symbol_id
+                or _SYMBOL_RE.fullmatch(symbol) is None
+            ):
+                _fail(f"{shard_path}.kernel_symbols.{symbol_id} is not canonical")
+            kernel_symbols[symbol_id] = symbol
+        for launch_id, launch_value in launches.items():
+            if (
+                not launch_id.startswith(digit)
+                or _HEX64_RE.fullmatch(launch_id) is None
+                or _content_id(launch_value) != launch_id
+            ):
+                _fail(f"{shard_path}.sm90_launches.{launch_id} is not canonical")
+            sm90_launches[launch_id] = launch_value
+        shard_documents.append((digit, shard_path, shard))
+        shard_paths.append(shard_path)
+        aggregate.extend(len(shard_bytes).to_bytes(8, "big"))
+        aggregate.extend(shard_bytes)
+
+    for digit, shard_path, shard in shard_documents:
+        for executable_id, executable_value in _as_object(shard["executables"], f"{shard_path}.executables").items():
+            if (
+                _HEX64_RE.fullmatch(executable_id) is None
+                or not executable_id.startswith(digit)
+                or executable_id in executables
+            ):
+                _fail(f"{shard_path} contains a misplaced or duplicate executable {executable_id}")
+            raw_executable = _as_object(executable_value, f"{shard_path}.executables.{executable_id}")
+            referenced_symbol_ids.add(cast(str, raw_executable.get("kernel_symbol")))
+            if raw_executable.get("sm90_launch") is not None:
+                referenced_launch_ids.add(cast(str, raw_executable["sm90_launch"]))
+            executables[executable_id] = _parse_executable(
+                family,
+                executable_id,
+                executable_value,
+                kernel_symbols,
+                sm90_launches,
+                f"{shard_path}.executables.{executable_id}",
+            )
+        shard_variants = _as_list(shard["variants"], f"{shard_path}.variants")
+        if any(
+            not isinstance(item, dict) or not str(item.get("variant_id", "")).startswith(digit)
+            for item in shard_variants
+        ):
+            _fail(f"{shard_path} contains a misplaced variant")
+        variants_raw.extend(shard_variants)
     if not variants_raw or len(variants_raw) > _MAX_FAMILY_IMAGES:
         _fail(f"{path}.variants must contain between 1 and {_MAX_FAMILY_IMAGES} entries")
     variants = tuple(
-        _parse_variant(family, registry_version, value, f"{path}.variants[{index}]")
+        _parse_variant(family, value, executables, f"{path}.variants[{index}]")
         for index, value in enumerate(variants_raw)
     )
     variant_ids = tuple(variant.variant_id for variant in variants)
@@ -864,13 +975,16 @@ def _parse_family(expected_family: str, index_path: Path) -> FamilyIndex:
             if key in runtime_keys:
                 _fail(f"{path}: multiple variants resolve to runtime key {key}")
             runtime_keys.add(key)
-    for pack in packs:
-        if pack.image_count != len(referenced[pack.target_arch]):
-            _fail(
-                f"{path}: pack {pack.target_arch} records {pack.image_count} images but variants reference "
-                f"{len(referenced[pack.target_arch])}"
-            )
-    return FamilyIndex(family, path, raw_bytes, compile_fingerprint, tuple(packs), variants)
+    referenced_executables = {
+        _string(_as_object(value, "variant")["executable"], "variant.executable", maximum=64) for value in variants_raw
+    }
+    if referenced_executables != set(executables):
+        _fail(f"{path} contains unreferenced executables")
+    if referenced_symbol_ids != set(kernel_symbols):
+        _fail(f"{path} contains unreferenced kernel symbols")
+    if referenced_launch_ids != set(sm90_launches):
+        _fail(f"{path} contains unreferenced SM90 launch records")
+    return FamilyIndex(family, path, bytes(aggregate), compile_fingerprint, tuple(packs), variants, tuple(shard_paths))
 
 
 def _load_families(family_indexes: Sequence[tuple[str, Path]]) -> tuple[FamilyIndex, ...]:
@@ -945,6 +1059,32 @@ def _verify_exact_pack_set(family: FamilyIndex) -> None:
 def _verify_exact_pack_sets(families: Sequence[FamilyIndex]) -> None:
     for family in families:
         _verify_exact_pack_set(family)
+
+
+def _verify_exact_shard_set(family: FamilyIndex) -> None:
+    """Require the record directory to contain only shards named by the index."""
+    records_dir = family.path.parent / "records"
+    if records_dir.is_symlink() or not records_dir.is_dir():
+        _fail(f"record directory must be a regular directory: {records_dir}")
+    expected = {path.name for path in family.shard_paths}
+    try:
+        entries = list(records_dir.iterdir())
+    except OSError as error:
+        raise MaterializationError(f"cannot inspect CUBIN record directory {records_dir}: {error}") from error
+    actual = {entry.name for entry in entries}
+    if actual != expected:
+        _fail(
+            f"{records_dir} does not exactly match its family index: "
+            f"missing={sorted(expected - actual)}, unreferenced={sorted(actual - expected)}"
+        )
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_file():
+            _fail(f"indexed CUBIN record shard must be a regular file: {entry}")
+
+
+def _verify_exact_shard_sets(families: Sequence[FamilyIndex]) -> None:
+    for family in families:
+        _verify_exact_shard_set(family)
 
 
 def _xz_vli(data: bytes, offset: int, limit: int, where: str) -> tuple[int, int]:
@@ -1293,12 +1433,13 @@ def verify_packs(family_indexes: Sequence[tuple[str, Path]]) -> VerificationResu
         MaterializationError: If any index, pack, or image is invalid.
     """
     families = _load_families(family_indexes)
+    _verify_exact_shard_sets(families)
     _verify_exact_pack_sets(families)
     return _verify_archives(families)
 
 
 def prune_unreferenced_packs(family_indexes: Sequence[tuple[str, Path]]) -> tuple[Path, ...]:
-    """Delete pack files no family index names, and report which went.
+    """Delete pack and record files no family index names, and report which went.
 
     A pack filename embeds the hash of its own contents, so rebuilding a family
     writes NEW files BESIDE the ones it supersedes rather than over them. Nothing
@@ -1329,23 +1470,24 @@ def prune_unreferenced_packs(family_indexes: Sequence[tuple[str, Path]]) -> tupl
     families = _load_families(family_indexes)
     pruned: list[Path] = []
     for family in families:
-        packs_dir = family.path.parent / "packs"
-        if packs_dir.is_symlink() or not packs_dir.is_dir():
-            _fail(f"pack directory must be a regular directory: {packs_dir}")
-        expected = {PurePosixPath(pack.file).name for pack in family.packs}
-        try:
-            entries = sorted(packs_dir.iterdir())
-        except OSError as error:
-            raise MaterializationError(f"cannot inspect CUBIN pack directory {packs_dir}: {error}") from error
-        for entry in entries:
-            if entry.name in expected:
-                continue
-            # Never a directory or a link: this deletes files, and an unexpected
-            # kind of entry is a corpus to look at rather than one to clean up.
-            if entry.is_symlink() or not entry.is_file():
-                _fail(f"refusing to prune a non-regular pack entry: {entry}")
-            entry.unlink()
-            pruned.append(entry)
+        directories = (
+            (family.path.parent / "packs", {PurePosixPath(pack.file).name for pack in family.packs}),
+            (family.path.parent / "records", {path.name for path in family.shard_paths}),
+        )
+        for directory, expected in directories:
+            if directory.is_symlink() or not directory.is_dir():
+                _fail(f"CUBIN artifact directory must be a regular directory: {directory}")
+            try:
+                entries = sorted(directory.iterdir())
+            except OSError as error:
+                raise MaterializationError(f"cannot inspect CUBIN artifact directory {directory}: {error}") from error
+            for entry in entries:
+                if entry.name in expected:
+                    continue
+                if entry.is_symlink() or not entry.is_file():
+                    _fail(f"refusing to prune a non-regular CUBIN artifact entry: {entry}")
+                entry.unlink()
+                pruned.append(entry)
     return tuple(pruned)
 
 
@@ -1792,6 +1934,7 @@ def materialize(
     if not isinstance(output_root, Path):
         raise TypeError("output_root must be pathlib.Path")
     families = _load_families(family_indexes)
+    _verify_exact_shard_sets(families)
     _verify_exact_pack_sets(families)
     images = _global_images(families)
     fingerprint = _fingerprint(families)

@@ -27,7 +27,7 @@ preserving a Python development workflow.
 The following chart shows how BioIR speedup changes with input size on an
 NVIDIA H100 GPU.
 
-![Speedup against input size on H100](../../assets/speedup-vs-residues.png)
+![Speedup against input size on H100](assets/speedup-vs-residues.png)
 
 ## Key Capabilities
 
@@ -45,18 +45,18 @@ BioIR provides the following key capabilities:
   structure-prediction patterns and supported modules. Pipeline orchestration
   overlaps data loading, featurization, and output writing with the GPU forward
   pass. Refer to
-  [how BioIR accelerates](../../ref/architecture.md#how-bioir-accelerates).
+  [how BioIR accelerates](ref/architecture.md#how-bioir-accelerates).
 
 - **Lower GPU memory pressure:** Fused kernels reduce intermediate
   materialization. Output-row chunking bounds peak activations for `O(N^2)` pair
   tensors. Precomputed masks avoid rebuilding the same attention data in every
   layer. Refer to
-  [where the memory savings come from](../../ref/architecture.md#where-the-memory-savings-come-from).
+  [where the memory savings come from](ref/architecture.md#where-the-memory-savings-come-from).
 
 - **Supported hardware and models:** BioIR supports mixed FP32 and BF16
   execution across data center and workstation GPUs. Six are qualified for this
   release; the rest of the matrix runs but is not part of that set. The
-  [support matrix](../../ref/support-matrix.md) lists model keys, input
+  [support matrix](ref/support-matrix.md) lists model keys, input
   coverage, GPU architectures, and fused-kernel availability.
 
 ## Choose How to Use BioIR
@@ -71,7 +71,7 @@ BioIR supports two inference workflows:
 
 Your custom model does not need to belong to a supported end-to-end family. It
 only needs to contain a module that BioIR optimizes. Refer to
-[the two inference workflows](../../ref/architecture.md#two-inference-workflows)
+[the two inference workflows](ref/architecture.md#two-inference-workflows)
 for implementation details.
 
 ### Choose an Executor
@@ -90,7 +90,7 @@ per-request timing.
 </Warning>
 
 Refer to
-[Ray multi-GPU replicas](../../ref/api.md#ray-multi-gpu-replicas) for
+[Ray multi-GPU replicas](ref/api.md#ray-multi-gpu-replicas) for
 configuration details.
 
 The following diagram shows how the Ray executor processes independent
@@ -149,29 +149,29 @@ Related proteome-scale structure prediction work is described in:
 ## Start Here
 
 <CardGroup cols={2}>
-  <Card title="Install BioIR" icon="download" href="../../install.md">
+  <Card title="Install BioIR" icon="download" href="install.md">
     Install the latest release wheel for your CPU architecture.
   </Card>
-  <Card title="Run a Boltz-2 prediction" icon="rocket" href="../../quickstart.md">
+  <Card title="Run a Boltz-2 prediction" icon="rocket" href="quickstart.md">
     Fold a protein sequence with Boltz-2 and inspect the output.
   </Card>
-  <Card title="Scale predictions with Ray" icon="server" href="../../ray.md">
+  <Card title="Scale predictions with Ray" icon="server" href="ray.md">
     Run one Boltz-2 replica per visible GPU for concurrent batch inference.
   </Card>
-  <Card title="Use the Python API" icon="code" href="../../ref/api.md">
+  <Card title="Use the Python API" icon="code" href="ref/api.md">
     Prepare inputs and run supported structure-prediction models.
   </Card>
   <Card
     title="Understand the architecture"
     icon="diagram-project"
-    href="../../ref/architecture.md"
+    href="ref/architecture.md"
   >
     The two workflows, the three levels of acceleration, and how the pieces fit.
   </Card>
   <Card
     title="Review performance benchmarks"
     icon="chart-line"
-    href="../../ref/benchmark.md"
+    href="ref/benchmark.md"
   >
     Compare BioIR speed, peak memory, and accuracy with OSS PyTorch baselines.
   </Card>

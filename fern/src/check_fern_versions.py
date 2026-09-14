@@ -196,7 +196,7 @@ def _write_development_version(path: Path, source_text: str) -> None:
 def sync_development(source_root: Path, site_root: Path) -> None:
     """Sync public development documentation into a generated site checkout."""
     source_docs, source_fern = source_paths(source_root)
-    destination_fern = site_root / "docs" / "fern"
+    destination_fern = site_root / "fern"
     destination_fern.mkdir(parents=True, exist_ok=True)
 
     snapshot = destination_fern / "pages-dev"

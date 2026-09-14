@@ -86,6 +86,6 @@ compile_commands.json
 CLAUDE.local.md
 
 # Fern CLI local state.
-docs/.fern/
-docs/.build/
+fern/.fern/
+fern/.build/
 node_modules/

@@ -518,7 +518,7 @@ rather than failing the batch — a bad request does not take down the run.
 [devguide]: ../dev.md
 [mem-opt]: ../../.agents/skills/scan-mem-opt-patterns/SKILL.md
 [model-weights]: model-weights.md
-[overview]: ../fern/pages/overview.mdx
+[overview]: ../overview.mdx
 [ray-data]: https://docs.ray.io/en/latest/data/data.html
 [skills]: ../../.agents/skills
 [support-matrix]: support-matrix.md

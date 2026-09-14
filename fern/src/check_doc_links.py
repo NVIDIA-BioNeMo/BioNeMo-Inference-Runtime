@@ -153,18 +153,21 @@ def check(docs_root: Path, fern_dir: Path) -> list[Finding]:
 
     expected = {(docs_root / relative).resolve() for relative in PAGE_ROUTES}
     navigation = _navigation_routes(index_yml)
+    repository_root = docs_root.parent
     findings: list[Finding] = []
     for path in sorted(expected - navigation.keys()):
-        findings.append(Finding(index_yml.relative_to(docs_root), 0, f"public page is missing from navigation: {path}"))
+        findings.append(
+            Finding(index_yml.relative_to(repository_root), 0, f"public page is missing from navigation: {path}")
+        )
     for path in sorted(navigation.keys() - expected):
-        findings.append(Finding(index_yml.relative_to(docs_root), 0, f"unexpected navigation page: {path}"))
+        findings.append(Finding(index_yml.relative_to(repository_root), 0, f"unexpected navigation page: {path}"))
     for path in sorted(expected & navigation.keys()):
         relative = path.relative_to(docs_root.resolve())
         configured = PAGE_ROUTES[relative]
         if navigation[path] != configured:
             findings.append(
                 Finding(
-                    index_yml.relative_to(docs_root),
+                    index_yml.relative_to(repository_root),
                     0,
                     f"navigation route for {relative} is {navigation[path]!r}, but link rewriting uses {configured!r}",
                 )
@@ -174,7 +177,6 @@ def check(docs_root: Path, fern_dir: Path) -> list[Finding]:
     for missing in sorted(expected - page_text.keys()):
         findings.append(Finding(missing, 0, "public page does not exist"))
 
-    repository_root = docs_root.parent
     for path, text in page_text.items():
         relative = path.relative_to(docs_root)
         for line, content, in_fence in iter_source_lines(text):
@@ -228,7 +230,7 @@ def main() -> int:
     parser.add_argument("--fern-dir", type=Path)
     args = parser.parse_args()
     docs_root = args.docs_root.expanduser().resolve()
-    fern_dir = (args.fern_dir or docs_root / "fern").expanduser().resolve()
+    fern_dir = (args.fern_dir or docs_root.parent / "fern").expanduser().resolve()
     try:
         findings = check(docs_root, fern_dir)
     except ValueError as exc:

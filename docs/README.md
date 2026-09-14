@@ -9,6 +9,7 @@
 Public Markdown for BioNeMo Inference Runtime (BioIR). The published site is
 at [docs.nvidia.com/bionemo/inference-runtime][site].
 
+- [`overview.mdx`](overview.mdx) — what BioIR is and how to start
 - [`install.md`](install.md) — requirements and release-wheel installation
 - [`quickstart.md`](quickstart.md) — serial Boltz-2 prediction
 - [`ray.md`](ray.md) — multi-GPU Boltz-2 prediction
@@ -19,10 +20,9 @@ at [docs.nvidia.com/bionemo/inference-runtime][site].
   community policies
 - [`ref/`](ref/) — API, architecture, config, images, support, model weights,
   and benchmarks
-- [`fern/pages/`](fern/pages/) — Fern-native pages used by the published site
 - [`assets/`](assets/) — images and other media referenced by these pages
 
-The linked Markdown files and `ref/` are the public sources. `fern/` holds site
-configuration and Fern-native MDX.
+The linked Markdown files and `ref/` are the public sources. `fern/` at the
+repository root holds the site configuration.
 
 [site]: https://docs.nvidia.com/bionemo/inference-runtime

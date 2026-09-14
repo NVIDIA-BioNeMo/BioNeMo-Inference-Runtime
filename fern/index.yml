@@ -6,13 +6,13 @@ navigation:
     skip-slug: true
     contents:
       - page: Overview
-        path: ./pages/overview.mdx
+        path: ../docs/overview.mdx
         slug: overview
       - page: Installation
-        path: ../install.md
+        path: ../docs/install.md
         slug: install
       - page: Quickstart
-        path: ../quickstart.md
+        path: ../docs/quickstart.md
         slug: quickstart
   - section: Documentation
     slug: references
@@ -22,59 +22,59 @@ navigation:
         collapsed: true
         contents:
           - page: Architecture
-            path: ../ref/architecture.md
+            path: ../docs/ref/architecture.md
           - page: Sampling
-            path: ../ref/sampling.md
+            path: ../docs/ref/sampling.md
           - page: Support Matrix
-            path: ../ref/support-matrix.md
+            path: ../docs/ref/support-matrix.md
           - page: Model Weights
-            path: ../ref/model-weights.md
+            path: ../docs/ref/model-weights.md
           - page: Configuration
-            path: ../ref/config.md
+            path: ../docs/ref/config.md
             slug: config
       - section: Performance and Scaling
         skip-slug: true
         collapsed: true
         contents:
           - page: Ray Quickstart
-            path: ../ray.md
+            path: ../docs/ray.md
             slug: ray
           - page: Benchmarks
-            path: ../ref/benchmark.md
+            path: ../docs/ref/benchmark.md
             slug: benchmark
       - section: API Reference
         skip-slug: true
         collapsed: true
         contents:
           - page: Python API
-            path: ../ref/api.md
+            path: ../docs/ref/api.md
             slug: api
       - section: Developer Reference
         skip-slug: true
         collapsed: true
         contents:
           - page: Development Workflow
-            path: ../dev.md
+            path: ../docs/dev.md
             slug: dev
           - page: Docker Images
-            path: ../ref/docker-images.md
+            path: ../docs/ref/docker-images.md
           - page: Coding Guidelines
-            path: ../coding.md
+            path: ../docs/coding.md
             slug: coding
           - page: Collecting system information
-            path: ../ref/system-information.md
+            path: ../docs/ref/system-information.md
             slug: system-information
           - page: GPU Stack
-            path: ../ref/gpu-stack.md
+            path: ../docs/ref/gpu-stack.md
             slug: gpu-stack
   - section: Community
     slug: community
     contents:
       - page: Contributing
-        path: ../contributing.md
+        path: ../docs/contributing.md
       - page: Code of Conduct
-        path: ../CODE_OF_CONDUCT.md
+        path: ../docs/CODE_OF_CONDUCT.md
         slug: code-of-conduct
       - page: Security Policy
-        path: ../SECURITY.md
+        path: ../docs/SECURITY.md
         slug: security

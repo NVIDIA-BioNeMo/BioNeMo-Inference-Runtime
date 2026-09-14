@@ -25,9 +25,9 @@ from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parent
 FERN_ROOT = SRC_ROOT.parent
-DOCS_ROOT = FERN_ROOT.parent
-REPO_ROOT = DOCS_ROOT.parent
-DEFAULT_SITE_ROOT = DOCS_ROOT / ".build" / "site"
+REPO_ROOT = FERN_ROOT.parent
+DOCS_ROOT = REPO_ROOT / "docs"
+DEFAULT_SITE_ROOT = FERN_ROOT / ".build" / "site"
 SITE_PREFIX = "/bionemo/inference-runtime"
 LATEST_VERSION_SLUG = "latest"
 GITHUB_REPOSITORY = "github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
@@ -40,7 +40,7 @@ PAGE_ROUTES = {
     Path("CODE_OF_CONDUCT.md"): "community/code-of-conduct",
     Path("contributing.md"): "community/contributing",
     Path("dev.md"): "references/dev",
-    Path("fern/pages/overview.mdx"): "overview",
+    Path("overview.mdx"): "overview",
     Path("install.md"): "install",
     Path("quickstart.md"): "quickstart",
     Path("ray.md"): "references/ray",
@@ -146,7 +146,7 @@ def image_targets(line: str) -> list[str]:
 
 def source_paths(root: Path) -> tuple[Path, Path]:
     docs = root / "docs"
-    fern = docs / "fern"
+    fern = root / "fern"
     required = (
         fern / "docs.yml",
         fern / "index.yml",

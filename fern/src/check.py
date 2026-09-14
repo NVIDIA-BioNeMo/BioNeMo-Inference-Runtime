@@ -50,7 +50,7 @@ def main() -> int:
     try:
         findings = [
             *check_public_api.check(source_root),
-            *check_doc_links.check(source_root / "docs", source_root / "docs" / "fern"),
+            *check_doc_links.check(source_root / "docs", source_root / "fern"),
             *check_math.check(source_root),
         ]
     except ValueError as exc:

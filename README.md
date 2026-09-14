@@ -113,7 +113,7 @@ images and what `docker/dev.sh` mounts.
 
 BioIR documentation lives under [`docs/`](docs/) and is published with Fern:
 
-- [Overview](docs/fern/pages/overview.mdx) — what BioIR is and how to start
+- [Overview](docs/overview.mdx) — what BioIR is and how to start
 - [Installation](docs/install.md) — requirements and release-wheel installation
 - [Quickstart](docs/quickstart.md) — run a serial Boltz-2 prediction
 - [Ray multi-GPU inference](docs/ray.md) — scale independent requests across

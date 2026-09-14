@@ -116,12 +116,13 @@ exclude = '''^\.github/(PULL_REQUEST_TEMPLATE\.md|ISSUE_TEMPLATE/.*\.md)$'''
 [[repos.hooks]]
 id = "docs-check"
 name = "docs checks (fern coverage, links, math)"
-entry = "python3 docs/fern/src/check.py --no-sync"
+entry = "python3 fern/src/check.py --no-sync"
 language = "system"
 pass_filenames = false
 files = '''(?x)^(
     bionemo_ir/.*\.py$
   | docs/.*
+  | fern/.*
   | \.agents/.*\.mdx?$
   | [^/]+\.mdx?$
   | \.rumdl\.toml$

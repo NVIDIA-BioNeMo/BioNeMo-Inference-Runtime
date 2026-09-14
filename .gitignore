@@ -89,3 +89,6 @@ CLAUDE.local.md
 fern/.fern/
 fern/.build/
 node_modules/
+
+# Verified outbound tool downloads and executables.
+/sync/.tools/

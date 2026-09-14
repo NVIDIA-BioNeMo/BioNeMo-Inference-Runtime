@@ -151,9 +151,8 @@ CUBINs are already inside the wheel extension. Still set
 
 ### Developer mode — editable + git-lfs
 
-The fused kernels live in LFS-tracked packs
-(`cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz`,
-`docs/nv/cubins-shipping.md`). Pointer files are not CUBINs.
+The fused kernels live in LFS-tracked packs under
+`cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz`. Pointer files are not CUBINs.
 
 ```bash
 git lfs install

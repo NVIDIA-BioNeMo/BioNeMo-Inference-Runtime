@@ -221,7 +221,7 @@ def _select_best_sample(output: dict) -> int:
         # (B, S, N_atoms, 50) → compute mean pLDDT per sample
         probs = torch.softmax(logits[0], dim=-1)
         n_bins = probs.shape[-1]
-        bin_centers = torch.linspace(0, 1, n_bins)
+        bin_centers = _bin_centers(n_bins, 0.0, 1.0)
         plddt_per_atom = (probs * bin_centers).sum(dim=-1)  # (S, N_atoms)
         mean_plddt = plddt_per_atom.mean(dim=-1)  # (S,)
         return int(mean_plddt.argmax())
@@ -242,7 +242,7 @@ def _compute_plddt(
         logits = logits[0]
     probs = torch.softmax(logits, dim=-1)
     n_bins = probs.shape[-1]
-    bin_centers = torch.linspace(0, 1, n_bins)
+    bin_centers = _bin_centers(n_bins, 0.0, 1.0)  # 50 bins -> 0.01, 0.03, ..., 0.99
     plddt_per_atom = (probs * bin_centers).sum(dim=-1).numpy() * 100.0
 
     # Aggregate to per-token
@@ -378,7 +378,7 @@ def _compute_pae(output: dict, best_idx: int, n_tokens: int) -> np.ndarray | Non
     logits = logits[:n_tokens, :n_tokens]
     probs = torch.softmax(logits, dim=-1)
     n_bins = probs.shape[-1]
-    bin_centers = torch.linspace(0, 32, n_bins)
+    bin_centers = _bin_centers(n_bins, 0.0, 32.0)  # 64 bins -> 0.25, 0.75, ..., 31.75 Å
     pae = (probs * bin_centers).sum(dim=-1).numpy()
     return np.round(pae, 3)
 

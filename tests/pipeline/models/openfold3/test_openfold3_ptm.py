@@ -18,7 +18,8 @@ AF3 SI §5.9.1 (eqs. 17-18), as AF2: pTM = max_i mean_j E[f(e_ij)], ipTM the
 same with j restricted to tokens of other chains, f(e) = 1 / (1 + (e/d0)^2),
 d0(N) = 1.24 (max(N, 19) - 15)^(1/3) - 1.8, E[.] over the 64 aligned-error bins
 with midpoints 0.25 ... 31.75 Å. The outer reduction is a *max over the
-aligned token i*, not a mean over tokens or token pairs.
+aligned token i*, not a mean over tokens or token pairs. Expected PAE / pLDDT
+use the same bin midpoints (pLDDT: 50 bins on [0, 1] -> 0.01 ... 0.99).
 """
 
 import importlib.util
@@ -35,6 +36,8 @@ from bionemo_ir.data.schemas.basic import FoldingOutput
 from bionemo_ir.pipeline.models.openfold3.postprocessor import (
     _aligned_token_mask,
     _compute_iptm,
+    _compute_pae,
+    _compute_plddt,
     _compute_ptm,
     _select_best_sample,
     _tm_score_from_pae_logits,
@@ -43,6 +46,7 @@ from tests.common.test_utils.basic import path_for_package_in_repo, require_vend
 
 N_BINS = 64
 BIN_WIDTH = 32.0 / N_BINS
+N_PLDDT_BINS = 50
 
 
 def _d0(n_tokens: int) -> float:
@@ -214,6 +218,48 @@ def test_get_scores_carries_the_frame_mask_convention() -> None:
     assert tagged.get_scores()["ptm_frame_mask"] == "polymer_tokens"
 
 
+# --- expected PAE / pLDDT at bin midpoints -----------------------------------
+
+
+def test_pae_uses_bin_midpoints() -> None:
+    """All mass in aligned-error bin k -> PAE_ij == 0.25 + 0.5 k Å (64 bins on [0, 32] Å)."""
+    n = 12
+    k = np.arange(n * n).reshape(n, n) % N_BINS
+    pae = _compute_pae({"pae_logits": _one_hot_logits(k)[None, None]}, 0, n)
+    np.testing.assert_allclose(pae, 0.25 + 0.5 * k, atol=1e-3)
+    assert pae.min() == pytest.approx(0.25, abs=1e-3)  # was 0.0 with linspace(0, 32, 64)
+    assert _compute_pae({"pae_logits": _one_hot_logits(np.full((n, n), N_BINS - 1))[None]}, 0, n).max() == (
+        pytest.approx(31.75, abs=1e-3)  # was 32.0
+    )
+
+
+def test_plddt_uses_bin_midpoints() -> None:
+    """All mass in pLDDT bin k -> pLDDT == 100 (k + 0.5) / 50 = 2k + 1 (50 bins on [0, 1], x100)."""
+    n_atoms = N_PLDDT_BINS
+    k = np.arange(n_atoms)  # atom a has all mass in bin a
+    logits = _one_hot_logits(k, n_bins=N_PLDDT_BINS)[None, None]  # (B=1, S=1, N_atoms, 50)
+    atom_to_token = np.arange(n_atoms)  # one atom per token
+    plddt = _compute_plddt({"plddt_logits": logits}, 0, n_atoms, atom_to_token, np.ones(n_atoms, dtype=bool))
+    np.testing.assert_allclose(plddt, 2.0 * k + 1.0, atol=1e-4)  # 1, 3, ..., 99 (was 0 ... 100)
+    # per-token mean over atoms: token 0 <- atoms in bins 0 and 1, ...
+    two_per_token = np.repeat(np.arange(n_atoms // 2), 2)
+    plddt2 = _compute_plddt({"plddt_logits": logits}, 0, n_atoms // 2, two_per_token, np.ones(n_atoms, dtype=bool))
+    np.testing.assert_allclose(plddt2, 0.5 * ((2.0 * k[0::2] + 1) + (2.0 * k[1::2] + 1)), atol=1e-4)
+
+
+def test_best_sample_selection_is_invariant_under_the_bin_centre_change() -> None:
+    """Midpoints are an increasing affine map of the old linspace positions, so the argmax is unchanged."""
+    rng = np.random.default_rng(7)
+    n_samples, n_atoms = 6, 40
+    logits = torch.as_tensor(rng.normal(scale=3.0, size=(1, n_samples, n_atoms, N_PLDDT_BINS)), dtype=torch.float32)
+    probs = torch.softmax(logits[0], dim=-1)
+    old = (probs * torch.linspace(0, 1, N_PLDDT_BINS)).sum(-1).mean(-1)  # end-point convention
+    new = (probs * (torch.arange(N_PLDDT_BINS) + 0.5) / N_PLDDT_BINS).sum(-1).mean(-1)
+    torch.testing.assert_close(new, old * (N_PLDDT_BINS - 1) / N_PLDDT_BINS + 0.5 / N_PLDDT_BINS)
+    assert int(old.argmax()) == int(new.argmax()) == _select_best_sample({"plddt_logits": logits})
+    assert _select_best_sample({}) == 0
+
+
 # --- parity with the vendored OSS OpenFold3 ------------------------------------
 
 
@@ -257,6 +303,21 @@ def test_matches_oss_openfold3_compute_ptm(seed: int) -> None:
         ours = {} if bool(frame_mask.all()) else {"has_frame": frame_mask}
         assert float(_tm_score_from_pae_logits(logits, n, **ours)) == pytest.approx(ref_ptm, abs=1e-5)
         assert float(_tm_score_from_pae_logits(logits, n, mask=inter, **ours)) == pytest.approx(ref_iptm, abs=1e-5)
+
+
+def test_matches_oss_openfold3_expected_pae_and_plddt() -> None:
+    """Parity of PAE / pLDDT with upstream ``probs_to_expected_error`` (64 bins, 0-32 Å) / ``compute_plddt``."""
+    confidence = _oss_confidence()
+    rng = np.random.default_rng(3)
+    n, n_atoms = 17, 23
+    pae_logits = torch.as_tensor(rng.normal(scale=2.0, size=(n, n, N_BINS)), dtype=torch.float32)
+    ref_pae = confidence.probs_to_expected_error(torch.softmax(pae_logits, -1), bin_min=0, bin_max=32, no_bins=64)
+    np.testing.assert_allclose(_compute_pae({"pae_logits": pae_logits[None]}, 0, n), ref_pae.numpy(), atol=1e-3)
+
+    plddt_logits = torch.as_tensor(rng.normal(scale=2.0, size=(n_atoms, N_PLDDT_BINS)), dtype=torch.float32)
+    ref_plddt = confidence.compute_plddt(plddt_logits).numpy() * 100.0
+    ours = _compute_plddt({"plddt_logits": plddt_logits[None]}, 0, n_atoms, np.arange(n_atoms), np.ones(n_atoms, bool))
+    np.testing.assert_allclose(ours, ref_plddt, atol=1e-4)
 
 
 # --- report helper (not an assertion): per-sample values on a real multi-sample logits file ---

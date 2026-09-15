@@ -217,6 +217,42 @@ def test_pad_multiple_zero_extends_without_changing_values(layout: str, pad_mult
     assert torch.all(padded[..., D:] == 0)
 
 
+@pytest.mark.parametrize("tokens", [(9, 13), (17, 17), (63, 63), (1, 8)])
+@pytest.mark.parametrize("token_pad_multiple", [8, 16])
+def test_token_pad_multiple_places_the_output_inside_a_padded_buffer(
+    tokens: tuple[int, int], token_pad_multiple: int
+) -> None:
+    """Both token axes round up, the interior is exact, and the gap is zero."""
+    torch.manual_seed(11)
+    D, B = 196, 2
+    I, J = tokens
+    x = torch.randn(B, I, J, D, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+    bias = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+
+    with torch.inference_mode():
+        unpadded = layer_norm_transpose(x, weight, bias, layout="bijd->bijd")
+        padded = layer_norm_transpose(x, weight, bias, layout="bijd->bijd", token_pad_multiple=token_pad_multiple)
+
+    round_up = -(-I // token_pad_multiple) * token_pad_multiple, -(-J // token_pad_multiple) * token_pad_multiple
+    assert padded.shape == (B, *round_up, D)
+    # Unlike the channel pad, the token pad leaves the row layout alone, so the
+    # interior has to match bit for bit.
+    assert torch.equal(padded[:, :I, :J], unpadded)
+    # The gap feeds a GEMM that masks by multiplying with 0.0, so leftover
+    # storage there would turn an inf into a nan rather than stay harmless.
+    assert torch.all(padded[:, I:, :] == 0)
+    assert torch.all(padded[:, :I, J:] == 0)
+
+
+def test_token_pad_multiple_rejects_layouts_without_a_token_pair() -> None:
+    x = torch.randn(1, 16, 196, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(196, device="cuda", dtype=torch.bfloat16)
+    bias = torch.randn(196, device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="only supported for 'bijd->bijd'"):
+        layer_norm_transpose(x, weight, bias, layout="bnd->bnd", token_pad_multiple=8)
+
+
 def test_pad_multiple_rejects_layouts_that_stride_the_channel_axis() -> None:
     x = torch.randn(1, 4, 4, 196, device="cuda", dtype=torch.bfloat16)
     weight = torch.randn(196, device="cuda", dtype=torch.bfloat16)

@@ -36,12 +36,37 @@ from __future__ import annotations
 
 import enum
 import functools
+from typing import NamedTuple
 
 import torch
 import triton
 import triton.language as tl
 
 _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+
+class TokenPad(NamedTuple):
+    """Padded token geometry for a ``[B, I, J, D]`` output.
+
+    The store walks the padded axes and gathers from the packed input, so the
+    result is the unpadded output placed inside a ``[B, i_pad, j_pad, D]``
+    buffer with the surplus rows and columns written as zeros.
+    """
+
+    i_true: int
+    j_true: int
+    i_pad: int
+    j_pad: int
+
+    @property
+    def tokens_in(self) -> int:
+        """Flattened token count the input carries."""
+        return self.i_true * self.j_true
+
+    @property
+    def tokens_out(self) -> int:
+        """Flattened token count the output spans."""
+        return self.i_pad * self.j_pad
 
 
 class Layout(enum.IntEnum):
@@ -85,6 +110,12 @@ def layer_norm_transpose_forward_kernel(
     LAYOUT: tl.constexpr,
     SINGLE_TILE: tl.constexpr,
     NEEDS_INT64: tl.constexpr = True,
+    # Token padding: ``N`` counts the padded grid, ``N_IN`` the packed input.
+    N_IN: tl.constexpr = 0,
+    I_TRUE: tl.constexpr = 0,
+    J_TRUE: tl.constexpr = 0,
+    J_PAD: tl.constexpr = 0,
+    TOKEN_PAD: tl.constexpr = False,
 ):
     # ``D_OUT >= D`` widens the output row stride so the result is a
     # zero-extended operand for kernels that need a K aligned to a vector
@@ -103,6 +134,20 @@ def layer_norm_transpose_forward_kernel(
     offs_d = tl.arange(0, TILE_D)
     mask_n = offs_n < N
 
+    # ``keep_n`` gates the loads and the normalisation, ``mask_n`` the store.
+    # They differ only under token padding, where the grid walks the padded
+    # token axis and the gap rows store zeros without reading anything.
+    if TOKEN_PAD:
+        i_idx = offs_n // J_PAD
+        j_idx = offs_n % J_PAD
+        keep_n = mask_n & (i_idx < I_TRUE) & (j_idx < J_TRUE)
+        in_n = i_idx * J_TRUE + j_idx
+        n_in = N_IN
+    else:
+        keep_n = mask_n
+        in_n = offs_n
+        n_in = N
+
     # Layouts 1 and 3 stride the channel axis, so a channel tile advances by a
     # row of N; the others hold D contiguous.
     if LAYOUT == 1:  # bdn->bnd
@@ -112,7 +157,7 @@ def layer_norm_transpose_forward_kernel(
         x_ptrs = x_ptr + offs_d[None, :] * B * N + pid_b * N + offs_n[:, None]
         x_step = TILE_D * B * N
     else:  # bnd->bnd, bnd->bdn, bnd->dbn
-        x_ptrs = x_ptr + pid_b * N * D + offs_n[:, None] * D + offs_d[None, :]
+        x_ptrs = x_ptr + pid_b * n_in * D + in_n[:, None] * D + offs_d[None, :]
         x_step = TILE_D
 
     # Layouts 0/1/3 write D contiguously, so ``D_OUT`` is their row stride.
@@ -133,7 +178,7 @@ def layer_norm_transpose_forward_kernel(
         # store. This is the whole reason the kernel is fast: the traffic is
         # one read and one write, which is the floor for a normalisation.
         mask_d = offs_d < D
-        x = tl.load(x_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
+        x = tl.load(x_ptrs, mask=keep_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
         if RMS_NORM:
             x_centred = x
         else:
@@ -157,7 +202,11 @@ def layer_norm_transpose_forward_kernel(
             y = x_hat
         # Affine defaults can reach out-of-range lanes; clear them so the
         # store can widen over the pad tail. With ``D_OUT == D`` this is a no-op.
-        y = tl.where(mask_d[None, :], y, 0.0)
+        if TOKEN_PAD:
+            # A gap row loaded zeros, so its affine output is the bias, not zero.
+            y = tl.where(keep_n[:, None] & mask_d[None, :], y, 0.0)
+        else:
+            y = tl.where(mask_d[None, :], y, 0.0)
         tl.store(out_ptrs, y, mask=mask_n[:, None] & (offs_d < D_OUT))
     else:
         num_tiles_d = tl.cdiv(D, TILE_D)
@@ -165,7 +214,7 @@ def layer_norm_transpose_forward_kernel(
         acc_sq = tl.zeros([TILE_N, TILE_D], dtype=tl.float32)
         for di in range(num_tiles_d):
             mask_d = offs_d < (D - di * TILE_D)
-            x = tl.load(x_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
+            x = tl.load(x_ptrs, mask=keep_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
             if not RMS_NORM:
                 acc += x
             acc_sq += x * x
@@ -191,7 +240,7 @@ def layer_norm_transpose_forward_kernel(
 
         for di in range(num_tiles_d):
             mask_d = offs_d < (D - di * TILE_D)
-            x = tl.load(x_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
+            x = tl.load(x_ptrs, mask=keep_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
             x_hat = (x - mean[:, None]) * rstd[:, None]
             if HAS_WEIGHT and HAS_BIAS:
                 w = tl.load(w_ptrs, mask=mask_d, other=1.0).to(tl.float32)
@@ -209,7 +258,10 @@ def layer_norm_transpose_forward_kernel(
                 w_ptrs += TILE_D
             if HAS_BIAS:
                 b_ptrs += TILE_D
-            y = tl.where(mask_d[None, :], y, 0.0)
+            if TOKEN_PAD:
+                y = tl.where(keep_n[:, None] & mask_d[None, :], y, 0.0)
+            else:
+                y = tl.where(mask_d[None, :], y, 0.0)
             tl.store(out_ptrs, y, mask=mask_n[:, None] & (offs_d < (D_OUT - di * TILE_D)))
             x_ptrs += x_step
             out_ptrs += out_step
@@ -237,11 +289,14 @@ def _allocate_output(
     layout: Layout,
     pad_multiple: int = -1,
     out_dtype: torch.dtype | None = None,
+    token_pad: TokenPad | None = None,
 ) -> tuple[torch.Tensor, int, int, int, int]:
     out_dtype = x.dtype if out_dtype is None else out_dtype
     if layout == Layout.BND_BND:
         B, N, D = x.shape
         D_OUT = _padded_channels(D, pad_multiple)
+        if token_pad is not None:
+            N = token_pad.tokens_out
         out = torch.empty((B, N, D_OUT), dtype=out_dtype, device=x.device)
     elif layout == Layout.BDN_BND:
         B, D, N = x.shape
@@ -339,6 +394,7 @@ def _launch_layer_norm_transpose(
     layout: Layout,
     pad_multiple: int = -1,
     out_dtype: torch.dtype | None = None,
+    token_pad: TokenPad | None = None,
 ) -> torch.Tensor:
     if not x.is_cuda:
         raise ValueError("fused LayerNorm/RMSNorm requires a CUDA input")
@@ -350,7 +406,9 @@ def _launch_layer_norm_transpose(
         raise ValueError(
             f"pad_multiple needs an output that is contiguous in D; layout {layout!r} keeps D as an outer axis"
         )
-    out, B, N, D, D_OUT = _allocate_output(x, layout, pad_multiple, out_dtype)
+    if token_pad is not None and layout != Layout.BND_BND:
+        raise ValueError(f"token padding needs a [B, N, D] output; layout {layout!r} does not have one")
+    out, B, N, D, D_OUT = _allocate_output(x, layout, pad_multiple, out_dtype, token_pad)
     has_weight = elementwise_affine and weight is not None
     has_bias = elementwise_affine and bias is not None
     if rms_norm and has_bias:
@@ -389,6 +447,11 @@ def _launch_layer_norm_transpose(
         LAYOUT=layout,
         SINGLE_TILE=single_tile,
         NEEDS_INT64=_needs_int64(B, N, D, tile_d),
+        N_IN=0 if token_pad is None else token_pad.tokens_in,
+        I_TRUE=0 if token_pad is None else token_pad.i_true,
+        J_TRUE=0 if token_pad is None else token_pad.j_true,
+        J_PAD=0 if token_pad is None else token_pad.j_pad,
+        TOKEN_PAD=token_pad is not None,
         num_warps=num_warps,
         num_stages=2,
     )
@@ -405,6 +468,7 @@ def layer_norm_transpose(
     pad_multiple: int = -1,
     rms_norm: bool = False,
     out_dtype: torch.dtype | None = None,
+    token_pad_multiple: int = -1,
 ) -> torch.Tensor:
     """Apply inference-only fused LayerNorm/RMSNorm with an optional layout change.
 
@@ -427,9 +491,20 @@ def layer_norm_transpose(
             64-channel tile.
         rms_norm: Compute RMSNorm instead of LayerNorm.
         out_dtype: Optional output dtype. Defaults to the input dtype.
+        token_pad_multiple: round both token axes up to this multiple,
+            writing zeros in the surplus rows and columns (``< 0`` disables).
+            Only valid for ``"bijd->bijd"``. The result is the unpadded output
+            placed inside a ``[B, i_pad, j_pad, D]`` buffer, which is what the
+            ``dual_gemm_x_x`` transposed path needs to return a projection
+            whose token strides and extents are both vector-aligned. The zeros
+            matter: that GEMM masks rows by multiplying with ``0.0``, and
+            ``inf * 0`` is ``nan``, so an uninitialised gap would propagate.
     """
     if rms_norm and elementwise_affine and bias is not None:
         raise ValueError("RMSNorm does not support an additive bias")
+    if token_pad_multiple > 0 and layout != "bijd->bijd":
+        raise ValueError(f"token_pad_multiple is only supported for 'bijd->bijd', got {layout!r}")
+    token_pad = None
 
     supported_layouts = (
         "nd->nd",  # codespell:ignore nd
@@ -484,7 +559,16 @@ def layer_norm_transpose(
         kernel_layout = Layout.BND_DBN
     elif layout == "bijd->bijd":
         B, I, J, D = x.shape
-        out_shape = (B, I, J, D)
+        if token_pad_multiple > 0:
+            token_pad = TokenPad(
+                i_true=I,
+                j_true=J,
+                i_pad=triton.cdiv(I, token_pad_multiple) * token_pad_multiple,
+                j_pad=triton.cdiv(J, token_pad_multiple) * token_pad_multiple,
+            )
+            out_shape = (B, token_pad.i_pad, token_pad.j_pad, D)
+        else:
+            out_shape = (B, I, J, D)
         x = x.contiguous().view(B, I * J, D)
         kernel_layout = Layout.BND_BND
     elif layout == "bijd->bdij":
@@ -520,6 +604,7 @@ def layer_norm_transpose(
         kernel_layout,
         pad_multiple,
         out_dtype,
+        token_pad,
     )
     if pad_multiple > 0:
         # Padding is rejected above unless D is the trailing output axis.

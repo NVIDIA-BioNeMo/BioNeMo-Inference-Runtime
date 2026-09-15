@@ -32,7 +32,7 @@ from bionemo_ir.utils import get_sm_version
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
 from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
-from ..custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
+from ..custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op, get_dual_gemm_x_x_op
 from .attention import TriangleAttention
 
 
@@ -43,6 +43,9 @@ def _round_up(value: int, multiple: int) -> int:
 _CUEQ_TRIMUL_PAIR_DIM = 384
 _CUEQ_TRIMUL_HIDDEN_DIM = 256
 _CUEQ_TRIMUL_SEQUENCE_THRESHOLD = 256
+
+#: Token multiple that keeps the contraction on cuBLAS's SM90 bf16 kernels.
+_GEMM_TOKEN_ALIGN = 8
 
 
 @lru_cache(maxsize=1)
@@ -299,28 +302,18 @@ class TriangleMultiplicationNode(nn.Module):
         high_precision: bool = True,
         mean_normalization: bool = False,
         pair_mask_left_aligned: bool = True,
+        align_contraction_tokens: bool = True,
     ):
         """Triangle multiplication node.
 
-        The internal cuEquivariance 384x256 TriMul owner is selected only for
-        BF16 ``dim=384`` / ``hidden_dim=256`` inference on SM90 when both its
-        operation and support-query APIs are installed. Runtime dispatch also
-        requires a supported input with more than 256 residues. Public
-        cuEquivariance releases without the support-query API retain BioIR.
+        Supported SM90 BF16 shapes may dispatch to cuEquivariance.
 
         Args:
-            pair_mask_left_aligned: Whether the runtime ``mask`` passed to
-                ``forward`` is guaranteed to be left-aligned along its
-                masked axis (``1...1 0...0``). The CuTe ``dual_gemm_x_x``
-                LM kernel masks via a per-row ``actual_seqlen`` prefix
-                count, so it only produces correct outputs under that
-                invariant. Default ``True`` for typical outer-product
-                ``pair_mask = seq[..., None] * seq[..., None, :]``; set
-                ``False`` for bipartite / interior-zero masks such as
-                Boltz-2 affinity ``cross_pair_mask`` -- the dispatcher
-                then routes the x_x dual GEMM around the CuTe path
-                (cuEquiv / vanilla both consume ``mask`` directly
-                without the prefix assumption).
+            pair_mask_left_aligned: Whether each mask row is ``1...1 0...0``,
+                as required by CuTe's prefix-length masking. ``False`` disables
+                the CuTe dual GEMM.
+            align_contraction_tokens: Pad both token axes to multiples of 8 for
+                fast SM90 GEMMs. Requires CuTe and ``actual_seqlen``.
         """
         super().__init__()
         if hidden_dim is None:
@@ -331,6 +324,7 @@ class TriangleMultiplicationNode(nn.Module):
         self.high_precision = high_precision
         self.mean_normalization = mean_normalization
         self.pair_mask_left_aligned = pair_mask_left_aligned
+        self.align_contraction_tokens = align_contraction_tokens
         self.eps = eps
 
         self.dim = dim
@@ -396,6 +390,12 @@ class TriangleMultiplicationNode(nn.Module):
             K=self.dim,
             pair_mask_left_aligned=self.pair_mask_left_aligned,
         )
+        # Only the CuTe backend takes the token extent from ``actual_seqlen``.
+        # The others read it off ``mask``, which stays unpadded, so a padded
+        # operand would not line up.
+        self._token_align_backend = self.pair_mask_left_aligned and (
+            get_cute_dual_gemm_x_x_op(self.dtype, N=2 * self.hidden_dim, K=self.dim, gate="sigmoid") is not None
+        )
         self._cueq_trimul_api: tuple[Callable[..., torch.Tensor], Callable[..., bool]] | None = None
         if (
             not skip_create_weights
@@ -419,13 +419,7 @@ class TriangleMultiplicationNode(nn.Module):
         return torch.einsum("bkid,bkjd->bijd", a, b)
 
     def _contract_projection(self, projected: torch.Tensor, mask: torch.Tensor, *, transposed: bool) -> torch.Tensor:
-        """Contract a dual-GEMM projection in a lifetime-bounded scope.
-
-        ``projected`` and its two views are O(N²) temporaries. Keeping them
-        local to this helper releases their references as soon as the
-        contraction is returned, before the caller allocates output
-        normalization and gating tensors.
-        """
+        """Contract a dual-GEMM projection while limiting temporary lifetimes."""
         split_dim = 0 if transposed else -1
         a, b = torch.chunk(projected, 2, dim=split_dim)
         if self.mean_normalization:
@@ -438,6 +432,30 @@ class TriangleMultiplicationNode(nn.Module):
         if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
             return torch.einsum("dbik,dbjk->dbij", a, b)
         return torch.einsum("dbki,dbkj->dbij", a, b)
+
+    def _token_pad_multiple(self, x: torch.Tensor, actual_seqlen: torch.Tensor | None) -> int:
+        """Return the token alignment needed by the contraction.
+
+        Fast GEMMs require both token axes to be multiples of 8.
+        Padding needs ``actual_seqlen`` so padded row groups can be appended.
+        """
+        if not self.align_contraction_tokens or not self._token_align_backend:
+            return -1
+        if actual_seqlen is None:
+            return -1
+        if x.device.type != "cuda" or x.dtype not in (torch.bfloat16, torch.float16):
+            return -1
+        if x.shape[1] % _GEMM_TOKEN_ALIGN == 0 and x.shape[2] % _GEMM_TOKEN_ALIGN == 0:
+            return -1
+        return _GEMM_TOKEN_ALIGN
+
+    @staticmethod
+    def _padded_actual_seqlen(actual_seqlen: torch.Tensor, rows: int, rows_padded: int) -> torch.Tensor:
+        """Append zero-length entries for padded dual-GEMM row groups."""
+        counts = actual_seqlen.reshape(-1, rows)
+        padded = counts.new_zeros((counts.shape[0], rows_padded))
+        padded[:, :rows] = counts
+        return padded
 
     def _k_padded_weight(self, slot: str, weight: torch.Tensor, k_padded: int) -> torch.Tensor:
         """Zero-extend a ``[N, K]`` weight to match a padded K operand.
@@ -481,7 +499,7 @@ class TriangleMultiplicationNode(nn.Module):
         return x
 
     def _cueq_forward_if_supported(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
-        """Run the optional internal SM90 384x256 TriMul owner."""
+        """Run the optional SM90 384x256 TriMul owner."""
         if self._cueq_trimul_api is None or x.shape[-2] <= _CUEQ_TRIMUL_SEQUENCE_THRESHOLD or torch.is_grad_enabled():
             return None
 
@@ -528,8 +546,19 @@ class TriangleMultiplicationNode(nn.Module):
                 (same as ``actual_s_kv`` from CuTeDSL precompute).
         """
         x = self._ensure_dtype(x)
-        x = layer_norm_transpose(x, self.norm_in.weight, self.norm_in.bias, eps=self.eps, layout="bijd->bijd")
+        tokens_i, tokens_j = x.shape[1], x.shape[2]
+        token_pad = self._token_pad_multiple(x, actual_seqlen)
+        x = layer_norm_transpose(
+            x,
+            self.norm_in.weight,
+            self.norm_in.bias,
+            eps=self.eps,
+            layout="bijd->bijd",
+            token_pad_multiple=token_pad,
+        )
         x_in = x
+        if token_pad > 0:
+            actual_seqlen = self._padded_actual_seqlen(actual_seqlen, tokens_i, x.shape[1])
         # Gated dual gemm
         x = self._contract_projection(
             self._dual_gemm_x_x_op_transpose(
@@ -558,30 +587,22 @@ class TriangleMultiplicationNode(nn.Module):
         )
 
         # Output gating
-        return self._output_gate(x_in.to(self.high_precision_dtype), x.to(self.high_precision_dtype))
+        out = self._output_gate(x_in.to(self.high_precision_dtype), x.to(self.high_precision_dtype))
+        if token_pad > 0:
+            # Hand back the caller's token extents as a view, so the padding
+            # costs no copy at all.
+            out = out[:, :tokens_i, :tokens_j]
+        return out
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None) -> torch.Tensor:
         """
         Args:
             x: input pair tensor ``[B, I, J, c_in]``.
             mask: pair mask ``[B, I, J]`` (1 = valid, 0 = padded).
-            actual_seqlen: optional precomputed ``int32[B, I]`` per-row
-                valid-J count consumed by the CuTe dual_gemm_x_x backend
-                (the LM kernel treats each ``(b, i)`` row as a separate
-                kernel batch). When supplied, it is forwarded to the
-                gated GEMM so the wrapper can skip its internal
-                ``mask.sum(-1)`` reduction (which would otherwise repeat
-                at every layer). When threading from
-                :class:`~bionemo_ir._torch.attention_backend.utils.PrecomputedPairMasks`,
-                ``tri_mul_out`` (``OUTGOING``) should be passed
-                ``precomputed_masks.mask_bias`` (which for the CuTeDSL
-                backend is ``actual_s_kv``, the per-row ``[B, I]`` int32
-                valid-J count); ``tri_mul_in`` (``INCOMING``) the
-                analogous ``precomputed_masks.mask_bias_transposed``
-                (``actual_s_kv_t``, ``[B, J]``).  Only meaningful when
-                the precompute came from the CuTeDSL backend; default
-                backends store an additive bias in those fields and
-                callers must pass ``None`` instead.
+            actual_seqlen: optional CuTeDSL ``int32[B, I]`` valid-J counts.
+                Pass ``mask_bias`` for outgoing multiplication and
+                ``mask_bias_transposed`` for incoming multiplication. Other
+                backends must pass ``None``.
         """
         cueq_output = self._cueq_forward_if_supported(x, mask)
         if cueq_output is not None:

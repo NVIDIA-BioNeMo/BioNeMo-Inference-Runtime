@@ -325,7 +325,7 @@ class PairTransition(CudnnGraphModule):
         if linear_mask is not None:
             self._cudnn_graph_plans["linear_mask"] = linear_mask
 
-    def forward(self, z: torch.Tensor, mask: torch.Tensor):
+    def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None):
         if self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(z):
             return chunk_apply(self._forward_impl, z, mask, policy=self.auto_chunk_policy)
         if can_use_cudnn_graph(z, enabled=self.enable_cudnn_graph):
@@ -334,12 +334,11 @@ class PairTransition(CudnnGraphModule):
                 return output
         return self._forward_impl(z, mask)
 
-    def _forward_cudnn(self, z: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
+    def _forward_cudnn(self, z: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor | None:
         z = self.layer_norm(z)
         rows = z.numel() // self.c_z
         hidden_dim = self.n * self.c_z
         z_flat = z.reshape(1, rows, self.c_z).contiguous()
-        mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype).contiguous()
         weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
         bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
         hidden = _run_cudnn_linear(
@@ -351,6 +350,10 @@ class PairTransition(CudnnGraphModule):
         )
         if hidden is None:
             return None
+        if mask is None:
+            return self.linear_2(hidden).view_as(z)
+
+        mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype).contiguous()
         weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
         bias_2 = self.linear_2.bias.reshape(1, 1, self.c_z)
         output = _run_cudnn_linear(
@@ -363,8 +366,7 @@ class PairTransition(CudnnGraphModule):
         )
         return None if output is None else output.view_as(z)
 
-    def _forward_impl(self, z: torch.Tensor, mask: torch.Tensor):
-        mask = mask.unsqueeze(-1)
+    def _forward_impl(self, z: torch.Tensor, mask: torch.Tensor | None):
         # [*, N_res, N_res, C_z]
         z = self.layer_norm(z)
 
@@ -374,7 +376,8 @@ class PairTransition(CudnnGraphModule):
 
         # [*, N_res, N_res, C_z]
         z = self.linear_2(z)
-        z = z * mask
+        if mask is not None:
+            z = z * mask.unsqueeze(-1)
 
         return z
 

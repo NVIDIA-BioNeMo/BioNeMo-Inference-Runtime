@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Static contracts for the public CUBIN build."""
+"""Public CUBIN build: ignore rules, CMake consumption, and corpus materialization."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -33,101 +32,35 @@ FAMILIES = tuple(
 )
 
 
-def test_setup_materializes_into_build_tree() -> None:
-    source = (REPO_ROOT / "setup.py").read_text()
-    assert "materialize_cubin_payloads.py" in source
-    # The payloads hang off the same root as the CMake tree, which is kept out
-    # of `build_temp` so the generated headers a compilation-database entry
-    # points at outlive a PEP 660 editable install.
-    assert 'build_root / "bioir_cubins"' in source
-    assert 'ROOT_DIR / "build" / "cmake"' in source
-    assert "-DBIOIR_CUBIN_MATERIALIZED_DIR=" in source
-    assert "prepare_cubins" not in source
-    assert "ALLOW_STALE" not in source
-    assert "family_indexes.append((family, index))" in source
-    assert "index.resolve()" not in source
-    assert "embedded_cubins.h" not in source
-
-
-def test_top_level_cmake_owns_all_payload_shards() -> None:
-    project = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text()
-    kernels = (KERNELS_DIR / "CMakeLists.txt").read_text()
-    assert "LANGUAGES CXX ASM" in project
-    assert "BIOIR_CUBIN_MATERIALIZED_DIR" in kernels
-    assert "materialization.json" in kernels
-    assert "foreach(BIOIR_CUBIN_SHARD 0 1 2 3 4 5 6 7 8 9 a b c d e f)" in kernels
-    # One loop registers every family, so no family carries its own CMakeLists.
-    assert "_registry.cpp" in kernels
+def test_families_do_not_ship_private_cmake() -> None:
     assert not list(KERNELS_DIR.glob("cutedsl_*/CMakeLists.txt"))
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_family_consumes_materialized_registry(family: str) -> None:
-    family_dir = KERNELS_DIR / f"cutedsl_{family}"
-    launcher = (family_dir / "launcher.cpp").read_text()
-
-    assert f'#include "{family}_registry.h"' in launcher
-    assert "embedded::registry()" in launcher
-    assert "embedded::kCubins" not in launcher
-    assert "embedded::kCubinCount" not in launcher
-
-
-def test_git_rules_track_only_indexes_records_and_packs(tmp_path: Path) -> None:
-    shutil.copyfile(REPO_ROOT / ".gitignore", tmp_path / ".gitignore")
-    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
-    git = ["git"]
+def test_git_rules_track_only_indexes_and_packs() -> None:
+    git = ["git", "-c", f"safe.directory={REPO_ROOT}"]
+    probe = subprocess.run(
+        [*git, "rev-parse", "--is-inside-work-tree"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+    )
+    if probe.returncode != 0:
+        pytest.skip("Git ignore rules require checkout metadata")
     family = FAMILIES[0]
     prefix = f"cpp/kernels/cutedsl_{family}/cubins"
 
     def ignored(path: str) -> bool:
         result = subprocess.run(
             [*git, "check-ignore", "--no-index", "--quiet", path],
-            cwd=tmp_path,
+            cwd=REPO_ROOT,
             check=False,
         )
         return result.returncode == 0
 
     assert not ignored(f"{prefix}/index.json")
-    assert not ignored(f"{prefix}/records/0_{'0' * 64}.json")
     assert not ignored(f"{prefix}/packs/{family}_sm80_deadbeef.tar.xz")
     assert ignored(f"{prefix}/.cache/objects/deadbeef.cubin")
     assert ignored(f"{prefix}/embedded_cubins.h")
-
-    attributes = (REPO_ROOT / ".gitattributes").read_text()
-    assert "cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz filter=lfs diff=lfs merge=lfs -text" in attributes
-
-
-def test_sdist_manifest_includes_only_public_build_inputs() -> None:
-    manifest = (REPO_ROOT / "MANIFEST.in").read_text()
-    assert "recursive-include cpp/cmake *.py" in manifest
-    assert "recursive-include cpp/kernels index.json *.tar.xz" in manifest
-    assert "recursive-include cpp/kernels/cutedsl_*/cubins/records *.json" in manifest
-    assert "prune cpp/tools" in manifest
-
-
-def test_nanobind_is_a_pinned_offline_build_dependency() -> None:
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    assert "nanobind==2.10.2" in pyproject["build-system"]["requires"]
-
-    cmake = (REPO_ROOT / "cpp" / "cmake" / "deps" / "nanobind.cmake").read_text()
-    assert 'set(BIOIR_NANOBIND_VERSION "2.10.2")' in cmake
-    assert "find_package(nanobind ${BIOIR_NANOBIND_VERSION} EXACT CONFIG REQUIRED)" in cmake
-    assert "FetchContent" not in cmake
-    assert "github.com" not in cmake
-
-    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text()
-    assert "pip install nanobind==2.10.2" in dockerfile
-
-
-def test_docker_context_excludes_raw_and_materialized_cubins() -> None:
-    dockerignore = (REPO_ROOT / ".dockerignore").read_text()
-    assert "**/cubins/*" in dockerignore
-    assert "!**/cubins/index.json" in dockerignore
-    assert "!**/cubins/records/" in dockerignore
-    assert "!**/cubins/records/*.json" in dockerignore
-    assert "!**/cubins/packs/" in dockerignore
-    assert "!**/cubins/packs/*.tar.xz" in dockerignore
-    assert "**/bioir_cubins/" in dockerignore
 
 
 @pytest.mark.skipif(

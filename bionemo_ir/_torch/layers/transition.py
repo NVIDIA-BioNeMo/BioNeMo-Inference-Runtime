@@ -38,6 +38,24 @@ from bionemo_ir.runtime.buffers import PreallocatedBuffers
 type _CudnnPlan = Callable[..., torch.Tensor | None]
 
 
+def _run_cudnn_linear(
+    prepared: _CudnnPlan | None,
+    static: _CudnnPlan,
+    *inputs: torch.Tensor,
+) -> torch.Tensor | None:
+    """Run a held dynamic-shape plan when there is one, else the static plan.
+
+    ``prepared`` is only populated under ``cudnn_dynamic_shapes``, and it
+    rejects row counts cuDNN will not override, so the static plan is both the
+    default and the fallback.
+    """
+    if prepared is not None:
+        output = prepared(*inputs)
+        if output is not None:
+            return output
+    return static(*inputs)
+
+
 def _get_silu_projection_op(dtype: torch.dtype | None, K: int, N: int):
     """Resolve the no-intermediate SwiGLU projection when it ships."""
     resolved_dtype = dtype or torch.get_default_dtype()
@@ -264,10 +282,12 @@ class PairTransition(CudnnGraphModule):
         skip_create_weights: bool = False,
         auto_chunk_policy: ChunkPolicy | None = None,
         enable_cudnn_graph: bool = False,
+        cudnn_dynamic_shapes: bool = False,
     ):
         super().__init__()
         self.auto_chunk_policy = auto_chunk_policy
         self.enable_cudnn_graph = enable_cudnn_graph
+        self.cudnn_dynamic_shapes = cudnn_dynamic_shapes
         self.dtype = dtype
         self.c_z = c_z
         self.n = n
@@ -281,6 +301,8 @@ class PairTransition(CudnnGraphModule):
 
     def _prepare_cudnn_graphs(self) -> None:
         self._cudnn_graph_plans.clear()
+        if not self.cudnn_dynamic_shapes:
+            return
         if not self.linear_1._weights_created or not self.linear_2._weights_created:
             return
         if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
@@ -320,26 +342,25 @@ class PairTransition(CudnnGraphModule):
         mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype).contiguous()
         weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
         bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
-        linear_relu = self._cudnn_graph_plans.get("linear_relu")
-        hidden = (
-            cudnn_linear_relu(z_flat, weight_1_t, bias_1)
-            if linear_relu is None
-            else linear_relu(z_flat, weight_1_t, bias_1)
+        hidden = _run_cudnn_linear(
+            self._cudnn_graph_plans.get("linear_relu"),
+            cudnn_linear_relu,
+            z_flat,
+            weight_1_t,
+            bias_1,
         )
-        if hidden is None and linear_relu is not None:
-            hidden = cudnn_linear_relu(z_flat, weight_1_t, bias_1)
         if hidden is None:
             return None
         weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
         bias_2 = self.linear_2.bias.reshape(1, 1, self.c_z)
-        linear_mask = self._cudnn_graph_plans.get("linear_mask")
-        output = (
-            cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
-            if linear_mask is None
-            else linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+        output = _run_cudnn_linear(
+            self._cudnn_graph_plans.get("linear_mask"),
+            cudnn_linear_mask,
+            hidden,
+            weight_2_t,
+            bias_2,
+            mask_flat,
         )
-        if output is None and linear_mask is not None:
-            output = cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
         return None if output is None else output.view_as(z)
 
     def _forward_impl(self, z: torch.Tensor, mask: torch.Tensor):
@@ -367,9 +388,11 @@ class MSATransition(CudnnGraphModule):
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         enable_cudnn_graph: bool = False,
+        cudnn_dynamic_shapes: bool = False,
     ) -> None:
         super().__init__()
         self.enable_cudnn_graph = enable_cudnn_graph
+        self.cudnn_dynamic_shapes = cudnn_dynamic_shapes
         self.dtype = dtype
         self.c_m = c_m
         self.n = n
@@ -383,6 +406,8 @@ class MSATransition(CudnnGraphModule):
 
     def _prepare_cudnn_graphs(self) -> None:
         self._cudnn_graph_plans.clear()
+        if not self.cudnn_dynamic_shapes:
+            return
         if not self.linear_1._weights_created or not self.linear_2._weights_created:
             return
         if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
@@ -420,26 +445,25 @@ class MSATransition(CudnnGraphModule):
         mask_flat = mask.reshape(1, rows, 1).to(dtype=m.dtype).contiguous()
         weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
         bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
-        linear_relu = self._cudnn_graph_plans.get("linear_relu")
-        hidden = (
-            cudnn_linear_relu(m_flat, weight_1_t, bias_1)
-            if linear_relu is None
-            else linear_relu(m_flat, weight_1_t, bias_1)
+        hidden = _run_cudnn_linear(
+            self._cudnn_graph_plans.get("linear_relu"),
+            cudnn_linear_relu,
+            m_flat,
+            weight_1_t,
+            bias_1,
         )
-        if hidden is None and linear_relu is not None:
-            hidden = cudnn_linear_relu(m_flat, weight_1_t, bias_1)
         if hidden is None:
             return None
         weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
         bias_2 = self.linear_2.bias.reshape(1, 1, self.c_m)
-        linear_mask = self._cudnn_graph_plans.get("linear_mask")
-        output = (
-            cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
-            if linear_mask is None
-            else linear_mask(hidden, weight_2_t, bias_2, mask_flat)
+        output = _run_cudnn_linear(
+            self._cudnn_graph_plans.get("linear_mask"),
+            cudnn_linear_mask,
+            hidden,
+            weight_2_t,
+            bias_2,
+            mask_flat,
         )
-        if output is None and linear_mask is not None:
-            output = cudnn_linear_mask(hidden, weight_2_t, bias_2, mask_flat)
         return None if output is None else output.view_as(m)
 
     def _forward_impl(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

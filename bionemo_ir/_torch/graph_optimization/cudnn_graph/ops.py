@@ -66,38 +66,6 @@ def _kernel_cache(
         return caches[key]
 
 
-def _linear_signature(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-) -> LinearGraphSignature | None:
-    if (
-        x.ndim != 3
-        or x.shape[0] != 1
-        or not x.is_contiguous()
-        or weight.ndim != 3
-        or weight.shape[0] != 1
-        or bias.ndim != 3
-        or bias.shape[:2] != (1, 1)
-        or x.device != weight.device
-        or x.device != bias.device
-        or x.dtype != weight.dtype
-        or x.dtype != bias.dtype
-        or x.shape[-1] != weight.shape[-2]
-        or bias.shape[-1] != weight.shape[-1]
-        or min(x.shape[-1], weight.shape[-1]) < _DYNAMIC_LINEAR_MIN_DIM
-    ):
-        return None
-    return (
-        x.device,
-        x.dtype,
-        x.shape[-1],
-        weight.shape[-1],
-        tuple(weight.stride()),
-        tuple(bias.stride()),
-    )
-
-
 def _prepared_linear_signature(
     device: torch.device,
     dtype: torch.dtype,
@@ -479,7 +447,11 @@ def prepare_cudnn_linear_relu(
     input_dim: int,
     output_dim: int,
 ) -> _DynamicLinearEpiPlan | None:
-    """Build a reusable dynamic linear, bias, and ReLU plan.
+    """Build one dynamic linear, bias, and ReLU plan for every row count.
+
+    Prefer :func:`cudnn_linear_relu`, whose static plan is faster at every row
+    count the released models use. Hold this plan only to cover row counts a
+    caller cannot enumerate.
 
     Args:
         device: CUDA device on which the plan will execute.
@@ -505,7 +477,11 @@ def prepare_cudnn_linear_mask(
     input_dim: int,
     output_dim: int,
 ) -> _DynamicLinearEpiPlan | None:
-    """Build a reusable dynamic linear, bias, and mask plan.
+    """Build one dynamic linear, bias, and mask plan for every row count.
+
+    Prefer :func:`cudnn_linear_mask`, whose static plan is faster at every row
+    count the released models use. Hold this plan only to cover row counts a
+    caller cannot enumerate.
 
     Args:
         device: CUDA device on which the plan will execute.
@@ -530,7 +506,7 @@ def cudnn_linear_relu(
     weight: torch.Tensor,
     bias: torch.Tensor,
 ) -> torch.Tensor | None:
-    """Apply matmul, bias, and ReLU through one cached cuDNN graph.
+    """Apply matmul, bias, and ReLU through one static cuDNN graph.
 
     Args:
         x: Input with shape ``[..., M, K]``.
@@ -541,13 +517,6 @@ def cudnn_linear_relu(
         The fused output, or ``None`` when cuDNN rejects the tensor signature.
     """
     inputs = (x, weight, bias)
-    signature = _linear_signature(*inputs)
-    if signature is not None:
-        dynamic_plan = _dynamic_linear_relu_plan(signature)
-        if dynamic_plan is not None:
-            output = dynamic_plan(*inputs)
-            if output is not None:
-                return output
     plan = _LINEAR_RELU_CACHE.get_or_create(
         inputs,
         lambda: _LinearEpiPlan(x, weight, bias, (), _make_linear_relu_epilogue),
@@ -561,7 +530,7 @@ def cudnn_linear_mask(
     bias: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor | None:
-    """Apply matmul, bias, and mask through one cached cuDNN graph.
+    """Apply matmul, bias, and mask through one static cuDNN graph.
 
     Args:
         x: Input with shape ``[..., M, K]``.
@@ -573,19 +542,6 @@ def cudnn_linear_mask(
         The fused output, or ``None`` when cuDNN rejects the tensor signature.
     """
     inputs = (x, weight, bias, mask)
-    signature = _linear_signature(x, weight, bias)
-    if (
-        signature is not None
-        and mask.shape == (1, x.shape[1], 1)
-        and mask.device == x.device
-        and mask.dtype == x.dtype
-        and mask.is_contiguous()
-    ):
-        dynamic_plan = _dynamic_linear_mask_plan(signature)
-        if dynamic_plan is not None:
-            output = dynamic_plan(*inputs)
-            if output is not None:
-                return output
     plan = _LINEAR_MASK_CACHE.get_or_create(
         inputs,
         lambda: _LinearEpiPlan(x, weight, bias, (mask,), _make_linear_mask_epilogue),

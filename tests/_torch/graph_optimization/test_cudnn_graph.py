@@ -52,23 +52,12 @@ def test_cudnn_graph_cache_reuses_signatures_and_evicts_lru() -> None:
     assert builds == 4
 
 
-def test_prepared_dynamic_linear_graphs_reuse_one_plan_across_row_counts() -> None:
-    input_dim, hidden_dim = 384, 768
-    for cache in (
-        cudnn_graph_ops._DYNAMIC_LINEAR_RELU_CACHE,
-        cudnn_graph_ops._DYNAMIC_LINEAR_MASK_CACHE,
-        cudnn_graph_ops._LINEAR_RELU_CACHE,
-        cudnn_graph_ops._LINEAR_MASK_CACHE,
-    ):
-        cache.clear()
-
-    device = torch.device("cuda")
-    dtype = torch.bfloat16
-    assert prepare_cudnn_linear_relu(device, dtype, input_dim, hidden_dim)
-    assert prepare_cudnn_linear_mask(device, dtype, hidden_dim, input_dim)
-    assert len(cudnn_graph_ops._DYNAMIC_LINEAR_RELU_CACHE) == 1
-    assert len(cudnn_graph_ops._DYNAMIC_LINEAR_MASK_CACHE) == 1
-
+def _released_pair_linear_operands(
+    input_dim: int,
+    hidden_dim: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     weight_1 = (
         torch.randn(hidden_dim, input_dim, device=device, dtype=dtype)
         .mul_(input_dim**-0.5)
@@ -83,14 +72,69 @@ def test_prepared_dynamic_linear_graphs_reuse_one_plan_across_row_counts() -> No
         .transpose(-1, -2)
     )
     bias_2 = torch.randn(1, 1, input_dim, device=device, dtype=dtype).mul_(0.01)
+    return weight_1, bias_1, weight_2, bias_2
 
+
+def _clear_linear_plan_caches() -> None:
+    for cache in (
+        cudnn_graph_ops._DYNAMIC_LINEAR_RELU_CACHE,
+        cudnn_graph_ops._DYNAMIC_LINEAR_MASK_CACHE,
+        cudnn_graph_ops._LINEAR_RELU_CACHE,
+        cudnn_graph_ops._LINEAR_MASK_CACHE,
+    ):
+        cache.clear()
+
+
+def test_linear_graphs_build_one_static_plan_per_row_count() -> None:
+    """The shared callables stay on static plans and never reach a dynamic one."""
+    input_dim, hidden_dim = 384, 768
+    _clear_linear_plan_caches()
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    weight_1, bias_1, weight_2, bias_2 = _released_pair_linear_operands(input_dim, hidden_dim, device, dtype)
+
+    row_counts = (64 * 64, 128 * 128)
     with torch.inference_mode():
-        for rows in (64 * 64, 128 * 128):
+        for rows in row_counts:
             value = torch.randn(1, rows, input_dim, device=device, dtype=dtype)
             mask = torch.randint(0, 2, (1, rows, 1), device=device).to(dtype)
             hidden = cudnn_linear_relu(value, weight_1, bias_1)
             assert hidden is not None
             output = cudnn_linear_mask(hidden, weight_2, bias_2, mask)
+            assert output is not None
+            expected_hidden = F.relu(torch.matmul(value, weight_1) + bias_1)
+            expected_output = (torch.matmul(expected_hidden, weight_2) + bias_2) * mask
+            torch.testing.assert_close(hidden, expected_hidden, atol=2e-2, rtol=2e-2)
+            torch.testing.assert_close(output, expected_output, atol=2e-2, rtol=2e-2)
+
+    assert len(cudnn_graph_ops._LINEAR_RELU_CACHE) == len(row_counts)
+    assert len(cudnn_graph_ops._LINEAR_MASK_CACHE) == len(row_counts)
+    assert len(cudnn_graph_ops._DYNAMIC_LINEAR_RELU_CACHE) == 0
+    assert len(cudnn_graph_ops._DYNAMIC_LINEAR_MASK_CACHE) == 0
+
+
+def test_prepared_dynamic_linear_graphs_reuse_one_plan_across_row_counts() -> None:
+    """The opt-in plans remain available and serve row counts they never saw."""
+    input_dim, hidden_dim = 384, 768
+    _clear_linear_plan_caches()
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    linear_relu = prepare_cudnn_linear_relu(device, dtype, input_dim, hidden_dim)
+    linear_mask = prepare_cudnn_linear_mask(device, dtype, hidden_dim, input_dim)
+    assert linear_relu is not None
+    assert linear_mask is not None
+    assert len(cudnn_graph_ops._DYNAMIC_LINEAR_RELU_CACHE) == 1
+    assert len(cudnn_graph_ops._DYNAMIC_LINEAR_MASK_CACHE) == 1
+
+    weight_1, bias_1, weight_2, bias_2 = _released_pair_linear_operands(input_dim, hidden_dim, device, dtype)
+
+    with torch.inference_mode():
+        for rows in (64 * 64, 128 * 128):
+            value = torch.randn(1, rows, input_dim, device=device, dtype=dtype)
+            mask = torch.randint(0, 2, (1, rows, 1), device=device).to(dtype)
+            hidden = linear_relu(value, weight_1, bias_1)
+            assert hidden is not None
+            output = linear_mask(hidden, weight_2, bias_2, mask)
             assert output is not None
             expected_hidden = F.relu(torch.matmul(value, weight_1) + bias_1)
             expected_output = (torch.matmul(expected_hidden, weight_2) + bias_2) * mask

@@ -191,6 +191,7 @@ def test_relu_transition_skip_create_weights_defers_linears(
         **kwargs,
         skip_create_weights=True,
         enable_cudnn_graph=True,
+        cudnn_dynamic_shapes=True,
     )
 
     for linear in (transition.linear_1, transition.linear_2):
@@ -225,7 +226,8 @@ def test_pair_transition_auto_chunk(chunk_rows: int):
     assert torch.count_nonzero(chunked[:, -3:]) == 0
 
 
-def test_msa_transition_cudnn_graph_matches_vanilla() -> None:
+@pytest.mark.parametrize("cudnn_dynamic_shapes", [False, True], ids=["static", "dynamic"])
+def test_msa_transition_cudnn_graph_matches_vanilla(cudnn_dynamic_shapes: bool) -> None:
     torch.manual_seed(2)
     device = torch.device("cuda")
     channels, expansion = 256, 4
@@ -240,8 +242,10 @@ def test_msa_transition_cudnn_graph_matches_vanilla() -> None:
         n=expansion,
         dtype=torch.bfloat16,
         enable_cudnn_graph=True,
+        cudnn_dynamic_shapes=cudnn_dynamic_shapes,
     ).to(device)
-    assert set(fused._cudnn_graph_plans) == {"linear_relu", "linear_mask"}
+    # Only the opt-in holds plans; the default path builds them per row count.
+    assert set(fused._cudnn_graph_plans) == ({"linear_relu", "linear_mask"} if cudnn_dynamic_shapes else set())
     with torch.no_grad():
         for parameter in vanilla.parameters():
             parameter.normal_(mean=0.0, std=0.02)

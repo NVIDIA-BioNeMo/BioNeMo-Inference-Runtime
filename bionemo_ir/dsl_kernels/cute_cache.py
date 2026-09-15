@@ -51,6 +51,7 @@ Usage::
 Controls:
   BIOIR_KERNEL_CACHE_ENABLED=0  — disable persistent .o cache (default: enabled)
   BIOIR_KERNEL_CACHE_DIR=path   — override default cache directory
+                                  (must be owned by the runtime user)
   CUTEDSL_FORCE_CUBIN=1           — resolve executables from the packaged CUBIN
                                     library instead of compiling from source
 
@@ -63,6 +64,7 @@ import hashlib
 import os
 import pickle
 import platform
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -100,7 +102,49 @@ LOCK_TIMEOUT = 60
 
 def get_cache_dir() -> Path:
     """Return (and create) the root cache directory."""
-    return DiskCache.get_cache_dir()
+    return _secure_cache_dir(DiskCache.get_cache_dir())
+
+
+def _secure_cache_dir(path: Path) -> Path:
+    """Create a private cache directory owned by this user.
+
+    The ``mkdir`` mode is masked by the process umask, so the mode is also set
+    explicitly. Both the ownership check and that fix-up go through a single
+    descriptor: a separate ``lstat`` and ``chmod`` pair names the path twice,
+    which lets a peer swap in a different target between the two calls, and
+    ``O_NOFOLLOW`` refuses a symlink standing in for the directory.
+
+    Args:
+        path: Cache directory to create and lock down.
+
+    Returns:
+        The same path, now mode ``0o700`` and owned by the runtime user.
+
+    Raises:
+        PermissionError: The path is not a directory this user owns.
+    """
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise PermissionError("Kernel cache directory is not private") from e
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            raise PermissionError("Kernel cache directory is not private")
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+    return path
+
+
+def _is_owned_object(path: Path) -> bool:
+    """Return whether path is a user-owned regular file."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
 
 
 # ---------------------------------------------------------------------------
@@ -334,15 +378,15 @@ class CuteKernelCache(KernelCacheBase):
             return
 
         sha = _key_to_hash(key)
-        cache_path = get_cache_dir() / _compute_source_fingerprint()
-        cache_path.mkdir(parents=True, exist_ok=True)
-        o_path = cache_path / f"{sha}.o"
-        lock_path = cache_path / f"{sha}.lock"
-
         try:
+            cache_path = _secure_cache_dir(get_cache_dir() / _compute_source_fingerprint())
+            o_path = cache_path / f"{sha}.o"
+            lock_path = cache_path / f"{sha}.lock"
             with FileLock(lock_path, exclusive=True, timeout=LOCK_TIMEOUT):
-                if o_path.exists():
-                    return
+                if o_path.exists() or o_path.is_symlink():
+                    if _is_owned_object(o_path):
+                        return
+                    o_path.unlink(missing_ok=True)
                 # Same directory as o_path so os.replace() is a same-filesystem
                 # atomic rename (a cross-fs rename would fall back to a
                 # non-atomic copy, reopening the torn-write window).
@@ -375,14 +419,13 @@ class CuteKernelCache(KernelCacheBase):
         if not CACHE_ENABLED:
             return None
 
-        sha = _key_to_hash(key)
-        cache_path = get_cache_dir() / _compute_source_fingerprint()
-        o_path = cache_path / f"{sha}.o"
-        lock_path = cache_path / f"{sha}.lock"
-
         try:
+            sha = _key_to_hash(key)
+            cache_path = _secure_cache_dir(get_cache_dir() / _compute_source_fingerprint())
+            o_path = cache_path / f"{sha}.o"
+            lock_path = cache_path / f"{sha}.lock"
             with FileLock(lock_path, exclusive=False, timeout=LOCK_TIMEOUT):
-                if not o_path.exists():
+                if not _is_owned_object(o_path):
                     return None
                 try:
                     m = cute.runtime.load_module(str(o_path), enable_tvm_ffi=True)

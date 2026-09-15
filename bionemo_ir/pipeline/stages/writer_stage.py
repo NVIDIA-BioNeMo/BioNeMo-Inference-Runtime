@@ -15,6 +15,7 @@
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -113,16 +114,46 @@ class WriterUDF(StatefulStageUDF):
             return CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping)
         raise ValueError(f"Invalid format: {fmt}")
 
-    def _resolve_paths(self, row: dict[str, Any], row_id, ext: str):
-        if self.output_path and row_id:
-            out = os.path.join(self.output_path, f"{row_id}{ext}")
-        elif self.output_path:
-            out = os.path.join(self.output_path, f"{row[self.IDX_IN_BATCH_COLUMN]}{ext}")
-        else:
-            out = None
-        return out
+    def _resolve_path(self, row: dict[str, Any], row_id: Any, suffix: str) -> str | None:
+        """Resolve one output destination inside the configured output directory.
+
+        Record identifiers come from user input and may contain ``..`` segments
+        or an absolute path, either of which would place the file outside the
+        output directory, so the resolved destination is checked against the
+        resolved output root.
+
+        Args:
+            row: Row being written, used for the fallback batch-index name.
+            row_id: Record identifier, or a falsy value to name the file by
+                batch index instead.
+            suffix: Extension or scores-file suffix to append to the name.
+
+        Returns:
+            The destination path, or ``None`` when no output directory is set.
+
+        Raises:
+            ValueError: The destination resolves outside the output directory.
+        """
+        if not self.output_path:
+            return None
+
+        output_dir = Path(self.output_path)
+        filename = f"{row_id if row_id else row[self.IDX_IN_BATCH_COLUMN]}{suffix}"
+        output_path = output_dir / filename
+        if not output_path.resolve().is_relative_to(output_dir.resolve()):
+            raise ValueError("Output path escapes output directory")
+        return str(output_path)
 
     async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Write one prediction in every configured format, plus its scores.
+
+        Args:
+            row: Folding outputs for a single record.
+
+        Returns:
+            The written paths, the primary serialized structure, the scores,
+            and any timing fields carried on the input row.
+        """
         chain_indices = row.get("chain_indices")
         if chain_indices is None:
             residue_indices = row.get("residue_indices")
@@ -157,7 +188,7 @@ class WriterUDF(StatefulStageUDF):
 
         for fmt in self.formats:
             ext = _EXT_MAP[fmt]
-            out_path = self._resolve_paths(row, row_id, ext)
+            out_path = self._resolve_path(row, row_id, ext)
             if out_path:
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
@@ -171,12 +202,7 @@ class WriterUDF(StatefulStageUDF):
 
         scores = self.round_floats(record.get_scores())
 
-        if self.output_path and row_id:
-            score_path = os.path.join(self.output_path, f"{row_id}_scores.json")
-        elif self.output_path:
-            score_path = os.path.join(self.output_path, f"{row[self.IDX_IN_BATCH_COLUMN]}_scores.json")
-        else:
-            score_path = None
+        score_path = self._resolve_path(row, row_id, "_scores.json")
 
         if score_path:
             with open(score_path, "w") as f:

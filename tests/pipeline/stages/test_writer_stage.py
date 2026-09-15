@@ -288,6 +288,24 @@ class TestWriterUDFProcessing:
                 expected_path = os.path.join(tmpdir, "0.pdb")
                 assert result["output_path"] == expected_path
 
+    @pytest.mark.parametrize("record_id", ["../escape", "/tmp/escape"])
+    def test_udf_for_item_rejects_traversal(self, sample_row, record_id):
+        """A record id that escapes the output directory is refused, not written."""
+        sample_row["__record_id"] = record_id
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            udf = WriterUDF(
+                compute_by_rows=True,
+                drop_keys=[],
+                expected_input_keys=[],
+                update_row=False,
+                mappings={},
+                output_path=tmpdir,
+            )
+
+            with pytest.raises(ValueError, match="escapes output directory"):
+                asyncio.run(udf.udf_for_item(sample_row))
+
     def test_udf_for_item_cif_format(self, sample_row):
         """Test that CIF format produces correct output."""
         with tempfile.TemporaryDirectory() as tmpdir:

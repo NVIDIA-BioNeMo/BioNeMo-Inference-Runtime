@@ -144,5 +144,10 @@ docker run --rm --gpus all \
 
 Stage the weights first with [`scripts/fetch_weights.sh`][fetch]
 
+`BIOIR_KERNEL_CACHE_DIR` must name a directory owned by the runtime user. Do
+not place it on a filesystem writable by untrusted users. BioIR restricts the
+CuTe DSL cache directory to mode `0700` and ignores cached objects it does not
+own.
+
 [devcontainers]: https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers
 [fetch]: ../../scripts/fetch_weights.sh

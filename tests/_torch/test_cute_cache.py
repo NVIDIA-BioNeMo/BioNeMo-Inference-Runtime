@@ -22,6 +22,9 @@ error: Illegal instruction") — an unrecoverable crash, not an exception the
 caller can handle.
 """
 
+import os
+import stat
+
 import pytest
 
 # Importing the cache pulls in cutlass; skip cleanly where it is unavailable
@@ -100,6 +103,44 @@ def test_successful_export_publishes_complete_object(cache_dir, monkeypatch):
         cute_cache.cute.runtime, "load_module", lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel}
     )
     assert cache.load_from_cache(key) is sentinel
+
+    cache_paths = [cache_dir, published[0].parent]
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in cache_paths)
+
+
+def test_secure_cache_dir_tightens_existing_directory(tmp_path):
+    """A world-writable cache directory is narrowed to owner-only access."""
+    path = tmp_path / "cache"
+    path.mkdir()
+    os.chmod(path, 0o777)
+
+    assert cute_cache._secure_cache_dir(path) == path
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+
+
+def test_secure_cache_dir_rejects_symlinked_directory(tmp_path):
+    """A symlink standing in for the cache directory is refused, not chmod'ed."""
+    target = tmp_path / "target"
+    target.mkdir()
+    os.chmod(target, 0o777)
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(PermissionError):
+        cute_cache._secure_cache_dir(link)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o777
+
+
+def test_load_rejects_unowned_object(cache_dir, monkeypatch):
+    """An object this user does not own is never handed to ``load_module``."""
+    cache = cute_cache.CuteKernelCache()
+    key = ("adaln", "float16", 128, "unowned")
+    cache.save_to_cache(key, _FakeArtifact(b"OBJECT"))
+    monkeypatch.setattr(cute_cache, "_is_owned_object", lambda path: False)
+    monkeypatch.setattr(cute_cache.cute.runtime, "load_module", pytest.fail)
+
+    assert cache.load_from_cache(key) is None
 
 
 def test_load_purges_corrupt_object(cache_dir, monkeypatch):

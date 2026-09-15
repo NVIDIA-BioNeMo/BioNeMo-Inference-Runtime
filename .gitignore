@@ -30,6 +30,7 @@ dump*/
 *.pkl
 *.hdf5
 *.lock
+!uv.lock
 config.json
 /*.svg
 cpp/cmake-build-*

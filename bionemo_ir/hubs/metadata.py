@@ -24,9 +24,13 @@ from typing import Any
 
 from huggingface_hub import hf_hub_download
 
+from bionemo_ir.hubs.integrity import verify_sha256
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
 logger = logging.getLogger(__name__)
+
+BOLTZ_CCD_SHA256 = "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4"
+BOLTZ_MOLS_SHA256 = "39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7"
 
 # ---------------------------------------------------------------------------
 # Shared utility helpers
@@ -150,6 +154,7 @@ class MetadataFile:
         repo_id: HuggingFace repo to download from.
         filename: File name inside the repo.
         env: Environment variable for local override.
+        sha256: Expected SHA-256 digest for Hub downloads.
         prepare: Callable ``(downloaded_path, cache_dir) -> resolved_path``
             that transforms the raw download into whatever the model expects.
             Defaults to returning the downloaded file path unchanged.
@@ -159,6 +164,7 @@ class MetadataFile:
     repo_id: str
     filename: str
     env: str
+    sha256: str | None = None
     prepare: Callable[[str, Path], str] = field(default=_prepare_plain_file)
 
 
@@ -169,6 +175,7 @@ HF_MODEL_METADATA: dict[str, list[MetadataFile]] = {
             repo_id="boltz-community/boltz-1",
             filename="ccd.pkl",
             env="BOLTZ_CCD_PATH",
+            sha256=BOLTZ_CCD_SHA256,
         ),
         # Boltz-1 reuses the Boltz-2 mols.tar: the inherited
         # Boltz2ContextGenerator.__call__ path always loads per-CCD-residue
@@ -178,6 +185,7 @@ HF_MODEL_METADATA: dict[str, list[MetadataFile]] = {
             repo_id="boltz-community/boltz-2",
             filename="mols.tar",
             env="BOLTZ_MOL_DIR",
+            sha256=BOLTZ_MOLS_SHA256,
             prepare=_prepare_tar_archive,
         ),
     ],
@@ -187,12 +195,14 @@ HF_MODEL_METADATA: dict[str, list[MetadataFile]] = {
             repo_id="boltz-community/boltz-1",
             filename="ccd.pkl",
             env="BOLTZ_CCD_PATH",
+            sha256=BOLTZ_CCD_SHA256,
         ),
         MetadataFile(
             metadata_key="mol_dir",
             repo_id="boltz-community/boltz-2",
             filename="mols.tar",
             env="BOLTZ_MOL_DIR",
+            sha256=BOLTZ_MOLS_SHA256,
             prepare=_prepare_tar_archive,
         ),
     ],
@@ -202,12 +212,14 @@ HF_MODEL_METADATA: dict[str, list[MetadataFile]] = {
             repo_id="boltz-community/boltz-1",
             filename="ccd.pkl",
             env="BOLTZ_CCD_PATH",
+            sha256=BOLTZ_CCD_SHA256,
         ),
         MetadataFile(
             metadata_key="mol_dir",
             repo_id="boltz-community/boltz-2",
             filename="mols.tar",
             env="BOLTZ_MOL_DIR",
+            sha256=BOLTZ_MOLS_SHA256,
             prepare=_prepare_tar_archive,
         ),
     ],
@@ -260,6 +272,8 @@ def load_metadata(
             resolved_cache_dir,
             local_files_only,
         )
+        if meta_file.sha256 is not None:
+            verify_sha256(downloaded, meta_file.sha256)
         metadata[meta_file.metadata_key] = meta_file.prepare(downloaded, resolved_cache_dir)
 
     return metadata

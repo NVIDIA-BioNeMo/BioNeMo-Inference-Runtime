@@ -27,7 +27,7 @@ from bionemo_ir.hubs.local import (
     _load_boltz_state_dict,
     _load_of3_state_dict,
     _load_protenix_state_dict,
-    verify_boltz_checkpoint_md5,
+    verify_boltz_checkpoint_sha256,
 )
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 from bionemo_ir.logger import logger
@@ -142,7 +142,7 @@ def load_state_dict_from_hf(
         return cached_file
     logger.debug(f"Loading state dict from {cached_file}")
     if name in BOLTZ_MODEL_NAMES:
-        verify_boltz_checkpoint_md5(cached_file, filename)
+        verify_boltz_checkpoint_sha256(cached_file, filename)
         state_dict = _load_boltz_state_dict(cached_file)
     elif name == SupMat.OpenFold3:
         state_dict = _load_of3_state_dict(cached_file)

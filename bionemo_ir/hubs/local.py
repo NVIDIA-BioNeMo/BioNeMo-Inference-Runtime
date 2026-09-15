@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import hashlib
 import io
 import logging
 import os
@@ -23,6 +22,7 @@ from pathlib import Path
 
 import torch
 
+from bionemo_ir.hubs.integrity import verify_sha256
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
 logger = logging.getLogger(__name__)
@@ -40,10 +40,10 @@ PROTENIX_MODEL_NAMES = frozenset(
     }
 )
 
-# MD5 digests of official HuggingFace Boltz checkpoints.
-BOLTZ_CHECKPOINT_MD5 = {
-    "boltz2_conf.ckpt": "2f0a1775bf8fc366a1a85e2019eca288",
-    "boltz2_aff.ckpt": "8e93dadedd6edb7a4d170f6051b99ec0",
+# SHA-256 digests of HuggingFace Boltz checkpoints.
+BOLTZ_CHECKPOINT_SHA256 = {
+    "boltz2_conf.ckpt": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
+    "boltz2_aff.ckpt": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e",
 }
 
 LocalCheckpoint = namedtuple("LocalCheckpoint", ["env", "weights_only", "state_dict_key"])
@@ -263,21 +263,13 @@ def _load_protenix_state_dict(local_checkpoint: str):
     return state_dict
 
 
-def verify_boltz_checkpoint_md5(path: str | Path, filename: str) -> None:
-    """Verify MD5 of a downloaded Boltz checkpoint against known digests."""
-    expected = BOLTZ_CHECKPOINT_MD5.get(Path(filename).name)
+def verify_boltz_checkpoint_sha256(path: str | Path, filename: str) -> None:
+    """Verify a downloaded Boltz checkpoint."""
+    checkpoint_name = Path(filename).name
+    expected = BOLTZ_CHECKPOINT_SHA256.get(checkpoint_name)
     if expected is None:
-        return
-    digest = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            digest.update(chunk)
-    actual = digest.hexdigest()
-    if actual != expected:
-        raise ValueError(
-            f"MD5 mismatch for {filename}: expected {expected}, got {actual}. "
-            "The checkpoint file may be corrupted or tampered with."
-        )
+        raise ValueError(f"Missing SHA-256 digest: {checkpoint_name}")
+    verify_sha256(path, expected)
 
 
 def _resolve_local_checkpoint(

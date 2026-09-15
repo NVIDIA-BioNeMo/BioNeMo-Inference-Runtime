@@ -190,11 +190,6 @@ pre-flight, pass `local_files_only=True` (not exposed by the pipeline).
 into the snapshot; re-run to finish. Refer to the
 [Hugging Face cache guide][hf-cache].
 
-**Integrity.** `boltz2_conf.ckpt` and `boltz2_aff.ckpt` are checked against
-`BOLTZ_CHECKPOINT_MD5` in `hubs/local.py` (mismatch → `ValueError`).
-`boltz1_conf.ckpt` has no recorded digest. Checks run on **downloads only**,
-not on env / staged files.
-
 **Authentication.** BioNeMo Inference Runtime (BioIR) does no token handling —
 that is all `huggingface_hub`. OpenFold3 is gated and an anonymous request gets
 `401`. Registering is free: create a HuggingFace account, accept the terms on

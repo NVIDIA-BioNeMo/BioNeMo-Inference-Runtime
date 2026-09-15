@@ -16,9 +16,12 @@
 import re
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+from bionemo_ir.data.path import resolve_input_path
 
 
 class PolymerType(str, Enum):
@@ -511,11 +514,13 @@ class MSARecord(dict):
     def is_file(self) -> bool:
         return self["path"] is not None
 
-    def get_content(self) -> str:
+    def get_content(self, allowed_root: str | Path | None = None) -> str:
+        """Return inline content or read it from an optionally confined path."""
         if self["content"] is not None:
             return self["content"]
         if self["path"] is not None:
-            with open(self["path"]) as f:
+            path = resolve_input_path(self["path"], allowed_root)
+            with path.open() as f:
                 self["content"] = f.read()
                 return self["content"]
         raise ValueError("No content or file available")
@@ -536,11 +541,13 @@ class Template(dict):
     def is_file(self) -> bool:
         return self["path"] is not None
 
-    def get_content(self) -> str:
+    def get_content(self, allowed_root: str | Path | None = None) -> str:
+        """Return inline content or read it from an optionally confined path."""
         if self["content"] is not None:
             return self["content"]
         if self["path"] is not None:
-            with open(self["path"]) as f:
+            path = resolve_input_path(self["path"], allowed_root)
+            with path.open() as f:
                 self["content"] = f.read()
                 return self["content"]
         raise ValueError("No content or file available")

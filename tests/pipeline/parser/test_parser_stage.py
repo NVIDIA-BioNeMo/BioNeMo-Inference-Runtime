@@ -93,6 +93,11 @@ class TestParserStageConfig:
 
         assert config.compute_by_rows is False
 
+    def test_config_with_input_root(self, tmp_path):
+        config = ParserStageConfig(input_root=str(tmp_path))
+
+        assert config.input_root == str(tmp_path)
+
 
 class TestParserStageGetDatasetKwargs:
     def test_get_dataset_map_batches_kwargs(self):

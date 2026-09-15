@@ -51,7 +51,13 @@ class _StageConfigBase(BaseModel):
 
 
 class ParserStageConfig(_StageConfigBase):
-    pass
+    input_root: str | None = Field(
+        default=None,
+        description=(
+            "Optional directory that must contain every MSA and template file. "
+            "Set this when processing paths supplied by untrusted callers."
+        ),
+    )
 
 
 class TokenizerStageConfig(_StageConfigBase):

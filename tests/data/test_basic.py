@@ -413,6 +413,17 @@ class TestTemplate:
         assert "T1031" in content
 
 
+@pytest.mark.parametrize("record_type", [MSARecord, Template])
+def test_file_content_rejects_path_outside_allowed_root(tmp_path, record_type):
+    allowed_root = tmp_path / "inputs"
+    allowed_root.mkdir()
+    outside_file = tmp_path / "secret"
+    outside_file.write_text("secret")
+
+    with pytest.raises(ValueError, match="outside allowed root"):
+        record_type(path=str(outside_file)).get_content(allowed_root=allowed_root)
+
+
 class TestPolymerWithMSA:
     def test_molecule_with_msa_content(self):
         msa_content = ">seq1\nACDEFGHIKL\n>seq2\nACDEFGHIKL"

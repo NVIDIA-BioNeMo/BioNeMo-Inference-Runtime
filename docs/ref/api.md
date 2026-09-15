@@ -77,8 +77,9 @@ request = InputRequest(
 
 [`MSARecord`][msarecord] / [`Template`][template] take either `path` or inline
 `content`, plus `format` (`"a3m"` for MSAs; `"cif"` or `"pdb"` for templates).
-Template `chain_id` selects which chain of a multi-chain CIF or PDB to use;
-`None` auto-selects.
+A `path` is read as given unless `ParserStageConfig.input_root` is set; then
+the resolved path must sit under that directory. Template `chain_id` selects
+which chain of a multi-chain CIF or PDB to use; `None` auto-selects.
 
 Paired MSAs are ordinary A3M (`format="a3m"`), not CSV and not a concatenated
 multi-chain alignment. Each protein polymer gets its own file covering
@@ -451,6 +452,10 @@ Stage configs (`ParserStageConfig`, `TokenizerStageConfig`,
 `FeatureGeneratorStageConfig`, `EngineStageConfig`, `WriterStageConfig`) all
 share `compute`, `num_cpus`, `memory`, `batch_size`, `drop_keys`. Extra fields:
 
+- **Parser:** `input_root`. Optional directory that must contain every MSA and
+  template `path`. Set this when processing paths from untrusted callers.
+  Default `None` leaves local paths unrestricted for trusted CLI and library
+  callers.
 - **Tokenizer / feature generator:** `init_context`. Set
   `init_context={"random_seed": N}` on the **feature-generator** stage so the
   tokenizer can fall back to the same seed (RDKit ETKDG on OpenFold3 and MSA

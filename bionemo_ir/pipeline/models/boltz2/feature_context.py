@@ -223,9 +223,6 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
         if first.get("sequences") or first.get("raw"):
             return first
         content = first.get("content") if isinstance(first, dict) else None
-        if content is None and isinstance(first, dict) and first.get("path"):
-            with open(first["path"]) as f:
-                content = f.read()
         if content:
             from io import StringIO
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer, Template
 from bionemo_ir.pipeline.stages.parser_stage import ParserUDF
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
@@ -211,6 +211,53 @@ class TestParserUDFErrorHandling:
 
         with pytest.raises(FileNotFoundError):
             asyncio.run(parser_udf.udf_for_item(row))
+
+    @pytest.mark.parametrize(
+        ("field", "entry", "content"),
+        [
+            ("msas", MSARecord, ">query\nACDEFGHIKL\n"),
+            ("templates", Template, "data_secret\n"),
+        ],
+    )
+    def test_input_root_rejects_paths_outside_root(self, tmp_path, field, entry, content):
+        allowed_root = tmp_path / "inputs"
+        allowed_root.mkdir()
+        outside_file = tmp_path / "secret"
+        outside_file.write_text(content)
+        parser_udf = ParserUDF(
+            compute_by_rows=True,
+            drop_keys=None,
+            expected_input_keys=["record"],
+            update_row=True,
+            input_root=allowed_root,
+        )
+        polymer_kwargs = {field: [entry(path=str(outside_file))]}
+        request = InputRequest(
+            input_id="outside_root",
+            polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", **polymer_kwargs)],
+        )
+
+        with pytest.raises(ValueError, match="outside allowed root"):
+            asyncio.run(parser_udf.udf_for_item({"record": dict(request), "__record_id": "test"}))
+
+    def test_input_root_allows_paths_inside_root(self, tmp_path):
+        msa_path = tmp_path / "input.a3m"
+        msa_path.write_text(">query\nACDEFGHIKL\n")
+        parser_udf = ParserUDF(
+            compute_by_rows=True,
+            drop_keys=None,
+            expected_input_keys=["record"],
+            update_row=True,
+            input_root=tmp_path,
+        )
+        request = InputRequest(
+            input_id="inside_root",
+            polymers=[Polymer(chain_id="A", sequence="ACDEFGHIKL", msas=[MSARecord(path=str(msa_path))])],
+        )
+
+        result = asyncio.run(parser_udf.udf_for_item({"record": dict(request), "__record_id": "test"}))
+
+        assert result["parsed"]["polymers"][0]["msas"][0]["sequences"] == ["ACDEFGHIKL"]
 
 
 class TestParserUDFContentExtraction:

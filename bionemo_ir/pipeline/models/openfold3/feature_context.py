@@ -702,14 +702,6 @@ def _parse_msa_entry(msas: list | None) -> dict | None:
     if first.get("sequences") or first.get("raw"):
         return first
     content = first.get("content") if isinstance(first, dict) else None
-    if content is None and isinstance(first, dict) and first.get("path"):
-        path = first["path"]
-        try:
-            with open(path) as f:
-                content = f.read()
-        except (FileNotFoundError, PermissionError, OSError) as e:
-            _logger.warning("Failed to read MSA file %s: %s", path, e)
-            return None
     if content:
         from io import StringIO
 

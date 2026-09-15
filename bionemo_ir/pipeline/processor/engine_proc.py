@@ -171,7 +171,7 @@ class EngineProcessorConfig(ProcessorConfig):
 def _build_parser_stage(config: EngineProcessorConfig, processor_defaults: dict[str, Any]) -> StatefulStage:
     parser_stage_cfg = resolve_stage_config(config.parser_stage, ParserStageConfig, processor_defaults)
     return ParserStage(
-        fn_constructor_kwargs={},
+        fn_constructor_kwargs={"input_root": parser_stage_cfg.input_root},
         map_batches_kwargs=build_cpu_stage_map_kwargs(parser_stage_cfg),
         compute_by_rows=parser_stage_cfg.compute_by_rows,
         drop_keys=parser_stage_cfg.drop_keys,

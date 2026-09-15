@@ -15,9 +15,11 @@
 
 import hashlib
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 from bionemo_ir.data.parsers.a3m import parse_a3m_content
+from bionemo_ir.data.path import resolve_input_path
 from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer, Template
 from bionemo_ir.data.schemas.basic import InputParsed, MSAParsed, PolymerParsed, TemplateParsed
 from bionemo_ir.pipeline.base import numpy_to_dict
@@ -36,7 +38,8 @@ class FileContentCache:
     - Different files/inline content with same content → stored once
     """
 
-    def __init__(self):
+    def __init__(self, allowed_root: str | Path | None = None):
+        self._allowed_root = Path(allowed_root).resolve() if allowed_root is not None else None
         # Maps content hash -> actual content
         self._content_by_hash: dict[str, str] = {}
         # Maps file path -> content hash
@@ -83,17 +86,18 @@ class FileContentCache:
 
     def get_or_load(self, path: str) -> str:
         """Get cached content or load from file and cache it."""
+        resolved_path = str(resolve_input_path(path, self._allowed_root))
         # Check if path is already cached
-        cached = self.get_by_path(path)
+        cached = self.get_by_path(resolved_path)
         if cached is not None:
             return cached
 
         # Load from file
-        with open(path) as f:
+        with open(resolved_path) as f:
             content = f.read()
 
         # Cache and return (will deduplicate if same content exists)
-        return self.cache_content(content, path=path)
+        return self.cache_content(content, path=resolved_path)
 
     def get_or_cache_content(self, content: str) -> str:
         """Get cached version of content or cache it.
@@ -132,10 +136,10 @@ class ParserUDF(StatefulStageUDF):
     same UDF instance (i.e., within the same Ray actor).
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, input_root: str | Path | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         # Instance-level cache for file content
-        self._file_cache = FileContentCache()
+        self._file_cache = FileContentCache(allowed_root=input_root)
 
     def _parse_msa(self, msa_data, cache: FileContentCache) -> MSAParsed:
         """Parse MSA data and return MSAParsed object.

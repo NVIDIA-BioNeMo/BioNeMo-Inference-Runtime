@@ -22,6 +22,7 @@ import torch
 
 from bionemo_ir.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase, dict_context_merger
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
+from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_ARG, SAMPLING_SEED_COLUMN
 
 
 class FeatureGeneratorUDF(StatefulStageUDF):
@@ -65,6 +66,8 @@ class FeatureGeneratorUDF(StatefulStageUDF):
         row_with_tensors = self._extract_tensors(row)
         # Per-row copy of the initial context; default to an empty dict when None.
         context = deepcopy(self.init_context) if self.init_context is not None else {}
+        if RANDOM_SEED_COLUMN in row:
+            context[RANDOM_SEED_COLUMN] = row[RANDOM_SEED_COLUMN]
         # Expose full row to generators (e.g. Boltz2 needs structure, tokens, molecules, MSA).
         context["_row"] = row
         features_dict = {}
@@ -91,6 +94,9 @@ class FeatureGeneratorUDF(StatefulStageUDF):
                 if collator.is_enabled():
                     merged_feats = collator(merged_feats, context)
 
+        sampling_seed = context.get(SAMPLING_SEED_ARG)
+        if sampling_seed is not None:
+            merged_feats[SAMPLING_SEED_COLUMN] = sampling_seed
         return merged_feats
 
 

@@ -23,6 +23,7 @@ import torch
 from bionemo_ir.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase, default_context_and_feature_merger
 from bionemo_ir.pipeline.stages.base import StatefulStageUDF
 from bionemo_ir.pipeline.stages.feature_generator_stage import FeatureGeneratorUDF
+from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_COLUMN
 
 
 def _unpack_columnar(output):
@@ -346,6 +347,7 @@ class TestFeatureGeneratorUDFPreInit:
         result = asyncio.run(udf.udf_for_item(row))
 
         assert "feat" in result
+        assert SAMPLING_SEED_COLUMN not in result
 
     def test_pre_init_none_allowed(self):
         generator = MockFeatureGenerator({"feat": torch.ones(3)}, name="gen")
@@ -394,3 +396,34 @@ class TestFeatureGeneratorUDFBatchProcessing:
         assert len(results) == 1
         output = _unpack_columnar(results[0])
         assert len(output["feat"]) == 3
+
+
+class TestFeatureGeneratorUDFSeedPropagation:
+    def test_row_seed_reaches_pre_init_and_sampling_metadata(self):
+        seen_contexts = []
+
+        def pre_init(context):
+            seen_contexts.append({key: value for key, value in context.items() if key != "_row"})
+            context["sampling_seed"] = context[RANDOM_SEED_COLUMN]
+            return context
+
+        udf = FeatureGeneratorUDF(
+            compute_by_rows=True,
+            drop_keys=None,
+            expected_input_keys=[],
+            update_row=False,
+            feature_generators=[],
+            pre_init=pre_init,
+            init_context={RANDOM_SEED_COLUMN: 41},
+        )
+        row = {
+            "input_tensor": torch.ones(3),
+            "__record_id": "test",
+            RANDOM_SEED_COLUMN: 17,
+        }
+
+        result = asyncio.run(udf.udf_for_item(row))
+
+        assert seen_contexts == [{RANDOM_SEED_COLUMN: 17}]
+        assert result[SAMPLING_SEED_COLUMN] == 17
+        assert udf.init_context == {RANDOM_SEED_COLUMN: 41}

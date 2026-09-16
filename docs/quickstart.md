@@ -109,7 +109,7 @@ The configuration controls the complete prediction pipeline:
   generator, checkpoint, and default runtime arguments.
 - `num_sampling_steps=50` shortens the diffusion stage for this example. Other
   Boltz-2 arguments retain their registered defaults.
-- `random_seed=42` makes feature generation reproducible.
+- `random_seed=42` makes request preprocessing and model sampling reproducible.
 - `WriterStageConfig` writes a CIF structure under `output/serial`.
 - `profile_inference=True` adds the GPU model-forward time to the output row.
 - Omitting `executor_backend` selects the serial processor. Ray replicas are

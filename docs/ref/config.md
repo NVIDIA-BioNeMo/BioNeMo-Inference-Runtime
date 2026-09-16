@@ -107,10 +107,10 @@ uses: copy a typed config, wrap a `bool`, or parse a `dict`, then fill
 `build_processor` always runs all five stages. `enabled` is not a
 public skip switch.
 
-Stage extras: `init_context` on tokenizer / feature generator (set
-`random_seed` on the **feature-generator** stage), `output_path` /
-`format` on the writer, `parallelism_mode=REPLICA` and `num_gpus` on
-the engine. Worked examples:
+Stage extras: `init_context` on tokenizer / feature generator (set a default
+`random_seed` on the **feature-generator** stage; a row-level seed overrides
+it), `output_path` / `format` on the writer,
+`parallelism_mode=REPLICA` and `num_gpus` on the engine. Worked examples:
 [API — `build_processor`][build-processor].
 
 ```text

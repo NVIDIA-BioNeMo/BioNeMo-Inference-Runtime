@@ -143,8 +143,9 @@ The configuration controls the distributed prediction pipeline:
 - `EngineStageConfig(compute=replicas)` creates one engine actor per visible
   GPU. Each actor reserves one GPU and loads one complete Boltz-2 model replica.
 - `num_sampling_steps=50` shortens the diffusion stage for this example.
-- `random_seed=42` seeds feature generation. The worker setup hook also seeds
-  PyTorch before each worker loads its pipeline stage.
+- `random_seed=42` seeds each request's preprocessing and model sampling. The
+  worker setup hook also seeds PyTorch before each worker loads its pipeline
+  stage.
 - `WriterStageConfig` uses an absolute path captured before the workers change
   directories and writes one CIF structure per request.
 - `should_continue_on_error=False` stops the example if any request fails.

@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 
 from bionemo_ir.pipeline.engine import FoldingEngine
+from bionemo_ir.pipeline.utils import SAMPLING_SEED_COLUMN
 
 # Determine device based on CUDA availability
 TEST_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,6 +52,20 @@ class MockModel(nn.Module):
 
     def optimize(self, accelerated_configs, **kwargs):
         return self
+
+
+class MockSeededModel(MockModel):
+    """Mock model that records the seed and feature dict for each call."""
+
+    def __init__(self, config=None, model_name=None):
+        super().__init__(config=config, model_name=model_name)
+        self.sampling_seeds = []
+        self.batches = []
+
+    def forward(self, batch, sampling_seed=None):
+        self.sampling_seeds.append(sampling_seed)
+        self.batches.append(batch)
+        return {"output": torch.randn(2, 3, 10)}
 
 
 class MockPostProcessor:
@@ -130,3 +145,31 @@ class TestFoldingEngine:
 
         assert engine.model is not None
         assert next(engine.model.parameters()).device.type == TEST_DEVICE
+
+    def test_execute_passes_each_request_seed_without_mutating_runtime_args(self):
+        """Request seeds remain per-call instead of becoming engine state."""
+        config = MockEngineConfig()
+        engine = FoldingEngine(config, MockSeededModel, MockPostProcessor)
+        batch = {"input": torch.randn(2, 10), SAMPLING_SEED_COLUMN: 17}
+
+        engine.execute(batch)
+        batch[SAMPLING_SEED_COLUMN] = 29
+        engine.execute(batch)
+
+        assert engine.model.sampling_seeds == [17, 29]
+        assert all(SAMPLING_SEED_COLUMN not in model_batch for model_batch in engine.model.batches)
+        assert engine.runtime_args == {}
+
+    def test_explicit_runtime_sampling_seed_overrides_request_seed(self):
+        """A model-only seed override keeps its documented precedence."""
+        config = MockEngineConfig()
+        engine = FoldingEngine(
+            config,
+            MockSeededModel,
+            MockPostProcessor,
+            runtime_args={"sampling_seed": 41},
+        )
+
+        engine.execute({"input": torch.randn(2, 10), SAMPLING_SEED_COLUMN: 17})
+
+        assert engine.model.sampling_seeds == [41]

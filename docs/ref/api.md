@@ -351,11 +351,11 @@ print(scores["ptm"], round(sum(scores["plddt"]) / len(scores["plddt"]), 2))
 
 Each input row:
 
-| Key           | Required    | Meaning                                                                                                 |
-| ------------- | ----------- | ------------------------------------------------------------------------------------------------------- |
-| `record`      | yes         | `InputRequest` — itself a `dict`, so `request["input_id"]` reads the id — or a dict with the same keys  |
-| `__record_id` | recommended | Becomes the output filename stem (`output/{id}.cif`)                                                    |
-| `random_seed` | no          | Not read by the tokenizer/feature `pre_init` hooks. Seed with `init_context` (below) or the process RNG |
+| Key           | Required    | Meaning                                                                                                |
+| ------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
+| `record`      | yes         | `InputRequest` — itself a `dict`, so `request["input_id"]` reads the id — or a dict with the same keys |
+| `__record_id` | recommended | Becomes the output filename stem (`output/{id}.cif`)                                                   |
+| `random_seed` | no          | Per-request seed passed to preprocessing hooks; overrides the stage default                            |
 
 `SerialProcessor.__call__` takes `list[dict]` and returns `list[dict]`.
 
@@ -457,10 +457,10 @@ share `compute`, `num_cpus`, `memory`, `batch_size`, `drop_keys`. Extra fields:
   Default `None` leaves local paths unrestricted for trusted CLI and library
   callers.
 - **Tokenizer / feature generator:** `init_context`. Set
-  `init_context={"random_seed": N}` on the **feature-generator** stage so the
-  tokenizer can fall back to the same seed (RDKit ETKDG on OpenFold3 and MSA
-  augmentation stay aligned). Setting it only on the tokenizer does **not**
-  seed the feature stage.
+  `init_context={"random_seed": N}` on the **feature-generator** stage to
+  provide a default seed for every row. A row-level `random_seed` overrides
+  this default. The tokenizer falls back to the feature-stage context, and its
+  resolved seed is carried into feature generation so both stages stay aligned.
 - **Writer:** `output_path`, `format` (`"pdb"`, `"cif"`, or `["pdb", "cif"]`).
 - **Engine:** `parallelism_mode=ParallelismMode.REPLICA`, `num_gpus` (default
   `1.0`).
@@ -477,8 +477,13 @@ overlays `config.runtime_args`. Only pass keys the model's `forward` accepts.
 
 ```python
 model(feed_dict, recycling_steps=3, num_sampling_steps=200,
-      diffusion_samples=1, max_parallel_samples=None, steering_args=None)
+      diffusion_samples=1, max_parallel_samples=None, steering_args=None,
+      sampling_seed=None)
 ```
+
+When a preprocessing hook resolves a model sampling seed, the pipeline supplies
+it as `sampling_seed`. A non-`None` `runtime_args["sampling_seed"]` overrides
+the request seed for model sampling only.
 
 #### OpenFold3
 

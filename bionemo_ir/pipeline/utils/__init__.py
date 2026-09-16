@@ -13,3 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Shared data-pipeline utilities."""
+
+RANDOM_SEED_COLUMN = "random_seed"
+SAMPLING_SEED_ARG = "sampling_seed"
+SAMPLING_SEED_COLUMN = "__sampling_seed"

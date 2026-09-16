@@ -97,7 +97,7 @@ class EngineProcessorConfig(ProcessorConfig):
         default_factory=dict,
         description="Runtime arguments passed to model.forward() alongside "
         "feed_dict. For Boltz models: recycling_steps, num_sampling_steps, "
-        "diffusion_samples, steering_args, etc.",
+        "diffusion_samples, sampling_seed, steering_args, etc.",
     )
 
     max_pending_requests: int | None = Field(

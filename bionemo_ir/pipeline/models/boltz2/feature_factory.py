@@ -19,6 +19,7 @@ Tokenizer stage (see Boltz2ContextGenerator in feature_context.py).
 """
 
 import random
+import secrets
 from collections.abc import Callable
 from typing import Any
 
@@ -32,6 +33,7 @@ from bionemo_ir.pipeline.base import (
     FeatureGeneratorSpec,
     default_context_and_feature_merger,
 )
+from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_ARG
 
 from .feature_collators import Boltz2FinalFeatureCollator
 from .feature_generators import (
@@ -55,21 +57,22 @@ _MAX_SEED = 2**32 - 1
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
     """Seed Python, NumPy, and Torch RNGs from ``context['random_seed']``.
 
-    Runs in the worker ahead of the tokenizer and feature stages, so one seed
-    covers everything downstream of it including the diffusion trajectory.
-    Same tri-seeding as the OpenFold2 and OpenFold3 factories.
+    Generate a seed from system entropy when the context omits one or provides
+    ``None``. Runs in the worker ahead of the tokenizer and feature stages, and
+    records the seed for the diffusion trajectory. Uses the same tri-seeding as
+    the OpenFold2 and OpenFold3 factories.
 
     Raises:
         ValueError: if ``random_seed`` is outside ``[0, 2**32 - 1]``.
     """
-    seed = context.get("random_seed", 0)
-    if seed is None:
-        seed = 0
-    seed = int(seed)
+    seed_value = context.get(RANDOM_SEED_COLUMN)
+    seed = secrets.randbelow(_MAX_SEED + 1) if seed_value is None else int(seed_value)
     # Named here rather than left to NumPy: this runs inside a Ray worker, where
     # its ValueError arrives as a dead actor several frames from the cause.
     if not 0 <= seed <= _MAX_SEED:
         raise ValueError(f"random_seed must be in [0, {_MAX_SEED}], got {seed}")
+    context[RANDOM_SEED_COLUMN] = seed
+    context[SAMPLING_SEED_ARG] = seed
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

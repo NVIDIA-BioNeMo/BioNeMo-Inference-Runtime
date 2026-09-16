@@ -15,13 +15,16 @@
 
 import asyncio
 import pickle
+from unittest.mock import patch
 
 import pytest
 import torch
 
 from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase
+from bionemo_ir.pipeline.models.boltz2.feature_factory import pre_init as boltz2_pre_init
 from bionemo_ir.pipeline.stages.base import StatefulStageUDF
 from bionemo_ir.pipeline.stages.tokenizer_stage import TokenizerUDF
+from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN
 
 
 def _unpack_columnar(output):
@@ -326,3 +329,61 @@ class TestTokenizerUDFBatchProcessing:
         assert len(results) == 1
         output = _unpack_columnar(results[0])
         assert len(output["feat"]) == 3
+
+
+class TestTokenizerUDFSeedPropagation:
+    def test_boltz_seed_resolution_is_propagated(self):
+        udf = TokenizerUDF(
+            compute_by_rows=True,
+            drop_keys=None,
+            expected_input_keys=["parsed"],
+            update_row=True,
+            context_generators={},
+            pre_init=boltz2_pre_init,
+        )
+
+        with patch(
+            "bionemo_ir.pipeline.models.boltz2.feature_factory.secrets.randbelow",
+            side_effect=[17, 29],
+        ) as mock_randbelow:
+            first = asyncio.run(udf.udf_for_item({"parsed": {}}))
+            second = asyncio.run(udf.udf_for_item({"parsed": {}}))
+            explicit = asyncio.run(udf.udf_for_item({"parsed": {}, RANDOM_SEED_COLUMN: 41}))
+
+        assert [item.args for item in mock_randbelow.call_args_list] == [(2**32,), (2**32,)]
+        assert [first[RANDOM_SEED_COLUMN], second[RANDOM_SEED_COLUMN], explicit[RANDOM_SEED_COLUMN]] == [
+            17,
+            29,
+            41,
+        ]
+
+    def test_row_seed_overrides_default_and_in_place_hook_is_propagated(self):
+        seen_contexts = []
+
+        def pre_init(context):
+            seen_contexts.append(dict(context))
+            context[RANDOM_SEED_COLUMN] = int(context[RANDOM_SEED_COLUMN])
+
+        udf = TokenizerUDF(
+            compute_by_rows=True,
+            drop_keys=None,
+            expected_input_keys=["parsed"],
+            update_row=True,
+            context_generators={},
+            pre_init=pre_init,
+            init_context={RANDOM_SEED_COLUMN: 41},
+        )
+
+        result = asyncio.run(
+            udf.udf_for_item(
+                {
+                    "parsed": {},
+                    "__record_id": "test",
+                    RANDOM_SEED_COLUMN: 17,
+                }
+            )
+        )
+
+        assert seen_contexts == [{RANDOM_SEED_COLUMN: 17}]
+        assert result[RANDOM_SEED_COLUMN] == 17
+        assert udf.init_context == {RANDOM_SEED_COLUMN: 41}

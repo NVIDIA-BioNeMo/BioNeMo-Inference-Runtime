@@ -14,10 +14,12 @@
 # limitations under the License.
 
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase, dict_context_merger, numpy_to_dict
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
+from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN
 
 
 class TokenizerUDF(StatefulStageUDF):
@@ -43,11 +45,13 @@ class TokenizerUDF(StatefulStageUDF):
     async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         # Seed before context generation so RDKit ETKDG (OpenFold3) sees the
         # same RNG state as FeatureFactory.pre_init documents.
+        context = deepcopy(self.init_context) if self.init_context is not None else {}
+        if RANDOM_SEED_COLUMN in row:
+            context[RANDOM_SEED_COLUMN] = row[RANDOM_SEED_COLUMN]
         if self.pre_init is not None:
-            from copy import deepcopy
-
-            ctx = deepcopy(self.init_context) if self.init_context is not None else {}
-            self.pre_init(context=ctx)
+            initialized_context = self.pre_init(context=context)
+            if initialized_context is not None:
+                context = initialized_context
 
         context_dict = {}
         for name, generator in self.context_generators.items():
@@ -62,6 +66,12 @@ class TokenizerUDF(StatefulStageUDF):
         for transform_func in self.transform_funcs:
             if transform_func.is_enabled():
                 context_dict = transform_func(context_dict)
+
+        # Keep the resolved per-request seed with the row so later stages do
+        # not have to reconstruct it from worker-local RNG state.
+        random_seed = context.get(RANDOM_SEED_COLUMN)
+        if random_seed is not None:
+            context_dict[RANDOM_SEED_COLUMN] = random_seed
 
         return context_dict
 

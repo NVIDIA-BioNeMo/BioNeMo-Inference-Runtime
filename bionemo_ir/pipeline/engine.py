@@ -24,6 +24,7 @@ from bionemo_ir.configs.base import EngineConfig
 from bionemo_ir.data.schemas import FoldingOutput
 from bionemo_ir.logger import logger
 from bionemo_ir.pipeline.base import PostProcessorBase
+from bionemo_ir.pipeline.utils import SAMPLING_SEED_ARG, SAMPLING_SEED_COLUMN
 
 
 class FoldingEngine:
@@ -90,7 +91,12 @@ class FoldingEngine:
     @torch.inference_mode()
     def execute(self, batch: dict[str, Any]) -> FoldingOutput:
         """Execute the model with the input."""
-        device_batch = self.transfer_batch_to_device(batch)
+        sampling_seed = batch.get(SAMPLING_SEED_COLUMN)
+        model_batch = {key: value for key, value in batch.items() if key != SAMPLING_SEED_COLUMN}
+        device_batch = self.transfer_batch_to_device(model_batch)
+        runtime_args = {**self.runtime_args}
+        if sampling_seed is not None and runtime_args.get(SAMPLING_SEED_ARG) is None:
+            runtime_args[SAMPLING_SEED_ARG] = int(sampling_seed)
 
         if self.config.profile_inference:
             # Single GPU-synced model-forward timing: one measurement per
@@ -99,12 +105,12 @@ class FoldingEngine:
             # same inputs rather than looping the forward pass here.
             torch.cuda.synchronize()
             _t0 = time.perf_counter()
-            output = self.model(device_batch, **self.runtime_args)
+            output = self.model(device_batch, **runtime_args)
             torch.cuda.synchronize()
             model_inference_time = time.perf_counter() - _t0
             logger.info(f"Model inference time: {model_inference_time:.4f} s")
         else:
-            output = self.model(device_batch, **self.runtime_args)
+            output = self.model(device_batch, **runtime_args)
 
         output = self.postprocessor(device_batch, output)
 

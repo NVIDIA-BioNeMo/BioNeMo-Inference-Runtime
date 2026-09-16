@@ -83,7 +83,9 @@ WORKDIR /opt/bioir-deps
 # nanobind must be importable before CMake configures, and --no-build-isolation
 # installs below cannot fetch it themselves.
 COPY requirements.txt ./
+# Replace the distro package without RECORD metadata.
 RUN --mount=type=cache,target=/cache/pip \
+    pip install --ignore-installed "$(grep -m1 '^PyYAML' requirements.txt)" && \
     pip install nanobind==2.10.2 -r requirements.txt
 
 # ------------------------------------------------------------------ devdeps

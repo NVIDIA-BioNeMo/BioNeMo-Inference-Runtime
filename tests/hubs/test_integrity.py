@@ -24,6 +24,7 @@ from bionemo_ir.hubs import hf, local
 @pytest.mark.parametrize(
     ("filename", "expected"),
     [
+        ("boltz1_conf.ckpt", "fea245d912c570ec117b2277c2719f312a6fc109c07b6f6ef741690ee775c2f5"),
         ("boltz2_conf.ckpt", "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1"),
         ("boltz2_aff.ckpt", "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e"),
     ],
@@ -49,13 +50,13 @@ def test_verify_boltz_checkpoint_sha256(tmp_path, monkeypatch):
 
 
 def test_missing_boltz_digest_blocks_deserialization(tmp_path, monkeypatch):
-    checkpoint = tmp_path / "boltz1_conf.ckpt"
+    checkpoint = tmp_path / "boltz1_unreviewed.ckpt"
     checkpoint.write_bytes(b"checkpoint")
     load_state_dict = Mock()
     monkeypatch.setattr(hf, "hf_hub_download", lambda **_kwargs: str(checkpoint))
     monkeypatch.setattr(hf, "_load_boltz_state_dict", load_state_dict)
 
-    with pytest.raises(ValueError, match="Missing SHA-256 digest: boltz1_conf.ckpt"):
+    with pytest.raises(ValueError, match="Missing SHA-256 digest: boltz1_unreviewed.ckpt"):
         hf.load_state_dict_from_hf(
             repo_id="boltz-community/boltz-1",
             filename=checkpoint.name,

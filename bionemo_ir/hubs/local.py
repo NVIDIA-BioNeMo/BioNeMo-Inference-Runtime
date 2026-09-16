@@ -42,6 +42,7 @@ PROTENIX_MODEL_NAMES = frozenset(
 
 # SHA-256 digests of HuggingFace Boltz checkpoints.
 BOLTZ_CHECKPOINT_SHA256 = {
+    "boltz1_conf.ckpt": "fea245d912c570ec117b2277c2719f312a6fc109c07b6f6ef741690ee775c2f5",
     "boltz2_conf.ckpt": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
     "boltz2_aff.ckpt": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e",
 }

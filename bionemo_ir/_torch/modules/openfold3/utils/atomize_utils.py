@@ -295,20 +295,109 @@ def get_token_atom_index_offset(atom_name: str, restype: torch.Tensor):
     return token_atom_index_offset, token_atom_mask
 
 
-def get_token_frame_atoms(
+def _insert_x_leading_dims(
+    tensor: torch.Tensor,
+    x: torch.Tensor,
+    trailing_dims: int = 1,
+) -> torch.Tensor:
+    """Insert missing leading dimensions before a tensor's feature dimensions.
+
+    For example, ``[B, N]`` becomes ``[B, 1, N]`` when ``x`` is
+    ``[B, S, N_atom, 3]``, preserving the batch axis during broadcasting.
+    """
+    target_ndim = x.ndim - 2 + trailing_dims
+    while tensor.ndim < target_ndim:
+        tensor = tensor.unsqueeze(-(trailing_dims + 1))
+    return tensor
+
+
+def _closest_atoms_to_start_atoms(
+    x: torch.Tensor,
+    atom_mask: torch.Tensor,
+    atom_asym_id: torch.Tensor,
+    start_atom_index: torch.Tensor,
+    eps: float,
+    inf: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Indices of the two closest same-chain atoms to each token's start atom.
+
+    A dense neighbour search over all atom pairs computes ``N_atom`` rows of which
+    only the ``N_token`` start-atom rows are ever read, so the query axis here is the
+    tokens. Distances and the pair mask are formed exactly as the dense search forms
+    them, so the selected indices are unchanged, but the working set is
+    ``N_token x N_atom`` per diffusion sample rather than ``N_atom^2`` -- the
+    difference between single-digit GB and tens of GB on a large complex.
+
+    Args:
+        x:
+            [*, N_atom, 3] Atom positions
+        atom_mask:
+            [*, N_atom] Atom mask
+        atom_asym_id:
+            [*, N_atom] Chain index, broadcast to atoms
+        start_atom_index:
+            [*, N_token] Index of the first atom of each token
+        eps:
+            Small constant for numerical stability
+        inf:
+            Large constant for numerical stability
+
+    Returns:
+        ([*, N_token], [*, N_token])
+        Indices of the closest and second closest atom to each token's start atom
+    """
+    leading_shape = x.shape[:-2]
+    atom_mask = _insert_x_leading_dims(atom_mask, x)
+    atom_asym_id = _insert_x_leading_dims(atom_asym_id, x)
+    start_atom_index = _insert_x_leading_dims(start_atom_index, x)
+    atom_mask = torch.broadcast_to(atom_mask, (*leading_shape, atom_mask.shape[-1]))
+    atom_asym_id = torch.broadcast_to(atom_asym_id, (*leading_shape, atom_asym_id.shape[-1]))
+    start_atom_index = torch.broadcast_to(
+        start_atom_index,
+        (*leading_shape, start_atom_index.shape[-1]),
+    )
+
+    # Position, mask and chain of the query (start) atoms
+    start_x = torch.gather(x, dim=-2, index=start_atom_index.unsqueeze(-1).expand(*start_atom_index.shape, 3))
+    start_atom_mask = torch.gather(atom_mask, dim=-1, index=start_atom_index)
+    start_asym_id = torch.gather(atom_asym_id, dim=-1, index=start_atom_index)
+
+    # Pairwise mask over (start atom, atom): both present, and within the same chain
+    # [*, N_token, N_atom]
+    pair_mask = start_atom_mask[..., None] * atom_mask[..., None, :]
+    pair_mask = pair_mask * (start_asym_id[..., None] == atom_asym_id[..., None, :])
+
+    # Distance from every start atom to every atom
+    # [*, N_token, N_atom]
+    d = torch.sum(eps + (start_x[..., None, :] - x[..., None, :, :]) ** 2, dim=-1) ** 0.5
+    d = d * pair_mask + inf * (1 - pair_mask)
+
+    # Index 0 is the start atom itself, so 1 and 2 are its two closest neighbours
+    _, closest_atom_index = torch.topk(d, k=3, dim=-1, largest=False)
+    return closest_atom_index[..., 1], closest_atom_index[..., 2]
+
+
+def get_token_frame_mask(
     batch: dict,
     x: torch.Tensor,
     atom_mask: torch.Tensor,
     angle_threshold: float = 25.0,
     eps: float = 1e-8,
     inf: float = 1e9,
-):
+) -> torch.Tensor:
     """
-    Extract frame atoms per token, which returns
+    Mask of tokens whose frame is valid, from the frame atoms
         -   (N, Ca, C) for standard amino acid residues
         -   (C3', C1', C4') for standard nucleotide residues
         -   closest neighbors for atomized tokens (modified residues and ligands),
             subject to additional angle and chain constraints from Subsection 4.3.2
+
+    A frame is valid when its three atoms are present, lie in one chain, and -- for
+    atomized tokens, whose frame comes from nearest neighbours rather than a known
+    backbone -- span an angle within ``angle_threshold`` of neither 0 nor 180 degrees.
+    This is the ``has_frame`` input of the pTM / ipTM outer maximum (AF3 SI 5.9.1):
+    only a token with a frame can be the aligned token. The frame atom positions
+    themselves are used only to test that angle and are not returned.
 
     Args:
         batch:
@@ -324,37 +413,52 @@ def get_token_frame_atoms(
         inf:
             Large constant for numerical stability
     Returns:
-        phi:
-            ([*, N_token, 3], [*, N_token, 3], [*, N_token, 3])
-            Tuple of three frame atoms
         valid_frame_mask:
             [*, N_token] Mask denoting valid frames
     """
-    # Create pairwise atom mask
-    pair_mask = atom_mask[..., None] * atom_mask[..., None, :]
+    if x.shape[-2] < 3:
+        token_mask = _insert_x_leading_dims(batch["token_mask"], x)
+        token_mask = torch.broadcast_to(token_mask, (*x.shape[:-2], token_mask.shape[-1]))
+        return torch.zeros_like(token_mask)
 
-    # Update pairwise atom mask
-    # Restrict to atoms within the same chain
+    # Insert the sample axis before broadcasting batch-shaped features.
+    batch = dict(batch)
+    for key in (
+        "token_mask",
+        "num_atoms_per_token",
+        "asym_id",
+        "start_atom_index",
+        "is_protein",
+        "is_dna",
+        "is_rna",
+        "is_atomized",
+    ):
+        batch[key] = _insert_x_leading_dims(batch[key], x)
+    batch["restype"] = _insert_x_leading_dims(batch["restype"], x, trailing_dims=2)
+    atom_mask = _insert_x_leading_dims(atom_mask, x)
+    atom_mask = torch.broadcast_to(atom_mask, (*x.shape[:-2], atom_mask.shape[-1]))
+
+    # Chain index per atom, to restrict frames to atoms within the same chain
     atom_asym_id = broadcast_token_feat_to_atoms(
         token_mask=batch["token_mask"],
         num_atoms_per_token=batch["num_atoms_per_token"],
         token_feat=batch["asym_id"],
     )
-    atom_asym_id_mask = atom_asym_id[..., None] == atom_asym_id[..., None, :]
-    pair_mask = pair_mask * atom_asym_id_mask
-
-    # Compute distance matrix
-    # [*, N_atom, N_atom]
-    d = torch.sum(eps + (x[..., None, :] - x[..., None, :, :]) ** 2, dim=-1) ** 0.5
-    d = d * pair_mask + inf * (1 - pair_mask)
+    atom_asym_id = _insert_x_leading_dims(atom_asym_id, x)
+    atom_asym_id = torch.broadcast_to(atom_asym_id, (*x.shape[:-2], atom_asym_id.shape[-1]))
 
     # Find indices of two closest atoms for start atoms
     # [*, N_token]
     start_atom_index = batch["start_atom_index"].long()
     start_atom_index = start_atom_index.expand(*x.shape[:-2], start_atom_index.shape[-1])
-    _, closest_atom_index = torch.topk(d, k=3, dim=-1, largest=False)
-    a_index = torch.gather(closest_atom_index[..., 1], dim=-1, index=start_atom_index)
-    c_index = torch.gather(closest_atom_index[..., 2], dim=-1, index=start_atom_index)
+    a_index, c_index = _closest_atoms_to_start_atoms(
+        x=x,
+        atom_mask=atom_mask,
+        atom_asym_id=atom_asym_id,
+        start_atom_index=start_atom_index,
+        eps=eps,
+        inf=inf,
+    )
 
     # Construct indices of atoms used for frame construction
     # [*, N_token]
@@ -401,7 +505,8 @@ def get_token_frame_atoms(
         },
     }
 
-    # Extract coordinates
+    # Extract chain, presence and coordinates of each frame atom. The coordinates
+    # serve only the angle test below; they are not part of the result.
     for key in frame_atoms:
         frame_atoms[key].update(
             {
@@ -414,12 +519,12 @@ def get_token_frame_atoms(
                     .long(),
                 ),
                 "asym_id": torch.gather(
-                    atom_asym_id.expand(*x.shape[:-2], atom_asym_id.shape[-1]),
+                    atom_asym_id,
                     dim=-1,
                     index=frame_atoms[key]["index"].long(),
                 ),
                 "atom_mask": torch.gather(
-                    atom_mask.expand(*x.shape[:-2], atom_mask.shape[-1]),
+                    atom_mask,
                     dim=-1,
                     index=frame_atoms[key]["index"].long(),
                 )
@@ -457,11 +562,4 @@ def get_token_frame_atoms(
     )
 
     # Compute final valid frame mask
-    valid_frame_mask = valid_frame_mask_angle * valid_frame_mask_atom * valid_frame_mask_asym_id
-    phi = (
-        frame_atoms["a"]["atom_positions"],
-        frame_atoms["b"]["atom_positions"],
-        frame_atoms["c"]["atom_positions"],
-    )
-
-    return phi, valid_frame_mask
+    return valid_frame_mask_angle * valid_frame_mask_atom * valid_frame_mask_asym_id

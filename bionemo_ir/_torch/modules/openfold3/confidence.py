@@ -22,6 +22,7 @@ from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import (
     broadcast_token_feat_to_atoms,
+    get_token_frame_mask,
     get_token_representative_atoms,
     max_atom_per_token_masked_select,
 )
@@ -657,6 +658,9 @@ class AuxiliaryHeadsAllAtom(nn.Module):
                         Predicted binned PLDDT logits
                     "pae_logits" ([*, N_token, N_token, 64]):
                         Predicted binned PAE logits
+                    "valid_frame_mask" ([*, N_token]):
+                        Tokens with a valid frame, the ``has_frame`` input of the
+                        pTM / ipTM outer maximum. Present with "pae_logits" only.
                     "pde_logits" ([*, N_token, N_token, 64]):
                         Predicted binned PDE logits
                     "experimentally_resolved_logits" ([*, N_atom, 2]):
@@ -721,6 +725,12 @@ class AuxiliaryHeadsAllAtom(nn.Module):
 
         if self.config.pae.enabled:
             aux_out["pae_logits"] = self.pae(zij).to(device=out_device)
+            # has_frame for the pTM / ipTM outer maximum, from the sampled
+            # coordinates, so it is per diffusion sample. Only the PAE head feeds
+            # pTM / ipTM, so nothing needs it when that head is off.
+            aux_out["valid_frame_mask"] = get_token_frame_mask(
+                batch=batch, x=atom_positions_predicted, atom_mask=batch["atom_mask"]
+            ).to(device=out_device)
 
         aux_out["pde_logits"] = pde_logits.to(device=out_device)
 

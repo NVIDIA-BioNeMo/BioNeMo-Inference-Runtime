@@ -67,19 +67,25 @@ class PostProcessor(PostProcessorBase):
         n_tokens = int(token_mask.sum())
         atom_mask_bool = atom_mask.bool().numpy()
 
+        # --- Per-atom pLDDT ---
+        # Drives both the diffusion-sample choice and the reported pLDDT.
+        plddt_per_atom = _plddt_per_atom(output)
+
         # --- Atom positions ---
         # atom_positions_predicted: (B, S, N_atoms, 3) or (B, N_atoms, 3)
-        raw_pos = _cpu(output["atom_positions_predicted"])
+        raw_pos = torch.as_tensor(output["atom_positions_predicted"])
         if raw_pos.dim() == 4:
             # Multiple diffusion samples — select best by mean pLDDT
-            best_idx = _select_best_sample(output)
-            best_pos = raw_pos[0, best_idx].numpy()  # (N_atoms, 3)
+            best_idx = _select_best_sample(plddt_per_atom)
+            best_pos = raw_pos[0, best_idx]
         elif raw_pos.dim() == 3:
             best_idx = 0
-            best_pos = raw_pos[0].numpy()  # (N_atoms, 3)
+            best_pos = raw_pos[0]
         else:
             best_idx = 0
-            best_pos = raw_pos.numpy()
+            best_pos = raw_pos
+        # Copy only the chosen sample, not all of them
+        best_pos = best_pos.cpu().numpy()  # (N_atoms, 3)
 
         # --- Atom-to-token mapping ---
         atom_to_token = _cpu(batch["atom_to_token_index"]).squeeze(0).numpy()  # (N_atoms,)
@@ -119,10 +125,14 @@ class PostProcessor(PostProcessorBase):
         chain_indices = chain_indices - 1
 
         # --- Confidence scores from logits ---
-        plddt = _compute_plddt(output, best_idx, n_tokens, atom_to_token, atom_mask_bool)
-        ptm = _compute_ptm(output, best_idx, n_tokens)
-        iptm = _compute_iptm(output, best_idx, n_tokens, chain_indices)
-        pae = _compute_pae(output, best_idx, n_tokens)
+        # Reduce logits on their current device and copy only the results.
+        # pTM, ipTM and PAE share the selected, cropped PAE logits.
+        plddt = _compute_plddt(plddt_per_atom, best_idx, n_tokens, atom_to_token, atom_mask_bool)
+        pae_logits = _pae_logits(output, best_idx, n_tokens)
+        has_frame = _frame_mask(output, best_idx, n_tokens)
+        ptm = _compute_ptm(pae_logits, n_tokens, has_frame=has_frame)
+        iptm = _compute_iptm(pae_logits, n_tokens, chain_indices, has_frame=has_frame)
+        pae = _compute_pae(pae_logits)
         max_pae = float(np.max(pae)) if pae is not None else None
 
         b_factors = np.repeat(plddt[:, None], NUM_ATOM_TYPES, axis=-1) * atom_mask_out
@@ -174,126 +184,218 @@ def _cpu(t: Any) -> torch.Tensor:
     return torch.as_tensor(t)
 
 
-def _select_best_sample(output: dict) -> int:
-    """Select best diffusion sample by mean pLDDT."""
+def _bin_centers(bin_min: float, bin_max: float, n_bins: int) -> torch.Tensor:
+    """Midpoints of ``n_bins`` equal-width bins spanning ``[bin_min, bin_max]``.
+
+    A binned head predicts a distribution over bins, so its expectation weights
+    each bin by that bin's midpoint: 0.25, 0.75, ... 31.75 A for the 64-bin PAE
+    head and 0.01, 0.03, ... 0.99 for the 50-bin pLDDT head. Mirrors upstream
+    ``openfold3/core/metrics/confidence.py::get_bin_centers``.
+
+    ``torch.linspace(bin_min, bin_max, n_bins)`` returns bin *boundaries*
+    instead, starting on the bottom edge and ending on the top one. That
+    stretches the grid by ``n_bins / (n_bins - 1)``, so it misplaces every
+    weight and biases the expectation it feeds.
+    """
+    width = (bin_max - bin_min) / n_bins
+    boundaries = torch.linspace(bin_min, bin_max, n_bins + 1, dtype=torch.float32)
+    return boundaries[:-1] + 0.5 * width
+
+
+def _frame_mask(output: dict, best_idx: int, n_tokens: int) -> torch.Tensor | None:
+    """``has_frame`` for the pTM / ipTM maximum, as emitted by the confidence head.
+
+    The head computes it from the sampled coordinates, so it carries the diffusion
+    sample axis and arrives as 0/1 floats in the output dtype. Absent when the PAE
+    head is disabled, in which case there is no pTM to restrict. Stays on its
+    original device, alongside the logits it will gate.
+    """
+    mask = output.get("valid_frame_mask")
+    if mask is None:
+        return None
+    mask = torch.as_tensor(mask)
+    if mask.dim() == 3:
+        mask = mask[0, best_idx]
+    elif mask.dim() == 2:
+        mask = mask[0]
+    return mask[:n_tokens].bool()
+
+
+def _pae_logits(output: dict, best_idx: int, n_tokens: int) -> torch.Tensor | None:
+    """The selected sample's PAE logits, cropped to the real tokens.
+
+    Left on its original device: ``torch.as_tensor`` preserves it, unlike
+    ``_cpu``. The engine calls the post-processor with the model's own output, so
+    this is normally GPU memory, and every consumer reduces it.
+    """
+    logits = output.get("pae_logits")
+    if logits is None:
+        return None
+    logits = torch.as_tensor(logits)
+    if logits.dim() == 5:
+        logits = logits[0, best_idx]  # (N_tokens, N_tokens, n_bins)
+    elif logits.dim() == 4:
+        logits = logits[0]
+    return logits[:n_tokens, :n_tokens]
+
+
+def _plddt_per_atom(output: dict) -> torch.Tensor | None:
+    """Per-atom pLDDT on a 0-100 scale, as ``(n_samples, N_atom)``.
+
+    Both the diffusion-sample choice and the reported per-token score are this
+    same expectation, so it runs once here instead of once in each. Stays on the
+    logits' device; only the selected row is ever copied to the host.
+    """
     logits = output.get("plddt_logits")
     if logits is None:
+        return None
+    logits = torch.as_tensor(logits)
+    if logits.dim() == 4:
+        logits = logits[0]  # (B, S, N_atom, n_bins) -> (S, N_atom, n_bins)
+    elif logits.dim() == 3:
+        logits = logits[:1]  # (B, N_atom, n_bins) -> a single sample
+    if logits.dim() == 2:
+        logits = logits.unsqueeze(0)  # (N_atom, n_bins) -> a single sample
+    probs = torch.softmax(logits.float(), dim=-1)
+    bin_centers = _bin_centers(0.0, 1.0, probs.shape[-1]).to(device=probs.device)
+    return (probs * bin_centers).sum(dim=-1) * 100.0
+
+
+def _select_best_sample(plddt_per_atom: torch.Tensor | None) -> int:
+    """Select best diffusion sample by mean pLDDT.
+
+    Reduces on the device and brings back only the winning index.
+    """
+    if plddt_per_atom is None:
         return 0
-    logits = _cpu(logits)
-    if logits.dim() >= 3:
-        # (B, S, N_atoms, 50) → compute mean pLDDT per sample
-        probs = torch.softmax(logits[0], dim=-1)
-        n_bins = probs.shape[-1]
-        bin_centers = torch.linspace(0, 1, n_bins)
-        plddt_per_atom = (probs * bin_centers).sum(dim=-1)  # (S, N_atoms)
-        mean_plddt = plddt_per_atom.mean(dim=-1)  # (S,)
-        return int(mean_plddt.argmax())
-    return 0
+    return int(plddt_per_atom.mean(dim=-1).argmax())
 
 
 def _compute_plddt(
-    output: dict, best_idx: int, n_tokens: int, atom_to_token: np.ndarray, atom_mask_bool: np.ndarray
+    plddt_per_atom: torch.Tensor | None,
+    best_idx: int,
+    n_tokens: int,
+    atom_to_token: np.ndarray,
+    atom_mask_bool: np.ndarray,
 ) -> np.ndarray:
-    """Compute per-token pLDDT from per-atom pLDDT logits."""
-    logits = output.get("plddt_logits")
-    if logits is None:
+    """Average the selected sample's per-atom pLDDT into per-token pLDDT.
+
+    Only the selected sample's ``(N_atom,)`` row crosses to the host. The
+    atom-to-token mean then runs as a bincount there: a scatter-add on the device
+    would be faster still, but CUDA's unordered ``atomicAdd`` makes it
+    non-reproducible run to run, and this value is reported and written into the
+    B-factors.
+    """
+    if plddt_per_atom is None:
         return np.full(n_tokens, 50.0, dtype=np.float32)
-    logits = _cpu(logits)
-    if logits.dim() == 4:
-        logits = logits[0, best_idx]  # (N_atoms, 50)
-    elif logits.dim() == 3:
-        logits = logits[0]
-    probs = torch.softmax(logits, dim=-1)
-    n_bins = probs.shape[-1]
-    bin_centers = torch.linspace(0, 1, n_bins)
-    plddt_per_atom = (probs * bin_centers).sum(dim=-1).numpy() * 100.0
+    per_atom = plddt_per_atom[best_idx].cpu().numpy()
 
-    # Aggregate to per-token
-    plddt = np.zeros(n_tokens, dtype=np.float32)
-    counts = np.zeros(n_tokens, dtype=np.float32)
-    for ai in np.where(atom_mask_bool)[0]:
-        t = atom_to_token[ai]
-        if t < n_tokens:
-            plddt[t] += plddt_per_atom[ai]
-            counts[t] += 1
-    counts = np.maximum(counts, 1)
-    return plddt / counts
+    # Mean over the present atoms of each token; tokens with no atom stay at 0
+    scored = atom_mask_bool & (atom_to_token < n_tokens)
+    token_of_atom = atom_to_token[scored]
+    totals = np.bincount(token_of_atom, weights=per_atom[scored], minlength=n_tokens)
+    counts = np.bincount(token_of_atom, minlength=n_tokens)
+    return (totals[:n_tokens] / np.maximum(counts[:n_tokens], 1)).astype(np.float32)
 
 
-def _compute_ptm(output: dict, best_idx: int, n_tokens: int) -> float:
+def _compute_ptm(logits: torch.Tensor | None, n_tokens: int, has_frame: torch.Tensor | None = None) -> float:
     """Compute predicted TM-score from PAE logits."""
-    logits = output.get("pae_logits")
     if logits is None:
         return float("nan")
-    logits = _cpu(logits)
-    if logits.dim() == 5:
-        logits = logits[0, best_idx]  # (N_tokens, N_tokens, 64)
-    elif logits.dim() == 4:
-        logits = logits[0]
-    logits = logits[:n_tokens, :n_tokens]
-    return float(_tm_score_from_pae_logits(logits, n_tokens))
+    return _tm_score_from_pae_logits(logits, n_tokens, has_frame=has_frame)
 
 
-def _compute_iptm(output: dict, best_idx: int, n_tokens: int, chain_indices: np.ndarray) -> float:
+def _compute_iptm(
+    logits: torch.Tensor | None,
+    n_tokens: int,
+    chain_indices: np.ndarray,
+    has_frame: torch.Tensor | None = None,
+) -> float:
     """Compute interface pTM from PAE logits (inter-chain pairs only)."""
-    logits = output.get("pae_logits")
     if logits is None:
         return float("nan")
-    unique_chains = np.unique(chain_indices)
-    if len(unique_chains) < 2:
-        return float("nan")
-    logits = _cpu(logits)
-    if logits.dim() == 5:
-        logits = logits[0, best_idx]
-    elif logits.dim() == 4:
-        logits = logits[0]
-    logits = logits[:n_tokens, :n_tokens]
 
-    # Mask to inter-chain pairs
-    ci = torch.tensor(chain_indices, dtype=torch.long)
-    inter_mask = (ci.unsqueeze(0) != ci.unsqueeze(1)).float()
-    if inter_mask.sum() == 0:
+    # Score only pairs that cross a chain boundary; a single chain has no interface.
+    ci = torch.as_tensor(chain_indices, dtype=torch.long, device=logits.device)
+    pair_mask = (ci.unsqueeze(-1) != ci.unsqueeze(-2)).to(dtype=torch.float32)
+    if not bool(pair_mask.any()):
         return float("nan")
 
-    return float(_tm_score_from_pae_logits(logits, n_tokens, mask=inter_mask))
+    return _tm_score_from_pae_logits(logits, n_tokens, pair_mask=pair_mask, has_frame=has_frame)
 
 
 def _tm_score_from_pae_logits(
     logits: torch.Tensor,
     n_tokens: int,
-    mask: torch.Tensor = None,
-) -> torch.Tensor:
-    """Compute TM-score from PAE logits using AF2/AF3 formula."""
-    probs = torch.softmax(logits, dim=-1)
+    pair_mask: torch.Tensor | None = None,
+    has_frame: torch.Tensor | None = None,
+) -> float:
+    """pTM / ipTM from PAE logits, per AF3 SI 5.9.1 Eqs. (17-18).
+
+    For each aligned token ``i``, the expected pairwise TM term is averaged over
+    the tokens ``j`` it scores against -- every token for pTM, only tokens of
+    other chains for ipTM. The score is then the **maximum** of those per-token
+    averages over ``i``, because pTM asks how good the structure looks from its
+    single best alignment frame. Averaging over ``i`` instead, or over all pairs
+    at once, reports the typical frame rather than the best one; that is a lower
+    bound on pTM and is not comparable with AF3-calibrated thresholds.
+
+    Only a token with a valid frame can be that aligned token, which is what
+    ``has_frame`` restricts. Upstream
+    (``openfold3/core/metrics/confidence.py::compute_ptm``) zero-fills the
+    ineligible rows before the maximum; since every term is non-negative, taking
+    the maximum over the eligible rows is the same thing.
+
+    Args:
+        logits: (N, N, n_bins) PAE logits, row ``i`` being the aligned token.
+        n_tokens: token count N, which sets ``d0``.
+        pair_mask: optional (N, N) 0/1 mask of the pairs to score. ``None``
+            scores every pair, giving pTM.
+        has_frame: optional (N,) bool mask of tokens eligible as the aligned
+            token. ``None`` treats every token as eligible.
+
+    Returns:
+        The score, or NaN when no eligible aligned token remains. Upstream
+        returns 0.0 there; NaN is used here so ``FoldingOutput.get_scores()``
+        reports ``None`` rather than a 0 that reads as a confident bad answer,
+        matching how this module already reports the ipTM of a single chain.
+    """
+    probs = torch.softmax(logits.float(), dim=-1)
     n_bins = probs.shape[-1]
-    bin_centers = torch.linspace(0, 32, n_bins)  # 64 bins, 0-32 Å
 
-    # d0 = 1.24 * (max(N, 19) - 15)^(1/3) - 1.8
+    # d0 = 1.24 * (max(N, 19) - 15)^(1/3) - 1.8, so the N floor of 19 keeps d0 > 0
     d0 = 1.24 * (max(n_tokens, 19) - 15) ** (1.0 / 3.0) - 1.8
-    d0 = max(d0, 0.01)
 
-    # TM-score per pair: 1 / (1 + (d/d0)^2)
+    # Expected TM term per pair: E_bins[1 / (1 + (e_ij / d0)^2)]
+    bin_centers = _bin_centers(0.0, 32.0, n_bins).to(device=probs.device)
     tm_per_bin = 1.0 / (1.0 + (bin_centers / d0) ** 2)
     tm_per_pair = (probs * tm_per_bin).sum(dim=-1)  # (N, N)
 
-    if mask is not None:
-        return (tm_per_pair * mask).sum() / mask.sum().clamp(min=1)
-    return tm_per_pair.mean()
+    # Mean over the scored tokens j, for each aligned token i
+    if pair_mask is None:
+        pair_mask = torch.ones_like(tm_per_pair)
+    n_scored = pair_mask.sum(dim=-1)  # (N,)
+    tm_per_aligned = (tm_per_pair * pair_mask).sum(dim=-1) / n_scored.clamp(min=1)
+
+    # Maximum over the aligned tokens that are eligible and have something to score
+    eligible = n_scored > 0
+    if has_frame is not None:
+        eligible = eligible & has_frame.to(device=eligible.device)
+    if not bool(eligible.any()):
+        return float("nan")
+    return float(tm_per_aligned[eligible].max())
 
 
-def _compute_pae(output: dict, best_idx: int, n_tokens: int) -> np.ndarray | None:
-    """Compute PAE matrix from PAE logits."""
-    logits = output.get("pae_logits")
+def _compute_pae(logits: torch.Tensor | None) -> np.ndarray | None:
+    """Compute PAE matrix from PAE logits.
+
+    Reducing the bin axis before the host copy makes the transfer ``n_bins``
+    times smaller: an (N_token, N_token) matrix rather than the logits.
+    """
     if logits is None:
         return None
-    logits = _cpu(logits)
-    if logits.dim() == 5:
-        logits = logits[0, best_idx]
-    elif logits.dim() == 4:
-        logits = logits[0]
-    logits = logits[:n_tokens, :n_tokens]
-    probs = torch.softmax(logits, dim=-1)
+    probs = torch.softmax(logits.float(), dim=-1)
     n_bins = probs.shape[-1]
-    bin_centers = torch.linspace(0, 32, n_bins)
-    pae = (probs * bin_centers).sum(dim=-1).numpy()
+    bin_centers = _bin_centers(0.0, 32.0, n_bins).to(device=probs.device)
+    pae = (probs * bin_centers).sum(dim=-1).cpu().numpy()
     return np.round(pae, 3)

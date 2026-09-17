@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -22,6 +23,8 @@ from typing import Optional
 import numpy as np
 
 from bionemo_ir.data.path import resolve_input_path
+
+_logger = logging.getLogger(__name__)
 
 
 class PolymerType(str, Enum):
@@ -568,6 +571,7 @@ class Polymer(dict):
 
         self._validate_chain_id(chain_id)
         self._validate_polymer_fields(polymer_type, sequence, templates)
+        sequence = self._normalize_polymer_sequence(polymer_type, chain_id, sequence)
 
         super().__init__(
             polymer_type=polymer_type.value if isinstance(polymer_type, PolymerType) else polymer_type,
@@ -603,10 +607,145 @@ class Polymer(dict):
 
     _CCD_LIGAND_PATTERN = re.compile(r"^[A-Z0-9]{1,5}(?:_[A-Z0-9]{1,5})*$")
 
+    # (canonical, ambiguous, unknown) per sequence polymer type. Ambiguous
+    # letters are rewritten to the unknown residue with a warning: no backend
+    # models them, and OpenFold2 indexes its restype table directly, so passing
+    # one through reaches feature generation as a KeyError.
+    _SEQUENCE_ALPHABETS = {
+        PolymerType.PROTEIN.value: ("ACDEFGHIKLMNPQRSTVWXY", "BJOUZ", "X"),
+        PolymerType.RNA.value: ("ACGNU", "BDHKMRSTVWY", "N"),
+        PolymerType.DNA.value: ("ACGNT", "BDHKMRSUVWY", "N"),
+    }
+
+    @staticmethod
+    def _normalize_polymer_sequence(
+        polymer_type: PolymerType, chain_id: str | list[str] | None, sequence: str | None
+    ) -> str | None:
+        """Normalise a sequence polymer and reject letters outside its alphabet.
+
+        Only ``PROTEIN`` / ``RNA`` / ``DNA`` are touched. A SMILES string is
+        case-sensitive (``C`` is aliphatic carbon, ``c`` aromatic) and a CCD code
+        has its own pattern, so both are returned unchanged.
+
+        Without this check a stray character reached the backends and was folded
+        into the unknown residue -- silently in the Boltz-2 path, with a log line
+        in the OpenFold3 one -- so malformed input produced a plausible-looking
+        structure instead of an error.
+
+        Raises:
+            ValueError: A character outside the polymer's alphabet.
+        """
+        alphabets = Polymer._SEQUENCE_ALPHABETS.get(polymer_type.value)
+        if alphabets is None or sequence is None:
+            return sequence
+        canonical, ambiguous, unknown = alphabets
+
+        where = f" of chain {chain_id!r}" if chain_id is not None else ""
+        residues: list[str] = []
+        invalid: list[tuple[int, str]] = []
+        lowered = False
+        degraded: set[str] = set()
+
+        for position, original in enumerate(sequence, start=1):
+            # Upper-case one ASCII letter at a time. str.upper() over the whole
+            # string folds 'ß' to 'SS' and 'ﬃ' to 'FFI', which would turn
+            # rejected input into accepted residues and change the chain length.
+            letter = original.upper() if "a" <= original <= "z" else original
+            lowered = lowered or letter != original
+            if letter in canonical:
+                residues.append(letter)
+            elif letter in ambiguous:
+                degraded.add(letter)
+                residues.append(unknown)
+            else:
+                invalid.append((position, original))
+
+        if invalid:
+            detail = ", ".join(f"{c!r} at position {i}" for i, c in invalid[:5])
+            if len(invalid) > 5:
+                detail += f", and {len(invalid) - 5} more"
+            raise ValueError(
+                f"Invalid {polymer_type.value} sequence{where}: {detail}. "
+                f"A {polymer_type.value} sequence must use the one-letter residue codes "
+                f"{canonical} (ambiguity codes {ambiguous} "
+                f"are accepted and read as unknown)."
+            )
+
+        if lowered:
+            _logger.warning(
+                "Lower-case residues in the %s sequence%s were upper-cased; a primary "
+                "sequence carries no alignment case convention.",
+                polymer_type.value,
+                where,
+            )
+        if degraded:
+            _logger.warning(
+                "Ambiguity codes %s in the %s sequence%s were replaced with %r.",
+                ", ".join(repr(c) for c in sorted(degraded)),
+                polymer_type.value,
+                where,
+                unknown,
+            )
+
+        return "".join(residues)
+
+    @staticmethod
+    def msa_row_alphabet(polymer_type: PolymerType) -> frozenset[str] | None:
+        """Characters an A3M row may carry, or ``None`` for a non-sequence polymer.
+
+        The residue codes of the primary-sequence contract, their lower-case
+        forms, and the gap. Derived from the same table so the two paths cannot
+        drift apart.
+        """
+        alphabets = Polymer._SEQUENCE_ALPHABETS.get(polymer_type.value)
+        if alphabets is None:
+            return None
+        canonical, ambiguous, _ = alphabets
+        letters = canonical + ambiguous
+        return frozenset(letters + letters.lower() + "-")
+
+    @staticmethod
+    def validate_msa_row(
+        polymer_type: PolymerType, chain_id: str | list[str] | None, row: int, sequence: str | None
+    ) -> None:
+        """Reject symbols an A3M row may not carry, without rewriting it.
+
+        Case is load-bearing here and must survive untouched: an upper-case
+        letter is an aligned residue, a lower-case one an insertion relative to
+        the query that ``generate_deletion_matrix`` counts, and ``-`` an aligned
+        gap. So this only rejects. Left unchecked, a stray symbol reaches the
+        backends as an unknown residue under Boltz-2 and OpenFold3 and as a
+        ``KeyError`` under OpenFold2 -- the split this validation exists to end.
+
+        Raises:
+            ValueError: A character outside the polymer's MSA alphabet.
+        """
+        allowed = Polymer.msa_row_alphabet(polymer_type)
+        if allowed is None or not sequence:
+            return
+        invalid = [(position, c) for position, c in enumerate(sequence, start=1) if c not in allowed]
+        if not invalid:
+            return
+        detail = ", ".join(f"{c!r} at position {position}" for position, c in invalid[:5])
+        if len(invalid) > 5:
+            detail += f", and {len(invalid) - 5} more"
+        raise ValueError(
+            f"Invalid {polymer_type.value} MSA row {row} of chain {chain_id!r}: {detail}. "
+            f"An MSA row may carry the residue codes {''.join(sorted(allowed - {'-'}))}, "
+            f"their lower-case forms for insertions, and '-' for a gap."
+        )
+
     @staticmethod
     def _validate_polymer_fields(polymer_type: PolymerType, sequence: str | None, templates: list | None) -> None:
         if sequence is None:
             raise ValueError(f"{polymer_type.value} must have 'sequence'")
+
+        # Guard every polymer type, not just the ones with an alphabet: a
+        # non-string otherwise reaches re.match as a TypeError for a CCD code,
+        # str.upper as an AttributeError for a sequence polymer, and nothing at
+        # all for SMILES. Only ValueError carries the input id added downstream.
+        if not isinstance(sequence, str):
+            raise ValueError(f"{polymer_type.value} 'sequence' must be a string, got {type(sequence).__name__}")
 
         if polymer_type == PolymerType.CCD_LIGAND:
             if not Polymer._CCD_LIGAND_PATTERN.match(sequence):

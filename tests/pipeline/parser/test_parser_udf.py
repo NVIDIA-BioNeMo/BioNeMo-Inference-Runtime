@@ -19,9 +19,96 @@ from pathlib import Path
 import pytest
 
 from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer, Template
-from bionemo_ir.pipeline.stages.parser_stage import ParserUDF
+from bionemo_ir.pipeline.stages.parser_stage import FileContentCache, ParserUDF
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
+
+
+class TestParserUDFSequenceValidation:
+    """A rejected sequence must name the request it came from."""
+
+    def test_invalid_sequence_error_names_the_input_id(self):
+        udf = ParserUDF.__new__(ParserUDF)
+        request = {
+            "input_id": "bad-id",
+            "polymers": [{"polymer_type": "protein", "chain_id": "A", "sequence": "ACD*EF"}],
+        }
+
+        with pytest.raises(ValueError) as excinfo:
+            udf._parse_input_request(request, cache=None)
+
+        message = str(excinfo.value)
+        assert "Input 'bad-id'" in message
+        assert "'*' at position 4" in message
+
+    def test_missing_input_id_falls_back_to_the_row_id(self):
+        udf = ParserUDF.__new__(ParserUDF)
+        request = {"polymers": [{"polymer_type": "protein", "chain_id": "A", "sequence": "ACD*EF"}]}
+
+        with pytest.raises(ValueError) as excinfo:
+            udf._parse_input_request(request, cache=None, record_id="row-42")
+
+        message = str(excinfo.value)
+        assert "row-42" in message
+        assert "Input None" not in message
+
+    def test_no_identifier_at_all_omits_the_prefix(self):
+        udf = ParserUDF.__new__(ParserUDF)
+        request = {"polymers": [{"polymer_type": "protein", "chain_id": "A", "sequence": "ACD*EF"}]}
+
+        with pytest.raises(ValueError) as excinfo:
+            udf._parse_input_request(request, cache=None)
+
+        assert "Input None" not in str(excinfo.value)
+
+    def test_malformed_msa_symbol_is_rejected_before_feature_generation(self, tmp_path):
+        a3m = tmp_path / "bad.a3m"
+        a3m.write_text(">query\nAC*EF\n")
+        udf = ParserUDF.__new__(ParserUDF)
+        udf._file_cache = FileContentCache()
+        request = {
+            "input_id": "bad-msa",
+            "polymers": [
+                {
+                    "polymer_type": "protein",
+                    "chain_id": "A",
+                    "sequence": "ACDEF",
+                    "msas": [{"path": str(a3m)}],
+                }
+            ],
+        }
+
+        with pytest.raises(ValueError) as excinfo:
+            udf._parse_input_request(request, cache=udf._file_cache)
+
+        message = str(excinfo.value)
+        assert "Input 'bad-msa'" in message
+        assert "MSA row 1" in message
+        assert "'A'" in message
+        assert "'*' at position 3" in message
+
+    def test_insertions_and_gaps_survive_msa_validation(self, tmp_path):
+        a3m = tmp_path / "ok.a3m"
+        a3m.write_text(">query\nACd-E\n")
+        udf = ParserUDF.__new__(ParserUDF)
+        udf._file_cache = FileContentCache()
+        request = {
+            "input_id": "ok",
+            "polymers": [
+                {
+                    "polymer_type": "protein",
+                    "chain_id": "A",
+                    "sequence": "ACDEF",
+                    "msas": [{"path": str(a3m)}],
+                }
+            ],
+        }
+
+        parsed = udf._parse_input_request(request, cache=udf._file_cache)
+
+        msa = parsed["polymers"][0]["msas"][0]
+        assert msa["raw"] == ["ACd-E"]
+        assert msa["sequences"] == ["AC-E"]
 
 
 class TestParserUDFBasicParsing:

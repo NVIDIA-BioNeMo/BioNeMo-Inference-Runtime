@@ -190,6 +190,52 @@ class TestChainIdGeneration:
         assert _generate_chain_id(28) == "AC"
 
 
+_RESIDUES = "ACDEFGHIKLMNPQRSTVWY"
+
+
+def _residue_sequence(index: int) -> str:
+    """Distinct protein sequence for ``index``, spelled in one-letter residues.
+
+    The chain-id tests need many different sequences and never look at their
+    content, but a placeholder like ``SEQ12`` is not a protein sequence and
+    Polymer rejects it. Render the index in base 20 over the canonical residues
+    instead, which keeps one sequence per index.
+    """
+    digits = ""
+    while True:
+        digits = _RESIDUES[index % len(_RESIDUES)] + digits
+        index //= len(_RESIDUES)
+        if index == 0:
+            return "SEQ" + digits
+
+
+class TestFastaHomomerDetection:
+    """Records that differ only in spelling describe one entity, not two."""
+
+    def test_records_differing_only_in_case_stay_one_polymer(self):
+        result = parse_fasta_content(StringIO(">a\nACDEF\n>b\nacdef\n"))
+
+        assert len(result["sequences"]) == 1
+        polymer = result["sequences"][0]
+        assert polymer["sequence"] == "ACDEF"
+        assert polymer["chain_id"] == ["A", "B"]
+
+    def test_records_differing_only_by_an_ambiguity_code_stay_one_polymer(self):
+        # Both fold to ACDXEF, so OpenFold2 must see one homomer, not two chains
+        # carrying an identical sequence down the heteromer path.
+        result = parse_fasta_content(StringIO(">a\nACDBEF\n>b\nACDJEF\n"))
+
+        assert len(result["sequences"]) == 1
+        assert result["sequences"][0]["sequence"] == "ACDXEF"
+        assert result["sequences"][0]["chain_id"] == ["A", "B"]
+
+    def test_genuinely_different_sequences_stay_separate(self):
+        result = parse_fasta_content(StringIO(">a\nACDEF\n>b\nACDEG\n"))
+
+        assert len(result["sequences"]) == 2
+        assert [p["chain_id"] for p in result["sequences"]] == ["A", "B"]
+
+
 class TestFastaWithManySequences:
     """Test FASTA parsing with many sequences to verify chain ID generation."""
 
@@ -226,7 +272,7 @@ class TestFastaWithManySequences:
             fasta_lines = []
             for i in range(num_seq):
                 fasta_lines.append(f">seq{i}")
-                fasta_lines.append(f"SEQ{i}")
+                fasta_lines.append(_residue_sequence(i))
 
             content = StringIO("\n".join(fasta_lines))
             result = parse_fasta_content(content)
@@ -241,7 +287,7 @@ class TestFastaWithManySequences:
         fasta_lines = []
         for i in range(40):
             fasta_lines.append(f">seq{i}")
-            fasta_lines.append(f"SEQ{i}")
+            fasta_lines.append(_residue_sequence(i))
 
         content = StringIO("\n".join(fasta_lines))
         result = parse_fasta_content(content)
@@ -277,7 +323,7 @@ class TestFastaWithManySequences:
         fasta_lines = []
         for i in range(26):
             fasta_lines.append(f">seq{i}")
-            fasta_lines.append(f"SEQ{i}")
+            fasta_lines.append(_residue_sequence(i))
 
         content = StringIO("\n".join(fasta_lines))
         result = parse_fasta_content(content)
@@ -299,7 +345,7 @@ class TestFastaWithManySequences:
         fasta_lines = []
         for i in range(52):
             fasta_lines.append(f">seq{i}")
-            fasta_lines.append(f"SEQ{i}")
+            fasta_lines.append(_residue_sequence(i))
 
         content = StringIO("\n".join(fasta_lines))
         result = parse_fasta_content(content)

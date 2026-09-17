@@ -19,7 +19,8 @@ import torch
 
 from bionemo_ir.configs.base import BaseConfig
 from bionemo_ir.data.parsers import InputParsed, MSAParsed
-from bionemo_ir.data.schemas.basic import PolymerParsed
+from bionemo_ir.data.schemas.basic import Polymer, PolymerParsed, PolymerType
+from bionemo_ir.data.utils import get_all_residue_types, sequence_to_onehot
 from bionemo_ir.pipeline.models.openfold2.feature_context import FeatureContextGenerator
 
 
@@ -385,3 +386,37 @@ class TestFeatureContextGeneratorIntegration:
         assert first["aatype"].shape == (4,)
         assert torch.equal(first["asym_id"], torch.tensor([1, 1, 2, 2]))
         assert_tensor_dict_exact(first, second)
+
+
+class TestOpenFold2AcceptsEverySchemaApprovedResidue:
+    """The schema contract has to hold at the backend that is least forgiving.
+
+    OpenFold2 indexes its restype table directly, so any residue the schema lets
+    through but the table lacks arrives as a KeyError during feature generation.
+    """
+
+    @staticmethod
+    def _restype_to_idx() -> dict:
+        return {residue.name: index for index, residue in enumerate(get_all_residue_types("openfold2"))}
+
+    @pytest.mark.parametrize("code", ["B", "J", "O", "U", "Z"])
+    def test_protein_ambiguity_codes_reach_the_encoder_as_unknown(self, code):
+        stored = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence=f"ACD{code}EF")["sequence"]
+
+        assert stored == "ACDXEF"
+        onehot = sequence_to_onehot(stored, self._restype_to_idx())
+        assert onehot.shape[0] == len("ACDXEF")
+
+    def test_every_accepted_protein_letter_encodes(self):
+        canonical, ambiguous, _ = Polymer._SEQUENCE_ALPHABETS[PolymerType.PROTEIN.value]
+        stored = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence=canonical + ambiguous)["sequence"]
+
+        # No KeyError: every letter the schema accepts has a restype index.
+        sequence_to_onehot(stored, self._restype_to_idx())
+
+    def test_mixed_case_records_encode_identically_to_upper_case(self):
+        upper = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="ACDEF")["sequence"]
+        mixed = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="aCdEf")["sequence"]
+
+        mapping = self._restype_to_idx()
+        assert torch.equal(sequence_to_onehot(upper, mapping), sequence_to_onehot(mixed, mapping))

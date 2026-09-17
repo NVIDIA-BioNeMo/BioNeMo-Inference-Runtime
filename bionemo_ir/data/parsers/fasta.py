@@ -123,19 +123,25 @@ def parse_fasta_content(
         except ValueError as e:
             raise ValueError(f"Cannot generate valid chain ID for sequence at index {i}. {str(e)}") from e
 
-        if seq in seen_sequences:
-            p = seen_sequences[seq]
-            chain_ids = p["chain_id"]
+        # Key the homomer lookup on what Polymer stores, not on the spelling in
+        # the file: the schema upper-cases and folds ambiguity codes, so two
+        # records that differ only in case describe one entity. Keying on the
+        # raw text split them into two chains carrying the same sequence, which
+        # sends OpenFold2 down its heteromer path.
+        molecule = Polymer(polymer_type=PolymerType.PROTEIN, chain_id=chain_id, sequence=seq)
+        normalized = molecule["sequence"]
+
+        if normalized in seen_sequences:
+            chain_ids = seen_sequences[normalized]["chain_id"]
             if isinstance(chain_ids, str):
                 chain_ids = [chain_ids]
             chain_ids.append(chain_id)
-            seen_sequences[seq]["chain_id"] = chain_ids
+            seen_sequences[normalized]["chain_id"] = chain_ids
             continue
 
-        molecule = Polymer(polymer_type=PolymerType.PROTEIN, chain_id=chain_id, sequence=seq)
         sequences.append(molecule)
         descriptions.append(desp)
-        seen_sequences[seq] = molecule
+        seen_sequences[normalized] = molecule
 
     return SequenceParsed(sequences=sequences, descriptions=descriptions)
 

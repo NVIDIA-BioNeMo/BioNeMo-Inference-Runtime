@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from bionemo_ir.data.parsers import parse_a3m_content, read_a3m
+from bionemo_ir.data.parsers import generate_deletion_matrix, parse_a3m_content, read_a3m
 from bionemo_ir.data.schemas import MSAParsed
 
 SAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "data" / "samples" / "monomers"
@@ -167,3 +167,14 @@ class TestCommentFiltering:
         assert result["sequences"] == ["ACDEFG"]
         # Description might contain the hash
         assert "seq1" in result["descriptions"][0]
+
+
+class TestA3MInsertionSemanticsUnchanged:
+    """Primary-sequence normalisation must not reach A3M rows."""
+
+    def test_lower_case_insertions_and_deletion_counts_survive(self):
+        parsed = parse_a3m_content(StringIO(">query\nACdEF\n"))
+
+        assert parsed["raw"] == ["ACdEF"]
+        assert parsed["sequences"] == ["ACEF"]
+        assert generate_deletion_matrix(parsed["raw"]).tolist() == [[0, 0, 1, 0]]

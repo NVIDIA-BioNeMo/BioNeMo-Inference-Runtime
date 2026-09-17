@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +79,101 @@ class TestPolymer:
     def test_smiles_ligand_requires_sequence(self):
         with pytest.raises(ValueError):
             Polymer(polymer_type=PolymerType.SMILES_LIGAND, chain_id="L")
+
+    @pytest.mark.parametrize(
+        "polymer_type",
+        [PolymerType.PROTEIN, PolymerType.RNA, PolymerType.DNA, PolymerType.CCD_LIGAND, PolymerType.SMILES_LIGAND],
+    )
+    @pytest.mark.parametrize("not_a_string", [123, ["A", "C"], {"seq": "ACDEF"}])
+    def test_non_string_sequence_is_rejected_as_a_value_error(self, polymer_type, not_a_string):
+        # ValueError specifically: the parser stage only adds the input id to that.
+        with pytest.raises(ValueError, match="must be a string"):
+            Polymer(polymer_type=polymer_type, chain_id="A", sequence=not_a_string)
+
+    @pytest.mark.parametrize("bad", ["ACD*EF", "ACD-EF", "ACD1EF", "ACD EF", "ACD.EF", "ACD_EF"])
+    def test_protein_sequence_rejects_non_residue_characters(self, bad):
+        with pytest.raises(ValueError, match="Invalid protein sequence"):
+            Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence=bad)
+
+    def test_rejection_names_the_character_and_its_position(self):
+        with pytest.raises(ValueError) as excinfo:
+            Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="ACD*EF")
+        message = str(excinfo.value)
+        assert "'*' at position 4" in message
+        assert "'A'" in message  # the affected chain
+
+    def test_rejection_lists_several_offenders_then_truncates(self):
+        with pytest.raises(ValueError) as excinfo:
+            Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="*" * 7)
+        assert "and 2 more" in str(excinfo.value)
+
+    def test_protein_sequence_accepts_canonical_and_unknown(self):
+        polymer = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="ACDXEF")
+        assert polymer["sequence"] == "ACDXEF"
+
+    @pytest.mark.parametrize("code", ["B", "J", "O", "U", "Z"])
+    def test_protein_ambiguity_codes_become_the_unknown_residue(self, code, caplog):
+        # OpenFold2 indexes its restype table directly, so anything but X reaches
+        # feature generation as a KeyError.
+        with caplog.at_level(logging.WARNING):
+            polymer = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence=f"ACD{code}EF")
+        assert polymer["sequence"] == "ACDXEF"
+        assert repr(code) in caplog.text and "'X'" in caplog.text
+
+    def test_warning_names_every_replaced_ambiguity_code(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="BJOUZ")
+        for code in "BJOUZ":
+            assert repr(code) in caplog.text
+
+    @pytest.mark.parametrize(
+        ("polymer_type", "sequence", "expected"),
+        [(PolymerType.RNA, "ACGRU", "ACGNU"), (PolymerType.DNA, "ACGRT", "ACGNT")],
+    )
+    def test_nucleotide_ambiguity_codes_become_n(self, polymer_type, sequence, expected):
+        assert Polymer(polymer_type=polymer_type, chain_id="A", sequence=sequence)["sequence"] == expected
+
+    # Unicode case folding can expand one character into several ASCII letters
+    # ('ss' for the sharp s, 'ffi' for the ligature), so upper-casing the whole
+    # string before validating would admit them and change the chain length.
+    @pytest.mark.parametrize("bad", ["A\u017fD", "A\u0131D", "A\u00dfD", "A\ufb03D"])
+    def test_unicode_letters_cannot_case_expand_into_residues(self, bad):
+        with pytest.raises(ValueError) as excinfo:
+            Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence=bad)
+        assert f"{bad[1]!r} at position 2" in str(excinfo.value)
+
+    def test_invalid_lower_case_is_reported_in_the_caller_spelling(self):
+        with pytest.raises(ValueError) as excinfo:
+            Polymer(polymer_type=PolymerType.RNA, chain_id="A", sequence="acgqu")
+        assert "'q' at position 4" in str(excinfo.value)
+
+    def test_lower_case_sequence_is_upper_cased_with_a_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            polymer = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence="acdef")
+        assert polymer["sequence"] == "ACDEF"
+        assert "upper-cased" in caplog.text
+
+    def test_normalisation_never_changes_the_residue_count(self):
+        for sequence in ("acdef", "ACDBEF", "BJOUZ", "ACDEF"):
+            polymer = Polymer(polymer_type=PolymerType.PROTEIN, chain_id="A", sequence=sequence)
+            assert len(polymer["sequence"]) == len(sequence)
+
+    @pytest.mark.parametrize(
+        ("polymer_type", "good", "bad"),
+        [
+            (PolymerType.RNA, "ACGUN", "ACG*U"),
+            (PolymerType.DNA, "ACGTN", "ACG*T"),
+        ],
+    )
+    def test_nucleotide_sequences_follow_the_same_rule(self, polymer_type, good, bad):
+        assert Polymer(polymer_type=polymer_type, chain_id="A", sequence=good)["sequence"] == good
+        with pytest.raises(ValueError, match="Invalid (rna|dna) sequence"):
+            Polymer(polymer_type=polymer_type, chain_id="A", sequence=bad)
+
+    def test_smiles_sequence_keeps_its_case(self):
+        # SMILES is case-sensitive: 'c' is aromatic carbon, 'C' aliphatic.
+        smiles = "c1ccccc1O"
+        assert Polymer(polymer_type=PolymerType.SMILES_LIGAND, chain_id="L", sequence=smiles)["sequence"] == smiles
 
     def test_ccd_ligand_create(self):
         ligand = Polymer(polymer_type=PolymerType.CCD_LIGAND, chain_id="L", sequence="ATP")

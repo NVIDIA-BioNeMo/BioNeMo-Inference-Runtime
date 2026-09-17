@@ -20,7 +20,7 @@ from typing import Any
 
 from bionemo_ir.data.parsers.a3m import parse_a3m_content
 from bionemo_ir.data.path import resolve_input_path
-from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer, Template
+from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer, PolymerType, Template
 from bionemo_ir.data.schemas.basic import InputParsed, MSAParsed, PolymerParsed, TemplateParsed
 from bionemo_ir.pipeline.base import numpy_to_dict
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
@@ -211,6 +211,22 @@ class ParserUDF(StatefulStageUDF):
 
         return TemplateParsed(content=content, format=template.get("format", "cif"), chain_id=template.get("chain_id"))
 
+    @staticmethod
+    def _validate_msa_rows(polymer, msas_parsed: list) -> None:
+        """Check every parsed MSA row against the polymer's alphabet.
+
+        Checks ``raw``, which still carries the lower-case insertions that the
+        aligned rows drop, so a stray symbol is caught wherever it sits.
+        """
+        polymer_type = polymer.get("polymer_type")
+        if polymer_type is None:
+            return
+        polymer_type = PolymerType(polymer_type)
+        chain_id = polymer.get("chain_id")
+        for msa in msas_parsed:
+            for row, sequence in enumerate(msa.get("raw") or [], start=1):
+                Polymer.validate_msa_row(polymer_type, chain_id, row, sequence)
+
     def _parse_polymer(self, polymer_data, cache: FileContentCache) -> PolymerParsed:
         """Parse a single polymer and return PolymerParsed object.
 
@@ -230,12 +246,14 @@ class ParserUDF(StatefulStageUDF):
         msas = polymer.get("msas")
         if msas:
             msas_parsed = [self._parse_msa(msa, cache) for msa in msas]
+            self._validate_msa_rows(polymer, msas_parsed)
 
         # Parse paired MSAs with cache
         paired_msas_parsed = None
         paired_msas = polymer.get("paired_msas")
         if paired_msas:
             paired_msas_parsed = [self._parse_msa(msa, cache) for msa in paired_msas]
+            self._validate_msa_rows(polymer, paired_msas_parsed)
 
         # Parse templates with cache
         templates_parsed = None
@@ -252,21 +270,34 @@ class ParserUDF(StatefulStageUDF):
             templates=templates_parsed,
         )
 
-    def _parse_input_request(self, input: InputRequest, cache: FileContentCache) -> InputParsed:
+    def _parse_input_request(
+        self, input: InputRequest, cache: FileContentCache, record_id: str | None = None
+    ) -> InputParsed:
         """Parse the entire input request and return InputParsed object.
 
         Args:
             input: InputRequest to parse.
             cache: File content cache for the current item.
+            record_id: Row identifier, used to name the request when it carries
+                no ``input_id`` of its own.
         """
         polymers = input.get("polymers", [])
         # Deserialize numpy arrays to Python dicts
         # This because ray stage will be serialized by pyarrow
         polymers = numpy_to_dict(polymers)
-        polymers_parsed: list[PolymerParsed] = [self._parse_polymer(p, cache) for p in polymers]
+        input_id = input.get("input_id")
+        try:
+            polymers_parsed: list[PolymerParsed] = [self._parse_polymer(p, cache) for p in polymers]
+        except ValueError as e:
+            # Name the offending request: the stage reports one error per row and
+            # a batch of inputs otherwise gives no way to tell which one failed.
+            # input_id is optional, so fall back to the row id rather than
+            # printing "Input None", which names nothing at all.
+            label = input_id if input_id is not None else record_id
+            raise ValueError(f"Input {label!r}: {e}" if label is not None else str(e)) from e
 
         return InputParsed(
-            input_id=input.get("input_id"),
+            input_id=input_id,
             polymers=polymers_parsed,
         )
 
@@ -278,7 +309,7 @@ class ParserUDF(StatefulStageUDF):
         """
         record = InputRequest(**row["record"])
         # Use the instance-level cache (persists across items in same actor)
-        parsed = self._parse_input_request(record, self._file_cache)
+        parsed = self._parse_input_request(record, self._file_cache, record_id=row.get(self.RECORD_ID_IN_BATCH_COLUMN))
         return {"parsed": parsed}
 
     def on_row_error(self, row: dict[str, Any], error: Exception) -> dict[str, Any]:

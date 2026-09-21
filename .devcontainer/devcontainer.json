@@ -5,7 +5,7 @@
   "workspaceFolder": "/bioir",
   "remoteUser": "dev",
   "initializeCommand": "${localWorkspaceFolder}/.devcontainer/init.sh",
-  "postCreateCommand": "git config --global --add safe.directory /bioir && pip install --no-build-isolation -e '.[dev]' && prek install",
+  "postCreateCommand": "git config --global --add safe.directory /bioir && uv pip install --no-deps -e . && prek install",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -16,7 +16,7 @@
       ],
       "settings": {
         "C_Cpp.intelliSenseEngine": "disabled",
-        "python.defaultInterpreterPath": "/usr/bin/python",
+        "python.defaultInterpreterPath": "/opt/bioir-venv/bin/python",
         "[python]": {
           "editor.defaultFormatter": "charliermarsh.ruff",
           "editor.formatOnSave": true

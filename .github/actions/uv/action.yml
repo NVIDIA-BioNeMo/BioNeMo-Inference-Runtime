@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Set up uv
+description: >
+  Install the Python and uv versions declared by the repository, so every
+  checkout uses the same project and lockfile behavior.
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/python
+
+    - name: Resolve the required uv version
+      id: version
+      shell: bash
+      run: |
+        version=$(sed -n 's/^required-version *= *">=\([^,"]*\),.*/\1/p' pyproject.toml)
+        if [[ -z "${version}" ]]; then
+          echo "::error file=pyproject.toml::no exact lower bound in 'tool.uv.required-version'"
+          exit 1
+        fi
+        echo "version=${version}" >>"${GITHUB_OUTPUT}"
+
+    # Through the environment, never interpolated into the script: the value is
+    # read from the pull request's pyproject.toml, and ${{ }} expands before
+    # bash sees it.
+    - shell: bash
+      env:
+        UV_VERSION: ${{ steps.version.outputs.version }}
+      run: python -m pip install "uv==${UV_VERSION}"

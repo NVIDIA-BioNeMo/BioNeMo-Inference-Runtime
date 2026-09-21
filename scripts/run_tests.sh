@@ -122,8 +122,9 @@ fi
 [[ -s "${WEIGHTS_ENV_FILE}" ]] && source "${WEIGHTS_ENV_FILE}"
 
 cd "${PROJECT_WORKDIR}"
-# The package is installed by the caller (CI's before_script, or `pip install -e .`
-# on first attach in the dev container), so we do not reinstall here.
+# The package is installed by the caller (CI's before_script, or `uv pip install
+# --no-deps -e .` on first attach in the dev container), so we do not reinstall
+# here.
 
 lap "setup (checkpoints + env)"
 echo ">>> [timing] run_tests.sh setup total: $((SECONDS - _t0))s"

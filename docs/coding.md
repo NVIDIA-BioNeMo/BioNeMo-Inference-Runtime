@@ -16,9 +16,9 @@ enforce automatically, whether it is authorized by developers or AI agents.
 [`prek.toml`][prekcfg] defines the hooks. [`prek`][prek] runs them both locally
 and in CI, touch only new or changed files.
 
-- **Local:** `pip install -e '.[dev]'`, then `prek install`
-  (the `commit-msg` shim runs the commit-message linter). Hooks then run on
-  `git commit`.
+- **Local:** `uv sync --locked`, then `source .venv/bin/activate` and
+  `prek install` (the `commit-msg` shim runs the commit-message linter). Hooks
+  then run on `git commit`.
 - **CI:** the style gate runs the same hooks on the MR/PR diff.
 
 The tools below are all installable with `pip`.

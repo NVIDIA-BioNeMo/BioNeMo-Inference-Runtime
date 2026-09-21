@@ -25,6 +25,12 @@ concurrency:
 permissions:
   contents: read
 
+# Lock freshness evaluates the package's dynamic metadata. These jobs never
+# install BioIR, but metadata still needs a CUDA version on CPU-only runners.
+env:
+  CUDA_TAG: cu130
+  UV_NO_INSTALL_PROJECT: '1'
+
 jobs:
   # Named `prek`, not `style`: the job name is the context the ruleset requires.
   prek:
@@ -40,7 +46,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/prek
-      - run: prek run --all-files --show-diff-on-failure --color=always
+      - run: >-
+          uv run --locked --only-group lint prek run
+          --all-files --show-diff-on-failure --color=always
 
   contract:
     name: contract
@@ -66,16 +74,10 @@ jobs:
           lfs: false
       - uses: ./.github/actions/cubin-packs
 
-      - uses: ./.github/actions/python
-
-      # requirements-dev.txt owns the floor, the same way the prek action reads
-      # its pin, so a bump there moves CI with it. `shell: bash` sets pipefail,
-      # which turns a pattern that stops matching into a failed step rather than
-      # a silent no-op install.
-      - name: Install the declared pytest
-        shell: bash
-        run: grep -E '^pytest[<>=!~]' requirements-dev.txt | pip install -r /dev/stdin
+      - uses: ./.github/actions/uv
 
       # Nothing here imports torch or the package itself, so there is no install
       # step and no build. tests/pytest.ini supplies the options.
-      - run: pytest tests/contract tests/cubin
+      - run: >-
+          uv run --locked --only-group test pytest
+          tests/contract tests/cubin

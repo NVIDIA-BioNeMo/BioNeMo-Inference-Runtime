@@ -378,13 +378,12 @@ Three rules keep it honest:
 Follow [environment.md](environment.md) in order. Do not skip to a
 harness because "python is already there".
 
-1. **Container + BioIR install** — default image
-   `nvcr.io/nvidia/pytorch:26.05-py3`. **Always**
+1. **Container + BioIR install** — use the prepared development container based
+   on `nvcr.io/nvidia/pytorch:26.05-py3`. **Always**
    `export CUTEDSL_FORCE_CUBIN=1` (CUBIN path; no CuTeDSL JIT on the
    clock). Developer mode: `git lfs pull` the cubin packs, then
-   `pip install -e '.[dev]'` — no `--no-build-isolation`, which skips
-   the very build requirements (`cmake`, `nanobind`, `setuptools`)
-   that the extension needs. Otherwise install the wheel
+   `uv pip install --no-deps -e .`. On a configured host, use
+   `uv sync --locked` instead. Otherwise install the wheel
    (`dist/bionemo_ir-*.whl`) or `pip install bionemo-ir`.
    See [environment.md](environment.md#container-and-bioir-install).
 1. **Probe BioIR** — `import bionemo_ir`, CUDA, `_cutedsl_kernels`

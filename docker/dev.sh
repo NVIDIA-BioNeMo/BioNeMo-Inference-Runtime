@@ -192,9 +192,10 @@ if ! container_exists; then
     --ulimit stack=67108864
     --cap-add SYS_PTRACE
     --volume "${REPO_ROOT}:${WORKDIR}"
-    # ccache, the pip cache and the compiled-kernel (CuTeDSL/Triton) cache,
-    # placed here by the Dockerfile's CCACHE_DIR / PIP_CACHE_DIR /
-    # BIOIR_KERNEL_CACHE_DIR, plus the bash history.
+    # ccache, the package-manager cache and the compiled-kernel
+    # (CuTeDSL/Triton) cache, placed here by the Dockerfile's CCACHE_DIR /
+    # PIP_CACHE_DIR / UV_CACHE_DIR / BIOIR_KERNEL_CACHE_DIR, plus the bash
+    # history.
     --volume "${HOST_CACHE}/cache:/cache"
     # The container user's ~/.cache: HuggingFace hub checkpoints (~/.cache/hf,
     # a path hardcoded in hubs/hf.py), torch hub, and the prek hook environments.
@@ -241,7 +242,7 @@ if ! container_exists; then
 Caches on the host, shared by every worktree, under ${HOST_CACHE}
 Weights: ${WEIGHT_CACHE}, the same path here and on the host
 The checkout is bind-mounted, so the package is not installed yet:
-    pip install -e '.[dev]'
+    uv pip install --no-deps -e .
 EOF
 elif [[ "$(docker container inspect --format '{{.State.Running}}' "${CONTAINER}")" != "true" ]]; then
   docker start "${CONTAINER}" >/dev/null

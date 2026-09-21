@@ -349,11 +349,12 @@ print(f'  CUTLASS DSL (SM90): SM90+ — {\"YES\" if sm >= (9,0) else \"NO\"}'  )
 "
 ```
 
-Record the results. If any critical package is missing:
+Record the results. If `bionemo_ir` is missing, run `uv sync --locked` from a
+host checkout or `uv pip install --no-deps -e .` in the prepared development
+container. If another package is missing:
 
 | Package                    | Install command                                                    | Required for                      |
 | -------------------------- | ------------------------------------------------------------------ | --------------------------------- |
-| `bionemo_ir`               | `pip install -v -e '.[dev]'` (from repo root)                      | All phases                        |
 | `safetensors`              | `pip install safetensors`                                          | Optional checkpoint serialization |
 | `triton`                   | `pip install triton==3.5.0`                                        | Triton fused kernels              |
 | `cuequivariance`           | `pip install cuequivariance==0.8.1`                                | CUEQUIV attention backend         |

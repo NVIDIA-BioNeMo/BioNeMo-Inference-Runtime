@@ -19,7 +19,6 @@ build
 tmp/
 venv/
 .venv/
-.python-version
 .local/
 .hypothesis/
 .idea/

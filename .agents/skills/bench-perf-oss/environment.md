@@ -115,9 +115,10 @@ print('PASS torch.version.cuda =', torch.version.cuda)
 
 ## Container and BioIR install
 
-Default image: `nvcr.io/nvidia/pytorch:26.05-py3` (`docs/dev.md`,
-`docker/README.md`). Ask whether the user is in **developer mode**
-(editable checkout) or **not** (released / wheel / pip).
+The prepared development container is built from
+`nvcr.io/nvidia/pytorch:26.05-py3`; start it with `docker/dev.sh` as described
+in `docs/dev.md`. Ask whether the user is in **developer mode** (editable
+checkout) or **not** (released / wheel / pip).
 
 **Always** export this before any BioIR import, probe, or timed run:
 
@@ -160,42 +161,36 @@ git lfs pull --include='cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz'
 # or: git lfs pull
 ```
 
-If a pack still starts with `version https://git-lfs.github.com/spec`,
-stop and pull LFS. Then:
+If a pack still starts with `version https://git-lfs.github.com/spec`, stop and
+pull LFS.
+
+On a configured host, create the locked project environment and use its
+interpreter:
 
 ```bash
-"$BIOIR_PYTHON" -m pip install -e '.[dev]'
+uv sync --locked
+BIOIR_PYTHON="$PWD/.venv/bin/python"
 ```
 
-**Do not add `--no-build-isolation` here unless you have checked that
-`cmake`, `nanobind` and `setuptools` are already installed for
-`$BIOIR_PYTHON`.** That flag tells pip to skip creating a build
-environment, and therefore to skip installing `pyproject.toml`'s
-`build-system.requires`. Those three are exactly what it skips, so on
-any interpreter that does not already carry them the build reaches
-`cpp/cmake/deps/nanobind.cmake`, fails `python -m nanobind
---cmake_dir`, and stops with a message about build-system
-requirements. Installing nanobind by hand to get past that is a
-workaround for a flag that should not have been there.
-
-Build isolation is safe for BioIR: `build-system.requires` is only
-`cmake`, `nanobind==2.10.2` and `setuptools`, none of which touch
-torch, and the pinned nanobind is the same one either way.
-
-One consequence to know: the isolated build environment has **no
-torch**. `setup.py` derives the wheel's CUDA tag from `nvcc` first and
-only falls back to `torch.version.cuda`, so this is invisible on the
-default image. Off it, with no `nvcc` on `PATH`, set the tag
-explicitly rather than re-adding the flag:
+Inside the prepared development container, the image already contains the
+locked runtime, build, and development dependencies. Add only the editable
+checkout to its writable environment:
 
 ```bash
-CUDA_TAG=cu132 "$BIOIR_PYTHON" -m pip install -e '.[dev]'
+uv pip install --no-deps -e .
+BIOIR_PYTHON="$(command -v python)"
 ```
 
-In the dev image, where all three build requirements are already
-present, `--no-build-isolation` is a legitimate speedup — it avoids
-re-resolving them on every rebuild. It is an optimization for that
-case, not the default.
+Do not use the container command in a raw NGC image or general interpreter;
+`--no-deps` is correct only when the prepared image already supplies the
+dependency closure. If `nvcc` is not on `PATH`, set the wheel tag explicitly:
+
+```bash
+# Configured host.
+CUDA_TAG=cu132 uv sync --locked
+# Prepared development container.
+CUDA_TAG=cu132 uv pip install --no-deps -e .
+```
 
 Verify the extension and that FORCE_CUBIN is on:
 

@@ -224,10 +224,9 @@ phases.
 python -c "from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase, FeatureGeneratorBase, FeatureCollatorBase; print('OK')"
 ```
 
-If this fails, install first: `pip install -v -e '.[dev]'`. Do not add
-`--no-build-isolation` unless `cmake`, `nanobind` and `setuptools` are
-already installed — the flag skips exactly those, and the nanobind
-extension then fails to configure.
+If this fails in a host checkout, run `uv sync --locked`. In the prepared
+development container, run `uv pip install --no-deps -e .`; the image already
+contains the locked dependencies and only the editable project is missing.
 
 ______________________________________________________________________
 

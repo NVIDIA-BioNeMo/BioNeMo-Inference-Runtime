@@ -22,6 +22,12 @@ concurrency:
 permissions:
   contents: read
 
+# Lock freshness evaluates the package's dynamic metadata. The title job never
+# installs BioIR, but metadata still needs a CUDA version on a CPU-only runner.
+env:
+  CUDA_TAG: cu130
+  UV_NO_INSTALL_PROJECT: '1'
+
 jobs:
   title:
     name: Title
@@ -43,7 +49,9 @@ jobs:
       # https://docs.github.com/en/actions/reference/security/secure-use
       - env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: .github/scripts/check-pr-title.sh "${PR_TITLE}"
+        run: >-
+          uv run --locked --only-group lint
+          .github/scripts/check-pr-title.sh "${PR_TITLE}"
 
   dco:
     name: DCO

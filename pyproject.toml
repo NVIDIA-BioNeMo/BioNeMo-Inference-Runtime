@@ -15,9 +15,6 @@ package-dir = { "" = "." }
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
-[tool.setuptools.dynamic.optional-dependencies]
-dev = { file = ["requirements-dev.txt"] }
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bionemo_ir*"]
@@ -35,9 +32,97 @@ description = "BioNeMo Inference Runtime: GPU accelerated framework for protein 
 requires-python = ">=3.12,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 readme = "README.md"
-dynamic = ["dependencies", "version", "optional-dependencies"]
+dynamic = ["dependencies", "version"]
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
+
+[dependency-groups]
+build = [
+  # PEP 517 build environments are independent of project dependencies. Keep
+  # the native build reproducible without narrowing the package's compatible
+  # build-system floors below.
+  "cmake==4.4.2",
+  "nanobind==2.10.2",
+  "setuptools==81.0.0",
+]
+coverage = [
+  "coverage[toml]>=7.10.6",
+]
+lint = [
+  "prek==0.4.12",  # Pinned for reproducible hook runs.
+]
+release = [
+  { include-group = "build" },
+  # Tools used after the build stay here rather than in the default developer
+  # environment. Release CI syncs this complete group from uv.lock.
+  "auditwheel==6.8.0",
+  "build==1.5.0",
+  # Match the digest-pinned NGC base: DALI 2.1.0 requires packaging<=26.0.
+  "packaging==26.0",
+  "pip==26.2.1",
+  "wheel==0.47.0",
+]
+sbom = [
+  # Isolated CI tool for inventorying the packages actually installed in NGC.
+  "cyclonedx-bom==7.4.0",
+]
+test = [
+  "pytest>=9.0.3",  # Older releases contain PYSEC-2026-1845.
+  "pytest-cov>=7.1.0",
+  "pytest-xdist>=3.8.0",
+  "parameterized",
+  "biotraj==1.2.2",
+  "ml_collections==1.1.0",
+]
+dev = [
+  { include-group = "lint" },
+  { include-group = "test" },
+]
+
+[tool.uv]
+required-version = ">=0.12.9,<0.13"
+default-groups = ["dev"]
+# CUTLASS's base and CUDA 13 wheels contain overlapping paths. Install in
+# dependency order so the CUDA 13 wheel consistently supplies those files.
+concurrent-installs = 1
+# Keep uv's isolated editable builds on the same internal toolchain as the
+# locked build group without narrowing the published PEP 517 compatibility
+# floors in build-system.requires.
+build-constraint-dependencies = [
+  "cmake==4.4.2",
+  "nanobind==2.10.2",
+  "setuptools==81.0.0",
+]
+# BioIR only supports Linux. Keep both release architectures in every lock
+# update so an x86_64 developer cannot silently break aarch64 resolution.
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.12'",
+]
+required-environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.12'",
+]
+# uv otherwise notices only Python packaging metadata. These inputs and
+# environment variables also determine the editable native extension.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "setup.py" },
+  { file = "requirements.txt" },
+  { file = "build.env" },
+  { file = "cpp/**/CMakeLists.txt" },
+  { file = "cpp/cmake/**/*.cmake" },
+  { file = "cpp/cmake/**/*.py" },
+  { file = "cpp/kernels/**/*.cpp" },
+  { file = "cpp/kernels/**/*.h" },
+  { file = "cpp/kernels/cutedsl_*/cubins/index.json" },
+  { file = "cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz" },
+  { env = "BIOIR_BUILD_CUTEDSL_KERNELS" },
+  { env = "BIOIR_VERSION_LOCAL" },
+  { env = "CUDA_TAG" },
+  { env = "CC" },
+  { env = "CXX" },
+]
 
 ####################################################################################################
 ###############################  LINTING, FORMATTING AND TESTING CONFIGURATION  ####################

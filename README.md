@@ -93,7 +93,7 @@ The image carries the dependencies; your checkout is bind-mounted, so install
 the package once inside and fold something:
 
 ```bash
-pip install -e '.[dev]'
+uv pip install --no-deps -e .
 scripts/fetch_weights.sh --model boltz-2
 python examples/folding/run_demo.py --output-dir output
 ```

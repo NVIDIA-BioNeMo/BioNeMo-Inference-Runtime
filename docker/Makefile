@@ -20,8 +20,8 @@ PWD := $(shell pwd)
 PROJECT_DIR ?= $(PWD)/..
 
 # Base images. Both pull anonymously -- no NGC key, no docker login. Override to
-# build against a different PyTorch/CUDA combination, but check that its torch
-# and triton satisfy requirements.txt without a downgrade.
+# build against a different PyTorch/CUDA combination, but verify its torch and
+# triton are compatible with the project so uv can reuse both base packages.
 # Compatibility notes: docs/ref/docker-images.md.
 BASE_IMAGE ?= nvcr.io/nvidia/pytorch
 BASE_TAG ?= 26.05-py3
@@ -40,11 +40,14 @@ TAG ?= $(BIOIR_BRANCH)_bioir$(COMMIT_SHORT_SHA)
 endif
 
 DEV_IMAGE_AND_TAG := $(REGISTRY_IMAGE):$(TAG)
-# Dependency-only image, keyed by the base it was built from: no source copy, no
-# editable install, no CMake tree. Invalidated only by requirements*.txt, which
-# is what makes it usable as a rolling CI cache.
+# Dependency-only image, keyed by the base it was built from: no source copy,
+# no editable install, no CMake tree. Invalidated only by dependency metadata,
+# which is what makes it usable as a rolling CI cache.
 DEPS_IMAGE_AND_TAG ?= $(REGISTRY_IMAGE):deps-$(BASE_TAG)
 RUNTIME_IMAGE_AND_TAG ?= $(REGISTRY_IMAGE):runtime-$(TAG)
+# Feed the source commit timestamp into wheel archive metadata. .git is excluded
+# from the Docker build context, so the Dockerfile cannot derive it itself.
+SOURCE_DATE_EPOCH ?= $(shell git -C $(PROJECT_DIR) show -s --format=%ct HEAD)
 
 # Match the host UID/GID so the bind-mounted checkout does not collect
 # root-owned build artifacts.
@@ -73,6 +76,7 @@ else
 BUILD_JOBS ?= 32
 endif
 _JOBS_ARG := $(if $(BUILD_JOBS),--build-arg BUILD_JOBS=$(BUILD_JOBS),)
+_SOURCE_DATE_EPOCH_ARG := --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH)
 
 CPU_ARCH := $(shell uname -m)
 ifeq ($(CPU_ARCH),x86_64)
@@ -118,14 +122,14 @@ dev:
 # Exports the built wheel to ./dist on the host rather than leaving it in an
 # image layer. Targets wheel-export, not wheel: see the Dockerfile.
 wheel:
-	$(_BUILD) $(_BASE_ARGS) --target wheel-export $(_JOBS_ARG) \
+	$(_BUILD) $(_BASE_ARGS) --target wheel-export $(_JOBS_ARG) $(_SOURCE_DATE_EPOCH_ARG) \
 		$(if $(CUDA_TAG),--build-arg CUDA_TAG=$(CUDA_TAG),) \
 		--output type=local,dest=$(PROJECT_DIR)/dist \
 		$(PROJECT_DIR)
 	@echo "wheel written to $(PROJECT_DIR)/dist"
 
 runtime:
-	$(_BUILD) $(_BASE_ARGS) --target runtime $(_JOBS_ARG) \
+	$(_BUILD) $(_BASE_ARGS) --target runtime $(_JOBS_ARG) $(_SOURCE_DATE_EPOCH_ARG) \
 		--build-arg RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
 		--build-arg RUNTIME_TAG=$(RUNTIME_TAG) \
 		$(if $(CUDA_TAG),--build-arg CUDA_TAG=$(CUDA_TAG),) \

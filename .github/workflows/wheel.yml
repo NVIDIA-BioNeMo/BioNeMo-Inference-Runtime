@@ -41,9 +41,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           lfs: false
+          fetch-depth: 0
       - uses: ./.github/actions/cubin-packs
 
-      - uses: ./.github/actions/python
+      - uses: ./.github/actions/uv
 
       # Not a literal, for the same reason the Python floor is not one. `setup.py`
       # turns the toolkit's `nvcc --version` into the wheel's `+cuXYZ` local
@@ -82,9 +83,11 @@ jobs:
           sub-packages: '["nvcc", "cudart"]'
 
       - name: Build the wheel
+        env:
+          SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          pip install --upgrade build
-          python -m build --wheel
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${SOURCE_REVISION}")"
+          scripts/build_wheel.sh --out-dir dist
           ls -l dist/
 
       # Prove the extension in the wheel actually loads, not just that it

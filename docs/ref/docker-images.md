@@ -21,16 +21,28 @@ make -C docker runtime     # minimal runtime image
 make -C docker submodules  # check out the pinned third-party sources
 ```
 
-- `deps` — runtime and dev dependencies, no source. Only `requirements*.txt`
-  invalidates it, which is what makes it usable as a rolling CI build cache.
+- `deps` — runtime and dev dependencies, no source. `requirements.txt`,
+  `pyproject.toml`, and `uv.lock` invalidate its rolling CI build cache.
 - `dev` — `deps` plus a user whose UID matches yours, for daily work on a GPU.
-  [`docker/dev.sh`](#without-vs-code) build it with `TAG=dev-<dirname>` so each
-  worktree gets its own image, then runs the container and enter it.
+  [`docker/dev.sh`](#without-vs-code) builds it with `TAG=dev-<dirname>` so each
+  worktree gets its own image, then runs and enters the container.
 - `wheel` — copies the source in with a `COPY .`, so `.dockerignore` has to stay
   accurate; builds the wheel and writes it to `./dist`.
 - `runtime` — that wheel on a minimal CUDA base, for end-to-end tests and for
   deploying.
 - `submodules` — builds nothing; runs `git submodule update --init --recursive`.
+
+The dependency stages install into the digest-pinned NGC Python interpreter.
+They preserve its torch and Triton builds and omit the PyPI CUDA wheels pulled
+by those packages. Every package layered on top comes from a hash-checked
+`uv.lock` export. This image-specific policy retains the curated NGC framework
+stack without allowing the remaining dependencies to drift.
+
+CI publishes two separate CycloneDX artifacts. The project dependency SBOM is
+exported from `uv.lock` and records the intended runtime, build, and development
+graph. The development-image SBOM inventories the packages actually installed
+in the NGC dependency image, including base-image packages that the project lock
+does not own. Neither artifact is presented as the other.
 
 Base images are overridable:
 
@@ -70,7 +82,7 @@ bind-mounted, so edits on the host are live and the image stays valid across
 branches. Install the package once per container:
 
 ```bash
-pip install -e '.[dev]'
+uv pip install --no-deps -e .
 ```
 
 ### VS Code Dev Container
@@ -98,7 +110,7 @@ It mounts the same host directories the dev container does:
 | Host                  | Container     | Holds                                                 |
 | --------------------- | ------------- | ----------------------------------------------------- |
 | the worktree          | `/bioir`      | the checkout, `build/`, the compiled `*.so`           |
-| `<cache>/cache`       | `/cache`      | ccache, the pip cache, compiled kernels, bash history |
+| `<cache>/cache`       | `/cache`      | ccache, uv/pip caches, compiled kernels, bash history |
 | `<cache>/home-cache`  | `~/.cache`    | HuggingFace hub files, torch hub, `prek` environments |
 | `~/.cache/bionemo_ir` | the same path | staged checkpoints and raw downloads                  |
 

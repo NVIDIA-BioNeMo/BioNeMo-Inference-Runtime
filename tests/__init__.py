@@ -24,7 +24,7 @@ import pytest
 _PRIVATE_CUTEDSL_SOURCE_DIR = Path(__file__).resolve().parents[1] / "bionemo_ir" / "dsl_kernels" / "cute"
 _CUTEDSL_LIBRARY_DIR = Path(__file__).resolve().parents[1] / "bionemo_ir" / "libs"
 _CUTEDSL_LIBRARY_MODULE = "bionemo_ir.libs._cutedsl_kernels"
-_CUTEDSL_BUILD_COMMAND = "pip install --no-build-isolation -v -e '.[dev]'"
+_CUTEDSL_BUILD_COMMAND = "uv sync && source .venv/bin/activate"
 
 
 def _not_built_message() -> str:

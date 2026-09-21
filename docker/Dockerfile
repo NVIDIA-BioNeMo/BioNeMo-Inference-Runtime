@@ -17,12 +17,9 @@
 # See docs/ref/docker-images.md.
 
 # nvcr.io/nvidia/pytorch is part of the public NGC catalog and pulls anonymously
-# -- no NGC key, no docker login. It is the default because this project's pins
-# are tuned for it: on a base whose triton is newer than the pin in
-# requirements.txt (the Docker Hub pytorch/pytorch images are), pip backtracks
-# and replaces the image's torch with a several-hundred-MB PyPI build. Any base
-# is fine as long as its torch and triton satisfy requirements.txt without a
-# downgrade.
+# -- no NGC key, no docker login. This project's GPU dependencies are tuned for
+# its framework stack. The image-specific lock policy preserves the base's torch
+# and Triton while hash-locking every package layered on top.
 #
 # The default tag is digest-pinned because `devdeps` bakes that same digest in as
 # the compile identity of the tracked CUBIN packs; see the ENV below.
@@ -33,15 +30,21 @@ ARG RUNTIME_TAG=13.0.2-base-ubuntu24.04
 
 # --------------------------------------------------------------------- base
 FROM ${BASE_IMAGE}:${BASE_TAG} AS base
+ARG UV_VERSION=0.12.9
 
 ENV CUDA_HOME=/usr/local/cuda \
     PATH=/usr/local/cuda/bin:${PATH} \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     # The PyTorch base images install torch into the distro's Python, which
-    # Debian marks externally-managed (PEP 668). In a container we own that
-    # interpreter, and adding a venv on top would only hide torch from it.
+    # Debian marks externally-managed (PEP 668). The dependency stages install
+    # into that interpreter so they retain the NGC framework stack.
     PIP_BREAK_SYSTEM_PACKAGES=1
+
+ENV UV_BREAK_SYSTEM_PACKAGES=1 \
+    UV_CACHE_DIR=/cache/uv \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
 
 # What the extension build actually needs. nvcc is NOT required to compile CUDA
 # here -- the kernels ship precompiled -- it is only read to stamp the wheel's
@@ -59,6 +62,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && git lfs install --system --skip-repo
 
+RUN python -m pip install "uv==${UV_VERSION}"
+
 # ccache needs a compiler launcher to do anything; setting CCACHE_DIR alone is
 # inert. Both languages the extension uses are covered (cpp/CMakeLists.txt
 # declares CXX and ASM). CCACHE_BASEDIR rewrites absolute paths relative to the
@@ -75,32 +80,47 @@ ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache \
 # stage, and is also how CI runs the devdeps image -- must be able to write here.
 # Without this, CMake's compiler check fails with "ccache: error: Permission
 # denied" and the extension never builds.
-RUN mkdir -p /cache/ccache /cache/pip && chmod -R 1777 /cache
+RUN mkdir -p /cache/ccache /cache/pip /cache/uv && chmod -R 1777 /cache
 
 # --------------------------------------------------------------------- deps
 FROM base AS deps
 WORKDIR /opt/bioir-deps
-# nanobind must be importable before CMake configures, and --no-build-isolation
-# installs below cannot fetch it themselves.
-COPY requirements.txt ./
-# Replace the distro package without RECORD metadata.
-RUN --mount=type=cache,target=/cache/pip \
-    pip install --ignore-installed "$(grep -m1 '^PyYAML' requirements.txt)" && \
-    pip install nanobind==2.10.2 -r requirements.txt
+# Install into the NGC Python environment so its tested framework and CUDA stack
+# remain in place. Pruning torch and Triton also removes their PyPI CUDA wheel
+# closure; every remaining runtime and build package comes from the lock export
+# with hashes. Reinstall PyYAML because the base's distro-owned copy has no pip
+# RECORD metadata and cannot be upgraded in place.
+COPY pyproject.toml uv.lock requirements.txt ./
+RUN --mount=type=cache,target=/cache/uv \
+    uv export --quiet --locked --no-dev --no-emit-project \
+        --prune torch --prune triton \
+        --output-file /tmp/bioir-runtime.txt \
+    && uv export --quiet --locked --only-group build --no-emit-project \
+        --output-file /tmp/bioir-build.txt \
+    && uv pip install --system --no-deps --require-hashes \
+        --reinstall-package pyyaml \
+        --requirements /tmp/bioir-runtime.txt \
+    && uv pip install --system --no-deps --require-hashes \
+        --requirements /tmp/bioir-build.txt \
+    && rm -f /tmp/bioir-runtime.txt /tmp/bioir-build.txt
 
 # ------------------------------------------------------------------ devdeps
 FROM deps AS devdeps
-# Dependencies only, no source: invalidated by requirements*.txt alone, which is
-# what makes it usable as CI's rolling build cache.
+# Dependencies only, no source: invalidated by the project metadata and lock,
+# which is what makes it usable as CI's rolling build cache.
 #
 # The immutable compile identity of the tracked CUBIN packs: the digest of the
 # anonymously pullable base above. Regenerating a pack is only reproducible from
 # that exact base, so the digest is pinned here rather than derived at build
 # time.
 ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
-COPY requirements-dev.txt ./
-RUN --mount=type=cache,target=/cache/pip \
-    pip install -r requirements-dev.txt
+RUN --mount=type=cache,target=/cache/uv \
+    uv export --quiet --locked --only-group dev --no-emit-project \
+        --prune torch --prune triton \
+        --output-file /tmp/bioir-dev.txt \
+    && uv pip install --system --no-deps --require-hashes \
+        --requirements /tmp/bioir-dev.txt \
+    && rm -f /tmp/bioir-dev.txt
 
 # ---------------------------------------------------------------------- dev
 FROM devdeps AS dev
@@ -124,15 +144,19 @@ RUN if ! getent group "${USER_GID}" >/dev/null; then \
     else \
         useradd -m -u "${USER_UID}" -g "${USER_GID}" -s /bin/bash "${USERNAME}"; \
     fi \
-    && mkdir -p /cache/ccache /cache/pip /cache/bioir-kernels /bioir \
-    && chown -R "${USER_UID}:${USER_GID}" /cache /bioir
+    && python -m venv --system-site-packages /opt/bioir-venv \
+    && mkdir -p /cache/ccache /cache/pip /cache/uv /cache/bioir-kernels /bioir \
+    && chown -R "${USER_UID}:${USER_GID}" /cache /bioir /opt/bioir-venv
 
 ENV BIOIR_KERNEL_CACHE_DIR=/cache/bioir-kernels \
-    HISTFILE=/cache/.bash_history
+    HISTFILE=/cache/.bash_history \
+    VIRTUAL_ENV=/opt/bioir-venv
+ENV PATH=/opt/bioir-venv/bin:${PATH}
 USER ${USERNAME}
 WORKDIR /bioir
 # Deliberately does not install the project: the source arrives as a bind mount
-# at run time, and `pip install -e .` runs against it on first attach.
+# at run time. The writable venv inherits the image dependencies, so
+# `uv pip install --no-deps -e .` adds only the checkout on first attach.
 # An interactive `docker run` gets a shell. The long-lived containers that need
 # to outlive it -- Compose for VS Code, docker/dev.sh -- pass `sleep infinity`
 # themselves rather than relying on a default that looks hung when a human runs
@@ -143,6 +167,10 @@ CMD ["bash"]
 FROM devdeps AS wheel
 WORKDIR /src
 COPY . /src
+# Make wheel ZIP metadata derive from the source revision rather than build time.
+ARG SOURCE_DATE_EPOCH
+RUN test -n "${SOURCE_DATE_EPOCH}"
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # State the CUDA tag explicitly so the wheel's local version does not depend on
 # nvcc being present or on which toolkit the base image happens to carry.
 ARG CUDA_TAG=
@@ -163,12 +191,13 @@ ARG BUILD_JOBS=
 #
 # CMAKE_BUILD_PARALLEL_LEVEL because the default generator is Unix Makefiles,
 # which builds serially unless told otherwise: setup.py passes `--parallel` only
-# when setuptools' own `parallel` option is set, and pip never sets it.
-RUN --mount=type=cache,target=/cache/pip \
+# when setuptools' own `parallel` option is set, and build frontends do not.
+RUN --mount=type=cache,target=/cache/uv \
     --mount=type=cache,target=/cache/ccache \
     --mount=type=cache,target=/src/build/cmake,sharing=locked \
-    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-    pip wheel --no-build-isolation --no-deps --wheel-dir /dist .
+    uv lock --check \
+    && CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
+        uv build --wheel --no-build-isolation --out-dir /dist .
 
 # ------------------------------------------------------------- wheel-export
 # `--output type=local` writes the whole filesystem of the target stage, so

@@ -30,11 +30,13 @@ API, refer to [Python API](ref/api.md).
   - Ignore them if the host already has Python and the toolchain below, and
     docker is not used.
 
-- **Python**: 3.12+ (`requires-python`); the extension is built `cp312`.
+- **Python**: 3.12 for source development; the extension is built `cp312`.
+
+- **uv**: 0.12.x on a configured host. The development image includes it.
 
 - **Toolchain**: a C++17 compiler and CUDA toolkit headers, only to build the
   extension from source. CMake and nanobind are declared build dependencies, so
-  pip supplies them.
+  uv supplies them.
 
 Verify these requirements with the commands in
 [Collecting System Information][system-information]. If the requirements are
@@ -47,7 +49,7 @@ Everything below works equally in a container or on a host that already has the
 prerequisites.
 
 For convenience, `docker/dev.sh` builds the dev image and opens a shell in it,
-with the checkout and the caches — weights, ccache, pip, compiled kernels —
+with the checkout and the caches — weights, ccache, uv/pip, compiled kernels —
 mounted from the host; refer to [Docker Images][docker-images].
 
 [system-information]: ref/system-information.md
@@ -97,7 +99,7 @@ development container, run:
 
 ```bash
 # Run inside the development container or on a configured host.
-pip wheel --no-deps --wheel-dir dist .
+scripts/build_wheel.sh --out-dir dist
 ```
 
 It shares `build/` with the [editable install](#editable-install), and it
@@ -109,28 +111,32 @@ it.
 
 ### Editable Install
 
+On a configured host, sync the project and activate its environment:
+
 ```bash
-pip install -e '.[dev]'
+uv sync --locked
+source .venv/bin/activate
 ```
 
-It compiles `bionemo_ir.libs._cutedsl_kernels`, a nanobind extension embedding
-the CUBIN packs under `cpp/kernels/cutedsl_*/cubins/`. Verify it:
+The development image already contains the dependencies. Register the mounted
+checkout there with:
+
+```bash
+uv pip install --no-deps -e .
+```
+
+Both paths compile `bionemo_ir.libs._cutedsl_kernels`, a nanobind extension
+embedding the CUBIN packs under `cpp/kernels/cutedsl_*/cubins/`. Verify it:
 
 ```bash
 python -c "import bionemo_ir.libs._cutedsl_kernels; print('ok')"
 ```
 
-pip builds this in an isolated environment and installs the build requirements
-declared in `pyproject.toml` — `cmake`, `nanobind`, and `setuptools` — so the
-command works on any interpreter, in the image or out of it.
-
-Inside the dev image those three are already present, and `--no-build-isolation`
-reuses them instead of re-resolving on every build. That is a speedup and
-nothing more: pip installs the same pinned `nanobind==2.10.2` either way. **Do
-not carry the flag outside the image.** It tells pip to skip installing the
-build requirements, so on an interpreter that lacks them the build fails in
-`cpp/cmake/deps/nanobind.cmake` with a message about build-system requirements —
-which reads as a missing dependency rather than as the flag that suppressed it.
+`uv sync --locked` installs the default `dev` dependency group and the editable
+project into `.venv`. The image installs the same build and development groups
+on top of the NGC Python environment so it keeps the tested torch, Triton, and
+CUDA stack; `--no-deps` adds only the mounted checkout to its writable
+development venv.
 
 One thing the isolated build environment does not have is `torch`. The wheel's
 CUDA tag comes from `nvcc` first and only falls back to `torch.version.cuda`, so
@@ -138,7 +144,7 @@ this is invisible wherever `nvcc` is on `PATH`. Where it is not, set the tag
 rather than reaching for the flag:
 
 ```bash
-CUDA_TAG=cu132 pip install -e '.[dev]'
+CUDA_TAG=cu132 uv sync --locked
 ```
 
 ## Run
@@ -256,7 +262,8 @@ pytest -q tests/ops/test_gated_sigmoid.py::test_gated_sigmoid_config_selection_i
 ## Lint and Format
 
 Style is enforced by [prek](https://github.com/j178/prek), which runs the hooks
-pinned in `prek.toml`. `.[dev]` already installs it; wire up the git hooks once:
+pinned in `prek.toml`. `uv sync --locked` installs it; wire up the git hooks
+once:
 
 ```bash
 prek install
@@ -279,7 +286,7 @@ Fork, then sign commits with `git commit -s`; refer to
 [Contributing](contributing.md). Ensure all three pass:
 
 - **Style** — `prek run --all-files`
-- **Build** — `pip install -e '.[dev]'`, then import the extension
+- **Build** — `uv sync --locked`, activate `.venv`, then import the extension
 - **Tests** — `scripts/run_tests.sh`
 
 Write the MR/PR title as the commit you want in history; squash is the default.

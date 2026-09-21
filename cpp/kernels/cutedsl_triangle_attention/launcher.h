@@ -360,12 +360,12 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
 
 struct LaunchParams
 {
-  Tensor3View q;
-  Tensor3View k;
-  Tensor3View v;
+  Tensor4View q;
+  Tensor4View k;
+  Tensor4View v;
   Tensor1View actual_s_kv;
   Tensor4View bias;
-  Tensor3View output;
+  Tensor4View output;
   Tensor3View lse;
   float softmax_scale{};
   std::int32_t i_dim{};

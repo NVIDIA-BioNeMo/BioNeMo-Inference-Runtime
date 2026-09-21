@@ -62,10 +62,12 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   if (config.has_bias)
     validate_tensor(params.bias, "bias", 16);
   validate_tensor(params.output, "output", 16);
+  validate_static_tail(params.a, kChannelsC, "a");
+  validate_static_tail(params.b, kChannelsD, "b");
+  validate_static_tail(params.output, kChannelsCz, "output");
 
-  /* a is [B, S, I, C] and b is [B, S, J, D]; the views keep (B, S, I) and
-   * (B, S, J). C, D and C_z never reach the descriptors because the kernel
-   * baked them in, so check them against the compiled constants here.
+  /* C, D and C_z stay in host metadata for validation, then the launcher
+   * projects only the dynamic leading extents into the device descriptors.
    */
   std::int32_t const batch = params.a.shape[0];
   std::int32_t const sequence = params.a.shape[1];

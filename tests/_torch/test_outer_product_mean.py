@@ -27,9 +27,11 @@ from bionemo_ir._torch.custom_ops import outer_product_mean as opm_ops
 from bionemo_ir._torch.custom_ops.outer_product_mean import (
     OuterProductMeanCuTe,
     _select_opm_config_bucket,
+    config_identity,
     get_outer_product_mean_op,
     select_opm_config,
 )
+from bionemo_ir._torch.custom_ops.outer_product_mean import _cubin as opm_cubin
 from bionemo_ir._torch.custom_ops.outer_product_mean import cutedsl as opm_cutedsl
 from bionemo_ir._torch.custom_ops.outer_product_mean.ops import _invoke_vanilla_opm
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
@@ -225,6 +227,48 @@ def test_outer_product_mean_force_cubin_ignores_warmed_source(monkeypatch):
     monkeypatch.setattr(backend, "force_cubin", lambda: True)
     monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
     assert backend._get_or_compile(config, torch.bfloat16, True, True, key) is cubin
+
+
+@pytest.mark.parametrize(
+    ("operand", "tail"),
+    [("a", 32), ("b", 32), ("output", 128)],
+)
+def test_outer_product_mean_cubin_rejects_wrong_static_tail(operand, tail):
+    library = pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    if SM_VERSION not in _CUTEDSL_SM:
+        pytest.skip(f"OPM CUBINs do not target SM{SM_VERSION}")
+
+    batch, sequence, rows, columns = 1, 31, 17, 19
+    dtype = torch.float16
+    config = select_opm_config(SM_VERSION, rows, columns, sequence, True, False, "fp16")
+    executable = opm_cubin.OuterProductMeanCubinExecutable(
+        library,
+        library.outer_product_mean,
+        SM_VERSION,
+        dtype,
+        False,
+        True,
+        config_identity(config),
+    )
+    args = {
+        "a": torch.zeros(batch, sequence, rows, 32, dtype=dtype, device="cuda"),
+        "b": torch.zeros(batch, sequence, columns, 32, dtype=dtype, device="cuda"),
+        "num_mask": torch.ones(batch, rows, columns, dtype=torch.float32, device="cuda"),
+        "weight": torch.zeros(128, 32 * 32, dtype=dtype, device="cuda"),
+        "output": torch.zeros(batch, rows, columns, 128, dtype=dtype, device="cuda"),
+    }
+    tensor = args[operand]
+    args[operand] = torch.zeros(*tensor.shape[:-1], tail + 1, dtype=tensor.dtype, device=tensor.device)
+
+    with pytest.raises(ValueError, match=rf"{operand} static tail"):
+        executable(
+            args["a"],
+            args["b"],
+            args["num_mask"],
+            args["weight"],
+            None,
+            args["output"],
+        )
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])

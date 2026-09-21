@@ -187,6 +187,58 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
     torch.testing.assert_close(actual, expected, atol=1e-1, rtol=1e-2)
 
 
+@pytest.mark.parametrize("operand", ["q", "k", "v", "output"])
+def test_triangle_cubin_rejects_wrong_static_head_dim(operand):
+    library = pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    major, minor = torch.cuda.get_device_capability()
+    sm_version = major * 10 + minor
+    if sm_version not in (80, 86, 89, 90):
+        pytest.skip(f"no directly launchable D32 CUBIN for SM{sm_version}")
+
+    from bionemo_ir._torch.attention_backend.triangle_attention import _cubin as triangle_cubin
+
+    batch, i_dim, seqlen, heads, head_dim = 1, 2, 13, 2, 32
+    batch_times_i = batch * i_dim
+    dtype = torch.bfloat16
+    executable = triangle_cubin.TriangleAttentionCubinExecutable(
+        library,
+        library.triangle_attention,
+        sm_version,
+        head_dim,
+        seqlen,
+        dtype,
+        False,
+    )
+    qkv = torch.zeros(batch_times_i, seqlen, heads, head_dim, dtype=dtype, device="cuda")
+    args = {
+        "q": qkv,
+        "k": qkv,
+        "v": qkv,
+        "bias": torch.zeros(batch, heads, seqlen, seqlen, dtype=dtype, device="cuda"),
+        "actual_s_kv": torch.full((batch_times_i,), seqlen, dtype=torch.int32, device="cuda"),
+        "output": torch.zeros_like(qkv),
+        "lse": torch.zeros(batch_times_i, seqlen, heads, dtype=torch.float32, device="cuda"),
+    }
+    tensor = args[operand]
+    args[operand] = torch.zeros(*tensor.shape[:-1], head_dim + 1, dtype=dtype, device="cuda")
+
+    with pytest.raises(ValueError, match=rf"{operand} static tail"):
+        executable(
+            args["q"],
+            args["k"],
+            args["v"],
+            args["bias"],
+            args["actual_s_kv"],
+            args["output"],
+            args["lse"],
+            1.0,
+            1.0,
+            i_dim,
+        )
+
+
 def test_tensor_views_reject_the_wrong_rank():
     library = SimpleNamespace(
         Tensor1View=lambda *args: args,
@@ -203,6 +255,8 @@ def test_tensor_views_reject_the_wrong_rank():
         library_runtime.tensor_s2_d1(library, rank3)
     with pytest.raises(ValueError):
         library_runtime.tensor_s3_d2(library, rank2)
+    with pytest.raises(ValueError):
+        library_runtime.tensor_s3_d2_static(library, rank3)
     with pytest.raises(ValueError):
         library_runtime.tensor_s4_d3(library, rank2)
 
@@ -231,6 +285,12 @@ def test_tensor_views_carry_shapes_strides_and_device():
         "3d",
         (2, 3, 4),
         tensor4.stride()[:2],
+        cpu,
+    )
+    assert library_runtime.tensor_s3_d2_static(library, tensor4) == (
+        "4d",
+        (2, 3, 4, 5),
+        tensor4.stride()[:3],
         cpu,
     )
     assert library_runtime.tensor_s4_d3(library, tensor4) == (

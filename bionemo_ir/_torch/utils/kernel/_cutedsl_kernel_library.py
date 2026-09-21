@@ -193,6 +193,18 @@ def tensor_s3_d2(library: ModuleType, tensor: torch.Tensor) -> Any:
     )
 
 
+def tensor_s3_d2_static(library: ModuleType, tensor: torch.Tensor) -> Any:
+    """Create a rank-4 host view for a CuTe ``s3_d2`` descriptor."""
+    if tensor.ndim != 4:
+        raise ValueError("s3_d2 static-tail tensor must have rank 4")
+    return library.Tensor4View(
+        tensor.data_ptr(),
+        tuple(tensor.shape),
+        tuple(tensor.stride()[:3]),
+        tensor.get_device(),
+    )
+
+
 def tensor_s4_d3(library: ModuleType, tensor: torch.Tensor) -> Any:
     """Create a CuTe ``s4_d3`` view using four extents and three strides."""
     if tensor.ndim < 4:

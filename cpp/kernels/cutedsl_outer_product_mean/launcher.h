@@ -162,8 +162,8 @@ struct LaunchParams
   /* a is [B, S, I, C] and b is [B, S, J, D]; the descriptors keep the leading
    * three extents and two strides because C and D are static.
    */
-  Tensor3View a;
-  Tensor3View b;
+  Tensor4View a;
+  Tensor4View b;
   Tensor3View num_mask;
   /* Rank-2 [C_z, C*D] and rank-1 [C_z] views. Only the address reaches the
    * kernel, but the extents let the launcher reject a wrong-shaped operand and
@@ -171,7 +171,7 @@ struct LaunchParams
    */
   Tensor2View weight;
   Tensor1View bias;
-  Tensor3View output;
+  Tensor4View output;
   std::uint64_t stream{};
 };
 

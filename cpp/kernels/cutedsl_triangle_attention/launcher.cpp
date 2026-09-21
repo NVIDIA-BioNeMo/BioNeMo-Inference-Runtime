@@ -93,6 +93,11 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   validate_tensor(params.lse, "lse", 4);
   validate_pointer(params.actual_s_kv.data, 4, "actual_s_kv");
   validate_tensor(params.bias, "bias", 16);
+  std::int32_t const head_dim = spec_head_dim(config.spec);
+  validate_static_tail(params.q, head_dim, "q");
+  validate_static_tail(params.k, head_dim, "k");
+  validate_static_tail(params.v, head_dim, "v");
+  validate_static_tail(params.output, head_dim, "output");
 
   std::int32_t const batch_times_i = params.q.shape[0];
   std::int32_t const seqlen_q = params.q.shape[1];
@@ -110,7 +115,7 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("q, k, and v must have the same number of heads");
   if (params.output.shape != params.q.shape)
     throw std::invalid_argument("output shape must match q shape");
-  if (params.lse.shape != params.q.shape)
+  if (!leading_shape_matches(params.lse, params.q))
     throw std::invalid_argument("lse dynamic shape must match q [BI, J, H]");
   if (params.actual_s_kv.shape[0] != batch_times_i)
     throw std::invalid_argument("actual_s_kv shape must equal q.shape[0]");

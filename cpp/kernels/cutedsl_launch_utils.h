@@ -65,13 +65,35 @@ void validate_tensor(ViewT const& tensor, char const* name, std::uint64_t alignm
   }
 }
 
-inline cute_tensor_s3_d2_t make_tensor3_descriptor(Tensor3View const& view)
+inline void validate_static_tail(Tensor4View const& tensor, std::int32_t expected, char const* name)
 {
+  if (tensor.shape[3] != expected)
+  {
+    throw std::invalid_argument(
+      std::string(name) + " static tail must be " + std::to_string(expected) + ", got "
+      + std::to_string(tensor.shape[3]));
+  }
+}
+
+inline bool leading_shape_matches(Tensor3View const& lhs, Tensor4View const& rhs)
+{
+  for (std::size_t index = 0; index < lhs.shape.size(); ++index)
+  {
+    if (lhs.shape[index] != rhs.shape[index])
+      return false;
+  }
+  return true;
+}
+
+template <std::size_t N>
+inline cute_tensor_s3_d2_t make_tensor3_descriptor(TensorView<N> const& view)
+{
+  static_assert(N >= 3, "an s3_d2 descriptor needs three host extents");
   cute_tensor_s3_d2_t descriptor{};
   descriptor.data = static_cast<CUdeviceptr>(view.data);
-  for (std::size_t index = 0; index < view.shape.size(); ++index)
+  for (std::size_t index = 0; index < 3; ++index)
     descriptor.dynamic_shapes[index] = view.shape[index];
-  for (std::size_t index = 0; index < view.strides.size(); ++index)
+  for (std::size_t index = 0; index < 2; ++index)
     descriptor.dynamic_strides[index] = view.strides[index];
   return descriptor;
 }
@@ -189,8 +211,10 @@ inline CoordTensorS2 make_tensor2_s2_coord(Tensor2View const& view)
   }};
 }
 
-inline CoordTensorS3 make_sm90_tensor3_coord(Tensor3View const& view)
+template <std::size_t N>
+inline CoordTensorS3 make_sm90_tensor3_coord(TensorView<N> const& view)
 {
+  static_assert(N >= 3, "an s3 coordinate needs three host extents");
   return CoordTensorS3{{
     view.shape[1],
     view.shape[2],
@@ -231,8 +255,10 @@ inline TmaTensorSource make_tma_tensor2_source(Tensor2View const& view, bool is_
   };
 }
 
-inline TmaTensorSource make_tma_tensor3_source(Tensor3View const& view, std::int32_t head_dim)
+template <std::size_t N>
+inline TmaTensorSource make_tma_tensor3_source(TensorView<N> const& view, std::int32_t head_dim)
 {
+  static_assert(N >= 3, "an s3 TMA source needs three host extents");
   return TmaTensorSource{
     view.data,
     {

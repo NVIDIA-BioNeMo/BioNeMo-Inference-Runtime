@@ -293,3 +293,13 @@ def test_cubin_launch_rejects_a_broadcast_bias():
     args["bias"] = bias[:1].expand(bias.shape)
     with pytest.raises(ValueError, match="non-positive stride"):
         _launch(executable, args)
+
+
+@pytest.mark.parametrize("operand", ["q", "k", "v", "output"])
+def test_cubin_launch_rejects_wrong_static_head_dim(operand):
+    executable, args = _cubin_launch_args(_tuned_head_dims()[0])
+    tensor = args[operand]
+    args[operand] = torch.zeros(*tensor.shape[:-1], tensor.shape[-1] + 1, dtype=tensor.dtype, device=tensor.device)
+
+    with pytest.raises(ValueError, match=rf"{operand} static tail"):
+        _launch(executable, args)

@@ -25,6 +25,7 @@ from ._cutedsl_kernel_library import (
     tensor_s1_d0,
     tensor_s2_d1,
     tensor_s3_d2,
+    tensor_s3_d2_static,
     tensor_s4_d3,
 )
 from ._kernel_config_loader import (
@@ -52,5 +53,6 @@ __all__ = [
     "tensor_s1_d0",
     "tensor_s2_d1",
     "tensor_s3_d2",
+    "tensor_s3_d2_static",
     "tensor_s4_d3",
 ]

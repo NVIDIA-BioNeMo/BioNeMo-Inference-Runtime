@@ -26,6 +26,7 @@ from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelVariantUnavailable,
     tensor_s1_d0,
     tensor_s3_d2,
+    tensor_s3_d2_static,
     tensor_s4_d3,
 )
 
@@ -84,12 +85,12 @@ class TriangleAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
         i_dim: int,
     ) -> None:
         params = self._launcher.LaunchParams()
-        params.q = tensor_s3_d2(self._kernel_library, q)
-        params.k = tensor_s3_d2(self._kernel_library, k)
-        params.v = tensor_s3_d2(self._kernel_library, v)
+        params.q = tensor_s3_d2_static(self._kernel_library, q)
+        params.k = tensor_s3_d2_static(self._kernel_library, k)
+        params.v = tensor_s3_d2_static(self._kernel_library, v)
         params.actual_s_kv = tensor_s1_d0(self._kernel_library, actual_s_kv)
         params.bias = tensor_s4_d3(self._kernel_library, bias)
-        params.output = tensor_s3_d2(self._kernel_library, output)
+        params.output = tensor_s3_d2_static(self._kernel_library, output)
         params.lse = tensor_s3_d2(self._kernel_library, lse)
         params.softmax_scale = softmax_scale
         params.i_dim = i_dim

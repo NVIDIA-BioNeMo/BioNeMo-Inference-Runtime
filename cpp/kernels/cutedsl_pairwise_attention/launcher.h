@@ -352,12 +352,12 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
 
 struct LaunchParams
 {
-  Tensor3View q;
-  Tensor3View k;
-  Tensor3View v;
+  Tensor4View q;
+  Tensor4View k;
+  Tensor4View v;
   Tensor1View actual_s_kv;
   Tensor4View bias;
-  Tensor3View output;
+  Tensor4View output;
   Tensor3View lse;
   /* Both scales come from the caller. Recomputing the log2 form here would
    * round differently from the source path's double-precision product for

@@ -27,6 +27,7 @@ from bionemo_ir._torch.utils.kernel import (
     tensor_s1_d0,
     tensor_s2_d1,
     tensor_s3_d2,
+    tensor_s3_d2_static,
 )
 
 
@@ -80,8 +81,8 @@ class OuterProductMeanCubinExecutable(CuTeDSLKernelLibraryExecutable):
                 f"but received bias={'a tensor' if bias is not None else 'None'}"
             )
         params = self._launcher.LaunchParams()
-        params.a = tensor_s3_d2(self._kernel_library, a)
-        params.b = tensor_s3_d2(self._kernel_library, b)
+        params.a = tensor_s3_d2_static(self._kernel_library, a)
+        params.b = tensor_s3_d2_static(self._kernel_library, b)
         params.num_mask = tensor_s3_d2(self._kernel_library, num_mask)
         # W_o and bias lower to bare pointers because C/D/C_z are static. The
         # views still carry extents and a device ordinal so the launcher can
@@ -89,6 +90,6 @@ class OuterProductMeanCubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.weight = tensor_s2_d1(self._kernel_library, W_o)
         if bias is not None:
             params.bias = tensor_s1_d0(self._kernel_library, bias)
-        params.output = tensor_s3_d2(self._kernel_library, out)
+        params.output = tensor_s3_d2_static(self._kernel_library, out)
         params.stream = torch.cuda.current_stream(a.device).cuda_stream
         self._launcher.launch(self._config, params)

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -64,8 +65,8 @@ def test_driver_abi_versions_stay_within_the_declared_triton_range() -> None:
     These drifted once: requirements widened to 3.7 while the launcher still gated on
     3.6, silently costing a supported install its fast path.
     """
-    requirements = (Path(__file__).resolve().parents[2] / "requirements.txt").read_text()
-    (pin,) = [line for line in requirements.splitlines() if line.startswith("triton")]
+    pyproject = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text())
+    (pin,) = [dependency for dependency in pyproject["project"]["dependencies"] if dependency.startswith("triton")]
     allowed = SpecifierSet(pin.removeprefix("triton"))
 
     assert _SUPPORTED_TRITON_VERSIONS, "the fast path must claim at least one ABI"

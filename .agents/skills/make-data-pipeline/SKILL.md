@@ -2219,11 +2219,11 @@ reason, affected samples, and what would be needed to add it later.
 
 ### Dependencies
 
-**Use pre-existing packages from BioIR's `requirements.txt` first.** Do not
+**Use pre-existing packages from BioIR's `pyproject.toml` first.** Do not
 introduce new dependencies without justification. The project already includes
 numpy, torch, pydantic, rdkit, and other common libraries — use them.
 
-If the OSS code depends on a library not in `requirements.txt`:
+If the OSS code depends on a library not in `pyproject.toml`:
 
 1. Check if the same functionality can be achieved with an existing dependency
    (e.g., use `numpy` instead of `scipy` for simple linear algebra, use `torch`

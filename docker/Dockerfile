@@ -90,7 +90,7 @@ WORKDIR /opt/bioir-deps
 # closure; every remaining runtime and build package comes from the lock export
 # with hashes. Reinstall PyYAML because the base's distro-owned copy has no pip
 # RECORD metadata and cannot be upgraded in place.
-COPY pyproject.toml uv.lock requirements.txt ./
+COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --no-dev --no-emit-project \
         --prune torch --prune triton \
@@ -103,6 +103,16 @@ RUN --mount=type=cache,target=/cache/uv \
     && uv pip install --system --no-deps --require-hashes \
         --requirements /tmp/bioir-build.txt \
     && rm -f /tmp/bioir-runtime.txt /tmp/bioir-build.txt
+
+# Export the complete PyPI runtime closure for the minimal runtime image. This
+# stage shares only the generated lock export with that image; none of the NGC
+# base filesystem crosses the stage boundary.
+FROM base AS runtime-dependencies
+WORKDIR /opt/bioir-runtime-dependencies
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/cache/uv \
+    uv export --quiet --locked --no-dev --no-emit-project \
+        --output-file /tmp/bioir-runtime.txt
 
 # ------------------------------------------------------------------ devdeps
 FROM deps AS devdeps
@@ -233,22 +243,20 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && python3.12 -m venv /opt/venv
 
-# Installed ahead of the wheel and on its own, so this layer is keyed by
-# requirements.txt alone. Bundled into the wheel install it was invalidated by
-# every source change and re-resolved the whole closure -- torch, ray, rdkit --
-# from PyPI each rebuild. requirements.txt is exactly the wheel's Requires-Dist:
-# pyproject.toml derives the dynamic dependencies from this file. This stage
-# shares nothing with the deps chain -- different base, different interpreter --
-# so it installs them itself.
-COPY requirements.txt /tmp/requirements.txt
+# Install dependencies ahead of the wheel so this layer is keyed by project
+# metadata and the lock, not every source change. This stage uses a different
+# base and interpreter than the dependency image, so it installs the complete
+# hash-locked PyPI closure itself.
+COPY --from=runtime-dependencies /tmp/bioir-runtime.txt /tmp/bioir-runtime.txt
 RUN --mount=type=cache,target=/cache/pip \
-    pip install -r /tmp/requirements.txt && rm -f /tmp/requirements.txt
+    pip install --require-hashes -r /tmp/bioir-runtime.txt \
+    && rm -f /tmp/bioir-runtime.txt
 
 # Bind-mounted rather than COPYed: a COPY keeps the wheel in a layer for the life
 # of the image, and deleting it afterwards only writes a whiteout. `wheel-export`
 # holds nothing but the wheel, so mounting it keys this layer on the wheel's bytes
 # alone -- mounting `wheel` would key it on that stage's whole filesystem.
-# --no-deps because requirements.txt is installed above; --no-cache-dir rather
+# --no-deps because the locked dependencies are installed above; --no-cache-dir rather
 # than a cache mount because there is nothing to cache for a local file.
 RUN --mount=type=bind,from=wheel-export,target=/wheel \
     pip install --no-deps --no-cache-dir /wheel/*.whl

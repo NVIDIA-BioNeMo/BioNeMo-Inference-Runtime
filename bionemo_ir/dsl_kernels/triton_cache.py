@@ -94,7 +94,7 @@ else:
     ENTER_HOOK = EXIT_HOOK = None
 
 # The direct launcher reads Triton's private CompiledKernel ABI, so only validated
-# versions get it; keep in step with the ``triton`` bound in requirements.txt. An
+# versions get it; keep in step with the ``triton`` bound in pyproject.toml. An
 # omitted version still runs, just without the fast path.
 _SUPPORTED_TRITON_VERSIONS: tuple[tuple[int, int], ...] = ((3, 6), (3, 7))
 

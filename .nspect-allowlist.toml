@@ -8,7 +8,7 @@ version = "1.0.0"
 
 # biopython 1.87 is flagged for CVE-2025-68463 (Bio.Entrez XXE/SSRF), but the
 # fix landed in 1.87 (biopython#5109 / PR #5148), so this is a scanner false
-# positive. requirements.txt pins biopython>=1.87.
+# positive. pyproject.toml requires biopython>=1.87.
 # See https://github.com/biopython/biopython/issues/5109
 [[oss.allowlist]]
 cve-id = "CVE-2025-68463"

@@ -12,9 +12,6 @@ package-dir = { "" = "." }
 
 # version is supplied by setup.py so the CUDA local segment (e.g. 0.4.0+cu131)
 # lands in the wheel METADATA — see setup.py. It stays in [project].dynamic below.
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bionemo_ir*"]
@@ -32,7 +29,36 @@ description = "BioNeMo Inference Runtime: GPU accelerated framework for protein 
 requires-python = ">=3.12,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 readme = "README.md"
-dynamic = ["dependencies", "version"]
+dependencies = [
+  "cuda-python>=13",
+  "torch>=2.11",
+  "cuequivariance==0.11.1",
+  "cuequivariance-ops-cu13==0.11.1",
+  "cuequivariance-ops-torch-cu13==0.11.1",
+  "triton>=3.6.0,<3.7.1",
+  "biopython>=1.87",
+  "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
+  # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
+  "uvloop==0.21.0",
+  "modelcif==1.6",  # Needed for CIFWriter.
+  "rdkit==2025.9.6",  # Needed for the Boltz2 data pipeline.
+  "nvidia-cutlass-dsl[cu13]==4.5.2",
+  "nvidia-cudnn-frontend==1.23.0",
+  "apache-tvm-ffi>=0.1.6,<0.2",
+  "biotite==1.6.0",
+  # https://github.com/huggingface/datasets/issues/7344
+  "datasets==4.8.4",
+  # hf_hub_download(), currently transitive through datasets.
+  "huggingface_hub>=0.25,<2",
+  "PyYAML>=6.0.3",
+  "lru-dict==1.4.1",
+  "kalign-python==3.6.0",
+  "scipy==1.13.1",
+  "gemmi==0.6.5",
+  "einops>=0.8",  # rearrange() and einsum() are imported directly.
+  "pydantic>=2,<3",
+]
+dynamic = ["version"]
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
 
@@ -108,7 +134,6 @@ required-environments = [
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "setup.py" },
-  { file = "requirements.txt" },
   { file = "build.env" },
   { file = "cpp/**/CMakeLists.txt" },
   { file = "cpp/cmake/**/*.cmake" },

@@ -21,8 +21,8 @@ make -C docker runtime     # minimal runtime image
 make -C docker submodules  # check out the pinned third-party sources
 ```
 
-- `deps` — runtime and dev dependencies, no source. `requirements.txt`,
-  `pyproject.toml`, and `uv.lock` invalidate its rolling CI build cache.
+- `deps` — runtime and dev dependencies, no source. `pyproject.toml` and
+  `uv.lock` invalidate its rolling CI build cache.
 - `dev` — `deps` plus a user whose UID matches yours, for daily work on a GPU.
   [`docker/dev.sh`](#without-vs-code) builds it with `TAG=dev-<dirname>` so each
   worktree gets its own image, then runs and enters the container.

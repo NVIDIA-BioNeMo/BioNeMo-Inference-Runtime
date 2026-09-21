@@ -100,10 +100,9 @@ files distributed by an upstream package remain authoritative for that package.
 
 ## Runtime Dependencies
 
-These packages are declared in `requirements.txt` and downloaded separately by
-the recipient's package installer. They are not included in the BioIR source
-distribution or wheel. Their package-provided license and notice files remain
-authoritative, and the release SBOM records the resolved versions.
+These direct runtime dependencies are downloaded separately by the recipient's
+package installer and are not included in the BioIR source distribution or
+wheel. Their package-provided license and notice files remain authoritative.
 
 - **apache-tvm-ffi**
   - Copyright: Apache TVM contributors
@@ -122,6 +121,11 @@ authoritative, and the release SBOM records the resolved versions.
   - Copyright: NVIDIA Corporation and affiliates
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [cuEquivariance][cuequivariance]
+
+- **nvidia-cudnn-frontend**
+  - Copyright: NVIDIA Corporation
+  - License: MIT; see [`LICENSES/MIT.txt`][mit]
+  - Source and license: [cuDNN Frontend 1.23.0][cudnn-frontend]
 
 - **triton**
   - Copyright: OpenAI and Triton contributors
@@ -172,6 +176,11 @@ authoritative, and the release SBOM records the resolved versions.
   - Copyright: Hugging Face and contributors
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [Hugging Face Hub][huggingface-hub]
+
+- **PyYAML**
+  - Copyright: Kirill Simonov and Ingy döt Net
+  - License: MIT; see [`LICENSES/MIT.txt`][mit]
+  - Source and license: [PyYAML][pyyaml]
 
 - **lru-dict**
   - Copyright: Amit Dev and contributors
@@ -229,7 +238,7 @@ The following pinned submodules support parity and reference tests. They do not
 ship in the BioIR wheel or runtime container.
 
 - **OpenFold3**
-  - Commit: `c4771653c5d0a3ebb0b3af71b05efd64bc44ee86`
+  - Commit: `0bb17be5199846e806b6347b6e17c6249c88ff1b`
   - Copyright: AlQuraishi Laboratory and contributors
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [OpenFold3 commit][openfold3]
@@ -277,6 +286,7 @@ resolved operating-system and base-image package closure.
 [bsd-3-clause]: LICENSES/BSD-3-Clause.txt
 [cmake]: https://github.com/Kitware/CMake
 [cuda-python]: https://pypi.org/project/cuda-python/
+[cudnn-frontend]: https://github.com/NVIDIA/cudnn-frontend/tree/v1.23.0
 [cueq-ops-cu13]: https://pypi.org/project/cuequivariance-ops-cu13/
 [cueq-ops-torch-cu13]: https://pypi.org/project/cuequivariance-ops-torch-cu13/
 [cuequivariance]: https://github.com/NVIDIA/cuEquivariance
@@ -295,7 +305,7 @@ resolved operating-system and base-image package closure.
 [mpl-2]: LICENSES/MPL-2.0.txt
 [nanobind]: https://github.com/wjakob/nanobind/tree/v2.10.2
 [openfold]: https://github.com/aqlaboratory/openfold
-[openfold3]: https://github.com/aqlaboratory/openfold-3/tree/c4771653c5d0a3ebb0b3af71b05efd64bc44ee86
+[openfold3]: https://github.com/aqlaboratory/openfold-3/tree/0bb17be5199846e806b6347b6e17c6249c88ff1b
 [parameterized]: https://github.com/wolever/parameterized
 [prek]: https://github.com/j178/prek
 [protenix]: https://github.com/bytedance/Protenix/tree/2475421477ab414b571149ad4a875c390ff8a35d
@@ -305,6 +315,7 @@ resolved operating-system and base-image package closure.
 [pytest-xdist]: https://github.com/pytest-dev/pytest-xdist
 [pytorch]: https://github.com/pytorch/pytorch
 [pytorch3d]: https://github.com/facebookresearch/pytorch3d
+[pyyaml]: https://github.com/yaml/pyyaml
 [quack]: https://github.com/Dao-AILab/quack/blob/c8ec3170057987da0ec99883736f381ea1937cf3/quack/cache/jit.py
 [ray]: https://github.com/ray-project/ray
 [ray-stage]: https://github.com/ray-project/ray/blob/ray-2.53.0/python/ray/llm/_internal/batch/stages/base.py

@@ -30,7 +30,7 @@ pin. Do not `pip install` OSS pins into the BioIR interpreter.
 ## CUDA 12 packages → CUDA 13
 
 The default container (`nvcr.io/nvidia/pytorch:26.05-py3`) and BioIR
-(`requirements.txt`) are **CUDA 13** (`cuequivariance-ops-*-cu13`,
+(`pyproject.toml`) are **CUDA 13** (`cuequivariance-ops-*-cu13`,
 `nvidia-cutlass-dsl[cu13]`, `cuda-python>=13`). OSS READMEs and
 extras often still pin CUDA 12.
 

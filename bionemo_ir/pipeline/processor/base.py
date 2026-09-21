@@ -14,11 +14,12 @@
 # limitations under the License.
 
 from collections import OrderedDict
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from bionemo_ir.pipeline.stages.base import StatefulStage
+from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 if TYPE_CHECKING:
     from ray.data import Dataset
@@ -169,6 +170,11 @@ class _ProcessorBase:
             stage_name = f"{stage_name}_{num_same_type_stage}"
         self.stages[stage_name] = stage
 
+    @staticmethod
+    def _validate_input_keys(keys: Iterable[str]) -> None:
+        if StatefulStageUDF.DATA_COLUMN in keys:
+            raise ValueError(f"Input column {StatefulStageUDF.DATA_COLUMN} is reserved.")
+
     def list_stage_names(self) -> list[str]:
         return list(self.stages.keys())
 
@@ -192,6 +198,7 @@ class Processor(_ProcessorBase):
         data_context._enable_actor_pool_on_exit_hook = True
 
     def __call__(self, dataset: "Dataset") -> "Dataset":
+        self._validate_input_keys(dataset.columns())
         for stage in self.stages.values():
             kwargs = stage.get_dataset_map_batches_kwargs(batch_size=self.config.batch_size)
             dataset = dataset.map_batches(stage.fn, **kwargs)
@@ -231,6 +238,7 @@ class SerialProcessor(_ProcessorBase):
         """
         import asyncio
 
+        self._validate_input_keys(key for record in records for key in record)
         batch: dict[str, Any] = self._rows_to_columnar(records)
 
         for name, stage in self.stages.items():

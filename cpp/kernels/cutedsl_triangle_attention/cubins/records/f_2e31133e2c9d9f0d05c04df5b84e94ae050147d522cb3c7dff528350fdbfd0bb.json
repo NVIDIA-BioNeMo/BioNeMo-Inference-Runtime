@@ -20,7 +20,8 @@
       "runtime_metadata": {
         "bucket": 384,
         "head_dim": 64,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "f30123cd52e437ec6895"
     },
@@ -29,7 +30,8 @@
       "runtime_metadata": {
         "bucket": 0,
         "head_dim": 32,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "f5e16ff3e9f02ff933f0"
     },
@@ -38,7 +40,8 @@
       "runtime_metadata": {
         "bucket": 384,
         "head_dim": 32,
-        "packed_output": false
+        "packed_output": false,
+        "sm100_launch": null
       },
       "variant_id": "f9b1c75a63b89a3f590a"
     },
@@ -47,7 +50,8 @@
       "runtime_metadata": {
         "bucket": 0,
         "head_dim": 128,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "fd6488dfb8ebf5ea80e7"
     },
@@ -56,7 +60,8 @@
       "runtime_metadata": {
         "bucket": 0,
         "head_dim": 128,
-        "packed_output": false
+        "packed_output": false,
+        "sm100_launch": null
       },
       "variant_id": "fe48ad8ee87621149313"
     }

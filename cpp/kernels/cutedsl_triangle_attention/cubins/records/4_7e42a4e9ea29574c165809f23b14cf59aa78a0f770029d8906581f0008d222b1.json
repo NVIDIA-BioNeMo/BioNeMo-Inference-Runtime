@@ -24,6 +24,18 @@
       "target_arch": "sm_90a",
       "target_sm": 90
     },
+    "46ffc4336aa7f95ac3e700ee8d58d3a0fedbc0de595050c39159cee6fce95685": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 232448,
+      "image_sha256": "c6878ffee917013e889a99e8e879315acf89569bf82b7311dec2cce25a62bc7d",
+      "image_size": 136576,
+      "kernel_sm": 100,
+      "kernel_symbol": "922e22580037823e5bca07d58320443f6f38874e08538ff57017dab586154b80",
+      "launch_abi": "triangle_attention_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
     "480ba25a7fb7f8213f7eda7e218c0b2482db0dc331eeeea8f3771f99610240a8": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 49152,
@@ -57,7 +69,8 @@
       "runtime_metadata": {
         "bucket": 384,
         "head_dim": 32,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "44538042460e31f3b84d"
     },
@@ -66,7 +79,8 @@
       "runtime_metadata": {
         "bucket": 0,
         "head_dim": 64,
-        "packed_output": false
+        "packed_output": false,
+        "sm100_launch": null
       },
       "variant_id": "45d1f5b865d50234f29f"
     },
@@ -75,7 +89,8 @@
       "runtime_metadata": {
         "bucket": 0,
         "head_dim": 256,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "45e721c3116fe821eaec"
     },
@@ -84,7 +99,8 @@
       "runtime_metadata": {
         "bucket": 384,
         "head_dim": 256,
-        "packed_output": false
+        "packed_output": false,
+        "sm100_launch": null
       },
       "variant_id": "48c8deb814ddb3addadb"
     },
@@ -93,7 +109,8 @@
       "runtime_metadata": {
         "bucket": 384,
         "head_dim": 32,
-        "packed_output": false
+        "packed_output": false,
+        "sm100_launch": null
       },
       "variant_id": "497bece4ecbdd2810777"
     },
@@ -102,7 +119,8 @@
       "runtime_metadata": {
         "bucket": 384,
         "head_dim": 32,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "4a19cac382b18374232b"
     },
@@ -111,7 +129,8 @@
       "runtime_metadata": {
         "bucket": 384,
         "head_dim": 64,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "4db51b2662d426422ee8"
     },
@@ -120,7 +139,8 @@
       "runtime_metadata": {
         "bucket": 0,
         "head_dim": 128,
-        "packed_output": true
+        "packed_output": true,
+        "sm100_launch": null
       },
       "variant_id": "4fd13b5e520a43e39d4a"
     }

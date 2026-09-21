@@ -1,5 +1,5 @@
 {
-  "compile_fingerprint": "5bb617f48e983e5879fe6a11c541f74209664b7e30d71ff607f642bc8fcaeab8",
+  "compile_fingerprint": "b22cce1c0e2bf472d031d39275fda9dbda10c290777c041a4b4f676aff999468",
   "family": "outer_product_mean",
   "format": "bioir-cubin-pack-v2",
   "packs": {

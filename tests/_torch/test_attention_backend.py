@@ -79,6 +79,21 @@ def test_triangle_auto_select_falls_back_to_sdpa(monkeypatch):
     assert attention_backend.auto_select_triangle_attention_backend(torch.float32) == "SDPA"
 
 
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+def test_triangle_auto_select_uses_cutedsl_on_supported_sm(monkeypatch, sm):
+    monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
+
+    assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16) == "CuTeDSL"
+
+
+@pytest.mark.parametrize("sm", [100, 103])
+def test_triangle_auto_select_rejects_unsupported_blackwell_head_dim(monkeypatch, sm):
+    monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
+    monkeypatch.setitem(sys.modules, "cuequivariance_ops_torch", None)
+
+    assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16, head_dim=256) == "SDPA"
+
+
 @pytest.mark.parametrize("backend_name", ["VANILLA", "SDPA", "CUEQUIV"])
 def test_triangle_default_mask_precompute_registry(backend_name):
     pair_mask = make_left_aligned_pair_mask(1, 8, dtype=torch.float32, device="cpu")

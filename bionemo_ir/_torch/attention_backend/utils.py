@@ -32,18 +32,30 @@ from .triangle_attention import (
 
 def auto_select_triangle_attention_backend(
     dtype: torch.dtype = torch.float32,
+    head_dim: int | None = None,
 ) -> str:
     """Return the fastest available triangle attention backend name.
 
     Selection priority (highest to lowest):
-      1. **CuTeDSL** — SM80/SM86/SM89/SM90, fp16/bf16 only.
+      1. **CuTeDSL** — SM80/SM86/SM89/SM90/SM100/SM103, fp16/bf16 only.
       2. **CUEQUIV** — all SKUs, all dtypes (fp32, fp16, bf16).
       3. **SDPA** — PyTorch scaled-dot-product attention, all SKUs/dtypes.
+
+    Args:
+        dtype: Input tensor dtype.
+        head_dim: Optional logical head dimension. Supplying it prevents
+            selection of an architecture whose CuTeDSL kernels cannot pad to
+            the requested dimension.
     """
     sm = get_sm_version()
     is_half = dtype in (torch.float16, torch.bfloat16)
+    if head_dim is not None and head_dim < 1:
+        raise ValueError(f"head_dim must be positive; got {head_dim}")
+    padded_head_dim = None if head_dim is None else ((head_dim + 31) // 32) * 32
+    supported_head_dims = {32, 64, 128} if sm in (100, 103) else {32, 64, 128, 256}
+    supports_head_dim = padded_head_dim is None or padded_head_dim in supported_head_dims
 
-    if sm in (80, 86, 89, 90) and is_half:
+    if sm in (80, 86, 89, 90, 100, 103) and is_half and supports_head_dim:
         return "CuTeDSL"
 
     try:

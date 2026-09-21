@@ -39,7 +39,7 @@ from typing import Any
 from bionemo_ir.logger import logger
 
 _TUNED_CONFIG_ENV = "BIOIR_TUNED_CONFIG_FOLDER"
-_SUPPORTED_KERNEL_ABIS = frozenset({"sm80", "sm90"})
+_SUPPORTED_KERNEL_ABIS = frozenset({"sm80", "sm90", "sm100"})
 
 
 def get_config_file_name(sm: int, **dims: int) -> str:
@@ -78,6 +78,8 @@ class KernelConfigBundle:
 
 def _implementation_kernel_abi(implementation: str) -> str:
     """Derive the kernel ABI family from an implementation path."""
+    if ".sm100_" in implementation:
+        return "sm100"
     return "sm90" if ".sm90_" in implementation else "sm80"
 
 

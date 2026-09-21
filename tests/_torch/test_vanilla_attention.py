@@ -42,6 +42,7 @@ from tests._torch import (
     make_left_aligned_mask,
     skip_if_no_cutedsl,
     skip_if_not_sm90,
+    skip_if_not_sm100_family,
 )
 
 
@@ -324,7 +325,7 @@ def test_triangle_left_mask_vs_vanilla(
     A source-free build tests CUBINs only; set
     ``BIOIR_TEST_CUTEDSL_MODES=source,cubin`` to cover both.
     """
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("triangle_attention")
     _configure_triangle_cutedsl_mode(cutedsl_mode, monkeypatch)
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
@@ -482,3 +483,97 @@ def test_triangle_left_mask_native_sm90(head_dim, I, J, qkv_packed, cutedsl_mode
     diff_mean = torch.mean(torch.abs(cute_out.float() - vanilla_out.float()))
     assert diff_max < 1e-1, f"max diff {diff_max:.4f} >= 1e-1"
     assert diff_mean < 1e-2, f"mean diff {diff_mean:.4f} >= 1e-2"
+
+
+# ---------------------------------------------------------------------------
+# CuTeDSL left-mask triangle attention — native Blackwell (SM100 ABI)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "dtype,head_dim,bs,I,J,num_heads",
+    [
+        (torch.bfloat16, 32, 2, 13, 13, 4),
+        (torch.bfloat16, 32, 1, 2, 513, 3),
+        (torch.bfloat16, 64, 1, 4, 127, 4),
+        (torch.bfloat16, 128, 1, 3, 129, 4),
+        (torch.float16, 32, 1, 3, 65, 4),
+    ],
+    ids=[
+        "bf16-D32-multibatch-tail",
+        "bf16-D32-three-scheduler-tiles",
+        "bf16-D64-tile-tail",
+        "bf16-D128-cross-tile",
+        "fp16-D32-padded",
+    ],
+)
+@pytest.mark.parametrize("qkv_packed", [False, True], ids=["separate", "packed"])
+@pytest.mark.parametrize(
+    "cutedsl_mode", cutedsl_test_modes(_TRIANGLE_CUTEDSL_SOURCE_MODULE), ids=lambda mode: f"impl-{mode}"
+)
+def test_triangle_left_mask_native_sm100(dtype, head_dim, bs, I, J, num_heads, qkv_packed, cutedsl_mode, monkeypatch):
+    """Compare native Blackwell source/CUBIN launch paths against vanilla."""
+    skip_if_not_sm100_family()
+    _configure_triangle_cutedsl_mode(cutedsl_mode, monkeypatch)
+    torch.manual_seed(42)
+
+    H, D = num_heads, head_dim
+    device = torch.device("cuda")
+    if qkv_packed:
+        qkv = torch.randn(bs, I, J, 3, H * D, dtype=dtype, device=device)
+        q, k, v = qkv[..., 0, :], qkv[..., 1, :], qkv[..., 2, :]
+    else:
+        q, k, v = (torch.randn(bs, I, J, H * D, dtype=dtype, device=device) for _ in range(3))
+
+    binary_mask = make_left_aligned_mask(bs, I, J, dtype=torch.float32, device=device)
+    actual_s_kv = binary_mask.sum(dim=-1).to(torch.int32)
+    pair_bias = torch.randn(bs, H, J, J, dtype=dtype, device=device)
+    additive_mask = ((1.0 - binary_mask) * -1e9).unsqueeze(-2).unsqueeze(-2)
+
+    vanilla_out = VanillaTriangleAttention(0, H, D, num_kv_heads=H).forward(
+        q.contiguous(),
+        k.contiguous(),
+        v.contiguous(),
+        biases=[additive_mask, pair_bias],
+        metadata=AttentionMetadata(),
+    )
+
+    cute_attn = TriangleAttentionCuTeLeftMask(0, H, D, num_kv_heads=H)
+    output_lse = torch.empty(bs * I, J, H, 1, dtype=torch.float32, device=device)
+    cute_out = cute_attn.forward(
+        q,
+        k,
+        v,
+        biases=[actual_s_kv, pair_bias],
+        metadata=_tri_meta(qkv_packed),
+        output_lse=output_lse,
+    )
+
+    variant = cute_attn._last_variant
+    assert variant.bucket == 0
+    is_cubin_executable = isinstance(
+        cute_attn._last_executable,
+        library_runtime.CuTeDSLKernelLibraryExecutable,
+    )
+    assert is_cubin_executable == (cutedsl_mode == "cubin")
+    if is_cubin_executable:
+        spec_name = type(cute_attn._last_executable._config.spec).__name__
+        assert spec_name == "KernelSpecSM100", f"D={head_dim} launched via {spec_name}, not the native SM100 launcher"
+
+    assert cute_out.shape == vanilla_out.shape
+    diff = torch.abs(cute_out.float() - vanilla_out.float())
+    assert diff.max() < 1e-1, f"max diff {diff.max():.4f} >= 1e-1"
+    assert diff.mean() < 1e-2, f"mean diff {diff.mean():.4f} >= 1e-2"
+
+    q_heads = q.reshape(bs, I, J, H, D).float()
+    k_heads = k.reshape(bs, I, J, H, D).float()
+    scores = torch.einsum("bijhd,bikhd->bijhk", q_heads, k_heads) * (D**-0.5)
+    scores = scores + pair_bias.float().permute(0, 2, 1, 3).unsqueeze(1)
+    valid_keys = binary_mask[:, :, None, None, :].bool()
+    expected_lse = torch.logsumexp(scores.masked_fill(~valid_keys, -torch.inf), dim=-1)
+    torch.testing.assert_close(
+        output_lse.reshape(bs, I, J, H),
+        expected_lse,
+        atol=1e-2,
+        rtol=1e-3,
+    )

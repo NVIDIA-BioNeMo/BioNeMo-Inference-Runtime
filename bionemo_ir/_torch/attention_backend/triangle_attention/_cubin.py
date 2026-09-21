@@ -64,7 +64,7 @@ class TriangleAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
         if not config.spec.supports_direct_launch:
             raise CuTeDSLKernelVariantUnavailable(
                 f"Triangle attention SM{target_sm}, head_dim={head_dim} uses "
-                "a native Hopper ABI whose direct launcher is not implemented"
+                "a native architecture ABI whose direct launcher is not implemented"
             )
 
         self._kernel_library = kernel_library

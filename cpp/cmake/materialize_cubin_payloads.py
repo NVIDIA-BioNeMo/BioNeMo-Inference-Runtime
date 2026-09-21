@@ -137,6 +137,14 @@ class _Sm90Spec:
 
 
 @dataclass(frozen=True)
+class _Sm100Spec:
+    """Native-SM100 launch record for Blackwell TMA kernels."""
+
+    enabled_field: str
+    operands: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _FamilySpec:
     """Everything family-specific about one registry."""
 
@@ -147,6 +155,7 @@ class _FamilySpec:
     dtype_key: str = "is_bfloat16"
     alias: _AliasSpec | None = None
     sm90: _Sm90Spec | None = None
+    sm100: _Sm100Spec | None = None
 
     @property
     def metadata_keys(self) -> frozenset[str]:
@@ -156,6 +165,8 @@ class _FamilySpec:
             keys.add("runtime_aliases")
         if self.sm90 is not None:
             keys.add("sm90_launch")
+        if self.sm100 is not None:
+            keys.add("sm100_launch")
         return frozenset(keys)
 
 
@@ -168,6 +179,13 @@ _ATTENTION_SPEC = _FamilySpec(
     ),
     runtime_key=("head_dim", "bucket", "is_bfloat16", "packed_output"),
     sm90=_Sm90Spec("enabled", ("q", "k", "v", "bias", "output")),
+)
+
+_TRIANGLE_ATTENTION_SPEC = _FamilySpec(
+    fields=_ATTENTION_SPEC.fields,
+    runtime_key=_ATTENTION_SPEC.runtime_key,
+    sm90=_ATTENTION_SPEC.sm90,
+    sm100=_Sm100Spec("enabled", ("q", "k", "v", "bias", "output")),
 )
 
 _FAMILY_SPECS: dict[str, _FamilySpec] = {
@@ -238,7 +256,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
     ),
     "pairwise_attention": _ATTENTION_SPEC,
-    "triangle_attention": _ATTENTION_SPEC,
+    "triangle_attention": _TRIANGLE_ATTENTION_SPEC,
     "dual_gemm_x_x": _FamilySpec(
         fields=(
             _Field("K", _POSITIVE, "std::int32_t K;"),
@@ -557,6 +575,26 @@ def _validate_sm90_launch(family: str, value: object, where: str, dtype: str, ke
         _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
 
 
+def _validate_sm100_launch(value: object, where: str, dtype: str, kernel_sm: int, operands: tuple[str, ...]) -> None:
+    if kernel_sm != 100:
+        if value is not None:
+            _fail(f"{where} must be null for a non-SM100 kernel ABI")
+        return
+    if value is None:
+        _fail(f"{where} is required for an SM100 kernel ABI")
+    launch = _as_object(value, where)
+    _exact_keys(launch, {"block_dims", "tma_descriptors"}, where)
+    block = _integer_array(launch["block_dims"], f"{where}.block_dims", length=3, minimum=1)
+    if block[0] * block[1] * block[2] > 1024:
+        _fail(f"{where}.block_dims exceeds 1024 threads")
+    if block[1] != 1 or block[2] != 1:
+        _fail(f"{where}.block_dims must be [num_threads, 1, 1]")
+    descriptors = _as_object(launch["tma_descriptors"], f"{where}.tma_descriptors")
+    _exact_keys(descriptors, set(operands), f"{where}.tma_descriptors")
+    for name in operands:
+        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, 4)
+
+
 def _validate_runtime_aliases(value: object, where: str, keys: tuple[str, str]) -> tuple[dict[str, object], ...]:
     aliases: list[dict[str, object]] = []
     seen: set[tuple[int, int]] = set()
@@ -637,6 +675,10 @@ def _apply_metadata_defaults(spec: _FamilySpec, metadata: dict[str, object]) -> 
                 metadata[field.name] = metadata[source]
         elif field.default is not _NO_DEFAULT:
             metadata[field.name] = field.default
+    # Keep an implementation change buildable against the previous family
+    # corpus. Old triangle-attention images have no native-SM100 record.
+    if spec.sm100 is not None and "sm100_launch" not in metadata:
+        metadata["sm100_launch"] = None
 
 
 def _validate_metadata(family: str, variant: VariantRecord, where: str) -> None:
@@ -646,8 +688,10 @@ def _validate_metadata(family: str, variant: VariantRecord, where: str) -> None:
     _exact_keys(metadata, _COMMON_METADATA | spec.metadata_keys, where)
     _integer(metadata["dynamic_smem_bytes"], f"{where}.dynamic_smem_bytes", maximum=_UINT32_MAX)
     non_portable = _boolean(metadata["non_portable_cluster_size_allowed"], f"{where}.non_portable_cluster_size_allowed")
-    if non_portable and variant.kernel_sm != 90:
-        _fail(f"{where}.non_portable_cluster_size_allowed requires an SM90 kernel ABI")
+    if non_portable and variant.kernel_sm not in {90, 100}:
+        _fail(f"{where}.non_portable_cluster_size_allowed requires an SM90 or SM100 kernel ABI")
+    if spec.sm100 is not None and variant.kernel_sm == 100 and not non_portable:
+        _fail(f"{where}.non_portable_cluster_size_allowed is required for an SM100 kernel ABI")
 
     # Every family states its dtype twice: once as the variant's own dtype and
     # once inside the launch metadata the kernel was compiled with.
@@ -664,6 +708,14 @@ def _validate_metadata(family: str, variant: VariantRecord, where: str) -> None:
         _validate_runtime_aliases(metadata["runtime_aliases"], f"{where}.runtime_aliases", spec.alias.keys)
     if spec.sm90 is not None:
         _validate_sm90_launch(family, metadata["sm90_launch"], f"{where}.sm90_launch", variant.dtype, variant.kernel_sm)
+    if spec.sm100 is not None:
+        _validate_sm100_launch(
+            metadata["sm100_launch"],
+            f"{where}.sm100_launch",
+            variant.dtype,
+            variant.kernel_sm,
+            spec.sm100.operands,
+        )
     if "num_threads" in metadata and cast(int, metadata["num_threads"]) > 1024:
         _fail(f"{where}.num_threads exceeds 1024")
 
@@ -1569,6 +1621,22 @@ def _render_sm90(value: object, operands: tuple[str, ...], indent: str) -> list[
     return lines
 
 
+def _render_sm100(value: object, operands: tuple[str, ...], indent: str) -> list[str]:
+    if value is None:
+        return [f"{indent}{{}},"]
+    metadata = cast(dict[str, object], value)
+    descriptors = cast(dict[str, object], metadata["tma_descriptors"])
+    lines = [
+        f"{indent}{{",
+        f"{indent}  true,",
+        f"{indent}  {_cpp_uint_array(metadata['block_dims'], 3)},",
+    ]
+    for operand in operands:
+        lines.extend(_render_tma_descriptor(descriptors[operand], indent + "  "))
+    lines.append(f"{indent}}},")
+    return lines
+
+
 def _sm90_declarations(spec: _FamilySpec) -> list[str]:
     assert spec.sm90 is not None
     return [
@@ -1584,6 +1652,19 @@ def _sm90_declarations(spec: _FamilySpec) -> list[str]:
     ]
 
 
+def _sm100_declarations(spec: _FamilySpec) -> list[str]:
+    assert spec.sm100 is not None
+    return [
+        "struct SM100LaunchInfo",
+        "{",
+        f"  bool {spec.sm100.enabled_field};",
+        "  std::uint32_t block_dims[3];",
+        *(f"  TmaDescriptorInfo {operand};" for operand in spec.sm100.operands),
+        "};",
+        "",
+    ]
+
+
 def _family_type_declarations(family: str) -> list[str]:
     """Declare this family's registry record, in field order."""
     spec = _FAMILY_SPECS[family]
@@ -1592,6 +1673,8 @@ def _family_type_declarations(family: str) -> list[str]:
         lines.extend(["struct RuntimeAlias", "{", *(f"  {item}" for item in spec.alias.declarations), "};", ""])
     if spec.sm90 is not None:
         lines.extend(_sm90_declarations(spec))
+    if spec.sm100 is not None:
+        lines.extend(_sm100_declarations(spec))
     lines.extend(
         [
             "struct CubinImage",
@@ -1602,6 +1685,8 @@ def _family_type_declarations(family: str) -> list[str]:
     )
     if spec.sm90 is not None:
         lines.append("  SM90LaunchInfo sm90;")
+    if spec.sm100 is not None:
+        lines.append("  SM100LaunchInfo sm100;")
     if spec.alias is not None:
         lines.extend(["  RuntimeAlias const* aliases;", "  std::size_t alias_count;"])
     lines.append("};")
@@ -1682,6 +1767,8 @@ def _family_initializer_lines(family: str, variant: VariantRecord, indent: str) 
     lines = [f"{indent}{_field_value(field, variant)}," for field in spec.fields]
     if spec.sm90 is not None:
         lines.extend(_render_sm90(variant.runtime_metadata["sm90_launch"], spec.sm90.operands, indent))
+    if spec.sm100 is not None:
+        lines.extend(_render_sm100(variant.runtime_metadata["sm100_launch"], spec.sm100.operands, indent))
     if spec.alias is not None:
         name = _alias_table_name(variant)
         lines.extend([f"{indent}{name},", f"{indent}sizeof({name}) / sizeof({name}[0]),"])

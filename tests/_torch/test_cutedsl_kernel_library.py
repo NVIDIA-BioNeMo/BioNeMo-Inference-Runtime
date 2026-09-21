@@ -114,7 +114,7 @@ def test_launch_library_executable_does_not_require_tvm_ffi():
 @pytest.mark.parametrize("qkv_packed", [False, True], ids=["separate", "packed"])
 def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv_packed):
     try:
-        importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
+        kernel_library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
     except ImportError:
         pytest.skip("_cutedsl_kernels extension is not installed")
     if not torch.cuda.is_available():
@@ -122,7 +122,7 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
 
     major, minor = torch.cuda.get_device_capability()
     sm_version = major * 10 + minor
-    if sm_version not in (80, 86, 89, 90):
+    if sm_version not in (80, 86, 89, 90, 100, 103):
         pytest.skip(f"no directly launchable D32 CUBIN for SM{sm_version}")
 
     from bionemo_ir._torch.attention_backend import (
@@ -134,6 +134,21 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
     from bionemo_ir._torch.attention_backend.triangle_attention import _config as triangle_config
     from tests._torch import make_left_aligned_mask
 
+    B, I, J, H, D = 1, 4, 13, 2, 32
+    bucket = triangle_config.get_nearest_bucket(sm_version, D, int(round((I * J) ** 0.5)))
+    try:
+        config = kernel_library.triangle_attention.make_kernel_config(
+            sm_version,
+            D,
+            bucket,
+            kernel_library.triangle_attention.DType.BFLOAT16,
+            qkv_packed,
+        )
+    except (RuntimeError, TypeError, ValueError):
+        pytest.skip(f"the installed extension has no D32 CUBIN for SM{sm_version}")
+    if not config.spec.supports_direct_launch:
+        pytest.skip(f"the installed SM{sm_version} D32 CUBIN has no direct launcher")
+
     def missing_source(_implementation):
         raise ModuleNotFoundError("CuTeDSL kernel source removed")
 
@@ -142,7 +157,6 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
     TriangleAttentionCuTeLeftMask._compiled_cache.clear()
 
     torch.manual_seed(42)
-    B, I, J, H, D = 1, 4, 13, 2, 32
     dtype = torch.bfloat16
     device = torch.device("cuda")
     if qkv_packed:
@@ -237,6 +251,165 @@ def test_triangle_cubin_rejects_wrong_static_head_dim(operand):
             1.0,
             i_dim,
         )
+
+
+def _triangle_backend(head_dim: int = 32):
+    from bionemo_ir._torch.attention_backend.triangle_attention import cutedsl as triangle_cutedsl
+
+    backend = object.__new__(triangle_cutedsl.TriangleAttentionCuTeLeftMask)
+    backend.layer_idx = 0
+    backend.num_heads = 2
+    backend.num_kv_heads = 2
+    backend.head_dim = head_dim
+    backend._sm_version = 100
+    backend._last_executable = None
+    backend._last_variant = None
+    backend._last_force_cubin = None
+    return backend, triangle_cutedsl
+
+
+def _triangle_inputs(head_dim: int = 32):
+    batch_size, i_dim, seqlen, num_heads = 1, 2, 5, 2
+    shape = (batch_size, i_dim, seqlen, num_heads, head_dim)
+    q = torch.randn(shape, dtype=torch.bfloat16)
+    k = torch.randn_like(q)
+    v = torch.randn_like(q)
+    actual_s_kv = torch.full((batch_size, i_dim), seqlen, dtype=torch.int32)
+    bias = torch.randn(batch_size, num_heads, seqlen, seqlen, dtype=q.dtype)
+    return q, k, v, actual_s_kv, bias
+
+
+@pytest.mark.parametrize("operand", ["K", "V", "pair_bias"])
+def test_triangle_attention_rejects_mixed_input_dtypes(operand):
+    backend, _ = _triangle_backend()
+    q, k, v, actual_s_kv, bias = _triangle_inputs()
+    replacements = {
+        "K": k.float(),
+        "V": v.float(),
+        "pair_bias": bias.float(),
+    }
+    k = replacements["K"] if operand == "K" else k
+    v = replacements["V"] if operand == "V" else v
+    bias = replacements["pair_bias"] if operand == "pair_bias" else bias
+
+    with pytest.raises(TypeError, match=operand):
+        backend._prepare_launch_inputs(q, k, v, actual_s_kv, bias, False, None, None)
+
+
+def test_triangle_attention_reuses_pre_padded_pair_bias():
+    backend, _ = _triangle_backend()
+    q, k, v, actual_s_kv, bias = _triangle_inputs()
+    padded_bias = torch.zeros(*bias.shape[:-1], 8, dtype=bias.dtype)
+    padded_bias[..., : bias.shape[-1]] = bias
+
+    launch_inputs = backend._prepare_launch_inputs(q, k, v, actual_s_kv, padded_bias, False, None, None)
+
+    assert launch_inputs.bias.shape == padded_bias.shape
+    assert launch_inputs.bias.data_ptr() == padded_bias.data_ptr()
+
+
+def test_triangle_attention_rejects_static_inner_stride_mismatches():
+    backend, _ = _triangle_backend()
+    q, k, v, actual_s_kv, bias = _triangle_inputs()
+    q = torch.randn(1, 2, 5, 32, 2, dtype=q.dtype).transpose(-1, -2)
+
+    with pytest.raises(ValueError, match="Q inner strides"):
+        backend._prepare_launch_inputs(q, k, v, actual_s_kv, bias, False, None, None)
+
+    q = torch.randn_like(k)
+    output = torch.empty(2, 5, 32, 2, dtype=q.dtype).transpose(-1, -2)
+    with pytest.raises(ValueError, match="output inner strides"):
+        backend._prepare_launch_inputs(q, k, v, actual_s_kv, bias, False, output, None)
+
+    output_lse = torch.empty(2, 2, 5, 1).permute(0, 2, 1, 3)
+    with pytest.raises(ValueError, match="output_lse inner strides"):
+        backend._prepare_launch_inputs(q, k, v, actual_s_kv, bias, False, None, output_lse)
+
+
+def test_triangle_attention_rejects_shared_qkv_stride_mismatches():
+    backend, _ = _triangle_backend()
+    q, _, v, actual_s_kv, bias = _triangle_inputs()
+    k = torch.randn(1, 2, 6, 2, 32, dtype=q.dtype)[:, :, :5]
+
+    with pytest.raises(ValueError, match="K outer strides must match Q"):
+        backend._prepare_launch_inputs(q, k, v, actual_s_kv, bias, False, None, None)
+
+
+def test_triangle_attention_writes_unpadded_output_buffer(monkeypatch):
+    backend, triangle_cutedsl = _triangle_backend(head_dim=31)
+    q, k, v, actual_s_kv, bias = _triangle_inputs(head_dim=31)
+    output = torch.full((2, 5, 2, 31), torch.nan, dtype=q.dtype)
+
+    monkeypatch.setattr(backend, "_get_executable", lambda *args: object())
+
+    def launch_stub(executable, *args):
+        del executable
+        args[5].fill_(3)
+
+    monkeypatch.setattr(triangle_cutedsl, "launch_compiled_kernel", launch_stub)
+    result = backend.forward(q, k, v, [actual_s_kv, bias], output=output)
+
+    assert result.reshape_as(output).data_ptr() == output.data_ptr()
+    torch.testing.assert_close(output, torch.full_like(output, 3))
+
+
+def test_triangle_attention_cache_separates_source_and_forced_cubin(monkeypatch):
+    backend, triangle_cutedsl = _triangle_backend()
+    variant = triangle_cutedsl._TriangleAttentionVariant(torch.bfloat16, 32, 0, False)
+    config = SimpleNamespace(arch="sm100", cache_identity=("fixed-sm100",))
+    source_executable = object()
+    cubin_executable = object()
+    cache = {
+        backend._source_cache_key(variant, config): source_executable,
+        backend._cubin_cache_key(variant): cubin_executable,
+    }
+    monkeypatch.setattr(triangle_cutedsl.TriangleAttentionCuTeLeftMask, "_compiled_cache", cache)
+    monkeypatch.setattr(backend, "_resolve_source_kernel", lambda *_: (config, object()))
+    monkeypatch.setattr(
+        triangle_cutedsl,
+        "load_source_module",
+        lambda _: SimpleNamespace(compile_triangle_attention_source=lambda *args: None),
+    )
+
+    monkeypatch.setenv(triangle_cutedsl.FORCE_CUBIN_ENV, "1")
+    assert backend._get_executable(variant, object(), 8, 1.0, 1) is cubin_executable
+
+    monkeypatch.delenv(triangle_cutedsl.FORCE_CUBIN_ENV)
+    assert backend._get_executable(variant, object(), 8, 1.0, 1) is source_executable
+
+
+def test_triangle_attention_forward_rechecks_forced_mode(monkeypatch):
+    backend, triangle_cutedsl = _triangle_backend()
+    q, k, v, actual_s_kv, bias = _triangle_inputs()
+    source_executable = object()
+    cubin_executable = object()
+    launches = []
+
+    def resolve_executable(*args):
+        del args
+        return cubin_executable if backend.force_cubin() else source_executable
+
+    def launch_stub(executable, *args):
+        launches.append(executable)
+        args[5].zero_()
+
+    monkeypatch.setattr(backend, "_get_executable", resolve_executable)
+    monkeypatch.setattr(triangle_cutedsl, "launch_compiled_kernel", launch_stub)
+    monkeypatch.delenv(triangle_cutedsl.FORCE_CUBIN_ENV, raising=False)
+    backend.forward(q, k, v, [actual_s_kv, bias])
+    monkeypatch.setenv(triangle_cutedsl.FORCE_CUBIN_ENV, "1")
+    backend.forward(q, k, v, [actual_s_kv, bias])
+
+    assert launches == [source_executable, cubin_executable]
+
+
+def test_triangle_attention_disk_cache_key_includes_source_config():
+    backend, triangle_cutedsl = _triangle_backend()
+    variant = triangle_cutedsl._TriangleAttentionVariant(torch.bfloat16, 32, 0, False)
+    first = SimpleNamespace(arch="sm100", cache_identity=("first",))
+    second = SimpleNamespace(arch="sm100", cache_identity=("second",))
+
+    assert backend._disk_cache_key(variant, first) != backend._disk_cache_key(variant, second)
 
 
 def test_tensor_views_reject_the_wrong_rank():

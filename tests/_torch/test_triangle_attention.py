@@ -26,8 +26,7 @@ from test_utils.boltz.ref_attn import RefTriangleAttention
 from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
 from bionemo_ir._torch.layers.attention import TriangleAttention
 from bionemo_ir.utils import str_dtype_to_torch
-from tests._torch import make_left_aligned_pair_mask
-from tests._torch import skip_cutedsl as _skip_cutedsl
+from tests._torch import make_left_aligned_pair_mask, skip_cutedsl_for
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -121,7 +120,7 @@ def test_triangle_attention_backend(s: Scenario):
         assert diff0_mean <= diff1_mean + 0.2
 
 
-@_skip_cutedsl
+@skip_cutedsl_for("triangle_attention")
 @pytest.mark.parametrize(
     "s",
     [

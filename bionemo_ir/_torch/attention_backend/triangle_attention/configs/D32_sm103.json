@@ -1,0 +1,6 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=0": {}
+  }
+}

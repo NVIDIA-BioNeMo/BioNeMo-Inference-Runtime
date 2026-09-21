@@ -41,6 +41,7 @@ class TriangleAttentionLeftMaskKernelConfig:
     arch: str
     kernel_factory: Callable[[int], Any]
     can_implement: Callable[[type, int], bool]
+    cache_identity: tuple[object, ...] = ()
 
 
 def _build_sm80_config(
@@ -75,7 +76,21 @@ def _build_sm80_config(
             sm_version,
         )
 
-    return TriangleAttentionLeftMaskKernelConfig(arch="sm80", kernel_factory=factory, can_implement=can_impl)
+    return TriangleAttentionLeftMaskKernelConfig(
+        arch="sm80",
+        kernel_factory=factory,
+        can_implement=can_impl,
+        cache_identity=(
+            kernel_cls.__module__,
+            kernel_cls.__qualname__,
+            m_block_size,
+            n_block_size,
+            num_threads,
+            swizzle_b,
+            load_bias_before_gemm,
+            sm_version,
+        ),
+    )
 
 
 def _build_sm90_config(
@@ -117,7 +132,38 @@ def _build_sm90_config(
         )
         return ok
 
-    return TriangleAttentionLeftMaskKernelConfig(arch="sm90", kernel_factory=factory, can_implement=can_impl)
+    return TriangleAttentionLeftMaskKernelConfig(
+        arch="sm90",
+        kernel_factory=factory,
+        can_implement=can_impl,
+        cache_identity=(
+            kernel_cls.__module__,
+            kernel_cls.__qualname__,
+            mma_mn_tuple,
+            is_persistent,
+            kv_stage,
+            raster_factor,
+            str(qk_acc_dtype),
+            str(pv_acc_dtype),
+        ),
+    )
+
+
+def _build_sm100_config(kernel_cls: type) -> TriangleAttentionLeftMaskKernelConfig:
+    """Bind the fixed native-Blackwell triangle-attention configuration."""
+
+    def factory(head_dim: int):
+        return kernel_cls(head_dim, enable_bias=True)
+
+    def can_impl(ct_dtype: type, head_dim: int) -> bool:
+        return bool(kernel_cls.can_implement(ct_dtype, head_dim))
+
+    return TriangleAttentionLeftMaskKernelConfig(
+        arch="sm100",
+        kernel_factory=factory,
+        can_implement=can_impl,
+        cache_identity=(kernel_cls.__module__, kernel_cls.__qualname__, True),
+    )
 
 
 _TRI_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
@@ -169,6 +215,10 @@ def get_kernel_config(
         bundle.kernel_abi, None, bundle.kernel_variant
     )
     kernel_cls = resolve_implementation(implementation)
+    if bundle.kernel_abi == "sm100":
+        if tile_params:
+            raise ValueError(f"SM100 triangle attention has no tunable tile parameters; got {tile_params}")
+        return _build_sm100_config(kernel_cls)
     if "mma_tiler_mn" in tile_params:
         return _build_sm90_config(kernel_cls, **tile_params)
     return _build_sm80_config(kernel_cls, sm_version=sm_version, **tile_params)

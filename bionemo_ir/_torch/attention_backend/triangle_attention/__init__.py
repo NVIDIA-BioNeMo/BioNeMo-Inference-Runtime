@@ -19,6 +19,7 @@ from ._config import (
     TriangleAttentionLeftMaskKernelConfig,
     _build_sm80_config,
     _build_sm90_config,
+    _build_sm100_config,
     get_kernel_config,
     get_nearest_bucket,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "_TRI_CONFIGS_DIR",
     "_build_sm80_config",
     "_build_sm90_config",
+    "_build_sm100_config",
     "get_kernel_config",
     "get_nearest_bucket",
 ]

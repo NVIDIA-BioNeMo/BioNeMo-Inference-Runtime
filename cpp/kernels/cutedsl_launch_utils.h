@@ -165,6 +165,18 @@ inline cute_tensor_s3_d2_t make_sm90_lse_descriptor(Tensor3View const& view)
   return descriptor;
 }
 
+inline cute_tensor_s3_d2_t make_sm100_lse_descriptor(Tensor3View const& view)
+{
+  cute_tensor_s3_d2_t descriptor{};
+  descriptor.data = static_cast<CUdeviceptr>(view.data);
+  descriptor.dynamic_shapes[0] = view.shape[1];
+  descriptor.dynamic_shapes[1] = view.shape[2];
+  descriptor.dynamic_shapes[2] = view.shape[0];
+  descriptor.dynamic_strides[0] = view.strides[1];
+  descriptor.dynamic_strides[1] = view.strides[0];
+  return descriptor;
+}
+
 struct CoordTensorS1
 {
   std::int32_t dynamic_shapes[1];

@@ -38,6 +38,7 @@ namespace
 constexpr float kLog2E = 1.4426950408889634F;
 constexpr char kSM80LaunchAbi[] = "triangle_attention_sm80";
 constexpr char kSM90LaunchAbi[] = "triangle_attention_sm90";
+constexpr char kSM100LaunchAbi[] = "triangle_attention_sm100";
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
 {
@@ -49,11 +50,12 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("kernel_symbol must not be empty");
   bool const is_sm80 = std::holds_alternative<KernelSpecSM80>(config.spec);
   bool const is_sm90 = std::holds_alternative<KernelSpecSM90>(config.spec);
-  if (!is_sm80 && !is_sm90)
+  bool const is_sm100 = std::holds_alternative<KernelSpecSM100>(config.spec);
+  if (!is_sm80 && !is_sm90 && !is_sm100)
     throw std::invalid_argument("triangle-attention config has no direct launch ABI");
 
-  char const* expected_abi = is_sm80 ? kSM80LaunchAbi : kSM90LaunchAbi;
-  std::int32_t const expected_kernel_sm = is_sm80 ? 80 : 90;
+  char const* expected_abi = is_sm80 ? kSM80LaunchAbi : (is_sm90 ? kSM90LaunchAbi : kSM100LaunchAbi);
+  std::int32_t const expected_kernel_sm = is_sm80 ? 80 : (is_sm90 ? 90 : 100);
   if (
     config.cubin.kernel_sm != expected_kernel_sm || config.cubin.launch_abi == nullptr
     || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)
@@ -76,6 +78,18 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
         throw std::invalid_argument("native SM90 triangle-attention CUBIN has an invalid cluster dimension");
     }
   }
+  if (is_sm100)
+  {
+    if (config.embedded_image == nullptr || !config.embedded_image->sm100.enabled)
+      throw std::invalid_argument("native SM100 triangle-attention CUBIN has no host launch metadata");
+    for (std::uint32_t dimension : config.embedded_image->sm100.block_dims)
+    {
+      if (dimension == 0)
+        throw std::invalid_argument("native SM100 triangle-attention CUBIN has an invalid block dimension");
+    }
+  }
+  if (config.cubin.non_portable_cluster_size_allowed != (is_sm90 || is_sm100))
+    throw std::invalid_argument("triangle-attention CUBIN has inconsistent cluster function metadata");
   std::int32_t const configured_sm = spec_target_sm(config.spec);
   if (!cubin_supports_sm(config.cubin, configured_sm))
   {
@@ -109,8 +123,8 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
 
   if (params.k.shape[0] != batch_times_i || params.v.shape != params.k.shape)
     throw std::invalid_argument("k/v shapes must agree and use q.shape[0]");
-  if (is_sm90 && seqlen_k != seqlen_q)
-    throw std::invalid_argument("native SM90 triangle attention requires matching q/k sequence lengths");
+  if ((is_sm90 || is_sm100) && seqlen_k != seqlen_q)
+    throw std::invalid_argument("native SM90/SM100 triangle attention requires matching q/k sequence lengths");
   if (params.k.shape[2] != num_heads)
     throw std::invalid_argument("q, k, and v must have the same number of heads");
   if (params.output.shape != params.q.shape)
@@ -165,6 +179,60 @@ cubin_launch_config_t make_sm90_launch_config(
   launch_config.cluster_y = metadata.cluster_dims[1];
   launch_config.cluster_z = metadata.cluster_dims[2];
   launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  return launch_config;
+}
+
+abi::SM100FastDivmod make_sm100_fast_divmod(std::int32_t divisor)
+{
+  if (divisor <= 0)
+    throw std::invalid_argument("SM100 scheduler divisor must be positive");
+
+  std::uint32_t const value = static_cast<std::uint32_t>(divisor);
+  std::uint32_t log2 = 0;
+  std::uint64_t power_of_two = 1;
+  while (power_of_two < value)
+  {
+    power_of_two <<= 1;
+    ++log2;
+  }
+
+  std::uint64_t const numerator = (power_of_two - value) << 32;
+  std::uint64_t const multiplier = numerator / value + 1;
+  if (multiplier > std::numeric_limits<std::uint32_t>::max())
+    throw std::overflow_error("SM100 scheduler multiplier overflow");
+
+  std::uint8_t const shift_right_1 = static_cast<std::uint8_t>(std::min(log2, 1U));
+  std::uint8_t const shift_right_2 = static_cast<std::uint8_t>(log2 - shift_right_1);
+  return abi::SM100FastDivmod{
+    divisor,
+    static_cast<std::uint32_t>(multiplier),
+    shift_right_1,
+    shift_right_2,
+  };
+}
+
+cubin_launch_config_t make_sm100_launch_config(
+  embedded::SM100LaunchInfo const& metadata,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t tile_m,
+  std::uint32_t smem_bytes)
+{
+  std::uint64_t const m_tiles
+    = ceil_div(static_cast<std::uint64_t>(params.q.shape[1]), static_cast<std::uint64_t>(tile_m));
+  std::uint64_t const total_blocks
+    = m_tiles * static_cast<std::uint64_t>(params.q.shape[2]) * static_cast<std::uint64_t>(params.q.shape[0]);
+  std::uint64_t const active_sms = static_cast<std::uint64_t>(cuda_multiprocessor_count_for_context(context));
+
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(std::min(active_sms, total_blocks), "triangle-attention SM100 grid.x");
+  launch_config.grid_y = 1;
+  launch_config.grid_z = 1;
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
   launch_config.dynamic_smem_bytes = smem_bytes;
   launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
   return launch_config;
@@ -296,6 +364,66 @@ void launch_sm90(
     "launch_cubin_kernel(triangle_attention_sm90)");
 }
 
+void launch_sm100(
+  cubin_kernel_t loaded,
+  KernelSpecSM100 const& spec,
+  embedded::SM100LaunchInfo const& metadata,
+  DType dtype,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  validate_operand_devices(params, cuda_device_for_context(context));
+
+  if (metadata.block_dims[0] != spec.num_threads)
+    throw std::invalid_argument("native SM100 block metadata disagrees with the kernel spec");
+
+  abi::SM100Params device_params{};
+  CUtensorMapDataType const expected_dtype = tma_data_type(dtype == DType::kBFloat16);
+  TmaTensorSource const q_source = make_tma_tensor3_source(params.q, spec.head_dim);
+  TmaTensorSource const k_source = make_tma_tensor3_source(params.k, spec.head_dim);
+  TmaTensorSource const v_source = make_tma_tensor3_source(params.v, spec.head_dim);
+  TmaTensorSource const bias_source = make_tma_bias_source(params.bias);
+  TmaTensorSource const output_source = make_tma_tensor3_source(params.output, spec.head_dim);
+  encode_tma_descriptor(device_params.q_tma, metadata.q, expected_dtype, q_source, "q");
+  encode_tma_descriptor(device_params.k_tma, metadata.k, expected_dtype, k_source, "k");
+  encode_tma_descriptor(device_params.v_tma, metadata.v, expected_dtype, v_source, "v");
+  encode_tma_descriptor(device_params.output_tma, metadata.output, expected_dtype, output_source, "output");
+  encode_tma_descriptor(device_params.bias_tma, metadata.bias, expected_dtype, bias_source, "bias");
+
+  device_params.q_coord = make_sm90_tensor3_coord(params.q);
+  device_params.k_coord = make_sm90_tensor3_coord(params.k);
+  device_params.v_coord = make_sm90_tensor3_coord(params.v);
+  device_params.output_coord = make_sm90_tensor3_coord(params.output);
+  device_params.lse = make_sm100_lse_descriptor(params.lse);
+  device_params.actual_s_kv = make_tensor1_descriptor(params.actual_s_kv);
+  device_params.bias_coord = make_sm90_bias_coord(params.bias);
+  device_params.i_dim = params.i_dim;
+  device_params.softmax_scale_log2 = params.softmax_scale * kLog2E;
+  device_params.softmax_scale = params.softmax_scale;
+
+  std::uint64_t const scheduler_num_blocks_u64
+    = ceil_div(static_cast<std::uint64_t>(params.q.shape[1]), static_cast<std::uint64_t>(spec.tile_m));
+  if (scheduler_num_blocks_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::overflow_error("triangle-attention SM100 scheduler M tile count overflow");
+  std::int32_t const scheduler_num_blocks = static_cast<std::int32_t>(scheduler_num_blocks_u64);
+  device_params.scheduler_num_blocks = make_sm100_fast_divmod(scheduler_num_blocks);
+  device_params.scheduler_num_heads = make_sm100_fast_divmod(params.q.shape[2]);
+  std::uint64_t const total_blocks = scheduler_num_blocks_u64 * static_cast<std::uint64_t>(params.q.shape[2])
+    * static_cast<std::uint64_t>(params.q.shape[0]);
+  if (total_blocks > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::overflow_error("triangle-attention SM100 scheduler total block count overflow");
+  device_params.scheduler_total_blocks = static_cast<std::int32_t>(total_blocks);
+
+  void* kernel_params[abi::kSM100ParameterCount];
+  abi::pack_sm100_kernel_params(&device_params, kernel_params);
+  cubin_launch_config_t const launch_config
+    = make_sm100_launch_config(metadata, params, context, spec.tile_m, smem_bytes);
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr),
+    "launch_cubin_kernel(triangle_attention_sm100)");
+}
+
 embedded::CubinImage const&
 find_embedded_cubin(std::int32_t target_sm, std::int32_t head_dim, std::int32_t S, DType dtype, bool packed_output)
 {
@@ -383,6 +511,12 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   if (auto const* spec = std::get_if<KernelSpecSM90>(&config.spec))
   {
     launch_sm90(loaded, *spec, config.embedded_image->sm90, config.dtype, params, context, smem_bytes);
+    return;
+  }
+
+  if (auto const* spec = std::get_if<KernelSpecSM100>(&config.spec))
+  {
+    launch_sm100(loaded, *spec, config.embedded_image->sm100, config.dtype, params, context, smem_bytes);
     return;
   }
 

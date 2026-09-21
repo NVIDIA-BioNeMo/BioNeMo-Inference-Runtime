@@ -32,8 +32,11 @@ Logical input shapes, and the flattened / padded forms passed to the kernel:
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import cutlass
@@ -55,6 +58,7 @@ from ._config import (
     TriangleAttentionLeftMaskKernelConfig,
     _build_sm80_config,
     _build_sm90_config,
+    _build_sm100_config,
     get_kernel_config,
     get_nearest_bucket,
 )
@@ -67,6 +71,7 @@ __all__ = [
     "_TRI_CONFIGS_DIR",
     "_build_sm80_config",
     "_build_sm90_config",
+    "_build_sm100_config",
     "get_kernel_config",
 ]
 
@@ -100,6 +105,7 @@ class _TriangleAttentionLaunchInputs:
     bias: torch.Tensor
     actual_s_kv: torch.Tensor
     output: torch.Tensor
+    output_target: torch.Tensor | None
     lse: torch.Tensor
     variant: _TriangleAttentionVariant
     ct_dtype: type[cutlass.Numeric]
@@ -125,8 +131,44 @@ def _pad_last_dim(t: torch.Tensor, new_size: int, value: float = 0.0) -> torch.T
 def _cutlass_dtype(t: torch.Tensor) -> type[cutlass.Numeric]:
     ty = _TORCH_TO_CUTLASS_DTYPE.get(t.dtype)
     if ty is None:
-        raise TypeError(f"SM80 triangle attention expects float16 or bfloat16; got {t.dtype}")
+        raise TypeError(f"CuTeDSL triangle attention expects float16 or bfloat16; got {t.dtype}")
     return ty
+
+
+@functools.lru_cache(maxsize=1)
+def _source_adapter_fingerprint() -> str:
+    """Hash source-side files that affect fake arguments and config binding."""
+    root = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in (root / "_config.py", root / "_source.py"):
+        content = path.read_bytes()
+        digest.update(path.name.encode())
+        digest.update(len(content).to_bytes(8, "little"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _validate_kernel_tensor_layout(
+    tensor: torch.Tensor,
+    name: str,
+    *,
+    static_inner_strides: tuple[int, ...],
+    dynamic_stride_dims: tuple[int, ...],
+    stride_divisibility: int,
+    pointer_alignment: int,
+) -> None:
+    """Validate layout facts omitted from the direct-launch tensor descriptor."""
+    actual_inner_strides = tuple(tensor.stride()[-len(static_inner_strides) :])
+    if actual_inner_strides != static_inner_strides:
+        raise ValueError(f"{name} inner strides must be {static_inner_strides}; got {actual_inner_strides}")
+    for dim in dynamic_stride_dims:
+        stride = tensor.stride(dim)
+        if stride <= 0 or stride % stride_divisibility:
+            raise ValueError(
+                f"{name} stride({dim}) must be positive and divisible by {stride_divisibility}; got {stride}"
+            )
+    if tensor.data_ptr() % pointer_alignment:
+        raise ValueError(f"{name} pointer must be {pointer_alignment}-byte aligned")
 
 
 def _resolve_lse_buffer(
@@ -137,8 +179,8 @@ def _resolve_lse_buffer(
     """Reuse ``output_lse`` if it matches the kernel contract, else allocate.
 
     The contract is fixed: ``shape``, dtype float32 (qk_acc_dtype), ``device``.
-    A mismatch falls back to an internal allocation rather than failing, as the
-    ``output`` parameter does.
+    A shape, dtype, or device mismatch falls back to an internal allocation.
+    A matching buffer with incompatible static inner strides is rejected.
     """
     if (
         output_lse is not None
@@ -146,6 +188,14 @@ def _resolve_lse_buffer(
         and output_lse.dtype == torch.float32
         and output_lse.device == device
     ):
+        _validate_kernel_tensor_layout(
+            output_lse,
+            "output_lse",
+            static_inner_strides=(1, 1),
+            dynamic_stride_dims=(0, 1),
+            stride_divisibility=1,
+            pointer_alignment=4,
+        )
         return output_lse
     return torch.empty(*shape, dtype=torch.float32, device=device)
 
@@ -189,12 +239,12 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
       Q, K, V     : [B, I, J, H, D]
       biases      : [actual_s_kv, pair_bias]
         actual_s_kv: [B, I] / [B*I] / [B]    int32 (count of leading 1s)
-        pair_bias  : [B, H, J, J]
+        pair_bias  : [B, H, J, J] or [B, H, J, J_padded]
     """
 
     Metadata = TriangleAttentionCuTeLeftMaskMetadata
 
-    _compiled_cache: dict[tuple[int, _TriangleAttentionVariant], Any] = {}
+    _compiled_cache: dict[tuple[object, ...], Any] = {}
 
     def __init__(
         self,
@@ -211,8 +261,30 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         self._sm_version = major * 10 + minor
         self._last_executable = None
         self._last_variant: _TriangleAttentionVariant | None = None
+        self._last_force_cubin: bool | None = None
 
-    def _disk_cache_key(self, variant: _TriangleAttentionVariant) -> tuple:
+    def _cubin_cache_key(self, variant: _TriangleAttentionVariant) -> tuple[object, ...]:
+        return ("cubin", self._sm_version, variant)
+
+    def _source_cache_key(
+        self,
+        variant: _TriangleAttentionVariant,
+        config: TriangleAttentionLeftMaskKernelConfig,
+    ) -> tuple[object, ...]:
+        return (
+            "source",
+            self._sm_version,
+            variant,
+            config.arch,
+            config.cache_identity,
+            _source_adapter_fingerprint(),
+        )
+
+    def _disk_cache_key(
+        self,
+        variant: _TriangleAttentionVariant,
+        config: TriangleAttentionLeftMaskKernelConfig,
+    ) -> tuple[object, ...]:
         return (
             "triangle_attn_cute_left_mask",
             self._sm_version,
@@ -220,6 +292,9 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             variant.head_dim,
             variant.bucket,
             variant.qkv_packed,
+            config.arch,
+            config.cache_identity,
+            _source_adapter_fingerprint(),
         )
 
     def _resolve_source_kernel(
@@ -239,7 +314,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         variant: _TriangleAttentionVariant,
         source_error: Exception | None = None,
     ):
-        cache_key = (self._sm_version, variant)
+        cache_key = self._cubin_cache_key(variant)
         try:
             executable = populate_compiled_cache_from_library(
                 TriangleAttentionCuTeLeftMask._compiled_cache,
@@ -286,8 +361,12 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         sm_scale: float,
         i_dim: int,
     ):
-        cache_key = (self._sm_version, variant)
-        disk_key = self._disk_cache_key(variant)
+        cache_key = self._source_cache_key(variant, config)
+        cached = TriangleAttentionCuTeLeftMask._compiled_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        disk_key = self._disk_cache_key(variant, config)
         executable = self.load_from_cache(disk_key)
         if executable is not None:
             logger.info(
@@ -331,18 +410,19 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         sm_scale: float,
         i_dim: int,
     ):
-        cache_key = (self._sm_version, variant)
-        executable = TriangleAttentionCuTeLeftMask._compiled_cache.get(cache_key)
-        if executable is not None:
-            return executable
-
         if self.force_cubin():
+            executable = TriangleAttentionCuTeLeftMask._compiled_cache.get(self._cubin_cache_key(variant))
+            if executable is not None:
+                return executable
             return self._load_cubin_executable(variant)
 
         try:
             source = load_source_module(__package__)
             config, kernel = self._resolve_source_kernel(variant, ct_dtype)
         except ImportError as source_error:
+            executable = TriangleAttentionCuTeLeftMask._compiled_cache.get(self._cubin_cache_key(variant))
+            if executable is not None:
+                return executable
             return self._load_cubin_executable(variant, source_error)
 
         return self._load_or_compile_source(
@@ -367,11 +447,31 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         output: torch.Tensor | None,
         output_lse: torch.Tensor | None,
     ) -> _TriangleAttentionLaunchInputs:
+        if q.ndim not in (4, 5):
+            raise ValueError(f"Q must be [B, I, J, H*D] or [B, I, J, H, D]; got ndim={q.ndim}")
+        if k.shape != q.shape or v.shape != q.shape:
+            raise ValueError("Q, K, and V must have the same shape")
+
+        ct_dtype = _cutlass_dtype(q)
+        for name, tensor in (("K", k), ("V", v), ("pair_bias", bias)):
+            if tensor.dtype != q.dtype:
+                raise TypeError(f"{name} must have dtype {q.dtype}; got {tensor.dtype}")
+            if tensor.device != q.device:
+                raise ValueError(f"{name} must be on {q.device}; got {tensor.device}")
+
         if q.ndim == 4:
+            expected_width = self.num_heads * self.head_dim
+            if q.shape[-1] != expected_width:
+                raise ValueError(f"Q/K/V width must be H*D={expected_width}; got {q.shape[-1]}")
             leading_shape = q.shape[:-1]
             q = q.view(*leading_shape, self.num_heads, self.head_dim)
             k = k.view(*leading_shape, self.num_heads, self.head_dim)
             v = v.view(*leading_shape, self.num_heads, self.head_dim)
+        elif q.shape[-2:] != (self.num_heads, self.head_dim):
+            raise ValueError(
+                f"Q/K/V trailing dimensions must be "
+                f"(H, D)=({self.num_heads}, {self.head_dim}); got {tuple(q.shape[-2:])}"
+            )
 
         padded_head_dim = _align_up(self.head_dim, 32)
         if padded_head_dim != self.head_dim:
@@ -379,32 +479,103 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             k = _pad_last_dim(k, padded_head_dim)
             v = _pad_last_dim(v, padded_head_dim)
 
-        if q.ndim != 5:
-            raise ValueError(f"Q must be [B, I, J, H, D]; got ndim={q.ndim}")
-        if k.shape != q.shape or v.shape != q.shape:
-            raise ValueError("Q, K, and V must have the same shape")
-
         batch_size, i_dim, seqlen, num_heads, padded_head_dim = q.shape
         if num_heads != self.num_heads:
             raise ValueError(f"num_heads mismatch: tensor H={num_heads}, expected {self.num_heads}")
 
-        ct_dtype = _cutlass_dtype(q)
         align_elems = 128 // ct_dtype.width
+        padded_seqlen = _align_up(seqlen, align_elems)
+        bias_shape = tuple(bias.shape)
+        expected_bias_prefix = (batch_size, num_heads, seqlen)
+        bias_width = bias_shape[-1] if len(bias_shape) == 4 else -1
+        if (
+            len(bias_shape) != 4
+            or bias_shape[:3] != expected_bias_prefix
+            or bias_width < seqlen
+            or (bias_width != seqlen and bias_width % align_elems)
+        ):
+            raise ValueError(
+                f"pair_bias must have shape {expected_bias_prefix + (seqlen,)} or "
+                f"({batch_size}, {num_heads}, {seqlen}, J_padded), where "
+                f"J_padded >= {seqlen} and is divisible by {align_elems}; got {bias_shape}"
+            )
+
         flat_shape = (batch_size * i_dim, seqlen, num_heads, padded_head_dim)
         q_flat = q.reshape(flat_shape)
         k_flat = k.reshape(flat_shape)
         v_flat = v.reshape(flat_shape)
+        for name, tensor in (("Q", q_flat), ("K", k_flat), ("V", v_flat)):
+            _validate_kernel_tensor_layout(
+                tensor,
+                name,
+                static_inner_strides=(padded_head_dim, 1),
+                dynamic_stride_dims=(0, 1),
+                stride_divisibility=align_elems,
+                pointer_alignment=16,
+            )
+        qkv_outer_strides = q_flat.stride()[:2]
+        for name, tensor in (("K", k_flat), ("V", v_flat)):
+            if tensor.stride()[:2] != qkv_outer_strides:
+                raise ValueError(
+                    f"{name} outer strides must match Q strides {qkv_outer_strides}; got {tensor.stride()[:2]}"
+                )
 
-        if output is not None and output.shape == flat_shape and output.dtype == q.dtype and output.device == q.device:
-            output_flat = output
-        else:
+        logical_flat_shape = (batch_size * i_dim, seqlen, num_heads, self.head_dim)
+        output_target = None
+        if output is None:
             output_flat = torch.empty(flat_shape, dtype=q.dtype, device=q.device)
+        else:
+            if output.dtype != q.dtype:
+                raise TypeError(f"output must have dtype {q.dtype}; got {output.dtype}")
+            if output.device != q.device:
+                raise ValueError(f"output must be on {q.device}; got {output.device}")
+            if tuple(output.shape) == flat_shape:
+                _validate_kernel_tensor_layout(
+                    output,
+                    "output",
+                    static_inner_strides=(padded_head_dim, 1),
+                    dynamic_stride_dims=(0, 1),
+                    stride_divisibility=align_elems,
+                    pointer_alignment=16,
+                )
+                output_flat = output
+            elif padded_head_dim != self.head_dim and tuple(output.shape) == logical_flat_shape:
+                _validate_kernel_tensor_layout(
+                    output,
+                    "output",
+                    static_inner_strides=(self.head_dim, 1),
+                    dynamic_stride_dims=(0, 1),
+                    stride_divisibility=1,
+                    pointer_alignment=1,
+                )
+                output_flat = torch.empty(flat_shape, dtype=q.dtype, device=q.device)
+                output_target = output
+            else:
+                raise ValueError(
+                    f"output must have shape {logical_flat_shape}"
+                    + (f" or padded kernel shape {flat_shape}" if flat_shape != logical_flat_shape else "")
+                    + f"; got {tuple(output.shape)}"
+                )
+        if not qkv_packed and output_flat.stride()[:2] != qkv_outer_strides:
+            raise ValueError(
+                f"unpacked output outer strides must match Q strides {qkv_outer_strides}; "
+                f"got {output_flat.stride()[:2]}"
+            )
 
-        padded_seqlen = _align_up(seqlen, align_elems)
         bias_padded = _pad_last_dim(bias.contiguous(), padded_seqlen)
+        _validate_kernel_tensor_layout(
+            bias_padded,
+            "pair_bias",
+            static_inner_strides=(1,),
+            dynamic_stride_dims=(0, 1, 2),
+            stride_divisibility=align_elems,
+            pointer_alignment=16,
+        )
         actual_s_kv_flat = _to_actual_s_kv_int32(actual_s_kv, batch_size, i_dim)
         if actual_s_kv_flat.device != q.device:
             raise ValueError(f"actual_s_kv must be on {q.device}; got {actual_s_kv_flat.device}")
+        if actual_s_kv_flat.data_ptr() % 4:
+            raise ValueError("actual_s_kv pointer must be 4-byte aligned")
 
         lse_flat = _resolve_lse_buffer(
             output_lse,
@@ -425,6 +596,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             bias=bias_padded,
             actual_s_kv=actual_s_kv_flat,
             output=output_flat,
+            output_target=output_target,
             lse=lse_flat,
             variant=variant,
             ct_dtype=ct_dtype,
@@ -456,12 +628,14 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             biases: [actual_s_kv, pair_bias]
                 actual_s_kv: [B, I] / [B*I] / [B] int32 — count of leading 1s
                              along the KV axis (must be ``<= J``).
-                pair_bias  : [B, H, J, J]
-            output: Optional ``[B*I, J, H, D]`` buffer written in place.
+                pair_bias  : [B, H, J, J] or [B, H, J, J_padded], where
+                             ``J_padded >= J`` and is 128-bit aligned.
+            output: Optional ``[B*I, J, H, D]`` buffer written in place. It
+                must match the input dtype/device and have contiguous H/D axes.
             output_lse: Optional ``[B*I, J, H, 1]`` float32 buffer written in
-                place, honored by both the Ampere and Hopper kernels. A
-                shape/dtype/device mismatch falls back to an internal
-                allocation.
+                place, honored by the Ampere, Hopper, and Blackwell kernels.
+                A shape/dtype/device mismatch falls back to an internal
+                allocation; incompatible inner strides are rejected.
         Returns:
             o: [B, I, J, H, D]
         """
@@ -482,7 +656,8 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             output,
             output_lse,
         )
-        if launch_inputs.variant == self._last_variant:
+        force_cubin = self.force_cubin()
+        if launch_inputs.variant == self._last_variant and force_cubin == self._last_force_cubin:
             executable = self._last_executable
         else:
             executable = self._get_executable(
@@ -494,6 +669,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             )
             self._last_variant = launch_inputs.variant
             self._last_executable = executable
+            self._last_force_cubin = force_cubin
 
         launch_compiled_kernel(
             executable,
@@ -515,4 +691,8 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             launch_inputs.num_heads,
             launch_inputs.variant.head_dim,
         )
-        return launch_inputs.output.view(output_shape)[..., : self.head_dim]
+        result = launch_inputs.output.view(output_shape)[..., : self.head_dim]
+        if launch_inputs.output_target is not None:
+            launch_inputs.output_target.copy_(result.reshape(launch_inputs.output_target.shape))
+            return launch_inputs.output_target.view(*output_shape[:-1], self.head_dim)
+        return result

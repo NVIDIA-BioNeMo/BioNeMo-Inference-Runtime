@@ -103,10 +103,18 @@ def _sm90_launch(family: str, dtype: str) -> dict[str, object]:
     return result
 
 
+def _sm100_launch(dtype: str) -> dict[str, object]:
+    names = ("q", "k", "v", "bias", "output")
+    return {
+        "block_dims": [512, 1, 1],
+        "tma_descriptors": {name: _tma_descriptor(dtype, 4) for name in names},
+    }
+
+
 def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
     common: dict[str, object] = {
         "dynamic_smem_bytes": 4096,
-        "non_portable_cluster_size_allowed": kernel_sm == 90 and family != "adaln_layernorm_sigmoid",
+        "non_portable_cluster_size_allowed": kernel_sm in {90, 100} and family != "adaln_layernorm_sigmoid",
     }
     concrete: dict[str, object]
     if family == "adaln_layernorm_sigmoid":
@@ -159,6 +167,11 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "is_bfloat16": dtype == "bf16",
             "packed_output": False,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+            **(
+                {"sm100_launch": _sm100_launch(dtype) if kernel_sm == 100 else None}
+                if family == "triangle_attention"
+                else {}
+            ),
         }
     elif family == "dual_gemm_x_x":
         concrete = {
@@ -245,8 +258,8 @@ def _write_case(
     image = image if image is not None else b"\x7fELF" + family.encode()
     indexed_image = indexed_image if indexed_image is not None else image
     image_hash = hashlib.sha256(indexed_image).hexdigest()
-    target_sm = 90 if kernel_sm == 90 else 80
-    target_arch = "sm_90a" if kernel_sm == 90 else "sm_80"
+    target_sm = kernel_sm if kernel_sm in {90, 100} else 80
+    target_arch = f"sm_{target_sm}a" if target_sm in {90, 100} else "sm_80"
     dtype = "fp32" if family == "adaln_layernorm_sigmoid" else "fp16"
     identity_spec = {"family_case": family, "kernel_sm": kernel_sm}
     canonical = {
@@ -423,6 +436,60 @@ def test_sm90_registry_renders_tma_metadata(tmp_path: Path) -> None:
     assert "CU_TENSOR_MAP_DATA_TYPE_FLOAT16" in source
     assert "CU_TENSOR_MAP_SWIZZLE_128B" in source
     assert "CU_CLUSTER_SCHEDULING_POLICY_DEFAULT" in source
+
+
+def test_sm100_registry_renders_tma_metadata(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "struct SM100LaunchInfo" in header
+    assert "SM100LaunchInfo sm100;" in header
+    assert "CU_TENSOR_MAP_DATA_TYPE_FLOAT16" in source
+    assert "CU_TENSOR_MAP_SWIZZLE_128B" in source
+    assert "    true," in source
+
+
+def test_sm100_registry_requires_launch_metadata(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    _mutate_records(index, lambda value: value["variants"][0]["runtime_metadata"].pop("sm100_launch"))
+
+    with pytest.raises(materializer.MaterializationError, match="sm100_launch is required"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_sm100_registry_requires_nonportable_cluster_attribute(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+
+    def disable_nonportable_cluster(value: dict[str, object]) -> None:
+        variant = value["variants"][0]
+        old_id = variant["executable"]
+        executable = value["executables"].pop(old_id)
+        executable["non_portable_cluster_size_allowed"] = False
+        new_id = hashlib.sha256(_stable_json(executable)).hexdigest()
+        value["executables"][new_id] = executable
+        variant["executable"] = new_id
+
+    _mutate_records(index, disable_nonportable_cluster)
+
+    with pytest.raises(materializer.MaterializationError, match="required for an SM100 kernel ABI"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_sm80_registry_rejects_sm100_launch_metadata(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family)
+    _mutate_records(
+        index,
+        lambda value: value["variants"][0]["runtime_metadata"].update(sm100_launch=_sm100_launch("fp16")),
+    )
+
+    with pytest.raises(materializer.MaterializationError, match="sm100_launch must be null"):
+        materializer.verify_packs([(family, index)])
 
 
 def test_adaln_sm90_does_not_imply_nonportable_cluster_size(tmp_path: Path) -> None:
@@ -625,13 +692,21 @@ def test_all_shards_use_portable_elf_syntax_and_empty_shard_assembles(tmp_path: 
     subprocess.run([assembler, "-o", tmp_path / "payload.o", populated], check=True, capture_output=True, text=True)
 
 
-def test_all_generated_registry_sources_compile_as_cpp17(tmp_path: Path) -> None:
+@pytest.mark.parametrize("triangle_kernel_sm", [90, 100])
+def test_all_generated_registry_sources_compile_as_cpp17(tmp_path: Path, triangle_kernel_sm: int) -> None:
     compiler = shutil.which("c++")
     cuda_include = Path("/usr/local/cuda/include")
     if compiler is None or not (cuda_include / "cuda.h").is_file():
         pytest.skip("a C++ compiler and CUDA headers are required")
     indexes = [
-        (family, _write_case(tmp_path / "source", family, kernel_sm=90 if family == "triangle_attention" else 80))
+        (
+            family,
+            _write_case(
+                tmp_path / "source",
+                family,
+                kernel_sm=triangle_kernel_sm if family == "triangle_attention" else 80,
+            ),
+        )
         for family in FAMILIES
     ]
     result = materializer.materialize(indexes, tmp_path / "build")

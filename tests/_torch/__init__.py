@@ -70,9 +70,11 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 #                                 configs resolve to, not a distinct op).
 #   * adaln_layernorm_sigmoid   -- runs on every SM (``sm < 90`` uses the
 #                                 default single-bucket schedule).
-#   * triangle_attention /      -- left-mask kernels ship Ampere (SM80) +
-#     pairwise_attention           Hopper (SM90) classes with configs for
+#   * pairwise_attention        -- left-mask kernels ship Ampere (SM80) +
+#                                 Hopper (SM90) classes with configs for
 #                                 80/86/89/90.
+#   * triangle_attention        -- additionally ships a native Blackwell
+#                                 implementation for SM100/103.
 # Add an entry only when an op's kernel support genuinely diverges from the
 # generic range; ``skip_if_no_cutedsl`` / ``skip_if_cutedsl`` then honor it.
 # (Tests that assert an SM-specific *kernel path* should use a direct SM
@@ -80,6 +82,7 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 # op-support fact.)
 _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
     "pair_weighted_averaging": (80, 90, 100, 103),
+    "triangle_attention": (80, 86, 89, 90, 100, 103),
 }
 
 CUTEDSL_TEST_MODES_ENV = "BIOIR_TEST_CUTEDSL_MODES"
@@ -175,6 +178,12 @@ skip_cutedsl = pytest.mark.skipif(
 )
 
 
+def skip_cutedsl_for(op_name: str):
+    """Return a pytest marker for one op's registered CuTeDSL SM range."""
+    supported = _cutedsl_supported_sm(op_name)
+    return pytest.mark.skipif(SM_VERSION not in supported, reason=_cutedsl_skip_reason(supported))
+
+
 def skip_if_no_cutedsl(op_name: str | None = None):
     """Call inside a test body to skip when the current GPU can't run the
     CuTeDSL kernel for *op_name*.
@@ -217,6 +226,12 @@ def skip_if_not_sm90():
     """
     if SM_VERSION != 90:
         pytest.skip(f"requires SM90 (current SM{SM_VERSION})")
+
+
+def skip_if_not_sm100_family():
+    """Skip when the current GPU cannot run the native SM100 launch ABI."""
+    if SM_VERSION not in (100, 103):
+        pytest.skip(f"requires SM100/SM103 (current SM{SM_VERSION})")
 
 
 def make_left_aligned_mask(

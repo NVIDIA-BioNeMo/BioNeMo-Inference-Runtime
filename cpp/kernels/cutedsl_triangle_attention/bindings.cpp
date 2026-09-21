@@ -73,6 +73,15 @@ void bind(nb::module_& parent)
     .def_ro("persistent", &KernelSpecSM90::persistent)
     .def_prop_ro("supports_direct_launch", [](KernelSpecSM90 const&) { return true; });
 
+  nb::class_<KernelSpecSM100>(module, "KernelSpecSM100")
+    .def_ro("target_sm", &KernelSpecSM100::target_sm)
+    .def_ro("head_dim", &KernelSpecSM100::head_dim)
+    .def_ro("bucket", &KernelSpecSM100::bucket)
+    .def_ro("tile_m", &KernelSpecSM100::tile_m)
+    .def_ro("tile_n", &KernelSpecSM100::tile_n)
+    .def_ro("num_threads", &KernelSpecSM100::num_threads)
+    .def_prop_ro("supports_direct_launch", [](KernelSpecSM100 const&) { return true; });
+
   nb::class_<KernelConfig>(module, "KernelConfig")
     .def_ro("spec", &KernelConfig::spec)
     .def_ro("dtype", &KernelConfig::dtype)

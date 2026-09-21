@@ -209,7 +209,7 @@ write_metrics() {
       --format=csv,noheader,nounits 2>/dev/null | head -1
   )
   host=$(hostname)
-  # File count in the restored per-arch kernel cache: high = warm (nothing
+  # File count in the current job-local kernel cache: high = warm (nothing
   # compiles, kernel sources stay uncovered), 0/low = cold.
   kcache=$(find "${BIOIR_KERNEL_CACHE_DIR:-/nonexistent}" -type f 2>/dev/null | wc -l | tr -d ' ')
   {

@@ -163,6 +163,26 @@ public_url() {
 
 NGC_RETRY_ATTEMPTS=3
 NGC_RETRY_DELAY_SECONDS=5
+NGC_CLI_SHA256="ff554b11edac202f5b8198f4bdd2543f25f35e6cbf7c55ff78c6a1a080b41267"
+BOLTZ_MOLS_SHA256="39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7"
+
+verify_sha256() {
+  local file="$1" expected="$2"
+  local actual
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "${file}")
+  elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "${file}")
+  else
+    echo "no SHA-256 utility found (need sha256sum or shasum)" >&2
+    return 1
+  fi
+  actual=${actual%% *}
+  [[ "${actual}" == "${expected}" ]] || {
+    echo "SHA-256 mismatch for ${file}: expected ${expected}, got ${actual}" >&2
+    return 1
+  }
+}
 
 # Concurrent downloads. The files are large and the link is the bottleneck, so
 # this is about keeping it saturated, not about CPU.
@@ -329,9 +349,12 @@ ngc_is_usable() {
     wget -q --content-disposition \
       https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/4.21.0/files/ngccli_linux.zip \
       -O "${ngc_tmp}/ngccli_linux.zip" || return 1
-    unzip -q -o "${ngc_tmp}/ngccli_linux.zip" -d "${ngc_tmp}" || return 1
-    chmod u+x "${ngc_tmp}/ngc-cli/ngc"
-    NGC="${ngc_tmp}/ngc-cli/ngc"
+    verify_sha256 "${ngc_tmp}/ngccli_linux.zip" "${NGC_CLI_SHA256}" || return 1
+    mkdir "${ngc_tmp}/unpacked"
+    unzip -q "${ngc_tmp}/ngccli_linux.zip" -d "${ngc_tmp}/unpacked" || return 1
+    [[ -f "${ngc_tmp}/unpacked/ngc-cli/ngc" ]] || return 1
+    chmod u+x "${ngc_tmp}/unpacked/ngc-cli/ngc"
+    NGC="${ngc_tmp}/unpacked/ngc-cli/ngc"
   else
     return 1
   fi
@@ -790,11 +813,18 @@ stage_metadata() {
       # is a sibling.
       if [[ ! -d "${extract_dir}" ]]; then
         echo "extracting $(meta_file "${row}") -> ${extract_dir}"
-        local staging_dir="${extract_dir}.part.$$"
-        rm -rf "${staging_dir}"
-        mkdir -p "${staging_dir}"
-        tar -xf "${file_path}" -C "${staging_dir}"
-        mv "${staging_dir}" "${extract_dir}"
+        verify_sha256 "${file_path}" "${BOLTZ_MOLS_SHA256}"
+        local staging_dir
+        staging_dir=$(mktemp -d "${MODEL_CACHE_DIR}/.$(meta_family "${row}")_${stem}.part.XXXXXX")
+        if ! tar -xf "${file_path}" -C "${staging_dir}" || [[ ! -d "${staging_dir}/mols" ]]; then
+          rm -rf -- "${staging_dir}"
+          echo "metadata archive is incomplete: ${file_path}" >&2
+          return 1
+        fi
+        if ! mv "${staging_dir}" "${extract_dir}"; then
+          rm -rf -- "${staging_dir}"
+          return 1
+        fi
       fi
       # The archive unpacks a single top-level dir (e.g. mols/); resolve that.
       local unpacked

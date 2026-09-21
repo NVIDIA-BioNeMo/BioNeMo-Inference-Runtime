@@ -486,8 +486,8 @@ def test_gated_sigmoid_cute_inplace_2d(M, has_bias):
     ],
     ids=["3d_DiT", "4d_batched"],
 )
-def test_gated_sigmoid_cute_inplace_batched(shape_s, shape_mha, has_bias):
-    """In-place with batched inputs: flatten to 2D, pass as output=mha_flat."""
+def test_gated_sigmoid_cute_inplace_batched(shape_s, shape_mha, has_bias, monkeypatch):
+    """In-place with a batched gate and flat output must stay on the fused path."""
     skip_if_no_cutedsl()
     torch.manual_seed(42)
     K = shape_s[-1]
@@ -503,9 +503,44 @@ def test_gated_sigmoid_cute_inplace_batched(shape_s, shape_mha, has_bias):
 
     ref = _ref_gated_sigmoid(s, W, mha, bias)
 
+    def reject_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected vanilla fallback")
+
+    monkeypatch.setattr(gated_cutedsl, "_invoke_vanilla_gated_sigmoid", reject_fallback)
     mha_flat = mha.reshape(-1, N_out)
     out = cute_op(s, W, mha_flat, bias, output=mha_flat)
 
     assert out.data_ptr() == mha_flat.data_ptr(), "in-place should reuse mha_out memory"
     out_restored = out.view(shape_mha)
     torch.testing.assert_close(out_restored, ref, atol=0.07, rtol=1e-2, msg=lambda m: f"shapes={shape_s}: {m}")
+
+
+@pytest.mark.parametrize("noncontiguous", ["mha", "output"])
+def test_gated_sigmoid_falls_back_for_unsupported_layout(noncontiguous, monkeypatch):
+    torch.manual_seed(61)
+    rows, K, N_out = 6, 64, 64
+    dtype = torch.bfloat16
+    s = torch.randn(rows, K, dtype=dtype, device="cuda")
+    weight = torch.randn(N_out, K, dtype=dtype, device="cuda")
+    contiguous_mha = torch.randn(rows, N_out, dtype=dtype, device="cuda")
+    mha = contiguous_mha if noncontiguous == "output" else contiguous_mha.t().contiguous().t()
+    output = None
+    if noncontiguous == "output":
+        output = torch.empty(N_out, rows, dtype=dtype, device="cuda").t()
+
+    calls = 0
+    original_fallback = _invoke_vanilla_gated_sigmoid
+
+    def record_fallback(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_fallback(*args, **kwargs)
+
+    monkeypatch.setattr(gated_cutedsl, "_invoke_vanilla_gated_sigmoid", record_fallback)
+    result = GatedSigmoidCuTe()(s, weight, mha, output=output)
+    expected = original_fallback(s, weight, mha)
+
+    assert calls == 1
+    if output is not None:
+        assert result.data_ptr() == output.data_ptr()
+    torch.testing.assert_close(result, expected, atol=0, rtol=0)

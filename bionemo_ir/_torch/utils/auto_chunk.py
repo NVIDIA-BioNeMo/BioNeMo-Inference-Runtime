@@ -15,10 +15,11 @@
 """Registry-based output-row chunking for memory-bounded eager execution.
 
 For position-wise ops along an output dim
-(``f(cat([a, b], dim)) == cat([f(a), f(b)], dim)``), slice that dim, run ``f``
-per slice, and ``cat`` the results (see :func:`chunk_apply`). Peak internal
-activations are bounded to ``chunk_size`` rows; the dense result is unchanged.
-Chunking engages only above a size threshold.
+(``f(cat([a, b], dim)) == cat([f(a), f(b)], dim)``), slice that dim and run
+``f`` per slice (see :func:`chunk_apply`). Inference writes slices directly
+into a preallocated result. Peak internal activations are bounded to ``chunk_size``
+rows; the dense result is unchanged. Chunking engages only above a size
+threshold.
 
 Layers look up a shared :class:`ChunkPolicy` from :data:`CHUNK_REGISTRY`::
 
@@ -39,6 +40,11 @@ from dataclasses import dataclass, replace
 import torch
 
 DEFAULT_PAIR_CHUNK_ROWS = 512
+
+# A [1, 4096, 4096, 128] recycled pair contains exactly 2**31
+# elements. Keep the baseline whole-tensor statement through that indexing
+# boundary; the owned row update is reserved for the larger capacity regime.
+RECYCLE_PAIR_UPDATE_MIN_SIZE = 4096
 
 # Threshold scales with sqrt(GPU memory): pair activations are O(N^2).
 _REFERENCE_GPU_GB = 80.0
@@ -75,6 +81,12 @@ DEFAULT_AUTOCHUNK_MIN = DEFAULT_AUTOCHUNK_MIN_REF
 # Registry keys for known chunkable ops.
 PAIR_TRANSITION = "pair_transition"
 DIFFUSION_PAIR_TRANSITION = "diffusion_pair_transition"
+DIFFUSION_CONDITIONING_PROJECTION = "diffusion_conditioning_projection"
+INPUT_EMBEDDER_PAIR_BUILD = "input_embedder_pair_build"
+RECYCLE_PAIR_UPDATE = "recycle_pair_update"
+CONFIDENCE_PAIR_EMBEDDING = "confidence_pair_embedding"
+CONFIDENCE_PAIR_PROJECTION = "confidence_pair_projection"
+CONFIDENCE_TRIANGLE_ATTENTION = "confidence_triangle_attention"
 MSA_TRANSITION = "msa_transition"
 PAIR_WEIGHTED_AVERAGING = "pair_weighted_averaging"
 OUTER_PRODUCT_MEAN = "outer_product_mean"
@@ -184,16 +196,33 @@ CHUNK_REGISTRY = ChunkRegistry()
 CHUNK_REGISTRY.register(PAIR_TRANSITION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 CHUNK_REGISTRY.register(DIFFUSION_PAIR_TRANSITION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 CHUNK_REGISTRY.register(
+    DIFFUSION_CONDITIONING_PROJECTION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=2, min_rank=5)
+)
+CHUNK_REGISTRY.register(INPUT_EMBEDDER_PAIR_BUILD, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
+CHUNK_REGISTRY.register(
+    RECYCLE_PAIR_UPDATE,
+    ChunkPolicy(
+        chunk_size=DEFAULT_PAIR_CHUNK_ROWS,
+        min_size=RECYCLE_PAIR_UPDATE_MIN_SIZE,
+        dim=1,
+        min_rank=4,
+    ),
+)
+CHUNK_REGISTRY.register(CONFIDENCE_PAIR_EMBEDDING, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
+CHUNK_REGISTRY.register(CONFIDENCE_PAIR_PROJECTION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=2, min_rank=5))
+CHUNK_REGISTRY.register(
+    CONFIDENCE_TRIANGLE_ATTENTION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4)
+)
+CHUNK_REGISTRY.register(
     MSA_TRANSITION,
     ChunkPolicy(chunk_size=DEFAULT_MSA_CHUNK_ROWS, min_size=DEFAULT_MSA_AUTOCHUNK_MIN, dim=1, min_rank=4),
 )
 CHUNK_REGISTRY.register(PAIR_WEIGHTED_AVERAGING, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 # Smaller chunks: intermediate carries an extra ``c_hidden**2`` factor.
 CHUNK_REGISTRY.register(OUTER_PRODUCT_MEAN, ChunkPolicy(chunk_size=128, dim=1, min_rank=4))
-# Off by default; flash triangle kernels already bound memory.
-CHUNK_REGISTRY.register(
-    TRIANGLE_ATTENTION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4, enabled=False)
-)
+# Bound QKV and output temporaries for long pair representations. The dense
+# fast path remains active below the memory-scaled threshold.
+CHUNK_REGISTRY.register(TRIANGLE_ATTENTION, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 CHUNK_REGISTRY.register(CONTACT_PROB, ChunkPolicy(chunk_size=DEFAULT_PAIR_CHUNK_ROWS, dim=1, min_rank=4))
 
 DEFAULT_PAIR_TRANSITION_POLICY = CHUNK_REGISTRY.get(PAIR_TRANSITION)
@@ -206,7 +235,7 @@ def chunk_apply[T](
     cat_dim: int | None = None,
     **passthrough,
 ) -> T:
-    """Evaluate ``fn(*chunked, **passthrough)`` in row-slices along ``policy.dim`` and concatenate.
+    """Evaluate ``fn(*chunked, **passthrough)`` in row-slices along ``policy.dim`` and assemble.
 
     For concat-style (position-wise) ops only: output row ``i`` must depend only on input row ``i``.
 
@@ -237,12 +266,123 @@ def chunk_apply[T](
             return t
         return t.narrow(dim, start, length)
 
-    outs = []
-    for start, length in iter_chunks(n, policy.chunk_size):
-        outs.append(fn(*[_slice(t, start, length) for t in chunked], **passthrough))
+    chunks = iter(iter_chunks(n, policy.chunk_size))
+    first_start, first_length = next(chunks)
+    first = fn(*[_slice(t, first_start, first_length) for t in chunked], **passthrough)
 
-    first = outs[0]
-    if isinstance(first, (tuple, list)):
-        catted = [torch.cat([o[i] for o in outs], dim=out_dim) for i in range(len(first))]
-        return type(first)(catted)
-    return torch.cat(outs, dim=out_dim)
+    container_type = type(first) if isinstance(first, (tuple, list)) else None
+    output_arity = len(first) if container_type is not None else 1
+
+    def _outputs(value: T) -> list[torch.Tensor]:
+        if container_type is None:
+            if not torch.is_tensor(value):
+                raise TypeError("chunk outputs must be tensors or a tuple/list of tensors")
+            return [value]
+        if not isinstance(value, container_type) or len(value) != output_arity:
+            raise TypeError("chunk outputs must retain their tuple/list type and length")
+        if not all(torch.is_tensor(output) for output in value):
+            raise TypeError("chunk output tuples/lists must contain only tensors")
+        return list(value)
+
+    first_outputs = _outputs(first)
+
+    def _normalize_dim(output: torch.Tensor) -> int:
+        normalized_dim = out_dim if out_dim >= 0 else output.dim() + out_dim
+        if not 0 <= normalized_dim < output.dim():
+            raise IndexError(f"cat_dim {out_dim} is out of range for a rank-{output.dim()} output")
+        return normalized_dim
+
+    result_dims = [_normalize_dim(output) for output in first_outputs]
+    reference_shapes = [tuple(output.shape) for output in first_outputs]
+
+    def _validate_shapes(outputs: list[torch.Tensor]) -> None:
+        for output, result_dim, reference_shape in zip(outputs, result_dims, reference_shapes, strict=True):
+            if output.dim() != len(reference_shape):
+                raise ValueError(
+                    f"chunk output rank {output.dim()} does not match the first output rank {len(reference_shape)}"
+                )
+            for axis, (extent, reference_extent) in enumerate(zip(output.shape, reference_shape, strict=True)):
+                if axis != result_dim and extent != reference_extent:
+                    raise ValueError(
+                        f"chunk output extent {extent} along non-concatenated dim {axis} "
+                        f"does not match the first output extent {reference_extent}"
+                    )
+
+    def _can_preallocate(output: torch.Tensor, result_dim: int, chunk_length: int) -> bool:
+        # ``new_empty`` matches torch.cat's layout only for standard contiguous
+        # tensors. Preserve the general concat contract for row-expanding and
+        # alternate-memory-format outputs by retaining the original cat path.
+        return output.layout == torch.strided and output.is_contiguous() and output.shape[result_dim] == chunk_length
+
+    def _pack(outputs: list[torch.Tensor]) -> T:
+        if container_type is None:
+            return outputs[0]
+        return container_type(outputs)
+
+    def _concatenate(
+        collected: list[list[torch.Tensor]],
+        remaining_chunks: Iterator[tuple[int, int]],
+    ) -> T:
+        for start, length in remaining_chunks:
+            current = fn(*[_slice(t, start, length) for t in chunked], **passthrough)
+            current_outputs = _outputs(current)
+            _validate_shapes(current_outputs)
+            for values, output in zip(collected, current_outputs, strict=True):
+                values.append(output)
+        return _pack(
+            [torch.cat(outputs, dim=result_dim) for outputs, result_dim in zip(collected, result_dims, strict=True)]
+        )
+
+    _validate_shapes(first_outputs)
+    if not all(
+        _can_preallocate(output, result_dim, first_length)
+        for output, result_dim in zip(first_outputs, result_dims, strict=True)
+    ):
+        return _concatenate([[output] for output in first_outputs], chunks)
+
+    # Copy each compatible inference chunk into final storage as it is
+    # produced. A list followed by ``torch.cat`` retains every chunk and then
+    # allocates a second full output.
+    def _allocate(output: torch.Tensor, result_dim: int, chunk_length: int) -> torch.Tensor:
+        shape = list(output.shape)
+        shape[result_dim] = n
+        result = output.new_empty(shape)
+        result.narrow(result_dim, first_start, chunk_length).copy_(output)
+        return result
+
+    results = [
+        _allocate(output, result_dim, first_length)
+        for output, result_dim in zip(first_outputs, result_dims, strict=True)
+    ]
+    written_chunks = [(first_start, first_length)]
+    del first_outputs, first
+
+    for start, length in chunks:
+        current = fn(*[_slice(t, start, length) for t in chunked], **passthrough)
+        current_outputs = _outputs(current)
+        _validate_shapes(current_outputs)
+        compatible = all(
+            _can_preallocate(output, result_dim, length)
+            and output.dtype == result.dtype
+            and output.device == result.device
+            for output, result, result_dim in zip(current_outputs, results, result_dims, strict=True)
+        )
+        if not compatible:
+            collected = [
+                [
+                    result.narrow(result_dim, previous_start, previous_length).clone()
+                    for previous_start, previous_length in written_chunks
+                ]
+                + [output]
+                for result, result_dim, output in zip(results, result_dims, current_outputs, strict=True)
+            ]
+            return _concatenate(collected, chunks)
+
+        for result, result_dim, output in zip(results, result_dims, current_outputs, strict=True):
+            result.narrow(result_dim, start, length).copy_(output)
+        written_chunks.append((start, length))
+        # Do not keep the just-copied source alive while Python evaluates the
+        # next operator call. At long sequence lengths one row block is large.
+        del output, current_outputs, current
+
+    return _pack(results)

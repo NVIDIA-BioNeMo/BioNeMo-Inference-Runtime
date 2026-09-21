@@ -21,7 +21,13 @@ from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.position_encoders import FourierEmbedding
 from bionemo_ir._torch.layers.transition import Transition
 from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
-from bionemo_ir._torch.utils import CHUNK_REGISTRY, DIFFUSION_PAIR_TRANSITION
+from bionemo_ir._torch.utils import (
+    CHUNK_REGISTRY,
+    DIFFUSION_CONDITIONING_PROJECTION,
+    DIFFUSION_PAIR_TRANSITION,
+    ChunkPolicy,
+    iter_chunks,
+)
 
 
 class ContactConditioning(nn.Module):
@@ -272,8 +278,14 @@ class DiffusionConditioning(nn.Module):
         self.linear_z = Linear(
             num_relpos_dims + self.c_z, self.c_z, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
         )
+        self.pair_projection_chunk_policy = CHUNK_REGISTRY.get(DIFFUSION_CONDITIONING_PROJECTION)
 
         # Only transition_z is row-chunkable; transition_s uses dim 1 for samples.
+        # OpenFold3 pair tensors include a size-one sample axis at dim 1, so
+        # copy the shared policy before moving its pair-row axis to dim 2.
+        pair_transition_policy = CHUNK_REGISTRY.get(DIFFUSION_PAIR_TRANSITION)
+        if pair_transition_policy is not None:
+            pair_transition_policy = pair_transition_policy.replace(dim=2)
         self.transition_z = nn.ModuleList(
             [
                 Transition(
@@ -282,7 +294,7 @@ class DiffusionConditioning(nn.Module):
                     eps=eps,
                     dtype=dtype,
                     skip_create_weights=skip_create_weights,
-                    auto_chunk_policy=CHUNK_REGISTRY.get(DIFFUSION_PAIR_TRANSITION),
+                    auto_chunk_policy=pair_transition_policy,
                 )
                 for _ in range(2)
             ]
@@ -309,26 +321,115 @@ class DiffusionConditioning(nn.Module):
             ]
         )
 
-    def _embed_trunk_inputs(
+    def _project_pair_inputs_dense(
+        self,
+        zij_trunk: torch.Tensor,
+        relpos_zij: torch.Tensor,
+    ) -> torch.Tensor:
+        """Project trunk and relative-position pair features without chunking."""
+        return self.linear_z(self.layer_norm_z(torch.cat([zij_trunk, relpos_zij], dim=-1)))
+
+    def _project_pair_inputs(
+        self,
+        zij_trunk: torch.Tensor,
+        batch: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Build relative positions and project pairs in bounded query rows.
+
+        A host-resident trunk pair is accepted only on the chunked path. Each
+        source row block is copied to the feature device before projection, so
+        the full trunk and conditioned pair never need to coexist on the GPU.
+        """
+
+        def relative_positions(row_slice: slice | None = None) -> torch.Tensor:
+            return relpos_complex(
+                batch=batch,
+                max_relative_idx=self.max_relative_idx,
+                max_relative_chain=self.max_relative_chain,
+                row_slice=row_slice,
+            ).to(dtype=zij_trunk.dtype)
+
+        policy: ChunkPolicy | None = self.pair_projection_chunk_policy
+        num_rows = zij_trunk.shape[-3]
+        target_device = batch["residue_index"].device
+        policy_device = target_device if target_device.type == "cuda" else None
+        should_chunk = policy is not None and policy.should_chunk_size(num_rows, policy_device)
+        if zij_trunk.device != target_device and not should_chunk:
+            raise ValueError("host-resident diffusion pair conditioning requires row chunking")
+        if not should_chunk:
+            return self._project_pair_inputs_dense(zij_trunk, relative_positions())
+
+        row_dim = zij_trunk.ndim - 3
+        output: torch.Tensor | None = None
+        for start, length in iter_chunks(num_rows, policy.chunk_size):
+            trunk_rows = zij_trunk.narrow(row_dim, start, length)
+            if trunk_rows.device != target_device:
+                trunk_rows = trunk_rows.to(device=target_device, non_blocking=False)
+            projected = self._project_pair_inputs_dense(
+                trunk_rows,
+                relative_positions(slice(start, start + length)),
+            )
+            if output is None:
+                # Autocast may make the projection narrower than the FP32
+                # trunk. Allocate from the actual projection so the chunked
+                # and dense paths retain the same persistent dtype.
+                output = projected.new_empty(zij_trunk.shape)
+            output.narrow(row_dim, start, length).copy_(projected)
+            del projected, trunk_rows
+        if output is None:
+            raise RuntimeError("diffusion pair conditioning requires at least one token row")
+        return output
+
+    def _apply_pair_transitions(
+        self,
+        zij: torch.Tensor,
+        token_mask: torch.Tensor,
+        *,
+        inplace_safe: bool,
+    ) -> torch.Tensor:
+        """Apply pair transitions, optionally reusing owned inference storage."""
+        pair_token_mask = token_mask.unsqueeze(-1) * token_mask.unsqueeze(-2)
+        can_update_inplace = inplace_safe and (not zij.is_cuda or not torch.cuda.is_current_stream_capturing())
+        for layer in self.transition_z:
+            update = layer(zij, mask=pair_token_mask.unsqueeze(-1))
+            if can_update_inplace:
+                zij.add_(update)
+            else:
+                zij = zij + update
+            del update
+        return zij
+
+    def _apply_single_transitions(self, si: torch.Tensor, token_mask: torch.Tensor) -> torch.Tensor:
+        """Apply the noise-dependent single transitions."""
+        for layer in self.transition_s:
+            si = si + layer(si, mask=token_mask.unsqueeze(-1))
+        return si
+
+    def prepare_pair(
+        self,
+        batch: dict,
+        zij_trunk: torch.Tensor,
+        use_conditioning: bool = True,
+    ) -> torch.Tensor:
+        """Compute the noise-independent pair conditioning once per rollout."""
+        if not use_conditioning:
+            zij_trunk = zij_trunk.zero_()
+
+        zij = self._project_pair_inputs(zij_trunk, batch)
+        return self._apply_pair_transitions(zij, batch["token_mask"], inplace_safe=True)
+
+    def forward_single(
         self,
         batch: dict,
         t: torch.Tensor,
         si_input: torch.Tensor,
         si_trunk: torch.Tensor,
-        zij_trunk: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        # Pair conditioning
-        relpos_zij = relpos_complex(
-            batch=batch,
-            max_relative_idx=self.max_relative_idx,
-            max_relative_chain=self.max_relative_chain,
-        ).to(dtype=zij_trunk.dtype)
+        use_conditioning: bool = True,
+    ) -> torch.Tensor:
+        """Compute the noise-dependent single conditioning for one EDM step."""
+        if not use_conditioning:
+            si_trunk = si_trunk.zero_()
 
-        zij = torch.cat([zij_trunk, relpos_zij], dim=-1)
-
-        zij = self.linear_z(self.layer_norm_z(zij))
-
-        # Single conditioning
         si = torch.cat([si_trunk, si_input], dim=-1)
         si = self.linear_s(self.layer_norm_s(si))
 
@@ -336,23 +437,7 @@ class DiffusionConditioning(nn.Module):
         n = self.fourier_emb(n)
 
         si = si + self.linear_n(self.layer_norm_n(n)).unsqueeze(-2)
-
-        return si, zij
-
-    def _forward(
-        self, si: torch.Tensor, zij: torch.Tensor, token_mask: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        pair_token_mask = token_mask.unsqueeze(-1) * token_mask.unsqueeze(-2)
-
-        # Pair conditioning
-        for layer in self.transition_z:
-            zij = zij + layer(zij, mask=pair_token_mask.unsqueeze(-1))
-
-        # Single conditioning
-        for layer in self.transition_s:
-            si = si + layer(si, mask=token_mask.unsqueeze(-1))
-
-        return si, zij
+        return self._apply_single_transitions(si, batch["token_mask"])
 
     def forward(
         self,
@@ -381,13 +466,16 @@ class DiffusionConditioning(nn.Module):
             zij:
                 [*, N_token, N_token, c_z] Conditioned pair representation
         """
-        token_mask = batch["token_mask"]
-        if not use_conditioning:
-            si_trunk = si_trunk.zero_()
-            zij_trunk = zij_trunk.zero_()
-
-        si, zij = self._embed_trunk_inputs(batch=batch, t=t, si_input=si_input, si_trunk=si_trunk, zij_trunk=zij_trunk)
-
-        si, zij = self._forward(si=si, zij=zij, token_mask=token_mask)
-
+        zij = self.prepare_pair(
+            batch=batch,
+            zij_trunk=zij_trunk,
+            use_conditioning=use_conditioning,
+        )
+        si = self.forward_single(
+            batch=batch,
+            t=t,
+            si_input=si_input,
+            si_trunk=si_trunk,
+            use_conditioning=use_conditioning,
+        )
         return si, zij

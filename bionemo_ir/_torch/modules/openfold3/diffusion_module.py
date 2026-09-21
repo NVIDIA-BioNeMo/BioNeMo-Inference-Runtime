@@ -166,6 +166,7 @@ class DiffusionModule(nn.Module):
         zij_trunk: torch.Tensor,
         attn_metadata: AttentionMetadata,
         use_conditioning: bool = True,
+        prepared_zij: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Note:
@@ -198,17 +199,32 @@ class DiffusionModule(nn.Module):
                 [*, N_token, N_token, c_z] Pair representation
             use_conditioning:
                 Whether to condition with the trunk representations
+            prepared_zij:
+                Optional noise-independent pair conditioning prepared once by
+                the sampler owner. When set with conditioning enabled, only
+                single conditioning is recomputed for this denoising step.
+                Unconditioned calls ignore this cache and rebuild the pair.
         Returns:
             [*, N_atom, 3] Denoised atom positions
         """
-        si, zij = self.diffusion_conditioning(
-            batch=batch,
-            t=t,
-            si_input=si_input,
-            si_trunk=si_trunk,
-            zij_trunk=zij_trunk,
-            use_conditioning=use_conditioning,
-        )
+        if prepared_zij is None or not use_conditioning:
+            si, zij = self.diffusion_conditioning(
+                batch=batch,
+                t=t,
+                si_input=si_input,
+                si_trunk=si_trunk,
+                zij_trunk=zij_trunk,
+                use_conditioning=use_conditioning,
+            )
+        else:
+            si = self.diffusion_conditioning.forward_single(
+                batch=batch,
+                t=t,
+                si_input=si_input,
+                si_trunk=si_trunk,
+                use_conditioning=use_conditioning,
+            )
+            zij = prepared_zij
 
         xl_noisy = xl_noisy * broadcast_atom_mask(xl_noisy, atom_mask)
 
@@ -314,19 +330,23 @@ class OpenFold3DiffusionSampler(nn.Module):
         zij_trunk: torch.Tensor,
         attn_metadata: AttentionMetadata,
         use_conditioning: bool,
+        prepared_zij: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self.diffusion_module(
-            batch=batch,
-            xl_noisy=x_noisy,
-            token_mask=batch["token_mask"],
-            atom_mask=atom_mask,
-            t=sigma_hat.to(x_noisy.device),
-            si_input=si_input,
-            si_trunk=si_trunk,
-            zij_trunk=zij_trunk,
-            attn_metadata=attn_metadata,
-            use_conditioning=use_conditioning,
-        )
+        diffusion_kwargs = {
+            "batch": batch,
+            "xl_noisy": x_noisy,
+            "token_mask": batch["token_mask"],
+            "atom_mask": atom_mask,
+            "t": sigma_hat.to(x_noisy.device),
+            "si_input": si_input,
+            "si_trunk": si_trunk,
+            "zij_trunk": zij_trunk,
+            "attn_metadata": attn_metadata,
+            "use_conditioning": use_conditioning,
+        }
+        if prepared_zij is not None:
+            diffusion_kwargs["prepared_zij"] = prepared_zij
+        return self.diffusion_module(**diffusion_kwargs)
 
     def forward(
         self,
@@ -339,6 +359,7 @@ class OpenFold3DiffusionSampler(nn.Module):
         attn_metadata: AttentionMetadata,
         use_conditioning: bool | None = None,
         seed: int | None = None,
+        prepared_zij: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -358,6 +379,8 @@ class OpenFold3DiffusionSampler(nn.Module):
                 Attention metadata
             use_conditioning:
                 Whether to condition with the trunk representations
+            prepared_zij:
+                Optional pair conditioning shared by every denoising step.
         Returns:
             [*, N_atom, 3] Sampled atom positions
         """
@@ -391,6 +414,7 @@ class OpenFold3DiffusionSampler(nn.Module):
                 zij_trunk=zij_trunk,
                 attn_metadata=attn_metadata,
                 use_conditioning=use_conditioning,
+                prepared_zij=prepared_zij,
             )
 
         with SamplingContext.graph_safe(atom_mask.device, seed) as context:

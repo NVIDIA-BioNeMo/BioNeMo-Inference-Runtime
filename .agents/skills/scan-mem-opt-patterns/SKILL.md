@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 name: scan-mem-opt-patterns
-description: Scan a pairwise-representation structure model (Boltz1/2, OpenFold2/3, Protenix, or a new port) for activation-memory patterns, grouped under four transferable levers — precision, lifetime, never-materialize, and chunking. Ships an inlined chunk engine and per-submodule memory profiler. Use when reducing activation memory, fitting longer sequences or more residues, diagnosing large-N OOM, or porting these optimizations to another pairwise model.
+description: Diagnose and reduce activation memory in pairwise-representation structure models using precision, lifetime, never-materialize, compute-once conditioning, row-born pair state, and chunking; profile OOMs and measure large-N capacity with reproducible boundaries and provenance. Use when fitting longer inputs or porting memory optimizations across Boltz, OpenFold, Protenix, and related models. Use bench-perf-oss for full BioIR-versus-OSS folding comparisons.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
@@ -29,13 +29,13 @@ activations, each `N²·c·sizeof(elem)` bytes (e.g. `[N,N,256]` fp32 ≈ 16 GB 
 N≈4000). Fitting a longer sequence is almost never one big win — it is removing
 that stack **one `[N,N,*]` tensor at a time**.
 
-This skill is the checklist developed against **Boltz2** (numbers below were
-measured at ~4000 residues on a single 80 GB GPU) and extended with patterns
-from **ProtenixV2** (multi-sample diffusion + confidence), written to
-**transfer**: the catalog is grouped under four *levers*, and for a new model
-you walk the levers even when no keyword matches.
-It is self-contained — the reusable code (profiler harness, chunk engine) is
-inlined; nothing here depends on a specific repo layout.
+This skill is the checklist developed against **Boltz2**, **ProtenixV2**, and
+**OpenFold3** H100 and A100 80 GB capacity work, written to **transfer**: walk
+all four levers even when no keyword matches. The core profiler and chunk
+engine are inlined. For a measured GPU campaign, also read
+[benchmarking and profiling](references/benchmarking-and-profiling.md); it
+defines claim boundaries, source pins, isolation, metrics, boundary closure,
+numerical evidence, and experiment stopping rules.
 
 ## When to use
 
@@ -45,6 +45,22 @@ inlined; nothing here depends on a specific repo layout.
   pairwise model.
 - Multi-sample diffusion / confidence OOM (`diffusion_samples` / `N_sample` > 1)
   even when single-sample fits.
+- "Profile memory", "find the next allocation wall", "measure maximum input
+  size", or "establish a safe production limit" for a pairwise model.
+
+## Choose the operating mode
+
+- **Source scan only:** use the four levers, pattern catalog, and report
+  template. Do not invent measured savings from tensor-size estimates.
+- **OOM diagnosis or memory profile:** also read the profiling, allocator, and
+  evidence sections of
+  [benchmarking and profiling](references/benchmarking-and-profiling.md).
+- **Optimization and capacity campaign:** read that reference in full before
+  launching GPU attempts. Freeze the workload and source identity, change one
+  lever at a time, and close a repeat-confirmed pass/OOM bracket.
+- **BioIR-versus-OSS folding latency or quality:** use
+  [`bench-perf-oss`](../bench-perf-oss/SKILL.md). A synthetic capacity workload
+  has no folding ground truth and cannot support a quality claim.
 
 ## The four transferable levers
 
@@ -82,32 +98,44 @@ Cross-cutting facts worth internalizing:
   materializing `[B·S,N,N,*]`.
 - **Inference-only assumptions are allowed** here (no autograd), which unlocks
   in-place / `del` / `pop` that training could not do. Destructive feature
-  ownership must be **opt-in** when the caller may retain the input dict (P6 /
-  P17).
+  ownership must be **opt-in** when the caller may retain the input dict (P6).
 - **Do not hoist recycle-dependent modules** (template / MSA that read current
   `z`) outside the recycle loop for "memory" — holding their activations across
   cycles can *raise* the resident base. Only static feature-side projections are
   hoist candidates; profile first.
+- **Caching is not automatically a memory optimization.** Computing a
+  noise-invariant pair path once can remove repeated work, but its output stays
+  resident throughout the rollout. It lowers memory only when the composition
+  also shortens or stages another overlapping lifetime (P21).
 
 ## Workflow (any model)
 
 Copy this checklist and track progress:
 
 ```text
-- [ ] 1. Map the target: the model forward; the trunk / MSA / pairformer
+- [ ] 1. Classify the claim: source scan, diagnostic profile, hard capacity,
+         recommended capacity, latency, or quality. Do not merge them.
+- [ ] 2. For GPU measurements, read the campaign reference and freeze hardware,
+         source/diff, checkpoint, inputs, full workload, allocator, and outputs.
+- [ ] 3. Map the target: the model forward; the trunk / MSA / pairformer
          stack; the diffusion-conditioning + token DiT + confidence stages;
-         the rel-pos encoder; the featurizer. Note `N_sample` /
-         `diffusion_samples`. Identify the pairwise rep tensor(s) and which
-         stage(s) drive the peak (profiler below).
-- [ ] 2. Grep the model package for each pattern's `Detect` markers below
+         the rel-pos encoder; the featurizer; input and recycle pair
+         construction. Note `N_sample` / `diffusion_samples`. Separate
+         noise-invariant pair conditioning from time-dependent single
+         conditioning. Identify the pairwise rep tensor(s) and which stage(s)
+         drive the peak (profiler below).
+- [ ] 4. Grep the model package for each pattern's `Detect` markers below
          -> a candidate list.
-- [ ] 3. For each candidate: confirm it applies (read the hit + trace
-         dtype/dataflow/lifetime), estimate GB saved, note the fix and its
+- [ ] 5. For each candidate: confirm it applies (read the hit + trace
+         dtype/dataflow/lifetime), estimate GiB saved, note the fix and its
          lever. Do NOT edit yet.
-- [ ] 4. Write the report (template below), ranked by GB and by which
+- [ ] 6. Write the report (template below), ranked by GiB and by which
          stage's wall it moves.
-- [ ] 5. Apply top candidates one at a time; verify numerically, then
-         re-profile (see below).
+- [ ] 7. Apply one top candidate; prove the optimized dispatch/lifetime path
+         executes, verify numerically, then re-run the exact failed input and
+         preceding pass under the frozen contract.
+- [ ] 8. Preserve raw attempts, repeat only the terminal adjacent endpoints,
+         and report the next wall plus any unverified quality or latency limit.
 ```
 
 The `Detect` markers are grep hints — every hit is a *candidate*. Confirm by
@@ -117,8 +145,10 @@ stage runs"), not just a keyword match.
 
 ## Profiling tools (find the peak stage / attribute the OOM)
 
-Three model-agnostic techniques; the first is inlined below as a ready-to-use
-harness:
+Use the full campaign protocol in
+[benchmarking and profiling](references/benchmarking-and-profiling.md) when a
+number will be published. Three model-agnostic diagnostic techniques follow;
+the first is inlined as a ready-to-use exploratory harness:
 
 - **Per-submodule memory attribution** — register `forward_pre` / `forward`
   hooks that log `memory_allocated` + `max_memory_allocated` at each module
@@ -126,10 +156,10 @@ harness:
   consumer, and on OOM the last module entered is the culprit. At that boundary,
   dump the live CUDA tensors (deduped by storage) to name the resident set, and
   probe the feed_dict by tensor size for dead entries. (Harness below.)
-- **Fit / max-length test** — run the real pipeline at increasing problem sizes,
-  each in an **OOM-isolated subprocess** (so an OOM can't corrupt the driver),
-  reporting peak alloc/reserved; descend from the largest and stop at the first
-  that fits. A few sampling/recycle steps suffice — the peak is per-step.
+- **Capacity boundary** — run the complete frozen workload once per fresh,
+  OOM-isolated subprocess. Search coarse anchors, refine on a declared grid,
+  then repeat both adjacent pass/OOM endpoints. A shortened recycle, diffusion,
+  sample, head, or export schedule is a diagnostic only, never a capacity row.
 - **Per-submodule timing tree** — NVTX ranges around the live submodules + CUDA
   events (or an nsys capture) for an inclusive per-module time tree with a true
   CPU-vs-GPU split — the compute hot stage, complementary to the memory view.
@@ -139,17 +169,18 @@ harness:
 Hooks every module boundary, logs current + running-peak allocation, dumps the
 live resident set on demand, and on OOM points at the last module entered. Adapt
 `deep` to your model's peak stage; the wrappers touch nothing in the source tree
-(they `register_*_hook` on live instances).
+(they `register_*_hook` on live instances). This instrumentation is intrusive:
+use a separate run for latency and remove the hooks before timing.
 
 ```python
 import gc, torch
-GB = 1 / 1e9
-_LOG = []  # (phase, name, cur_gb, peak_gb)
+GIB = 1 / (1 << 30)
+_LOG = []  # (phase, name, cur_gib, peak_gib)
 
 def _mem():
-    torch.cuda.synchronize()
-    return (torch.cuda.memory_allocated() * GB,
-            torch.cuda.max_memory_allocated() * GB)
+    # Do not synchronize at every module boundary: that changes scheduling.
+    return (torch.cuda.memory_allocated() * GIB,
+            torch.cuda.max_memory_allocated() * GIB)
 
 def _hooks(name):
     def pre(_m, _i):      _LOG.append(("enter", name, *_mem()))
@@ -189,19 +220,19 @@ def dump_cuda_tensors(tag, topn=30):
         except Exception:
             continue
     rows = sorted(seen.values(), reverse=True)
-    total = sum(r[0] for r in rows) * GB
-    print(f"[cuda @ {tag}] {len(rows)} storages, {total:.2f} GB")
+    total = sum(r[0] for r in rows) * GIB
+    print(f"[cuda @ {tag}] {len(rows)} storages, {total:.2f} GiB")
     for nb, shp, dt in rows[:topn]:
-        print(f"  {nb * GB:7.3f} GB  {str(shp):28s} {dt}")
+        print(f"  {nb * GIB:7.3f} GiB  {str(shp):28s} {dt}")
 
 def report(oom=None):
     peak = max(_LOG, key=lambda r: r[3], default=None)
     for ph, nm, cur, pk in _LOG:
         hit = peak and (ph, nm, pk) == (peak[0], peak[1], peak[3])
         star = "  <-- PEAK" if hit else ""
-        print(f"{ph:>5} {nm:<32} cur {cur:6.1f}G  peak {pk:6.1f}G{star}")
+        print(f"{ph:>5} {nm:<32} cur {cur:6.1f}GiB  peak {pk:6.1f}GiB{star}")
     if peak:
-        print(f"global peak {peak[3]:.1f} GB at {peak[1]} ({peak[0]})")
+        print(f"global peak {peak[3]:.1f} GiB at {peak[1]} ({peak[0]})")
     if oom is not None:
         entered = [r[1] for r in _LOG if r[0] == "enter"]
         print(f"OOM -- last module entered: {entered[-1] if entered else '?'}")
@@ -216,8 +247,9 @@ def report(oom=None):
 
 The `cur` where the running `peak` jumps to its max is the dominant consumer;
 `dump_cuda_tensors` at that boundary names the tensors (shape/dtype) in the
-resident base. Run under `expandable_segments` (below) so the peak reflects live
-tensors, not fragmentation.
+resident base. Reproduce the wall with the default allocator first. A separate
+`expandable_segments` run may test an allocator-history hypothesis, but cannot
+define the production boundary or share a timing comparison.
 
 Because that dump reports **storage** bytes against the **view's** shape, a row
 whose byte count is far larger than its shape implies is a slice pinning a
@@ -287,10 +319,21 @@ model's names.
   simultaneously live (≈3×).
 - **Detect:** `z = z +`, `z_init = z_init +`, `zij = zij +`.
 - **Fix (inference):** in-place `z += X` on a **freshly-owned** tensor (e.g.
-  right after a norm / broadcast-add that already allocated it). Verify the
-  accumulator isn't aliased/needed elsewhere — do **not** in-place a `forward()`
-  input the caller reuses (it silently corrupts a second call).
-- **Savings:** ~1 `[N,N,c]` per chained add (clears the z-init spike).
+  right after a norm / broadcast-add that already allocated it). Keep shared
+  modules out-of-place by default and thread an explicit ownership opt-in from
+  the model-specific caller. Gate the mutation off when CUDA graph capture is
+  active. Do **not** infer ownership from execution mode alone, and do **not**
+  in-place a `forward()` input the caller reuses (it silently corrupts a second
+  call).
+- **Verify:** assert destination storage is reused only in the opted-in
+  inference case; cover default and capture guards; compare against
+  the original sequence of residual additions rather than an algebraically
+  collapsed expression whose floating-point rounding differs. A global
+  allocator peak may remain unchanged when an earlier stage dominates, so
+  retain phase telemetry and an adjacent capacity-grid test.
+- **Savings:** ~1 `[N,N,c]` per residual add lifetime. Reusing the accumulator
+  can remove a later-stage spike and move capacity even when the whole-forward
+  `max_memory_allocated()` is unchanged.
 
 #### P4 — A tensor computed early but held across the whole trunk
 
@@ -557,14 +600,208 @@ model's names.
   diffusion rollout and the confidence stack, with peak transient bounded by the
   chunk.
 
+### L2/L3/L4 — H100-proven composition and dispatch
+
+#### P16 — Chunk executor retains chunks, then duplicates the full output
+
+- **Symptom:** row chunking bounds the operator's internal activation, but the
+  executor stores every completed chunk in a list and calls `torch.cat` at the
+  end. The final concatenation needs a second full output while all chunks
+  remain live, so the program can OOM immediately after the chunked operator
+  succeeds.
+- **Detect:** list comprehensions or `append` inside a chunk loop followed by
+  `torch.cat(outs, ...)`; an OOM requesting approximately one full
+  `[N,N,c]` output at the concatenation line.
+- **Fix:** in this inference-only runtime, evaluate the first chunk, allocate
+  the final contiguous output once with `new_empty`, copy that chunk into its
+  destination slice, and write every later chunk directly into the same storage.
+  Do not retain a separate backward implementation. Validate output extent,
+  negative `cat_dim`, and tuple/list output type and arity.
+- **Proof:** make `torch.cat` raise for compatible one-to-one inference outputs;
+  weak-reference the first and previous copied chunks and require them dead
+  before the next operator call. Cover tensor, tuple, list, negative
+  `cat_dim`, row-expanding, mismatched-shape, and channels-last outputs.
+- **Savings:** removes the final full-output copy and releases each temporary
+  chunk after its destination copy.
+
+#### P17 — A destination-writing fused op rejects a logically compatible layout
+
+- **Symptom:** a fused elementwise/gated epilogue exists and can write into an
+  owned destination, yet a dispatcher rejects tensors whose ranks or leading
+  shapes differ before flattening. A logically row-aligned input such as
+  `[1,N,N,K]` and destination `[N²,K]` silently falls back to
+  `sigmoid(gate) * output`, materializing a full gate or product.
+- **Detect:** shape/rank equality checks before `flatten`/`view`, a broad
+  fallback around a fused op, and an OOM at the vanilla sigmoid/multiply rather
+  than inside the fused kernel. Inspect the actual dispatch choice at runtime.
+- **Fix:** first validate the kernel's real contract—device, dtype, inner
+  dimensions, supported architecture, destination ownership, and required
+  stride—then compare flattened leading row counts. Dispatch the existing
+  destination-writing kernel when those logical counts match; preserve the
+  fallback for unsupported cases.
+- **Proof:** monkeypatch the vanilla fallback to raise, assert that the returned
+  tensor aliases the supplied destination, and compare the fused result with the
+  reference using a frozen dtype-specific tolerance. Keep an unsupported-shape
+  fallback test.
+- **Savings:** one full gate/product tensor, often several GiB at large `N`,
+  without adding a kernel or changing model precision.
+
+#### P18 — A cheap full-pair output is allocated before an independent heavy phase
+
+- **Symptom:** a head computes a full `[N,N,K]` output early and retains it
+  across an unrelated pairformer, confidence stack, or offload phase. The output
+  is required eventually but not by the intervening work; its lifetime overlap
+  can expose a later, non-monotonic OOM.
+- **Detect:** trace creation and first consumer of distogram, PAE/PDE, contact,
+  or other pair logits. Flag a creation that precedes a heavy stage which never
+  reads it, especially when a cast makes the retained copy wider.
+- **Fix:** move the projection after the heavy phase and recreate only a cheap
+  cast or view when needed. Gate schedule changes to the measured large-input
+  inference path; preserve prior behavior for CPU execution, small inputs, and
+  CUDA graph capture unless each is independently validated.
+  Clearing the allocator cache alone is not a fix while the output remains live.
+- **Proof:** record call order in a focused test, compare the deferred and prior
+  outputs exactly when operation order is unchanged, test every guard, and
+  re-profile the previously failing input.
+- **Savings:** removes the full output from the heavy phase's resident base; the
+  peak reduction depends on whether that overlap was on the critical path.
+
+#### P19 — CPU offload is collapsed into the default performance lane
+
+- **Symptom:** a memory-optimized build appears slower than a GPU-resident
+  baseline because large pair representations or pair-head logits cross PCIe
+  inside `model.forward()`. The same run can still improve end-to-end pipeline
+  time when the next consumer is on the CPU, so one timing boundary hides the
+  tradeoff seen by the other.
+- **Detect:** `to("cpu")`, host `copy_`, or a host archive followed by a later
+  `to(device=cuda)` around `[S,N,N,C]` tensors; flags such as
+  `offload_pairformer_outputs`; CPU-resident PAE/PDE outputs. Account for every
+  direction. An archive copied GPU→CPU, restored once for projection, then
+  emitted as CPU logits moves approximately
+  `S*N^2*(2*C_pair*bytes_pair + C_heads*bytes_out)` bytes.
+- **Fix:** keep explicit GPU-resident latency and CPU-offload capacity modes.
+  Select a default only after a matched A/B establishes the relevant GPU
+  headroom, forward latency, pipeline latency, and host-memory cost. Do not
+  silently enable offload only in the candidate lane or treat the two modes as
+  one aggregate. Consider a size gate only after measuring its crossover.
+- **Proof:** on the same source revision and inputs, run the two modes in fresh,
+  interleaved processes; assert the effective flags and output devices, verify
+  numerical or file identity, and report peak allocated/reserved GPU memory,
+  host RSS, synchronized forward time, and end-to-end pipeline time separately.
+- **Savings/cost:** releases the offloaded pair archive and logits from the GPU
+  resident set, but consumes host memory and interconnect bandwidth. The cost
+  scales quadratically with `N` and linearly with sample count `S`.
+
+#### P20 — CPU offload archives every sample before projecting final heads
+
+- **Symptom:** sequential confidence offload still peaks in host RSS or spends
+  avoidable time on transfers. Each completed BF16 `[N,N,C_pair]` sample is
+  copied to an all-sample CPU archive, then copied back to the GPU for PAE/PDE
+  projection, even though the final FP32 pair logits belong on the CPU.
+- **Detect:** a per-sample Pairformer iterator followed by `copy_` into a host
+  pair archive, then a second loop that selects each host sample, calls
+  `to(cuda)`, projects the heads, and copies logits to CPU. Size the removable
+  archive as `S*N^2*C_pair*bytes_pair`; account separately for the unavoidable
+  final CPU outputs.
+- **Fix:** in inference-only CPU-offload mode, project each completed GPU pair
+  immediately and copy its logits into preallocated final-dtype CPU output
+  slices before advancing the Pairformer iterator. Retain only small single
+  representations needed by later heads. Preserve the old path for CPU
+  execution, graph capture, and the explicit GPU-resident lane.
+- **Proof:** make the all-sample archive builder raise, assert the streamed path
+  executes and returns CPU final-dtype outputs, compare outputs exactly when
+  arithmetic order is unchanged, and measure both owned RSS and device-wide
+  GPU high-water on the prior host-guard input. A completed run may still be
+  GPU-unsafe; classify host guard, hard OOM, and recommended margin separately.
+- **Savings/cost:** removes one BF16 all-sample host archive plus its CPU-to-GPU
+  restore, while final CPU logits remain `O(S*N^2*C_heads)`. It can lower host
+  RSS and forward time without moving a trunk- or diffusion-limited GPU-safe
+  boundary.
+
+### L2/L3/L4 — Compute-once and row-born pair state (A100-proven)
+
+#### P21 — Noise-invariant pair conditioning repeats every denoising step
+
+- **Symptom:** diffusion conditioning computes the same `[N,N,*]` pair path
+  on every denoising step even though only the single path depends on time or
+  noise. Hundreds of identical pair transitions dominate runtime, while the
+  repeated allocation schedule can keep an avoidable high-water mark.
+- **Detect:** trace pair and single conditioning dependencies separately.
+  Look for the combined conditioning module inside the per-step denoiser, pair
+  projections or transitions that read only the trunk pair and static batch
+  features, and no rollout-scoped prepared-pair argument.
+- **Fix:** split the API into `prepare_pair(...)` and
+  `forward_single(..., time_or_noise)` operations. Let the sampler or rollout
+  owner build the pair result once, pass it to every step, and delete it after
+  the last step. Keep the cache request-scoped; do not use a module-global
+  dictionary that can outlive or cross-contaminate requests. For a long
+  CPU-offload lane whose confidence stage later needs the original trunk pair,
+  snapshot that original on the host, release the GPU source before building
+  the prepared pair by rows, then delete the prepared pair before restoring
+  the original. Apply P19 host guards and keep GPU-resident mode distinct.
+- **Proof:** count one pair preparation per rollout and one single preparation
+  per step; test consecutive requests for stale-cache reuse; exercise dense,
+  CPU, and capture guards; compare complete outputs under the declared
+  exact or tolerance contract. Measure initial cache construction and rollout
+  peaks separately because the first can remain the local wall.
+- **Savings/cost:** caching alone primarily removes repeated compute; the cache
+  remains resident and is a memory win only when another overlapping lifetime
+  is shortened or staged. In one pinned OpenFold3 A100 80 GB exact-mode run,
+  the compute-once revision kept all five N=4,096 CIF hashes byte-identical and
+  reduced synchronized forward time from 697.57 to 550.58 seconds (21.07%).
+  Do not transfer that timing or threshold to another workload or GPU SKU.
+
+#### P22 — Pair state is assembled or recycled through dense full-size outputs
+
+- **Symptom:** an input embedder materializes full token-bond,
+  relative-position, projection, cast, and out-of-place sum tensors before
+  returning the final pair state; or each recycle computes
+  `z_init + linear(norm(z))` into another full `[N,N,C]` output even though
+  inference owns `z`.
+- **Detect:** full-size `token_bonds_emb` or relative-position features followed
+  by `z = z + ...`; a producer result cast immediately to the consumer dtype;
+  dense recycle expressions whose old `z` is dead after the assignment.
+- **Fix:** preallocate the final pair storage once in the consumer dtype. Build
+  each row block at the producer precision, preserve the dense operation order,
+  and copy the completed rows directly into final storage. For recycling, write
+  normalized and projected rows back into inference-owned `z` only outside
+  CUDA graph capture. Keep a dense path below a validated threshold and give
+  each operation an independently tuned chunk policy; do not copy another
+  runtime's fixed chunk size.
+- **Allocator caveat:** a large local allocated-memory reduction can still raise
+  the global reserved or device-wide peak when row-build allocation classes
+  survive into the trunk. Reclaim the allocator cache only at a proven phase
+  boundary after the row temporaries are dead, retain dense/capture behavior,
+  and remeasure the complete workload before claiming capacity.
+- **Numerical boundary:** row-wise execution can select a different backend path
+  even when the expression is algebraically unchanged. Test the exact
+  32-bit-index boundary and both sides when a tensor approaches `2^31`
+  elements. OpenFold3 `[1,4096,4096,128]` changed end-to-end hashes on its row
+  recycle path; that establishes path-dependent numerics, not a generally
+  incorrect kernel. Its exact lane therefore keeps the dense path through
+  N=4,096 and enables row recycling only above it.
+- **Proof:** make the dense long-input fallback raise, assert final storage or
+  owned recycle storage is reused, and cover dtype, row extent, CPU, and
+  capture guards. Compare local rows and complete outputs where a dense
+  reference fits, then remeasure the global peak and repeat adjacent capacity
+  endpoints. Do not claim dense-reference equivalence above the tested range.
+- **Savings/cost:** in the pinned OpenFold3 A100 80 GB CPU-offload campaign,
+  row-born input construction reduced its isolated stage from 57.149 to
+  21.166 GB. Row recycling added 0.11% forward time at N=4,480 and 0.31% at
+  N=4,608 versus the conditioning-only revision. The final P21/P22 composition
+  moved recommended-safe capacity from 4,288 to 4,736 tokens (+10.45%, or
+  +21.99% pair area); N=4,800 completed but violated the declared headroom.
+  This is a workload-specific capacity result, not a GPU-resident boundary.
+
 ## Chunk engine (inline, copy/adapt)
 
-The reusable core for **L4**. `chunk_apply` runs a *position-wise* op in
-row-slices along one dim and concatenates — bit-identical to the dense call, but
-bounds the internal activation to `chunk_size` rows. It only slices tensors
-whose sliced-dim extent matches the primary input; `None` / scalars /
-already-reduced biases pass through untouched, and it falls back to a single
-dense call below the size threshold (identical graph, zero overhead).
+The reusable core for **L4**. `chunk_apply` runs a *position-wise* op in row
+slices and keeps the dense result unchanged. During inference it allocates the
+final result once and copies each completed chunk directly into its destination;
+it never retains all chunks for a second full-output `torch.cat`. This skill
+targets inference only; callers must not use this helper as a backward contract.
+Inputs whose sliced extent does not match the primary pass through untouched,
+and inputs below the threshold take one dense call.
 
 ```python
 import torch
@@ -586,28 +823,155 @@ class ChunkPolicy:
                 and x.shape[self.dim] > self.min_size)
 
 def chunk_apply(fn, *chunked, policy, cat_dim=None, **passthrough):
-    """Run a POSITION-WISE fn in row-slices along policy.dim, then concat."""
+    """Run a position-wise fn in row slices along policy.dim."""
     primary = chunked[0] if chunked else None
     if primary is None or not policy.should_chunk(primary):
-        return fn(*chunked, **passthrough)                     # dense fast path
+        return fn(*chunked, **passthrough)  # dense fast path
+
     dim = policy.dim
     out_dim = policy.dim if cat_dim is None else cat_dim
     n = primary.shape[dim]
 
     def _slice(t, start, length):
-        # misaligned / scalar / None -> pass through untouched
+        # Misaligned tensors, scalars, and None pass through untouched.
         if (t is None or not torch.is_tensor(t) or t.dim() <= dim
                 or t.shape[dim] != n):
             return t
         return t.narrow(dim, start, length)
 
-    outs = [fn(*[_slice(t, s, min(policy.chunk_size, n - s))
-                 for t in chunked], **passthrough)
-            for s in range(0, n, policy.chunk_size)]
-    if isinstance(outs[0], (tuple, list)):  # multi-output fn: concat per slot
-        return type(outs[0])(torch.cat([o[i] for o in outs], dim=out_dim)
-                             for i in range(len(outs[0])))
-    return torch.cat(outs, dim=out_dim)
+    spans = iter(
+        (start, min(policy.chunk_size, n - start))
+        for start in range(0, n, policy.chunk_size)
+    )
+    first_start, first_length = next(spans)
+    first = fn(
+        *[_slice(t, first_start, first_length) for t in chunked],
+        **passthrough,
+    )
+
+    container_type = type(first) if isinstance(first, (tuple, list)) else None
+    arity = len(first) if container_type is not None else 1
+
+    def _outputs(value):
+        if container_type is None:
+            if not torch.is_tensor(value):
+                raise TypeError("chunk outputs must be tensors")
+            return [value]
+        if not isinstance(value, container_type) or len(value) != arity:
+            raise TypeError("chunk outputs changed type or length")
+        if not all(torch.is_tensor(output) for output in value):
+            raise TypeError("chunk output containers must hold tensors")
+        return list(value)
+
+    first_outputs = _outputs(first)
+
+    def _output_dim(output):
+        normalized_dim = out_dim if out_dim >= 0 else output.dim() + out_dim
+        if not 0 <= normalized_dim < output.dim():
+            raise IndexError(
+                f"cat_dim {out_dim} is out of range for rank {output.dim()}"
+            )
+        return normalized_dim
+
+    result_dims = [_output_dim(output) for output in first_outputs]
+    reference_shapes = [tuple(output.shape) for output in first_outputs]
+
+    def _validate(outputs):
+        for output, result_dim, reference in zip(
+            outputs, result_dims, reference_shapes, strict=True
+        ):
+            if output.dim() != len(reference):
+                raise ValueError("chunk output rank changed")
+            if any(
+                output.shape[axis] != extent
+                for axis, extent in enumerate(reference)
+                if axis != result_dim
+            ):
+                raise ValueError("non-concatenated output extent changed")
+
+    def _pack(outputs):
+        return outputs[0] if container_type is None else container_type(outputs)
+
+    def _cat_remaining(collected, remaining):
+        for start, length in remaining:
+            outputs = _outputs(fn(
+                *[_slice(t, start, length) for t in chunked],
+                **passthrough,
+            ))
+            _validate(outputs)
+            for values, output in zip(collected, outputs, strict=True):
+                values.append(output)
+        return _pack([
+            torch.cat(outputs, dim=result_dim)
+            for outputs, result_dim in zip(collected, result_dims, strict=True)
+        ])
+
+    _validate(first_outputs)
+    compatible = all(
+        output.layout == torch.strided
+        and output.is_contiguous()
+        and output.shape[result_dim] == first_length
+        for output, result_dim in zip(first_outputs, result_dims, strict=True)
+    )
+    if not compatible:
+        # Preserve torch.cat's general contract for row-expanding functions and
+        # alternate layouts such as channels-last.
+        return _cat_remaining([[output] for output in first_outputs], spans)
+
+    # Write compatible inference results directly into final storage instead
+    # of retaining chunks for a later concatenation.
+    def _allocate(output, result_dim, chunk_length):
+        shape = list(output.shape)
+        shape[result_dim] = n
+        result = output.new_empty(shape)
+        result.narrow(
+            result_dim, first_start, chunk_length
+        ).copy_(output)
+        return result
+
+    results = [
+        _allocate(output, result_dim, first_length)
+        for output, result_dim in zip(first_outputs, result_dims, strict=True)
+    ]
+    written = [(first_start, first_length)]
+    del first_outputs, first
+
+    for start, length in spans:
+        current = fn(
+            *[_slice(t, start, length) for t in chunked],
+            **passthrough,
+        )
+        outputs = _outputs(current)
+        _validate(outputs)
+        compatible = all(
+            output.is_contiguous()
+            and output.shape[result_dim] == length
+            and output.dtype == result.dtype
+            and output.device == result.device
+            for output, result, result_dim in zip(
+                outputs, results, result_dims, strict=True
+            )
+        )
+        if not compatible:
+            collected = [
+                [
+                    result.narrow(result_dim, old_start, old_length).clone()
+                    for old_start, old_length in written
+                ] + [output]
+                for result, result_dim, output in zip(
+                    results, result_dims, outputs, strict=True
+                )
+            ]
+            return _cat_remaining(collected, spans)
+        for result, result_dim, output in zip(
+            results, result_dims, outputs, strict=True
+        ):
+            result.narrow(result_dim, start, length).copy_(output)
+        written.append((start, length))
+        # Python otherwise keeps the previous RHS bound while evaluating the
+        # next fn(...) call, retaining an extra row block.
+        del output, outputs, current
+    return _pack(results)
 ```
 
 **To make an op chunkable:**
@@ -620,92 +984,114 @@ def chunk_apply(fn, *chunked, policy, cat_dim=None, **passthrough):
    row `N`, sequence `S`, query row `I`). Verify `f(cat(a,b)) == cat(f(a),f(b))`
    before trusting it.
 
-Notes: give each op its own `ChunkPolicy`; a central `dict[name -> ChunkPolicy]`
-lets you retune thresholds globally at runtime instead of hardcoding per layer.
-**Memory-scale `min_size`** rather than fixing it: pair activations are O(N²),
-so the largest N that fits before chunking scales `~sqrt(total_mem)` — anchor at
-a reference GPU (e.g. 2560 residues @ 80 GB) and scale to the device, resolved
-lazily on the first forward so import never initializes CUDA. Disable chunking
-for ops that already have a memory-bounded kernel (e.g. flash-attention triangle
-attention).
+Notes: give each op its own `ChunkPolicy`; a central
+`dict[name -> ChunkPolicy]` lets you retune thresholds globally instead of
+hardcoding each layer. Resolve device-scaled defaults lazily so import never
+initializes CUDA. Pair activations are O(N²), so `sqrt(device memory)` scaling
+is a useful starting estimate for `min_size`, not a measured capacity claim;
+validate each GPU SKU.
 
-## Runtime lever: allocator fragmentation (`expandable_segments`)
+Start chunking disabled when a fused kernel already bounds the dominant
+intermediate. Still inspect allocations *before* that kernel: a dense QKV
+projection can OOM before memory-bounded attention runs. Enable guarded
+query-row chunking only after the traceback and shape arithmetic identify that
+specific wall, then measure its launch/latency cost.
 
-Not all "used" memory is live tensors — the CUDA caching allocator also holds
-**reserved-but- unallocated** blocks it can't reuse for a differently-sized
-request (fragmentation), which at large `N` can be **tens of GB**. Before (or
-alongside) any code lever, try:
+## Allocator fragmentation: a separate diagnostic
+
+Not all reserved memory is live tensor storage. The caching allocator can hold
+reserved-but-unallocated blocks that do not satisfy a differently sized
+request. A large reserved-but-unallocated value is an allocator-history
+**signature**, not proof of fragmentation: live allocations can pin split
+segments, and changing lifetime or scheduling can change reuse.
+
+First reproduce the OOM under the default allocator in a fresh subprocess. If
+the exact attempt reports a large unused reserve, run one distinct,
+explicitly-labeled diagnostic with:
 
 ```text
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
 
-It lets the allocator grow/relocate segments instead of stranding them. In the
-Boltz2 4k run it reclaimed **~19 GB** (reserved-but-unallocated `19 GB → 0.1
-GB`) and moved the OOM wall from the *first* confidence pairformer layer all the
-way into the confidence heads — turning a fragmentation failure into a true
-allocation ceiling. **Read the OOM message:** a large `"X GB reserved but
-unallocated"` ⇒ fragmentation (try this flag first); a small one ⇒ genuinely out
-of live memory (need a code lever from the catalog). Zero-code and a sensible
-runtime default here — keep it on while profiling so the per-stage peak reflects
-live tensors, not fragmentation.
+Use that result only to ask whether allocator policy moves the wall. Never mix
+it into a production hard/recommended boundary, a before/after code delta, or a
+latency comparison. Expanding segments can add virtual-memory remapping work
+and change throughput. Record the exact environment and
+`diagnostic_only=true`.
 
-**Scope this to memory work.** Growing segments by remapping virtual address
-ranges adds driver work on the hot path, so this flag can cost throughput. Keep
-it out of latency benchmarking, where the allocator must stay on its default on
-both sides (`bench-perf-oss`, [measurement.md][bench-alloc]). Quote a memory
-number measured under this flag as a fragmentation-isolated peak, not as the
-configuration a deployment would time.
+Do not claim that the flag lowered the live set merely because a run passed.
+Compare allocated peaks and the resident-tensor inventory. A smaller input
+failing after a larger input passes is likewise an allocator-history/lifetime
+signal, not a monotonic capacity boundary and not proof that fragmentation
+alone caused the failure.
+
+For comparative latency work, keep both implementations on the default
+allocator as required by [the benchmark protocol][bench-alloc].
 
 [bench-alloc]: ../bench-perf-oss/measurement.md#allocator-flags--leave-pytorch-on-its-default
 
 ## Reduce-then-verify (when applying a found fix)
 
-1. **Gate** dtype/chunk/in-place/destructive/compact changes so the aligned /
-   small-N / default-API path stays byte-identical (compile-time constant,
-   `if`-gate, size threshold, or opt-in flag with safe default).
-1. **Verify numerically** on a small shape *before* profiling: a hermetic
-   equivalence test comparing the new path to the original
-   (`torch.testing.assert_close`, fp32 `~1e-4`, bf16 `~3e-3`). **Init random
-   weights** — zero/default-initialized layers make equivalence tests vacuously
-   pass. If a module accumulates into its inputs in place, **clone inputs per
-   call** in the test. For P13, compare broadcast-vs-explicit-expansion
-   attention; for P14, compare joint LN+Linear vs dense `Linear(LN(cat(...)))`;
-   for P8, compare embedding-gather vs one-hot+cat Linear with **unchanged
-   checkpoint keys**. For P15, pin the reduction against the consumer code you
-   deleted with `torch.equal` (it should be bit-identical, not just close), and
-   separately assert chunked == dense and reduce-then-repeat ==
-   repeat-then-reduce.
-1. **Re-profile** per-stage peak (`torch.cuda.max_memory_allocated`) to record
-   the GB delta and confirm the wall actually moved (with `expandable_segments`
-   to isolate fragmentation).
-1. Apply **one lever at a time** on a dedicated branch so each delta is
-   attributable.
-1. For quality-sensitive dtype flips (persistent bf16 pair state, bf16 pair
-   transitions), run a real-checkpoint A/B (recycles + full diffusion rollout)
-   before flipping the production default.
+1. **Gate** dtype, chunk, in-place, destructive, and scheduling changes so
+   unaffected small-input, CPU, capture, or default-API paths retain their prior
+   behavior. Destructive ownership remains opt-in.
+1. Apply **one lever at a time** on a dedicated branch or immutable source
+   snapshot. Do not bundle a second optimization merely because the first
+   exposes another wall.
+1. **Prove the new path executes.** Make a fallback raise or count dispatches;
+   assert storage aliasing for destination-writing paths; record call order for
+   lifetime scheduling. Output equality alone can pass while the optimized path
+   silently falls back.
+1. **Verify numerically** on randomized, representative shapes before profiling.
+   Use `torch.equal` when operation order is unchanged; otherwise freeze an
+   operator- and dtype-specific `torch.testing.assert_close` contract before
+   examining the capacity result. There is no universal BF16 tolerance.
+   Initialize random weights, and clone inputs per call when either path mutates
+   storage. Keep checkpoint keys unchanged.
+1. Exercise the guards and API semantics: dense/small path, unsupported fused
+   shape, CPU, batch shape, output type, CUDA graph capture, and
+   caller-owned inputs as applicable. For the chunk engine, prove inference
+   avoids `torch.cat`.
+1. **Re-profile the exact prior failure and its preceding pass** under the same
+   default-allocator contract. Record raw peak allocated, reserved, device-wide
+   used memory, host RSS, output status, and the new failure site. Run allocator
+   experiments only as separately labeled diagnostics.
+1. When a wall moves, close the new adjacent grid endpoints with two fresh
+   subprocesses each. Do not repeatedly scan an unaffected recommendation
+   region, and do not run beyond the predeclared ceiling merely because the last
+   point passed.
+1. For quality-sensitive precision, fused-math, or operation-order changes, run
+   a real-checkpoint full-workload A/B. Finite deterministic synthetic outputs
+   establish execution integrity, not folding quality.
 
 ## Report template
 
 Title it `# <Model> memory-opt scan`, then the findings table:
 
-| #   | lever | pattern                                       | location    | applies? | est. GB | fix (1 line)                     | risk |
-| --- | ----- | --------------------------------------------- | ----------- | -------- | ------- | -------------------------------- | ---- |
-| P1  | L1    | fp32 trimul                                   | <file:line> | yes/no   | ~X      | thread high_precision flag       | low  |
-| P2  | L1    | fp32 pair cond / bias / accum / cache         | ...         | ...      | ...     | build/cast bf16; cache consumer  | low  |
-| P3  | L2    | out-of-place [N,N,*] add                      | ...         |          |         | z += X (freshly-owned)           | low  |
-| P4  | L2    | tensor held across trunk                      | ...         |          |         | recompute flag                   | low  |
-| P5  | L2    | heavy intermediate / multi-sample             | ...         |          |         | RAII helper; stream per sample   | low  |
-| P6  | L2    | dead feed_dict / ownership                    | ...         |          |         | pop + opt-in destructive/compact | low  |
-| P7  | L2    | stage outputs held                            | ...         |          |         | del before next stage            | low  |
-| P8  | L3    | one-hot+cat Linear (RPE/MSA/tmpl)             | ...         |          |         | embedding-gather; slice weights  | low  |
-| P9  | L3    | broadcast/loop [N,N,*]                        | ...         |          |         | bmm / einsum                     | low  |
-| P10 | L3    | use-once big intermediate                     | ...         |          |         | inline + in-place mask           | low  |
-| P11 | L3    | fused-op input copy                           | ...         |          |         | strided read + predicate         | med  |
-| P12 | L4    | unchunked [N,N,*] op                          | ...         |          |         | chunk_apply (pair-row only)      | low  |
-| P13 | L2/L3 | sample-replicated pair bias                   | ...         |          |         | sample-indep bias; broadcast S   | med  |
-| P14 | L3    | joint LN+Linear via cat                       | ...         |          |         | joint stats; dual GEMM; no cat   | med  |
-| P15 | L2/L3 | wide tensor crosses stages, read as reduction | ...         |          |         | reduce at producer; chunk it     | low  |
+| #   | lever    | pattern                                       | location    | applies? | est. GB | fix (1 line)                     | risk |
+| --- | -------- | --------------------------------------------- | ----------- | -------- | ------- | -------------------------------- | ---- |
+| P1  | L1       | fp32 trimul                                   | <file:line> | yes/no   | ~X      | thread high_precision flag       | low  |
+| P2  | L1       | fp32 pair cond / bias / accum / cache         | ...         | ...      | ...     | build/cast bf16; cache consumer  | low  |
+| P3  | L2       | out-of-place [N,N,*] add                      | ...         |          |         | z += X (freshly-owned)           | low  |
+| P4  | L2       | tensor held across trunk                      | ...         |          |         | recompute flag                   | low  |
+| P5  | L2       | heavy intermediate / multi-sample             | ...         |          |         | RAII helper; stream per sample   | low  |
+| P6  | L2       | dead feed_dict / ownership                    | ...         |          |         | pop + opt-in destructive/compact | low  |
+| P7  | L2       | stage outputs held                            | ...         |          |         | del before next stage            | low  |
+| P8  | L3       | one-hot+cat Linear (RPE/MSA/tmpl)             | ...         |          |         | embedding-gather; slice weights  | low  |
+| P9  | L3       | broadcast/loop [N,N,*]                        | ...         |          |         | bmm / einsum                     | low  |
+| P10 | L3       | use-once big intermediate                     | ...         |          |         | inline + in-place mask           | low  |
+| P11 | L3       | fused-op input copy                           | ...         |          |         | strided read + predicate         | med  |
+| P12 | L4       | unchunked [N,N,*] op                          | ...         |          |         | chunk_apply (pair-row only)      | low  |
+| P13 | L2/L3    | sample-replicated pair bias                   | ...         |          |         | sample-indep bias; broadcast S   | med  |
+| P14 | L3       | joint LN+Linear via cat                       | ...         |          |         | joint stats; dual GEMM; no cat   | med  |
+| P15 | L2/L3    | wide tensor crosses stages, read as reduction | ...         |          |         | reduce at producer; chunk it     | low  |
+| P16 | L2/L4    | chunk list + final cat                        | ...         |          |         | preallocate; copy each chunk     | low  |
+| P17 | L3       | fused op rejects logical layout               | ...         |          |         | flatten rows; write destination  | med  |
+| P18 | L2       | pair output spans heavy phase                 | ...         |          |         | defer output past heavy work     | low  |
+| P19 | L2       | CPU offload hidden in performance lane        | ...         |          |         | split latency/capacity modes     | low  |
+| P20 | L2/L3    | CPU pair archive restored before projection   | ...         |          |         | project sample into CPU outputs  | low  |
+| P21 | L2       | repeated noise-invariant pair conditioning    | ...         |          |         | prepare once per rollout         | low  |
+| P22 | L2/L3/L4 | dense input/recycle pair construction         | ...         |          |         | row-born final storage           | med  |
 
 Close with a `## Notes` section answering:
 
@@ -714,9 +1100,25 @@ Close with a `## Notes` section answering:
 - Multi-sample factor S: `<N_sample>`. Any `[N,N,*]` expanded over S?
 - Cross-stage args: any `[N,N,K]` threaded between stages that every consumer
   only reads reduced (P15)?
+- Conditioning invariance: which pair work is noise-independent, who owns its
+  rollout-scoped cache, and are construction and rollout peaks reported
+  separately (P21)?
+- Row-born storage: is the final pair destination inference-owned and in the
+  consumer dtype? Are allocator phase boundaries measured globally (P22)?
+- Large-index numerics: does any path approach `2^31` elements, and were the
+  exact boundary and both sides tested?
 - Shared vs model-specific: which fixes land in shared layer/module code (cover
   multiple models)?
 - Ownership / compact-output flags: default-safe vs opt-in destructive?
+- Claim type and boundary: estimate, diagnostic profile, hard capacity,
+  recommended capacity, latency, or quality.
+- Frozen identity: source revision/diff, checkpoint, workload, input, allocator,
+  hardware, and harness.
+- If measured: immutable attempt artifacts, repeat counts, adjacent pass/OOM
+  bracket, headroom rule, observed deltas, cleanup, and next failure site.
+- Numerical scope: exact, locally tolerance-bounded, deterministic/finite, or
+  real-data quality-tested; never silently promote one level to another.
 - Recommended order (biggest / earliest wall first).
-- Rejected, with the reason: hoist recycle-dependent template/MSA; chunk
-  sample-axis transitions; atom coords as the main wall.
+- Rejected, with the reason: hoist recycle-dependent template/MSA; global
+  conditioning cache; copied donor chunk sizes; unscored BF16 conditioning;
+  chunk sample-axis transitions; atom coords as the main wall.

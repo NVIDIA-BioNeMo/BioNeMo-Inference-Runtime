@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pydantic import Field
+
 from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, EvoformerStackConfig, PairformerConfig
 from bionemo_ir.registry import SupMat
 
@@ -205,7 +207,16 @@ class AuxiliaryHeadsConfig(BaseConfig):
     no_bin: int = 39
     max_atoms_per_token: int = 23
     inf: float = 1e9
-    memory_efficient_mode: bool = True
+    memory_efficient_mode: bool = Field(
+        default=True, description="Run confidence Pairformer separately for each sample."
+    )
+    offload_pairformer_outputs: bool = Field(
+        default=True,
+        description=(
+            "Project each completed confidence pair immediately and keep only final PAE/PDE logits on CPU when "
+            "memory_efficient_mode is enabled. Other outputs stay on the input device."
+        ),
+    )
     pairformer: PairformerConfig = PairformerConfig(
         token_s=384,
         token_z=128,

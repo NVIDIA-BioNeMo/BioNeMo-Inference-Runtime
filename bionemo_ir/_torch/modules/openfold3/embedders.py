@@ -26,7 +26,13 @@ from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingCo
 from bionemo_ir._torch.modules.openfold2.template import TemplatePairStack
 from bionemo_ir._torch.modules.openfold3.sequence_local_atom_attention import AtomAttentionEncoder
 from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
-from bionemo_ir._torch.utils import recursive_calling_load_weights
+from bionemo_ir._torch.utils import (
+    CHUNK_REGISTRY,
+    INPUT_EMBEDDER_PAIR_BUILD,
+    ChunkPolicy,
+    iter_chunks,
+    recursive_calling_load_weights,
+)
 from bionemo_ir._torch.utils.common import (
     commit_graph_safe_generator,
     make_graph_safe_generator,
@@ -94,6 +100,7 @@ class InputEmbedderAllAtom(nn.Module):
         self.linear_token_bonds = Linear(
             1, config.c_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
         )
+        self.pair_build_chunk_policy = CHUNK_REGISTRY.get(INPUT_EMBEDDER_PAIR_BUILD)
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -102,15 +109,80 @@ class InputEmbedderAllAtom(nn.Module):
         if not_loaded_weights:
             raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
+    def _build_pair_embeddings_dense(
+        self,
+        s_input_emb_i: torch.Tensor,
+        s_input_emb_j: torch.Tensor,
+        batch: dict,
+    ) -> torch.Tensor:
+        """Build all pair rows with the original dense statement sequence."""
+        token_bonds_emb = self.linear_token_bonds(batch["token_bonds"].unsqueeze(-1).to(dtype=s_input_emb_i.dtype))
+
+        z = s_input_emb_i[..., None, :] + s_input_emb_j[..., None, :, :]
+
+        relpos_feats = relpos_complex(
+            batch=batch,
+            max_relative_idx=self.max_relative_idx,
+            max_relative_chain=self.max_relative_chain,
+        ).to(dtype=z.dtype)
+        relpos_emb = self.linear_relpos(relpos_feats)
+        z = z + relpos_emb
+
+        z = z + token_bonds_emb
+        return z
+
+    def _build_pair_embeddings(
+        self,
+        s_input_emb_i: torch.Tensor,
+        s_input_emb_j: torch.Tensor,
+        batch: dict,
+        pair_output_dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
+        """Build pair embeddings in bounded query rows for long inference."""
+        policy: ChunkPolicy | None = self.pair_build_chunk_policy
+        num_tokens = s_input_emb_i.shape[-2]
+        device = s_input_emb_i.device if s_input_emb_i.is_cuda else None
+        if policy is None or not policy.should_chunk_size(num_tokens, device):
+            z = self._build_pair_embeddings_dense(s_input_emb_i, s_input_emb_j, batch)
+            return z if pair_output_dtype is None else z.to(dtype=pair_output_dtype)
+
+        output_dtype = s_input_emb_i.dtype if pair_output_dtype is None else pair_output_dtype
+        z = torch.empty(
+            (*s_input_emb_i.shape[:-2], num_tokens, num_tokens, s_input_emb_i.shape[-1]),
+            dtype=output_dtype,
+            device=s_input_emb_i.device,
+        )
+        for start, length in iter_chunks(num_tokens, policy.chunk_size):
+            z_rows = s_input_emb_i.narrow(-2, start, length)[..., None, :] + s_input_emb_j[..., None, :, :]
+            relpos_feats = relpos_complex(
+                batch=batch,
+                max_relative_idx=self.max_relative_idx,
+                max_relative_chain=self.max_relative_chain,
+                row_slice=slice(start, start + length),
+            ).to(dtype=z_rows.dtype)
+            z_rows.add_(self.linear_relpos(relpos_feats))
+            del relpos_feats
+            token_bonds_rows = batch["token_bonds"].narrow(-2, start, length)
+            z_rows.add_(self.linear_token_bonds(token_bonds_rows.unsqueeze(-1).to(dtype=z_rows.dtype)))
+            z.narrow(-3, start, length).copy_(z_rows)
+            del z_rows
+        return z
+
     def forward(
         self,
         batch: dict,
         attn_metadata: AttentionMetadata,
+        *,
+        pair_output_dtype: torch.dtype | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             batch:
                 Input feature dictionary
+            pair_output_dtype:
+                Optional final dtype for the pair representation. Long inference
+                writes row results directly into this dtype after computing each
+                row block at the input embedder's precision.
         Returns:
             s_input:
                 [*, N_token, C_s_input] Single (input) representation
@@ -142,20 +214,12 @@ class InputEmbedderAllAtom(nn.Module):
 
         s_input_emb_ij = self.linear_z_ij(s_input)
         s_input_emb_i, s_input_emb_j = s_input_emb_ij.chunk(2, dim=-1)
-        token_bonds_emb = self.linear_token_bonds(batch["token_bonds"].unsqueeze(-1).to(dtype=s.dtype))
-
-        # [*, N_token, N_token, C_z]
-        z = s_input_emb_i[..., None, :] + s_input_emb_j[..., None, :, :]
-
-        relpos_feats = relpos_complex(
-            batch=batch,
-            max_relative_idx=self.max_relative_idx,
-            max_relative_chain=self.max_relative_chain,
-        ).to(dtype=z.dtype)
-        relpos_emb = self.linear_relpos(relpos_feats)
-        z = z + relpos_emb
-
-        z = z + token_bonds_emb
+        z = self._build_pair_embeddings(
+            s_input_emb_i,
+            s_input_emb_j,
+            batch,
+            pair_output_dtype=pair_output_dtype,
+        )
 
         return s_input, s, z
 

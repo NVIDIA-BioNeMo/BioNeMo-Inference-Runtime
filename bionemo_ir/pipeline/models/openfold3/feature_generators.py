@@ -49,6 +49,7 @@ from .feature_context import (
 )
 
 logger = logging.getLogger(__name__)
+_NO_TEMPLATE_N_TEMPLATES = 1
 
 
 def _get_row(context: dict[str, Any]) -> dict[str, Any]:
@@ -797,12 +798,14 @@ def _extract_deletion_counts(raw_seq: str) -> list[int]:
 class TemplateFeatureGenerator(FeatureGeneratorBase):
     """Generates OF3 template features (``featurize_template_structures_of3``).
 
-    Two paths, both producing ``n_templ = DEFAULT_N_TEMPLATES`` slots:
+    Two paths:
 
-    * **No templates supplied** (common case): the no-template placeholder —
-      restype one-hot at the GAP class, all-zero masks/coords/distogram/
-      unit-vector, byte-identical to OSS no-template inference.
-    * **Direct-CIF templates supplied** (protein only): parse each CIF, align its
+    * **No templates supplied** (common case): emit one GAP-restype placeholder
+      with all-zero masks, coordinates, distogram, and unit vectors. The four
+      OSS placeholder slots are identical and processed independently before
+      averaging, so one slot preserves the template result.
+    * **Direct-CIF templates supplied** (protein only): emit the default slots,
+      parse each CIF, align its
       best chain to the query via kalign, build per-token pseudo-beta /
       backbone-frame precursors, then apply the OSS featurization math with
       inter/intra-chain masking. See ``template_logic.py``.
@@ -812,7 +815,7 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         return True  # Always produces template features (placeholder or real)
 
     def _no_template_feats(self, n_tokens: int) -> dict[str, torch.Tensor]:
-        n_templ = DEFAULT_N_TEMPLATES
+        n_templ = _NO_TEMPLATE_N_TEMPLATES
         feats: dict[str, torch.Tensor] = {}
         template_restype = torch.zeros(n_templ, n_tokens, NUM_RESTYPE_CLASSES, dtype=torch.int32)
         template_restype[..., GAP_IDX] = 1

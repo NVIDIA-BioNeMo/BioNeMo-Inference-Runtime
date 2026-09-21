@@ -167,6 +167,29 @@ def test_template_l1_matches_golden(target: str) -> None:
     _assert_matches_golden(sig, golden[target], target)
 
 
+def test_no_template_placeholder_uses_one_equivalent_slot() -> None:
+    from bionemo_ir.pipeline.models.openfold3.const import GAP_IDX, NUM_RESTYPE_CLASSES
+    from bionemo_ir.pipeline.models.openfold3.feature_generators import TemplateFeatureGenerator
+
+    n_tokens = 11
+    features = TemplateFeatureGenerator(config=None, name="t")(
+        {"token_index": torch.arange(n_tokens)},
+        {"_row": {"templates_per_chain": {}}},
+    )
+
+    assert {value.shape[0] for value in features.values()} == {1}
+    assert features["template_restype"].shape == (1, n_tokens, NUM_RESTYPE_CLASSES)
+    expected_restype = torch.full((1, n_tokens), GAP_IDX)
+    assert torch.equal(features["template_restype"].argmax(dim=-1), expected_restype)
+    for name in (
+        "template_pseudo_beta_mask",
+        "template_backbone_frame_mask",
+        "template_distogram",
+        "template_unit_vector",
+    ):
+        assert torch.count_nonzero(features[name]).item() == 0
+
+
 def _regen_golden() -> None:
     golden = {}
     for t in TARGETS:

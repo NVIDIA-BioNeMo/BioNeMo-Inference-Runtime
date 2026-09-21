@@ -33,6 +33,7 @@ from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
 )
+from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_pair_mask
 
@@ -86,6 +87,7 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     ref_node.eval()
 
     weights_and_biases = create_triangle_attention_node_weights(from_ref=ref_node)
+    chunk_policy = ChunkPolicy(chunk_size=s.chunk_size, min_size=1) if s.chunk_size else ChunkPolicy(enabled=False)
     node = TriangleAttentionNode(
         c_in=s.c_in,
         c_hidden=s.c_hidden,
@@ -94,6 +96,7 @@ def test_triangle_attention_node(s: AttnNodeScenario):
         dtype=dtype,
         attn_backend=s.backend,
         skip_create_weights=False,
+        chunk_policy=chunk_policy,
     )
     node.to(device)
     load_triangle_attention_node_weights_torch(node, weights_and_biases, dtype)
@@ -101,14 +104,29 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in, dtype=torch.float32).cuda()
     mask = make_left_aligned_pair_mask(bs, s.seq_len, dtype=torch.float32, device="cuda")
 
+    seen_qkv_rows: list[int] = []
+
+    def record_qkv_rows(_module, inputs) -> None:
+        seen_qkv_rows.append(inputs[0].shape[1])
+
+    handle = node.mha.qkv_proj.register_forward_pre_hook(record_qkv_rows)
     with torch.inference_mode():
         ref_output_float = ref_node(x, mask)
         x = x.to(dtype)
         mask = mask.to(dtype)
         ref_node = ref_node.to(dtype)
         ref_output = ref_node(x, mask)
-        output = node(x, mask, attn_metadata=attn_metadata)
+        try:
+            output = node(x, mask, attn_metadata=attn_metadata)
+        finally:
+            handle.remove()
 
+    expected_qkv_rows = (
+        [min(s.chunk_size, s.seq_len - start) for start in range(0, s.seq_len, s.chunk_size)]
+        if s.chunk_size
+        else [s.seq_len]
+    )
+    assert seen_qkv_rows == expected_qkv_rows
     assert output.shape == ref_output.shape
     if dtype == torch.float32:
         torch.testing.assert_close(output, ref_output, atol=1e-2, rtol=1e-3)

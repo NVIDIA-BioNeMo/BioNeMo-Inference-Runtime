@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import types
+import weakref
 from unittest import mock
 
 import pytest
@@ -25,15 +26,22 @@ from bionemo_ir._torch.utils.auto_chunk import (
     AUTOCHUNK_MIN_AUTO,
     CHUNK_REGISTRY,
     CONTACT_PROB,
+    CONFIDENCE_PAIR_EMBEDDING,
+    CONFIDENCE_PAIR_PROJECTION,
+    CONFIDENCE_TRIANGLE_ATTENTION,
     DEFAULT_AUTOCHUNK_MIN_REF,
     DEFAULT_MSA_AUTOCHUNK_MIN,
     DEFAULT_MSA_CHUNK_ROWS,
     DEFAULT_PAIR_CHUNK_ROWS,
+    DIFFUSION_CONDITIONING_PROJECTION,
     DIFFUSION_PAIR_TRANSITION,
+    INPUT_EMBEDDER_PAIR_BUILD,
     MSA_TRANSITION,
     OUTER_PRODUCT_MEAN,
     PAIR_TRANSITION,
     PAIR_WEIGHTED_AVERAGING,
+    RECYCLE_PAIR_UPDATE,
+    RECYCLE_PAIR_UPDATE_MIN_SIZE,
     TRIANGLE_ATTENTION,
     ChunkPolicy,
     ChunkRegistry,
@@ -160,11 +168,14 @@ def test_registry_register_overwrite_flag():
 
 def test_registry_set_overrides_selected_fields():
     reg = ChunkRegistry()
-    reg.register("a", ChunkPolicy(chunk_size=4, min_size=10, dim=1, min_rank=4))
+    original = ChunkPolicy(chunk_size=4, min_size=10, dim=1, min_rank=4)
+    reg.register("a", original)
     new = reg.set("a", min_size=99)
     assert new.min_size == 99  # overridden
     assert (new.chunk_size, new.dim, new.min_rank) == (4, 1, 4)  # preserved
-    assert reg.get("a") is new  # stored in place
+    assert reg.get("a") is new  # replacement stored in the registry
+    assert new is not original
+    assert original.min_size == 10  # existing module references stay immutable
 
 
 def test_registry_set_creates_from_defaults_when_absent():
@@ -194,9 +205,15 @@ def test_global_registry_builtin_defaults():
     # Read-only assertions on the shared registry (do NOT mutate it here).
     for name in (
         PAIR_TRANSITION,
+        CONFIDENCE_PAIR_EMBEDDING,
+        CONFIDENCE_PAIR_PROJECTION,
+        CONFIDENCE_TRIANGLE_ATTENTION,
+        DIFFUSION_CONDITIONING_PROJECTION,
         DIFFUSION_PAIR_TRANSITION,
+        INPUT_EMBEDDER_PAIR_BUILD,
         MSA_TRANSITION,
         PAIR_WEIGHTED_AVERAGING,
+        RECYCLE_PAIR_UPDATE,
         OUTER_PRODUCT_MEAN,
         TRIANGLE_ATTENTION,
         CONTACT_PROB,
@@ -204,12 +221,27 @@ def test_global_registry_builtin_defaults():
         assert name in CHUNK_REGISTRY
     assert CHUNK_REGISTRY.get(PAIR_TRANSITION).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
     assert CHUNK_REGISTRY.get(DIFFUSION_PAIR_TRANSITION).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(DIFFUSION_CONDITIONING_PROJECTION).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(DIFFUSION_CONDITIONING_PROJECTION).dim == 2
+    assert CHUNK_REGISTRY.get(INPUT_EMBEDDER_PAIR_BUILD).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(INPUT_EMBEDDER_PAIR_BUILD).dim == 1
+    assert CHUNK_REGISTRY.get(RECYCLE_PAIR_UPDATE).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(RECYCLE_PAIR_UPDATE).dim == 1
+    assert CHUNK_REGISTRY.get(RECYCLE_PAIR_UPDATE).min_size == RECYCLE_PAIR_UPDATE_MIN_SIZE
+    assert not CHUNK_REGISTRY.get(RECYCLE_PAIR_UPDATE).should_chunk_size(4096)
+    assert CHUNK_REGISTRY.get(RECYCLE_PAIR_UPDATE).should_chunk_size(4097)
+    assert CHUNK_REGISTRY.get(CONFIDENCE_PAIR_EMBEDDING).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(CONFIDENCE_PAIR_EMBEDDING).dim == 1
+    assert CHUNK_REGISTRY.get(CONFIDENCE_PAIR_PROJECTION).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(CONFIDENCE_PAIR_PROJECTION).dim == 2
+    assert CHUNK_REGISTRY.get(CONFIDENCE_TRIANGLE_ATTENTION).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
+    assert CHUNK_REGISTRY.get(CONFIDENCE_TRIANGLE_ATTENTION).dim == 1
+    assert CHUNK_REGISTRY.get(CONFIDENCE_TRIANGLE_ATTENTION).enabled is True
     assert CHUNK_REGISTRY.get(MSA_TRANSITION).chunk_size == DEFAULT_MSA_CHUNK_ROWS
     assert CHUNK_REGISTRY.get(MSA_TRANSITION).min_size == DEFAULT_MSA_AUTOCHUNK_MIN
     assert CHUNK_REGISTRY.get(OUTER_PRODUCT_MEAN).chunk_size == 128
     assert CHUNK_REGISTRY.get(CONTACT_PROB).chunk_size == DEFAULT_PAIR_CHUNK_ROWS
-    # Triangle attention is off by default (flash kernels already bound memory).
-    assert CHUNK_REGISTRY.get(TRIANGLE_ATTENTION).enabled is False
+    assert CHUNK_REGISTRY.get(TRIANGLE_ATTENTION).enabled is True
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +411,77 @@ def test_chunk_apply_cat_dim_override_tuple():
     out = chunk_apply(lambda t: (t.t(), (t * 2).t()), x, policy=_force(3, dim=0), cat_dim=1)
     assert torch.equal(out[0], x.t())
     assert torch.equal(out[1], (x * 2).t())
+
+
+def test_chunk_apply_preserves_row_expanding_concat_contract():
+    x = torch.arange(20, dtype=torch.float32).reshape(10, 2)
+    fn = lambda t: t.repeat_interleave(2, dim=0)
+    assert torch.equal(chunk_apply(fn, x, policy=_force(3)), fn(x))
+
+
+def test_chunk_apply_rejects_mismatched_non_concat_dimension():
+    x = torch.arange(16, dtype=torch.float32).reshape(8, 2)
+    calls = 0
+
+    def fn(t):
+        nonlocal calls
+        calls += 1
+        return t if calls == 1 else t[:, :1]
+
+    with pytest.raises(ValueError, match="non-concatenated dim 1"):
+        chunk_apply(fn, x, policy=_force(4))
+
+
+def test_chunk_apply_preserves_channels_last_memory_format():
+    x = torch.randn(8, 3, 4, 5).to(memory_format=torch.channels_last)
+    out = chunk_apply(lambda t: t + 1, x, policy=_force(3))
+    assert torch.equal(out, x + 1)
+    assert out.is_contiguous(memory_format=torch.channels_last)
+
+
+def test_chunk_apply_releases_copied_chunk_before_next_call():
+    x = torch.arange(20, dtype=torch.float32).reshape(10, 2)
+    chunk_refs: list[weakref.ReferenceType[torch.Tensor]] = []
+
+    def fn(t: torch.Tensor) -> torch.Tensor:
+        assert all(reference() is None for reference in chunk_refs)
+        output = t * 2
+        chunk_refs.append(weakref.ref(output))
+        return output
+
+    with torch.inference_mode():
+        actual = chunk_apply(fn, x, policy=_force(3))
+
+    assert torch.equal(actual, x * 2)
+
+
+@pytest.mark.parametrize("case", ["tensor", "list", "negative_cat_dim"])
+def test_chunk_apply_inference_preallocates_without_cat(case: str, monkeypatch: pytest.MonkeyPatch):
+    x = torch.arange(20, dtype=torch.float32).reshape(10, 2)
+    seen = []
+
+    def tensor_fn(t):
+        seen.append(t.shape[0])
+        return t * 2 + 1
+
+    if case == "tensor":
+        fn, expected, cat_dim = tensor_fn, x * 2 + 1, 0
+    elif case == "list":
+        fn, expected, cat_dim = lambda t: [t * 2, t - 1], [x * 2, x - 1], 0
+    else:
+        fn, expected, cat_dim = lambda t: t.t().contiguous(), x.t(), -1
+
+    monkeypatch.setattr(torch, "cat", mock.Mock(side_effect=AssertionError("inference must not concatenate")))
+    with torch.inference_mode():
+        out = chunk_apply(fn, x, policy=_force(3), cat_dim=cat_dim)
+
+    outputs = out if isinstance(out, list) else [out]
+    references = expected if isinstance(expected, list) else [expected]
+    assert all(value.is_contiguous() for value in outputs)
+    assert all(torch.equal(value, reference) for value, reference in zip(outputs, references, strict=True))
+    if case == "tensor":
+        assert seen == [3, 3, 3, 1]
+        assert out.data_ptr() != x.data_ptr()
 
 
 def test_chunk_apply_default_policy_below_threshold_is_dense():

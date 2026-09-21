@@ -50,7 +50,13 @@ from bionemo_ir._torch.modules.openfold3.embedders import (
 )
 from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleStack
 from bionemo_ir._torch.sampling import EDMScheduleConfig
-from bionemo_ir._torch.utils import tensor_tree_map
+from bionemo_ir._torch.utils import (
+    CHUNK_REGISTRY,
+    RECYCLE_PAIR_UPDATE,
+    ChunkPolicy,
+    iter_chunks,
+    tensor_tree_map,
+)
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import load_weights as load_weights_from_hubs
 from bionemo_ir.models.openfold3.config import PRETRAINED_CONFIG_REGISTRY
@@ -109,6 +115,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             dtype=trunk_dtype,
             skip_create_weights=self.config.skip_create_weights,
         )
+        self.recycle_pair_update_chunk_policy = CHUNK_REGISTRY.get(RECYCLE_PAIR_UPDATE)
 
         self.template_embedder = TemplateEmbedderAllAtom(config=self.config.template_embedder_config)
         self.msa_module_embedder = MSAModuleEmbedder(config=self.config.msa_module_embedder_config)
@@ -223,6 +230,19 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         self.pairformer_stack.load_weights(openfold3_weights["pairformer_stack"])
         self.aux_heads.load_weights(openfold3_weights["auxiliary_heads"])
 
+    def _update_recycle_pair(self, z_init: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """Apply pair recycling in owned row blocks for long eager inference."""
+        policy: ChunkPolicy | None = getattr(self, "recycle_pair_update_chunk_policy", None)
+        if not z.is_cuda or policy is None or not policy.should_chunk(z) or torch.cuda.is_current_stream_capturing():
+            return z_init + self.linear_z(self.layer_norm_z(z))
+
+        for start, length in iter_chunks(z.shape[-3], policy.chunk_size):
+            z_rows = z.narrow(-3, start, length)
+            update = z_init.narrow(-3, start, length) + self.linear_z(self.layer_norm_z(z_rows))
+            z_rows.copy_(update)
+            del update
+        return z
+
     def feature_extraction(
         self, batch: dict, num_cycles: int, attn_metadata: dict = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -243,11 +263,30 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
                 [*, N_token, N_token, C_z] Pair representation
         """
 
-        s_input, s_init, z_init = self.input_embedder(batch=batch, attn_metadata=attn_metadata)
-        # Cast recycle state to trunk dtype once (input embedder is fp32).
         pairformer_dtype = self.config.trunk.pairformer.torch_dtype
+        s_input, s_init, z_init = self.input_embedder(
+            batch=batch,
+            attn_metadata=attn_metadata,
+            pair_output_dtype=pairformer_dtype,
+        )
+        # Cast recycle state to trunk dtype once (input embedder is fp32).
+        # Long inference writes pair rows directly into this final storage.
         s_init = s_init.to(dtype=pairformer_dtype)
-        z_init = z_init.to(dtype=pairformer_dtype)
+
+        pair_build_policy = getattr(self.input_embedder, "pair_build_chunk_policy", None)
+        reclaim_recycle_cache = (
+            z_init.is_cuda
+            and pair_build_policy is not None
+            and pair_build_policy.should_chunk(z_init)
+            and not torch.cuda.is_current_stream_capturing()
+        )
+        # Row construction and the trunk use different allocation shapes. Drop
+        # inactive row-build segments before the trunk, then between recycles,
+        # so cached fragments do not accumulate across otherwise identical
+        # cycles. Dense, CPU, and CUDA-capture paths retain the cache.
+        if reclaim_recycle_cache:
+            torch.cuda.empty_cache()
+
         # s: [*, N_token, C_s]
         # z: [*, N_token, N_token, C_z]
         s = torch.zeros_like(s_init)
@@ -258,9 +297,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         token_mask = batch["token_mask"]
         pair_mask = token_mask[..., None] * token_mask[..., None, :]
 
-        for _ in range(num_cycles):
+        for cycle_index in range(num_cycles):
             # [*, N_token, N_token, C_z]
-            z = z_init + self.linear_z(self.layer_norm_z(z))
+            z = self._update_recycle_pair(z_init, z)
 
             z = z + self.template_embedder(batch=batch, z=z, pair_mask=pair_mask).to(dtype=z.dtype)
 
@@ -279,7 +318,11 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
                 z=z,
                 mask=token_mask.to(dtype=pairformer_dtype),
                 pair_mask=pair_mask.to(dtype=pairformer_dtype),
+                inplace_safe=True,
             )
+
+            if reclaim_recycle_cache and cycle_index + 1 < num_cycles:
+                torch.cuda.empty_cache()
 
         return s_input, s, z
 
@@ -316,6 +359,30 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         no_rollout_steps_eff = no_rollout_steps if no_rollout_steps is not None else self.no_rollout_steps
         no_rollout_samples_eff = no_rollout_samples if no_rollout_samples is not None else self.no_rollout_samples
 
+        pair_policy = self.diffusion_module.diffusion_conditioning.pair_projection_chunk_policy
+        prepare_pair_once = (
+            self.diffusion_sampler.use_conditioning
+            and zij_trunk.is_cuda
+            and pair_policy is not None
+            and pair_policy.should_chunk_size(zij_trunk.shape[-3], zij_trunk.device)
+            and not torch.cuda.is_current_stream_capturing()
+        )
+        prepared_zij = None
+        zij_trunk_host = None
+        if prepare_pair_once:
+            # Confidence needs the original FP32 trunk pair after sampling.
+            # Stage it first, then construct conditioned rows on device from
+            # the host snapshot so the two full pair tensors never overlap.
+            zij_trunk_host = zij_trunk.to(device="cpu", non_blocking=False)
+            del zij_trunk
+            torch.cuda.empty_cache()
+            prepared_zij = self.diffusion_module.diffusion_conditioning.prepare_pair(
+                batch=batch,
+                zij_trunk=zij_trunk_host,
+            )
+            torch.cuda.empty_cache()
+            zij_trunk = prepared_zij
+
         noise_schedule = EDMScheduleConfig(
             sigma_data=self.noise_schedule.sigma_data,
             s_max=self.noise_schedule.s_max,
@@ -333,7 +400,14 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             no_rollout_samples=no_rollout_samples_eff,
             attn_metadata=attn_metadata,
             seed=sampling_seed,
+            prepared_zij=prepared_zij,
         )
+
+        if zij_trunk_host is not None:
+            del prepared_zij, zij_trunk
+            torch.cuda.empty_cache()
+            zij_trunk = zij_trunk_host.to(device=si_trunk.device, non_blocking=False)
+            del zij_trunk_host
 
         output = {
             "si_trunk": si_trunk,
@@ -376,11 +450,26 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
 
         batch = tensor_tree_map(lambda t: t.unsqueeze(1), batch)
 
+        # Rebind before prediction so the caller does not retain a second pair
+        # representation at trunk precision throughout diffusion and confidence.
+        diffusion_dtype = self.diffusion_module.dtype
+        si_input = si_input.to(dtype=diffusion_dtype)
+        si_trunk = si_trunk.to(dtype=diffusion_dtype)
+        zij_trunk = zij_trunk.to(dtype=diffusion_dtype)
+
+        # Feature extraction and diffusion use different allocation shapes.
+        # Return wholly unused trunk segments before prediction while the
+        # final trunk representations are the only live model outputs.
+        if zij_trunk.is_cuda and not torch.cuda.is_current_stream_capturing():
+            torch.cuda.empty_cache()
+
+        pair_holder = [zij_trunk]
+        del zij_trunk
         output = self.prediction(
             batch=batch,
-            si_input=si_input.to(dtype=self.diffusion_module.dtype),
-            si_trunk=si_trunk.to(dtype=self.diffusion_module.dtype),
-            zij_trunk=zij_trunk.to(dtype=self.diffusion_module.dtype),
+            si_input=si_input,
+            si_trunk=si_trunk,
+            zij_trunk=pair_holder.pop(),
             attn_metadata=attn_metadata,
             no_rollout_steps=num_sampling_steps,
             no_rollout_samples=diffusion_samples,

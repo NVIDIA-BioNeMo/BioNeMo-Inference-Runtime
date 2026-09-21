@@ -30,7 +30,7 @@ from bionemo_ir._torch.attention_backend.utils import (
     precompute_pair_masks,
     precompute_single_masks,
 )
-from bionemo_ir._torch.layers.transformers.pairformer import PairformerLayerV1
+from bionemo_ir._torch.layers.transformers.pairformer import PairformerLayerV1, PairformerNoSeqModule
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl_single
@@ -591,3 +591,27 @@ def test_pairformer_no_seq_module_forwards_pair_mask_left_aligned():
         assert layer.tri_mul_in.pair_mask_left_aligned is False
         assert layer.tri_attn_start.pair_mask_left_aligned is False
         assert layer.tri_attn_end.pair_mask_left_aligned is False
+
+
+def test_pairformer_no_seq_wrappers_forward_inplace_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    stack = PairformerNoSeqModule(
+        num_blocks=2,
+        token_z=8,
+        pairwise_head_width=4,
+        pairwise_num_heads=2,
+        dtype=torch.float32,
+        triangle_attn_backend="VANILLA",
+        pairwise_attn_backend="VANILLA",
+        skip_create_weights=True,
+    )
+    seen: list[bool] = []
+
+    def record_forward(self, *, z: torch.Tensor, **kwargs):
+        seen.append(kwargs["inplace_safe"])
+        return None, z
+
+    monkeypatch.setattr(PairformerLayerV1, "forward", record_forward)
+    z = torch.randn(1, 4, 4, 8)
+    pair_mask = torch.ones(1, 4, 4)
+    assert stack(z, pair_mask, inplace_safe=True) is z
+    assert seen == [True, True]

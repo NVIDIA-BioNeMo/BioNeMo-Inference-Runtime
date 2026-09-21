@@ -210,7 +210,8 @@ class GatedSigmoidCuTe(CuteKernelCache):
             weight: Projection weight with shape ``[N, K]``.
             mha_out: Attention output with shape ``[..., N]``. Its leading
                 dimensions may differ from ``s`` in one dimension where
-                ``s`` has size 1.
+                ``s`` has size 1, or may have a different shape with the same
+                flattened row count.
             bias: Optional projection bias with shape ``[N]``.
             output: Optional output tensor matching ``mha_out``.
 
@@ -220,12 +221,60 @@ class GatedSigmoidCuTe(CuteKernelCache):
         K = s.shape[-1]
         N_out = weight.shape[0]
 
+        if (
+            weight.ndim != 2
+            or weight.shape[1] != K
+            or mha_out.ndim < 1
+            or mha_out.shape[-1] != N_out
+            or (bias is not None and (bias.ndim != 1 or bias.shape[0] != N_out))
+        ):
+            return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+
+        s_2d = s.reshape(-1, K)
+        M_s = s_2d.shape[0]
+        mha_2d = mha_out.reshape(-1, N_out)
+        M_out = mha_2d.shape[0]
+
+        def supports_row_major_2d(tensor: torch.Tensor) -> bool:
+            return tensor.ndim == 2 and tensor.layout == torch.strided and tensor.stride(1) == 1
+
+        output_2d: torch.Tensor | None = None
+        if output is not None:
+            if (
+                output.shape != mha_out.shape
+                or output.dtype != mha_out.dtype
+                or output.device != mha_out.device
+                or output.layout != torch.strided
+            ):
+                return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+            try:
+                output_2d = output.view(M_out, N_out)
+            except RuntimeError:
+                return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+
+        operands = (s_2d, weight, mha_2d)
+        if (
+            not all(supports_row_major_2d(tensor) for tensor in operands)
+            or any(tensor.dtype != s.dtype or tensor.device != s.device for tensor in operands[1:])
+            or (
+                bias is not None
+                and (bias.ndim != 1 or bias.stride(0) != 1 or bias.dtype != s.dtype or bias.device != s.device)
+            )
+            or (output_2d is not None and not supports_row_major_2d(output_2d))
+        ):
+            return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+
         # Allow one broadcast leading dimension.
         s_lead = s.shape[:-1]
         mha_lead = mha_out.shape[:-1]
         mult = 1
         inner: int | None = None
-        if s_lead != mha_lead:
+        # Triangle attention retains the batched gate input while flattening
+        # its reusable attention-output buffer. Equal flattened row counts are
+        # still the same row-wise operation and need no broadcast.
+        if M_s == M_out:
+            inner = M_s
+        elif s_lead != mha_lead:
             mismatched = [i for i in range(len(mha_lead)) if i >= len(s_lead) or s_lead[i] != mha_lead[i]]
             if len(s_lead) != len(mha_lead) or len(mismatched) != 1 or s_lead[mismatched[0]] != 1:
                 return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
@@ -235,10 +284,6 @@ class GatedSigmoidCuTe(CuteKernelCache):
             for d in range(bcast_dim + 1, len(mha_lead)):
                 inner *= int(mha_lead[d])
 
-        s_2d = s.reshape(-1, K)
-        M_s = s_2d.shape[0]
-        mha_2d = mha_out.reshape(-1, N_out)
-        M_out = mha_2d.shape[0]
         if inner is None:
             inner = M_s
 
@@ -258,20 +303,11 @@ class GatedSigmoidCuTe(CuteKernelCache):
             self._last_exe = exe
 
         # No-bias kernels omit the bias argument from their ABI.
-        out_provided = (
-            output is not None
-            and output.is_contiguous()
-            and output.shape[-1] == N_out
-            and output.numel() == M_out * N_out
-        )
-        if out_provided:
-            out_2d = output.view(M_out, N_out)
-        else:
-            out_2d = torch.empty_like(mha_2d)
+        out_2d = output_2d if output_2d is not None else torch.empty_like(mha_2d)
 
         launch_compiled_kernel(exe, s_2d, weight, bias, mha_2d, out_2d, mult, inner)
 
-        if out_provided:
+        if output is not None:
             return output
         if mha_out.ndim == 2:
             return out_2d

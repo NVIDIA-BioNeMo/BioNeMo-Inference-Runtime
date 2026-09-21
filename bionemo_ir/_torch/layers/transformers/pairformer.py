@@ -184,7 +184,17 @@ class PairformerLayerV1(nn.Module):
         attn_metadatas: dict[str, AttentionMetadata] | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
+        inplace_safe: bool = False,
     ) -> torch.Tensor:
+        can_update_inplace = inplace_safe and (not z.is_cuda or not torch.cuda.is_current_stream_capturing())
+
+        def add_residual(update: torch.Tensor) -> None:
+            nonlocal z
+            if can_update_inplace:
+                z.add_(update)
+            else:
+                z = z + update
+
         # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
         # Otherwise, let the wrapper derive masking from ``pair_mask``.
         tri_out_actual_seqlen = tri_in_actual_seqlen = None
@@ -195,8 +205,8 @@ class PairformerLayerV1(nn.Module):
         ):
             tri_out_actual_seqlen = precomputed_masks.mask_bias
             tri_in_actual_seqlen = precomputed_masks.mask_bias_transposed
-        z = z + self.tri_mul_out(z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen)
-        z = z + self.tri_mul_in(z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen)
+        add_residual(self.tri_mul_out(z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen))
+        add_residual(self.tri_mul_in(z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen))
         z = z.to(self.dtype)
 
         tri_attn_metadata = (attn_metadatas or {}).get("triangle_attn")
@@ -209,12 +219,14 @@ class PairformerLayerV1(nn.Module):
             mb_start = mb_end = None
             pair_mask = pair_mask.to(self.dtype)
 
-        z = z + self.tri_attn_start(
-            z, mask=pair_mask, mask_bias=mb_start, attn_metadata=tri_attn_metadata, buffers=buffers
+        add_residual(
+            self.tri_attn_start(z, mask=pair_mask, mask_bias=mb_start, attn_metadata=tri_attn_metadata, buffers=buffers)
         )
-        z = z + self.tri_attn_end(z, mask=pair_mask, mask_bias=mb_end, attn_metadata=tri_attn_metadata, buffers=buffers)
+        add_residual(
+            self.tri_attn_end(z, mask=pair_mask, mask_bias=mb_end, attn_metadata=tri_attn_metadata, buffers=buffers)
+        )
 
-        z = z + self.transition_z(z)
+        add_residual(self.transition_z(z))
         return z
 
     def forward(
@@ -229,7 +241,14 @@ class PairformerLayerV1(nn.Module):
         buffers: PreallocatedBuffers | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self._transform_z(z, pair_mask, attn_metadatas, precomputed_masks=precomputed_masks, buffers=buffers)
+        z = self._transform_z(
+            z,
+            pair_mask,
+            attn_metadatas,
+            precomputed_masks=precomputed_masks,
+            buffers=buffers,
+            inplace_safe=bool(kwargs.get("inplace_safe", False)),
+        )
         if not self.no_update_s:
             mask_bias = precomputed_single_masks.mask_bias if precomputed_single_masks else None
             s = s + self.attention(
@@ -282,6 +301,7 @@ class PairformerNoSeqLayer(PairformerLayerV1):
             precomputed_masks=precomputed_masks,
             precomputed_single_masks=precomputed_single_masks,
             buffers=buffers,
+            **kwargs,
         )
         return update_z
 
@@ -327,7 +347,7 @@ class PairformerNoSeqModule(nn.Module):
         if buffers is None and first_layer.triangle_attn_backend == "CuTeDSL":
             buffers = {}
         for layer in self.layers:
-            z = layer(z, pair_mask, attn_metadatas, precomputed_masks=precomputed, buffers=buffers)
+            z = layer(z, pair_mask, attn_metadatas, precomputed_masks=precomputed, buffers=buffers, **kwargs)
         return z
 
 
@@ -350,8 +370,16 @@ class PairformerLayerV2(PairformerLayerV1):
         precomputed_masks: PrecomputedPairMasks | None = None,
         precomputed_single_masks: PrecomputedSingleMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
+        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self._transform_z(z, pair_mask, attn_metadatas, precomputed_masks=precomputed_masks, buffers=buffers)
+        z = self._transform_z(
+            z,
+            pair_mask,
+            attn_metadatas,
+            precomputed_masks=precomputed_masks,
+            buffers=buffers,
+            inplace_safe=bool(kwargs.get("inplace_safe", False)),
+        )
         original_s_dtype = s.dtype
         original_z_dtype = z.dtype
 
@@ -481,6 +509,7 @@ class PairformerModule(nn.Module):
         _uses_cute = "CuTeDSL" in (self.config.triangle_attention_backend, self.config.pairwise_attention_backend)
         if buffers is None and _uses_cute:
             buffers = {}
+        inplace_safe = bool(kwargs.get("inplace_safe", False))
         for layer in self.layers:
             s, z = layer(
                 s,
@@ -491,5 +520,6 @@ class PairformerModule(nn.Module):
                 precomputed_masks=precomputed,
                 precomputed_single_masks=precomputed_single,
                 buffers=buffers,
+                inplace_safe=inplace_safe,
             )
         return s, z

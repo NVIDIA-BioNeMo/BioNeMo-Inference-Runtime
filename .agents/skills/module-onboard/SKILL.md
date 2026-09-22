@@ -112,6 +112,20 @@ Do ALL file reads and analysis upfront before proceeding.
 
 ### Step 0 — GPU & environment sanity check
 
+When working from a BioIR checkout, create and activate its locked environment
+before running the BioIR checks below. Keep this environment unchanged:
+
+```bash
+uv sync --locked
+source .venv/bin/activate
+```
+
+When BioIR comes from a wheel, activate the environment that owns that wheel
+for the BioIR checks and keep it unchanged. Run later plain `pip install` steps
+in a separate environment with BioIR installed. If a BioIR check environment
+was modified, recreate it from the lock or reinstall the wheel before
+continuing.
+
 1. Run `nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits` to
    get available VRAM.
 1. Estimate module memory footprint (parameter count x bytes-per-dtype). If it

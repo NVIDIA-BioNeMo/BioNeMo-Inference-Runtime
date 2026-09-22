@@ -83,16 +83,27 @@ git lfs install &&
   cd BioNeMo-Inference-Runtime
 ```
 
-Then, build the dev image and open a shell in it:
+On a host with the required compiler and CUDA headers, uv provisions the pinned
+Python and exact dependency set, builds the editable extension, and runs tools
+inside that environment:
+
+```bash
+uv sync --locked
+uv run --locked scripts/fetch_weights.sh --model boltz-2
+uv run --locked python examples/folding/run_demo.py --output-dir output
+```
+
+The supported container workflow remains available when the host is not
+configured:
 
 ```bash
 docker/dev.sh
 ```
 
-The image carries the dependencies; your checkout is bind-mounted, so install
-the package once inside and fold something:
+Then run inside its shell:
 
 ```bash
+uv lock --check
 uv pip install --no-deps -e .
 scripts/fetch_weights.sh --model boltz-2
 python examples/folding/run_demo.py --output-dir output
@@ -100,14 +111,14 @@ python examples/folding/run_demo.py --output-dir output
 
 Checkpoints come from their upstream publishers and need no NVIDIA credentials;
 anything that cannot be fetched is skipped, and the tests needing it skip too.
-Running `scripts/run_tests.sh` stages weights and runs the suite the way CI
-does.
+Running `uv run --locked scripts/run_tests.sh` on the host, or
+`scripts/run_tests.sh` in the container, stages weights and runs the suite the
+way CI does.
 
-Building without a container needs more than a Python environment — see
-[`docs/dev.md`](docs/dev.md#prerequisites-for-bioir-development-workflow) for
-the prerequisites and the wheel build. The rest of that page covers daily
-development; [`docs/ref/docker-images.md`](docs/ref/docker-images.md) covers the
-images and what `docker/dev.sh` mounts.
+See [`docs/dev.md`](docs/dev.md#prerequisites-for-bioir-development-workflow)
+for the host prerequisites, environment details and wheel build.
+[`docs/ref/docker-images.md`](docs/ref/docker-images.md) covers the images and
+what `docker/dev.sh` mounts.
 
 ## Documentation
 

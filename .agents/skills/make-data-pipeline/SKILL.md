@@ -221,7 +221,7 @@ phases.
 ### Step 4 — Verify BioIR base classes are available
 
 ```bash
-python -c "from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase, FeatureGeneratorBase, FeatureCollatorBase; print('OK')"
+uv run --locked python -c "from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase, FeatureGeneratorBase, FeatureCollatorBase; print('OK')"
 ```
 
 If this fails in a host checkout, run `uv sync --locked`. In the prepared

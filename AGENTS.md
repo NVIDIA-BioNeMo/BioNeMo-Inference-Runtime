@@ -11,9 +11,9 @@ This repo is **BioIR** (BioNeMo Inference Runtime).
 ## Project checks
 
 - **Read and follow [`docs/coding.md`][coding]**
-- **Run the hooks before committing.** Install once with `prek install`; they
-  then run on `git commit`. Or run ad hoc with `prek run`. CI enforces the same
-  set.
+- **Run the hooks before committing.** Install once with
+  `uv run --locked prek install`; they then run on `git commit`. Or run ad hoc
+  with `uv run --locked prek run`. CI enforces the same set.
 - **License headers.** Every source file carries the NVIDIA SPDX Apache-2.0
   header; `insert-license` adds it where missing.
 - **Sign every commit** (`git commit -s`). CI blocks unsigned work; see

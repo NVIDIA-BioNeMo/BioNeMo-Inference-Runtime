@@ -198,6 +198,10 @@ def _assemble_batched_kwargs(per_sample):
     batched = dict(padded[0])
     for key in ("xl_noisy", "token_mask", "atom_mask", "si_input", "si_trunk", "zij_trunk"):
         batched[key] = torch.cat([p[key] for p in padded], dim=0)
+    if all(p.get("prepared_zij") is not None for p in padded):
+        batched["prepared_zij"] = torch.cat([p["prepared_zij"] for p in padded], dim=0)
+    else:
+        batched.pop("prepared_zij", None)
     # Stack every ``batch`` field whose padded shape matches across samples
     # (the atom/token-indexed features the diffusion module consumes). Fields
     # that stay ragged after padding (e.g. MSA/template tensors with a

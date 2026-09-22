@@ -330,20 +330,25 @@ class _PairCacheConditioning:
     def __init__(self, events: list[str], *, min_size: int) -> None:
         self.events = events
         self.pair_projection_chunk_policy = ChunkPolicy(chunk_size=2, min_size=min_size, dim=2, min_rank=5)
+        self.prepared_refs: list[weakref.ReferenceType[torch.Tensor]] = []
 
     def prepare_pair(self, *, batch: dict[str, torch.Tensor], zij_trunk: torch.Tensor) -> torch.Tensor:
-        assert zij_trunk.device.type == "cpu"
-        self.events.append("prepare_pair")
-        return zij_trunk.to(device=batch["token_mask"].device)
+        self.events.append(f"prepare_pair:{zij_trunk.device.type}")
+        prepared = zij_trunk.to(device=batch["token_mask"].device) * 2
+        self.prepared_refs.append(weakref.ref(prepared))
+        return prepared
 
 
 class _PairCacheSampler:
     use_conditioning = True
 
-    def __init__(self, events: list[str], expected_pair: torch.Tensor, *, expect_prepared: bool) -> None:
+    def __init__(
+        self, events: list[str], expected_pair: torch.Tensor, *, expect_prepared: bool, expect_offload: bool
+    ) -> None:
         self.events = events
         self.expected_pair = expected_pair
         self.expect_prepared = expect_prepared
+        self.expect_offload = expect_offload
 
     def __call__(
         self,
@@ -356,11 +361,13 @@ class _PairCacheSampler:
         self.events.append("sample")
         if self.expect_prepared:
             assert prepared_zij is not None
-            assert prepared_zij.data_ptr() == zij_trunk.data_ptr()
+            assert torch.equal(prepared_zij, self.expected_pair * 2)
+            assert (prepared_zij.data_ptr() == zij_trunk.data_ptr()) == self.expect_offload
         else:
             assert prepared_zij is None
         assert zij_trunk.is_cuda
-        assert torch.equal(zij_trunk, self.expected_pair)
+        expected_trunk = self.expected_pair * 2 if self.expect_offload else self.expected_pair
+        assert torch.equal(zij_trunk, expected_trunk)
         return torch.zeros((*batch["atom_mask"].shape, 3), device=zij_trunk.device)
 
 
@@ -379,10 +386,20 @@ class _PairCacheAuxHeads:
 class _PairCachePredictionProbe:
     prediction = OpenFold3.prediction
 
-    def __init__(self, events: list[str], expected_pair: torch.Tensor, *, min_size: int, expect_prepared: bool) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        expected_pair: torch.Tensor,
+        *,
+        min_size: int,
+        expect_prepared: bool,
+        expect_offload: bool = False,
+    ) -> None:
         conditioning = _PairCacheConditioning(events, min_size=min_size)
         self.diffusion_module = SimpleNamespace(diffusion_conditioning=conditioning)
-        self.diffusion_sampler = _PairCacheSampler(events, expected_pair, expect_prepared=expect_prepared)
+        self.diffusion_sampler = _PairCacheSampler(
+            events, expected_pair, expect_prepared=expect_prepared, expect_offload=expect_offload
+        )
         self.aux_heads = _PairCacheAuxHeads(events, expected_pair)
         self.no_rollout_steps = 2
         self.no_rollout_samples = 1
@@ -391,22 +408,35 @@ class _PairCachePredictionProbe:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize(
-    ("mode", "min_size", "expect_prepared", "expected_events"),
+    ("mode", "min_size", "expect_prepared", "expect_offload", "expected_events"),
     [
         (
             "inference",
             1,
             True,
-            ["empty_cache", "prepare_pair", "empty_cache", "sample", "empty_cache", "aux_heads"],
+            True,
+            ["empty_cache", "prepare_pair:cpu", "empty_cache", "sample", "empty_cache", "aux_heads"],
         ),
-        ("short", 8, False, ["sample", "aux_heads"]),
-        ("capture", 1, False, ["sample", "aux_heads"]),
+        ("short", 8, True, False, ["prepare_pair:cuda", "sample", "aux_heads"]),
+        ("no_policy", 1, True, False, ["prepare_pair:cuda", "sample", "aux_heads"]),
+        ("disabled_policy", 1, True, False, ["prepare_pair:cuda", "sample", "aux_heads"]),
+        ("unconditioned", 1, False, False, ["sample", "aux_heads"]),
+        (
+            "grad",
+            1,
+            True,
+            True,
+            ["empty_cache", "prepare_pair:cpu", "empty_cache", "sample", "empty_cache", "aux_heads"],
+        ),
+        ("grad", 8, True, False, ["prepare_pair:cuda", "sample", "aux_heads"]),
+        ("capture", 1, False, False, ["sample", "aux_heads"]),
     ],
 )
 def test_prediction_stages_trunk_pair_around_cached_rollout(
     mode: str,
     min_size: int,
     expect_prepared: bool,
+    expect_offload: bool,
     expected_events: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,14 +449,21 @@ def test_prediction_stages_trunk_pair_around_cached_rollout(
         expected_pair,
         min_size=min_size,
         expect_prepared=expect_prepared,
+        expect_offload=expect_offload,
     )
+    conditioning = probe.diffusion_module.diffusion_conditioning
+    if mode == "no_policy":
+        conditioning.pair_projection_chunk_policy = None
+    elif mode == "disabled_policy":
+        conditioning.pair_projection_chunk_policy = conditioning.pair_projection_chunk_policy.replace(enabled=False)
+    probe.diffusion_sampler.use_conditioning = mode != "unconditioned"
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty_cache"))
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: mode == "capture")
     batch = {
         "token_mask": torch.ones(1, 1, tokens, device=device),
         "atom_mask": torch.ones(1, 1, tokens, device=device),
     }
-    with torch.inference_mode():
+    with torch.inference_mode(mode != "grad"), torch.set_grad_enabled(mode == "grad"):
         output = probe.prediction(
             batch=batch,
             si_input=torch.randn(1, 1, tokens, channels, device=device),
@@ -436,3 +473,29 @@ def test_prediction_stages_trunk_pair_around_cached_rollout(
 
     assert events == expected_events
     assert torch.equal(output["zij_trunk"], expected_pair)
+    assert all(reference() is None for reference in conditioning.prepared_refs)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_prediction_refreshes_conditioning_for_each_rollout() -> None:
+    device = torch.device("cuda", torch.cuda.current_device())
+    events: list[str] = []
+    pair = torch.randn(1, 1, 4, 4, 2, device=device)
+    probe = _PairCachePredictionProbe(events, pair, min_size=8, expect_prepared=True)
+    with torch.inference_mode():
+        for tokens in (4, 4, 5):
+            pair = torch.randn(1, 1, tokens, tokens, 2, device=device)
+            probe.diffusion_sampler.expected_pair = pair.clone()
+            probe.aux_heads.expected_pair = pair.clone()
+            probe.prediction(
+                batch={
+                    "token_mask": torch.ones(1, 1, tokens, device=device),
+                    "atom_mask": torch.ones(1, 1, tokens, device=device),
+                },
+                si_input=torch.randn(1, 1, tokens, 2, device=device),
+                si_trunk=torch.randn(1, 1, tokens, 2, device=device),
+                zij_trunk=pair,
+            )
+            pair.add_(1)
+            assert all(reference() is None for reference in probe.diffusion_module.diffusion_conditioning.prepared_refs)
+    assert events == ["prepare_pair:cuda", "sample", "aux_heads"] * 3

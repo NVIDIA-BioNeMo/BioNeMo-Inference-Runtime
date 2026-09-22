@@ -257,6 +257,55 @@ def test_openfold3_diffusion_conditioning_split_is_exact_with_host_pair() -> Non
     assert torch.equal(actual_zij, expected_zij)
 
 
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_dense_prepared_pair_matches_full_conditioning_across_timesteps(batch_size: int) -> None:
+    torch.manual_seed(19)
+    device = torch.device("cuda", torch.cuda.current_device())
+    tokens = 8
+    module = DiffusionConditioning(
+        c_s_input=8,
+        c_s=16,
+        c_z=8,
+        c_fourier_emb=8,
+        max_relative_idx=2,
+        max_relative_chain=1,
+        sigma_data=16.0,
+        dtype=torch.float32,
+    ).to(device)
+    replace_with_fused_layernorm(module)
+    module.pair_projection_chunk_policy = None
+    batch = {
+        name: torch.randint(0, 4, (batch_size, 1, tokens), device=device)
+        for name in ("residue_index", "asym_id", "entity_id", "token_index", "sym_id")
+    }
+    batch["token_mask"] = torch.ones(batch_size, 1, tokens, device=device)
+    batch["token_mask"][..., -2:] = 0
+    si_input = torch.randn(batch_size, 1, tokens, 8, device=device)
+    si_trunk = torch.randn(batch_size, 1, tokens, 16, device=device)
+    zij_trunk = torch.randn(batch_size, 1, tokens, tokens, 8, device=device)
+    original_trunk = zij_trunk.clone()
+
+    with torch.inference_mode():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.1)
+        prepared = module.prepare_pair(batch=batch, zij_trunk=zij_trunk)
+        original_prepared = prepared.clone()
+        singles = []
+        for noise_level in (80.0, 1.5, 0.01):
+            t = torch.full((batch_size, 1), noise_level, device=device)
+            expected_si, expected_zij = module(
+                batch=batch, t=t, si_input=si_input, si_trunk=si_trunk, zij_trunk=zij_trunk
+            )
+            single = module.forward_single(batch=batch, t=t, si_input=si_input, si_trunk=si_trunk)
+            torch.testing.assert_close(single, expected_si, atol=0, rtol=0)
+            torch.testing.assert_close(prepared, expected_zij, atol=0, rtol=0)
+            singles.append(single)
+
+    assert not torch.equal(singles[0], singles[-1])
+    assert torch.equal(zij_trunk, original_trunk)
+    assert torch.equal(prepared, original_prepared)
+
+
 def test_openfold3_diffusion_pair_projection_preserves_autocast_dtype() -> None:
     torch.manual_seed(13)
     device = torch.device("cuda", torch.cuda.current_device())

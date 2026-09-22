@@ -140,7 +140,8 @@ def test_of3_diffusion_module_eager_batched_matches_separate(_of3_diffusion_capt
         assert rel < 0.02, f"batched sample {i} differs from separate B=1 by mean-relative {rel:.2%} (> 2%)"
 
 
-def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_capture, sample_id="T1038"):
+@pytest.mark.parametrize("prepare_pair", [False, True])
+def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_capture, prepare_pair, sample_id="T1038"):
     assert sample_id == _SAMPLE_IDS[0], (
         f"sample_id={sample_id!r} would need its own capture — _of3_diffusion_capture only covers {_SAMPLE_IDS}"
     )
@@ -154,6 +155,7 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
     # T1047s1 (232), so index 0 is always T1038 — see _SAMPLE_IDS above.
     module, per_sample, _ = _of3_diffusion_capture
     kwargs = clone_tree(per_sample[0])
+    kwargs.pop("prepared_zij", None)
 
     module = module.eval()
     assert kwargs["xl_noisy"].shape[0] == 1, f"expected a B=1 input, got {tuple(kwargs['xl_noisy'].shape)}"
@@ -161,6 +163,11 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
     # --- Eager reference ------------------------------------------------------
     with torch.no_grad():
         eager_out = module(**kwargs).clone()
+        if prepare_pair:
+            kwargs["prepared_zij"] = module.diffusion_conditioning.prepare_pair(
+                batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"]
+            )
+            assert torch.equal(module(**kwargs), eager_out)
 
     # --- Drive the CUDA-graph tracker: warmup -> capture -> replay ------------
     tracker = CUDAGraphOptimizationTracker(_diffusion_graph_config(), inner_module=module).eval()
@@ -186,8 +193,23 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
         f"(max|Δ|={(graph_out.float() - eager_out.float()).abs().max().item():.3e})"
     )
 
+    if prepare_pair:
+        # Reuse the graph for another rollout with equal shapes but new pair
+        # values. The tracker must stage the new cache, not replay stale data.
+        kwargs["zij_trunk"] = kwargs["zij_trunk"] + 0.125
+        with torch.no_grad():
+            kwargs["prepared_zij"] = module.diffusion_conditioning.prepare_pair(
+                batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"]
+            )
+            refreshed_eager = module(**kwargs).clone()
+            refreshed_graph = tracker(**kwargs).clone()
+        assert len(tracker.graph_state_by_key) == 1
+        assert torch.equal(refreshed_graph, refreshed_eager)
+        assert not torch.equal(refreshed_graph, eager_out)
 
-def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_capture):
+
+@pytest.mark.parametrize("prepare_pair", [False, True])
+def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_capture, prepare_pair):
     """A B=2 batch of ("T1038", "T1047s1") run eager equals the same batch run
     through the CUDA-graph-optimized DiffusionModule (InputKeyMethod.EXACT),
     byte-for-byte: the tracker captures a graph for the B=2 input shape and its
@@ -199,6 +221,10 @@ def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_captur
         pytest.skip("openfold3 weights/metadata unavailable")
     module, _, batched = _of3_diffusion_capture
     batched = clone_tree(batched)
+    if not prepare_pair:
+        batched.pop("prepared_zij", None)
+    else:
+        assert batched["prepared_zij"].shape[0] == len(_SAMPLE_IDS)
 
     module = module.eval()
     assert batched["xl_noisy"].shape[0] == len(_SAMPLE_IDS), (

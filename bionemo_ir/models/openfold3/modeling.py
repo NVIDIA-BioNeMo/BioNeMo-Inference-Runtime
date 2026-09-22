@@ -363,13 +363,16 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         prepare_pair_once = (
             self.diffusion_sampler.use_conditioning
             and zij_trunk.is_cuda
-            and pair_policy is not None
-            and pair_policy.should_chunk_size(zij_trunk.shape[-3], zij_trunk.device)
             and not torch.cuda.is_current_stream_capturing()
         )
         prepared_zij = None
         zij_trunk_host = None
-        if prepare_pair_once:
+        offload_trunk_pair = (
+            prepare_pair_once
+            and pair_policy is not None
+            and pair_policy.should_chunk_size(zij_trunk.shape[-3], zij_trunk.device)
+        )
+        if offload_trunk_pair:
             # Confidence needs the original FP32 trunk pair after sampling.
             # Stage it first, then construct conditioned rows on device from
             # the host snapshot so the two full pair tensors never overlap.
@@ -382,6 +385,13 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             )
             torch.cuda.empty_cache()
             zij_trunk = prepared_zij
+        elif prepare_pair_once:
+            # Pair conditioning is noise-independent even below the chunking
+            # threshold. Keep the original trunk pair for confidence heads.
+            prepared_zij = self.diffusion_module.diffusion_conditioning.prepare_pair(
+                batch=batch,
+                zij_trunk=zij_trunk,
+            )
 
         noise_schedule = EDMScheduleConfig(
             sigma_data=self.noise_schedule.sigma_data,
@@ -403,8 +413,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             prepared_zij=prepared_zij,
         )
 
+        del prepared_zij
         if zij_trunk_host is not None:
-            del prepared_zij, zij_trunk
+            del zij_trunk
             torch.cuda.empty_cache()
             zij_trunk = zij_trunk_host.to(device=si_trunk.device, non_blocking=False)
             del zij_trunk_host

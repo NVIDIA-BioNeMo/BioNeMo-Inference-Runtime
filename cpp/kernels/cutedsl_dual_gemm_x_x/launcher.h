@@ -57,16 +57,16 @@ struct SM80Params
   std::int32_t raster_factor;
 };
 
-constexpr std::size_t sm80_parameter_count(bool has_bias, bool has_mask)
+constexpr std::size_t sm80_parameter_count(bool has_bias, bool runtime_mask, bool dynamic_mask = false)
 {
-  return 6U + (has_bias ? 2U : 0U) + (has_mask ? 1U : 0U);
+  return 6U + (has_bias ? 2U : 0U) + ((runtime_mask || dynamic_mask) ? 1U : 0U);
 }
 
-/* Optional operands are compiled out of the parameter bank, so compact the
- * live pointers instead of leaving null placeholders.
+/* Legacy images compact an absent mask out of the parameter bank. Nullable
+ * images always include its descriptor and use a null data pointer at runtime.
  */
-inline std::size_t
-pack_sm80_kernel_params(SM80Params* params, bool has_bias, bool has_mask, void* kernel_params[kSM80MaxParameterCount])
+inline std::size_t pack_sm80_kernel_params(
+  SM80Params* params, bool has_bias, bool runtime_mask, bool dynamic_mask, void* kernel_params[kSM80MaxParameterCount])
 {
   std::size_t count = 0;
   kernel_params[count++] = &params->x;
@@ -77,7 +77,7 @@ pack_sm80_kernel_params(SM80Params* params, bool has_bias, bool has_mask, void* 
     kernel_params[count++] = &params->bias0;
     kernel_params[count++] = &params->bias1;
   }
-  if (has_mask)
+  if (runtime_mask || dynamic_mask)
     kernel_params[count++] = &params->actual_seqlen;
   kernel_params[count++] = &params->output;
   kernel_params[count++] = &params->i_dim;
@@ -108,13 +108,13 @@ struct SM90Params
   std::uint8_t tiled_mma;
 };
 
-constexpr std::size_t sm90_parameter_count(bool has_bias, bool has_mask)
+constexpr std::size_t sm90_parameter_count(bool has_bias, bool runtime_mask, bool dynamic_mask = false)
 {
-  return 12U + (has_bias ? 2U : 0U) + (has_mask ? 1U : 0U);
+  return 12U + (has_bias ? 2U : 0U) + ((runtime_mask || dynamic_mask) ? 1U : 0U);
 }
 
-inline std::size_t
-pack_sm90_kernel_params(SM90Params* params, bool has_bias, bool has_mask, void* kernel_params[kSM90MaxParameterCount])
+inline std::size_t pack_sm90_kernel_params(
+  SM90Params* params, bool has_bias, bool runtime_mask, bool dynamic_mask, void* kernel_params[kSM90MaxParameterCount])
 {
   std::size_t count = 0;
   kernel_params[count++] = &params->x0_tma;
@@ -132,7 +132,7 @@ pack_sm90_kernel_params(SM90Params* params, bool has_bias, bool has_mask, void* 
     kernel_params[count++] = &params->bias0;
     kernel_params[count++] = &params->bias1;
   }
-  if (has_mask)
+  if (runtime_mask || dynamic_mask)
     kernel_params[count++] = &params->actual_seqlen;
   kernel_params[count++] = &params->i_dim;
   kernel_params[count++] = &params->tiled_mma;
@@ -175,7 +175,7 @@ struct KernelConfig
   DType dtype;
   bool transpose_out;
   bool has_bias;
-  bool has_mask;
+  bool runtime_mask;
   /* Epilogue activation. Selects the image and nothing else: silu costs one
    * extra fused multiply inside the epilogue, so it changes machine code while
    * leaving the device parameter bank and its packing identical.
@@ -206,7 +206,7 @@ KernelConfig make_kernel_config(
   DType dtype,
   bool transpose_out,
   bool has_bias,
-  bool has_mask,
+  bool runtime_mask,
   bool silu_gate = false);
 
 std::uint32_t dynamic_smem_bytes(KernelConfig const& config);

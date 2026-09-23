@@ -24,6 +24,7 @@ from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, prec
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.transformers.evoformer import EvoformerBlock
 from bionemo_ir._torch.layers.transition import Transition
+from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata, precompute_trimul_metadata
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, MSA_TRANSITION, PAIR_TRANSITION, recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
 
@@ -149,6 +150,7 @@ class MSAModuleBlock(EvoformerBlock):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadata: AttentionMetadata | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -178,8 +180,8 @@ class MSAModuleBlock(EvoformerBlock):
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
-        z = z + self.tri_mul_out(z, mask=pair_mask)
-        z = z + self.tri_mul_in(z, mask=pair_mask)
+        z = self.tri_mul_out(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
+        z = self.tri_mul_in(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
 
         if precomputed_masks is not None:
             z = z + self.tri_attn_start(z, mask_bias=precomputed_masks.mask_bias, attn_metadata=attn_metadata)
@@ -231,6 +233,7 @@ class MSAModuleStack(nn.Module):
                     last_block=True if i == self.num_blocks - 1 else False,
                 )
             )
+        self.pair_mask_left_aligned = self.blocks[0].pair_mask_left_aligned
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -288,9 +291,23 @@ class MSAModuleStack(nn.Module):
                 dtype=self.blocks[0].dtype,
             )
         )
+        trimul_metadata = precompute_trimul_metadata(
+            z,
+            precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+            precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+            enabled=self.pair_mask_left_aligned,
+        )
 
         for block in self.blocks:
-            m, z = block(m, z, msa_mask, pair_mask, attn_metadata, precomputed_masks=precomputed)
+            m, z = block(
+                m,
+                z,
+                msa_mask,
+                pair_mask,
+                trimul_metadata,
+                attn_metadata,
+                precomputed_masks=precomputed,
+            )
         if n_dims == 3:
             m = m.squeeze(0)
             z = z.squeeze(0)

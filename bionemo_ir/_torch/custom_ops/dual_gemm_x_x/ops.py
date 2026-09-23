@@ -142,13 +142,33 @@ def get_dual_gemm_x_x_op(
         return _invoke_vanilla_dual_gemm_x_x
     sm = get_sm_version()
     has_cute_config = sm in _CUTE_SMS and _has_direct_config_for_gate(sm, K, N, gate)
-    if has_cute_config and pair_mask_left_aligned:
-        return _invoke_cute_dual_gemm_x_x
+    if has_cute_config:
+        return _invoke_cute_dual_gemm_x_x if pair_mask_left_aligned else _invoke_cute_dual_gemm_x_x_masked
     if gate != "sigmoid":
         return _invoke_vanilla_dual_gemm_x_x
-    if has_cute_config or (N, K) in _CUEQUIV_FALLBACK_SHAPES:
+    if (N, K) in _CUEQUIV_FALLBACK_SHAPES:
         return _invoke_cuequiv_dual_gemm_x_x
     return _invoke_vanilla_dual_gemm_x_x
+
+
+def _invoke_cute_dual_gemm_x_x_masked(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    bias1: torch.Tensor | None = None,
+    bias2: torch.Tensor | None = None,
+    mask: torch.Tensor | None = None,
+    transpose_out: bool = False,
+    actual_seqlen: torch.Tensor | None = None,
+    gate: str = "sigmoid",
+) -> torch.Tensor:
+    """Project every position, then zero rows selected by an arbitrary mask."""
+    del actual_seqlen
+    output = _invoke_cute_dual_gemm_x_x(x, w1, w2, bias1, bias2, transpose_out=transpose_out, gate=gate)
+    if mask is not None:
+        matrix = output.flatten(1).T if transpose_out else output.reshape(-1, output.shape[-1])
+        matrix.masked_fill_(~mask.reshape(-1, 1).bool(), 0)
+    return output
 
 
 def get_cute_dual_gemm_x_x_op(

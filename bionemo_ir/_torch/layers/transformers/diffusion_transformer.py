@@ -37,14 +37,18 @@ from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 
-def build_bias_mega_weight(layers: nn.ModuleList) -> torch.Tensor:
+def build_bias_mega_weight(layers: nn.ModuleList, attn_attr: str = "pair_bias_attn") -> torch.Tensor:
     """Fold LayerNorm gamma into pair-bias weights and stack them.
+
+    Args:
+        layers: transformer layers, each holding an ``AttentionPairBias``.
+        attn_attr: attribute name of that attention on each layer.
 
     Returns ``[num_layers * num_heads, c_z]`` for one shared normalization.
     """
     parts: list[torch.Tensor] = []
     for layer in layers:
-        proj_z = layer.pair_bias_attn.proj_z
+        proj_z = getattr(layer, attn_attr).proj_z
         ln = proj_z[0] if len(proj_z) > 1 else None
         proj = proj_z[-1]
         w = proj.weight.data  # [H, D]
@@ -54,6 +58,32 @@ def build_bias_mega_weight(layers: nn.ModuleList) -> torch.Tensor:
     return torch.cat(parts, dim=0).contiguous()  # [N*H, D]
 
 
+def build_bias_mega_offset(layers: nn.ModuleList, attn_attr: str = "pair_bias_attn") -> torch.Tensor | None:
+    """Fold a biased pair LayerNorm's beta into a per-head constant.
+
+    ``W @ (gamma * z_hat + beta)`` splits into the gamma term handled by
+    :func:`build_bias_mega_weight` and ``W @ beta``, one constant per head.
+    Adding a constant to every logit of a softmax row is mathematically a
+    no-op, but it is folded in anyway (free, as the GEMM's epilogue) so the
+    precomputed path stays bit-comparable with the per-layer path.
+
+    Returns ``[num_layers * num_heads]``, or ``None`` when no pair LayerNorm
+    carries a bias (OpenFold3 and Protenix force ``bias=False`` there).
+    """
+    parts: list[torch.Tensor] = []
+    for layer in layers:
+        proj_z = getattr(layer, attn_attr).proj_z
+        ln = proj_z[0] if len(proj_z) > 1 else None
+        beta = getattr(ln, "bias", None) if ln is not None else None
+        proj = proj_z[-1]
+        if beta is None:
+            parts.append(torch.zeros(proj.weight.shape[0], dtype=proj.weight.dtype, device=proj.weight.device))
+        else:
+            parts.append(proj.weight.data @ beta.data)  # [H, D] @ [D] -> [H]
+    offset = torch.cat(parts, dim=0).contiguous()  # [N*H]
+    return None if not offset.any() else offset
+
+
 def precompute_pair_biases(
     z: torch.Tensor,
     w_mega: torch.Tensor,
@@ -61,6 +91,8 @@ def precompute_pair_biases(
     num_heads: int,
     norm_eps: float,
     bias_pad_multiple: int = -1,
+    bias_offset: torch.Tensor | None = None,
+    rms_norm: bool = False,
 ) -> list[torch.Tensor]:
     """Project every layer's pair bias with one normalization and GEMM.
 
@@ -69,6 +101,9 @@ def precompute_pair_biases(
         w_mega: fused projection ``[num_layers * num_heads, c_z]`` from
             :func:`build_bias_mega_weight`.
         bias_pad_multiple: key padding multiple; ``<= 0`` disables padding.
+        bias_offset: optional ``[num_layers * num_heads]`` per-head constant
+            from :func:`build_bias_mega_offset`, applied in the GEMM epilogue.
+        rms_norm: Normalize pair features with RMSNorm instead of LayerNorm.
 
     Returns:
         ``num_layers`` tensors, each ``[*, num_heads, I, J_pad]``.
@@ -87,9 +122,16 @@ def precompute_pair_biases(
         eps=norm_eps,
         elementwise_affine=False,
         layout="nd->nd",  # codespell:ignore nd
+        rms_norm=rms_norm,
     ).view_as(z)
-    out = torch.mm(w_mega, z_hat.reshape(-1, D).t().contiguous())
+    z_flat_t = z_hat.reshape(-1, D).t().contiguous()
+    if bias_offset is None:
+        out = torch.mm(w_mega, z_flat_t)
+    else:
+        out = torch.addmm(bias_offset.unsqueeze(1), w_mega, z_flat_t)
     out = out.reshape(num_layers, num_heads, b_flat, I, J_pad)
+    if bias_offset is not None and J_pad != J:
+        out[..., J:] = 0
     biases: list[torch.Tensor] = []
     for i in range(num_layers):
         if b_flat == 1:

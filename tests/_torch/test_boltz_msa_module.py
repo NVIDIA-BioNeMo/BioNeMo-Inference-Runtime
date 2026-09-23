@@ -27,6 +27,7 @@ from test_utils.boltz.ref_layers import RefMSALayer, RefMSAModule
 
 from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks
+from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
 from bionemo_ir._torch.modules.boltz.trunk import MSALayer, MSAModule
 from bionemo_ir.models.boltz2.config import MSAModuleConfig
 from bionemo_ir.utils import str_dtype_to_torch
@@ -95,7 +96,14 @@ def test_msa_layer(sc: Scenario):
 
         ref_mod = ref_mod.to(dtype)
         ref_z, ref_m = ref_mod(z, m, token_mask, msa_mask)
-        output_z, output_m = msa_layer(z, m, token_mask, msa_mask, attn_metadata=triangle_metadata_cls())
+        output_z, output_m = msa_layer(
+            z,
+            m,
+            token_mask,
+            msa_mask,
+            precompute_trimul_metadata(z, None, None),
+            attn_metadata=triangle_metadata_cls(),
+        )
 
     assert ref_z.shape == output_z.shape
     assert ref_m.shape == output_m.shape
@@ -261,17 +269,30 @@ def test_msa_layer_precomputed_masks(sc: Scenario):
     triangle_metadata_cls = get_attention_backend(sc.triangle_attn_backend, AttentionType.TRIANGLE).Metadata
 
     precomputed = precompute_pair_masks(sc.triangle_attn_backend, token_mask, inf=msa_layer.inf, dtype=dtype)
+    trimul_metadata = precompute_trimul_metadata(
+        z,
+        precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+        precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+    )
 
     # MSALayer accumulates into z/m *in place* (memory opt), so it consumes its inputs. Give each
     # call its own copy, otherwise the second call would run on the first call's mutated z/m rather
     # than the same inputs -- the two mask paths must be compared on identical inputs.
     with torch.inference_mode():
-        out_z, out_m = msa_layer(z.clone(), m.clone(), token_mask, msa_mask, attn_metadata=triangle_metadata_cls())
+        out_z, out_m = msa_layer(
+            z.clone(),
+            m.clone(),
+            token_mask,
+            msa_mask,
+            trimul_metadata,
+            attn_metadata=triangle_metadata_cls(),
+        )
         out_z_pre, out_m_pre = msa_layer(
             z.clone(),
             m.clone(),
             token_mask,
             msa_mask,
+            trimul_metadata,
             attn_metadata=triangle_metadata_cls(),
             precomputed_masks=precomputed,
         )

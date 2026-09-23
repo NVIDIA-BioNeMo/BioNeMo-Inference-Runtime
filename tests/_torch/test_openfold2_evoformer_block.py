@@ -27,6 +27,7 @@ from test_utils.openfold.ref_layers import RefEvoformerBlock
 
 from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
 from bionemo_ir._torch.layers.transformers.evoformer import EvoformerBlock
+from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata, precompute_trimul_metadata
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
@@ -114,7 +115,13 @@ def test_evoformer_block(sc: Scenario):
         msa_mask_t = msa_mask.to(torch_dtype)
         pair_mask_t = pair_mask.to(torch_dtype)
 
-        output_m, output_z = module(m_t, z_t, msa_mask_t, pair_mask_t)
+        output_m, output_z = module(
+            m_t,
+            z_t,
+            msa_mask_t,
+            pair_mask_t,
+            precompute_trimul_metadata(z_t, None, None),
+        )
 
     # Mask outputs at padded positions before comparing: PyTorch reference
     # produces NaN at fully-masked-key softmax rows (seq_mask padding) and
@@ -186,10 +193,22 @@ def test_evoformer_block_precomputed_masks(sc: Scenario):
     pair_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
 
     precomputed = precompute_pair_masks(sc.triangle_attn_backend, pair_mask, inf=ref_module.inf, dtype=torch_dtype)
+    trimul_metadata = precompute_trimul_metadata(
+        z,
+        precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+        precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+    )
 
     with torch.inference_mode():
-        out_m, out_z = module(m, z, msa_mask, pair_mask)
-        out_m_pre, out_z_pre = module(m, z, msa_mask, pair_mask, precomputed_masks=precomputed)
+        out_m, out_z = module(m, z, msa_mask, pair_mask, trimul_metadata)
+        out_m_pre, out_z_pre = module(
+            m,
+            z,
+            msa_mask,
+            pair_mask,
+            trimul_metadata,
+            precomputed_masks=precomputed,
+        )
 
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
@@ -238,14 +257,7 @@ class _SpyModule(torch.nn.Module):
 
 
 def test_evoformer_block_actual_seqlen_wiring():
-    """``EvoformerBlock.forward`` forwards ``mask_bias`` /
-    ``mask_bias_transposed`` as ``actual_seqlen`` to ``tri_mul_out`` /
-    ``tri_mul_in`` only when the precomputed masks are in the CuTeDSL
-    ``int32`` per-row-count form.  For default-backend (float additive
-    bias) precomputed masks, and when no precomputed masks are supplied,
-    both nodes must receive ``actual_seqlen=None`` so the dual_gemm_x_x
-    wrapper falls back to the in-call ``mask.sum(-1)`` reduction.
-    """
+    """``EvoformerBlock`` reuses stack-level TriMul row-length metadata."""
     torch.manual_seed(0)
     sc = Scenario(triangle_attn_backend="VANILLA")
     device = torch.device("cuda")
@@ -279,18 +291,39 @@ def test_evoformer_block_actual_seqlen_wiring():
         mask_bias=mb_int32,
         mask_bias_transposed=mb_int32_t,
     )
-    module(m, z, msa_mask, pair_mask, precomputed_masks=pre_cutedsl)
-    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is mb_int32
-    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is mb_int32_t
+    trimul_metadata = TriangleMultiplicationMetadata(
+        outgoing_actual_seqlen=mb_int32,
+        incoming_actual_seqlen=mb_int32_t,
+    )
+    module(
+        m,
+        z,
+        msa_mask,
+        pair_mask,
+        precomputed_masks=pre_cutedsl,
+        trimul_metadata=trimul_metadata,
+    )
+    assert module.tri_mul_out.call_args.kwargs["trimul_metadata"] is trimul_metadata
+    assert module.tri_mul_in.call_args.kwargs["trimul_metadata"] is trimul_metadata
+    assert module.tri_mul_out.call_args.kwargs["residual"] is True
+    assert module.tri_mul_in.call_args.kwargs["residual"] is True
 
     module.pair_mask_left_aligned = False
     module.tri_mul_out.reset_mock()
     module.tri_mul_in.reset_mock()
     module.tri_attn_start.reset_mock()
     module.tri_attn_end.reset_mock()
-    module(m, z, msa_mask, pair_mask, precomputed_masks=pre_cutedsl)
-    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
-    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    no_lengths = TriangleMultiplicationMetadata()
+    module(
+        m,
+        z,
+        msa_mask,
+        pair_mask,
+        precomputed_masks=pre_cutedsl,
+        trimul_metadata=no_lengths,
+    )
+    assert module.tri_mul_out.call_args.kwargs["trimul_metadata"] is no_lengths
+    assert module.tri_mul_in.call_args.kwargs["trimul_metadata"] is no_lengths
     assert module.tri_attn_start.call_args.kwargs["mask_bias"] is None
     assert module.tri_attn_end.call_args.kwargs["mask_bias"] is None
 
@@ -304,12 +337,19 @@ def test_evoformer_block_actual_seqlen_wiring():
         mask_bias=mb_float,
         mask_bias_transposed=mb_float_t,
     )
-    module(m, z, msa_mask, pair_mask, precomputed_masks=pre_default)
-    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
-    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    module(
+        m,
+        z,
+        msa_mask,
+        pair_mask,
+        precomputed_masks=pre_default,
+        trimul_metadata=no_lengths,
+    )
+    assert module.tri_mul_out.call_args.kwargs["trimul_metadata"] is no_lengths
+    assert module.tri_mul_in.call_args.kwargs["trimul_metadata"] is no_lengths
 
     module.tri_mul_out.reset_mock()
     module.tri_mul_in.reset_mock()
-    module(m, z, msa_mask, pair_mask, precomputed_masks=None)
-    assert module.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
-    assert module.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    module(m, z, msa_mask, pair_mask, precomputed_masks=None, trimul_metadata=no_lengths)
+    assert module.tri_mul_out.call_args.kwargs["trimul_metadata"] is no_lengths
+    assert module.tri_mul_in.call_args.kwargs["trimul_metadata"] is no_lengths

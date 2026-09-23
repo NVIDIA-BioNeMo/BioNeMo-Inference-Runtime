@@ -35,14 +35,34 @@ namespace
 {
 
 constexpr char kSM80LaunchAbi[] = "dual_gemm_x_x_sm80";
+constexpr char kSM80DynamicMaskLaunchAbi[] = "dual_gemm_x_x_sm80_mask_ptr_v1";
 constexpr char kSM90LaunchAbi[] = "dual_gemm_x_x_sm90";
+constexpr char kSM90DynamicMaskLaunchAbi[] = "dual_gemm_x_x_sm90_mask_ptr_v1";
 constexpr std::int64_t kElementsPer16Bytes = 8;
+
+bool uses_dynamic_mask(embedded::CubinImage const& image)
+{
+  /* Nullable-mask images are identified by ABI, not another registry flag. */
+  return image.cubin.launch_abi != nullptr
+    && (std::strcmp(image.cubin.launch_abi, kSM80DynamicMaskLaunchAbi) == 0
+        || std::strcmp(image.cubin.launch_abi, kSM90DynamicMaskLaunchAbi) == 0);
+}
+
+bool uses_dynamic_mask(KernelConfig const& config)
+{
+  return config.embedded_image != nullptr && uses_dynamic_mask(*config.embedded_image);
+}
 
 struct EmbeddedSelection
 {
   embedded::CubinImage const* image;
   embedded::RuntimeAlias const* alias;
 };
+
+bool mask_present(KernelConfig const& config, LaunchParams const& params)
+{
+  return uses_dynamic_mask(config) ? params.actual_seqlen.data != 0 : config.runtime_mask;
+}
 
 bool dtype_is_bfloat16(DType dtype)
 {
@@ -161,7 +181,8 @@ void validate_config(KernelConfig const& config)
   if (
     config.K != image.K || image.is_bfloat16 != dtype_is_bfloat16(config.dtype)
     || config.transpose_out != image.transpose_out || config.has_bias != image.has_bias
-    || config.has_mask != image.has_mask || config.silu_gate != image.is_silu_gate)
+    || (!uses_dynamic_mask(image) && config.runtime_mask != image.legacy_has_mask)
+    || config.silu_gate != image.is_silu_gate)
   {
     throw std::invalid_argument("dual_gemm_x_x config axes disagree with the generated CUBIN image");
   }
@@ -196,7 +217,8 @@ void validate_config(KernelConfig const& config)
   if ((config.target_sm == 90) != is_sm90)
     throw std::invalid_argument("dual_gemm_x_x target SM and kernel SM are inconsistent");
 
-  char const* expected_abi = is_sm80 ? kSM80LaunchAbi : kSM90LaunchAbi;
+  char const* expected_abi = is_sm80 ? (uses_dynamic_mask(config) ? kSM80DynamicMaskLaunchAbi : kSM80LaunchAbi)
+                                     : (uses_dynamic_mask(config) ? kSM90DynamicMaskLaunchAbi : kSM90LaunchAbi);
   if (!equal_c_strings(config.cubin.launch_abi, expected_abi))
     throw std::invalid_argument("dual_gemm_x_x CUBIN has an incompatible launch ABI");
   if (config.cubin.non_portable_cluster_size_allowed != is_sm90)
@@ -259,7 +281,7 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     if (params.bias0.shape[0] != config.N || params.bias1.shape[0] != config.N)
       throw std::invalid_argument("bias0 and bias1 shapes must both be [N]");
   }
-  if (config.has_mask)
+  if (mask_present(config, params))
   {
     validate_tensor(params.actual_seqlen, "actual_seqlen", 4);
     if (params.actual_seqlen.shape[0] != M / params.i_dim)
@@ -293,7 +315,7 @@ void validate_operand_devices(KernelConfig const& config, LaunchParams const& pa
     check(params.bias0.device, "bias0");
     check(params.bias1.device, "bias1");
   }
-  if (config.has_mask)
+  if (mask_present(config, params))
     check(params.actual_seqlen.device, "actual_seqlen");
 }
 
@@ -393,7 +415,13 @@ void launch_sm80(
     device_params.bias0 = make_tensor1_descriptor(params.bias0);
     device_params.bias1 = make_tensor1_descriptor(params.bias1);
   }
-  if (config.has_mask)
+  bool const dynamic_mask = uses_dynamic_mask(config);
+  if (dynamic_mask)
+  {
+    if (params.actual_seqlen.data != 0)
+      device_params.actual_seqlen = make_tensor1_descriptor(params.actual_seqlen);
+  }
+  else if (config.runtime_mask)
     device_params.actual_seqlen = make_tensor1_descriptor(params.actual_seqlen);
   device_params.output = make_tensor2_s2_d1_descriptor(params.output);
   device_params.i_dim = params.i_dim;
@@ -401,8 +429,8 @@ void launch_sm80(
 
   void* kernel_params[abi::kSM80MaxParameterCount]{};
   std::size_t const parameter_count
-    = abi::pack_sm80_kernel_params(&device_params, config.has_bias, config.has_mask, kernel_params);
-  if (parameter_count != abi::sm80_parameter_count(config.has_bias, config.has_mask))
+    = abi::pack_sm80_kernel_params(&device_params, config.has_bias, config.runtime_mask, dynamic_mask, kernel_params);
+  if (parameter_count != abi::sm80_parameter_count(config.has_bias, config.runtime_mask, dynamic_mask))
     throw std::logic_error("dual_gemm_x_x SM80 parameter packer produced the wrong ABI count");
 
   cubin_launch_config_t const launch_config = make_sm80_launch_config(image, params, smem_bytes);
@@ -442,15 +470,21 @@ void launch_sm90(
     device_params.bias0 = make_tensor1_descriptor(params.bias0);
     device_params.bias1 = make_tensor1_descriptor(params.bias1);
   }
-  if (config.has_mask)
+  bool const dynamic_mask = uses_dynamic_mask(config);
+  if (dynamic_mask)
+  {
+    if (params.actual_seqlen.data != 0)
+      device_params.actual_seqlen = make_tensor1_descriptor(params.actual_seqlen);
+  }
+  else if (config.runtime_mask)
     device_params.actual_seqlen = make_tensor1_descriptor(params.actual_seqlen);
   device_params.i_dim = params.i_dim;
   device_params.tiled_mma = 0;
 
   void* kernel_params[abi::kSM90MaxParameterCount]{};
   std::size_t const parameter_count
-    = abi::pack_sm90_kernel_params(&device_params, config.has_bias, config.has_mask, kernel_params);
-  if (parameter_count != abi::sm90_parameter_count(config.has_bias, config.has_mask))
+    = abi::pack_sm90_kernel_params(&device_params, config.has_bias, config.runtime_mask, dynamic_mask, kernel_params);
+  if (parameter_count != abi::sm90_parameter_count(config.has_bias, config.runtime_mask, dynamic_mask))
     throw std::logic_error("dual_gemm_x_x SM90 parameter packer produced the wrong ABI count");
 
   cubin_launch_config_t const launch_config = make_sm90_launch_config(image, params, context, smem_bytes);
@@ -466,7 +500,7 @@ EmbeddedSelection find_embedded_cubin(
   DType dtype,
   bool transpose_out,
   bool has_bias,
-  bool has_mask,
+  bool runtime_mask,
   bool silu_gate)
 {
   if (target_sm <= 0 || K <= 0 || N <= 0)
@@ -483,8 +517,8 @@ EmbeddedSelection find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[image_index];
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.K != K || image.is_bfloat16 != is_bfloat16
-      || image.transpose_out != transpose_out || image.has_bias != has_bias || image.has_mask != has_mask
-      || image.is_silu_gate != silu_gate)
+      || image.transpose_out != transpose_out || image.has_bias != has_bias
+      || (!uses_dynamic_mask(image) && image.legacy_has_mask != runtime_mask) || image.is_silu_gate != silu_gate)
     {
       continue;
     }
@@ -536,11 +570,11 @@ KernelConfig make_kernel_config(
   DType dtype,
   bool transpose_out,
   bool has_bias,
-  bool has_mask,
+  bool runtime_mask,
   bool silu_gate)
 {
   EmbeddedSelection const selection
-    = find_embedded_cubin(target_sm, K, N, S, dtype, transpose_out, has_bias, has_mask, silu_gate);
+    = find_embedded_cubin(target_sm, K, N, S, dtype, transpose_out, has_bias, runtime_mask, silu_gate);
   return KernelConfig{
     target_sm,
     selection.image->K,
@@ -549,7 +583,7 @@ KernelConfig make_kernel_config(
     dtype,
     transpose_out,
     has_bias,
-    has_mask,
+    runtime_mask,
     silu_gate,
     selection.image->cubin,
     selection.image,

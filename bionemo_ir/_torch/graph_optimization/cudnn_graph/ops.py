@@ -232,6 +232,41 @@ def _make_linear_mask_epilogue(
     )
 
 
+def _make_linear_residual_epilogue(
+    graph: cudnn.Graph,
+    output: cudnn.tensor,
+    epilogue_inputs: tuple[torch.Tensor, ...],
+) -> cudnn.tensor:
+    (residual,) = epilogue_inputs
+    return graph.add(
+        output,
+        residual,
+        compute_data_type=cudnn.data_type.FLOAT,
+        name="residual",
+    )
+
+
+def _make_linear_mask_residual_epilogue(
+    graph: cudnn.Graph,
+    output: cudnn.tensor,
+    epilogue_inputs: tuple[torch.Tensor, ...],
+) -> cudnn.tensor:
+    mask, residual = epilogue_inputs
+    output = graph.mul(
+        output,
+        mask,
+        compute_data_type=cudnn.data_type.FLOAT,
+        name="mask",
+    )
+    output.set_data_type(_cudnn_data_type(residual.dtype))
+    return graph.add(
+        output,
+        residual,
+        compute_data_type=cudnn.data_type.FLOAT,
+        name="residual",
+    )
+
+
 class _LinearEpiPlan:
     def __init__(
         self,
@@ -410,6 +445,8 @@ class _AddMaskPlan:
 
 _LINEAR_RELU_CACHE = CudnnGraphCache[_LinearEpiPlan]("linear + bias + ReLU")
 _LINEAR_MASK_CACHE = CudnnGraphCache[_LinearEpiPlan]("linear + bias + mask")
+_LINEAR_RESIDUAL_CACHE = CudnnGraphCache[_LinearEpiPlan]("linear + bias + residual")
+_LINEAR_MASK_RESIDUAL_CACHE = CudnnGraphCache[_LinearEpiPlan]("linear + bias + mask + residual")
 _DYNAMIC_LINEAR_RELU_CACHE = CudnnGraphCache[_DynamicLinearEpiPlan]("dynamic linear + bias + ReLU")
 _DYNAMIC_LINEAR_MASK_CACHE = CudnnGraphCache[_DynamicLinearEpiPlan]("dynamic linear + bias + mask")
 # cuDNN 9.22's generic pointwise fusion engines reject dynamic-shape plans for
@@ -545,6 +582,43 @@ def cudnn_linear_mask(
     plan = _LINEAR_MASK_CACHE.get_or_create(
         inputs,
         lambda: _LinearEpiPlan(x, weight, bias, (mask,), _make_linear_mask_epilogue),
+    )
+    return None if plan is None else plan(*inputs)
+
+
+def cudnn_linear_residual(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    residual: torch.Tensor,
+) -> torch.Tensor | None:
+    """Apply matmul, bias, and residual addition through one static graph."""
+    inputs = (x, weight, bias, residual)
+    plan = _LINEAR_RESIDUAL_CACHE.get_or_create(
+        inputs,
+        lambda: _LinearEpiPlan(x, weight, bias, (residual,), _make_linear_residual_epilogue),
+    )
+    return None if plan is None else plan(*inputs)
+
+
+def cudnn_linear_mask_residual(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    mask: torch.Tensor,
+    residual: torch.Tensor,
+) -> torch.Tensor | None:
+    """Apply matmul, bias, optional-output mask, and residual addition."""
+    inputs = (x, weight, bias, mask, residual)
+    plan = _LINEAR_MASK_RESIDUAL_CACHE.get_or_create(
+        inputs,
+        lambda: _LinearEpiPlan(
+            x,
+            weight,
+            bias,
+            (mask, residual),
+            _make_linear_mask_residual_epilogue,
+        ),
     )
     return None if plan is None else plan(*inputs)
 

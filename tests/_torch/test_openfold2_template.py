@@ -26,6 +26,7 @@ from test_utils.openfold.create_and_load_weights import (
 )
 from test_utils.openfold.ref_layers import RefTemplatePairStackBlock, RefTemplatePointwiseAttention
 
+from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
 from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock, TemplatePointwiseAttention
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
@@ -96,7 +97,7 @@ def test_template_pair_stack_block(sc: Scenario):
 
         t = t.to(torch_dtype)
         mask = mask.to(torch_dtype)
-        output_t = module(t, mask)
+        output_t = module(t, mask, precompute_trimul_metadata(t, None, None))
 
     if torch_dtype == torch.float32:
         torch.testing.assert_close(output_t.float(), ref_t.float(), atol=1e-3, rtol=1e-4)

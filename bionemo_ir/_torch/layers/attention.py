@@ -16,6 +16,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
@@ -364,6 +365,7 @@ class AttentionPairBias(nn.Module):
         pair_norm_type: str = "layer_norm",
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
+        mask_left_aligned: bool = True,
     ):
         """Self-attention with pair bias.
 
@@ -377,6 +379,8 @@ class AttentionPairBias(nn.Module):
             out_bias: add a bias to the output projection.
             pair_norm_type: pair-bias norm — ``"layer_norm"`` or
                 ``"rms_norm"``.
+            mask_left_aligned: Whether valid keys form a prefix. Set false for
+                arbitrary valid-token positions.
         """
         super().__init__()
         self.layer_idx = layer_idx
@@ -392,6 +396,7 @@ class AttentionPairBias(nn.Module):
         self.use_qk_norm = use_qk_norm
         self.norm_type = norm_type
         self.inf = inf
+        self.mask_left_aligned = mask_left_aligned
 
         self.num_key_value_heads = num_heads
         # This equal to 1 for self-attention
@@ -642,6 +647,7 @@ class AttentionPairBias(nn.Module):
             ``[mask_bias, pair_bias]``, or ``[mask_bias]`` when ``z`` is
             ``None``.
         """
+        sequence_mask = mask
         if mask_bias is None:
             if self.attn_backend == "CuTeDSL":
                 mask_bias = mask.float()
@@ -667,6 +673,24 @@ class AttentionPairBias(nn.Module):
                 pad_multiple=self._bias_pad_multiple,
                 proj_z=self.proj_z,
             )
+
+        if not self.mask_left_aligned:
+            valid_keys = F.pad(
+                sequence_mask.bool(),
+                (0, pair_bias.shape[-1] - sequence_mask.shape[-1]),
+                value=False,
+            )
+            mask_value = (
+                -min(float(self.inf), torch.finfo(pair_bias.dtype).max) if self.attn_backend == "CuTeDSL" else 0.0
+            )
+            pair_bias = pair_bias.masked_fill(~valid_keys[..., None, None, :], mask_value)
+            if self.attn_backend == "CuTeDSL":
+                mask_bias = torch.full(
+                    sequence_mask.shape[:-1],
+                    sequence_mask.shape[-1],
+                    device=sequence_mask.device,
+                    dtype=torch.int32,
+                )
 
         if self.attn_backend != "CuTeDSL":
             # Insert broadcast-1 dims so pair_bias broadcasts over any

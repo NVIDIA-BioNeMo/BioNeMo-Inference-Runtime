@@ -43,6 +43,7 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         dtype: torch.dtype,
         has_bias: bool,
         K1: int | None = None,
+        fused_residual: bool = False,
     ):
         K1 = K if K1 is None else K1
         dtype_map = {
@@ -55,7 +56,16 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
             raise CuTeDSLKernelVariantUnavailable(f"dual_gemm x0_x1 CUBINs do not support {dtype}") from error
 
         try:
-            config = launcher.make_kernel_config(target_sm, K, N, bucket, library_dtype, has_bias, K1=K1)
+            config = launcher.make_kernel_config(
+                target_sm,
+                K,
+                N,
+                bucket,
+                library_dtype,
+                has_bias,
+                K1=K1,
+                fused_residual=fused_residual,
+            )
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
                 f"No dual_gemm x0_x1 CUBIN for SM{target_sm}, K0={K}, K1={K1}, N={N}, "
@@ -66,18 +76,19 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         self._launcher = launcher
         self._config = config
         self._is_sm90 = int(config.spec.kernel_sm) == 90
+        self._fused_residual = bool(fused_residual)
 
     def __call__(self, *args: Any) -> None:
-        if self._is_sm90:
-            expected = "(X0, X1, W0, W1, bias0, bias1, actual_seqlen, out, I_dim)"
-            if len(args) != 9:
+        if self._is_sm90 or self._fused_residual:
+            expected = "(X0, X1, W0, W1, bias0, bias1, actual_seqlen, residual, out, I_dim)"
+            if len(args) != 10:
                 raise CuTeDSLKernelVariantUnavailable(
-                    f"dual_gemm x0_x1 selected a Hopper CUBIN expecting {expected}; got {len(args)} arguments"
+                    f"dual_gemm x0_x1 selected a CUBIN expecting {expected}; got {len(args)} arguments"
                 )
-            X0, X1, W0, W1, bias0, bias1, actual_seqlen, out, _i_dim = args
-            if actual_seqlen is not None:
+            X0, X1, W0, W1, bias0, bias1, actual_seqlen, residual, out, i_dim = args
+            if self._fused_residual != (actual_seqlen is not None and residual is not None):
                 raise CuTeDSLKernelVariantUnavailable(
-                    "dual_gemm x0_x1 CUBINs are compiled with has_mask=False; actual_seqlen must be None"
+                    "dual_gemm x0_x1 fused-residual operands do not match the selected CUBIN"
                 )
         else:
             if len(args) != 7:
@@ -102,5 +113,9 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         if has_bias:
             params.bias0 = tensor_s1_d0(self._kernel_library, bias0)
             params.bias1 = tensor_s1_d0(self._kernel_library, bias1)
+        if self._fused_residual:
+            params.actual_seqlen = tensor_s1_d0(self._kernel_library, actual_seqlen)
+            params.residual = tensor_s2_d1(self._kernel_library, residual)
+            params.i_dim = i_dim
         params.stream = torch.cuda.current_stream(X0.device).cuda_stream
         self._launcher.launch(self._config, params)

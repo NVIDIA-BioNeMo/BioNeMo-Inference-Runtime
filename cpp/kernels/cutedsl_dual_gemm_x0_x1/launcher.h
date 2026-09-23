@@ -50,13 +50,21 @@ struct CubinImage;
  *   ord 7  0x98  0x04  raster_factor std::int32_t
  *
  * Without bias, out moves to 0x60 and raster_factor to 0x78.
+ *
+ * Residual launch ABIs insert ``actual_seqlen`` and ``residual`` after the
+ * optional biases, then append ``i_dim`` between ``out`` and raster_factor.
  */
 namespace bioir::cutedsl::dual_gemm_x0_x1::abi
 {
 
-inline constexpr std::size_t kSM80BiasParameterCount = 8;
-inline constexpr std::size_t kSM80NoBiasParameterCount = 6;
-inline constexpr std::size_t kSM80MaxParameterCount = kSM80BiasParameterCount;
+constexpr std::size_t sm80_parameter_count(bool has_bias, bool fused_residual)
+{
+  return 6U + (has_bias ? 2U : 0U) + (fused_residual ? 3U : 0U);
+}
+
+inline constexpr std::size_t kSM80BiasParameterCount = sm80_parameter_count(true, false);
+inline constexpr std::size_t kSM80NoBiasParameterCount = sm80_parameter_count(false, false);
+inline constexpr std::size_t kSM80MaxParameterCount = sm80_parameter_count(true, true);
 
 struct SM80Params
 {
@@ -68,11 +76,14 @@ struct SM80Params
   cute_tensor_s1_d0_t bias1;
   cute_tensor_s2_d1_t out;
   std::int32_t raster_factor;
+  cute_tensor_s1_d0_t actual_seqlen;
+  cute_tensor_s2_d1_t residual;
+  std::int32_t i_dim;
 };
 
 /* Returns the number of packed parameters. */
-inline std::size_t
-pack_sm80_kernel_params(SM80Params* params, bool has_bias, void* kernel_params[kSM80MaxParameterCount])
+inline std::size_t pack_sm80_kernel_params(
+  SM80Params* params, bool has_bias, bool fused_residual, void* kernel_params[kSM80MaxParameterCount])
 {
   std::size_t count = 0;
   kernel_params[count++] = &params->x0;
@@ -84,7 +95,14 @@ pack_sm80_kernel_params(SM80Params* params, bool has_bias, void* kernel_params[k
     kernel_params[count++] = &params->bias0;
     kernel_params[count++] = &params->bias1;
   }
+  if (fused_residual)
+  {
+    kernel_params[count++] = &params->actual_seqlen;
+    kernel_params[count++] = &params->residual;
+  }
   kernel_params[count++] = &params->out;
+  if (fused_residual)
+    kernel_params[count++] = &params->i_dim;
   kernel_params[count++] = &params->raster_factor;
   return count;
 }
@@ -136,6 +154,13 @@ inline cubin_launch_config_t sm80_launch_config(
  * CuTe's 0x40-byte non-executable CopyAtom payload followed by zero padding.
  *
  * Without bias, i_dim moves to 0x388 and tiled_mma to 0x38c.
+ *
+ * Residual launch ABIs insert these parameters after the optional biases:
+ *
+ *   actual_seqlen  cute_tensor_s1_d0_t  (0x10 bytes)
+ *   residual       cute_tensor_s2_d1_t  (0x18 bytes)
+ *
+ * The residual is the flattened [M, N] pair tensor.
  */
 struct SM90Params
 {
@@ -151,19 +176,21 @@ struct SM90Params
   CoordTensorS2 output_coord;
   cute_tensor_s1_d0_t bias0;
   cute_tensor_s1_d0_t bias1;
+  cute_tensor_s1_d0_t actual_seqlen;
+  cute_tensor_s2_d1_t residual;
   std::int32_t i_dim;
   std::uint8_t tiled_mma;
 };
 
-constexpr std::size_t sm90_parameter_count(bool has_bias)
+constexpr std::size_t sm90_parameter_count(bool has_bias, bool fused_residual)
 {
-  return 12U + (has_bias ? 2U : 0U);
+  return 12U + (has_bias ? 2U : 0U) + (fused_residual ? 2U : 0U);
 }
 
-inline constexpr std::size_t kSM90MaxParameterCount = sm90_parameter_count(true);
+inline constexpr std::size_t kSM90MaxParameterCount = sm90_parameter_count(true, true);
 
-inline std::size_t
-pack_sm90_kernel_params(SM90Params* params, bool has_bias, void* kernel_params[kSM90MaxParameterCount])
+inline std::size_t pack_sm90_kernel_params(
+  SM90Params* params, bool has_bias, bool fused_residual, void* kernel_params[kSM90MaxParameterCount])
 {
   std::size_t count = 0;
   kernel_params[count++] = &params->x0_tma;
@@ -181,6 +208,11 @@ pack_sm90_kernel_params(SM90Params* params, bool has_bias, void* kernel_params[k
     kernel_params[count++] = &params->bias0;
     kernel_params[count++] = &params->bias1;
   }
+  if (fused_residual)
+  {
+    kernel_params[count++] = &params->actual_seqlen;
+    kernel_params[count++] = &params->residual;
+  }
   kernel_params[count++] = &params->i_dim;
   kernel_params[count++] = &params->tiled_mma;
   return count;
@@ -195,6 +227,9 @@ static_assert(offsetof(SM80Params, bias0) == 0x60, "unexpected dual-GEMM x0_x1 S
 static_assert(offsetof(SM80Params, bias1) == 0x70, "unexpected dual-GEMM x0_x1 SM80 bias1 offset");
 static_assert(offsetof(SM80Params, out) == 0x80, "unexpected dual-GEMM x0_x1 SM80 out offset");
 static_assert(offsetof(SM80Params, raster_factor) == 0x98, "unexpected dual-GEMM x0_x1 SM80 raster offset");
+static_assert(sizeof(SM80Params::actual_seqlen) == 0x10, "unexpected dual-GEMM x0_x1 SM80 mask width");
+static_assert(sizeof(SM80Params::residual) == 0x18, "unexpected dual-GEMM x0_x1 SM80 residual width");
+static_assert(sm80_parameter_count(true, true) == kSM80MaxParameterCount);
 
 static_assert(std::is_standard_layout_v<SM80Params>);
 static_assert(std::is_standard_layout_v<SM90Params>);
@@ -212,10 +247,12 @@ static_assert(sizeof(SM90Params::x0_tma) == 0x80, "unexpected dual-GEMM x0_x1 SM
 static_assert(sizeof(SM90Params::x0_coord) == 0x08, "unexpected dual-GEMM x0_x1 SM90 coordinate width");
 static_assert(sizeof(SM90Params::output_coord) == 0x08, "unexpected dual-GEMM x0_x1 SM90 output coordinate width");
 static_assert(sizeof(SM90Params::bias0) == 0x10, "unexpected dual-GEMM x0_x1 SM90 bias width");
+static_assert(sizeof(SM90Params::actual_seqlen) == 0x10, "unexpected dual-GEMM x0_x1 SM90 mask width");
+static_assert(sizeof(SM90Params::residual) == 0x18, "unexpected dual-GEMM x0_x1 SM90 residual width");
 static_assert(sizeof(SM90Params::i_dim) == 0x04, "unexpected dual-GEMM x0_x1 SM90 i_dim width");
 static_assert(sizeof(SM90Params::tiled_mma) == 0x01, "unexpected dual-GEMM x0_x1 SM90 MMA token width");
-static_assert(sm90_parameter_count(true) == kSM90MaxParameterCount);
-static_assert(sm90_parameter_count(false) == 12U);
+static_assert(sm90_parameter_count(true, true) == kSM90MaxParameterCount);
+static_assert(sm90_parameter_count(false, false) == 12U);
 
 } // namespace bioir::cutedsl::dual_gemm_x0_x1::abi
 
@@ -240,6 +277,7 @@ struct KernelSpec
   std::int32_t N;
   std::int32_t bucket;
   bool has_bias;
+  bool fused_residual;
 
   std::uint32_t tile_m;
   std::uint32_t tile_n;
@@ -252,6 +290,7 @@ struct KernelConfig
   KernelSpec spec;
   DType dtype;
   bool has_bias;
+  bool fused_residual;
   EmbeddedCubinImage cubin;
   embedded::CubinImage const* embedded_image;
 };
@@ -271,6 +310,9 @@ struct LaunchParams
   Tensor2View w1;
   Tensor1View bias0;
   Tensor1View bias1;
+  Tensor1View actual_seqlen;
+  Tensor2View residual;
+  std::int32_t i_dim{1};
   Tensor2View out;
   std::uint64_t stream{};
 };
@@ -279,7 +321,14 @@ std::vector<KernelSpec> kernel_specs();
 
 /* K1 selects the asymmetric tunings; pass K for the symmetric ones. */
 KernelConfig make_kernel_config(
-  std::int32_t target_sm, std::int32_t K, std::int32_t K1, std::int32_t N, std::int32_t S, DType dtype, bool has_bias);
+  std::int32_t target_sm,
+  std::int32_t K,
+  std::int32_t K1,
+  std::int32_t N,
+  std::int32_t S,
+  DType dtype,
+  bool has_bias,
+  bool fused_residual);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 

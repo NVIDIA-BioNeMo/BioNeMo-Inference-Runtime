@@ -37,8 +37,10 @@ from bionemo_ir._torch.layers.transition import Transition
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
+    TriangleMultiplicationMetadata,
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
+    precompute_trimul_metadata,
 )
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, PAIR_TRANSITION, recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
@@ -181,6 +183,7 @@ class PairformerLayerV1(nn.Module):
         self,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadatas: dict[str, AttentionMetadata] | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
@@ -197,16 +200,8 @@ class PairformerLayerV1(nn.Module):
 
         # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
         # Otherwise, let the wrapper derive masking from ``pair_mask``.
-        tri_out_actual_seqlen = tri_in_actual_seqlen = None
-        if (
-            self.pair_mask_left_aligned
-            and precomputed_masks is not None
-            and precomputed_masks.mask_bias.dtype == torch.int32
-        ):
-            tri_out_actual_seqlen = precomputed_masks.mask_bias
-            tri_in_actual_seqlen = precomputed_masks.mask_bias_transposed
-        add_residual(self.tri_mul_out(z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen))
-        add_residual(self.tri_mul_in(z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen))
+        z = self.tri_mul_out(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
+        z = self.tri_mul_in(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
         z = z.to(self.dtype)
 
         tri_attn_metadata = (attn_metadatas or {}).get("triangle_attn")
@@ -235,6 +230,7 @@ class PairformerLayerV1(nn.Module):
         z: torch.Tensor,
         mask: torch.Tensor,
         pair_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadatas: dict[str, AttentionMetadata] | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
         precomputed_single_masks: PrecomputedSingleMasks | None = None,
@@ -244,6 +240,7 @@ class PairformerLayerV1(nn.Module):
         z = self._transform_z(
             z,
             pair_mask,
+            trimul_metadata,
             attn_metadatas,
             precomputed_masks=precomputed_masks,
             buffers=buffers,
@@ -286,6 +283,7 @@ class PairformerNoSeqLayer(PairformerLayerV1):
         self,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadatas: dict[str, AttentionMetadata] | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
         precomputed_single_masks: PrecomputedSingleMasks | None = None,
@@ -297,6 +295,7 @@ class PairformerNoSeqLayer(PairformerLayerV1):
             z=z,
             mask=None,
             pair_mask=pair_mask,
+            trimul_metadata=trimul_metadata,
             attn_metadatas=attn_metadatas,
             precomputed_masks=precomputed_masks,
             precomputed_single_masks=precomputed_single_masks,
@@ -328,6 +327,7 @@ class PairformerNoSeqModule(nn.Module):
                 for i in range(num_blocks)
             ]
         )
+        self.pair_mask_left_aligned = self.layers[0].pair_mask_left_aligned if self.layers else False
 
     def forward(
         self,
@@ -337,6 +337,8 @@ class PairformerNoSeqModule(nn.Module):
         buffers: PreallocatedBuffers | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        if not self.layers:
+            return z
         first_layer = self.layers[0]
         precomputed = precompute_pair_masks(
             first_layer.triangle_attn_backend,
@@ -346,8 +348,22 @@ class PairformerNoSeqModule(nn.Module):
         )
         if buffers is None and first_layer.triangle_attn_backend == "CuTeDSL":
             buffers = {}
+        trimul_metadata = precompute_trimul_metadata(
+            z,
+            precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+            precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+            enabled=self.pair_mask_left_aligned,
+        )
         for layer in self.layers:
-            z = layer(z, pair_mask, attn_metadatas, precomputed_masks=precomputed, buffers=buffers, **kwargs)
+            z = layer(
+                z,
+                pair_mask,
+                trimul_metadata,
+                attn_metadatas,
+                precomputed_masks=precomputed,
+                buffers=buffers,
+                **kwargs,
+            )
         return z
 
 
@@ -366,6 +382,7 @@ class PairformerLayerV2(PairformerLayerV1):
         z: torch.Tensor,
         mask: torch.Tensor,
         pair_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadatas: dict[str, AttentionMetadata] | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
         precomputed_single_masks: PrecomputedSingleMasks | None = None,
@@ -375,6 +392,7 @@ class PairformerLayerV2(PairformerLayerV1):
         z = self._transform_z(
             z,
             pair_mask,
+            trimul_metadata,
             attn_metadatas,
             precomputed_masks=precomputed_masks,
             buffers=buffers,
@@ -477,6 +495,7 @@ class PairformerModule(nn.Module):
                     tri_attn_transposed_bias=config.tri_attn_transposed_bias,
                 )
             )
+        self.pair_mask_left_aligned = self.layers[0].pair_mask_left_aligned
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -509,6 +528,12 @@ class PairformerModule(nn.Module):
         _uses_cute = "CuTeDSL" in (self.config.triangle_attention_backend, self.config.pairwise_attention_backend)
         if buffers is None and _uses_cute:
             buffers = {}
+        trimul_metadata = precompute_trimul_metadata(
+            z,
+            precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+            precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+            enabled=self.pair_mask_left_aligned,
+        )
         inplace_safe = bool(kwargs.get("inplace_safe", False))
         for layer in self.layers:
             s, z = layer(
@@ -516,6 +541,7 @@ class PairformerModule(nn.Module):
                 z,
                 mask,
                 pair_mask,
+                trimul_metadata,
                 attn_metadatas,
                 precomputed_masks=precomputed,
                 precomputed_single_masks=precomputed_single,

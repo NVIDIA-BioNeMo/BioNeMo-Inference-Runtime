@@ -3,18 +3,24 @@ include THIRD_PARTY_NOTICES.md
 # setup.py reads it for long_description, and CI builds the wheel from the
 # unpacked sdist, so a missing README breaks that build rather than the metadata.
 include README.md
-recursive-include LICENSES *.txt
-recursive-include cpp CMakeLists.txt *.cmake *.cpp *.h
+include LICENSES/*.txt
 # The public materializer is standard-library-only and is required to build a
 # wheel from an sdist. Family indexes, record shards, and Git-LFS packs are the
 # only CUBIN artifact inputs that ship in source distributions.
-recursive-include cpp/cmake *.py
-recursive-include cpp/kernels index.json *.tar.xz
-recursive-include cpp/kernels/cutedsl_*/cubins/records *.json
+# Keep every pattern non-recursive. Setuptools evaluates each recursive pattern
+# as a separate ``**`` walk without consulting .gitignore, so editable metadata
+# generation would otherwise descend into local CMake and CUBIN cache trees.
+include cpp/CMakeLists.txt
+include cpp/cmake/*.cmake
+include cpp/cmake/*.py
+include cpp/cmake/deps/*.cmake
+include cpp/kernels/CMakeLists.txt
+include cpp/kernels/*.cpp
+include cpp/kernels/*.h
+include cpp/kernels/cutedsl_*/*.cpp
+include cpp/kernels/cutedsl_*/*.h
+include cpp/kernels/cutedsl_*/cubins/index.json
+include cpp/kernels/cutedsl_*/cubins/records/*.json
+include cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz
 prune cpp/tools
-# recursive-include does not consult .gitignore, and local CMake trees vendor the
-# fetched nanobind sources.
-prune cpp/build*
-prune cpp/cmake-build-*
-prune cpp/kernels/cutedsl_*/cubins/.cache
 exclude build.env

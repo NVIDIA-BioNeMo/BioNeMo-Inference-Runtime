@@ -20,6 +20,7 @@ import pytest
 import torch
 
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerLayerV1
+from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata
 from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir.models.openfold3.modeling import OpenFold3
 
@@ -28,9 +29,12 @@ class _ScaledPairUpdate(torch.nn.Module):
     def __init__(self, scale: float) -> None:
         super().__init__()
         self.scale = scale
+        self.last_output_ptr: int | None = None
 
     def forward(self, value: torch.Tensor, *_args, **_kwargs) -> torch.Tensor:
-        return value * self.scale
+        output = value * self.scale
+        self.last_output_ptr = output.data_ptr()
+        return output
 
 
 def _make_pair_residual_probe() -> PairformerLayerV1:
@@ -60,23 +64,27 @@ def test_pairformer_reuses_owned_pair_storage_only_when_safe(mode: str, monkeypa
     original = z.clone()
     pair_mask = torch.ones(2, 3, 3, device=device)
     layer = _make_pair_residual_probe().to(device)
+    trimul_metadata = TriangleMultiplicationMetadata()
     if mode == "capture":
         monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
     with torch.inference_mode():
-        expected = layer._transform_z(original.clone(), pair_mask)
+        expected = layer._transform_z(original.clone(), pair_mask, trimul_metadata)
 
     def transform() -> torch.Tensor:
-        return layer._transform_z(z, pair_mask, inplace_safe=mode != "default")
+        return layer._transform_z(z, pair_mask, trimul_metadata, inplace_safe=mode != "default")
 
     with torch.inference_mode():
         actual = transform()
 
     assert torch.equal(actual, expected)
+    trimul_output_ptr = layer.tri_mul_in.last_output_ptr
+    assert trimul_output_ptr is not None
     if mode == "inference":
-        assert actual.data_ptr() == z.data_ptr()
+        assert actual.data_ptr() == trimul_output_ptr
     else:
-        assert actual.data_ptr() != z.data_ptr()
-        assert torch.equal(z, original)
+        assert actual.data_ptr() != trimul_output_ptr
+    assert actual.data_ptr() != z.data_ptr()
+    assert torch.equal(z, original)
 
 
 class _TrunkLifetimeProbe:

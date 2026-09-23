@@ -25,12 +25,14 @@ from bionemo_ir._torch.graph_optimization.cudnn_graph import (
     CudnnGraphModule,
     can_use_cudnn_graph,
     cudnn_linear_mask,
+    cudnn_linear_mask_residual,
     cudnn_linear_relu,
+    cudnn_linear_residual,
     prepare_cudnn_linear_mask,
     prepare_cudnn_linear_relu,
 )
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
-from bionemo_ir._torch.layers.normalization import AdaLN, AdaLNNormType
+from bionemo_ir._torch.layers.normalization import AdaLN, AdaLNNormType, FusedLayerNorm
 from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
@@ -293,7 +295,7 @@ class PairTransition(CudnnGraphModule):
         self.n = n
         self._cudnn_graph_plans: dict[str, _CudnnPlan] = {}
 
-        self.layer_norm = nn.LayerNorm(c_z, eps=eps, dtype=dtype)
+        self.layer_norm = FusedLayerNorm(c_z, eps=eps, dtype=dtype)
         self.linear_1 = Linear(c_z, n * c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.linear_2 = Linear(n * c_z, c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.relu = nn.ReLU()
@@ -325,20 +327,27 @@ class PairTransition(CudnnGraphModule):
         if linear_mask is not None:
             self._cudnn_graph_plans["linear_mask"] = linear_mask
 
-    def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None):
+    def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None, *, residual: bool = False):
         if self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(z):
-            return chunk_apply(self._forward_impl, z, mask, policy=self.auto_chunk_policy)
+            return chunk_apply(self._forward_impl, z, mask, policy=self.auto_chunk_policy, residual=residual)
         if can_use_cudnn_graph(z, enabled=self.enable_cudnn_graph):
-            output = self._forward_cudnn(z, mask)
+            output = self._forward_cudnn(z, mask, residual=residual)
             if output is not None:
                 return output
-        return self._forward_impl(z, mask)
+        return self._forward_impl(z, mask, residual=residual)
 
-    def _forward_cudnn(self, z: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor | None:
+    def _forward_cudnn(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor | None,
+        *,
+        residual: bool,
+    ) -> torch.Tensor | None:
+        old_z = z
         z = self.layer_norm(z)
         rows = z.numel() // self.c_z
         hidden_dim = self.n * self.c_z
-        z_flat = z.reshape(1, rows, self.c_z).contiguous()
+        z_flat = z.reshape(1, rows, self.c_z)
         weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
         bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
         hidden = _run_cudnn_linear(
@@ -350,23 +359,38 @@ class PairTransition(CudnnGraphModule):
         )
         if hidden is None:
             return None
-        if mask is None:
+        if mask is None and not residual:
             return self.linear_2(hidden).view_as(z)
 
-        mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype).contiguous()
         weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
         bias_2 = self.linear_2.bias.reshape(1, 1, self.c_z)
-        output = _run_cudnn_linear(
-            self._cudnn_graph_plans.get("linear_mask"),
-            cudnn_linear_mask,
-            hidden,
-            weight_2_t,
-            bias_2,
-            mask_flat,
-        )
+        if residual:
+            residual_flat = old_z.reshape(1, rows, self.c_z)
+            if mask is None:
+                output = cudnn_linear_residual(hidden, weight_2_t, bias_2, residual_flat)
+            else:
+                mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype)
+                output = cudnn_linear_mask_residual(hidden, weight_2_t, bias_2, mask_flat, residual_flat)
+        else:
+            mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype)
+            output = _run_cudnn_linear(
+                self._cudnn_graph_plans.get("linear_mask"),
+                cudnn_linear_mask,
+                hidden,
+                weight_2_t,
+                bias_2,
+                mask_flat,
+            )
         return None if output is None else output.view_as(z)
 
-    def _forward_impl(self, z: torch.Tensor, mask: torch.Tensor | None):
+    def _forward_impl(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor | None,
+        *,
+        residual: bool = False,
+    ) -> torch.Tensor:
+        old_z = z
         # [*, N_res, N_res, C_z]
         z = self.layer_norm(z)
 
@@ -377,7 +401,11 @@ class PairTransition(CudnnGraphModule):
         # [*, N_res, N_res, C_z]
         z = self.linear_2(z)
         if mask is not None:
-            z = z * mask.unsqueeze(-1)
+            if mask.ndim == z.ndim - 1:
+                mask = mask.unsqueeze(-1)
+            z = z * mask.to(dtype=z.dtype)
+        if residual:
+            z = z + old_z
 
         return z
 

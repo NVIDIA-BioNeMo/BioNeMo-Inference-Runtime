@@ -45,6 +45,7 @@ void bind(nb::module_& parent)
     .def_ro("N", &KernelSpec::N)
     .def_ro("bucket", &KernelSpec::bucket)
     .def_ro("has_bias", &KernelSpec::has_bias)
+    .def_ro("fused_residual", &KernelSpec::fused_residual)
     .def_ro("tile_m", &KernelSpec::tile_m)
     .def_ro("tile_n", &KernelSpec::tile_n)
     .def_ro("num_threads", &KernelSpec::num_threads)
@@ -55,6 +56,7 @@ void bind(nb::module_& parent)
     .def_ro("spec", &KernelConfig::spec)
     .def_ro("dtype", &KernelConfig::dtype)
     .def_ro("has_bias", &KernelConfig::has_bias)
+    .def_ro("fused_residual", &KernelConfig::fused_residual)
     .def_ro("cubin", &KernelConfig::cubin)
     .def_prop_ro("dynamic_smem_bytes", &dynamic_smem_bytes)
     .def_prop_ro("cubin_size", [](KernelConfig const& config) { return config.cubin.size; })
@@ -69,6 +71,9 @@ void bind(nb::module_& parent)
     .def_rw("w1", &LaunchParams::w1)
     .def_rw("bias0", &LaunchParams::bias0)
     .def_rw("bias1", &LaunchParams::bias1)
+    .def_rw("actual_seqlen", &LaunchParams::actual_seqlen)
+    .def_rw("residual", &LaunchParams::residual)
+    .def_rw("i_dim", &LaunchParams::i_dim)
     .def_rw("out", &LaunchParams::out)
     .def_rw("stream", &LaunchParams::stream);
 
@@ -84,15 +89,17 @@ void bind(nb::module_& parent)
       std::int32_t S,
       DType dtype,
       bool has_bias,
-      std::optional<std::int32_t> K1)
-    { return make_kernel_config(target_sm, K, K1.value_or(K), N, S, dtype, has_bias); },
+      std::optional<std::int32_t> K1,
+      bool fused_residual)
+    { return make_kernel_config(target_sm, K, K1.value_or(K), N, S, dtype, has_bias, fused_residual); },
     "target_sm"_a,
     "K"_a,
     "N"_a,
     "S"_a,
     "dtype"_a,
     "has_bias"_a,
-    "K1"_a = nb::none());
+    "K1"_a = nb::none(),
+    "fused_residual"_a = false);
 
   module.def("current_cuda_sm", &current_cuda_sm);
 

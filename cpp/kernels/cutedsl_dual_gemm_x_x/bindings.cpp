@@ -40,7 +40,7 @@ void bind(nb::module_& parent)
     .def_ro("dtype", &KernelConfig::dtype)
     .def_ro("transpose_out", &KernelConfig::transpose_out)
     .def_ro("has_bias", &KernelConfig::has_bias)
-    .def_ro("has_mask", &KernelConfig::has_mask)
+    .def_ro("runtime_mask", &KernelConfig::runtime_mask)
     .def_ro("silu_gate", &KernelConfig::silu_gate)
     .def_ro("cubin", &KernelConfig::cubin)
     .def_prop_ro("dynamic_smem_bytes", &dynamic_smem_bytes)
@@ -70,7 +70,7 @@ void bind(nb::module_& parent)
     "dtype"_a,
     "transpose_out"_a,
     "has_bias"_a,
-    "has_mask"_a,
+    "runtime_mask"_a,
     // Defaulted so a caller that predates the gate axis still selects the
     // sigmoid image it was already getting.
     "silu_gate"_a = false);

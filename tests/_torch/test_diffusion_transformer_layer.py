@@ -26,10 +26,85 @@ from test_utils.openfold3.ref_layers import Openfold3RefDiffusionTransformerLaye
 
 from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
 from bionemo_ir._torch.attention_backend.utils import precompute_single_masks
-from bionemo_ir._torch.layers.transformers.diffusion_transformer import DiffusionTransformerLayer
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
+    DiffusionTransformerLayer,
+    build_bias_mega_offset,
+    build_bias_mega_weight,
+    precompute_pair_biases,
+)
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
+
+
+def test_pair_bias_mega_parameters_support_custom_attention_attributes() -> None:
+    class PairBias(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj_z = torch.nn.Sequential(
+                torch.nn.LayerNorm(3),
+                torch.nn.Linear(3, 2, bias=False),
+            )
+
+    class Layer(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mha = PairBias()
+
+    layers = torch.nn.ModuleList([Layer(), Layer()])
+    with torch.no_grad():
+        for index, layer in enumerate(layers, start=1):
+            layer.mha.proj_z[0].weight.fill_(index)
+            layer.mha.proj_z[0].bias.fill_(index + 0.5)
+            layer.mha.proj_z[-1].weight.fill_(index + 1)
+
+    expected_weights = torch.cat(
+        [layer.mha.proj_z[-1].weight * layer.mha.proj_z[0].weight for layer in layers],
+    )
+    expected_offsets = torch.cat(
+        [layer.mha.proj_z[-1].weight @ layer.mha.proj_z[0].bias for layer in layers],
+    )
+    torch.testing.assert_close(build_bias_mega_weight(layers, attn_attr="mha"), expected_weights)
+    torch.testing.assert_close(build_bias_mega_offset(layers, attn_attr="mha"), expected_offsets)
+
+
+@pytest.mark.parametrize("rms_norm", [False, True], ids=["layer_norm", "rms_norm"])
+def test_pair_bias_precompute_matches_custom_attention_normalization(rms_norm: bool) -> None:
+    class PairBias(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            norm = torch.nn.RMSNorm(3, eps=1e-5) if rms_norm else torch.nn.LayerNorm(3, eps=1e-5)
+            self.proj_z = torch.nn.Sequential(norm, torch.nn.Linear(3, 2, bias=False))
+
+    class Layer(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mha = PairBias()
+
+    layers = torch.nn.ModuleList([Layer().cuda()])
+    z = torch.randn(1, 5, 7, 3, device="cuda")
+    norm = layers[0].mha.proj_z[0]
+    projection = layers[0].mha.proj_z[-1]
+    with torch.no_grad():
+        norm.weight.uniform_(0.5, 1.5)
+        if not rms_norm:
+            norm.bias.uniform_(-0.5, 0.5)
+        projection.weight.uniform_(-0.5, 0.5)
+        expected = projection(norm(z)).movedim(-1, -3)
+        expected = torch.nn.functional.pad(expected, (0, 1))
+        weight = build_bias_mega_weight(layers, attn_attr="mha")
+        offset = build_bias_mega_offset(layers, attn_attr="mha")
+        actual = precompute_pair_biases(
+            z,
+            weight,
+            num_layers=1,
+            num_heads=2,
+            norm_eps=norm.eps,
+            bias_pad_multiple=8,
+            bias_offset=offset,
+            rms_norm=rms_norm,
+        )[0]
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
 
 @dataclass(kw_only=True, frozen=True)

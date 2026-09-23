@@ -47,6 +47,9 @@ from .ops import (
     _invoke_vanilla_dual_gemm_x0_x1 as _invoke_vanilla_dual_gemm_x0_x1,
 )
 from .ops import (
+    get_cute_dual_gemm_x0_x1_residual_op as get_cute_dual_gemm_x0_x1_residual_op,
+)
+from .ops import (
     get_dual_gemm_x0_x1_op as get_dual_gemm_x0_x1_op,
 )
 
@@ -55,6 +58,7 @@ __all__ = [
     "DualGemmX0X1KernelConfig",
     "_CONFIGS_DIR",
     "compute_S",
+    "get_cute_dual_gemm_x0_x1_residual_op",
     "get_dual_gemm_x0_x1_op",
     "get_kernel_config",
     "get_nearest_bucket",

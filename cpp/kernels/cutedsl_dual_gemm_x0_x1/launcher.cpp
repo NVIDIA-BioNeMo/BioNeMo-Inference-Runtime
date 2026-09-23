@@ -35,8 +35,12 @@ namespace
 {
 
 constexpr char kSM80LaunchAbi[] = "dual_gemm_x0_x1_sm80";
+/* Adds actual_seqlen, residual, and i_dim to the Ampere parameter bank. */
+constexpr char kSM80ResidualLaunchAbi[] = "dual_gemm_x0_x1_sm80_residual_v1";
 constexpr char kSM90LaunchAbi[] = "dual_gemm_x0_x1_sm90";
 constexpr char kSM90AsymmetricLaunchAbi[] = "dual_gemm_x0_x1_sm90_asym";
+constexpr char kSM90ResidualLaunchAbi[] = "dual_gemm_x0_x1_sm90_residual_v1";
+constexpr char kSM90AsymmetricResidualLaunchAbi[] = "dual_gemm_x0_x1_sm90_asym_residual_v1";
 
 /* Matches the source path's unused I_dim value. */
 constexpr std::int32_t kSM90UnusedIDim = 1;
@@ -119,6 +123,11 @@ void validate_operand_devices(KernelConfig const& config, LaunchParams const& pa
   check(params.w0.device, "w0");
   check(params.w1.device, "w1");
   check(params.out.device, "out");
+  if (config.fused_residual)
+  {
+    check(params.actual_seqlen.device, "actual_seqlen");
+    check(params.residual.device, "residual");
+  }
   if (config.has_bias)
   {
     check(params.bias0.device, "bias0");
@@ -136,18 +145,31 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("kernel_symbol must not be empty");
   bool const is_sm90 = config.cubin.kernel_sm == 90;
   bool const launch_abi_matches = config.cubin.launch_abi != nullptr
-    && ((!is_sm90 && std::strcmp(config.cubin.launch_abi, kSM80LaunchAbi) == 0)
-        || (is_sm90 && (std::strcmp(config.cubin.launch_abi, kSM90LaunchAbi) == 0 || std::strcmp(config.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0)));
+    && ((!is_sm90
+         && (std::strcmp(config.cubin.launch_abi, kSM80LaunchAbi) == 0
+             || std::strcmp(config.cubin.launch_abi, kSM80ResidualLaunchAbi) == 0))
+        || (is_sm90
+            && (std::strcmp(config.cubin.launch_abi, kSM90LaunchAbi) == 0
+                || std::strcmp(config.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0
+                || std::strcmp(config.cubin.launch_abi, kSM90ResidualLaunchAbi) == 0
+                || std::strcmp(config.cubin.launch_abi, kSM90AsymmetricResidualLaunchAbi) == 0)));
   if ((config.cubin.kernel_sm != 80 && config.cubin.kernel_sm != 90) || !launch_abi_matches)
   {
     throw std::invalid_argument("dual-GEMM x0_x1 CUBIN has an incompatible launch ABI");
   }
+  bool const residual_launch_abi = std::strcmp(config.cubin.launch_abi, kSM80ResidualLaunchAbi) == 0
+    || std::strcmp(config.cubin.launch_abi, kSM90ResidualLaunchAbi) == 0
+    || std::strcmp(config.cubin.launch_abi, kSM90AsymmetricResidualLaunchAbi) == 0;
+  if (residual_launch_abi != config.fused_residual)
+    throw std::invalid_argument("dual-GEMM x0_x1 residual flag disagrees with its launch ABI");
   if (config.spec.kernel_sm != config.cubin.kernel_sm)
     throw std::invalid_argument("dual-GEMM x0_x1 spec disagrees with its CUBIN about the kernel ABI generation");
   if (config.cubin.non_portable_cluster_size_allowed != is_sm90)
     throw std::invalid_argument("dual-GEMM x0_x1 CUBIN has inconsistent cluster function metadata");
   if (config.spec.has_bias != config.has_bias)
     throw std::invalid_argument("dual-GEMM x0_x1 config disagrees with its CUBIN about bias");
+  if (config.spec.fused_residual != config.fused_residual)
+    throw std::invalid_argument("dual-GEMM x0_x1 config disagrees with its CUBIN about residual fusion");
   /* Only Hopper permits raster_factor 0. */
   if ((!is_sm90 && config.spec.raster_factor == 0) || config.spec.tile_m == 0 || config.spec.tile_n == 0)
     throw std::invalid_argument("dual-GEMM x0_x1 CUBIN has invalid launch geometry");
@@ -187,9 +209,18 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("w1 must be [N, K1] with K1 matching x1");
   if (params.out.shape[0] != M || params.out.shape[1] != N)
     throw std::invalid_argument("out must be [M, N]");
-  /* K0/K1/N must cover full 128-bit copy vectors. Callers zero-extend a
-   * narrower operand, so the 196-wide gate arrives padded to 200.
-   */
+  if (config.fused_residual)
+  {
+    validate_tensor(params.residual, "residual", 16);
+    validate_tensor(params.actual_seqlen, "actual_seqlen", 16);
+    if (params.residual.shape[0] != M || params.residual.shape[1] != N)
+      throw std::invalid_argument("residual must match the [M, N] output shape");
+    if (params.actual_seqlen.shape[0] <= 0 || params.i_dim <= 0 || M % params.i_dim != 0)
+      throw std::invalid_argument("fused residual requires valid row lengths and I_dim");
+    if (params.actual_seqlen.shape[0] != M / params.i_dim)
+      throw std::invalid_argument("actual_seqlen must have one entry per output row group");
+  }
+  /* K0/K1/N must cover full 128-bit copy vectors. */
   if (K % 8 != 0 || K1 % 8 != 0 || N % 8 != 0)
     throw std::invalid_argument("dual-GEMM x0_x1 requires K0, K1 and N to be multiples of 8");
   if (params.x0.strides[0] < K || params.x1.strides[0] < K1 || params.out.strides[0] < N)
@@ -251,11 +282,18 @@ void launch_sm80(
     device_params.bias0 = make_tensor1_descriptor(params.bias0);
     device_params.bias1 = make_tensor1_descriptor(params.bias1);
   }
+  if (config.fused_residual)
+  {
+    device_params.actual_seqlen = make_tensor1_descriptor(params.actual_seqlen);
+    device_params.residual = make_tensor2_s2_d1_descriptor(params.residual);
+    device_params.i_dim = params.i_dim;
+  }
   device_params.raster_factor = static_cast<std::int32_t>(spec.raster_factor);
 
   void* kernel_params[abi::kSM80MaxParameterCount];
-  std::size_t const parameter_count = abi::pack_sm80_kernel_params(&device_params, config.has_bias, kernel_params);
-  std::size_t const expected_count = config.has_bias ? abi::kSM80BiasParameterCount : abi::kSM80NoBiasParameterCount;
+  std::size_t const parameter_count
+    = abi::pack_sm80_kernel_params(&device_params, config.has_bias, config.fused_residual, kernel_params);
+  std::size_t const expected_count = abi::sm80_parameter_count(config.has_bias, config.fused_residual);
   if (parameter_count != expected_count)
     throw std::logic_error("dual-GEMM x0_x1 packed an unexpected parameter count");
 
@@ -415,7 +453,9 @@ cubin_launch_config_t make_sm90_launch_config(
   if (multiprocessor_count <= 0)
     throw std::invalid_argument("current CUDA device has no active multiprocessors");
 
-  if (image.cubin.launch_abi != nullptr && std::strcmp(image.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0)
+  if (
+    image.cubin.launch_abi != nullptr
+    && (std::strcmp(image.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0 || std::strcmp(image.cubin.launch_abi, kSM90AsymmetricResidualLaunchAbi) == 0))
   {
     return make_sm90_asymmetric_launch_config(image, params, smem_bytes, multiprocessor_count);
   }
@@ -443,8 +483,9 @@ void launch_sm90(
   TmaTensorSource const w1_source = make_tma_tensor2_source(params.w1, false);
   /* Output is always N-major. */
   TmaTensorSource const out_source = make_tma_tensor2_source(params.out, false);
-  bool const is_asymmetric
-    = config.cubin.launch_abi != nullptr && std::strcmp(config.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0;
+  bool const is_asymmetric = config.cubin.launch_abi != nullptr
+    && (std::strcmp(config.cubin.launch_abi, kSM90AsymmetricLaunchAbi) == 0
+        || std::strcmp(config.cubin.launch_abi, kSM90AsymmetricResidualLaunchAbi) == 0);
   /* The asymmetric kernel multicasts the activation tiles over its N cluster
    * and keeps the resident weights and the output per-CTA. A unit cluster
    * leaves every operand on the plain load atom.
@@ -478,12 +519,18 @@ void launch_sm90(
     device_params.bias0 = make_tensor1_descriptor(params.bias0);
     device_params.bias1 = make_tensor1_descriptor(params.bias1);
   }
-  device_params.i_dim = kSM90UnusedIDim;
+  if (config.fused_residual)
+  {
+    device_params.actual_seqlen = make_tensor1_descriptor(params.actual_seqlen);
+    device_params.residual = make_tensor2_s2_d1_descriptor(params.residual);
+  }
+  device_params.i_dim = config.fused_residual ? params.i_dim : kSM90UnusedIDim;
   device_params.tiled_mma = 0;
 
   void* kernel_params[abi::kSM90MaxParameterCount]{};
-  std::size_t const parameter_count = abi::pack_sm90_kernel_params(&device_params, config.has_bias, kernel_params);
-  if (parameter_count != abi::sm90_parameter_count(config.has_bias))
+  std::size_t const parameter_count
+    = abi::pack_sm90_kernel_params(&device_params, config.has_bias, config.fused_residual, kernel_params);
+  if (parameter_count != abi::sm90_parameter_count(config.has_bias, config.fused_residual))
     throw std::logic_error("dual-GEMM x0_x1 SM90 parameter packer produced the wrong ABI count");
 
   cubin_launch_config_t const launch_config = make_sm90_launch_config(image, params, context, smem_bytes);
@@ -501,6 +548,7 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.N,
     image.bucket,
     image.has_bias,
+    image.fused_residual,
     image.tile_m,
     image.tile_n,
     image.num_threads,
@@ -510,7 +558,14 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
 
 /* Select the nearest S anchor; ties choose the lower anchor. */
 embedded::CubinImage const& find_embedded_cubin(
-  std::int32_t target_sm, std::int32_t K, std::int32_t K1, std::int32_t N, std::int32_t S, DType dtype, bool has_bias)
+  std::int32_t target_sm,
+  std::int32_t K,
+  std::int32_t K1,
+  std::int32_t N,
+  std::int32_t S,
+  DType dtype,
+  bool has_bias,
+  bool fused_residual)
 {
   if (S < 0)
     throw std::invalid_argument("dual-GEMM x0_x1 S must be non-negative");
@@ -524,7 +579,7 @@ embedded::CubinImage const& find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[index];
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.K != K || image.K1 != K1 || image.N != N
-      || image.is_bfloat16 != is_bfloat16 || image.has_bias != has_bias)
+      || image.is_bfloat16 != is_bfloat16 || image.has_bias != has_bias || image.fused_residual != fused_residual)
       continue;
 
     std::int64_t const delta = static_cast<std::int64_t>(image.bucket) - static_cast<std::int64_t>(S);
@@ -543,7 +598,7 @@ embedded::CubinImage const& find_embedded_cubin(
   throw std::invalid_argument(
     "No embedded dual-GEMM x0_x1 CUBIN for SM" + std::to_string(target_sm) + ", K0=" + std::to_string(K)
     + ", K1=" + std::to_string(K1) + ", N=" + std::to_string(N) + ", S=" + std::to_string(S)
-    + ", has_bias=" + (has_bias ? "true" : "false"));
+    + ", has_bias=" + (has_bias ? "true" : "false") + ", fused_residual=" + (fused_residual ? "true" : "false"));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -564,13 +619,21 @@ std::vector<KernelSpec> kernel_specs()
 }
 
 KernelConfig make_kernel_config(
-  std::int32_t target_sm, std::int32_t K, std::int32_t K1, std::int32_t N, std::int32_t S, DType dtype, bool has_bias)
+  std::int32_t target_sm,
+  std::int32_t K,
+  std::int32_t K1,
+  std::int32_t N,
+  std::int32_t S,
+  DType dtype,
+  bool has_bias,
+  bool fused_residual)
 {
-  embedded::CubinImage const& image = find_embedded_cubin(target_sm, K, K1, N, S, dtype, has_bias);
+  embedded::CubinImage const& image = find_embedded_cubin(target_sm, K, K1, N, S, dtype, has_bias, fused_residual);
   return KernelConfig{
     make_kernel_spec(image),
     dtype,
     has_bias,
+    fused_residual,
     image.cubin,
     &image,
   };

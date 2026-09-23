@@ -333,6 +333,22 @@ _SINGLE_TILE_MAX_ELEMS = 16384
 #: reduction and the store loses its 2D shape.
 _MIN_TILE_N = 4
 _TARGET_FP32_PER_THREAD = 32
+#: fp32 values per thread when the load strides the channel axis. Those rows
+#: reduce across lanes rather than inside a thread, so the tile is sized to
+#: hold one warp (``32 * 128 == 4096`` values) and the deep per-thread slice is
+#: what keeps loads in flight instead of extra warps.
+_STRIDED_FP32_PER_THREAD = 128
+#: Rows per program floor for those layouts: a bf16 thread reads 8 contiguous
+#: rows, so a shorter tile leaves part of the load vector unused.
+_STRIDED_MIN_TILE_N = 8
+#: Working set, as a multiple of L2, below which the warp-sized tile is taken.
+#: One warp's worth of rows is narrower than a 128-byte line once ``D`` reaches
+#: 256, so the strided load fetches part of a sector; neighbouring programs
+#: cover the rest, which L2 absorbs but a DRAM stream does not. Past this the
+#: fetch is the bottleneck and hides the reduction anyway, so the wider tile
+#: that has been shipping stays. Measured on an H100: below it the warp tile is
+#: 1.2-1.9x, above it up to 5% slower at ``D=256``.
+_STRIDED_WARP_TILE_L2_MULTIPLE = 2
 
 
 def _strides_channel_axis(layout: Layout) -> bool:
@@ -355,26 +371,54 @@ def _sm_count(device_index: int) -> int:
 
 
 @functools.cache
-def _launch_params(D: int, D_OUT: int, rows: int, layout: Layout, sm_count: int) -> tuple[int, int, int, bool]:
+def _l2_bytes(device_index: int) -> int:
+    return torch.cuda.get_device_properties(device_index).L2_cache_size
+
+
+@functools.cache
+def _launch_params(
+    D: int,
+    D_OUT: int,
+    rows: int,
+    layout: Layout,
+    sm_count: int,
+    cache_resident: bool = False,
+) -> tuple[int, int, int, bool]:
     """Pick ``(tile_d, tile_n, num_warps, single_tile)``.
 
     A channel tile that spans the row lets the kernel take both moments from
-    one load, so it wins whenever the register footprint fits. Within that, the
-    row tile trades two effects measured on an H100:
+    one load, so it wins whenever the register footprint fits. What the row
+    tile should then be depends on where D sits in memory, because that decides
+    what the row reduction costs.
 
-    * layouts that stride the channel axis read ``TILE_N`` contiguous elements
-      along N, so they want the widest row tile -- 64 rows of bf16 fill a
-      sector, and dropping to 16 cost 13% at ``D=196``;
-    * layouts that hold D contiguous only need enough rows to fill the machine,
-      and a wider row tile past that shrinks the grid below the SM count, which
-      is what makes the short sequence-shaped norms slow.
+    When D is contiguous, a thread's own load vector already covers part of the
+    row, so the reduction is mostly a sequential add and the warp count only
+    has to fill the machine: ~32 fp32 per thread was flat to within 1.5% of the
+    swept optimum at all four production shapes.
 
-    The warp count then targets ~32 fp32 values per thread, which was flat to
-    within 1.5% of the swept optimum at all four production shapes.
+    When the load strides D -- the triangle-multiplication output norm, which
+    reads ``[D, B, I, J]`` -- nothing of the row lands inside a thread. The
+    reduction is then pure data movement between lanes, and its cost is set by
+    how many *warps* a row spans: within one warp it is a shuffle butterfly,
+    across warps it becomes a shared-memory round trip with two barriers, paid
+    twice because the variance waits on the mean. Sizing the tile to one warp
+    removes both barriers, which is 1.2-1.9x on the ``dbij->bijd`` shapes the
+    TriMul stacks request; the deep per-thread slice replaces the memory-level
+    parallelism the extra warps used to supply. That only pays while the pair
+    tensor is cache-resident, hence ``cache_resident`` -- see
+    :data:`_STRIDED_WARP_TILE_L2_MULTIPLE`.
     """
     tile_d = triton.next_power_of_2(max(D, D_OUT))
     if tile_d * _MIN_TILE_N > _SINGLE_TILE_MAX_ELEMS:
         return _TILE_D, 64, 8, False
+
+    if cache_resident and _strides_channel_axis(layout):
+        warp_tile = 32 * _STRIDED_FP32_PER_THREAD
+        tile_n = max(_STRIDED_MIN_TILE_N, min(64, warp_tile // tile_d))
+        tile_n = max(_STRIDED_MIN_TILE_N, min(tile_n, _prev_power_of_2(rows // sm_count)))
+        # A row wider than one warp's slice has to span several; keep them at
+        # the same per-thread depth rather than shrinking the tile further.
+        return tile_d, tile_n, max(1, tile_n * tile_d // warp_tile), True
 
     budget = _SINGLE_TILE_MAX_ELEMS if _strides_channel_axis(layout) else _SINGLE_TILE_MAX_ELEMS // 2
     tile_n = min(64, max(1, budget // tile_d))
@@ -425,7 +469,16 @@ def _launch_layer_norm_transpose(
     if out.numel() == 0:
         return out
 
-    tile_d, tile_n, num_warps, single_tile = _launch_params(D, D_OUT, B * N, layout, _sm_count(x.device.index or 0))
+    device_index = x.device.index or 0
+    traffic = B * N * (D * x.element_size() + D_OUT * out.element_size())
+    tile_d, tile_n, num_warps, single_tile = _launch_params(
+        D,
+        D_OUT,
+        B * N,
+        layout,
+        _sm_count(device_index),
+        traffic <= _STRIDED_WARP_TILE_L2_MULTIPLE * _l2_bytes(device_index),
+    )
     x = x.contiguous()
     weight_arg = weight.contiguous() if has_weight else x
     bias_arg = bias.contiguous() if has_bias else x

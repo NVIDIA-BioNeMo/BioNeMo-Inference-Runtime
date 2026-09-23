@@ -15,7 +15,10 @@ package-dir = { "" = "." }
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bionemo_ir*"]
-namespaces = true
+# Every shipped Python package has an __init__.py. Regular package discovery
+# prunes unrelated checkout directories before descending into them; implicit
+# namespace discovery walks the entire workspace, including ignored build trees.
+namespaces = false
 
 [tool.setuptools.package-data]
 "bionemo_ir" = [

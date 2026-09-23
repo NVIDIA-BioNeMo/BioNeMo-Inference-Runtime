@@ -25,6 +25,7 @@ from test_utils.openfold.create_and_load_weights import (
 from test_utils.openfold.ref_layers import RefExtraMSABlock
 
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks
+from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
 from bionemo_ir._torch.modules.openfold2.trunk import ExtraMSABlock
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
@@ -109,7 +110,13 @@ def test_extra_msa_block(sc: Scenario):
         msa_mask_t = msa_mask.to(torch_dtype)
         pair_mask_t = pair_mask.to(torch_dtype)
 
-        output_m, output_z = module(m_t, z_t, msa_mask_t, pair_mask_t)
+        output_m, output_z = module(
+            m_t,
+            z_t,
+            msa_mask_t,
+            pair_mask_t,
+            precompute_trimul_metadata(z_t, None, None),
+        )
 
     if torch_dtype == torch.float32:
         torch.testing.assert_close(output_m, ref_m_f32, atol=1e-3, rtol=1e-4)
@@ -171,10 +178,22 @@ def test_extra_msa_block_precomputed_masks(sc: Scenario):
     pair_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
 
     precomputed = precompute_pair_masks(sc.triangle_attn_backend, pair_mask, inf=ref_module.inf, dtype=torch_dtype)
+    trimul_metadata = precompute_trimul_metadata(
+        z,
+        precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+        precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+    )
 
     with torch.inference_mode():
-        out_m, out_z = module(m, z, msa_mask, pair_mask)
-        out_m_pre, out_z_pre = module(m, z, msa_mask, pair_mask, precomputed_masks=precomputed)
+        out_m, out_z = module(m, z, msa_mask, pair_mask, trimul_metadata)
+        out_m_pre, out_z_pre = module(
+            m,
+            z,
+            msa_mask,
+            pair_mask,
+            trimul_metadata,
+            precomputed_masks=precomputed,
+        )
 
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)

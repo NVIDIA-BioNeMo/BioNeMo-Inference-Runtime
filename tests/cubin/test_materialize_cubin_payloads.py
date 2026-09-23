@@ -65,7 +65,7 @@ def _stable_json(value: object) -> bytes:
 def _aliases(family: str) -> list[dict[str, object]]:
     return {
         "adaln_layernorm_sigmoid": [{"feature_dim": 128, "num_threads": 128}],
-        "dual_gemm_x0_x1": [{"K": 64, "K1": 64, "N": 32, "has_bias": False}],
+        "dual_gemm_x0_x1": [{"K": 64, "K1": 64, "N": 32, "has_bias": False, "fused_residual": False}],
         "dual_gemm_x_x": [{"N": 32, "bucket": 64}],
         "gated_sigmoid": [{"K": 64, "N": 32, "m_bucket": 0}],
         "outer_product_mean": [{"default_config": True}],
@@ -196,6 +196,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "bucket": 64,
             "is_bfloat16": dtype == "bf16",
             "has_bias": False,
+            "fused_residual": False,
             "tile_m": 64,
             "tile_n": 64,
             "num_threads": 128,

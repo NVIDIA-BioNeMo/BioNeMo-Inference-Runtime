@@ -31,6 +31,7 @@ from bionemo_ir._torch.attention_backend.utils import (
     precompute_single_masks,
 )
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerLayerV1, PairformerNoSeqModule
+from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata, precompute_trimul_metadata
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl_single
@@ -129,7 +130,15 @@ def test_pairformer_layer(sc: Scenario):
                     module.float()
 
         ref_s, ref_z = ref_layer(s, z, mask, pair_mask)
-        output_s, output_z = layer(s, z, mask, pair_mask, attn_metadatas=attn_metadatas)
+        trimul_metadata = precompute_trimul_metadata(z, None, None)
+        output_s, output_z = layer(
+            s,
+            z,
+            mask,
+            pair_mask,
+            trimul_metadata,
+            attn_metadatas=attn_metadatas,
+        )
 
     assert ref_s.shape == output_s.shape
     assert ref_z.shape == output_z.shape
@@ -328,15 +337,21 @@ def test_pairformer_layer_precomputed_masks(sc: Scenario):
 
     precomputed = precompute_pair_masks(sc.triangle_attn_backend, pair_mask, inf=1e9, dtype=dtype)
     precomputed_single = precompute_single_masks(sc.pairwise_attn_backend, mask, inf=1e9)
+    trimul_metadata = precompute_trimul_metadata(
+        z,
+        precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+        precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+    )
 
     with torch.inference_mode():
-        out_s, out_z = layer(s, z, mask, pair_mask, attn_metadatas=attn_metadatas)
+        out_s, out_z = layer(s, z, mask, pair_mask, trimul_metadata, attn_metadatas=attn_metadatas)
 
         out_s_pre, out_z_pre = layer(
             s,
             z,
             mask,
             pair_mask,
+            trimul_metadata,
             attn_metadatas=attn_metadatas,
             precomputed_masks=precomputed,
             precomputed_single_masks=precomputed_single,
@@ -402,14 +417,7 @@ def _make_minimal_pairformer_layer(
 
 
 def test_pairformer_transform_z_actual_seqlen_wiring():
-    """``_transform_z`` forwards ``mask_bias`` / ``mask_bias_transposed`` as
-    ``actual_seqlen`` to ``tri_mul_out`` / ``tri_mul_in`` only when the
-    precomputed masks are in the CuTeDSL ``int32`` per-row-count form
-    (``mask_bias.dtype == torch.int32``).  For the default backends'
-    float additive-bias form, and when no precomputed masks are supplied,
-    both nodes must receive ``actual_seqlen=None`` so the dual_gemm_x_x
-    wrapper falls back to the in-call ``mask.sum(-1)`` reduction.
-    """
+    """``_transform_z`` reuses stack-level TriMul row-length metadata."""
     torch.manual_seed(0)
     device = torch.device("cuda")
     dtype = torch.bfloat16
@@ -434,9 +442,20 @@ def test_pairformer_transform_z_actual_seqlen_wiring():
         mask_bias=mb_int32,
         mask_bias_transposed=mb_int32_t,
     )
-    layer._transform_z(z, pair_mask, precomputed_masks=pre_cutedsl)
-    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is mb_int32
-    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is mb_int32_t
+    trimul_metadata = TriangleMultiplicationMetadata(
+        outgoing_actual_seqlen=mb_int32,
+        incoming_actual_seqlen=mb_int32_t,
+    )
+    layer._transform_z(
+        z,
+        pair_mask,
+        precomputed_masks=pre_cutedsl,
+        trimul_metadata=trimul_metadata,
+    )
+    assert layer.tri_mul_out.call_args.kwargs["trimul_metadata"] is trimul_metadata
+    assert layer.tri_mul_in.call_args.kwargs["trimul_metadata"] is trimul_metadata
+    assert layer.tri_mul_out.call_args.kwargs["residual"] is True
+    assert layer.tri_mul_in.call_args.kwargs["residual"] is True
 
     layer.tri_mul_out.reset_mock()
     layer.tri_mul_in.reset_mock()
@@ -447,15 +466,16 @@ def test_pairformer_transform_z_actual_seqlen_wiring():
         mask_bias=mb_float,
         mask_bias_transposed=mb_float_t,
     )
-    layer._transform_z(z, pair_mask, precomputed_masks=pre_default)
-    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
-    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    no_lengths = TriangleMultiplicationMetadata()
+    layer._transform_z(z, pair_mask, precomputed_masks=pre_default, trimul_metadata=no_lengths)
+    assert layer.tri_mul_out.call_args.kwargs["trimul_metadata"] is no_lengths
+    assert layer.tri_mul_in.call_args.kwargs["trimul_metadata"] is no_lengths
 
     layer.tri_mul_out.reset_mock()
     layer.tri_mul_in.reset_mock()
-    layer._transform_z(z, pair_mask, precomputed_masks=None)
-    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
-    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    layer._transform_z(z, pair_mask, precomputed_masks=None, trimul_metadata=no_lengths)
+    assert layer.tri_mul_out.call_args.kwargs["trimul_metadata"] is no_lengths
+    assert layer.tri_mul_in.call_args.kwargs["trimul_metadata"] is no_lengths
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +578,10 @@ def test_pairformer_transform_z_skips_actual_seqlen_when_not_left_aligned():
     mb_int32 = torch.zeros(B, N, dtype=torch.int32, device=device)
     mb_int32_t = torch.zeros(B, N, dtype=torch.int32, device=device)
     pre = PrecomputedPairMasks(pair_mask=pair_mask, mask_bias=mb_int32, mask_bias_transposed=mb_int32_t)
-    layer._transform_z(z, pair_mask, precomputed_masks=pre)
-    assert layer.tri_mul_out.call_args.kwargs["actual_seqlen"] is None
-    assert layer.tri_mul_in.call_args.kwargs["actual_seqlen"] is None
+    trimul_metadata = TriangleMultiplicationMetadata()
+    layer._transform_z(z, pair_mask, precomputed_masks=pre, trimul_metadata=trimul_metadata)
+    assert layer.tri_mul_out.call_args.kwargs["trimul_metadata"] is trimul_metadata
+    assert layer.tri_mul_in.call_args.kwargs["trimul_metadata"] is trimul_metadata
     assert layer.tri_attn_start.call_args.kwargs["mask_bias"] is None
     assert layer.tri_attn_end.call_args.kwargs["mask_bias"] is None
 
@@ -585,6 +606,7 @@ def test_pairformer_no_seq_module_forwards_pair_mask_left_aligned():
         pair_mask_left_aligned=False,
     )
     assert len(stack.layers) == 2
+    assert stack.pair_mask_left_aligned is False
     for layer in stack.layers:
         assert layer.pair_mask_left_aligned is False
         assert layer.tri_mul_out.pair_mask_left_aligned is False
@@ -605,9 +627,11 @@ def test_pairformer_no_seq_wrappers_forward_inplace_safe(monkeypatch: pytest.Mon
         skip_create_weights=True,
     )
     seen: list[bool] = []
+    trimul_metadata = []
 
     def record_forward(self, *, z: torch.Tensor, **kwargs):
         seen.append(kwargs["inplace_safe"])
+        trimul_metadata.append(kwargs["trimul_metadata"])
         return None, z
 
     monkeypatch.setattr(PairformerLayerV1, "forward", record_forward)
@@ -615,3 +639,4 @@ def test_pairformer_no_seq_wrappers_forward_inplace_safe(monkeypatch: pytest.Mon
     pair_mask = torch.ones(1, 4, 4)
     assert stack(z, pair_mask, inplace_safe=True) is z
     assert seen == [True, True]
+    assert trimul_metadata[0] is trimul_metadata[1]

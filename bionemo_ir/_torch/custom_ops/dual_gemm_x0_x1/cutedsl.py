@@ -40,6 +40,7 @@ from ._config import (
     kernel_is_sm90,
     load_bundle,
     needs_independent_operand_strides,
+    supports_fused_residual,
 )
 from ._cubin import DualGemmX0X1CubinExecutable
 
@@ -85,6 +86,7 @@ class _DualGemmX0X1Variant:
     has_bias: bool
     # Second GEMM inner dim; equal to ``K`` for the symmetric case.
     K1: int
+    fused_residual: bool = False
 
 
 class DualGemmX0X1CuTe(CuteKernelCache):
@@ -105,7 +107,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         # Bump when the compiled ABI changes; a stale entry would reuse a
         # kernel with shared ``K0``/``K1`` layout or the old SM90 path.
         return (
-            "dual_gemm_x0_x1_cute_asym_v8",
+            "dual_gemm_x0_x1_cute_asym_v9",
             self._sm_version,
             variant.dtype,
             variant.K,
@@ -113,6 +115,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             variant.N,
             variant.bucket,
             variant.has_bias,
+            variant.fused_residual,
         )
 
     def _kernel_is_sm90(self, K: int, N: int, K1: int | None = None) -> bool:
@@ -154,6 +157,8 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             S=variant.bucket,
             has_bias=variant.has_bias,
             dtype_str=dtype_str,
+            has_mask=variant.fused_residual,
+            fused_residual=variant.fused_residual,
             K1=variant.K1,
         )
         # Both inner dims share one tile, so each must satisfy the kernel's
@@ -187,6 +192,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
                     variant.dtype,
                     variant.has_bias,
                     variant.K1,
+                    variant.fused_residual,
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
@@ -236,6 +242,8 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             ct_dtype,
             variant.has_bias,
             asymmetric=needs_independent_operand_strides(variant.K, variant.K1, variant.N),
+            has_mask=variant.fused_residual,
+            fused_residual=variant.fused_residual,
         )
         DualGemmX0X1CuTe._compiled_cache[cache_key] = executable
         self.save_to_cache(disk_key, executable)
@@ -273,6 +281,8 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         W1: torch.Tensor,
         bias0: torch.Tensor | None = None,
         bias1: torch.Tensor | None = None,
+        actual_seqlen: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Return the fused output.
 
@@ -283,6 +293,8 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             W1: Second weight [N, K1].
             bias0: Optional first bias [N].
             bias1: Optional second bias [N].
+            actual_seqlen: Optional int32 valid-J counts for every ``(B, I)`` row.
+            residual: Optional residual with the input leading shape and ``N`` channels.
 
         Returns:
             Output [*, N].
@@ -331,6 +343,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
 
         X0_2d = X0.reshape(-1, K) if x0_ndim != 2 else X0
         X1_2d = X1.reshape(-1, K1) if x0_ndim != 2 else X1
+        residual_2d = None
         M = X0_2d.shape[0]
         if M == 0:
             raise ValueError("dual_gemm x0_x1 requires at least one row")
@@ -346,6 +359,21 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         if not needs_independent_operand_strides(K, K1, N) and X0_2d.stride(0) != N:
             raise ValueError(f"X0 row stride must equal output width N={N}, got {X0_2d.stride(0)}")
         has_bias = bias0 is not None
+        fused_residual = residual is not None
+        if fused_residual != (actual_seqlen is not None):
+            raise ValueError("actual_seqlen and residual must both be supplied for fused residual output")
+        if fused_residual:
+            if not supports_fused_residual(self._sm_version, K, N, K1):
+                raise ValueError("fused dual_gemm x0_x1 residual output is unavailable for this shape")
+            if residual.shape != (*x0_orig_shape[:-1], N):
+                raise ValueError(f"residual must have shape {(*x0_orig_shape[:-1], N)}, got {tuple(residual.shape)}")
+            if residual.dtype != dtype or residual.device != device:
+                raise ValueError("residual must match X0 dtype and device")
+            if not residual.is_contiguous():
+                raise ValueError("residual must be contiguous")
+            residual_2d = residual.view(-1, N)
+            if residual_2d.stride(1) != 1 or residual_2d.stride(0) % 8 != 0:
+                raise ValueError("residual rows must be contiguous and 16-byte aligned")
 
         dtype_str = _dtype_str(dtype)
         variant = _DualGemmX0X1Variant(
@@ -355,6 +383,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             bucket=self._nearest_bucket(compute_S(M), K, N, has_bias, K1),
             has_bias=has_bias,
             K1=K1,
+            fused_residual=fused_residual,
         )
 
         if variant == self._last_variant:
@@ -365,11 +394,45 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             self._last_exe = exe
 
         out_2d = torch.empty((M, N), dtype=dtype, device=device)
+        i_dim = 1
+        if fused_residual:
+            i_dim = x0_orig_shape[-2]
+            kernel_B = M // i_dim
+            if actual_seqlen.numel() != kernel_B:
+                raise ValueError(f"actual_seqlen must have {kernel_B} elements, got shape {tuple(actual_seqlen.shape)}")
+            actual_seqlen = actual_seqlen.to(device=device, dtype=torch.int32).reshape(kernel_B).contiguous()
         if self._kernel_is_sm90(K, N, K1):
             # Hopper carries unused mask and I_dim slots.
-            launch_compiled_kernel(exe, X0_2d, X1_2d, W0, W1, bias0, bias1, None, out_2d, 1)
+            launch_compiled_kernel(
+                exe,
+                X0_2d,
+                X1_2d,
+                W0,
+                W1,
+                bias0,
+                bias1,
+                actual_seqlen,
+                residual_2d,
+                out_2d,
+                i_dim,
+            )
         else:
-            launch_compiled_kernel(exe, X0_2d, X1_2d, W0, W1, bias0, bias1, out_2d)
+            if fused_residual:
+                launch_compiled_kernel(
+                    exe,
+                    X0_2d,
+                    X1_2d,
+                    W0,
+                    W1,
+                    bias0,
+                    bias1,
+                    actual_seqlen,
+                    residual_2d,
+                    out_2d,
+                    i_dim,
+                )
+            else:
+                launch_compiled_kernel(exe, X0_2d, X1_2d, W0, W1, bias0, bias1, out_2d)
 
         if x0_ndim == 2:
             return out_2d

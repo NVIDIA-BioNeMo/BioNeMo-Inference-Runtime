@@ -204,7 +204,9 @@ def test_relu_transition_skip_create_weights_defers_linears(
 
 
 @pytest.mark.parametrize("chunk_rows", [8, 7], ids=["even", "partial"])
-def test_pair_transition_auto_chunk(chunk_rows: int):
+@pytest.mark.parametrize("with_mask", [False, True], ids=["unmasked", "masked"])
+@pytest.mark.parametrize("residual", [False, True], ids=["no_residual", "residual"])
+def test_pair_transition_auto_chunk(chunk_rows: int, with_mask: bool, residual: bool):
     """PairTransition chunks pair rows without changing its ReLU FFN."""
     torch.manual_seed(1)
     device = torch.device("cuda")
@@ -218,12 +220,14 @@ def test_pair_transition_auto_chunk(chunk_rows: int):
     z = torch.randn(1, n, n, dim, device=device)
     mask = torch.ones(1, n, n, dtype=torch.bool, device=device)
     mask[:, -3:, :] = False
+    mask_or_none = mask if with_mask else None
     with torch.inference_mode():
-        dense = transition._forward_impl(z, mask)
-        chunked = transition(z, mask)
+        dense = transition._forward_impl(z, mask_or_none, residual=residual)
+        chunked = transition(z, mask_or_none, residual=residual)
 
     torch.testing.assert_close(chunked, dense, atol=1e-5, rtol=1e-5)
-    assert torch.count_nonzero(chunked[:, -3:]) == 0
+    if with_mask and not residual:
+        assert torch.count_nonzero(chunked[:, -3:]) == 0
 
 
 @pytest.mark.parametrize("cudnn_dynamic_shapes", [False, True], ids=["static", "dynamic"])

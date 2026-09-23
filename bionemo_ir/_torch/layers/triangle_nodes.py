@@ -14,13 +14,13 @@
 # limitations under the License.
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache
 from importlib import import_module
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
@@ -31,7 +31,7 @@ from bionemo_ir.utils import get_sm_version
 
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
-from ..custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
+from ..custom_ops.dual_gemm_x0_x1 import get_cute_dual_gemm_x0_x1_residual_op, get_dual_gemm_x0_x1_op
 from ..custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op, get_dual_gemm_x_x_op
 from .attention import TriangleAttention
 
@@ -70,6 +70,65 @@ class TriangleAttentionNodeType(IntEnum):
 class TriangleMultiplicationNodeType(IntEnum):
     INCOMING = 0
     OUTGOING = 1
+
+
+@dataclass(frozen=True)
+class TriangleMultiplicationMetadata:
+    """Token alignment and row lengths shared by a TriMul stack."""
+
+    token_pad_multiple: int = -1
+    outgoing_actual_seqlen: torch.Tensor | None = None
+    incoming_actual_seqlen: torch.Tensor | None = None
+    padded_outgoing_actual_seqlen: torch.Tensor | None = None
+    padded_incoming_actual_seqlen: torch.Tensor | None = None
+
+
+def _pad_actual_seqlen(actual_seqlen: torch.Tensor, rows: int, rows_padded: int) -> torch.Tensor:
+    counts = actual_seqlen.reshape(-1, rows)
+    padded = counts.new_zeros((counts.shape[0], rows_padded))
+    padded[:, :rows] = counts
+    return padded
+
+
+def precompute_trimul_metadata(
+    x: torch.Tensor,
+    outgoing_actual_seqlen: torch.Tensor | None,
+    incoming_actual_seqlen: torch.Tensor | None,
+    *,
+    enabled: bool = True,
+) -> TriangleMultiplicationMetadata:
+    """Prepare row lengths and optional token padding once per stack."""
+    if not enabled:
+        outgoing_actual_seqlen = incoming_actual_seqlen = None
+    token_pad = -1
+    padded_outgoing = padded_incoming = None
+    can_pad = (
+        (outgoing_actual_seqlen is not None or incoming_actual_seqlen is not None)
+        and x.device.type == "cuda"
+        and x.dtype in (torch.bfloat16, torch.float16)
+        and (x.shape[1] % _GEMM_TOKEN_ALIGN != 0 or x.shape[2] % _GEMM_TOKEN_ALIGN != 0)
+    )
+    if can_pad:
+        token_pad = _GEMM_TOKEN_ALIGN
+        if outgoing_actual_seqlen is not None:
+            padded_outgoing = _pad_actual_seqlen(
+                outgoing_actual_seqlen,
+                x.shape[1],
+                _round_up(x.shape[1], token_pad),
+            )
+        if incoming_actual_seqlen is not None:
+            padded_incoming = _pad_actual_seqlen(
+                incoming_actual_seqlen,
+                x.shape[2],
+                _round_up(x.shape[2], token_pad),
+            )
+    return TriangleMultiplicationMetadata(
+        token_pad_multiple=token_pad,
+        outgoing_actual_seqlen=outgoing_actual_seqlen,
+        incoming_actual_seqlen=incoming_actual_seqlen,
+        padded_outgoing_actual_seqlen=padded_outgoing,
+        padded_incoming_actual_seqlen=padded_incoming,
+    )
 
 
 class TriangleAttentionNode(nn.Module):
@@ -368,19 +427,23 @@ class TriangleMultiplicationNode(nn.Module):
             skip_create_weights=skip_create_weights,
         )
 
-        # Fused half-precision gates require K divisible by 8. The 196-wide
-        # operand is padded to 200; LayerNorm emits the zero tail.
-        k_align = 8 if self.high_precision_dtype in (torch.float16, torch.bfloat16) else 1
-        self._k_align_or_off = k_align if k_align > 1 else -1
-        self._x0_k = _round_up(self.dim, k_align)
-        self._x1_k = _round_up(self.hidden_dim, k_align)
-        self._k_pad_cache: dict[str, tuple[tuple, torch.Tensor]] = {}
+        # Select a fused output gate only when the native widths are tuned.
         self._dual_gemm_x0_x1_op = get_dual_gemm_x0_x1_op(
             self.high_precision_dtype,
             transpose_out=False,
             N=self.dim,
-            K0=self._x0_k,
-            K1=self._x1_k,
+            K0=self.dim,
+            K1=self.hidden_dim,
+        )
+        self._dual_gemm_x0_x1_residual_op = (
+            get_cute_dual_gemm_x0_x1_residual_op(
+                self.high_precision_dtype,
+                N=self.dim,
+                K0=self.dim,
+                K1=self.hidden_dim,
+            )
+            if self.pair_mask_left_aligned
+            else None
         )
         # Route interior-zero masks around CuTe's prefix-mask kernel.
         self._dual_gemm_x_x_op_transpose = get_dual_gemm_x_x_op(
@@ -433,63 +496,37 @@ class TriangleMultiplicationNode(nn.Module):
             return torch.einsum("dbik,dbjk->dbij", a, b)
         return torch.einsum("dbki,dbkj->dbij", a, b)
 
-    def _token_pad_multiple(self, x: torch.Tensor, actual_seqlen: torch.Tensor | None) -> int:
-        """Return the token alignment needed by the contraction.
+    def can_fuse_residual(self, x: torch.Tensor) -> bool:
+        """Whether the residual matches the output gate's aligned layout."""
+        return (
+            self._dual_gemm_x0_x1_residual_op is not None
+            and x.shape[1] % _GEMM_TOKEN_ALIGN == 0
+            and x.shape[2] % _GEMM_TOKEN_ALIGN == 0
+        )
 
-        Fast GEMMs require both token axes to be multiples of 8.
-        Padding needs ``actual_seqlen`` so padded row groups can be appended.
-        """
-        if not self.align_contraction_tokens or not self._token_align_backend:
-            return -1
-        if actual_seqlen is None:
-            return -1
-        if x.device.type != "cuda" or x.dtype not in (torch.bfloat16, torch.float16):
-            return -1
-        if x.shape[1] % _GEMM_TOKEN_ALIGN == 0 and x.shape[2] % _GEMM_TOKEN_ALIGN == 0:
-            return -1
-        return _GEMM_TOKEN_ALIGN
-
-    @staticmethod
-    def _padded_actual_seqlen(actual_seqlen: torch.Tensor, rows: int, rows_padded: int) -> torch.Tensor:
-        """Append zero-length entries for padded dual-GEMM row groups."""
-        counts = actual_seqlen.reshape(-1, rows)
-        padded = counts.new_zeros((counts.shape[0], rows_padded))
-        padded[:, :rows] = counts
-        return padded
-
-    def _k_padded_weight(self, slot: str, weight: torch.Tensor, k_padded: int) -> torch.Tensor:
-        """Zero-extend a ``[N, K]`` weight to match a padded K operand.
-
-        Cached across calls and rebuilt whenever the source weight is
-        rewritten, which covers ``load_state_dict``, an in-place ``copy_``
-        and a ``.data`` reassignment.
-        """
-        if weight.shape[-1] >= k_padded:
-            return weight
-        key = (weight.data_ptr(), weight._version, weight.dtype)
-        cached = self._k_pad_cache.get(slot)
-        if cached is None or cached[0] != key:
-            padded = weight.new_zeros((*weight.shape[:-1], k_padded))
-            padded[..., : weight.shape[-1]] = weight
-            cached = (key, padded)
-            self._k_pad_cache[slot] = cached
-        return cached[1]
-
-    @staticmethod
-    def _zero_extend_k(x: torch.Tensor, k_padded: int) -> torch.Tensor:
-        """Widen the last dim to ``k_padded``, leaving wider inputs alone."""
-        pad = k_padded - x.shape[-1]
-        return x if pad <= 0 else F.pad(x, (0, pad))
-
-    def _output_gate(self, x0: torch.Tensor, x1: torch.Tensor) -> torch.Tensor:
-        """Run the fused output gate, zero-extending K where required."""
-        return self._dual_gemm_x0_x1_op(
-            self._zero_extend_k(x0, self._x0_k),
-            self._zero_extend_k(x1, self._x1_k),
-            self._k_padded_weight("g_out", self.g_out.weight, self._x0_k),
-            self._k_padded_weight("p_out", self.p_out.weight, self._x1_k),
+    def _output_gate(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        *,
+        actual_seqlen: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run the output gate, optionally fusing the masked residual."""
+        operation = self._dual_gemm_x0_x1_op
+        if residual is not None:
+            if self._dual_gemm_x0_x1_residual_op is None or actual_seqlen is None:
+                raise ValueError("fused triangle residual requires a supported CuTe kernel and actual_seqlen")
+            operation = self._dual_gemm_x0_x1_residual_op
+        return operation(
+            x0,
+            x1,
+            self.g_out.weight,
+            self.p_out.weight,
             self.g_out.bias,
             self.p_out.bias,
+            actual_seqlen=actual_seqlen,
+            residual=residual,
         )
 
     def _ensure_dtype(self, x: torch.Tensor) -> torch.Tensor:
@@ -534,20 +571,40 @@ class TriangleMultiplicationNode(nn.Module):
         )
 
     def _forward_impl(
-        self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
+        *,
+        residual: bool = False,
     ) -> torch.Tensor:
         """Run triangle multiplication with feature-major intermediates.
 
         Args:
             x (torch.Tensor): input tensor, shape [B, I, J, c_in]
             mask (torch.Tensor): mask tensor [B, I, J]
-            actual_seqlen (torch.Tensor | None): precomputed ``int32[B, I]``
-                per-row valid-J count for the CuTe dual_gemm_x_x backend
-                (same as ``actual_s_kv`` from CuTeDSL precompute).
+            trimul_metadata: precomputed token padding and row lengths.
         """
+        residual_pair = x
         x = self._ensure_dtype(x)
         tokens_i, tokens_j = x.shape[1], x.shape[2]
-        token_pad = self._token_pad_multiple(x, actual_seqlen)
+        outgoing = trimul_metadata.outgoing_actual_seqlen
+        incoming = trimul_metadata.incoming_actual_seqlen
+        padded_outgoing = trimul_metadata.padded_outgoing_actual_seqlen
+        padded_incoming = trimul_metadata.padded_incoming_actual_seqlen
+        selected = outgoing if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else incoming
+        padded_selected = (
+            padded_outgoing if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else padded_incoming
+        )
+        use_token_pad = (
+            self.align_contraction_tokens
+            and self._token_align_backend
+            and trimul_metadata.token_pad_multiple > 0
+            and padded_selected is not None
+        )
+        token_pad = trimul_metadata.token_pad_multiple if use_token_pad else -1
+        actual_seqlen = padded_selected if use_token_pad else selected
+        output_actual_seqlen = padded_outgoing if use_token_pad else outgoing
         x = layer_norm_transpose(
             x,
             self.norm_in.weight,
@@ -557,8 +614,6 @@ class TriangleMultiplicationNode(nn.Module):
             token_pad_multiple=token_pad,
         )
         x_in = x
-        if token_pad > 0:
-            actual_seqlen = self._padded_actual_seqlen(actual_seqlen, tokens_i, x.shape[1])
         # Gated dual gemm
         x = self._contract_projection(
             self._dual_gemm_x_x_op_transpose(
@@ -575,36 +630,52 @@ class TriangleMultiplicationNode(nn.Module):
             transposed=True,
         )
 
-        # Output normalization. The gate wants a K that is a multiple of 8,
-        # and this norm can emit the zero tail without an extra pass.
+        # Output normalization.
         x = layer_norm_transpose(
             x,
             self.norm_out.weight,
             self.norm_out.bias,
             eps=self.eps,
             layout="dbij->bijd",
-            pad_multiple=self._k_align_or_off,
         )
 
         # Output gating
-        out = self._output_gate(x_in.to(self.high_precision_dtype), x.to(self.high_precision_dtype))
+        fuse_residual = residual and self.can_fuse_residual(residual_pair) and output_actual_seqlen is not None
+        out = self._output_gate(
+            x_in.to(self.high_precision_dtype),
+            x.to(self.high_precision_dtype),
+            actual_seqlen=output_actual_seqlen if fuse_residual else None,
+            residual=residual_pair if fuse_residual else None,
+        )
         if token_pad > 0:
             # Hand back the caller's token extents as a view, so the padding
             # costs no copy at all.
             out = out[:, :tokens_i, :tokens_j]
+        if residual and not fuse_residual:
+            out = residual_pair + out
         return out
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor, actual_seqlen: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
+        *,
+        residual: bool = False,
+    ) -> torch.Tensor:
         """
         Args:
             x: input pair tensor ``[B, I, J, c_in]``.
             mask: pair mask ``[B, I, J]`` (1 = valid, 0 = padded).
-            actual_seqlen: optional CuTeDSL ``int32[B, I]`` valid-J counts.
-                Pass ``mask_bias`` for outgoing multiplication and
-                ``mask_bias_transposed`` for incoming multiplication. Other
-                backends must pass ``None``.
+            trimul_metadata: precomputed token padding and row lengths.
+            residual: fuse ``x + update`` and the output mask when supported.
         """
         cueq_output = self._cueq_forward_if_supported(x, mask)
         if cueq_output is not None:
-            return cueq_output
-        return self._forward_impl(x, mask, actual_seqlen=actual_seqlen)
+            return x + cueq_output if residual else cueq_output
+        return self._forward_impl(
+            x,
+            mask,
+            trimul_metadata=trimul_metadata,
+            residual=residual,
+        )

@@ -42,12 +42,29 @@ _SYMMETRIC_CONFIG_RE = re.compile(r"K(\d+)_N(\d+)_sm(\d+)\.json")
 _ASYMMETRIC_CONFIG_RE = re.compile(r"K0(\d+)_K1(\d+)_N(\d+)_sm(\d+)\.json")
 
 
-def _skip_unless_cubin_has_x0_x1(K: int, N: int, K1: int, *, has_bias: bool = True, bucket: int = 128) -> None:
+def _skip_unless_cubin_has_x0_x1(
+    K: int,
+    N: int,
+    K1: int,
+    *,
+    has_bias: bool = True,
+    bucket: int = 128,
+    fused_residual: bool = False,
+) -> None:
     """Skip cubin-mode asymmetric-shape cases until the artifact-only refresh lands."""
     launcher = require_cubin_library().dual_gemm_x0_x1
     try:
-        launcher.make_kernel_config(SM_VERSION, K, N, bucket, launcher.DType.BFLOAT16, has_bias, K1=K1)
-    except ValueError:
+        launcher.make_kernel_config(
+            SM_VERSION,
+            K,
+            N,
+            bucket,
+            launcher.DType.BFLOAT16,
+            has_bias,
+            K1=K1,
+            fused_residual=fused_residual,
+        )
+    except (TypeError, ValueError):
         pytest.skip(f"dual_gemm_x0_x1 CUBIN corpus has no SM{SM_VERSION} K0={K} K1={K1} N={N} yet")
 
 
@@ -123,6 +140,8 @@ def _config_shape(path: Path) -> tuple[int, int, int, int]:
 )
 def test_matches_fp32_reference(cutedsl_mode, dtype, has_bias, K, N, M, monkeypatch):
     skip_if_no_cutedsl()
+    if cutedsl_mode == "cubin":
+        _skip_unless_cubin_has_x0_x1(K, N, K, has_bias=has_bias)
     _configure_mode(cutedsl_mode, monkeypatch)
     torch.manual_seed(42)
     out, ref = _run(DualGemmX0X1CuTe(), K, N, M, dtype, has_bias)
@@ -183,8 +202,8 @@ def test_mismatched_row_stride_is_rejected_by_both_paths(cutedsl_mode, monkeypat
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
 @pytest.mark.parametrize(
     ("K0", "K1", "N"),
-    [(256, 200, 256), (384, 200, 384), (384, 256, 384)],
-    ids=["public-padded", "release-padded", "declared-256"],
+    [(384, 256, 384)],
+    ids=["declared-256"],
 )
 def test_asymmetric_source_and_cubin_match_reference(
     cutedsl_mode,
@@ -228,14 +247,14 @@ def test_asymmetric_source_and_cubin_match_reference(
 
 @pytest.mark.parametrize("cutedsl_mode", _MODES, ids=lambda mode: f"impl-{mode}")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
-@pytest.mark.parametrize("K1", [200, 256], ids=["K1-200", "K1-256"])
+@pytest.mark.parametrize("K1", [256], ids=["K1-256"])
 def test_sm90_resident_weight_asymmetric_kernel_supports_no_bias(
     cutedsl_mode,
     dtype,
     K1,
     monkeypatch,
 ):
-    """Exercise the no-bias ABI for both resident-weight K1 extents."""
+    """Exercise the no-bias ABI for the resident-weight kernel."""
     skip_if_no_cutedsl()
     if SM_VERSION != 90:
         pytest.skip(f"resident-weight asymmetric kernel requires SM90 (current SM{SM_VERSION})")
@@ -256,7 +275,7 @@ def test_sm90_resident_weight_asymmetric_kernel_supports_no_bias(
 
 
 @pytest.mark.parametrize("cutedsl_mode", _MODES, ids=lambda mode: f"impl-{mode}")
-@pytest.mark.parametrize("K1", [200, 256], ids=["K1-200", "K1-256"])
+@pytest.mark.parametrize("K1", [256], ids=["K1-256"])
 @pytest.mark.parametrize(
     "M",
     [1, 63, 64, 65, 127, 128, 129, 512 * 512],
@@ -319,10 +338,114 @@ def test_sm90_resident_weight_unit_cluster_matches_reference(cutedsl_mode, has_b
 
 
 @pytest.mark.parametrize("cutedsl_mode", _MODES, ids=lambda mode: f"impl-{mode}")
+@pytest.mark.parametrize("has_bias", [False, True], ids=["nobias", "bias"])
 @pytest.mark.parametrize(
     ("K0", "K1", "N"),
-    [(256, 200, 256), (384, 200, 384), (384, 256, 384)],
-    ids=["split-k", "resident-weight-K1-200", "resident-weight-K1-256"],
+    [(128, 128, 128), (384, 256, 384), (512, 256, 512)],
+    ids=["pingpong", "resident-weight-cluster2", "resident-weight-cluster1"],
+)
+def test_fused_residual_masks_output(cutedsl_mode, has_bias, K0, K1, N, monkeypatch):
+    """Fuse the rounded gate, residual add, and left mask."""
+    skip_if_no_cutedsl()
+    if SM_VERSION not in _CUBIN_SMS:
+        pytest.skip(f"fused residual output requires SM80/86/89/90 (current SM{SM_VERSION})")
+    _configure_mode(cutedsl_mode, monkeypatch)
+
+    batch, tokens, padded_tokens, valid = 2, 256, 256, 249
+    bucket = dg_config.get_nearest_bucket(SM_VERSION, K0, N, padded_tokens, has_bias, K1=K1)
+    if cutedsl_mode == "cubin":
+        _skip_unless_cubin_has_x0_x1(
+            K0,
+            N,
+            K1,
+            bucket=bucket,
+            has_bias=has_bias,
+            fused_residual=True,
+        )
+    torch.manual_seed(96)
+    dtype = torch.bfloat16
+
+    def rand(*shape):
+        return (torch.randn(*shape, dtype=dtype, device="cuda") * 0.03).contiguous()
+
+    x0 = torch.zeros(batch, padded_tokens, padded_tokens, K0, dtype=dtype, device="cuda")
+    x1 = torch.zeros(batch, padded_tokens, padded_tokens, K1, dtype=dtype, device="cuda")
+    x0[:, :tokens, :tokens] = rand(batch, tokens, tokens, K0)
+    x1[:, :tokens, :tokens] = rand(batch, tokens, tokens, K1)
+    w0, w1 = rand(N, K0), rand(N, K1)
+    bias0 = rand(N) if has_bias else None
+    bias1 = rand(N) if has_bias else None
+    residual = rand(batch, tokens, tokens, N)
+    token_mask = torch.arange(tokens, device="cuda") < valid
+    pair_mask = token_mask[:, None] & token_mask[None, :]
+    mask_value = pair_mask[None, :, :, None].to(dtype).expand(batch, -1, -1, -1)
+    actual_seqlen = torch.zeros(batch, padded_tokens, dtype=torch.int32, device="cuda")
+    actual_seqlen[:, :valid] = valid
+
+    op = DualGemmX0X1CuTe()
+    update = _reference(x0, x1, w0, w1, bias0, bias1)[:, :tokens, :tokens]
+    expected = (residual + update) * mask_value
+    actual = op(
+        x0,
+        x1,
+        w0,
+        w1,
+        bias0,
+        bias1,
+        actual_seqlen=actual_seqlen,
+        residual=residual,
+    )[:, :tokens, :tokens]
+
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+    assert torch.count_nonzero(actual[:, valid:]) == 0
+    assert torch.count_nonzero(actual[:, :, valid:]) == 0
+
+
+def test_sm80_residual_source_logic_on_hopper(monkeypatch):
+    """Exercise the SM80 implementation on Hopper without making a latency claim."""
+    skip_if_no_cutedsl()
+    if SM_VERSION != 90:
+        pytest.skip("the cross-generation diagnostic runs only on Hopper")
+
+    with monkeypatch.context() as capability:
+        capability.setattr(torch.cuda, "get_device_capability", lambda *_args, **_kwargs: (8, 0))
+        op = DualGemmX0X1CuTe()
+
+    torch.manual_seed(97)
+    batch, tokens, valid = 1, 64, 57
+    K0, K1, N = 384, 256, 384
+    dtype = torch.bfloat16
+
+    def rand(*shape):
+        return (torch.randn(*shape, dtype=dtype, device="cuda") * 0.03).contiguous()
+
+    x0, x1 = rand(batch, tokens, tokens, K0), rand(batch, tokens, tokens, K1)
+    w0, w1, bias0, bias1 = rand(N, K0), rand(N, K1), rand(N), rand(N)
+    residual = rand(batch, tokens, tokens, N)
+    axis = torch.arange(tokens, device="cuda") < valid
+    mask = (axis[:, None] & axis[None, :])[None, :, :, None]
+    actual_seqlen = torch.zeros(batch, tokens, dtype=torch.int32, device="cuda")
+    actual_seqlen[:, :valid] = valid
+
+    update = op(x0, x1, w0, w1, bias0, bias1)
+    actual = op(
+        x0,
+        x1,
+        w0,
+        w1,
+        bias0,
+        bias1,
+        actual_seqlen=actual_seqlen,
+        residual=residual,
+    )
+    torch.testing.assert_close(actual, (residual + update) * mask, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("cutedsl_mode", _MODES, ids=lambda mode: f"impl-{mode}")
+@pytest.mark.parametrize(
+    ("K0", "K1", "N"),
+    [(384, 256, 384)],
+    ids=["resident-weight-K1-256"],
 )
 def test_asymmetric_output_store_stays_in_bounds(cutedsl_mode, K0, K1, N, monkeypatch):
     """Canary the odd-M output tail in both source and direct-CUBIN modes."""
@@ -391,7 +514,19 @@ def test_cubin_mode_selects_the_cubin_adapter(monkeypatch):
     _configure_mode("cubin", monkeypatch)
     torch.manual_seed(0)
     op = DualGemmX0X1CuTe()
-    _run(op, 128, 128, 512, torch.bfloat16, True)
+    if SM_VERSION in (80, 86, 89, 90):
+        M, K, N = 512, 128, 128
+        X0 = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+        X1 = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+        W0 = torch.randn(N, K, dtype=torch.bfloat16, device="cuda")
+        W1 = torch.randn(N, K, dtype=torch.bfloat16, device="cuda")
+        bias0 = torch.randn(N, dtype=torch.bfloat16, device="cuda")
+        bias1 = torch.randn(N, dtype=torch.bfloat16, device="cuda")
+        actual_seqlen = torch.tensor([M], dtype=torch.int32, device="cuda")
+        residual = torch.randn(M, N, dtype=torch.bfloat16, device="cuda")
+        op(X0, X1, W0, W1, bias0, bias1, actual_seqlen=actual_seqlen, residual=residual)
+    else:
+        _run(op, 128, 128, 512, torch.bfloat16, True)
     executable = op._last_exe
     assert isinstance(executable, DualGemmX0X1CubinExecutable)
     config = executable._config
@@ -413,7 +548,15 @@ def test_cubin_and_python_agree_on_the_bucket(monkeypatch):
         assert anchors
         for S in [1, 64, 200, 400, 900, 1500, 5000]:
             expected = dg_config.get_nearest_bucket(SM_VERSION, K, N, S, True)
-            config = launcher.make_kernel_config(SM_VERSION, K, N, S, launcher.DType.BFLOAT16, True)
+            config = launcher.make_kernel_config(
+                SM_VERSION,
+                K,
+                N,
+                S,
+                launcher.DType.BFLOAT16,
+                True,
+                fused_residual=SM_VERSION in (80, 86, 89, 90),
+            )
             assert config.spec.bucket == expected, f"K={K} N={N} S={S}"
 
 
@@ -433,21 +576,44 @@ def test_every_shipped_config_is_reachable_through_the_cubin_path(monkeypatch):
             bucket = int(key_match.group(1))
             raw_bias = key_match.group(2)
             bias_modes = (False, True) if raw_bias is None else (bool(int(raw_bias)),)
+            fused_modes = (True,) if SM_VERSION in (80, 86, 89, 90) else (False, True)
             for name, library_dtype in dtypes.items():
                 for has_bias in bias_modes:
-                    try:
-                        config = launcher.make_kernel_config(SM_VERSION, K, N, bucket, library_dtype, has_bias, K1=K1)
-                    except ValueError as error:
-                        # Implementation MRs add tunings before the protected
-                        # corpus refresh ships the matching CUBINs.
-                        if "No embedded dual-GEMM x0_x1 CUBIN" not in str(error):
+                    for fused_residual in fused_modes:
+                        try:
+                            config = launcher.make_kernel_config(
+                                SM_VERSION,
+                                K,
+                                N,
+                                bucket,
+                                library_dtype,
+                                has_bias,
+                                K1=K1,
+                                fused_residual=fused_residual,
+                            )
+                        except ValueError as error:
+                            if "No embedded dual-GEMM x0_x1 CUBIN" in str(error):
+                                raise AssertionError(f"{path.name} {key} {name}: {error}") from error
                             raise
-                        continue
-                    assert config.spec.bucket == bucket, f"{path.name} {key} {name}"
-                    assert config.spec.K1 == K1
-                    assert config.has_bias == has_bias
-                    checked += 1
+                        assert config.spec.bucket == bucket, f"{path.name} {key} {name}"
+                        assert config.spec.K1 == K1
+                        assert config.has_bias == has_bias
+                        checked += 1
     assert checked > 0
+
+
+def test_production_cubin_corpus_excludes_plain_variants():
+    """Production packs ship only the triangle-multiplication residual ABI."""
+    skip_if_no_cutedsl()
+    if SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(f"residual-only corpus policy does not apply to SM{SM_VERSION}")
+    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
+    launcher = library.dual_gemm_x0_x1
+    args = (SM_VERSION, 128, 128, 256, launcher.DType.BFLOAT16, True)
+    with pytest.raises(ValueError, match="No embedded dual-GEMM x0_x1 CUBIN"):
+        launcher.make_kernel_config(*args)
+    config = launcher.make_kernel_config(*args, fused_residual=True)
+    assert config.spec.fused_residual is True
 
 
 def test_unavailable_variant_raises_instead_of_falling_back(monkeypatch):

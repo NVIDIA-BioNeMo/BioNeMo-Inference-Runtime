@@ -22,6 +22,7 @@ import torch
 
 from bionemo_ir.utils import get_sm_version
 
+from ._config import supports_fused_residual
 from .cutedsl import DualGemmX0X1CuTe
 
 
@@ -34,8 +35,12 @@ def _invoke_vanilla_dual_gemm_x0_x1(
     bias2: torch.Tensor | None = None,
     mask: torch.Tensor | None = None,
     transpose_out: bool = False,
+    actual_seqlen: torch.Tensor | None = None,
+    residual: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run the unfused PyTorch fallback."""
+    if actual_seqlen is not None or residual is not None:
+        raise NotImplementedError("vanilla dual_gemm_x0_x1 does not support fused residual output")
     if bias1 is not None and bias2 is not None:
         result = (x1 @ w1.T + bias1).sigmoid() * (x2 @ w2.T + bias2)
     else:
@@ -56,8 +61,12 @@ def _invoke_cuequiv_dual_gemm_x0_x1(
     bias2: torch.Tensor | None = None,
     mask: torch.Tensor | None = None,
     transpose_out: bool = False,
+    actual_seqlen: torch.Tensor | None = None,
+    residual: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run the cuEquivariance fused fallback."""
+    if actual_seqlen is not None or residual is not None:
+        raise NotImplementedError("cuEquivariance dual_gemm_x0_x1 does not support fused residual output")
     from cuequivariance_ops_torch.gated_gemm_torch import fused_sigmoid_gated_dual_gemm_dual_x
 
     return fused_sigmoid_gated_dual_gemm_dual_x(
@@ -93,6 +102,8 @@ def _invoke_cute_dual_gemm_x0_x1(
     bias2: torch.Tensor | None = None,
     mask: torch.Tensor | None = None,
     transpose_out: bool = False,
+    actual_seqlen: torch.Tensor | None = None,
+    residual: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run the source-or-CUBIN CuTe backend."""
     if mask is not None:
@@ -106,7 +117,16 @@ def _invoke_cute_dual_gemm_x0_x1(
             "to the cuEquivariance backend via get_dual_gemm_x0_x1_op for "
             "transposed output."
         )
-    return _get_cute_dual_gemm_x0_x1()(x1, x2, w1, w2, bias0=bias1, bias1=bias2)
+    return _get_cute_dual_gemm_x0_x1()(
+        x1,
+        x2,
+        w1,
+        w2,
+        bias0=bias1,
+        bias1=bias2,
+        actual_seqlen=actual_seqlen,
+        residual=residual,
+    )
 
 
 def get_dual_gemm_x0_x1_op(
@@ -129,17 +149,12 @@ def get_dual_gemm_x0_x1_op(
     # Keyed on ``(N, K0, K1)``:
     #   * (128, 128, 128) -- OpenFold3 / Boltz; SM80/86/89/90
     #   * (256, 256, 256) -- ProtenixV2; SM80/86/89/90
-    #   * (256, 256, 200) / (384, 384, 200 | 256) -- asymmetric trimul; SM80/86/89/90
+    #   * (384, 384, 256) -- asymmetric trimul; SM80/86/89/90
     cute_shapes = {(128, 128, 128)}
     if sm in (80, 86, 89, 90):
         cute_shapes = cute_shapes | {(256, 256, 256)}
     if sm in (80, 86, 89, 90):
-        # 200 is trimul hidden width 196 padded to a 128-bit copy atom.
-        cute_shapes = cute_shapes | {
-            (256, 256, 200),
-            (384, 384, 200),
-            (384, 384, 256),
-        }
+        cute_shapes.add((384, 384, 256))
     if sm in (80, 86, 89, 90):
         cute_shapes = cute_shapes | {
             # Template-level trimul in OpenFold2/3 and Protenix.
@@ -164,8 +179,24 @@ def get_dual_gemm_x0_x1_op(
         return _invoke_cuequiv_dual_gemm_x0_x1
     if transpose_out:
         return _invoke_vanilla_dual_gemm_x0_x1
-    if sm in (80, 86, 89, 90):
-        return _invoke_cute_dual_gemm_x0_x1
+    # Shipped packs contain only the fused-residual ABI. Plain equal-K calls
+    # use cuEquivariance; asymmetric calls use vanilla.
     if K0 == K1:
         return _invoke_cuequiv_dual_gemm_x0_x1
     return _invoke_vanilla_dual_gemm_x0_x1
+
+
+def get_cute_dual_gemm_x0_x1_residual_op(
+    dtype: torch.dtype,
+    *,
+    N: int,
+    K0: int,
+    K1: int,
+) -> Callable | None:
+    """Return the CuTe mask-residual epilogue for a tuned shape."""
+    sm = get_sm_version()
+    if dtype not in (torch.float16, torch.bfloat16):
+        return None
+    if not supports_fused_residual(sm, K0, N, K1):
+        return None
+    return _invoke_cute_dual_gemm_x0_x1

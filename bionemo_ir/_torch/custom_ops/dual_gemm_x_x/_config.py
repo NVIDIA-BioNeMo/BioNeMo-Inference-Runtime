@@ -214,7 +214,6 @@ def get_kernel_config(
     S: int,
     transpose_out: bool,
     has_bias: bool,
-    has_mask: bool,
     dtype_str: str,
     gate: str = "sigmoid",
 ) -> DualGemmXxKernelConfig:
@@ -228,7 +227,6 @@ def get_kernel_config(
     return source.build_source_kernel_config(
         selection,
         has_bias=has_bias,
-        has_mask=has_mask,
         transpose_out=transpose_out,
         dtype_str=dtype_str,
         gate=gate,

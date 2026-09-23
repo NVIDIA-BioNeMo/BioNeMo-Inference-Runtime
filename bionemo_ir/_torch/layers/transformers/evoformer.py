@@ -25,8 +25,10 @@ from bionemo_ir._torch.layers.transition import MSATransition, PairTransition
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
+    TriangleMultiplicationMetadata,
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
+    precompute_trimul_metadata,
 )
 from bionemo_ir._torch.utils import recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
@@ -206,6 +208,7 @@ class EvoformerBlock(nn.Module):
         z: torch.Tensor,
         msa_mask: torch.Tensor,
         pair_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadata: AttentionMetadata | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
@@ -236,16 +239,8 @@ class EvoformerBlock(nn.Module):
             m, z = self._compute_opm(m, z, msa_mask)
         # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
         # Otherwise, let the wrapper derive masking from ``pair_mask``.
-        tri_out_actual_seqlen = tri_in_actual_seqlen = None
-        if (
-            self.pair_mask_left_aligned
-            and precomputed_masks is not None
-            and precomputed_masks.mask_bias.dtype == torch.int32
-        ):
-            tri_out_actual_seqlen = precomputed_masks.mask_bias
-            tri_in_actual_seqlen = precomputed_masks.mask_bias_transposed
-        z = z + self.tri_mul_out(z, mask=pair_mask, actual_seqlen=tri_out_actual_seqlen)
-        z = z + self.tri_mul_in(z, mask=pair_mask, actual_seqlen=tri_in_actual_seqlen)
+        z = self.tri_mul_out(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
+        z = self.tri_mul_in(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
 
         # Same left-aligned gate as tri_mul: CuTeDSL int32 row lengths are
         # invalid for bipartite / interior-zero masks.
@@ -299,6 +294,7 @@ class EvoformerStack(nn.Module):
                     tri_attn_transposed_bias=config.tri_attn_transposed_bias,
                 )
             )
+        self.pair_mask_left_aligned = self.blocks[0].pair_mask_left_aligned
         self.linear = Linear(
             config.c_m, config.c_s, bias=True, dtype=config.torch_dtype, skip_create_weights=config.skip_create_weights
         )
@@ -325,9 +321,24 @@ class EvoformerStack(nn.Module):
             inf=self.blocks[0].inf,
             dtype=self.blocks[0].dtype,
         )
+        trimul_metadata = precompute_trimul_metadata(
+            z,
+            precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+            precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+            enabled=self.pair_mask_left_aligned,
+        )
         buffers: PreallocatedBuffers | None = {} if backend == "CuTeDSL" else None
         for block in self.blocks:
-            m, z = block(m, z, msa_mask, pair_mask, attn_metadata, precomputed_masks=precomputed, buffers=buffers)
+            m, z = block(
+                m,
+                z,
+                msa_mask,
+                pair_mask,
+                trimul_metadata,
+                attn_metadata,
+                precomputed_masks=precomputed,
+                buffers=buffers,
+            )
         s = self.linear(m[..., 0, :, :])
 
         return m, z, s

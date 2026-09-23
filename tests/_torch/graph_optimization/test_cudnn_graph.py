@@ -23,7 +23,9 @@ from bionemo_ir._torch.graph_optimization.cudnn_graph import (
     cudnn_add_add_mask,
     cudnn_add_mask,
     cudnn_linear_mask,
+    cudnn_linear_mask_residual,
     cudnn_linear_relu,
+    cudnn_linear_residual,
     cudnn_scale_shift_mask,
     prepare_cudnn_linear_mask,
     prepare_cudnn_linear_relu,
@@ -81,6 +83,8 @@ def _clear_linear_plan_caches() -> None:
         cudnn_graph_ops._DYNAMIC_LINEAR_MASK_CACHE,
         cudnn_graph_ops._LINEAR_RELU_CACHE,
         cudnn_graph_ops._LINEAR_MASK_CACHE,
+        cudnn_graph_ops._LINEAR_RESIDUAL_CACHE,
+        cudnn_graph_ops._LINEAR_MASK_RESIDUAL_CACHE,
     ):
         cache.clear()
 
@@ -164,6 +168,28 @@ def test_cudnn_graph_primitives_match_rounded_torch_operations(dtype: torch.dtyp
         projected = cudnn_linear_mask(hidden, weight.transpose(-1, -2), bias[..., :input_dim], mask)
         assert projected is not None
         expected_projected = (torch.matmul(expected_hidden, weight.transpose(-1, -2)) + bias[..., :input_dim]) * mask
+        old_value = torch.randn(1, rows, input_dim, device="cuda", dtype=dtype)
+        projected_residual = cudnn_linear_residual(
+            hidden,
+            weight.transpose(-1, -2),
+            bias[..., :input_dim],
+            old_value,
+        )
+        assert projected_residual is not None
+        expected_projected_residual = (
+            torch.matmul(expected_hidden, weight.transpose(-1, -2)) + bias[..., :input_dim] + old_value
+        )
+        projected_mask_residual = cudnn_linear_mask_residual(
+            hidden,
+            weight.transpose(-1, -2),
+            bias[..., :input_dim],
+            mask,
+            old_value,
+        )
+        assert projected_mask_residual is not None
+        expected_projected_mask_residual = (
+            torch.matmul(expected_hidden, weight.transpose(-1, -2)) + bias[..., :input_dim]
+        ) * mask + old_value
 
         scale = torch.sigmoid(torch.randn_like(hidden))
         shift = torch.randn_like(hidden)
@@ -184,6 +210,8 @@ def test_cudnn_graph_primitives_match_rounded_torch_operations(dtype: torch.dtyp
     tolerance = {"atol": 2e-2, "rtol": 2e-2} if dtype == torch.bfloat16 else {"atol": 3e-3, "rtol": 3e-3}
     torch.testing.assert_close(hidden, expected_hidden, **tolerance)
     torch.testing.assert_close(projected, expected_projected, **tolerance)
+    torch.testing.assert_close(projected_residual, expected_projected_residual, **tolerance)
+    torch.testing.assert_close(projected_mask_residual, expected_projected_mask_residual, **tolerance)
     torch.testing.assert_close(modulated, expected_modulated, atol=0, rtol=0)
     torch.testing.assert_close(added, expected_added, atol=0, rtol=0)
     torch.testing.assert_close(residual, expected_residual, atol=0, rtol=0)

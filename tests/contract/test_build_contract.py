@@ -23,6 +23,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -109,6 +110,72 @@ def test_long_description_survives_an_index_rendering_it_out_of_context(
     assert "https://raw.githubusercontent.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/main/docs/assets/" in description
     # A fenced command that merely names a relative path comes through untouched.
     assert "python examples/folding/run_demo.py --output-dir output" in description
+
+
+def test_package_discovery_prunes_unrelated_workspace_trees() -> None:
+    """Require regular packages so setuptools does not walk the whole checkout."""
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    discovery = config["tool"]["setuptools"]["packages"]["find"]
+    assert discovery == {
+        "where": ["."],
+        "include": ["bionemo_ir*"],
+        "namespaces": False,
+    }
+
+    package_root = REPO_ROOT / "bionemo_ir"
+    package_directories = {path.parent for path in package_root.rglob("*.py")}
+    package_directories.update(path.parent for path in package_root.rglob("configs/*.json"))
+    missing_initializers = sorted(
+        path.relative_to(REPO_ROOT).as_posix() for path in package_directories if not (path / "__init__.py").is_file()
+    )
+    assert not missing_initializers
+
+
+def test_manifest_patterns_do_not_walk_local_build_trees(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep editable metadata generation out of ignored CMake and CUBIN caches."""
+    from setuptools.command import egg_info
+
+    patterns: list[str] = []
+    glob = egg_info.glob
+
+    def bounded_glob(pattern: str, recursive: bool = False) -> list[str]:
+        patterns.append(pattern)
+        assert "**" not in pattern
+        assert not recursive
+        return glob(pattern, recursive=recursive)
+
+    monkeypatch.setattr(egg_info, "glob", bounded_glob)
+    filelist = egg_info.FileList()
+    filelist.files = ["build.env"]
+    for raw_line in (REPO_ROOT / "MANIFEST.in").read_text().splitlines():
+        line = raw_line.strip()
+        if line and not line.startswith("#"):
+            filelist.process_template_line(line)
+
+    selected = set(filelist.files)
+    assert patterns
+    assert "build.env" not in selected
+    assert not any(path.startswith(("cpp/build", "cpp/cmake-build-")) for path in selected)
+    assert {
+        "cpp/CMakeLists.txt",
+        "cpp/cmake/materialize_cubin_payloads.py",
+        "cpp/kernels/CMakeLists.txt",
+        "cpp/kernels/cubin_runtime.cpp",
+    } <= selected
+
+    for family in FAMILIES:
+        prefix = f"cpp/kernels/cutedsl_{family}"
+        assert f"{prefix}/launcher.cpp" in selected
+        assert f"{prefix}/cubins/index.json" in selected
+        assert any(path.startswith(f"{prefix}/cubins/records/") for path in selected)
+        assert any(path.startswith(f"{prefix}/cubins/packs/") for path in selected)
+
+    for path in selected:
+        parts = PurePosixPath(path).parts
+        if "cubins" not in parts:
+            continue
+        tail = parts[parts.index("cubins") + 1 :]
+        assert tail and tail[0] in {"index.json", "records", "packs"}
 
 
 def test_families_do_not_ship_private_cmake() -> None:

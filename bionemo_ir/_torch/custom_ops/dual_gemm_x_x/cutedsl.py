@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import ModuleType
 from typing import Any
 
@@ -58,7 +58,7 @@ class _DualGemmXxVariant:
     bucket: int
     transpose_out: bool
     has_bias: bool
-    has_mask: bool
+    runtime_mask: bool
     gate: str = "sigmoid"
 
 
@@ -107,7 +107,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             _variant_key(variant.bucket, variant.transpose_out),
             variant.transpose_out,
             variant.has_bias,
-            variant.has_mask,
+            variant.runtime_mask,
             variant.gate,
         )
         return ("dual_gemm_x_x_cute_v3", self._sm_version) + source_key
@@ -115,6 +115,10 @@ class DualGemmXxCuTe(CuteKernelCache):
     def _kernel_is_sm90(self, K: int, N: int) -> bool:
         """Whether this shape uses the duplicated-X SM90 source signature."""
         return _kernel_is_sm90(self._sm_version, K, N)
+
+    def _source_variant(self, variant: _DualGemmXxVariant) -> _DualGemmXxVariant:
+        """Collapse the runtime mask state for nullable-mask source kernels."""
+        return replace(variant, runtime_mask=True)
 
     def _resolve_source_kernel(
         self,
@@ -135,7 +139,6 @@ class DualGemmXxCuTe(CuteKernelCache):
             selection,
             x,
             has_bias=variant.has_bias,
-            has_mask=variant.has_mask,
             transpose_out=variant.transpose_out,
             dtype_str=_dtype_str(variant.dtype),
             gate=variant.gate,
@@ -164,7 +167,7 @@ class DualGemmXxCuTe(CuteKernelCache):
                     variant.dtype,
                     variant.transpose_out,
                     variant.has_bias,
-                    variant.has_mask,
+                    variant.runtime_mask,
                     variant.gate,
                 ),
             )
@@ -183,7 +186,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             f"CuTeDSL dual_gemm x_x: using precompiled CUBIN for SM{self._sm_version}, "
             f"K={variant.K}, N={variant.N}, bucket={variant.bucket}, "
             f"transpose_out={variant.transpose_out}, has_bias={variant.has_bias}, "
-            f"has_mask={variant.has_mask}, gate={variant.gate}, dtype={variant.dtype}"
+            f"runtime_mask={variant.runtime_mask}, gate={variant.gate}, dtype={variant.dtype}"
         )
         return executable
 
@@ -206,7 +209,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             f"CuTeDSL dual_gemm x_x: compiling kernel for SM{self._sm_version}, "
             f"K={variant.K}, N={variant.N}, bucket={variant.bucket}, "
             f"transpose_out={variant.transpose_out}, has_bias={variant.has_bias}, "
-            f"has_mask={variant.has_mask}, dtype={variant.dtype}, tile={source.config.tile_params}"
+            f"runtime_mask={variant.runtime_mask}, dtype={variant.dtype}, tile={source.config.tile_params}"
         )
         executable = source_module.compile_dual_gemm_x_x_source(
             self.compile,
@@ -214,7 +217,6 @@ class DualGemmXxCuTe(CuteKernelCache):
             K=variant.K,
             transpose_out=variant.transpose_out,
             has_bias=variant.has_bias,
-            has_mask=variant.has_mask,
             is_sm90=self._kernel_is_sm90(variant.K, variant.N),
         )
         DualGemmXxCuTe._compiled_cache[cache_key] = executable
@@ -224,24 +226,21 @@ class DualGemmXxCuTe(CuteKernelCache):
 
     def _get_executable(self, variant: _DualGemmXxVariant, x: torch.Tensor) -> Any:
         """Resolve a cached source executable or direct CUBIN adapter."""
-        cache_key = (self._sm_version, variant)
-        executable = DualGemmXxCuTe._compiled_cache.get(cache_key)
         force_cubin = self.force_cubin()
-        if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
-            return executable
-
         if force_cubin:
-            # A process may set the flag after compiling a source variant. Do
-            # not let that cache entry defeat the explicit CUBIN request.
-            DualGemmXxCuTe._compiled_cache.pop(cache_key, None)
             return self._load_cubin_executable(variant)
 
+        source_variant = self._source_variant(variant)
+        source_key = (self._sm_version, source_variant)
+        executable = DualGemmXxCuTe._compiled_cache.get(source_key)
+        if executable is not None and not isinstance(executable, CuTeDSLKernelLibraryExecutable):
+            return executable
         try:
-            source_module, source = self._resolve_source_kernel(variant, x)
+            source_module, source = self._resolve_source_kernel(source_variant, x)
         except ImportError as source_error:
             return self._load_cubin_executable(variant, source_error)
 
-        return self._load_or_compile_source(variant, source_module, source)
+        return self._load_or_compile_source(source_variant, source_module, source)
 
     def __call__(
         self,
@@ -295,7 +294,7 @@ class DualGemmXxCuTe(CuteKernelCache):
         if (bias0 is None) != (bias1 is None):
             raise ValueError("bias0 and bias1 must both be supplied or both None.")
         has_bias = bias0 is not None
-        has_mask = mask is not None or actual_seqlen is not None
+        runtime_mask = mask is not None or actual_seqlen is not None
         _dtype_str(x.dtype)
 
         ranges = self._get_bucket_ranges(K, N, transpose_out)
@@ -307,7 +306,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             bucket=bucket,
             transpose_out=transpose_out,
             has_bias=has_bias,
-            has_mask=has_mask,
+            runtime_mask=runtime_mask,
             gate=gate,
         )
 
@@ -322,7 +321,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             self._last_exe = executable
 
         x_2d = x.reshape(M, K)
-        if has_mask:
+        if runtime_mask:
             actual_seqlen = self._get_actual_seqlen(
                 actual_seqlen=actual_seqlen,
                 mask=mask,
@@ -343,7 +342,21 @@ class DualGemmXxCuTe(CuteKernelCache):
             output = torch.empty((M, N), dtype=x.dtype, device=device)
             output_storage = output
 
-        if is_sm90:
+        if not isinstance(executable, CuTeDSLKernelLibraryExecutable):
+            source_module = load_source_module(__package__)
+            source_module.launch_dual_gemm_x_x_source(
+                executable,
+                x=x_2d,
+                w0=w0,
+                w1=w1,
+                bias0=bias0,
+                bias1=bias1,
+                actual_seqlen=actual_seqlen,
+                output=output,
+                i_dim=I_dim,
+                is_sm90=is_sm90,
+            )
+        elif is_sm90:
             launch_compiled_kernel(
                 executable,
                 x_2d,
@@ -353,6 +366,7 @@ class DualGemmXxCuTe(CuteKernelCache):
                 bias0,
                 bias1,
                 actual_seqlen,
+                None,
                 output,
                 I_dim,
             )

@@ -57,7 +57,7 @@ class DualGemmXxCubinExecutable(CuTeDSLKernelLibraryExecutable):
         dtype: torch.dtype,
         transpose_out: bool,
         has_bias: bool,
-        has_mask: bool,
+        runtime_mask: bool,
         gate: str = "sigmoid",
     ):
         # Gate is a compiled axis; a missing image raises below.
@@ -82,14 +82,14 @@ class DualGemmXxCubinExecutable(CuTeDSLKernelLibraryExecutable):
                 library_dtype,
                 transpose_out,
                 has_bias,
-                has_mask,
+                runtime_mask,
                 gate == _SILU_GATE,
             )
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
                 f"No dual_gemm_x_x CUBIN for SM{target_sm}, K={K}, N={N}, "
                 f"bucket={bucket}, dtype={dtype}, transpose_out={transpose_out}, "
-                f"has_bias={has_bias}, has_mask={has_mask}, gate={gate}"
+                f"has_bias={has_bias}, runtime_mask={runtime_mask}, gate={gate}"
             ) from error
 
         self._kernel_library = kernel_library
@@ -98,7 +98,7 @@ class DualGemmXxCubinExecutable(CuTeDSLKernelLibraryExecutable):
         self._dtype = dtype
         self._transpose_out = transpose_out
         self._has_bias = has_bias
-        self._has_mask = has_mask
+        self._runtime_mask = runtime_mask
 
     def __call__(self, *args: Any) -> None:
         """Launch from either the one-X SM80 or duplicated-X SM90 signature."""
@@ -108,15 +108,21 @@ class DualGemmXxCubinExecutable(CuTeDSLKernelLibraryExecutable):
             x, x1, w0, w1, bias0, bias1, actual_seqlen, output, i_dim = args
             if not _same_tensor_reference(x, x1):
                 raise ValueError("dual_gemm_x_x SM90 requires x0 and x1 to refer to the same tensor")
+        elif len(args) == 10:
+            x, x1, w0, w1, bias0, bias1, actual_seqlen, residual, output, i_dim = args
+            if residual is not None:
+                raise ValueError("dual_gemm_x_x does not accept a residual operand")
+            if not _same_tensor_reference(x, x1):
+                raise ValueError("dual_gemm_x_x SM90 requires x0 and x1 to refer to the same tensor")
         else:
-            raise TypeError(f"dual_gemm_x_x executable expects 8 (SM80) or 9 (SM90) arguments; got {len(args)}")
+            raise TypeError(f"dual_gemm_x_x executable expects 8 (SM80) or 9/10 (SM90) arguments; got {len(args)}")
 
         if (bias0 is None) != (bias1 is None):
             raise ValueError("bias0 and bias1 must both be supplied or both None")
         if self._has_bias != (bias0 is not None):
             raise ValueError(f"dual_gemm_x_x CUBIN was configured with has_bias={self._has_bias}")
-        if self._has_mask != (actual_seqlen is not None):
-            raise ValueError(f"dual_gemm_x_x CUBIN was configured with has_mask={self._has_mask}")
+        if self._runtime_mask != (actual_seqlen is not None):
+            raise ValueError(f"dual_gemm_x_x CUBIN was configured with runtime_mask={self._runtime_mask}")
 
         for name, tensor in (("x", x), ("w0", w0), ("w1", w1), ("output", output)):
             if tensor.dtype != self._dtype:

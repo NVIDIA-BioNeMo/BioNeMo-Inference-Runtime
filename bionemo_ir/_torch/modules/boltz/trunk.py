@@ -24,6 +24,7 @@ from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule, PairformerNoSeqLayer
 from bionemo_ir._torch.layers.transition import Transition
+from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata, precompute_trimul_metadata
 from bionemo_ir._torch.modules.boltz.template import TemplateV2Module
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, PAIR_TRANSITION, recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
@@ -100,6 +101,7 @@ class MSALayer(nn.Module):
         m: torch.Tensor,
         token_mask: torch.Tensor,
         msa_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadata: AttentionMetadata | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -119,7 +121,11 @@ class MSALayer(nn.Module):
         z += self.outer_product_mean(m, msa_mask)
 
         z = self.pairformer_layer(
-            z, token_mask, attn_metadatas={"triangle_attn": attn_metadata}, precomputed_masks=precomputed_masks
+            z,
+            token_mask,
+            trimul_metadata,
+            attn_metadatas={"triangle_attn": attn_metadata},
+            precomputed_masks=precomputed_masks,
         )
         return z, m
 
@@ -179,6 +185,7 @@ class MSAModule(nn.Module):
                     trimul_high_precision=self.trimul_high_precision,
                 )
             )
+        self.pair_mask_left_aligned = self.layers[0].pairformer_layer.pair_mask_left_aligned
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -238,9 +245,23 @@ class MSAModule(nn.Module):
             inf=first_layer.inf,
             dtype=first_layer.dtype,
         )
+        trimul_metadata = precompute_trimul_metadata(
+            z,
+            precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+            precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+            enabled=self.pair_mask_left_aligned,
+        )
 
         for i in range(self.msa_blocks):
-            z, m = self.layers[i](z, m, token_pad_mask, msa_mask, attn_metadata, precomputed_masks=precomputed)
+            z, m = self.layers[i](
+                z,
+                m,
+                token_pad_mask,
+                msa_mask,
+                trimul_metadata,
+                attn_metadata,
+                precomputed_masks=precomputed,
+            )
         return z
 
 

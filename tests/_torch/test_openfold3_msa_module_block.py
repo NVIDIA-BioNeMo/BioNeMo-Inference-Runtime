@@ -20,6 +20,7 @@ import pytest
 import torch
 
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks
+from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
 from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleBlock
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
@@ -136,7 +137,13 @@ def test_msa_module_block(sc: Scenario):
         msa_mask_t = msa_mask.to(torch_dtype)
         pair_mask_t = pair_mask.to(torch_dtype)
 
-        output_m, output_z = module(m_t, z_t, msa_mask_t, pair_mask_t)
+        output_m, output_z = module(
+            m_t,
+            z_t,
+            msa_mask_t,
+            pair_mask_t,
+            precompute_trimul_metadata(z_t, None, None),
+        )
 
     # Mask outputs at fully-padded positions before comparing: PyTorch
     # softmax-of-all-(-inf) emits NaN at padded query rows and the
@@ -213,10 +220,22 @@ def test_msa_module_block_precomputed_masks(sc: Scenario):
     precomputed = precompute_pair_masks(
         sc.triangle_attn_backend, pair_mask, inf=ref_module.msa_att_row.inf, dtype=torch_dtype
     )
+    trimul_metadata = precompute_trimul_metadata(
+        z,
+        precomputed.mask_bias if precomputed.mask_bias.dtype == torch.int32 else None,
+        precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
+    )
 
     with torch.inference_mode():
-        out_m, out_z = module(m, z, msa_mask, pair_mask)
-        out_m_pre, out_z_pre = module(m, z, msa_mask, pair_mask, precomputed_masks=precomputed)
+        out_m, out_z = module(m, z, msa_mask, pair_mask, trimul_metadata)
+        out_m_pre, out_z_pre = module(
+            m,
+            z,
+            msa_mask,
+            pair_mask,
+            trimul_metadata,
+            precomputed_masks=precomputed,
+        )
 
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)

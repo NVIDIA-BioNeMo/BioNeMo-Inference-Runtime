@@ -20,6 +20,7 @@ import pytest
 import torch
 from test_utils.openfold3.ref_layers_from_oss import RefTemplatePairBlockFromOF3OSS
 
+from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
 from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
@@ -148,7 +149,7 @@ def test_template_pair_stack_block(sc: Scenario):
         t_test_dtype = t_float.to(test_dtype)
         mask_test_dtype = mask_float.to(test_dtype)
 
-        output_test_dtype = module(t_test_dtype, mask_test_dtype)
+        output_test_dtype = module(t_test_dtype, mask_test_dtype, precompute_trimul_metadata(t_test_dtype, None, None))
         ref_output_float = ref_module(t_float, mask_float)
 
         if test_dtype == torch.float32:

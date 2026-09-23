@@ -97,6 +97,8 @@ def _build_kernel_config(
     sm_version: int,
     kernel_abi: str,
     asymmetric: bool = False,
+    has_mask: bool = False,
+    fused_residual: bool = False,
     K: int | None = None,
     K1: int | None = None,
     N: int | None = None,
@@ -111,6 +113,13 @@ def _build_kernel_config(
     change for tunings that predate this.
     """
     full_params = dict(tile_params)
+    if fused_residual and kernel_abi == "sm80":
+        full_params = sm80_residual_tile_params(
+            full_params,
+            dtype_str,
+            sm_version,
+            asymmetric=asymmetric,
+        )
     full_params["ab_dtype"] = dtype_str
     is_sm90 = kernel_abi == "sm90"
     kernel_params = dict(full_params)
@@ -122,16 +131,22 @@ def _build_kernel_config(
     kernel_config = _kernel_config_dataclass(kernel_cls).from_dict(kernel_params)
 
     def factory():
-        # x0_x1 is always N-major and unmasked.
         if is_sm90:
             return kernel_cls(
                 config=kernel_config,
                 variant="x0_x1",
                 has_bias=has_bias,
-                has_mask=False,
+                has_mask=has_mask,
+                has_residual=fused_residual,
                 transpose_out=False,
             )
-        return kernel_cls(config=kernel_config, has_bias=has_bias, transpose_out=False)
+        return kernel_cls(
+            config=kernel_config,
+            has_bias=has_bias,
+            has_mask=has_mask,
+            has_residual=fused_residual,
+            transpose_out=False,
+        )
 
     def can_implement(ct_dtype: type, K: int, N: int) -> bool:
         if is_sm90:
@@ -191,6 +206,33 @@ def needs_independent_operand_strides(K0: int, K1: int, N: int) -> bool:
     identities, disk cache keys, and shipped CUBINs untouched.
     """
     return K1 != K0 or N != K0
+
+
+def sm80_residual_tile_params(
+    tile_params: dict[str, Any],
+    dtype_str: str,
+    sm_version: int,
+    *,
+    asymmetric: bool,
+) -> dict[str, Any]:
+    """Reserve one cp.async residual tile, reducing stages only when needed."""
+    adjusted = dict(tile_params)
+    bM, bN, bK = (int(extent) for extent in adjusted["cta_tiler"])
+    itemsize = 2 if dtype_str in ("fp16", "bf16") else 4
+    capacity = int(utils.get_smem_capacity_in_bytes(f"sm_{sm_version}"))
+    while True:
+        stages = int(adjusted["num_stages"])
+        mainloop_factor = 1 if asymmetric else 2
+        mainloop = itemsize * mainloop_factor * stages * bK * (bM + bN)
+        epilogue = itemsize * bM * bN
+        required = max(mainloop, epilogue) + epilogue
+        if required <= capacity:
+            return adjusted
+        if stages <= 2:
+            raise ValueError(
+                f"SM{sm_version} residual kernel needs {required} shared-memory bytes, capacity is {capacity}"
+            )
+        adjusted["num_stages"] = stages - 1
 
 
 def config_file_name(sm: int, K0: int, K1: int, N: int) -> str:
@@ -280,6 +322,17 @@ def kernel_is_sm90(sm_version: int, K: int, N: int, K1: int | None = None) -> bo
     return bundle.kernel_abi == "sm90"
 
 
+def supports_fused_residual(sm_version: int, K: int, N: int, K1: int | None = None) -> bool:
+    """Whether this shape has a tuned mask-residual epilogue."""
+    if sm_version not in _TUNED_SMS:
+        return False
+    try:
+        bundle = load_bundle(sm_version, K, N, K1)
+    except ValueError:
+        return False
+    return bundle.kernel_abi in ("sm80", "sm90")
+
+
 def get_kernel_config(
     sm_version: int,
     K: int,
@@ -289,6 +342,8 @@ def get_kernel_config(
     dtype_str: str,
     K1: int | None = None,
     K0: int | None = None,
+    has_mask: bool = False,
+    fused_residual: bool = False,
 ) -> DualGemmX0X1KernelConfig:
     """Resolve the nearest tuned source kernel.
 
@@ -307,7 +362,10 @@ def get_kernel_config(
     bundle = load_bundle(sm_version, K, N, K1)
     bucket, chosen_key, tile_params = _nearest_variant(bundle.configs, S, has_bias)
     implementation = load_source_module(__package__).source_implementation(
-        bundle.kernel_abi, tile_params, bundle.kernel_variant
+        bundle.kernel_abi,
+        tile_params,
+        bundle.kernel_variant,
+        fused_residual=fused_residual,
     )
     kernel_cls = resolve_implementation(implementation)
     return _build_kernel_config(
@@ -320,6 +378,8 @@ def get_kernel_config(
         sm_version=sm_version,
         kernel_abi=bundle.kernel_abi,
         asymmetric=K1 is not None and K1 != K,
+        has_mask=has_mask,
+        fused_residual=fused_residual,
         K=K,
         K1=K1,
         N=N,

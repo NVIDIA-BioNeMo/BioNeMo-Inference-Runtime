@@ -28,8 +28,10 @@ from bionemo_ir._torch.layers.transition import Transition as SwiGLUTransition
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
+    TriangleMultiplicationMetadata,
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
+    precompute_trimul_metadata,
 )
 
 
@@ -141,17 +143,24 @@ class TemplatePairBlock(nn.Module):
         else:
             raise ValueError(f"Transition type {transition_type} is not available")
 
-    def trimul_update(self, single: torch.Tensor, single_mask: torch.Tensor) -> torch.Tensor:
+    def trimul_update(
+        self,
+        single: torch.Tensor,
+        single_mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
+    ) -> torch.Tensor:
         """
         Update the single template with the triangle multiplication
         """
         single = single + self.tri_mul_out(
             single,
             single_mask,
+            trimul_metadata,
         )
         single = single + self.tri_mul_in(
             single,
             single_mask,
+            trimul_metadata,
         )
         return single
 
@@ -168,7 +177,11 @@ class TemplatePairBlock(nn.Module):
         return single
 
     def forward(
-        self, z: torch.Tensor, mask: torch.Tensor, attn_metadata: AttentionMetadata | None = None
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
+        attn_metadata: AttentionMetadata | None = None,
     ) -> torch.Tensor:
         single_templates = [t.unsqueeze(-4) for t in torch.unbind(z, dim=-4)]
         single_templates_masks = [m.unsqueeze(-3) for m in torch.unbind(mask, dim=-3)]
@@ -186,11 +199,11 @@ class TemplatePairBlock(nn.Module):
                 if single_mask.ndim == 4:
                     single_mask = single_mask.flatten(0, 1)
 
-                single = self.trimul_update(single, single_mask)
+                single = self.trimul_update(single, single_mask, trimul_metadata)
                 single = self.triattn_update(single, single_mask, attn_metadata=attn_metadata)
             else:
                 single = self.triattn_update(single, single_mask, attn_metadata=attn_metadata)
-                single = self.trimul_update(single, single_mask)
+                single = self.trimul_update(single, single_mask, trimul_metadata)
 
             single = single + self.pair_transition(single, single_mask)
 
@@ -283,8 +296,13 @@ class TemplatePairStack(nn.Module):
             mask = mask.expand(*expand_idx)
 
         if not skip_template_pair_stack:
+            trimul_metadata = precompute_trimul_metadata(
+                t.reshape(-1, *t.shape[-3:]),
+                None,
+                None,
+            )
             for block in self.blocks:
-                t = block(z=t, mask=mask)
+                t = block(z=t, mask=mask, trimul_metadata=trimul_metadata)
         t = self.layer_norm(t)
         return t.to(origin_dtype)
 

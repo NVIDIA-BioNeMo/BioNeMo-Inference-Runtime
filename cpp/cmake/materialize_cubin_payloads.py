@@ -263,7 +263,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
             _Field("transpose_out", _BOOL, "bool transpose_out;"),
             _Field("has_bias", _BOOL, "bool has_bias;"),
-            _Field("has_mask", _BOOL, "bool has_mask;"),
+            _Field("legacy_has_mask", _BOOL, "bool legacy_has_mask;", default=False),
             # Every image published before the gate axis existed is sigmoid.
             _Field("is_silu_gate", _BOOL, "bool is_silu_gate;", default=False),
             _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U"),
@@ -293,12 +293,13 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("bucket", _INDEX, "std::int32_t bucket;"),
             _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
             _Field("has_bias", _BOOL, "bool has_bias;"),
+            _Field("fused_residual", _BOOL, "bool fused_residual;", default=False),
             _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U"),
             _Field("tile_n", _POSITIVE, "std::uint32_t tile_n;", suffix="U"),
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
             _Field("raster_factor", _COUNT, "std::uint32_t raster_factor;", suffix="U"),
         ),
-        runtime_key=("K", "K1", "N", "bucket", "is_bfloat16", "has_bias"),
+        runtime_key=("K", "K1", "N", "bucket", "is_bfloat16", "has_bias", "fused_residual"),
         sm90=_Sm90Spec("is_native", ("x0", "x1", "w0", "w1", "output")),
     ),
 }
@@ -307,7 +308,13 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
 # declares its own key set, and two carry a "everything else" sentinel form.
 _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
     "adaln_layernorm_sigmoid": (("feature_dim", 1), ("num_threads", 1)),
-    "dual_gemm_x0_x1": (("K", 1), ("K1", 1), ("N", 1), ("has_bias", None)),
+    "dual_gemm_x0_x1": (
+        ("K", 1),
+        ("K1", 1),
+        ("N", 1),
+        ("has_bias", None),
+        ("fused_residual", None),
+    ),
     "dual_gemm_x_x": (("N", 1), ("bucket", 0)),
     "gated_sigmoid": (("K", 1), ("N", 1), ("m_bucket", 0)),
     "outer_product_mean": (("N", 1), ("S", 1)),
@@ -320,7 +327,10 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
 # omit it, and runtime_metadata has no K1 (K1 defaults to K via default_from).
 # After that default, K1 is a runtime-dispatch axis for the asymmetric tunings.
 _PUBLIC_LEGACY_ALIAS_FIELDS = {
-    "dual_gemm_x0_x1": ((("K", 1), ("N", 1), ("has_bias", None)),),
+    "dual_gemm_x0_x1": (
+        (("K", 1), ("K1", 1), ("N", 1), ("has_bias", None)),
+        (("K", 1), ("N", 1), ("has_bias", None)),
+    ),
 }
 _PUBLIC_ALIAS_SENTINELS = {"gated_sigmoid": "fallback_tile", "outer_product_mean": "default_config"}
 _DTYPE_CODES = {"fp16": 0, "bf16": 1, "fp32": 2}
@@ -733,12 +743,22 @@ def _runtime_keys(family: str, variant: VariantRecord) -> tuple[tuple[object, ..
         metadata["runtime_aliases"] if spec.alias is not None else [{}],
     )
 
-    def value(token: str, alias: Mapping[str, object]) -> object:
+    def value(token: str, alias: Mapping[str, object], mask_override: bool | None) -> object:
+        if token == "has_mask":
+            if mask_override is not None:
+                return mask_override
+            return metadata["legacy_has_mask"]
         raw = alias[token[1:]] if token.startswith("@") else metadata[token]
         return tuple(cast("list[object]", raw)) if isinstance(raw, list) else raw
 
+    mask_modes: tuple[bool | None, ...] = (
+        (False, True) if family == "dual_gemm_x_x" and variant.launch_abi.endswith("_mask_ptr_v1") else (None,)
+    )
     return tuple(
-        (sm, *(value(token, alias) for token in spec.runtime_key)) for sm in variant.supported_sms for alias in aliases
+        (sm, *(value(token, alias, mask_override) for token in spec.runtime_key))
+        for sm in variant.supported_sms
+        for alias in aliases
+        for mask_override in mask_modes
     )
 
 
@@ -829,6 +849,10 @@ def _parse_variant(
         _fail(f"{where}.executable references an unknown executable")
     executable = executables[executable_id]
     runtime_metadata = _as_object(raw["runtime_metadata"], f"{where}.runtime_metadata")
+    if family == "dual_gemm_x_x" and "has_mask" in runtime_metadata:
+        if "legacy_has_mask" in runtime_metadata:
+            _fail(f"{where}.runtime_metadata repeats legacy mask metadata")
+        runtime_metadata["legacy_has_mask"] = runtime_metadata.pop("has_mask")
     moved = {
         "dynamic_smem_bytes",
         "non_portable_cluster_size_allowed",

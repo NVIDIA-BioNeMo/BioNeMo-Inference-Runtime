@@ -105,6 +105,8 @@ test = [
   "pytest>=9.0.3",  # Older releases contain PYSEC-2026-1845.
   "pytest-cov>=7.1.0",
   "pytest-xdist>=3.8.0",
+  # tests/contract runs setup.py.
+  "setuptools>=77",
   "parameterized",
   "biotraj==1.2.2",
   "ml_collections==1.1.0",

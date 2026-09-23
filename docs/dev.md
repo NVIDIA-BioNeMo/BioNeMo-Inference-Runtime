@@ -369,6 +369,10 @@ CI runs the same hooks. `prek.toml` lists them: a formatter and a linter per
 language in the tree, plus the SPDX license header every source file carries.
 Inside the development container, use the equivalent bare `prek` commands.
 
+Both CI systems run their CPU gates through `scripts/ci/`: `style.sh` wraps the
+hooks above, and `contract.sh` runs the build-contract and CUBIN suites with no
+GPU and no built extension.
+
 ## Open a Pull Request
 
 Fork, then sign commits with `git commit -s`; refer to

@@ -317,7 +317,7 @@ def _local_version() -> str:
     safe, and both are enforced elsewhere: a release ships one CUDA build
     (``WHEEL_BASE_TAGS`` is singular, asserted by
     ``test_ci_publishes_one_wheel_base_tag``), so no second variant collapses
-    onto the same version; and ``build_wheel.sh`` refuses the flag off
+    onto the same version; and ``release_wheel.sh`` refuses the flag off
     ``release/*``, where the commit in the local version is the only thing
     separating a branch wheel from the release at that version.
 

@@ -9,6 +9,9 @@
 # Everything heavier runs on internal hardware through Blossom, which a
 # maintainer has to ask for by comment -- this is the signal a contributor gets
 # without waiting.
+#
+# Both gates are scripts under scripts/ci/. This file owns only what is
+# GitHub's: the checkout, the caches and the uv install.
 name: CI
 
 on:
@@ -25,12 +28,6 @@ concurrency:
 permissions:
   contents: read
 
-# Lock freshness evaluates the package's dynamic metadata. These jobs never
-# install BioIR, but metadata still needs a CUDA version on CPU-only runners.
-env:
-  CUDA_TAG: cu130
-  UV_NO_INSTALL_PROJECT: '1'
-
 jobs:
   # Named `prek`, not `style`: the job name is the context the ruleset requires.
   prek:
@@ -46,38 +43,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/prek
-      - run: >-
-          uv run --locked --only-group lint prek run
-          --all-files --show-diff-on-failure --color=always
+      - run: scripts/ci/style.sh
 
   contract:
     name: contract
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # The LFS content is load-bearing, but only a slice of it.
-      # test_committed_corpus_materializes materializes the real committed CUBIN
-      # packs and says why: "An LFS pointer or a corrupt pack fails here, not at
-      # pip install time." Verified by rewriting the packs as pointers -- the
-      # test fails with "is a Git LFS pointer", which is it doing its job.
-      #
-      # `lfs: true` would fetch every object in the repo, measured at 88.2 MB
-      # against the 2.5 MB of packs these suites read; the rest is sample MSAs
-      # and structures nothing here opens. So fetch the packs by pattern.
-      #
-      # The credentials stay: this is an internal repo, and `git lfs pull` below
+      # `lfs: false`: the script pulls the CUBIN packs by pattern and nothing
+      # else. The credentials stay: this is an internal repo, and `git lfs pull`
       # authenticates with the header checkout leaves in the local git config.
       #
       # No submodules: neither suite imports bionemo_ir or reads 3rdparty/.
       - uses: actions/checkout@v7
         with:
           lfs: false
-      - uses: ./.github/actions/cubin-packs
-
       - uses: ./.github/actions/uv
-
-      # Nothing here imports torch or the package itself, so there is no install
-      # step and no build. tests/pytest.ini supplies the options.
-      - run: >-
-          uv run --locked --only-group test pytest
-          tests/contract tests/cubin
+      - run: scripts/ci/contract.sh

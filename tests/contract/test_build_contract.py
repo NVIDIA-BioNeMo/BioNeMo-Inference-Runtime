@@ -64,7 +64,7 @@ def test_public_wheel_drops_the_whole_local_version(monkeypatch: pytest.MonkeyPa
 
     Not just the CUDA tag: a leftover commit segment is still a local version,
     and PEP 440 sorts a longer one higher, so half the segment would be worse
-    than all of it. `build_wheel.sh` derives the flag from the ref — set on
+    than all of it. `release_wheel.sh` derives the flag from the ref — set on
     `release/*`, where the base version alone identifies the build, and refused
     anywhere else.
     """

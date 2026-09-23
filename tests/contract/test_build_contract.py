@@ -18,18 +18,97 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import runpy
 import shutil
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
+import setuptools
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 KERNELS_DIR = REPO_ROOT / "cpp" / "kernels"
 FAMILIES = tuple(
     path.parent.name.removeprefix("cutedsl_") for path in sorted(KERNELS_DIR.glob("cutedsl_*/launcher.cpp"))
 )
+
+
+def _setup_metadata(monkeypatch: pytest.MonkeyPatch, **environment: str) -> dict[str, object]:
+    """Run setup.py for its metadata, with `setup()` stubbed so nothing is built."""
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+    for name in ("BIOIR_PUBLIC_WHEEL", "BIOIR_VERSION_LOCAL", "CUDA_TAG"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    runpy.run_path(str(REPO_ROOT / "setup.py"), run_name="setup_under_test")
+    return captured
+
+
+def _setup_version(monkeypatch: pytest.MonkeyPatch, **environment: str) -> str:
+    """The version setup.py stamps into the wheel."""
+    return str(_setup_metadata(monkeypatch, **environment)["version"])
+
+
+def test_wheel_version_records_the_toolkit_and_the_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local version is what tells two builds of one base version apart."""
+    version = _setup_version(monkeypatch, CUDA_TAG="cu132", BIOIR_VERSION_LOCAL="g1a2b3c4 some/branch")
+
+    assert version.endswith("+cu132.g1a2b3c4.some.branch"), version
+
+
+def test_public_wheel_drops_the_whole_local_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A public index rejects a local version, so BIOIR_PUBLIC_WHEEL drops it.
+
+    Not just the CUDA tag: a leftover commit segment is still a local version,
+    and PEP 440 sorts a longer one higher, so half the segment would be worse
+    than all of it. `build_wheel.sh` derives the flag from the ref — set on
+    `release/*`, where the base version alone identifies the build, and refused
+    anywhere else.
+    """
+    version = _setup_version(monkeypatch, BIOIR_PUBLIC_WHEEL="1", BIOIR_VERSION_LOCAL="g1a2b3c4 some/branch")
+
+    assert "+" not in version, version
+    # And it never reaches for nvcc or torch: neither is present on a public
+    # build's critical path once the tag it would produce is unused.
+    assert version == _setup_version(monkeypatch, BIOIR_PUBLIC_WHEEL="1")
+
+
+def test_long_description_survives_an_index_rendering_it_out_of_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An index renders the description standalone, and the page cannot be amended.
+
+    PyPI strips no YAML frontmatter and resolves no relative path, so the
+    license header would open the page as its largest heading and every
+    `docs/...` link would 404 — neither repairable without burning a version.
+    setup.py rewrites both out, leaving README.md itself relative for a
+    checkout and for GitHub.
+    """
+    description = str(_setup_metadata(monkeypatch, BIOIR_PUBLIC_WHEEL="1")["long_description"])
+
+    assert not description.startswith("---"), description[:200]
+    assert "SPDX-FileCopyrightText" not in description
+    targets = re.findall(r"!?\[[^\]]*\]\(([^)\s]+)\)", description)
+    targets += re.findall(r"^\[[^\]]+\]:[ \t]+(\S+)", description, re.MULTILINE)
+    # An index renders the HTML in the description, so a raw <a>/<img> and an
+    # autolink reach a reader exactly as a Markdown link does. Both are forms
+    # setup.py rewrites nothing in, which is the case worth catching here.
+    targets += re.findall(r"<(?:a|img)\b[^>]*(?:href|src)=[\"']([^\"']+)[\"']", description, re.IGNORECASE)
+    targets += re.findall(r"<(https?://[^>\s]+)>", description)
+    assert targets, "no links found — the rewrite regexes stopped matching"
+    # Cleartext is as unfixable as a 404 once the version is out, and a reader
+    # of the page has no way to tell it was not meant that way.
+    cleartext = [target for target in targets if target.startswith("http://")]
+    assert not cleartext, cleartext
+    relative = [target for target in targets if not target.startswith(("https://", "#", "mailto:"))]
+    assert not relative, relative
+    # An image needs the bytes, so it resolves to raw rather than to a blob page.
+    assert "https://raw.githubusercontent.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/main/docs/assets/" in description
+    # A fenced command that merely names a relative path comes through untouched.
+    assert "python examples/folding/run_demo.py --output-dir output" in description
 
 
 def test_families_do_not_ship_private_cmake() -> None:

@@ -1,5 +1,8 @@
 include LICENSE
 include THIRD_PARTY_NOTICES.md
+# setup.py reads it for long_description, and CI builds the wheel from the
+# unpacked sdist, so a missing README breaks that build rather than the metadata.
+include README.md
 recursive-include LICENSES *.txt
 recursive-include cpp CMakeLists.txt *.cmake *.cpp *.h
 # The public materializer is standard-library-only and is required to build a

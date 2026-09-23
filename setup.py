@@ -18,9 +18,10 @@
 embeds architecture-specific CuTeDSL CUBINs, to CMake; the local version segment
 (for example ``+cu131``) records the CUDA toolkit that built the wheel, and
 ``BIOIR_VERSION_LOCAL`` appends more segments to it so a wheel built from an
-arbitrary commit is traceable (for example ``+cu131.g1a2b3c4``). Every checkout
-builds the extension, and ``BIOIR_BUILD_CUTEDSL_KERNELS=0`` opts out from the
-environment or an untracked ``build.env``.
+arbitrary commit is traceable (for example ``+cu131.g1a2b3c4``).
+``BIOIR_PUBLIC_WHEEL=1`` drops that segment for a public index, which rejects
+one. Every checkout builds the extension, and ``BIOIR_BUILD_CUTEDSL_KERNELS=0``
+opts out from the environment or an untracked ``build.env``.
 """
 
 import contextlib
@@ -38,10 +39,16 @@ from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 
 ROOT_DIR = Path(__file__).parent.resolve()
+_README = ROOT_DIR / "README.md"
+# The public tree a rendered README's relative paths have to resolve against.
+# Kept spelled the same way as docs/fern/src/common.py, which mints the same
+# URLs for the generated documentation site.
+_GITHUB_SLUG = "NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
 _BUILD_ENV_FILE = ROOT_DIR / "build.env"
 _KERNELS_DIR = ROOT_DIR / "cpp" / "kernels"
 _CUBIN_MATERIALIZER = ROOT_DIR / "cpp" / "cmake" / "materialize_cubin_payloads.py"
 _BUILD_CUTEDSL_KERNELS_ENV = "BIOIR_BUILD_CUTEDSL_KERNELS"
+_PUBLIC_WHEEL_ENV = "BIOIR_PUBLIC_WHEEL"
 _KERNEL_LIBRARY_STEM = "_cutedsl_kernels"
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
@@ -214,6 +221,12 @@ _BUILD_CUTEDSL_KERNELS = _env_flag(
     default=True,
 )
 
+_PUBLIC_WHEEL = _env_flag(
+    _PUBLIC_WHEEL_ENV,
+    env_file=_BUILD_ENV_FILE,
+    default=False,
+)
+
 
 def _base_version() -> str:
     """Read ``__version__`` from version.py WITHOUT importing the package.
@@ -288,6 +301,80 @@ def _extra_local_version() -> str:
     if not normalized:
         raise ValueError(f"BIOIR_VERSION_LOCAL has no alphanumeric content: {raw!r}")
     return f".{normalized}"
+
+
+def _local_version() -> str:
+    """The PEP 440 local version identifier, or ``""`` for a public wheel.
+
+    ``+cu131.g1a2b3c4`` is what tells two builds of one base version apart: it
+    names the CUDA toolkit that produced the extension, and the commit it was
+    produced from. Public indexes reject a local version outright, though --
+    it is the segment PEP 440 reserves for a downstream rebuild, so PyPI
+    refuses to host one -- and ``BIOIR_PUBLIC_WHEEL=1`` drops the whole thing.
+
+    Dropping it leaves exactly ``<base version>``, so it is safe only where
+    nothing else has to distinguish the build. Two facts make the release case
+    safe, and both are enforced elsewhere: a release ships one CUDA build
+    (``WHEEL_BASE_TAGS`` is singular, asserted by
+    ``test_ci_publishes_one_wheel_base_tag``), so no second variant collapses
+    onto the same version; and ``build_wheel.sh`` refuses the flag off
+    ``release/*``, where the commit in the local version is the only thing
+    separating a branch wheel from the release at that version.
+
+    Returns:
+        ``"+<cuda tag>[<extra segments>]"``, or ``""``.
+    """
+    if _PUBLIC_WHEEL:
+        return ""
+    return f"+{_cuda_local_version()}{_extra_local_version()}"
+
+
+_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+_INLINE_LINK_RE = re.compile(r"(?P<image>!?)\[(?P<text>[^\]]*)\]\((?P<target>[^)\s]+)\)")
+_REFERENCE_LINK_RE = re.compile(r"^(?P<label>\[[^\]]+\]:)[ \t]+(?P<target>\S+)[ \t]*$", re.MULTILINE)
+
+
+def _absolute_target(target: str, *, image: bool) -> str:
+    """Resolve one README link target against the public GitHub tree."""
+    if target.startswith(("http://", "https://", "//", "#", "mailto:")):
+        return target
+    path, separator, fragment = target.partition("#")
+    if image:
+        # An index needs the bytes; a blob URL would serve GitHub's page instead.
+        url = f"https://raw.githubusercontent.com/{_GITHUB_SLUG}/main/{path}"
+    else:
+        url = f"https://github.com/{_GITHUB_SLUG}/{'tree' if path.endswith('/') else 'blob'}/main/{path}"
+    return f"{url}{separator}{fragment}"
+
+
+def _long_description() -> str:
+    """README.md rewritten for a package index, which renders it out of context.
+
+    PyPI renders the description standalone: it strips no YAML frontmatter, so
+    the license header would open the page as its largest heading, and it
+    resolves no relative path, so every ``docs/...`` link 404s and the banner
+    image never loads. Neither is repairable after the fact — an index refuses a
+    second upload at the same version, and the page is built from that upload's
+    metadata alone.
+
+    Rewriting here rather than in the file keeps ``README.md`` itself relative,
+    which is what a checkout and GitHub want.
+
+    Returns:
+        The README with frontmatter removed and every relative target made
+        absolute.
+    """
+    text = _FRONTMATTER_RE.sub("", _README.read_text(encoding="utf-8"))
+    text = _INLINE_LINK_RE.sub(
+        lambda match: (
+            f"{match['image']}[{match['text']}]({_absolute_target(match['target'], image=bool(match['image']))})"
+        ),
+        text,
+    )
+    return _REFERENCE_LINK_RE.sub(
+        lambda match: f"{match['label']} {_absolute_target(match['target'], image=False)}",
+        text,
+    )
 
 
 class CMakeExtension(Extension):
@@ -382,7 +469,9 @@ class CMakeBuild(build_ext):
 
 
 setup(
-    version=f"{_base_version()}+{_cuda_local_version()}{_extra_local_version()}",
+    version=f"{_base_version()}{_local_version()}",
+    long_description=_long_description(),
+    long_description_content_type="text/markdown",
     ext_modules=(
         [CMakeExtension("bionemo_ir.libs._cutedsl_kernels", ROOT_DIR / "cpp")] if _BUILD_CUTEDSL_KERNELS else []
     ),

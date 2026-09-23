@@ -28,7 +28,6 @@ name = "bionemo-ir"
 description = "BioNeMo Inference Runtime: GPU accelerated framework for protein folding"
 requires-python = ">=3.12,<4.0"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
-readme = "README.md"
 dependencies = [
   "cuda-python>=13",
   "torch>=2.11",
@@ -58,9 +57,19 @@ dependencies = [
   "einops>=0.8",  # rearrange() and einsum() are imported directly.
   "pydantic>=2,<3",
 ]
-dynamic = ["version"]
+# readme is dynamic because setup.py rewrites it for a package index: an index
+# renders it standalone, resolving no relative path and stripping no frontmatter.
+dynamic = ["version", "readme"]
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
+
+# Rendered as the sidebar links on the PyPI project page, which is built from
+# this metadata alone -- a published version's page cannot be edited afterwards.
+[project.urls]
+Homepage = "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
+Documentation = "https://docs.nvidia.com/bionemo/inference-runtime"
+Repository = "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
+Issues = "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/issues"
 
 [dependency-groups]
 build = [

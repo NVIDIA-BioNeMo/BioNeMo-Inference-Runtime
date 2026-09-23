@@ -29,7 +29,7 @@ from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import _config as dg_config
 from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import cutedsl as dg_cutedsl
 from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1._cubin import DualGemmX0X1CubinExecutable
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
-from tests._torch import SM_VERSION, cutedsl_test_modes, skip_if_no_cutedsl
+from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_library, skip_if_no_cutedsl
 
 _SOURCE_MODULE = "bionemo_ir._torch.custom_ops.dual_gemm_x0_x1._source"
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
@@ -44,12 +44,9 @@ _ASYMMETRIC_CONFIG_RE = re.compile(r"K0(\d+)_K1(\d+)_N(\d+)_sm(\d+)\.json")
 
 def _skip_unless_cubin_has_x0_x1(K: int, N: int, K1: int, *, has_bias: bool = True, bucket: int = 128) -> None:
     """Skip cubin-mode asymmetric-shape cases until the artifact-only refresh lands."""
+    launcher = require_cubin_library().dual_gemm_x0_x1
     try:
-        library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
-        launcher = library.dual_gemm_x0_x1
         launcher.make_kernel_config(SM_VERSION, K, N, bucket, launcher.DType.BFLOAT16, has_bias, K1=K1)
-    except ImportError:
-        pytest.skip("CUBIN test mode requires the _cutedsl_kernels extension")
     except ValueError:
         pytest.skip(f"dual_gemm_x0_x1 CUBIN corpus has no SM{SM_VERSION} K0={K} K1={K1} N={N} yet")
 
@@ -61,10 +58,7 @@ def _configure_mode(mode: str, monkeypatch) -> None:
     if mode == "cubin":
         if SM_VERSION not in _CUBIN_SMS:
             pytest.skip(f"dual_gemm x0_x1 CUBINs cover SM{_CUBIN_SMS} (current SM{SM_VERSION})")
-        try:
-            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
-        except ImportError:
-            pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
+        require_cubin_library()
 
         def source_unavailable(_implementation):
             raise ModuleNotFoundError("CuTeDSL source disabled by CUBIN test mode")

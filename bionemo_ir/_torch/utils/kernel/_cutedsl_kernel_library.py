@@ -37,6 +37,7 @@ _PACKAGE_DIR = Path(__file__).resolve().parents[3]
 _KERNEL_LIBRARY_DIR = _PACKAGE_DIR / "libs"
 _KERNEL_SOURCE_DIR = _PACKAGE_DIR / "dsl_kernels" / "cute"
 _kernel_library: ModuleType | None = None
+_kernel_library_error: BaseException | None = None
 
 
 class CuTeDSLKernelLibraryError(RuntimeError):
@@ -97,12 +98,22 @@ def require_kernel_backend() -> None:
 
 
 def _load_kernel_library() -> ModuleType:
-    global _kernel_library
+    global _kernel_library, _kernel_library_error
     if _kernel_library is not None:
         return _kernel_library
+    # A failed import is final for the process. Python drops the
+    # half-initialized module from sys.modules, so a retry re-runs
+    # PyInit__cutedsl_kernels; nanobind refuses the duplicate enum
+    # registration and aborts the interpreter rather than raising. Retrying
+    # therefore turns a recoverable import error into SIGABRT, which under
+    # pytest-xdist costs the whole worker.
+    if _kernel_library_error is not None:
+        raise CuTeDSLKernelLibraryUnavailable(f"Cannot import {_KERNEL_LIBRARY_MODULE!r}") from _kernel_library_error
     try:
+        # A failed dlopen surfaces as OSError, not ImportError.
         module = importlib.import_module(_KERNEL_LIBRARY_MODULE)
-    except ImportError as error:
+    except (ImportError, OSError) as error:
+        _kernel_library_error = error
         raise CuTeDSLKernelLibraryUnavailable(f"Cannot import {_KERNEL_LIBRARY_MODULE!r}") from error
     _kernel_library = module
     return module

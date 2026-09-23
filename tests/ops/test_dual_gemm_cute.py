@@ -44,7 +44,14 @@ from bionemo_ir._torch.custom_ops.dual_gemm_x_x import ops as dual_gemm_x_x_ops
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x._cubin import DualGemmXxCubinExecutable
 from bionemo_ir._torch.utils.kernel import CuTeDSLKernelVariantUnavailable
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
-from tests._torch import SM_VERSION, cutedsl_test_modes, make_left_aligned_mask, skip_if_no_cutedsl, skip_if_not_sm90
+from tests._torch import (
+    SM_VERSION,
+    cutedsl_test_modes,
+    make_left_aligned_mask,
+    require_cubin_library,
+    skip_if_no_cutedsl,
+    skip_if_not_sm90,
+)
 
 _DUAL_GEMM_XX_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.dual_gemm_x_x._source"
 _DUAL_GEMM_XX_TEST_MODES = cutedsl_test_modes(_DUAL_GEMM_XX_SOURCE_MODULE)
@@ -60,10 +67,7 @@ def _configure_dual_gemm_x_x_mode(mode: str, monkeypatch) -> None:
     monkeypatch.setattr(DualGemmXxCuTe, "_compiled_cache", _DUAL_GEMM_XX_MODE_CACHES[mode])
 
     if mode == "cubin":
-        try:
-            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
-        except ImportError:
-            pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
+        require_cubin_library()
 
         try:
             source_module = importlib.import_module("bionemo_ir._torch.custom_ops.dual_gemm_x_x._source")
@@ -95,9 +99,8 @@ def _skip_unless_cubin_has_x_x(
     gate: str = "sigmoid",
 ) -> None:
     """Skip cubin-mode tuned-shape cases until the artifact-only refresh lands."""
+    launcher = require_cubin_library().dual_gemm_x_x
     try:
-        library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
-        launcher = library.dual_gemm_x_x
         launcher.make_kernel_config(
             SM_VERSION,
             K,
@@ -109,8 +112,6 @@ def _skip_unless_cubin_has_x_x(
             has_mask,
             gate == "silu",
         )
-    except ImportError:
-        pytest.skip("CUBIN test mode requires the _cutedsl_kernels extension")
     except ValueError:
         pytest.skip(f"dual_gemm_x_x CUBIN corpus has no SM{SM_VERSION} K={K} N={N} yet")
 

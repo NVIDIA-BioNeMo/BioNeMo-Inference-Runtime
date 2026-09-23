@@ -40,7 +40,7 @@ from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
 from bionemo_ir.utils import str_dtype_to_torch
-from tests._torch import SM_VERSION, cutedsl_test_modes, skip_if_no_cutedsl
+from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_library, skip_if_no_cutedsl
 
 _CUTEDSL_SM = (80, 90, 100, 103)
 _PWA_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.pair_weighted_averaging._source"
@@ -61,10 +61,7 @@ def _configure_pwa_mode(mode: str, monkeypatch) -> None:
     monkeypatch.setattr(PairWeightedAveragingCuTe, "_compiled_cache", _PWA_MODE_CACHES[mode])
 
     if mode == "cubin":
-        try:
-            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
-        except ImportError:
-            pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
+        require_cubin_library()
 
         try:
             source_module = importlib.import_module("bionemo_ir._torch.custom_ops.pair_weighted_averaging._source")

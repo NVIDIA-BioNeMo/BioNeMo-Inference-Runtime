@@ -16,6 +16,7 @@
 import importlib.util
 import os
 from collections.abc import Callable
+from types import ModuleType
 
 import pytest
 import torch
@@ -126,6 +127,21 @@ def cutedsl_test_modes(source_module: str | None = None) -> tuple[str, ...]:
             f"{CUTEDSL_TEST_MODES_ENV} contains unsupported modes {invalid}; choose from {_CUTEDSL_TEST_MODES}"
         )
     return modes
+
+
+def require_cubin_library() -> ModuleType:
+    """The CUBIN launcher extension, or fail the test that asked for it.
+
+    Delegates to the runtime loader rather than importing here. One cache per
+    process is the point: a second import site would still re-enter
+    ``PyInit__cutedsl_kernels`` after the other had already failed, and
+    nanobind aborts the interpreter on the duplicate enum registration
+    instead of raising.
+    """
+    try:
+        return library_runtime._load_kernel_library()
+    except library_runtime.CuTeDSLKernelLibraryUnavailable as error:
+        pytest.fail(f"CUBIN test mode requires the _cutedsl_kernels extension: {error}")
 
 
 def run_cutedsl_test_mode(

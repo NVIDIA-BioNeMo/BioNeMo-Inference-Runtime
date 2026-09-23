@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import importlib
 import os
 
 import pytest
@@ -40,6 +39,7 @@ from tests._torch import (
     SM_VERSION,
     cutedsl_test_modes,
     make_left_aligned_mask,
+    require_cubin_library,
     skip_if_no_cutedsl,
     skip_if_not_sm90,
     skip_if_not_sm100_family,
@@ -71,10 +71,7 @@ def _configure_triangle_cutedsl_mode(mode: str, monkeypatch) -> None:
     monkeypatch.setattr(TriangleAttentionCuTeLeftMask, "_compiled_cache", mode_cache)
 
     if mode == "cubin":
-        try:
-            importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
-        except ImportError:
-            pytest.fail("CUBIN test mode requires the _cutedsl_kernels extension")
+        require_cubin_library()
 
         def source_unavailable(_implementation):
             raise ModuleNotFoundError("CuTeDSL source disabled by CUBIN test mode")

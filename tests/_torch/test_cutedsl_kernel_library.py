@@ -24,6 +24,7 @@ import pytest
 import torch
 
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
+from tests._torch import require_cubin_library
 
 
 class _LibraryExecutable(library_runtime.CuTeDSLKernelLibraryExecutable):
@@ -491,3 +492,67 @@ def test_tensor_s2_d1_requires_the_other_dimension_to_be_contiguous():
         library_runtime.tensor_s2_d1(library, row_major, dynamic_stride_dim=1)
     with pytest.raises(ValueError, match="stride for dimension 1"):
         library_runtime.tensor_s2_d1(library, column_major, dynamic_stride_dim=0)
+
+
+def test_failed_extension_import_is_not_retried(monkeypatch):
+    """A retry re-runs the extension's nanobind init, which aborts the process.
+
+    Python drops a module whose init raised from ``sys.modules``, so the second
+    ``import_module`` re-enters ``PyInit__cutedsl_kernels``. nanobind refuses
+    the duplicate enum registration with ``Fatal Python error: Aborted`` rather
+    than an exception, taking the whole pytest-xdist worker with it.
+    """
+    monkeypatch.setattr(library_runtime, "_kernel_library", None)
+    monkeypatch.setattr(library_runtime, "_kernel_library_error", None)
+    attempts = []
+
+    def failing_import(name):
+        attempts.append(name)
+        raise ImportError(name)
+
+    monkeypatch.setattr(library_runtime.importlib, "import_module", failing_import)
+
+    for _ in range(3):
+        with pytest.raises(library_runtime.CuTeDSLKernelLibraryUnavailable):
+            library_runtime._load_kernel_library()
+
+    assert attempts == [library_runtime._KERNEL_LIBRARY_MODULE]
+
+
+def test_dlopen_failure_is_reported_as_unavailable(monkeypatch):
+    """A failed dlopen raises OSError, not ImportError -- and is not retried."""
+    monkeypatch.setattr(library_runtime, "_kernel_library", None)
+    monkeypatch.setattr(library_runtime, "_kernel_library_error", None)
+    attempts = []
+
+    def failing_import(name):
+        attempts.append(name)
+        raise OSError("libcuda.so.1: cannot open shared object file")
+
+    monkeypatch.setattr(library_runtime.importlib, "import_module", failing_import)
+
+    for _ in range(3):
+        with pytest.raises(library_runtime.CuTeDSLKernelLibraryUnavailable):
+            library_runtime._load_kernel_library()
+
+    assert attempts == [library_runtime._KERNEL_LIBRARY_MODULE]
+
+
+def test_require_cubin_library_shares_the_runtime_import_cache(monkeypatch):
+    """Two import sites would re-enter PyInit and abort the worker."""
+    monkeypatch.setattr(library_runtime, "_kernel_library", None)
+    monkeypatch.setattr(library_runtime, "_kernel_library_error", None)
+    attempts = []
+
+    def failing_import(name):
+        attempts.append(name)
+        raise ImportError(name)
+
+    monkeypatch.setattr(library_runtime.importlib, "import_module", failing_import)
+
+    with pytest.raises(library_runtime.CuTeDSLKernelLibraryUnavailable):
+        library_runtime._load_kernel_library()
+    with pytest.raises(pytest.fail.Exception):
+        require_cubin_library()
+
+    assert attempts == [library_runtime._KERNEL_LIBRARY_MODULE]

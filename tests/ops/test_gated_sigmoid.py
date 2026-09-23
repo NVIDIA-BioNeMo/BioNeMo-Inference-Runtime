@@ -27,7 +27,13 @@ from bionemo_ir._torch.custom_ops.gated_sigmoid import (
 from bionemo_ir._torch.custom_ops.gated_sigmoid import _config as gated_config
 from bionemo_ir._torch.custom_ops.gated_sigmoid import cutedsl as gated_cutedsl
 from bionemo_ir._torch.custom_ops.gated_sigmoid._cubin import GatedSigmoidCubinExecutable
-from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode, skip_if_no_cutedsl
+from tests._torch import (
+    SM_VERSION,
+    cutedsl_test_modes,
+    require_cubin_library,
+    run_cutedsl_test_mode,
+    skip_if_no_cutedsl,
+)
 
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.gated_sigmoid._source")
 
@@ -416,7 +422,7 @@ def test_get_gated_sigmoid_op_runs():
 
 def test_sm80_cubin_adapter_selects_atom_layout():
     """The Python adapter must pass every tile-selection axis to C++."""
-    library = pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     launcher = library.gated_sigmoid
     tile_params = gated_config.get_tile_params(80, K=128, N=128, M=1)
 

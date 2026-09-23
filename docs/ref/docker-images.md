@@ -38,12 +38,6 @@ by those packages. Every package layered on top comes from a hash-checked
 `uv.lock` export. This image-specific policy retains the curated NGC framework
 stack without allowing the remaining dependencies to drift.
 
-CI publishes two separate CycloneDX artifacts. The project dependency SBOM is
-exported from `uv.lock` and records the intended runtime, build, and development
-graph. The development-image SBOM inventories the packages actually installed
-in the NGC dependency image, including base-image packages that the project lock
-does not own. Neither artifact is presented as the other.
-
 Base images are overridable:
 
 ```bash

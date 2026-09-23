@@ -91,6 +91,7 @@ WORKDIR /opt/bioir-deps
 # with hashes. Reinstall PyYAML because the base's distro-owned copy has no pip
 # RECORD metadata and cannot be upgraded in place.
 COPY pyproject.toml uv.lock ./
+# CUDA 13 must own overlapping CuTe files.
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --no-dev --no-emit-project \
         --prune torch --prune triton \
@@ -102,6 +103,9 @@ RUN --mount=type=cache,target=/cache/uv \
         --requirements /tmp/bioir-runtime.txt \
     && uv pip install --system --no-deps --require-hashes \
         --requirements /tmp/bioir-build.txt \
+    && uv pip install --system --no-deps --require-hashes \
+        --reinstall-package nvidia-cutlass-dsl-libs-cu13 \
+        --requirements /tmp/bioir-runtime.txt \
     && rm -f /tmp/bioir-runtime.txt /tmp/bioir-build.txt
 
 # Export the complete PyPI runtime closure for the minimal runtime image. This

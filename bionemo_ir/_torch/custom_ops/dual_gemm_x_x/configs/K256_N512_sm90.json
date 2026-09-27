@@ -1,99 +1,170 @@
 {
   "kernel_abi": "sm90",
+  "kernel_variant": "resident",
   "gates": [
     "sigmoid",
     "silu"
   ],
   "configs": {
     "S=128|t=0": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 2
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=128|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 0
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=256|t=0": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 1
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=256|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 1
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=512|t=0": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 1
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=512|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 0
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=768|t=0": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 0
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=768|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 4
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=1536|t=0": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 4
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     },
     "S=1536|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 4
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "bias_smem": true,
+      "cluster_n": 1,
+      "bias_regs": false,
+      "n": 512,
+      "k0": 256,
+      "k1": 256
     }
   }
 }

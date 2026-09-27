@@ -233,7 +233,7 @@ class EvoformerBlock(nn.Module):
         m = m + self.msa_att_row(m, z, mask=msa_mask, attn_metadata=attn_metadata)
         if not self.no_column_attention:
             m = m + self.msa_att_col(m, z=None, mask=msa_mask, attn_metadata=attn_metadata)
-        m = m + self.msa_transition(m, mask=msa_mask)
+        m = self.msa_transition(m, mask=msa_mask, residual=True)
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
@@ -253,7 +253,7 @@ class EvoformerBlock(nn.Module):
         z = z + self.tri_attn_start(z, mask=pair_mask, mask_bias=mb_start, attn_metadata=attn_metadata, buffers=buffers)
         z = z + self.tri_attn_end(z, mask=pair_mask, mask_bias=mb_end, attn_metadata=attn_metadata, buffers=buffers)
 
-        z = z + self.pair_transition(z, mask=pair_mask)
+        z = self.pair_transition(z, mask=pair_mask, residual=True)
 
         return m, z
 

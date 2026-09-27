@@ -39,6 +39,8 @@ _DYNAMIC_CACHE_ROWS = 64 * 64
 # different BF16 accumulation path. Supported production widths are >= 256.
 _DYNAMIC_LINEAR_MIN_DIM = 128
 _KERNEL_CACHE_LOCK = threading.Lock()
+# Private to Torch; without it, batch-1 linear + ReLU takes the cuDNN graph like every other shape.
+_ADDMM_ACTIVATION = getattr(torch, "_addmm_activation", None)
 _LINEAR_RELU_KERNEL_CACHES: dict[tuple[torch.device, torch.dtype], object] = {}
 _LINEAR_MASK_KERNEL_CACHES: dict[tuple[torch.device, torch.dtype], object] = {}
 
@@ -543,7 +545,11 @@ def cudnn_linear_relu(
     weight: torch.Tensor,
     bias: torch.Tensor,
 ) -> torch.Tensor | None:
-    """Apply matmul, bias, and ReLU through one static cuDNN graph.
+    """Apply matmul, bias, and ReLU through one fused kernel.
+
+    Batch-1 operands run cuBLASLt's bias and ReLU epilogue through ``torch._addmm_activation``,
+    which builds nothing and beats cuDNN's heuristic plan on SM90. Other shapes use one static
+    cuDNN graph.
 
     Args:
         x: Input with shape ``[..., M, K]``.
@@ -553,6 +559,13 @@ def cudnn_linear_relu(
     Returns:
         The fused output, or ``None`` when cuDNN rejects the tensor signature.
     """
+    if (
+        _ADDMM_ACTIVATION is not None
+        and x.dim() == weight.dim() == 3
+        and x.shape[0] == weight.shape[0] == 1
+        and bias.numel() == weight.shape[-1]
+    ):
+        return _ADDMM_ACTIVATION(bias.reshape(-1), x[0], weight[0]).unsqueeze(0)
     inputs = (x, weight, bias)
     plan = _LINEAR_RELU_CACHE.get_or_create(
         inputs,

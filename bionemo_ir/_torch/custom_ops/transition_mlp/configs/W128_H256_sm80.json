@@ -1,0 +1,6 @@
+{
+  "kernel_abi": "sm80",
+  "configs": {
+    "act=silu_gate|bias=0|mask=0": {"tile_m": 64, "num_warps": 4, "stages": 4}
+  }
+}

@@ -351,6 +351,68 @@ _STRIDED_MIN_TILE_N = 8
 _STRIDED_WARP_TILE_L2_MULTIPLE = 2
 
 
+class _LaunchTuning(NamedTuple):
+    """Single-tile launch constants for one SM version.
+
+    Fitted by a sweep that times every ``(tile_n, num_warps)`` through :func:`layer_norm_transpose`.
+    Warps are sized from fp32 values per thread, the quantity whose optimum held across D, batch
+    and N.
+    """
+
+    #: Elements per program when D is contiguous; the row tile is this over the channel tile.
+    tile_elems: int
+    #: fp32 values per thread when D is contiguous.
+    fp32_per_thread: int
+    #: Row-tile cap when the load strides D.
+    strided_tile_n: int
+    #: fp32 values per thread when the load strides D.
+    strided_fp32_per_thread: int
+    #: ``(tile_n, num_warps)`` when the load strides D over a token count that is not a
+    #: multiple of 16: Triton cannot prove the rows aligned, so the loads go scalar and need
+    #: more warps in flight.
+    strided_unaligned: tuple[int, int]
+
+
+#: Tuned SM versions; any other keeps :func:`_default_launch_params`. Constants are per SM,
+#: so one entry serves every SM count of that version.
+_LAUNCH_TUNING: dict[int, _LaunchTuning] = {
+    # A100 (108 SMs), D 64-768, B 1-32, N 256-1536: every pick within 1.13x of the swept best. Over the
+    # default: the TriMul output norm 1.085x (up to 1.25x), 1.07x on unaligned tokens; contiguous D even
+    # overall. Contiguous picks stay on one warp up to D=256 and on one tile above it, so the
+    # token-padded norm matches the unpadded one bit for bit.
+    80: _LaunchTuning(
+        tile_elems=512,
+        fp32_per_thread=32,
+        strided_tile_n=64,
+        strided_fp32_per_thread=128,
+        strided_unaligned=(32, 4),
+    ),
+    # L40S (142 SMs), D 64-384, B 1-32, N 256-1536. Over the default: the TriMul output norm 1.2x
+    # where the pick moves (small batches; up to 1.5x at D=256), 1.04x on unaligned tokens;
+    # contiguous D even overall. Contiguous picks stay on one warp up to D=256, so the token-padded
+    # norm matches the unpadded one bit for bit; the default's two-warp D=64 tile does not. Picks
+    # within 1.21x of the swept best: the strided optimum wants 16 warps or tiles past
+    # _SINGLE_TILE_MAX_ELEMS, which these constants cannot reach.
+    89: _LaunchTuning(
+        tile_elems=1024,
+        fp32_per_thread=32,
+        strided_tile_n=64,
+        strided_fp32_per_thread=8,
+        strided_unaligned=(8, 8),
+    ),
+    # H200 (132 SMs), D 128-1024, B 1-32, N 64-1536: every pick within 1.1x of the swept best.
+    # Over the default: contiguous D=384 1.12-1.2x, the TriMul output norm 1.2x at D=256 and
+    # 1.5x at D=128.
+    90: _LaunchTuning(
+        tile_elems=1024,
+        fp32_per_thread=128,
+        strided_tile_n=64,
+        strided_fp32_per_thread=128,
+        strided_unaligned=(32, 4),
+    ),
+}
+
+
 def _strides_channel_axis(layout: Layout) -> bool:
     """True when the load walks D with a stride, so N must carry coalescing."""
     return layout in (Layout.BDN_BND, Layout.DBN_BND)
@@ -376,20 +438,61 @@ def _l2_bytes(device_index: int) -> int:
 
 
 @functools.cache
+def _sm_version(device_index: int) -> int:
+    major, minor = torch.cuda.get_device_capability(device_index)
+    return major * 10 + minor
+
+
+@functools.cache
 def _launch_params(
     D: int,
     D_OUT: int,
-    rows: int,
+    B: int,
+    N: int,
     layout: Layout,
+    sm_version: int,
     sm_count: int,
     cache_resident: bool = False,
 ) -> tuple[int, int, int, bool]:
-    """Pick ``(tile_d, tile_n, num_warps, single_tile)``.
+    """Pick ``(tile_d, tile_n, num_warps, single_tile)`` for an SM version and SM count.
 
-    A channel tile that spans the row lets the kernel take both moments from
-    one load, so it wins whenever the register footprint fits. What the row
-    tile should then be depends on where D sits in memory, because that decides
-    what the row reduction costs.
+    A channel tile that spans the row lets the kernel take both moments from one load, so it
+    wins whenever the register footprint fits. The row tile and warp count then come from the
+    SM version's :class:`_LaunchTuning`, and the SM count bounds the row tile so the grid still
+    fills the machine. SM versions without a tuning use :func:`_default_launch_params`.
+    """
+    tile_d = triton.next_power_of_2(max(D, D_OUT))
+    if tile_d * _MIN_TILE_N > _SINGLE_TILE_MAX_ELEMS:
+        return _TILE_D, 64, 8, False
+    tuning = _LAUNCH_TUNING.get(sm_version)
+    if tuning is None:
+        return _default_launch_params(tile_d, B * N, layout, sm_count, cache_resident)
+
+    fill = _prev_power_of_2(B * N // sm_count)
+    budget = _SINGLE_TILE_MAX_ELEMS // tile_d
+    if not _strides_channel_axis(layout):
+        tile_n = max(_MIN_TILE_N, min(64, tuning.tile_elems // tile_d, fill))
+        per_thread = tuning.fp32_per_thread
+    elif N % 16:
+        tile_n, num_warps = tuning.strided_unaligned
+        return tile_d, min(tile_n, budget), num_warps, True
+    else:
+        tile_n = min(max(_STRIDED_MIN_TILE_N, min(tuning.strided_tile_n, fill)), budget)
+        per_thread = tuning.strided_fp32_per_thread
+    return tile_d, tile_n, min(8, max(1, tile_n * tile_d // (32 * per_thread))), True
+
+
+def _default_launch_params(
+    tile_d: int,
+    rows: int,
+    layout: Layout,
+    sm_count: int,
+    cache_resident: bool,
+) -> tuple[int, int, int, bool]:
+    """Single-tile ``(tile_d, tile_n, num_warps, single_tile)`` for SM versions without a tuning.
+
+    The row tile depends on where D sits in memory, because that decides what
+    the row reduction costs.
 
     When D is contiguous, a thread's own load vector already covers part of the
     row, so the reduction is mostly a sequential add and the warp count only
@@ -408,10 +511,6 @@ def _launch_params(
     tensor is cache-resident, hence ``cache_resident`` -- see
     :data:`_STRIDED_WARP_TILE_L2_MULTIPLE`.
     """
-    tile_d = triton.next_power_of_2(max(D, D_OUT))
-    if tile_d * _MIN_TILE_N > _SINGLE_TILE_MAX_ELEMS:
-        return _TILE_D, 64, 8, False
-
     if cache_resident and _strides_channel_axis(layout):
         warp_tile = 32 * _STRIDED_FP32_PER_THREAD
         tile_n = max(_STRIDED_MIN_TILE_N, min(64, warp_tile // tile_d))
@@ -474,8 +573,10 @@ def _launch_layer_norm_transpose(
     tile_d, tile_n, num_warps, single_tile = _launch_params(
         D,
         D_OUT,
-        B * N,
+        B,
+        N,
         layout,
+        _sm_version(device_index),
         _sm_count(device_index),
         traffic <= _STRIDED_WARP_TILE_L2_MULTIPLE * _l2_bytes(device_index),
     )

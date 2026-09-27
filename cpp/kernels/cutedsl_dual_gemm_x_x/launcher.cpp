@@ -38,6 +38,8 @@ constexpr char kSM80LaunchAbi[] = "dual_gemm_x_x_sm80";
 constexpr char kSM80DynamicMaskLaunchAbi[] = "dual_gemm_x_x_sm80_mask_ptr_v1";
 constexpr char kSM90LaunchAbi[] = "dual_gemm_x_x_sm90";
 constexpr char kSM90DynamicMaskLaunchAbi[] = "dual_gemm_x_x_sm90_mask_ptr_v1";
+/* Same kernel parameters as the ping-pong image; a column-owning grid and cluster [1, y, 1]. */
+constexpr char kSM90ResidentLaunchAbi[] = "dual_gemm_x_x_sm90_resident_mask_ptr_v1";
 constexpr std::int64_t kElementsPer16Bytes = 8;
 
 bool uses_dynamic_mask(embedded::CubinImage const& image)
@@ -45,7 +47,13 @@ bool uses_dynamic_mask(embedded::CubinImage const& image)
   /* Nullable-mask images are identified by ABI, not another registry flag. */
   return image.cubin.launch_abi != nullptr
     && (std::strcmp(image.cubin.launch_abi, kSM80DynamicMaskLaunchAbi) == 0
-        || std::strcmp(image.cubin.launch_abi, kSM90DynamicMaskLaunchAbi) == 0);
+        || std::strcmp(image.cubin.launch_abi, kSM90DynamicMaskLaunchAbi) == 0
+        || std::strcmp(image.cubin.launch_abi, kSM90ResidentLaunchAbi) == 0);
+}
+
+bool uses_resident_grid(embedded::CubinImage const& image)
+{
+  return image.cubin.launch_abi != nullptr && std::strcmp(image.cubin.launch_abi, kSM90ResidentLaunchAbi) == 0;
 }
 
 bool uses_dynamic_mask(KernelConfig const& config)
@@ -61,6 +69,9 @@ struct EmbeddedSelection
 
 bool mask_present(KernelConfig const& config, LaunchParams const& params)
 {
+  /* The resident epilogue reads actual_seqlen without a null check, so its launches always carry one. */
+  if (config.embedded_image != nullptr && uses_resident_grid(*config.embedded_image))
+    return true;
   return uses_dynamic_mask(config) ? params.actual_seqlen.data != 0 : config.runtime_mask;
 }
 
@@ -133,7 +144,15 @@ void validate_sm90_metadata(KernelConfig const& config, embedded::CubinImage con
   }
   if (sm90.block_dims[0] != image.num_threads || sm90.block_dims[1] != 1 || sm90.block_dims[2] != 1)
     throw std::invalid_argument("native SM90 block metadata disagrees with the generated launch geometry");
-  if (sm90.cluster_dims[1] != 1 || sm90.cluster_dims[2] != 1)
+  if (uses_resident_grid(image))
+  {
+    /* A clustered image multicasts x, which needs each CTA's share of the box encoded as the
+     * x0_x1 launcher's multicast_tma_descriptor does; the full box never completes the barrier.
+     */
+    if (sm90.cluster_dims[0] != 1 || sm90.cluster_dims[1] != 1 || sm90.cluster_dims[2] != 1)
+      throw std::invalid_argument("native SM90 dual_gemm_x_x resident grid supports only unclustered images");
+  }
+  else if (sm90.cluster_dims[1] != 1 || sm90.cluster_dims[2] != 1)
   {
     throw std::invalid_argument(
       "native SM90 dual_gemm_x_x flattened persistent grid requires cluster dimensions [x, 1, 1]");
@@ -219,6 +238,8 @@ void validate_config(KernelConfig const& config)
 
   char const* expected_abi = is_sm80 ? (uses_dynamic_mask(config) ? kSM80DynamicMaskLaunchAbi : kSM80LaunchAbi)
                                      : (uses_dynamic_mask(config) ? kSM90DynamicMaskLaunchAbi : kSM90LaunchAbi);
+  if (is_sm90 && uses_resident_grid(image))
+    expected_abi = kSM90ResidentLaunchAbi;
   if (!equal_c_strings(config.cubin.launch_abi, expected_abi))
     throw std::invalid_argument("dual_gemm_x_x CUBIN has an incompatible launch ABI");
   if (config.cubin.non_portable_cluster_size_allowed != is_sm90)
@@ -342,10 +363,57 @@ make_sm80_launch_config(embedded::CubinImage const& image, LaunchParams const& p
   return launch_config;
 }
 
+/* Resident-weight grid: y is the output-column tile a CTA owns for its lifetime and x the
+ * row-worker slot, with two consumer warp groups per CTA. Mirrors the kernel's own launch.
+ */
+cubin_launch_config_t make_sm90_resident_launch_config(
+  embedded::CubinImage const& image,
+  LaunchParams const& params,
+  std::int32_t multiprocessor_count,
+  std::uint32_t smem_bytes)
+{
+  embedded::SM90LaunchInfo const& metadata = image.sm90;
+  std::uint64_t const gm
+    = ceil_div(static_cast<std::uint64_t>(params.x.shape[0]), static_cast<std::uint64_t>(image.tile_m));
+  std::uint64_t const gn
+    = ceil_div(static_cast<std::uint64_t>(params.output.shape[1]), static_cast<std::uint64_t>(image.tile_n));
+  if (gm == 0 || gn == 0 || gn % metadata.cluster_dims[1] != 0)
+    throw std::invalid_argument("dual_gemm_x_x resident SM90 grid requires cluster y dividing grid.n");
+  std::uint64_t const per_column_cap
+    = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(multiprocessor_count) / gn);
+  constexpr std::uint64_t kConsumerWarpGroups = 2;
+  std::uint64_t const full_workers = checked_multiply(kConsumerWarpGroups, per_column_cap, "resident SM90 row workers");
+  std::uint64_t const target_iterations = ceil_div(gm, full_workers);
+  std::uint64_t const row_workers_per_cta
+    = checked_multiply(kConsumerWarpGroups, target_iterations, "resident SM90 row workers per CTA");
+
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(ceil_div(gm, row_workers_per_cta), "dual_gemm_x_x resident SM90 grid.x");
+  launch_config.grid_y = checked_u32(gn, "dual_gemm_x_x resident SM90 grid.y");
+  launch_config.grid_z = 1;
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  return launch_config;
+}
+
 cubin_launch_config_t make_sm90_launch_config(
   embedded::CubinImage const& image, LaunchParams const& params, CUcontext context, std::uint32_t smem_bytes)
 {
   embedded::SM90LaunchInfo const& metadata = image.sm90;
+  if (uses_resident_grid(image))
+  {
+    std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
+    if (multiprocessor_count <= 0)
+      throw std::invalid_argument("current CUDA device has no active multiprocessors");
+    return make_sm90_resident_launch_config(image, params, multiprocessor_count, smem_bytes);
+  }
   std::uint64_t const gm
     = ceil_div(static_cast<std::uint64_t>(params.x.shape[0]), static_cast<std::uint64_t>(image.tile_m));
   std::uint64_t const gn

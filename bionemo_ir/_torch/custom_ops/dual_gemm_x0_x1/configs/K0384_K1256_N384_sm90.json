@@ -11,9 +11,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 1,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=128|b=1": {
       "tile_n": 96,
@@ -24,9 +24,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 1,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=256|b=0": {
       "tile_n": 96,
@@ -37,9 +37,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 1,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=256|b=1": {
       "tile_n": 96,
@@ -50,9 +50,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 1,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=512|b=0": {
       "tile_n": 96,
@@ -63,9 +63,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 2,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=512|b=1": {
       "tile_n": 96,
@@ -76,9 +76,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 2,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=768|b=0": {
       "tile_n": 96,
@@ -89,9 +89,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 2,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=768|b=1": {
       "tile_n": 96,
@@ -102,9 +102,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 2,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=1536|b=0": {
       "tile_n": 96,
@@ -115,9 +115,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 2,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     },
     "S=1536|b=1": {
       "tile_n": 96,
@@ -128,9 +128,9 @@
       "epi_n": 48,
       "epi_stage": 2,
       "k_group": 2,
-      "bias_smem": false,
+      "bias_smem": true,
       "cluster_n": 2,
-      "bias_regs": true
+      "bias_regs": false
     }
   }
 }

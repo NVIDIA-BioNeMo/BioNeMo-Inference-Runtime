@@ -37,6 +37,16 @@ class _ScaledPairUpdate(torch.nn.Module):
         return output
 
 
+class _ScaledPairTransition(_ScaledPairUpdate):
+    """A pair transition that, like ``Transition``, adds its own residual and may do so in place."""
+
+    def forward(self, value: torch.Tensor, *_args, residual: bool = False, inplace: bool = False, **_kwargs):
+        update = super().forward(value)
+        if not residual:
+            return update
+        return value.add_(update) if inplace else value + update
+
+
 def _make_pair_residual_probe() -> PairformerLayerV1:
     layer = PairformerLayerV1.__new__(PairformerLayerV1)
     torch.nn.Module.__init__(layer)
@@ -46,7 +56,7 @@ def _make_pair_residual_probe() -> PairformerLayerV1:
     layer.tri_mul_in = _ScaledPairUpdate(2)
     layer.tri_attn_start = _ScaledPairUpdate(3)
     layer.tri_attn_end = _ScaledPairUpdate(4)
-    layer.transition_z = _ScaledPairUpdate(5)
+    layer.transition_z = _ScaledPairTransition(5)
     return layer
 
 

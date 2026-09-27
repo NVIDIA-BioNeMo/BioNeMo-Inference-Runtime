@@ -47,12 +47,33 @@ _FAMILIES = frozenset(
         "outer_product_mean",
         "pair_weighted_averaging",
         "pairwise_attention",
+        "transition_mlp",
+        "triangle_attention",
+    }
+)
+# Public build-contract tests use this exact baseline while the protected
+# publisher performs the declared transition to ``_FAMILIES``. Remove it with
+# the matching CI declaration after the expanded corpus lands.
+_PREVIOUS_FAMILIES = frozenset(
+    {
+        "adaln_layernorm_sigmoid",
+        "dual_gemm_x0_x1",
+        "dual_gemm_x_x",
+        "gated_sigmoid",
+        "outer_product_mean",
+        "pair_weighted_averaging",
+        "pairwise_attention",
         "triangle_attention",
     }
 )
 _DTYPES = {
     "adaln_layernorm_sigmoid": frozenset({"fp16", "bf16", "fp32"}),
-    **{family: frozenset({"fp16", "bf16"}) for family in _FAMILIES if family != "adaln_layernorm_sigmoid"},
+    "transition_mlp": frozenset({"bf16"}),
+    **{
+        family: frozenset({"fp16", "bf16"})
+        for family in _FAMILIES
+        if family not in {"adaln_layernorm_sigmoid", "transition_mlp"}
+    },
 }
 _HEX20_RE = re.compile(r"[0-9a-f]{20}")
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
@@ -130,10 +151,12 @@ class _AliasSpec:
 
 @dataclass(frozen=True)
 class _Sm90Spec:
-    """Native-SM90 launch record; families differ only in name and operands."""
+    """Native-SM90 launch record; families differ in name, operands, TMA rank and epilogue tile."""
 
     enabled_field: str
     operands: tuple[str, ...]
+    rank: int = 4
+    epi_tile: bool = False
 
 
 @dataclass(frozen=True)
@@ -283,7 +306,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             "is_silu_gate",
         ),
         alias=_AliasSpec(("N", "bucket"), ("std::int32_t N;", "std::int32_t bucket;")),
-        sm90=_Sm90Spec("enabled", ("x0", "x1", "w0", "w1", "output")),
+        sm90=_Sm90Spec("enabled", ("x0", "x1", "w0", "w1", "output"), rank=2, epi_tile=True),
     ),
     "dual_gemm_x0_x1": _FamilySpec(
         fields=(
@@ -300,7 +323,33 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("raster_factor", _COUNT, "std::uint32_t raster_factor;", suffix="U"),
         ),
         runtime_key=("K", "K1", "N", "bucket", "is_bfloat16", "has_bias", "fused_residual"),
-        sm90=_Sm90Spec("is_native", ("x0", "x1", "w0", "w1", "output")),
+        sm90=_Sm90Spec("is_native", ("x0", "x1", "w0", "w1", "output"), rank=2, epi_tile=True),
+    ),
+    "transition_mlp": _FamilySpec(
+        fields=(
+            _Field("width", _POSITIVE, "std::int32_t width;"),
+            _Field("hidden", _POSITIVE, "std::int32_t hidden;"),
+            # The tuned pseudo sequence length; 0 for an image that serves every size.
+            _Field("bucket", _INDEX, "std::int32_t bucket;"),
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("is_silu_gate", _BOOL, "bool is_silu_gate;"),
+            _Field("has_bias", _BOOL, "bool has_bias;"),
+            _Field("has_mask", _BOOL, "bool has_mask;"),
+            _Field("has_residual", _BOOL, "bool has_residual;"),
+            _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U"),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+        ),
+        runtime_key=(
+            "is_bfloat16",
+            "is_silu_gate",
+            "has_bias",
+            "has_mask",
+            "has_residual",
+            "width",
+            "hidden",
+            "bucket",
+        ),
+        sm90=_Sm90Spec("enabled", ("x", "w1", "w2", "residual", "output"), rank=2),
     ),
 }
 
@@ -320,6 +369,15 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
     "outer_product_mean": (("N", 1), ("S", 1)),
     "pair_weighted_averaging": (("n_anchor", 1), ("s_anchor", 1)),
     "pairwise_attention": (("head_dim", 1), ("packed", None)),
+    "transition_mlp": (
+        ("width", 1),
+        ("hidden", 1),
+        ("bucket", 0),
+        ("is_silu_gate", None),
+        ("has_bias", None),
+        ("has_mask", None),
+        ("has_residual", None),
+    ),
     "triangle_attention": (("head_dim", 1), ("packed", None)),
 }
 # Implementation changes must remain buildable with the last protected artifact
@@ -556,7 +614,7 @@ def _validate_tma_descriptor(value: object, where: str, dtype: str, rank: int) -
     return descriptor
 
 
-def _validate_sm90_launch(family: str, value: object, where: str, dtype: str, kernel_sm: int) -> None:
+def _validate_sm90_launch(spec: _Sm90Spec, value: object, where: str, dtype: str, kernel_sm: int) -> None:
     if kernel_sm != 90:
         if value is not None:
             _fail(f"{where} must be null for a non-SM90 kernel ABI")
@@ -564,9 +622,8 @@ def _validate_sm90_launch(family: str, value: object, where: str, dtype: str, ke
     if value is None:
         _fail(f"{where} is required for an SM90 kernel ABI")
     launch = _as_object(value, where)
-    is_dual = family in {"dual_gemm_x_x", "dual_gemm_x0_x1"}
     expected_keys = {"block_dims", "cluster_dims", "cluster_scheduling_policy", "tma_descriptors"}
-    if is_dual:
+    if spec.epi_tile:
         expected_keys.add("epi_tile")
     _exact_keys(launch, expected_keys, where)
     block = _integer_array(launch["block_dims"], f"{where}.block_dims", length=3, minimum=1)
@@ -575,14 +632,12 @@ def _validate_sm90_launch(family: str, value: object, where: str, dtype: str, ke
     _integer_array(launch["cluster_dims"], f"{where}.cluster_dims", length=3, minimum=1)
     if _string(launch["cluster_scheduling_policy"], f"{where}.cluster_scheduling_policy") not in _CLUSTER_POLICY:
         _fail(f"{where}.cluster_scheduling_policy is unsupported")
-    if is_dual:
+    if spec.epi_tile:
         _integer_array(launch["epi_tile"], f"{where}.epi_tile", length=2, minimum=1)
-    descriptor_names = ("x0", "x1", "w0", "w1", "output") if is_dual else ("q", "k", "v", "bias", "output")
     descriptors = _as_object(launch["tma_descriptors"], f"{where}.tma_descriptors")
-    _exact_keys(descriptors, set(descriptor_names), f"{where}.tma_descriptors")
-    rank = 2 if is_dual else 4
-    for name in descriptor_names:
-        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
+    _exact_keys(descriptors, set(spec.operands), f"{where}.tma_descriptors")
+    for name in spec.operands:
+        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, spec.rank)
 
 
 def _validate_sm100_launch(value: object, where: str, dtype: str, kernel_sm: int, operands: tuple[str, ...]) -> None:
@@ -717,7 +772,9 @@ def _validate_metadata(family: str, variant: VariantRecord, where: str) -> None:
     if spec.alias is not None:
         _validate_runtime_aliases(metadata["runtime_aliases"], f"{where}.runtime_aliases", spec.alias.keys)
     if spec.sm90 is not None:
-        _validate_sm90_launch(family, metadata["sm90_launch"], f"{where}.sm90_launch", variant.dtype, variant.kernel_sm)
+        _validate_sm90_launch(
+            spec.sm90, metadata["sm90_launch"], f"{where}.sm90_launch", variant.dtype, variant.kernel_sm
+        )
     if spec.sm100 is not None:
         _validate_sm100_launch(
             metadata["sm100_launch"],
@@ -744,7 +801,9 @@ def _runtime_keys(family: str, variant: VariantRecord) -> tuple[tuple[object, ..
     )
 
     def value(token: str, alias: Mapping[str, object], mask_override: bool | None) -> object:
-        if token == "has_mask":
+        # dual_gemm_x_x keys its nullable-mask images on a legacy field; transition_mlp's
+        # has_mask is an ordinary metadata field.
+        if token == "has_mask" and family == "dual_gemm_x_x":
             if mask_override is not None:
                 return mask_override
             return metadata["legacy_has_mask"]

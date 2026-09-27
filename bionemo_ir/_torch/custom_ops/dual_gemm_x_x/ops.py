@@ -20,6 +20,7 @@ from collections.abc import Callable
 
 import torch
 
+from bionemo_ir.dsl_kernels.triton.zero_masked_rows import zero_masked_rows_
 from bionemo_ir.utils import get_sm_version
 
 from ._config import _has_direct_config_for_gate
@@ -167,7 +168,7 @@ def _invoke_cute_dual_gemm_x_x_masked(
     output = _invoke_cute_dual_gemm_x_x(x, w1, w2, bias1, bias2, transpose_out=transpose_out, gate=gate)
     if mask is not None:
         matrix = output.flatten(1).T if transpose_out else output.reshape(-1, output.shape[-1])
-        matrix.masked_fill_(~mask.reshape(-1, 1).bool(), 0)
+        zero_masked_rows_(matrix, mask)
     return output
 
 

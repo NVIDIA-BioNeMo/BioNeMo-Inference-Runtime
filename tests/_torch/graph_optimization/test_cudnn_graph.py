@@ -90,7 +90,7 @@ def _clear_linear_plan_caches() -> None:
 
 
 def test_linear_graphs_build_one_static_plan_per_row_count() -> None:
-    """The shared callables stay on static plans and never reach a dynamic one."""
+    """Batch-1 ReLU linears build no plan; masked linears keep one static plan per row count."""
     input_dim, hidden_dim = 384, 768
     _clear_linear_plan_caches()
     device = torch.device("cuda")
@@ -111,7 +111,7 @@ def test_linear_graphs_build_one_static_plan_per_row_count() -> None:
             torch.testing.assert_close(hidden, expected_hidden, atol=2e-2, rtol=2e-2)
             torch.testing.assert_close(output, expected_output, atol=2e-2, rtol=2e-2)
 
-    assert len(cudnn_graph_ops._LINEAR_RELU_CACHE) == len(row_counts)
+    assert len(cudnn_graph_ops._LINEAR_RELU_CACHE) == 0
     assert len(cudnn_graph_ops._LINEAR_MASK_CACHE) == len(row_counts)
     assert len(cudnn_graph_ops._DYNAMIC_LINEAR_RELU_CACHE) == 0
     assert len(cudnn_graph_ops._DYNAMIC_LINEAR_MASK_CACHE) == 0
@@ -215,6 +215,35 @@ def test_cudnn_graph_primitives_match_rounded_torch_operations(dtype: torch.dtyp
     torch.testing.assert_close(modulated, expected_modulated, atol=0, rtol=0)
     torch.testing.assert_close(added, expected_added, atol=0, rtol=0)
     torch.testing.assert_close(residual, expected_residual, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("has_addmm_activation", [True, False])
+def test_batch_one_linear_relu_runs_without_torch_addmm_activation(
+    has_addmm_activation: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Batch-1 linear + ReLU takes Torch's private epilogue when it exists, else the cuDNN graph."""
+    calls = []
+    # A Torch without the private binding still exercises the fast path, through the same math.
+    addmm_activation = cudnn_graph_ops._ADDMM_ACTIVATION or (
+        lambda bias, mat1, mat2: torch.relu(torch.addmm(bias, mat1, mat2))
+    )
+
+    def fast_path(*args):
+        calls.append(args)
+        return addmm_activation(*args)
+
+    monkeypatch.setattr(cudnn_graph_ops, "_ADDMM_ACTIVATION", fast_path if has_addmm_activation else None)
+    torch.manual_seed(43)
+    x = torch.randn(1, 37, 24, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(1, 24, 40, device="cuda", dtype=torch.bfloat16).mul_(24**-0.5)
+    bias = torch.randn(1, 1, 40, device="cuda", dtype=torch.bfloat16).mul_(0.01)
+
+    with torch.inference_mode():
+        hidden = cudnn_linear_relu(x, weight, bias)
+
+    assert len(calls) == int(has_addmm_activation)
+    assert hidden is not None
+    torch.testing.assert_close(hidden, F.relu(torch.matmul(x, weight) + bias), atol=2e-2, rtol=2e-2)
 
 
 def test_cudnn_graph_eligibility_checks_flag_dtype_device_and_batch() -> None:

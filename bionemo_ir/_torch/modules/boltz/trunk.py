@@ -117,7 +117,7 @@ class MSALayer(nn.Module):
         """
         # PWA and msa_transition auto-chunk internally via their registry policies at large N/S.
         m += self.pair_weighted_averaging(m, z, token_mask)
-        m += self.msa_transition(m)
+        m = self.msa_transition(m, residual=True, inplace=True)
         z += self.outer_product_mean(m, msa_mask)
 
         z = self.pairformer_layer(

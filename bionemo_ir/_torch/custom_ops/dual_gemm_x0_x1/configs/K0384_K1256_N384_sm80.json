@@ -36,7 +36,7 @@
         128,
         32
       ],
-      "num_stages": 3,
+      "num_stages": 4,
       "atom_layout_mnk": [
         2,
         2,
@@ -46,11 +46,11 @@
     },
     "S=256|b=1": {
       "cta_tiler": [
-        64,
         128,
+        64,
         32
       ],
-      "num_stages": 3,
+      "num_stages": 4,
       "atom_layout_mnk": [
         2,
         2,
@@ -64,13 +64,13 @@
         128,
         32
       ],
-      "num_stages": 3,
+      "num_stages": 4,
       "atom_layout_mnk": [
         2,
         2,
         1
       ],
-      "raster_factor": 1
+      "raster_factor": 2
     },
     "S=512|b=1": {
       "cta_tiler": [
@@ -92,13 +92,13 @@
         128,
         32
       ],
-      "num_stages": 3,
+      "num_stages": 4,
       "atom_layout_mnk": [
         2,
         2,
         1
       ],
-      "raster_factor": 1
+      "raster_factor": 2
     },
     "S=768|b=1": {
       "cta_tiler": [
@@ -106,13 +106,13 @@
         128,
         32
       ],
-      "num_stages": 3,
+      "num_stages": 4,
       "atom_layout_mnk": [
         2,
         2,
         1
       ],
-      "raster_factor": 1
+      "raster_factor": 2
     },
     "S=1536|b=0": {
       "cta_tiler": [

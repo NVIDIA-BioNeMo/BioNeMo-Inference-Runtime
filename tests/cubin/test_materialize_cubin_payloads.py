@@ -54,8 +54,18 @@ FAMILIES = (
     "outer_product_mean",
     "pair_weighted_averaging",
     "pairwise_attention",
+    "transition_mlp",
     "triangle_attention",
 )
+# Operand names, TMA rank, whether an epilogue tile is recorded, and threads per block, per
+# native-SM90 family. The transition MLP runs one load and two compute warpgroups.
+_SM90_LAUNCH_SHAPES = {
+    "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
+    "dual_gemm_x_x": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
+    "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
+    "transition_mlp": (("x", "w1", "w2", "residual", "output"), 2, False, 384),
+    "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
+}
 
 
 def _stable_json(value: object) -> bytes:
@@ -71,6 +81,17 @@ def _aliases(family: str) -> list[dict[str, object]]:
         "outer_product_mean": [{"default_config": True}],
         "pair_weighted_averaging": [{"n_anchor": 64, "s_anchor": 128}],
         "pairwise_attention": [{"head_dim": 64, "packed": False}],
+        "transition_mlp": [
+            {
+                "width": 64,
+                "hidden": 128,
+                "bucket": 256,
+                "is_silu_gate": False,
+                "has_bias": True,
+                "has_mask": True,
+                "has_residual": True,
+            }
+        ],
         "triangle_attention": [{"head_dim": 64, "packed": False}],
     }[family]
 
@@ -90,15 +111,14 @@ def _tma_descriptor(dtype: str, rank: int) -> dict[str, object]:
 
 
 def _sm90_launch(family: str, dtype: str) -> dict[str, object]:
-    dual = family in {"dual_gemm_x0_x1", "dual_gemm_x_x"}
-    names = ("x0", "x1", "w0", "w1", "output") if dual else ("q", "k", "v", "bias", "output")
+    names, rank, epi_tile, threads = _SM90_LAUNCH_SHAPES[family]
     result: dict[str, object] = {
-        "block_dims": [128, 1, 1],
+        "block_dims": [threads, 1, 1],
         "cluster_dims": [1, 1, 1],
         "cluster_scheduling_policy": "default",
-        "tma_descriptors": {name: _tma_descriptor(dtype, 2 if dual else 4) for name in names},
+        "tma_descriptors": {name: _tma_descriptor(dtype, rank) for name in names},
     }
-    if dual:
+    if epi_tile:
         result["epi_tile"] = [32, 32]
     return result
 
@@ -172,6 +192,20 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
                 if family == "triangle_attention"
                 else {}
             ),
+        }
+    elif family == "transition_mlp":
+        concrete = {
+            "width": 64,
+            "hidden": 128,
+            "bucket": 256,
+            "is_bfloat16": dtype == "bf16",
+            "is_silu_gate": False,
+            "has_bias": True,
+            "has_mask": True,
+            "has_residual": True,
+            "tile_m": 128,
+            "num_threads": 384,
+            "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
         }
     elif family == "dual_gemm_x_x":
         concrete = {
@@ -261,7 +295,7 @@ def _write_case(
     image_hash = hashlib.sha256(indexed_image).hexdigest()
     target_sm = kernel_sm if kernel_sm in {90, 100} else 80
     target_arch = f"sm_{target_sm}a" if target_sm in {90, 100} else "sm_80"
-    dtype = "fp32" if family == "adaln_layernorm_sigmoid" else "fp16"
+    dtype = {"adaln_layernorm_sigmoid": "fp32", "transition_mlp": "bf16"}.get(family, "fp16")
     identity_spec = {"family_case": family, "kernel_sm": kernel_sm}
     canonical = {
         "registry_version": 2,

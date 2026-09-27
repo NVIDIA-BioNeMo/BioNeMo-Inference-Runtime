@@ -36,6 +36,8 @@ _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
 _TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90)
 _FALLBACK_SM = 80
+#: SM90 kernel that keeps each CTA's weight slice resident and multicasts X across a cluster.
+RESIDENT_VARIANT = "resident"
 _VARIANT_KEY_RE = re.compile(r"^S=(\d+)\|t=(\d+)$")
 _DEFAULT_GATES = ("sigmoid",)
 _SUPPORTED_GATES = frozenset({"sigmoid", "silu"})
@@ -194,6 +196,12 @@ def _kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
     """Whether the selected source generation uses the raw SM90 signature."""
     bundle = _optional_config_bundle(sm_version, K, N)
     return bundle is not None and bundle.kernel_abi == "sm90"
+
+
+def _uses_resident_kernel(sm_version: int, K: int, N: int) -> bool:
+    """Whether the shape selects the resident-weight SM90 kernel, which needs a live mask."""
+    bundle = _optional_config_bundle(sm_version, K, N)
+    return bundle is not None and bundle.kernel_abi == "sm90" and bundle.kernel_variant == RESIDENT_VARIANT
 
 
 def get_nearest_bucket(

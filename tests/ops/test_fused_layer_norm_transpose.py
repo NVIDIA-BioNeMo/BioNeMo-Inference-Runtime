@@ -13,11 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
+
 import pytest
 import torch
 import torch.nn.functional as F
 
-from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import _needs_int64, layer_norm_transpose
+from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import (
+    _LAUNCH_TUNING,
+    _SINGLE_TILE_MAX_ELEMS,
+    Layout,
+    _launch_params,
+    _needs_int64,
+    layer_norm_transpose,
+)
 
 
 def _max_ulp_distance(actual: torch.Tensor, expected: torch.Tensor) -> int:
@@ -290,6 +299,46 @@ def test_row_counts_between_tiny_and_huge_still_launch(rows: int, D: int) -> Non
         expected = F.layer_norm(x, (D,), weight, bias, 1e-5)
 
     torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("layout", ["dbij->bijd", "bdij->bijd"])
+@pytest.mark.parametrize("tokens", [(16, 16), (17, 19)], ids=["aligned", "unaligned"])
+@pytest.mark.parametrize("D", [128, 256, 384])
+def test_strided_layouts_match_torch_across_token_alignment(layout: str, tokens: tuple[int, int], D: int) -> None:
+    """Strided loads pick their tile by whether the token count is 16-aligned; both must be exact."""
+    torch.manual_seed(7)
+    B = 3
+    I, J = tokens
+    shape = {"dbij->bijd": (D, B, I, J), "bdij->bijd": (B, D, I, J)}[layout]
+    x = torch.randn(*shape, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+    bias = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+    token_major = x.permute(1, 2, 3, 0) if layout == "dbij->bijd" else x.permute(0, 2, 3, 1)
+
+    with torch.inference_mode():
+        actual = layer_norm_transpose(x, weight, bias, eps=1e-5, layout=layout)
+        expected = F.layer_norm(token_major.float(), (D,), weight.float(), bias.float(), 1e-5).to(x.dtype)
+
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("sm_version", sorted(_LAUNCH_TUNING))
+def test_tuned_launch_params_fit_the_single_tile(sm_version: int) -> None:
+    """Every tuned pick is a power-of-two tile inside the register budget, at any SM count."""
+    for D, rows, sm_count, layout, aligned in itertools.product(
+        (1, 64, 128, 196, 384, 1024, 2048, 4096),
+        (1, 7, 1000, 160000, 2**24),
+        (8, 78, 132, 148),
+        list(Layout),
+        (True, False),
+    ):
+        N = rows * 16 if aligned else rows * 16 + 1
+        tile_d, tile_n, num_warps, single_tile = _launch_params(D, D, 1, N, layout, sm_version, sm_count)
+        if not single_tile:
+            continue
+        assert tile_n & (tile_n - 1) == 0, (D, N, layout, tile_n)
+        assert tile_n * tile_d <= _SINGLE_TILE_MAX_ELEMS, (D, N, layout, tile_n)
+        assert num_warps in (1, 2, 4, 8), (D, N, layout, num_warps)
 
 
 def test_int64_selection_uses_tiled_channel_extent() -> None:

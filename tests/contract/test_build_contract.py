@@ -31,9 +31,13 @@ import setuptools
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 KERNELS_DIR = REPO_ROOT / "cpp" / "kernels"
-FAMILIES = tuple(
+ACTIVE_FAMILIES = tuple(
     path.parent.name.removeprefix("cutedsl_") for path in sorted(KERNELS_DIR.glob("cutedsl_*/launcher.cpp"))
 )
+sys.path.insert(0, os.fspath(REPO_ROOT / "cpp" / "cmake"))
+from materialize_cubin_payloads import _PREVIOUS_FAMILIES  # noqa: E402
+
+PUBLISHED_FAMILIES = tuple(sorted(_PREVIOUS_FAMILIES))
 
 
 def _setup_metadata(monkeypatch: pytest.MonkeyPatch, **environment: str) -> dict[str, object]:
@@ -163,7 +167,7 @@ def test_manifest_patterns_do_not_walk_local_build_trees(monkeypatch: pytest.Mon
         "cpp/kernels/cubin_runtime.cpp",
     } <= selected
 
-    for family in FAMILIES:
+    for family in PUBLISHED_FAMILIES:
         prefix = f"cpp/kernels/cutedsl_{family}"
         assert f"{prefix}/launcher.cpp" in selected
         assert f"{prefix}/cubins/index.json" in selected
@@ -192,7 +196,7 @@ def test_git_rules_track_only_indexes_and_packs() -> None:
     )
     if probe.returncode != 0:
         pytest.skip("Git ignore rules require checkout metadata")
-    family = FAMILIES[0]
+    family = ACTIVE_FAMILIES[0]
     prefix = f"cpp/kernels/cutedsl_{family}/cubins"
 
     def ignored(path: str) -> bool:
@@ -221,7 +225,7 @@ def test_full_cmake_build_consumes_synthetic_materialization(tmp_path: Path) -> 
     from tests.cubin.test_materialize_cubin_payloads import _write_case, materializer
 
     source = tmp_path / "source"
-    indexes = [(family, _write_case(source, family)) for family in FAMILIES]
+    indexes = [(family, _write_case(source, family)) for family in ACTIVE_FAMILIES]
     materialized = materializer.materialize(indexes, tmp_path / "materialized")
     build = tmp_path / "build"
     library = tmp_path / "lib"
@@ -248,7 +252,7 @@ def test_full_cmake_build_consumes_synthetic_materialization(tmp_path: Path) -> 
     extensions = list(library.glob("_cutedsl_kernels*.so"))
     assert len(extensions) == 1
     extension_bytes = extensions[0].read_bytes()
-    for family in FAMILIES:
+    for family in ACTIVE_FAMILIES:
         assert extension_bytes.count(b"\x7fELF" + family.encode()) == 1
 
 
@@ -260,7 +264,7 @@ def _stage_indexed_corpus(staging: Path) -> list[tuple[str, Path]]:
     materializes the indexed corpus, not a publish-pruned directory.
     """
     indexes: list[tuple[str, Path]] = []
-    for family in FAMILIES:
+    for family in PUBLISHED_FAMILIES:
         source = KERNELS_DIR / f"cutedsl_{family}" / "cubins"
         source_index = source / "index.json"
         destination = staging / family
@@ -298,7 +302,7 @@ def test_stage_indexed_corpus_ignores_unreferenced_builder_packs(
     """A rebuild may leave previous packs beside the indexed ones; only copy those."""
     family = "dual_gemm_x_x"
     monkeypatch.setattr("tests.contract.test_build_contract.KERNELS_DIR", tmp_path)
-    monkeypatch.setattr("tests.contract.test_build_contract.FAMILIES", (family,))
+    monkeypatch.setattr("tests.contract.test_build_contract.PUBLISHED_FAMILIES", (family,))
     cubins = tmp_path / f"cutedsl_{family}" / "cubins"
     packs = cubins / "packs"
     packs.mkdir(parents=True)

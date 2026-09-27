@@ -43,8 +43,9 @@ class LNProjMoveaxisPad(nn.Module):
 
     Transparently dispatches between:
       - **Fused Triton kernel**: single-pass over ``[*, I, J, D]`` input,
-        writing directly to ``[*, H, I, J_padded]``.  Used when
-        ``pad_multiple >= 0`` and the input is contiguous.
+        writing directly to ``[*, H, I, J_padded]``. Used for contiguous inputs
+        when ``pad_multiple >= 0``, and for any ``pad_multiple`` when the input
+        takes the streaming kernel (bf16/fp16, ``D % 64 == 0``).
       - **Split fallback**: single-pass Triton LayerNorm/RMSNorm, cuBLAS
         projection, then fused moveaxis + pad. No ATen normalization fallback
         is used.
@@ -110,7 +111,7 @@ class LNProjMoveaxisPad(nn.Module):
             and z.is_contiguous()
             and has_norm_inputs
             and projection_bias is None
-            and pad_multiple >= 0
+            and (pad_multiple >= 0 or self._fused_kernel.streams(z.dtype))
         )
 
         if use_fused:

@@ -38,6 +38,7 @@ from ._config import (
     _get_config_selection,
     _has_direct_config_for_gate,
     _kernel_is_sm90,
+    _uses_resident_kernel,
     _variant_key,
 )
 from ._cubin import DualGemmXxCubinExecutable
@@ -92,6 +93,9 @@ class DualGemmXxCuTe(CuteKernelCache):
         self._last_exe = None
         self._last_key: _DualGemmXxVariant | None = None
         self._bucket_ranges: dict[tuple[int, int, bool], list[tuple[int, str]] | None] = {}
+        # Per-(K, N) bundle facts, cached so each launch skips re-reading its config.
+        self._is_sm90: dict[tuple[int, int], bool] = {}
+        self._resident: dict[tuple[int, int], bool] = {}
 
     def _disk_cache_key(self, variant: _DualGemmXxVariant) -> tuple:
         """Return the source-object disk cache key.
@@ -114,7 +118,17 @@ class DualGemmXxCuTe(CuteKernelCache):
 
     def _kernel_is_sm90(self, K: int, N: int) -> bool:
         """Whether this shape uses the duplicated-X SM90 source signature."""
-        return _kernel_is_sm90(self._sm_version, K, N)
+        cached = self._is_sm90.get((K, N))
+        if cached is None:
+            cached = self._is_sm90.setdefault((K, N), _kernel_is_sm90(self._sm_version, K, N))
+        return cached
+
+    def _uses_resident_kernel(self, K: int, N: int) -> bool:
+        """Whether this shape's bundle selects the resident-weight kernel."""
+        cached = self._resident.get((K, N))
+        if cached is None:
+            cached = self._resident.setdefault((K, N), _uses_resident_kernel(self._sm_version, K, N))
+        return cached
 
     def _source_variant(self, variant: _DualGemmXxVariant) -> _DualGemmXxVariant:
         """Collapse the runtime mask state for nullable-mask source kernels."""
@@ -295,6 +309,10 @@ class DualGemmXxCuTe(CuteKernelCache):
             raise ValueError("bias0 and bias1 must both be supplied or both None.")
         has_bias = bias0 is not None
         runtime_mask = mask is not None or actual_seqlen is not None
+        if not runtime_mask and self._uses_resident_kernel(K, N):
+            # The resident kernel reads the lengths without a null check.
+            actual_seqlen = torch.full((kernel_B,), I_dim, dtype=torch.int32, device=device)
+            runtime_mask = True
         _dtype_str(x.dtype)
 
         ranges = self._get_bucket_ranges(K, N, transpose_out)

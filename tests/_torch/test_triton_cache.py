@@ -24,10 +24,17 @@ import triton.language as tl
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
+from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir.dsl_kernels.cache_base import make_driver_launcher
 from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import (
+    _STREAMING_DEFAULT_TUNING,
+    _STREAMING_TUNING,
     FusedLNProjMoveaxisPad,
     _fused_ln_proj_moveaxis_pad_kernel,
+    _fused_ln_proj_moveaxis_pad_streaming_kernel,
+    _streaming_chunk,
+    _streaming_supported,
+    fused_ln_proj_moveaxis_pad,
 )
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU, _fused_swiglu_kernel
 from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad, _moveaxis_pad_kernel
@@ -42,6 +49,7 @@ from bionemo_ir.dsl_kernels.triton_cache import (
 # Kernels whose one CUBIN, compiled from dummy arguments, is reused for every shape.
 DRIVER_LAUNCHED_KERNELS = [
     _fused_ln_proj_moveaxis_pad_kernel,
+    _fused_ln_proj_moveaxis_pad_streaming_kernel,
     _moveaxis_pad_kernel,
     _fused_swiglu_kernel,
 ]
@@ -216,13 +224,120 @@ def test_fused_ln_projection_driver_is_deterministic_in_cuda_graph() -> None:
 def _ln_proj_moveaxis_pad_reference(
     z: torch.Tensor,
     ln_weight: torch.Tensor,
-    ln_bias: torch.Tensor,
+    ln_bias: torch.Tensor | None,
     proj_weight: torch.Tensor,
     j_padded: int,
 ) -> torch.Tensor:
-    out = F.layer_norm(z.float(), [z.shape[-1]], ln_weight.float(), ln_bias.float(), eps=1e-5)
+    if ln_bias is None:
+        out = F.rms_norm(z.float(), [z.shape[-1]], ln_weight.float(), eps=1e-5)
+    else:
+        out = F.layer_norm(z.float(), [z.shape[-1]], ln_weight.float(), ln_bias.float(), eps=1e-5)
     out = F.linear(out, proj_weight.float()).movedim(-1, -3)
     return F.pad(out, (0, j_padded - out.shape[-1]))
+
+
+@pytest.mark.parametrize("sm", [None, *sorted(_STREAMING_TUNING)])
+def test_streaming_chunk_divides_every_streamed_feature_dim(sm: int | None) -> None:
+    """The kernel walks D in CHUNK-wide slices, so each tuning's chunk must divide every D that streams."""
+    tuning = _STREAMING_DEFAULT_TUNING if sm is None else _STREAMING_TUNING[sm]
+    for dim_d in range(1, 1025):
+        if _streaming_supported(dim_d, 16):
+            assert dim_d % _streaming_chunk(dim_d, tuning) == 0, dim_d
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    "tile_j",
+    sorted(
+        {tile_j for tuning in (_STREAMING_DEFAULT_TUNING, *_STREAMING_TUNING.values()) for tile_j, _ in tuning.tiles}
+    ),
+)
+def test_streaming_ln_projection_dummy_args_carry_no_value_specialization(tile_j: int) -> None:
+    op = FusedLNProjMoveaxisPad(D=128, H=16, dtype=torch.bfloat16)
+    dummy = op._make_streaming_dummy_args(torch.bfloat16, tile_j=tile_j)
+
+    assert op.streams(torch.bfloat16)
+    assert not op.streams(torch.float32)
+    assert value_specialized_params(_fused_ln_proj_moveaxis_pad_streaming_kernel, dummy) == []
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    ("dim_d", "heads", "rms_norm", "norm_dtype", "batch", "tokens", "multiple"),
+    [
+        pytest.param(128, 4, False, torch.float32, 1, 199, 8, id="d128-h4-mixed-j199"),
+        pytest.param(256, 12, False, torch.bfloat16, 3, 64, 8, id="d256-h12-b3"),
+        pytest.param(384, 12, True, torch.bfloat16, 2, 37, 8, id="rmsnorm-d384-b2-j37"),
+        pytest.param(384, 16, False, torch.float32, 2, 30, -1, id="d384-h16-unpadded"),
+        pytest.param(256, 32, False, torch.bfloat16, 1, 130, 0, id="d256-h32-j130"),
+        pytest.param(384, 16, False, torch.bfloat16, 2, 250, 8, id="d384-h16-b2-j250-wide-tile"),
+        pytest.param(256, 8, True, torch.bfloat16, 1, 128, 0, id="rmsnorm-d256-j128-wide-tile"),
+        pytest.param(192, 8, False, torch.bfloat16, 2, 41, 8, id="d192-h8-b2-j41-chunk-fallback"),
+    ],
+)
+def test_streaming_ln_projection_matches_reference(
+    dim_d: int,
+    heads: int,
+    rms_norm: bool,
+    norm_dtype: torch.dtype,
+    batch: int,
+    tokens: int,
+    multiple: int,
+) -> None:
+    """The folded, chunked kernel matches LayerNorm/RMSNorm + Linear + moveaxis + pad in fp32."""
+    torch.manual_seed(123)
+    z = torch.randn(batch, tokens, tokens, dim_d, device="cuda", dtype=torch.bfloat16) + 0.5
+    ln_weight = torch.randn(dim_d, device="cuda", dtype=norm_dtype)
+    ln_bias = None if rms_norm else torch.randn(dim_d, device="cuda", dtype=norm_dtype)
+    proj_weight = torch.randn(heads, dim_d, device="cuda", dtype=z.dtype) * dim_d**-0.5
+
+    op = FusedLNProjMoveaxisPad(D=dim_d, H=heads, dtype=z.dtype, rms_norm=rms_norm)
+    assert op.streams(z.dtype)
+    actual = op(z, ln_weight, ln_bias, proj_weight, multiple=multiple)
+    torch.cuda.synchronize()
+
+    j_padded = tokens if multiple <= 0 else -(-tokens // multiple) * multiple
+    assert actual.shape == (batch, heads, tokens, j_padded)
+    assert torch.count_nonzero(actual[..., tokens:]) == 0
+    expected = _ln_proj_moveaxis_pad_reference(z, ln_weight, ln_bias, proj_weight, j_padded)
+    torch.testing.assert_close(actual.float(), expected, rtol=0.02, atol=0.02)
+    if not rms_norm:
+        functional = fused_ln_proj_moveaxis_pad(z, ln_weight, ln_bias, proj_weight, multiple=multiple)
+        torch.testing.assert_close(functional, actual)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_unpadded_pair_bias_takes_the_streaming_kernel() -> None:
+    """``pad_multiple < 0`` (the SDPA layout) uses the fused kernel when it streams."""
+    torch.manual_seed(0)
+    dim_d, heads, tokens = 256, 12, 45
+    z = torch.randn(2, tokens, tokens, dim_d, device="cuda", dtype=torch.bfloat16)
+    norm = torch.nn.LayerNorm(dim_d, device="cuda")
+    projection = torch.nn.Linear(dim_d, heads, bias=False, device="cuda", dtype=torch.bfloat16)
+    op = LNProjMoveaxisPad(D=dim_d, H=heads)
+
+    calls = []
+    fused = op._fused_kernel
+    original_call = type(fused).__call__
+    type(fused).__call__ = lambda self, *args, **kwargs: calls.append(kwargs) or original_call(self, *args, **kwargs)
+    try:
+        actual = op(z, norm.weight, norm.bias, projection.weight, pad_multiple=-1, proj_z=projection)
+    finally:
+        type(fused).__call__ = original_call
+
+    assert calls == [{"multiple": -1}]
+    expected = _ln_proj_moveaxis_pad_reference(z, norm.weight, norm.bias, projection.weight, tokens)
+    torch.testing.assert_close(actual.float(), expected, rtol=0.02, atol=0.02)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_float16_op_streams_after_a_bfloat16_op_of_the_same_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The streaming cache keys on the dtypes it compiled, so a bfloat16 op cannot strand a float16 one."""
+    monkeypatch.setattr(FusedLNProjMoveaxisPad, "_global_cache", {})
+    FusedLNProjMoveaxisPad(D=128, H=4, dtype=torch.bfloat16)
+    op = FusedLNProjMoveaxisPad(D=128, H=4, dtype=torch.float16)
+    assert op.streams(torch.float16)
+    assert {(torch.float16, tile_j) for tile_j, _ in op._streaming_tuning.tiles} <= set(op._streaming_kernels)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")

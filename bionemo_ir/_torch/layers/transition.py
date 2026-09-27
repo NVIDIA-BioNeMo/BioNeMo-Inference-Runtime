@@ -21,6 +21,7 @@ import torch.nn as nn
 
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
+from bionemo_ir._torch.custom_ops.transition_mlp import get_transition_mlp_op
 from bionemo_ir._torch.graph_optimization.cudnn_graph import (
     CudnnGraphModule,
     can_use_cudnn_graph,
@@ -106,18 +107,66 @@ class Transition(nn.Module):
             weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
         )
         self._swiglu = FusedSwiGLU(d=self.hidden, three_way=False, dtype=dtype or torch.bfloat16)
-        self._dual_gemm_silu_op = _get_silu_projection_op(dtype, K=dim, N=hidden)
         self.fc3 = Linear(hidden, out_dim, dtype=dtype, bias=False, skip_create_weights=skip_create_weights)
+        # One fused op per (mask, residual) state; the kernel's output is as wide as its input.
+        self._fused_mlp_ops = {
+            (has_mask, has_residual): get_transition_mlp_op(
+                dtype or torch.get_default_dtype(),
+                width=dim,
+                hidden=hidden,
+                activation="silu_gate",
+                has_bias=False,
+                has_mask=has_mask,
+                has_residual=has_residual,
+            )
+            for has_mask in (False, True)
+            for has_residual in (False, True)
+            if out_dim == dim
+        }
 
     def forward(
         self,
         x: torch.Tensor,
         mask: torch.Tensor | None = None,
+        *,
+        residual: bool = False,
+        inplace: bool = False,
     ) -> torch.Tensor:
+        """The SwiGLU update, or ``x`` plus it when ``residual`` is set.
+
+        Args:
+            inplace: With ``residual``, write the sum into ``x`` as ``x += update`` would.
+        """
+        output = self._forward_fused(x, mask, residual=residual, inplace=inplace)
+        if output is not None:
+            return output
         # Chunk position-wise FFNs when configured; small inputs stay dense.
         if self.auto_chunk_policy is not None:
-            return chunk_apply(self._forward_impl, x, mask, policy=self.auto_chunk_policy)
-        return self._forward_impl(x, mask)
+            update = chunk_apply(self._forward_impl, x, mask, policy=self.auto_chunk_policy)
+        else:
+            update = self._forward_impl(x, mask)
+        if not residual:
+            return update
+        return x.add_(update) if inplace else x + update
+
+    def _forward_fused(
+        self, x: torch.Tensor, mask: torch.Tensor | None, *, residual: bool, inplace: bool
+    ) -> torch.Tensor | None:
+        """Normalize, then one kernel for the SwiGLU, ``fc3``, the mask and any residual.
+
+        The hidden activation stays on chip. Returns ``None`` when the call needs the unfused path,
+        including when the chunk policy asks for row chunks.
+        """
+        op = self._fused_mlp_ops.get((mask is not None, residual))
+        if op is None or (self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(x)):
+            return None
+        weights = (self.fused_fc2_fc1.weight, None, self.fc3.weight, None)
+        if not op.accepts(x, mask, *weights):
+            return None
+        normed = x if self.norm is None else self.norm(x)
+        if not residual:
+            return op(normed, *weights, None, mask)
+        return op(normed, *weights, x, mask, out=x if inplace else None)
 
     def _forward_impl(
         self,
@@ -126,17 +175,7 @@ class Transition(nn.Module):
     ) -> torch.Tensor:
         if self.norm is not None:
             x = self.norm(x)
-        if self._dual_gemm_silu_op is not None:
-            weight = self.fused_fc2_fc1.weight
-            x = self._dual_gemm_silu_op(
-                x,
-                weight[self.hidden :],
-                weight[: self.hidden],
-                gate="silu",
-            )
-        else:
-            x = self._swiglu(self.fused_fc2_fc1(x))
-        x = self.fc3(x)
+        x = self.fc3(self._swiglu(self.fused_fc2_fc1(x)))
 
         if mask is not None:
             if mask.ndim == x.ndim - 1:
@@ -180,34 +219,39 @@ class ConditionedTransitionBlock(nn.Module):
             dim_single, dim_single_cond, eps=eps, dtype=dtype, norm_type=norm_type, cond_norm_bias=cond_norm_bias
         )
         self.dim_inner = int(dim_single * expansion_factor)
-        # Fused swiglu_gate linear and a_to_b
         self.using_silu = using_silu
-        self._swiglu = FusedSwiGLU(d=self.dim_inner, three_way=not using_silu, dtype=dtype or torch.bfloat16)
-        if not using_silu:
-            self.fused_swl_a_to_b = Linear(
-                self.dim_single,
-                3 * self.dim_inner,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights,
-                weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_QKV_LINEAR),
-            )
-        else:
-            self.fused_swl_a_to_b = Linear(
-                self.dim_single,
-                2 * self.dim_inner,
-                bias=False,
-                dtype=dtype,
-                skip_create_weights=skip_create_weights,
-                weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
-            )
-        self._dual_gemm_silu_op = (
-            _get_silu_projection_op(dtype, K=self.dim_single, N=self.dim_inner) if using_silu else None
+        # Value rows, then gate rows, then (3-way only) the second value's rows.
+        self.fused_swl_a_to_b = Linear(
+            self.dim_single,
+            (2 if using_silu else 3) * self.dim_inner,
+            bias=False,
+            dtype=dtype,
+            skip_create_weights=skip_create_weights,
+            weights_loading_config=WeightsLoadingConfig(
+                weight_mode=WeightMode.FUSED_KV_LINEAR if using_silu else WeightMode.FUSED_QKV_LINEAR
+            ),
         )
-
+        self._swiglu = FusedSwiGLU(d=self.dim_inner, three_way=not using_silu, dtype=dtype or torch.bfloat16)
         self.b_to_a = Linear(
             self.dim_inner, self.dim_single, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
         )
+        # A 2-way SwiGLU MLP runs on one kernel path: the fused transition op, which keeps the hidden
+        # activation on chip and ships for widths up to 256, or else the dual GEMM for the gated
+        # projection ahead of b_to_a.
+        self._fused_mlp_op = None
+        self._dual_gemm_silu_op = None
+        if using_silu:
+            self._fused_mlp_op = get_transition_mlp_op(
+                dtype or torch.get_default_dtype(),
+                width=self.dim_single,
+                hidden=self.dim_inner,
+                activation="silu_gate",
+                has_bias=False,
+                has_mask=False,
+                has_residual=False,
+            )
+            if self._fused_mlp_op is None:
+                self._dual_gemm_silu_op = _get_silu_projection_op(dtype, K=self.dim_single, N=self.dim_inner)
 
         self.output_projection = Linear(
             self.dim_single_cond, self.dim_single, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
@@ -242,23 +286,12 @@ class ConditionedTransitionBlock(nn.Module):
             a: [B, I, d]
         """
         a = self.adaln(a, s, buffers=buffers, buffer_key=buffer_key, mask=mask)
-        if self._dual_gemm_silu_op is not None:
-            weight = self.fused_swl_a_to_b.weight
-            b = self._dual_gemm_silu_op(
-                a,
-                weight[self.dim_inner :],
-                weight[: self.dim_inner],
-                gate="silu",
-            )
-        else:
-            b = self._swiglu(self.fused_swl_a_to_b(a))
-        a = self.b_to_a(b)
+        a = self._swiglu_mlp(a)
 
         # The gated-sigmoid op broadcasts `s` (gate) across the multiplicity
         # dim of `a` when their leading shapes differ, falling back to torch
         # internally for unsupported patterns. Reuse the AdaLN output buffer —
-        # fused_swl_a_to_b consumed it above, same shape as the gated_sigmoid
-        # output.
+        # the MLP consumed it above, same shape as the gated_sigmoid output.
         a = self._gated_sigmoid_op(
             s,
             self.output_projection.weight,
@@ -272,6 +305,22 @@ class ConditionedTransitionBlock(nn.Module):
                 mask = mask.unsqueeze(-1)
             a = a * mask.to(dtype=a.dtype)
         return a
+
+    def _swiglu_mlp(self, a: torch.Tensor) -> torch.Tensor:
+        """``b_to_a(swiglu(fused_swl_a_to_b(a)))`` on the chosen kernel path, else unfused."""
+        weight = self.fused_swl_a_to_b.weight
+        if self._fused_mlp_op is not None:
+            weights = (weight, None, self.b_to_a.weight, None)
+            if self._fused_mlp_op.accepts(a, None, *weights):
+                output = self._fused_mlp_op(a, *weights, None, None)
+                if output is not None:
+                    return output
+        if self._dual_gemm_silu_op is not None:
+            # The dual GEMM gates its first weight; the projection holds value rows, then gate rows.
+            b = self._dual_gemm_silu_op(a, weight[self.dim_inner :], weight[: self.dim_inner], gate="silu")
+        else:
+            b = self._swiglu(self.fused_swl_a_to_b(a))
+        return self.b_to_a(b)
 
 
 class PairTransition(CudnnGraphModule):
@@ -299,6 +348,12 @@ class PairTransition(CudnnGraphModule):
         self.linear_1 = Linear(c_z, n * c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.linear_2 = Linear(n * c_z, c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.relu = nn.ReLU()
+        self._fused_mlp_ops = {
+            has_residual: get_transition_mlp_op(
+                dtype or torch.get_default_dtype(), width=c_z, hidden=n * c_z, has_residual=has_residual
+            )
+            for has_residual in (False, True)
+        }
         self._prepare_cudnn_graphs()
 
     def _prepare_cudnn_graphs(self) -> None:
@@ -330,11 +385,25 @@ class PairTransition(CudnnGraphModule):
     def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None, *, residual: bool = False):
         if self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(z):
             return chunk_apply(self._forward_impl, z, mask, policy=self.auto_chunk_policy, residual=residual)
+        output = self._forward_fused(z, mask, residual=residual)
+        if output is not None:
+            return output
         if can_use_cudnn_graph(z, enabled=self.enable_cudnn_graph):
             output = self._forward_cudnn(z, mask, residual=residual)
             if output is not None:
                 return output
         return self._forward_impl(z, mask, residual=residual)
+
+    def _forward_fused(self, z: torch.Tensor, mask: torch.Tensor | None, *, residual: bool) -> torch.Tensor | None:
+        """LayerNorm, then one kernel for both linears, the mask and any residual; ``None`` if declined.
+
+        The hidden activation stays on chip, which saves most of this layer's DRAM traffic.
+        """
+        op = self._fused_mlp_ops[residual]
+        weights = (self.linear_1.weight, self.linear_1.bias, self.linear_2.weight, self.linear_2.bias)
+        if op is None or mask is None or not op.accepts(z, mask, *weights):
+            return None
+        return op(self.layer_norm(z), *weights, z if residual else None, mask)
 
     def _forward_cudnn(
         self,
@@ -433,6 +502,12 @@ class MSATransition(CudnnGraphModule):
         self.linear_1 = Linear(c_m, n * c_m, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.linear_2 = Linear(n * c_m, c_m, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
         self.relu = nn.ReLU()
+        self._fused_mlp_ops = {
+            has_residual: get_transition_mlp_op(
+                dtype or torch.get_default_dtype(), width=c_m, hidden=n * c_m, has_residual=has_residual
+            )
+            for has_residual in (False, True)
+        }
         self._prepare_cudnn_graphs()
 
     def _prepare_cudnn_graphs(self) -> None:
@@ -461,12 +536,24 @@ class MSATransition(CudnnGraphModule):
         if linear_mask is not None:
             self._cudnn_graph_plans["linear_mask"] = linear_mask
 
-    def forward(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, m: torch.Tensor, mask: torch.Tensor, *, residual: bool = False) -> torch.Tensor:
+        """The masked MLP update, or ``m`` plus it when ``residual`` is set."""
+        output = self._forward_fused(m, mask, residual=residual)
+        if output is not None:
+            return output
         if can_use_cudnn_graph(m, enabled=self.enable_cudnn_graph):
             output = self._forward_cudnn(m, mask)
-            if output is not None:
-                return output
-        return self._forward_impl(m, mask)
+        if output is None:
+            output = self._forward_impl(m, mask)
+        return m + output if residual else output
+
+    def _forward_fused(self, m: torch.Tensor, mask: torch.Tensor, *, residual: bool) -> torch.Tensor | None:
+        """LayerNorm, then one kernel for both linears, the mask and any residual; ``None`` if declined."""
+        op = self._fused_mlp_ops[residual]
+        weights = (self.linear_1.weight, self.linear_1.bias, self.linear_2.weight, self.linear_2.bias)
+        if op is None or not op.accepts(m, mask, *weights):
+            return None
+        return op(self.layer_norm(m), *weights, m if residual else None, mask)
 
     def _forward_cudnn(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
         m = self.layer_norm(m)

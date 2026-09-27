@@ -205,7 +205,7 @@ class TemplatePairBlock(nn.Module):
                 single = self.triattn_update(single, single_mask, attn_metadata=attn_metadata)
                 single = self.trimul_update(single, single_mask, trimul_metadata)
 
-            single = single + self.pair_transition(single, single_mask)
+            single = self.pair_transition(single, single_mask, residual=True)
 
             single_templates[i] = single
 

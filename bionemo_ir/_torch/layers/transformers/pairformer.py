@@ -221,8 +221,7 @@ class PairformerLayerV1(nn.Module):
             self.tri_attn_end(z, mask=pair_mask, mask_bias=mb_end, attn_metadata=tri_attn_metadata, buffers=buffers)
         )
 
-        add_residual(self.transition_z(z))
-        return z
+        return self.transition_z(z, residual=True, inplace=can_update_inplace)
 
     def forward(
         self,

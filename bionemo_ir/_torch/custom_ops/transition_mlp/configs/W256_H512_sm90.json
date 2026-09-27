@@ -1,0 +1,15 @@
+{
+  "kernel_abi": "sm90",
+  "configs": {
+    "S=64|act=relu|bias=1|mask=1|res=0": {"weight_stages": 4, "x_stages": 2},
+    "S=128|act=relu|bias=1|mask=1|res=0": {"weight_stages": 4, "x_stages": 2},
+    "S=256|act=relu|bias=1|mask=1|res=0": {"weight_stages": 4, "x_stages": 2},
+    "S=384|act=relu|bias=1|mask=1|res=0": {"weight_stages": 4, "x_stages": 2},
+    "S=512|act=relu|bias=1|mask=1|res=0": {"weight_stages": 3, "x_stages": 2},
+    "S=768|act=relu|bias=1|mask=1|res=0": {"weight_stages": 3, "x_stages": 2},
+    "S=1024|act=relu|bias=1|mask=1|res=0": {"weight_stages": 3, "x_stages": 2},
+    "S=1536|act=relu|bias=1|mask=1|res=0": {"weight_stages": 3, "x_stages": 2},
+    "S=2048|act=relu|bias=1|mask=1|res=0": {"weight_stages": 3, "x_stages": 2},
+    "act=relu|bias=1|mask=1|res=1": {"weight_stages": 4, "x_stages": 2}
+  }
+}

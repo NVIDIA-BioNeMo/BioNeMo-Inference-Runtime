@@ -102,6 +102,8 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         # Parsed tuning anchors by (K0, K1, N, has_bias).
         self._bucket_ranges: dict[tuple, list[tuple[int, str]] | None] = {}
         self._is_sm90: dict[tuple[int, int, int], bool] = {}
+        self._fused_residual: dict[tuple[int, int, int], bool] = {}
+        self._last_bucket: tuple[tuple, int] | None = None
 
     def _disk_cache_key(self, variant: _DualGemmX0X1Variant) -> tuple:
         # Bump when the compiled ABI changes; a stale entry would reuse a
@@ -142,7 +144,12 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             self._bucket_ranges[cache_key] = ranges
         if not ranges:
             return S
-        return min(ranges, key=lambda anchor: (abs(anchor[0] - S), anchor[0]))[0]
+        last = self._last_bucket
+        if last is not None and last[0] == (S, cache_key):
+            return last[1]
+        bucket = min(ranges, key=lambda anchor: (abs(anchor[0] - S), anchor[0]))[0]
+        self._last_bucket = ((S, cache_key), bucket)
+        return bucket
 
     def _resolve_source_kernel(
         self,
@@ -363,7 +370,12 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         if fused_residual != (actual_seqlen is not None):
             raise ValueError("actual_seqlen and residual must both be supplied for fused residual output")
         if fused_residual:
-            if not supports_fused_residual(self._sm_version, K, N, K1):
+            fusable = self._fused_residual.get((K, N, K1))
+            if fusable is None:
+                fusable = self._fused_residual.setdefault(
+                    (K, N, K1), supports_fused_residual(self._sm_version, K, N, K1)
+                )
+            if not fusable:
                 raise ValueError("fused dual_gemm x0_x1 residual output is unavailable for this shape")
             if residual.shape != (*x0_orig_shape[:-1], N):
                 raise ValueError(f"residual must have shape {(*x0_orig_shape[:-1], N)}, got {tuple(residual.shape)}")

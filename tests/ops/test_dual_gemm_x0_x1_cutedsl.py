@@ -341,8 +341,14 @@ def test_sm90_resident_weight_unit_cluster_matches_reference(cutedsl_mode, has_b
 @pytest.mark.parametrize("has_bias", [False, True], ids=["nobias", "bias"])
 @pytest.mark.parametrize(
     ("K0", "K1", "N"),
-    [(128, 128, 128), (384, 256, 384), (512, 256, 512)],
-    ids=["pingpong", "resident-weight-cluster2", "resident-weight-cluster1"],
+    [(64, 64, 64), (128, 128, 128), (128, 128, 256), (384, 256, 384), (512, 256, 512)],
+    ids=[
+        "resident-weight-n64",
+        "resident-weight-n128",
+        "pingpong",
+        "resident-weight-cluster2",
+        "resident-weight-cluster1",
+    ],
 )
 def test_fused_residual_masks_output(cutedsl_mode, has_bias, K0, K1, N, monkeypatch):
     """Fuse the rounded gate, residual add, and left mask."""

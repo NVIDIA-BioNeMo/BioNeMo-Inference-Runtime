@@ -145,6 +145,9 @@ def populate_compiled_cache_from_library[ExecutableT](
     return executable
 
 
+_TVM_FFI_DEVICES: dict[int, Any] = {}
+
+
 def launch_compiled_kernel(executable: Any, *args: Any) -> Any:
     """Launch a cached CUBIN executable or a CuTeDSL TVM-FFI executable."""
     if isinstance(executable, CuTeDSLKernelLibraryExecutable):
@@ -154,7 +157,14 @@ def launch_compiled_kernel(executable: Any, *args: Any) -> Any:
     # when the cache entry came from the development-time compile path.
     import tvm_ffi
 
-    with tvm_ffi.use_torch_stream():
+    # ``tvm_ffi.use_torch_stream()`` rebuilds a torch Stream and parses its device
+    # name on every call, most of a small launch's host time. The raw handle is
+    # also the capture stream under CUDA-graph capture.
+    device_index = torch.cuda.current_device()
+    device = _TVM_FFI_DEVICES.get(device_index)
+    if device is None:
+        device = _TVM_FFI_DEVICES.setdefault(device_index, tvm_ffi.device("cuda", device_index))
+    with tvm_ffi.use_raw_stream(device, torch._C._cuda_getCurrentRawStream(device_index)):
         return executable(*args)
 
 

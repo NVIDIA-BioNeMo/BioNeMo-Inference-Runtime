@@ -620,6 +620,8 @@ class AtomAttentionEncoder(nn.Module):
         rl: torch.Tensor | None = None,
         si_trunk: torch.Tensor | None = None,
         zij_trunk: torch.Tensor | None = None,
+        prepared_cl: torch.Tensor | None = None,
+        prepared_plm: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -657,13 +659,19 @@ class AtomAttentionEncoder(nn.Module):
                 [*, N_blocks, N_query, N_key, c_atom_pair] Atom pair representation
                 Note: Converted to block format ahead of time due to reduce memory cost
         """
-        ql, cl, plm = self.get_atom_reps(
-            batch=batch,
-            rl=rl,
-            si_trunk=si_trunk,
-            zij_trunk=zij_trunk,
-            attn_metadata=attn_metadata,
-        )
+        if prepared_cl is not None and prepared_plm is not None and rl is not None and self.add_noisy_pos:
+            # Only the noisy-coordinate projection varies during a rollout.
+            # All reference/trunk conditioning and the pair MLP are static.
+            cl, plm = prepared_cl, prepared_plm
+            ql = cl + self.noisy_position_embedder.linear_r(rl)
+        else:
+            ql, cl, plm = self.get_atom_reps(
+                batch=batch,
+                rl=rl,
+                si_trunk=si_trunk,
+                zij_trunk=zij_trunk,
+                attn_metadata=attn_metadata,
+            )
         # Cross attention transformer (line 15)
         # [*, N_blocks, N_query, c_atom]
 

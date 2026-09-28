@@ -156,6 +156,8 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
     module, per_sample, _ = _of3_diffusion_capture
     kwargs = clone_tree(per_sample[0])
     kwargs.pop("prepared_zij", None)
+    kwargs.pop("prepared_atom_cl", None)
+    kwargs.pop("prepared_atom_plm", None)
 
     module = module.eval()
     assert kwargs["xl_noisy"].shape[0] == 1, f"expected a B=1 input, got {tuple(kwargs['xl_noisy'].shape)}"
@@ -206,6 +208,33 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
         assert len(tracker.graph_state_by_key) == 1
         assert torch.equal(refreshed_graph, refreshed_eager)
         assert not torch.equal(refreshed_graph, eager_out)
+
+
+def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_capture):
+    """Reference and trunk atom embeddings are invariant across denoising steps."""
+    reason = harness_skip_reason((_SAMPLE_IDS[0],))
+    if reason is not None:
+        pytest.skip(reason)
+    if _of3_diffusion_capture is None:
+        pytest.skip("openfold3 weights/metadata unavailable")
+    module, per_sample, _ = _of3_diffusion_capture
+    kwargs = clone_tree(per_sample[0])
+    kwargs.pop("prepared_zij", None)
+    kwargs.pop("prepared_atom_cl", None)
+    kwargs.pop("prepared_atom_plm", None)
+    module = module.eval()
+    with torch.no_grad():
+        uncached = module(**kwargs).clone()
+        pair = module.diffusion_conditioning.prepare_pair(batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"])
+        _, cl, plm = module.atom_attn_enc.get_atom_reps(
+            batch=kwargs["batch"],
+            rl=torch.zeros_like(kwargs["xl_noisy"][:, :1]),
+            si_trunk=kwargs["si_trunk"],
+            zij_trunk=pair,
+            attn_metadata=kwargs["attn_metadata"],
+        )
+        cached = module(**kwargs, prepared_zij=pair, prepared_atom_cl=cl, prepared_atom_plm=plm)
+    assert torch.equal(cached, uncached)
 
 
 @pytest.mark.parametrize("prepare_pair", [False, True])

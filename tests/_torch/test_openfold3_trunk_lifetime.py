@@ -29,11 +29,11 @@ class _ScaledPairUpdate(torch.nn.Module):
     def __init__(self, scale: float) -> None:
         super().__init__()
         self.scale = scale
-        self.last_output_ptr: int | None = None
+        self.last_output: torch.Tensor | None = None
 
     def forward(self, value: torch.Tensor, *_args, **_kwargs) -> torch.Tensor:
         output = value * self.scale
-        self.last_output_ptr = output.data_ptr()
+        self.last_output = output
         return output
 
 
@@ -87,12 +87,12 @@ def test_pairformer_reuses_owned_pair_storage_only_when_safe(mode: str, monkeypa
         actual = transform()
 
     assert torch.equal(actual, expected)
-    trimul_output_ptr = layer.tri_mul_in.last_output_ptr
-    assert trimul_output_ptr is not None
+    trimul_output = layer.tri_mul_in.last_output
+    assert trimul_output is not None
     if mode == "inference":
-        assert actual.data_ptr() == trimul_output_ptr
+        assert actual.data_ptr() == trimul_output.data_ptr()
     else:
-        assert actual.data_ptr() != trimul_output_ptr
+        assert actual.data_ptr() != trimul_output.data_ptr()
     assert actual.data_ptr() != z.data_ptr()
     assert torch.equal(z, original)
 

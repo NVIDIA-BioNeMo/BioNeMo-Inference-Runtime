@@ -167,6 +167,8 @@ class DiffusionModule(nn.Module):
         attn_metadata: AttentionMetadata,
         use_conditioning: bool = True,
         prepared_zij: torch.Tensor | None = None,
+        prepared_atom_cl: torch.Tensor | None = None,
+        prepared_atom_plm: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Note:
@@ -204,6 +206,9 @@ class DiffusionModule(nn.Module):
                 the sampler owner. When set with conditioning enabled, only
                 single conditioning is recomputed for this denoising step.
                 Unconditioned calls ignore this cache and rebuild the pair.
+            prepared_atom_cl, prepared_atom_plm:
+                Optional reference/trunk atom conditioning and pair representation
+                shared by all denoising steps of a conditioned rollout.
         Returns:
             [*, N_atom, 3] Denoised atom positions
         """
@@ -245,14 +250,18 @@ class DiffusionModule(nn.Module):
         #   ql:  [B, 1, N_atom, c_atom]
         #   cl:  [B, 1, N_atom, c_atom]
         #   plm: [B, S, N_blocks, N_query, N_key, c_atom_pair]
-        ai, ql, cl, plm = self.atom_attn_enc(
-            batch=batch,
-            atom_mask=atom_mask,
-            rl=rl_noisy,
-            si_trunk=si_trunk,
-            zij_trunk=zij,
-            attn_metadata=attn_metadata,
-        )
+        atom_encoder_kwargs = {
+            "batch": batch,
+            "atom_mask": atom_mask,
+            "rl": rl_noisy,
+            "si_trunk": si_trunk,
+            "zij_trunk": zij,
+            "attn_metadata": attn_metadata,
+        }
+        if use_conditioning and prepared_atom_cl is not None and prepared_atom_plm is not None:
+            atom_encoder_kwargs["prepared_cl"] = prepared_atom_cl
+            atom_encoder_kwargs["prepared_plm"] = prepared_atom_plm
+        ai, ql, cl, plm = self.atom_attn_enc(**atom_encoder_kwargs)
 
         # Input
         #   si: [B, 1, N_token, c_token=384]
@@ -331,6 +340,8 @@ class OpenFold3DiffusionSampler(nn.Module):
         attn_metadata: AttentionMetadata,
         use_conditioning: bool,
         prepared_zij: torch.Tensor | None = None,
+        prepared_atom_cl: torch.Tensor | None = None,
+        prepared_atom_plm: torch.Tensor | None = None,
     ) -> torch.Tensor:
         diffusion_kwargs = {
             "batch": batch,
@@ -346,6 +357,9 @@ class OpenFold3DiffusionSampler(nn.Module):
         }
         if prepared_zij is not None:
             diffusion_kwargs["prepared_zij"] = prepared_zij
+        if prepared_atom_cl is not None and prepared_atom_plm is not None:
+            diffusion_kwargs["prepared_atom_cl"] = prepared_atom_cl
+            diffusion_kwargs["prepared_atom_plm"] = prepared_atom_plm
         return self.diffusion_module(**diffusion_kwargs)
 
     def forward(
@@ -403,6 +417,21 @@ class OpenFold3DiffusionSampler(nn.Module):
         )
         use_conditioning = self.use_conditioning if use_conditioning is None else use_conditioning
 
+        prepared_atom_cl = None
+        prepared_atom_plm = None
+        if prepared_zij is not None and use_conditioning:
+            # Reference and trunk conditioning do not depend on noisy atom
+            # coordinates or the diffusion time. Prepare them once before the
+            # denoiser's CUDA graph is captured and replayed for every step.
+            zero_positions = torch.zeros((*atom_mask.shape, 3), device=atom_mask.device, dtype=noise_schedule.dtype)
+            _, prepared_atom_cl, prepared_atom_plm = self.diffusion_module.atom_attn_enc.get_atom_reps(
+                batch=batch,
+                rl=zero_positions,
+                si_trunk=si_trunk,
+                zij_trunk=prepared_zij,
+                attn_metadata=attn_metadata,
+            )
+
         def predict(x_noisy: torch.Tensor, sigma_hat: torch.Tensor) -> torch.Tensor:
             return self.denoise(
                 x_noisy,
@@ -415,6 +444,8 @@ class OpenFold3DiffusionSampler(nn.Module):
                 attn_metadata=attn_metadata,
                 use_conditioning=use_conditioning,
                 prepared_zij=prepared_zij,
+                prepared_atom_cl=prepared_atom_cl,
+                prepared_atom_plm=prepared_atom_plm,
             )
 
         with SamplingContext.graph_safe(atom_mask.device, seed) as context:

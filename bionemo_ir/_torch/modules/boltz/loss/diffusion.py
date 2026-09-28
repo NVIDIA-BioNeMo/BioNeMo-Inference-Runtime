@@ -86,7 +86,7 @@ def weighted_rigid_align(
     cov_matrix_32 = cov_matrix_32 + eye * _COV_EPS
 
     try:
-        U, S, V = torch.linalg.svd(cov_matrix_32, driver="gesvd" if cov_matrix_32.is_cuda else None)
+        U, S, V = torch.linalg.svd(cov_matrix_32)
     except (torch.linalg.LinAlgError, RuntimeError) as exc:
         # Skip the rigid rotation for this step; keep the translation onto the
         # predicted centroid so reverse-diffusion can continue.

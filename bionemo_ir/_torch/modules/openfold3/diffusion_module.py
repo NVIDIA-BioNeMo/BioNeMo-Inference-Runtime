@@ -169,6 +169,8 @@ class DiffusionModule(nn.Module):
         prepared_zij: torch.Tensor | None = None,
         prepared_atom_cl: torch.Tensor | None = None,
         prepared_atom_plm: torch.Tensor | None = None,
+        prepared_atom_encoder_pair_biases: list[torch.Tensor] | None = None,
+        prepared_atom_decoder_pair_biases: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """
         Note:
@@ -209,6 +211,9 @@ class DiffusionModule(nn.Module):
             prepared_atom_cl, prepared_atom_plm:
                 Optional reference/trunk atom conditioning and pair representation
                 shared by all denoising steps of a conditioned rollout.
+            prepared_atom_encoder_pair_biases, prepared_atom_decoder_pair_biases:
+                Optional atom-transformer biases projected from ``prepared_atom_plm``;
+                used only with that cache.
         Returns:
             [*, N_atom, 3] Denoised atom positions
         """
@@ -258,9 +263,12 @@ class DiffusionModule(nn.Module):
             "zij_trunk": zij,
             "attn_metadata": attn_metadata,
         }
-        if use_conditioning and prepared_atom_cl is not None and prepared_atom_plm is not None:
+        use_prepared_atoms = use_conditioning and prepared_atom_cl is not None and prepared_atom_plm is not None
+        if use_prepared_atoms:
             atom_encoder_kwargs["prepared_cl"] = prepared_atom_cl
             atom_encoder_kwargs["prepared_plm"] = prepared_atom_plm
+            if prepared_atom_encoder_pair_biases is not None:
+                atom_encoder_kwargs["prepared_pair_biases"] = prepared_atom_encoder_pair_biases
         ai, ql, cl, plm = self.atom_attn_enc(**atom_encoder_kwargs)
 
         # Input
@@ -283,7 +291,14 @@ class DiffusionModule(nn.Module):
 
         ai = self.layer_norm_a(ai)
         rl_update = self.atom_attn_dec(
-            batch=batch, atom_mask=atom_mask, ai=ai, ql=ql, cl=cl, plm=plm, attn_metadata=attn_metadata
+            batch=batch,
+            atom_mask=atom_mask,
+            ai=ai,
+            ql=ql,
+            cl=cl,
+            plm=plm,
+            attn_metadata=attn_metadata,
+            prepared_pair_biases=prepared_atom_decoder_pair_biases if use_prepared_atoms else None,
         )
         sq_t = t[..., None, None] ** 2
         xl_out = (
@@ -342,6 +357,8 @@ class OpenFold3DiffusionSampler(nn.Module):
         prepared_zij: torch.Tensor | None = None,
         prepared_atom_cl: torch.Tensor | None = None,
         prepared_atom_plm: torch.Tensor | None = None,
+        prepared_atom_encoder_pair_biases: list[torch.Tensor] | None = None,
+        prepared_atom_decoder_pair_biases: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         diffusion_kwargs = {
             "batch": batch,
@@ -360,6 +377,10 @@ class OpenFold3DiffusionSampler(nn.Module):
         if prepared_atom_cl is not None and prepared_atom_plm is not None:
             diffusion_kwargs["prepared_atom_cl"] = prepared_atom_cl
             diffusion_kwargs["prepared_atom_plm"] = prepared_atom_plm
+            if prepared_atom_encoder_pair_biases is not None:
+                diffusion_kwargs["prepared_atom_encoder_pair_biases"] = prepared_atom_encoder_pair_biases
+            if prepared_atom_decoder_pair_biases is not None:
+                diffusion_kwargs["prepared_atom_decoder_pair_biases"] = prepared_atom_decoder_pair_biases
         return self.diffusion_module(**diffusion_kwargs)
 
     def forward(
@@ -420,6 +441,8 @@ class OpenFold3DiffusionSampler(nn.Module):
 
         prepared_atom_cl = None
         prepared_atom_plm = None
+        prepared_atom_encoder_pair_biases = None
+        prepared_atom_decoder_pair_biases = None
         if prepared_zij is not None and use_conditioning:
             # Reference and trunk conditioning do not depend on noisy atom
             # coordinates or the diffusion time. Prepare them once before the
@@ -431,6 +454,14 @@ class OpenFold3DiffusionSampler(nn.Module):
                 si_trunk=si_trunk,
                 zij_trunk=prepared_zij,
                 attn_metadata=attn_metadata,
+            )
+            # The decoder reuses the encoder's pair, so both project it once.
+            module = self.diffusion_module
+            prepared_atom_encoder_pair_biases = module.atom_attn_enc.atom_transformer.prepare_pair_biases(
+                prepared_atom_plm
+            )
+            prepared_atom_decoder_pair_biases = module.atom_attn_dec.atom_transformer.prepare_pair_biases(
+                prepared_atom_plm
             )
 
         def predict(x_noisy: torch.Tensor, sigma_hat: torch.Tensor) -> torch.Tensor:
@@ -447,6 +478,8 @@ class OpenFold3DiffusionSampler(nn.Module):
                 prepared_zij=prepared_zij,
                 prepared_atom_cl=prepared_atom_cl,
                 prepared_atom_plm=prepared_atom_plm,
+                prepared_atom_encoder_pair_biases=prepared_atom_encoder_pair_biases,
+                prepared_atom_decoder_pair_biases=prepared_atom_decoder_pair_biases,
             )
 
         with SamplingContext.graph_safe(atom_mask.device, seed) as context:

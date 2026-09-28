@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
+from collections.abc import Iterator
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -140,6 +143,27 @@ def precompute_pair_biases(
             b = out[i].permute(1, 0, 2, 3).contiguous()
         biases.append(b.view(*batch_dims, num_heads, I, J_pad))
     return biases
+
+
+def _prepare_layer_biases(layers: nn.ModuleList, z: torch.Tensor) -> list[torch.Tensor]:
+    """Project ``z`` into each layer's pair bias with that layer's own weights."""
+    if not all(layer.pair_bias_attn.bias_proj for layer in layers):
+        raise ValueError("pair bias preparation requires bias projection")
+    return [layer.pair_bias_attn.project_pair_bias(z) for layer in layers]
+
+
+@contextlib.contextmanager
+def _projected_pair_biases(layers: nn.ModuleList, biases: list[torch.Tensor]) -> Iterator[None]:
+    """Let every layer take its entry of ``biases`` as an already projected pair bias."""
+    if len(biases) != len(layers):
+        raise ValueError("Prepared pair bias count must match transformer depth")
+    for layer in layers:
+        layer.pair_bias_attn.bias_proj = False
+    try:
+        yield
+    finally:
+        for layer in layers:
+            layer.pair_bias_attn.bias_proj = True
 
 
 class DiffusionTransformerLayer(nn.Module):
@@ -500,6 +524,14 @@ class OpenFold3DiffusionTransformer(nn.Module):
             z, self._W_mega, len(self.layers), self._num_heads, self._norm_eps, self._bias_pad_multiple
         )
 
+    def prepare_pair_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
+        """Prepare pair biases once when the pair representation is step-invariant."""
+        if hasattr(self, "layer_norm_z"):
+            z = self.layer_norm_z(z)
+        if self._precompute_bias:
+            return self._precompute_all_biases(z)
+        return _prepare_layer_biases(self.layers, z)
+
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
@@ -517,10 +549,10 @@ class OpenFold3DiffusionTransformer(nn.Module):
         mask: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
-
-        if hasattr(self, "layer_norm_z"):
+        if prepared_pair_biases is None and hasattr(self, "layer_norm_z"):
             z = self.layer_norm_z(z)
 
         precomputed_single_masks = None
@@ -533,33 +565,26 @@ class OpenFold3DiffusionTransformer(nn.Module):
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
 
-        if self._precompute_bias:
-            all_biases = self._precompute_all_biases(z)
-
-            # Temporarily disable per-layer bias projection so that
-            # AttentionPairBias accepts the pre-computed [B, H, I, J_pad]
-            # directly instead of re-projecting raw z.
+        biases = prepared_pair_biases
+        if biases is None and self._precompute_bias:
+            biases = self._precompute_all_biases(z)
+        if biases is None:
             for layer in self.layers:
-                layer.pair_bias_attn.bias_proj = False
-            try:
-                for i, layer in enumerate(self.layers):
+                a = layer(
+                    a, s, z, mask, attn_metadata, precomputed_single_masks=precomputed_single_masks, buffers=buffers
+                )
+        else:
+            with _projected_pair_biases(self.layers, biases):
+                for layer, bias in zip(self.layers, biases, strict=True):
                     a = layer(
                         a,
                         s,
-                        all_biases[i],
+                        bias,
                         mask,
                         attn_metadata,
                         precomputed_single_masks=precomputed_single_masks,
                         buffers=buffers,
                     )
-            finally:
-                for layer in self.layers:
-                    layer.pair_bias_attn.bias_proj = True
-        else:
-            for layer in self.layers:
-                a = layer(
-                    a, s, z, mask, attn_metadata, precomputed_single_masks=precomputed_single_masks, buffers=buffers
-                )
         return a
 
 
@@ -642,6 +667,12 @@ class ProtenixDiffusionTransformer(nn.Module):
             z, w_mega, len(self.layers), self._num_heads, self._norm_eps, self._bias_pad_multiple
         )
 
+    def prepare_pair_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
+        """Project static pairs shaped ``[*, Q, K, C_z]`` once per rollout."""
+        if self._precompute_bias:
+            return self._precompute_all_biases(z)
+        return _prepare_layer_biases(self.layers, z)
+
     def forward(
         self,
         a: torch.Tensor,
@@ -652,6 +683,7 @@ class ProtenixDiffusionTransformer(nn.Module):
         n_keys: int | None = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """Apply local atom or global token diffusion attention.
 
@@ -664,6 +696,7 @@ class ProtenixDiffusionTransformer(nn.Module):
             n_queries / n_keys: window sizes; both enable the local path.
             attn_metadata: optional local gather metadata.
             buffers: optional shared layer-stack buffers.
+            prepared_pair_biases: projected biases; local windows include a singleton sample axis.
 
         Returns:
             Updated representation with the same shape as ``a``.
@@ -687,19 +720,16 @@ class ProtenixDiffusionTransformer(nn.Module):
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
 
-        if self._precompute_bias:
-            all_biases = self._precompute_all_biases(z_in)
-            for layer in self.layers:
-                layer.pair_bias_attn.bias_proj = False
-            try:
-                for i, layer in enumerate(self.layers):
-                    a_in = layer(a_in, s_in, all_biases[i], mask_in, attn_metadata, buffers=buffers)
-            finally:
-                for layer in self.layers:
-                    layer.pair_bias_attn.bias_proj = True
-        else:
+        biases = prepared_pair_biases
+        if biases is None and self._precompute_bias:
+            biases = self._precompute_all_biases(z_in)
+        if biases is None:
             for layer in self.layers:
                 a_in = layer(a_in, s_in, z_in, mask_in, attn_metadata, buffers=buffers)
+        else:
+            with _projected_pair_biases(self.layers, biases):
+                for layer, bias in zip(self.layers, biases, strict=True):
+                    a_in = layer(a_in, s_in, bias, mask_in, attn_metadata, buffers=buffers)
 
         if local:
             return a_in.reshape(B, K * W, -1)[:, :N]

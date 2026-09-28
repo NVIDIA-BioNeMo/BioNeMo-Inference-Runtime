@@ -600,6 +600,25 @@ class AttentionPairBias(nn.Module):
             k = self.k_norm(k)
         return q, k, v
 
+    def project_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
+        """Project a pair representation into this layer's attention bias.
+
+        Args:
+            z: ``[B, (*), N_q, N_k, C_z]`` pair features.
+
+        Returns:
+            ``[B, (*), H, N_q, N_k_padded]`` bias, keys padded for the backend.
+        """
+        ln = self.proj_z[0] if len(self.proj_z) > 1 else None
+        return self._ln_proj_moveaxis_pad(
+            z,
+            ln_weight=ln.weight if ln is not None else None,
+            ln_bias=getattr(ln, "bias", None) if ln is not None else None,
+            proj_weight=self.proj_z[-1].weight,
+            pad_multiple=self._bias_pad_multiple,
+            proj_z=self.proj_z,
+        )
+
     def _prep_mask_bias(
         self,
         s: torch.Tensor,
@@ -661,18 +680,7 @@ class AttentionPairBias(nn.Module):
                     mask_bias = mask_bias.unsqueeze(1)
             return [mask_bias]
 
-        pair_bias = z
-        if self.bias_proj:
-            ln = self.proj_z[0] if len(self.proj_z) > 1 else None
-            proj = self.proj_z[-1]
-            pair_bias = self._ln_proj_moveaxis_pad(
-                z,
-                ln_weight=ln.weight if ln is not None else None,
-                ln_bias=getattr(ln, "bias", None) if ln is not None else None,
-                proj_weight=proj.weight,
-                pad_multiple=self._bias_pad_multiple,
-                proj_z=self.proj_z,
-            )
+        pair_bias = self.project_pair_bias(z) if self.bias_proj else z
 
         if not self.mask_left_aligned:
             valid_keys = F.pad(

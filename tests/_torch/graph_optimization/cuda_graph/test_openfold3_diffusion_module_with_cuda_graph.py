@@ -51,6 +51,9 @@ _NUM_DRIVE_CALLS = 4
 # All three tests below need real trunk-derived DiffusionModule inputs for this
 # same pair of bundled samples.
 _SAMPLE_IDS = ("T1038", "T1047s1")
+# Rollout caches a capture may carry; tests needing a raw step drop them.
+_BIAS_KEYS = ("prepared_atom_encoder_pair_biases", "prepared_atom_decoder_pair_biases")
+_PREPARED_KEYS = ("prepared_zij", "prepared_atom_cl", "prepared_atom_plm", *_BIAS_KEYS)
 
 
 @pytest.fixture(scope="module")
@@ -155,9 +158,8 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
     # T1047s1 (232), so index 0 is always T1038 — see _SAMPLE_IDS above.
     module, per_sample, _ = _of3_diffusion_capture
     kwargs = clone_tree(per_sample[0])
-    kwargs.pop("prepared_zij", None)
-    kwargs.pop("prepared_atom_cl", None)
-    kwargs.pop("prepared_atom_plm", None)
+    for key in _PREPARED_KEYS:
+        kwargs.pop(key, None)
 
     module = module.eval()
     assert kwargs["xl_noisy"].shape[0] == 1, f"expected a B=1 input, got {tuple(kwargs['xl_noisy'].shape)}"
@@ -210,6 +212,22 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
         assert not torch.equal(refreshed_graph, eager_out)
 
 
+def _prepare_atom_cache(module: DiffusionModule, kwargs: dict, pair: torch.Tensor) -> dict:
+    _, cl, plm = module.atom_attn_enc.get_atom_reps(
+        batch=kwargs["batch"],
+        rl=torch.zeros_like(kwargs["xl_noisy"][:, :1]),
+        si_trunk=kwargs["si_trunk"],
+        zij_trunk=pair,
+        attn_metadata=kwargs["attn_metadata"],
+    )
+    return {
+        "prepared_atom_cl": cl,
+        "prepared_atom_plm": plm,
+        "prepared_atom_encoder_pair_biases": module.atom_attn_enc.atom_transformer.prepare_pair_biases(plm),
+        "prepared_atom_decoder_pair_biases": module.atom_attn_dec.atom_transformer.prepare_pair_biases(plm),
+    }
+
+
 def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_capture):
     """Reference and trunk atom embeddings are invariant across denoising steps."""
     reason = harness_skip_reason((_SAMPLE_IDS[0],))
@@ -219,22 +237,18 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
         pytest.skip("openfold3 weights/metadata unavailable")
     module, per_sample, _ = _of3_diffusion_capture
     kwargs = clone_tree(per_sample[0])
-    kwargs.pop("prepared_zij", None)
-    kwargs.pop("prepared_atom_cl", None)
-    kwargs.pop("prepared_atom_plm", None)
+    for key in _PREPARED_KEYS:
+        kwargs.pop(key, None)
     module = module.eval()
     with torch.no_grad():
         uncached = module(**kwargs).clone()
         pair = module.diffusion_conditioning.prepare_pair(batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"])
-        _, cl, plm = module.atom_attn_enc.get_atom_reps(
-            batch=kwargs["batch"],
-            rl=torch.zeros_like(kwargs["xl_noisy"][:, :1]),
-            si_trunk=kwargs["si_trunk"],
-            zij_trunk=pair,
-            attn_metadata=kwargs["attn_metadata"],
-        )
-        cached = module(**kwargs, prepared_zij=pair, prepared_atom_cl=cl, prepared_atom_plm=plm)
+        atom_cache = _prepare_atom_cache(module, kwargs, pair)
+        biases = {key: atom_cache.pop(key) for key in _BIAS_KEYS}
+        cached = module(**kwargs, prepared_zij=pair, **atom_cache)
+        cached_biases = module(**kwargs, prepared_zij=pair, **atom_cache, **biases)
     assert torch.equal(cached, uncached)
+    assert torch.equal(cached_biases, uncached)
 
 
 @pytest.mark.parametrize("prepare_pair", [False, True])
@@ -256,6 +270,9 @@ def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_captur
         assert batched["prepared_zij"].shape[0] == len(_SAMPLE_IDS)
 
     module = module.eval()
+    if prepare_pair:
+        with torch.no_grad():
+            batched.update(_prepare_atom_cache(module, batched, batched["prepared_zij"]))
     assert batched["xl_noisy"].shape[0] == len(_SAMPLE_IDS), (
         f"expected a B={len(_SAMPLE_IDS)} input, got {tuple(batched['xl_noisy'].shape)}"
     )

@@ -17,11 +17,13 @@
 import math
 import os
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 import torch
 import torch.nn as nn
 
+from bionemo_ir._torch.layers.attention import AttentionPairBias
 from bionemo_ir._torch.modules.protenix import ProtenixAtomAttentionDecoder
 from bionemo_ir.models.protenix.config import AtomAttentionDecoderConfig
 from bionemo_ir.models.protenix.convert import convert_atom_attention_decoder_torch
@@ -113,3 +115,58 @@ def test_protenix_atom_attention_decoder(sc: Scenario):
     r = _rmse_ratio(act, exp)
     tol = 3e-3 if torch_dtype == torch.float32 else 5e-2
     assert r < tol, f"rmse_ratio={r:.3e} exceeds {tol:.0e} ({sc.dtype})"
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("batch_size,n_sample", [(1, 1), (1, 3), (2, 3)])
+@pytest.mark.parametrize("precompute", [False, True])
+def test_cached_decoder_biases(dtype: str, batch_size: int, n_sample: int, precompute: bool) -> None:
+    """Biases prepared once from ``p_lm`` replace every folded sample's per-step projection."""
+    torch.manual_seed(42)
+    sc = Scenario(dtype=dtype)
+    device = torch.device("cuda")
+    torch_dtype = str_dtype_to_torch(dtype)
+    transformer = AtomAttentionDecoderConfig().atom_transformer_config.model_copy(
+        update={"precompute_bias": precompute}
+    )
+    config = AtomAttentionDecoderConfig(
+        c_token=sc.c_token,
+        c_atom=sc.c_atom,
+        c_atompair=sc.c_atompair,
+        n_queries=sc.n_queries,
+        n_keys=sc.n_keys,
+        atom_transformer_config=transformer,
+        dtype=dtype,
+    )
+    model = ProtenixAtomAttentionDecoder(config).to(device).eval()
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if param.ndim > 1:
+                param.normal_(std=0.1)
+            elif name.endswith("weight"):
+                param.fill_(1)
+            else:
+                param.zero_()
+
+    rows, K = batch_size * n_sample, math.ceil(sc.n_atoms / sc.n_queries)
+    a2t = (torch.arange(sc.n_atoms, device=device) // (sc.n_atoms // sc.n_token)).expand(rows, -1)
+    a = torch.randn(rows, sc.n_token, sc.c_token, device=device, dtype=torch_dtype)
+    q_skip = torch.randn(rows, sc.n_atoms, sc.c_atom, device=device, dtype=torch_dtype)
+    c_skip = torch.randn_like(q_skip)
+    p_lm = torch.randn(batch_size, K, sc.n_queries, sc.n_keys, sc.c_atompair, device=device, dtype=torch_dtype)
+    p_skip = p_lm.unsqueeze(1).expand(batch_size, n_sample, *p_lm.shape[1:]).reshape(rows, *p_lm.shape[1:])
+    reject = AssertionError("Bias recomputed")
+    with torch.inference_mode():
+        biases = model.prepare_pair_biases(p_lm)
+        assert all(bias.shape[0] == batch_size for bias in biases)
+        expected = model(a2t, a, q_skip, c_skip, p_skip)
+        with (
+            patch.object(model.atom_transformer, "_precompute_all_biases", side_effect=reject),
+            patch.object(AttentionPairBias, "project_pair_bias", side_effect=reject),
+        ):
+            actual = model(a2t, a, q_skip, c_skip, p_skip, prepared_pair_biases=biases)
+        unbiased = model(a2t, a, q_skip, c_skip, p_skip, prepared_pair_biases=[torch.zeros_like(b) for b in biases])
+
+    exact = torch_dtype == torch.float32
+    torch.testing.assert_close(actual, expected, atol=1e-5 if exact else 2e-3, rtol=1e-4 if exact else 2e-2)
+    assert not torch.allclose(unbiased, expected, atol=1e-3), "pair biases do not reach the decoder output"

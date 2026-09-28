@@ -308,13 +308,24 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     cache_atoms = use_prepared and use_conditioning
     prepared_cl = torch.ones(1, 1, 4, 2)
     prepared_plm = torch.ones(1, 1, 4, 4, 2)
+    encoder_biases = (torch.ones(1, 1, 4, 4),)
+    decoder_biases = (torch.zeros(1, 1, 4, 4),)
     get_atom_reps = Mock(return_value=(None, prepared_cl, prepared_plm))
+    prepare_encoder_biases = Mock(return_value=encoder_biases)
+    prepare_decoder_biases = Mock(return_value=decoder_biases)
+    prepare_biases = (prepare_encoder_biases, prepare_decoder_biases)
 
     class _Denoiser(nn.Module):
         def __init__(self):
             super().__init__()
             self.calls = 0
-            self.atom_attn_enc = SimpleNamespace(get_atom_reps=get_atom_reps)
+            self.atom_attn_enc = SimpleNamespace(
+                get_atom_reps=get_atom_reps,
+                atom_transformer=SimpleNamespace(prepare_pair_biases=prepare_encoder_biases),
+            )
+            self.atom_attn_dec = SimpleNamespace(
+                atom_transformer=SimpleNamespace(prepare_pair_biases=prepare_decoder_biases)
+            )
 
         def forward(self, *, xl_noisy, **_kwargs):
             self.calls += 1
@@ -322,6 +333,8 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
             assert _kwargs["use_conditioning"] is use_conditioning
             assert _kwargs.get("prepared_atom_cl") is (prepared_cl if cache_atoms else None)
             assert _kwargs.get("prepared_atom_plm") is (prepared_plm if cache_atoms else None)
+            assert _kwargs.get("prepared_atom_encoder_pair_biases") is (encoder_biases if cache_atoms else None)
+            assert _kwargs.get("prepared_atom_decoder_pair_biases") is (decoder_biases if cache_atoms else None)
             return 0.7 * xl_noisy
 
     config = SimpleNamespace(
@@ -348,12 +361,15 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
 
     first = sampler(**kwargs)
     assert get_atom_reps.call_count == int(cache_atoms)
+    assert [prepare.call_count for prepare in prepare_biases] == [int(cache_atoms)] * 2
     if cache_atoms:
+        assert all(prepare.call_args.args[0] is prepared_plm for prepare in prepare_biases)
         assert get_atom_reps.call_args.kwargs["zij_trunk"] is prepared_zij
         assert get_atom_reps.call_args.kwargs["si_trunk"] is kwargs["si_trunk"]
     torch.manual_seed(123456)
     second = sampler(**kwargs)
     assert get_atom_reps.call_count == 2 * int(cache_atoms)
+    assert [prepare.call_count for prepare in prepare_biases] == [2 * int(cache_atoms)] * 2
     assert first.shape == (1, 2, 4, 3)
     assert denoiser.calls == 2 * (schedule.numel() - 1)
     torch.testing.assert_close(first, second)
@@ -364,6 +380,7 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     torch.manual_seed(11)
     graph_safe_second = sampler(**graph_safe_kwargs)
     assert get_atom_reps.call_count == 4 * int(cache_atoms)
+    assert [prepare.call_count for prepare in prepare_biases] == [4 * int(cache_atoms)] * 2
     assert denoiser.calls == 4 * (schedule.numel() - 1)
     torch.testing.assert_close(graph_safe_first, graph_safe_second)
 

@@ -16,6 +16,7 @@
 
 import os
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -24,6 +25,7 @@ import torch.nn.functional as F
 
 from bionemo_ir._torch.layers.linear import WeightMode
 from bionemo_ir._torch.modules.protenix import ProtenixAtomAttentionEncoder
+from bionemo_ir._torch.modules.protenix._common import atom_encoder_kwargs
 from bionemo_ir.configs import DiffusionTransformerConfig
 from bionemo_ir.models.protenix.config import DiffusionAtomAttentionEncoderConfig
 from bionemo_ir.models.protenix.convert import convert_diffusion_atom_encoder_torch
@@ -201,3 +203,73 @@ def test_protenix_diffusion_atom_encoder(sc: Scenario):
     for name, a, e in zip(("a", "q_l", "c_l", "p_lm"), act, exp, strict=True):
         r = _rmse_ratio(a, e)
         assert r < tol, f"{name} rmse_ratio={r:.3e} exceeds {tol:.0e} ({sc.dtype})"
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("batch_size,n_sample", [(1, 1), (1, 3), (2, 3)])
+@pytest.mark.parametrize("precompute", [False, True])
+def test_cached_atom_biases(dtype: str, batch_size: int, n_sample: int, precompute: bool) -> None:
+    torch.manual_seed(42)
+    sc = Scenario(dtype=dtype)
+    tc = _atom_transformer_config(sc)
+    tc.precompute_bias = precompute
+    config = DiffusionAtomAttentionEncoderConfig(
+        c_token=sc.c_token,
+        c_atom=sc.c_atom,
+        c_atompair=sc.c_atompair,
+        c_s=sc.c_s,
+        c_z=sc.c_z,
+        n_queries=sc.n_queries,
+        n_keys=sc.n_keys,
+        atom_transformer_config=tc,
+        dtype=dtype,
+    )
+    model = ProtenixAtomAttentionEncoder(config).cuda().eval()
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if param.ndim > 1:
+                param.normal_(std=0.02)
+            elif name.endswith("weight"):
+                param.fill_(1)
+            else:
+                param.zero_()
+    feats = _make_features(torch.device("cuda"), sc.n_atom, sc.n_token)
+    args = atom_encoder_kwargs(feats)
+    args = {
+        key: value.unsqueeze(0).expand(batch_size, *value.shape).contiguous()
+        if isinstance(value, torch.Tensor)
+        else value
+        for key, value in args.items()
+    }
+    s = torch.randn(batch_size, sc.n_token, sc.c_s, device="cuda")
+    z = torch.randn(batch_size, sc.n_token, sc.n_token, sc.c_z, device="cuda")
+    with torch.inference_mode():
+        cl, plm, metadata = model.prepare_coords_cache(**args, s=s, z=z)
+        biases = model.prepare_pair_biases(plm)
+        assert all(bias.shape[0] == batch_size for bias in biases)
+        for _ in range(2):
+            coords = torch.randn(batch_size, n_sample, sc.n_atom, 3, device="cuda")
+            expected = model(
+                **args,
+                s=s.unsqueeze(1).expand(-1, n_sample, -1, -1),
+                z=z.unsqueeze(1).expand(-1, n_sample, -1, -1, -1),
+                r_l=coords,
+            )
+            with (
+                patch.object(
+                    model.atom_transformer, "prepare_pair_biases", side_effect=AssertionError("Bias recomputed")
+                ),
+                patch.object(
+                    model.atom_transformer, "_precompute_all_biases", side_effect=AssertionError("Bias recomputed")
+                ),
+            ):
+                actual = model.run_coords_cached(
+                    args["atom_to_token_idx"], cl, plm, coords, sc.n_token, metadata, prepared_pair_biases=biases
+                )
+            for result, reference in zip(actual, expected, strict=True):
+                torch.testing.assert_close(
+                    result,
+                    reference,
+                    atol=2e-3 if dtype == "bfloat16" else 1e-5,
+                    rtol=2e-2 if dtype == "bfloat16" else 1e-4,
+                )

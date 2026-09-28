@@ -622,6 +622,7 @@ class AtomAttentionEncoder(nn.Module):
         zij_trunk: torch.Tensor | None = None,
         prepared_cl: torch.Tensor | None = None,
         prepared_plm: torch.Tensor | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -648,6 +649,10 @@ class AtomAttentionEncoder(nn.Module):
                 [*, N_atom, c_s] Trunk single representation (optional)
             zij_trunk:
                 [*, N_atom, N_atom, c_z] Trunk pair representation (optional)
+            prepared_cl, prepared_plm:
+                Static conditioning returned by ``get_atom_reps``.
+            prepared_pair_biases:
+                Projected biases for ``prepared_plm``; ignored without conditioning.
         Returns:
             ai:
                 [*, N_token, c_token] Token representation
@@ -665,6 +670,7 @@ class AtomAttentionEncoder(nn.Module):
             cl, plm = prepared_cl, prepared_plm
             ql = cl + self.noisy_position_embedder.linear_r(rl)
         else:
+            prepared_pair_biases = None
             ql, cl, plm = self.get_atom_reps(
                 batch=batch,
                 rl=rl,
@@ -689,7 +695,14 @@ class AtomAttentionEncoder(nn.Module):
             cl = cl.unsqueeze(1)
 
         atom_mask, _ = pad_to_multiple_and_divide(atom_mask, multiple=self.n_query, dim=atom_mask.ndim - 1)
-        ql = self.atom_transformer(a=ql, s=cl, z=plm, mask=atom_mask, attn_metadata=attn_metadata)
+        ql = self.atom_transformer(
+            a=ql,
+            s=cl,
+            z=plm,
+            mask=atom_mask,
+            attn_metadata=attn_metadata,
+            prepared_pair_biases=prepared_pair_biases,
+        )
         if not is_contained_diffusion_channel:
             ql = ql.flatten(1, 3)[:, :current_size, :]
             cl = cl.flatten(1, 3)[:, :current_size, :]
@@ -785,6 +798,7 @@ class AtomAttentionDecoder(nn.Module):
         cl: torch.Tensor,
         plm: torch.Tensor,
         attn_metadata: AttentionMetadata,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -803,6 +817,8 @@ class AtomAttentionDecoder(nn.Module):
             plm:
                 [*, N_blocks, N_query, N_key, c_atom_pair] Atom pair representation
                 Note: Converted to block format in AtomAttentionEncoder
+            prepared_pair_biases:
+                Projected biases for a step-invariant ``plm``; skips its projection.
         Returns:
             rl_update:
                 [*, N_atom, 3] Atom position updates
@@ -831,6 +847,7 @@ class AtomAttentionDecoder(nn.Module):
             z=plm,
             mask=atom_mask,
             attn_metadata=attn_metadata,
+            prepared_pair_biases=prepared_pair_biases,
         )
         ql = ql.flatten(2, 3)[:, :, :current_size, :]
 

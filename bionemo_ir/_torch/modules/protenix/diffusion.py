@@ -266,7 +266,10 @@ class ProtenixDiffusionModule(nn.Module):
             Cache dict with ``pair_z`` ``[B, N_token, N_token, c_z]``,
             ``atom_c_l`` ``[B, N_atom, c_atom]``,
             ``atom_p_lm`` ``[B, K, W, H, c_atompair]``,
-            ``attn_metadata``, ``n_token``.
+            ``atom_encoder_pair_biases`` / ``atom_decoder_pair_biases``
+            (sample-independent atom-transformer projections of ``atom_p_lm``),
+            ``attn_metadata``, ``n_token``, and ``atom_reduction`` (token slots,
+            or ``None`` for scatter).
         """
         pair_z = self.diffusion_conditioning.prepare_pair(input_feature_dict["relp"], z_trunk)
         atom_c_l, atom_p_lm, attn_metadata = self.atom_attention_encoder.prepare_coords_cache(
@@ -276,6 +279,9 @@ class ProtenixDiffusionModule(nn.Module):
             "pair_z": pair_z,
             "atom_c_l": atom_c_l,
             "atom_p_lm": atom_p_lm,
+            "atom_encoder_pair_biases": self.atom_attention_encoder.prepare_pair_biases(atom_p_lm),
+            # The cached path decodes with the same step-invariant p_lm as its skip.
+            "atom_decoder_pair_biases": self.atom_attention_decoder.prepare_pair_biases(atom_p_lm),
             "attn_metadata": attn_metadata,
             "n_token": s_trunk.shape[-2],
             "atom_reduction": self.atom_attention_encoder.prepare_reduction(
@@ -323,6 +329,7 @@ class ProtenixDiffusionModule(nn.Module):
                 n_token,
                 attn_metadata,
                 reduction=cache.get("atom_reduction"),
+                prepared_pair_biases=cache.get("atom_encoder_pair_biases"),
             )
         else:
             if attn_metadata is None:
@@ -371,6 +378,7 @@ class ProtenixDiffusionModule(nn.Module):
             c_skip.reshape(BS, c_skip.shape[-2], -1),
             p_skip.reshape(BS, *p_skip.shape[2:]),
             attn_metadata=attn_metadata,
+            prepared_pair_biases=None if cache is None else cache.get("atom_decoder_pair_biases"),
         )
         return r_update.reshape(B, S, n_atom, 3)
 

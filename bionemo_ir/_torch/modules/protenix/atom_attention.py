@@ -341,14 +341,18 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         r_l: torch.Tensor,
         n_token: int,
         attn_metadata: AttentionMetadata,
+        *,
         reduction: IndexedReduction | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Noisy-coord-dependent path on pre-conditioned ``c_l`` / ``p_lm``."""
         W, H = self.n_queries, self.n_keys
         BS = c_l.shape[0]
         q_l = c_l + self.linear_no_bias_r(r_l.reshape(BS, *r_l.shape[2:]))
         atom_mask = c_l.new_ones(BS, c_l.shape[-2])
-        q_l = self.atom_transformer(q_l, c_l, p_lm, atom_mask, W, H, attn_metadata)
+        q_l = self.atom_transformer(
+            q_l, c_l, p_lm, atom_mask, W, H, attn_metadata, prepared_pair_biases=prepared_pair_biases
+        )
         a = _aggregate_atom_to_token(F.relu(self.linear_no_bias_q(q_l)), a2t, n_token, reduction)
         return a, q_l
 
@@ -367,7 +371,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         """Coordinate-conditioned (``has_coords``) encoder path -> ``[B, S, ...]``."""
         B, S, n_token = s.shape[0], s.shape[1], s.shape[-2]
         c_l, p_lm, a2t = self._prepare_coords(atom_to_token_idx, p_lm, c_l, s, z, K, attn_metadata)
-        a, q_l = self._run_coords(a2t, c_l, p_lm, r_l, n_token, attn_metadata, reduction)
+        a, q_l = self._run_coords(a2t, c_l, p_lm, r_l, n_token, attn_metadata, reduction=reduction)
         return (
             a.reshape(B, S, n_token, -1),
             q_l.reshape(B, S, q_l.shape[-2], -1),
@@ -420,6 +424,18 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         c_l, p_lm, _ = self._prepare_coords(atom_to_token_idx, p_lm, c_l, s, z, K, attn_metadata)
         return c_l, p_lm, attn_metadata
 
+    def prepare_pair_biases(self, p_lm: torch.Tensor) -> list[torch.Tensor]:
+        """Project the cached ``p_lm`` into every atom-transformer layer's bias once per rollout.
+
+        Args:
+            p_lm: ``[B, K, W, H, c_atompair]`` from :meth:`prepare_coords_cache`
+
+        Returns:
+            One bias per layer with the local path's singleton sample axis, for
+            :meth:`run_coords_cached`.
+        """
+        return self.atom_transformer.prepare_pair_biases(p_lm.unsqueeze(1))
+
     def run_coords_cached(
         self,
         atom_to_token_idx: torch.Tensor,
@@ -428,7 +444,9 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         r_l: torch.Tensor,
         n_token: int,
         attn_metadata: AttentionMetadata,
+        *,
         reduction: IndexedReduction | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Per-step coord path from cached sample-independent ``c_l`` / ``p_lm``.
 
@@ -440,6 +458,8 @@ class ProtenixAtomAttentionEncoder(nn.Module):
             n_token: token count
             reduction: Slots from :meth:`prepare_reduction`, shared across
                 samples; scatter without them.
+            prepared_pair_biases: Biases from :meth:`prepare_pair_biases`, shared
+                across samples.
 
         Returns:
             ``a`` ``[B, S, N_token, c_token]``,
@@ -451,7 +471,11 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         c_l = _expand_bs(c_l, B, S)
         p_lm = _expand_bs(p_lm, B, S)
         a2t = _expand_bs(atom_to_token_idx, B, S)
-        a, q_l = self._run_coords(a2t, c_l, p_lm, r_l, n_token, attn_metadata, reduction)
+        if prepared_pair_biases is not None:
+            prepared_pair_biases = [_expand_bs(bias, B, S) for bias in prepared_pair_biases]
+        a, q_l = self._run_coords(
+            a2t, c_l, p_lm, r_l, n_token, attn_metadata, reduction=reduction, prepared_pair_biases=prepared_pair_biases
+        )
         return (
             a.reshape(B, S, n_token, -1),
             q_l.reshape(B, S, q_l.shape[-2], -1),
@@ -485,6 +509,18 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         self.layernorm_q = nn.LayerNorm(c_atom, bias=False, eps=config.norm_epsilon, dtype=dtype)
         self.linear_no_bias_out = Linear(c_atom, 3, bias=False, dtype=dtype, skip_create_weights=skip)
 
+    def prepare_pair_biases(self, p_lm: torch.Tensor) -> list[torch.Tensor]:
+        """Project a step-invariant ``p_lm`` into every atom-transformer layer's bias once per rollout.
+
+        Args:
+            p_lm: ``[B, K, W, H, c_atompair]``, the cached encoder pair
+
+        Returns:
+            One bias per layer with the local path's singleton sample axis, for
+            :meth:`forward`.
+        """
+        return self.atom_transformer.prepare_pair_biases(p_lm.unsqueeze(1))
+
     def forward(
         self,
         atom_to_token_idx: torch.Tensor,
@@ -493,6 +529,7 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         c_skip: torch.Tensor,
         p_skip: torch.Tensor,
         attn_metadata: AttentionMetadata | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """Decode per-token features to a per-atom coordinate update.
 
@@ -502,6 +539,9 @@ class ProtenixAtomAttentionDecoder(nn.Module):
             q_skip: ``[B, N_atom, c_atom]`` encoder skip
             c_skip: ``[B, N_atom, c_atom]``
             p_skip: ``[B, K, W, H, c_atompair]``
+            attn_metadata: Optional prebuilt atom-window metadata.
+            prepared_pair_biases: Biases from :meth:`prepare_pair_biases` for the
+                ``p_skip`` every folded sample shares; skips its projection.
 
         Returns:
             ``[B, N_atom, 3]`` per-atom coordinate update
@@ -515,6 +555,19 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         if attn_metadata is None:
             attn_metadata = self.atom_transformer.build_attn_metadata(K, self.n_queries, self.n_keys, q.device)
         atom_mask = q.new_ones(*q.shape[:-1])
-        q = self.atom_transformer(q, c_skip, p_skip, atom_mask, self.n_queries, self.n_keys, attn_metadata)
+        if prepared_pair_biases is not None:
+            batch = prepared_pair_biases[0].shape[0]
+            samples = q.shape[0] // batch
+            prepared_pair_biases = [_expand_bs(bias, batch, samples) for bias in prepared_pair_biases]
+        q = self.atom_transformer(
+            q,
+            c_skip,
+            p_skip,
+            atom_mask,
+            self.n_queries,
+            self.n_keys,
+            attn_metadata,
+            prepared_pair_biases=prepared_pair_biases,
+        )
 
         return self.linear_no_bias_out(self.layernorm_q(q))

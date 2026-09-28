@@ -497,6 +497,15 @@ def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch
         return original_reduce(*args, **kwargs)
 
     monkeypatch.setattr(atom_attention, "reduce_atom_slots", track_reduction)
+    decoder_transformer = module.atom_attention_decoder.atom_transformer
+    decoder_forward = decoder_transformer.forward
+    decoder_prepared = []
+
+    def track_decoder(*args: object, **kwargs: object) -> torch.Tensor:
+        decoder_prepared.append(kwargs.get("prepared_pair_biases") is not None)
+        return decoder_forward(*args, **kwargs)
+
+    monkeypatch.setattr(decoder_transformer, "forward", track_decoder)
     sampler = ProtenixDiffusionSampler(module, use_cache=use_cache).to(device).eval()
     batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
     s_inputs = s_inputs * 0.1
@@ -510,6 +519,9 @@ def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch
     assert torch.isfinite(x).all()
     assert len(launches) >= 4
     assert all(shape == (B, S) for shape in launches)
+    # Only the cached rollout decodes every step from biases prepared once.
+    assert len(decoder_prepared) >= 4
+    assert decoder_prepared == [use_cache] * len(decoder_prepared)
 
 
 @pytest.mark.parametrize(

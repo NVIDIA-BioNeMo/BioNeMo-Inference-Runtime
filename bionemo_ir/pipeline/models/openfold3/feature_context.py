@@ -22,6 +22,8 @@ everything in a context dict for downstream feature generators.
 from __future__ import annotations
 
 import logging
+import random
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
 
@@ -162,7 +164,18 @@ def _get_nucleotide_from_ccd_with_leaving(ccd_code: str) -> struc.AtomArray:
     return res
 
 
-def _embed_conformer_inplace(mol_h: Chem.Mol) -> int:
+@lru_cache(maxsize=500)
+def _nucleotide_rdkit_topology(ccd_code: str) -> tuple[Chem.Mol, np.ndarray]:
+    """Cache sanitized CCD connectivity without sharing a conformer."""
+    res_full = _get_nucleotide_from_ccd_with_leaving(ccd_code)
+    mol = biotite_to_mol(res_full, kekulize=True)
+    Chem.SanitizeMol(mol)
+    mol.RemoveConformer(0)
+    crop_mask = np.array([name not in ("OP3", "O3P") for name in res_full.atom_name], dtype=bool)
+    return mol, crop_mask
+
+
+def _embed_conformer_inplace(mol_h: Chem.Mol, random_seed: int | None = None) -> int:
     """Embed one 3-D conformer into *mol_h*; return its id (-1 on failure).
 
     Monatomic species — e.g. metal-ion ligands like CD (cadmium), CO
@@ -174,8 +187,6 @@ def _embed_conformer_inplace(mol_h: Chem.Mol) -> int:
     directly — numerically identical to what ETKDG produces for one atom,
     without the warning or the wasted embedding attempt.
     """
-    import random as _random
-
     if mol_h.GetNumAtoms() == 1:
         conf = Chem.Conformer(1)
         conf.SetAtomPosition(0, Point3D(0.0, 0.0, 0.0))
@@ -183,18 +194,21 @@ def _embed_conformer_inplace(mol_h: Chem.Mol) -> int:
         return mol_h.AddConformer(conf, assignId=True)
 
     params = AllChem.ETKDGv3()
-    params.randomSeed = _random.randint(0, 10**9)
+    params.randomSeed = random.randint(0, 10**9) if random_seed is None else random_seed
     params.clearConfs = False
     conf_id = AllChem.EmbedMolecule(mol_h, params)
     if conf_id == -1:
         params.useRandomCoords = True
-        params.randomSeed = _random.randint(0, 10**9)
+        params.randomSeed = (
+            random.randint(0, 10**9) if random_seed is None else random.Random(random_seed).randint(0, 10**9)
+        )
         conf_id = AllChem.EmbedMolecule(mol_h, params)
     return conf_id
 
 
 def _build_nucleotide_rdkit_mol(
     ccd_code: str,
+    random_seed: int | None = None,
 ) -> tuple[Chem.Mol | None, np.ndarray]:
     """Convert a CCD nucleotide residue to an RDKit Mol with 3D conformer.
 
@@ -207,21 +221,12 @@ def _build_nucleotide_rdkit_mol(
         (mol, in_crop_mask): mol with conformer, boolean mask over mol atoms.
         in_crop_mask[i] = True for atoms to keep (non-leaving).
     """
-    # Use the full residue (with OP3/O3P) for conformer generation
-    res_full = _get_nucleotide_from_ccd_with_leaving(ccd_code)
-
     try:
-        mol = biotite_to_mol(res_full, kekulize=True)
-        Chem.SanitizeMol(mol)
-        mol.RemoveConformer(0)
-        mol_h = Chem.AddHs(mol)
-        _embed_conformer_inplace(mol_h)
+        mol, in_crop_mask = _nucleotide_rdkit_topology(ccd_code)
+        mol_h = Chem.AddHs(Chem.Mol(mol))
+        _embed_conformer_inplace(mol_h, random_seed)
         mol_h = Chem.RemoveHs(mol_h)
-
-        # Build mask: exclude OP3 and O3P leaving atoms
-        in_crop_mask = np.array([res_full.atom_name[i] not in ("OP3", "O3P") for i in range(len(res_full))], dtype=bool)
-
-        return mol_h, in_crop_mask
+        return mol_h, in_crop_mask.copy()
     except Exception as e:
         _logger.debug("Failed to build RDKit mol for nucleotide %s: %s", ccd_code, e)
         return None, np.array([], dtype=bool)
@@ -562,6 +567,22 @@ def _build_structure_from_polymers(
                 )
 
         for cid in chain_ids:
+            prebuilt_mols = None
+            if (
+                polymer_type in ("rna", "dna")
+                and len(sequence) >= 32
+                and all(char in resname_1_to_3 for char in sequence)
+            ):
+                ccd_codes = [resname_1_to_3[char] for char in sequence]
+                try:
+                    for ccd_code in set(ccd_codes):
+                        _nucleotide_rdkit_topology(ccd_code)
+                except Exception as e:
+                    _logger.debug("Nucleotide topology prefetch failed: %s", e)
+                else:
+                    seeds = [random.randint(0, 10**9) for _ in sequence]
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        prebuilt_mols = list(executor.map(_build_nucleotide_rdkit_mol, ccd_codes, seeds))
             for res_idx, res_char in enumerate(sequence):
                 # Resolve 3-letter residue code
                 if res_char in resname_1_to_3:
@@ -599,7 +620,10 @@ def _build_structure_from_polymers(
                         res_elements = ["P", "C", "C"]
 
                 # Build RDKit mol for conformer generation
-                mol, in_crop_mask = _build_mol_fn(resname_3)
+                if prebuilt_mols is None:
+                    mol, in_crop_mask = _build_mol_fn(resname_3)
+                else:
+                    mol, in_crop_mask = prebuilt_mols[res_idx]
                 residue_mols.append(mol)
                 residue_crop_masks.append(in_crop_mask)
 

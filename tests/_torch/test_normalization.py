@@ -22,6 +22,7 @@ from test_utils.boltz.ref_layers import RefAdaLN
 
 from bionemo_ir._torch.layers.normalization import AdaLN
 from bionemo_ir.utils import str_dtype_to_torch
+from tests._torch import init_module_weights
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -87,6 +88,7 @@ def test_adaln_rms_norm_matches_torch_formula():
     device = torch.device("cuda")
     dim, dim_cond, seq_len = 32, 16, 11
     adaln = AdaLN(dim, dim_cond, dtype=torch.float32, norm_type="rms_norm").to(device)
+    init_module_weights(adaln)
     assert callable(adaln._fused_op)
     a = torch.randn(2, seq_len, dim, device=device)
     s = torch.randn(2, seq_len, dim_cond, device=device)
@@ -110,6 +112,7 @@ def test_adaln_mask_broadcasts_across_samples():
     device = torch.device("cuda")
     dim, dim_cond, batch, samples, tokens = 8, 8, 2, 3, 5
     adaln = AdaLN(dim, dim_cond, dtype=torch.float32).to(device)
+    init_module_weights(adaln)
     adaln._fused_op = None
     a = torch.randn(batch, samples, tokens, dim, device=device)
     s = torch.randn(batch, 1, tokens, dim_cond, device=device)

@@ -33,7 +33,6 @@ from bionemo_ir._torch.layers.normalization import (
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.sequence_local_atom import (
     create_gather_indices,
-    create_indexing_matrix,
     query_to_keys_optimized,
 )
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
@@ -169,10 +168,8 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         W = self.n_query
         H = self.n_key
         device = batch["atom_mask"].device
-        # ``keys_indexing_matrix`` drives the matmul-based query-to-keys
-        # path in ``sequence_local_atom``; it is stored here for callers
-        # that use it, while the op below takes the bit-exact gather path.
-        self.keys_indexing_matrix = create_indexing_matrix(K, W, H, device)
+        # The OF3 atom path uses gather indices exclusively. The legacy
+        # one-hot indexing matrix has no consumer here.
         gather_indices, _ = create_gather_indices(K, W, H, device)
 
         # Single OSS-equivalent zero-pad query→keys callable, pre-bound to

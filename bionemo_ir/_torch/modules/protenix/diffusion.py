@@ -167,6 +167,9 @@ class ProtenixDiffusionConditioning(nn.Module):
         """
         relpe_z = self.relpe(relp=relp)
         pair_z = self._joint_layernorm_linear_z(z_trunk, relpe_z).to(self.z_pair_dtype)
+        # The FP32 relative-position pair is dead once projected; keeping it
+        # alive through the transitions' hidden activations raises the peak.
+        del relpe_z
         for layer in self.transition_z:
             pair_z = pair_z + layer(pair_z)
         return pair_z
@@ -275,6 +278,9 @@ class ProtenixDiffusionModule(nn.Module):
             "atom_p_lm": atom_p_lm,
             "attn_metadata": attn_metadata,
             "n_token": s_trunk.shape[-2],
+            "atom_reduction": self.atom_attention_encoder.prepare_reduction(
+                input_feature_dict["atom_to_token_idx"], s_trunk.shape[-2]
+            ),
         }
 
     def f_forward(
@@ -316,6 +322,7 @@ class ProtenixDiffusionModule(nn.Module):
                 r_noisy,
                 n_token,
                 attn_metadata,
+                reduction=cache.get("atom_reduction"),
             )
         else:
             if attn_metadata is None:
@@ -336,6 +343,7 @@ class ProtenixDiffusionModule(nn.Module):
                 s=s_trunk_s,
                 z=z_pair_s,
                 attn_metadata=attn_metadata,
+                reduction=input_feature_dict.get("atom_reduction"),
             )
             n_token = a_token.shape[-2]
 
@@ -507,6 +515,13 @@ class ProtenixDiffusionSampler(nn.Module):
             atom_mask = input_feature_dict.get("ref_mask")
         mask = None if atom_mask is None else atom_mask.unsqueeze(-2).to(dtype)
         schedule = self.noise_schedule(num_sampling_steps, device, torch.float32)
+        sampling_features = input_feature_dict
+        if not self.use_cache:
+            reduction = self.diffusion_module.atom_attention_encoder.prepare_reduction(
+                input_feature_dict["atom_to_token_idx"], s_trunk.shape[-2]
+            )
+            if reduction is not None:
+                sampling_features = {**input_feature_dict, "atom_reduction": reduction}
         cache = None
         if self.use_cache:
             cache = self.diffusion_module.prepare_cache(input_feature_dict, s_inputs, s_trunk, z_trunk, attn_metadata)
@@ -533,7 +548,7 @@ class ProtenixDiffusionSampler(nn.Module):
                 sigma_hat,
                 batch_shape=batch_shape,
                 n_sample=N_sample,
-                input_feature_dict=input_feature_dict,
+                input_feature_dict=sampling_features,
                 s_inputs=s_inputs,
                 s_trunk=s_trunk,
                 z_trunk=z_trunk,

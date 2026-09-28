@@ -38,6 +38,7 @@ from bionemo_ir._torch.modules.openfold3.utils.token_atom_constants import (
     atom_name_to_index_by_restype,
 )
 from bionemo_ir._torch.utils.common import _deterministic_algorithms as _shared_deterministic_algorithms
+from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import MAX_ORDERED_ATOMS
 
 
 def _deterministic_algorithms():
@@ -106,6 +107,72 @@ def broadcast_token_feat_to_atoms(
     )
 
 
+def prepare_atom_reduction(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Prepare validated atom slots before embedding or graph capture.
+
+    Args:
+        batch: OF3 features with token counts/starts, atom owners, and binary
+            masks. Shapes are ``[B, T/A]`` or ``[B, 1, T/A]``.
+
+    Returns:
+        A shallow copy with reusable reduction metadata, or a batch without
+        incomplete metadata when its layout requires deterministic scatter.
+    """
+    gather_keys = ("atom_gather_index", "atom_gather_mask", "atom_gather_counts")
+    if all(key in batch for key in gather_keys):
+        return batch
+    if any(key in batch for key in gather_keys):
+        batch = {key: value for key, value in batch.items() if key not in gather_keys}
+    required = ("num_atoms_per_token", "start_atom_index", "atom_mask", "atom_to_token_index", "token_mask")
+    if any(key not in batch for key in required):
+        return batch
+    mask = batch["atom_mask"]
+    counts = batch["num_atoms_per_token"].long()
+    starts = batch["start_atom_index"].long()
+    owners = batch["atom_to_token_index"]
+    if (
+        mask.dtype not in (torch.bool, torch.float32)
+        or counts.numel() == 0
+        or counts.shape != starts.shape
+        or counts.shape != batch["token_mask"].shape
+        or counts.shape[:-1] != mask.shape[:-1]
+        or mask.shape != owners.shape
+        or (mask.is_cuda and torch.cuda.is_current_stream_capturing())
+    ):
+        return batch
+    max_atoms = int(counts.max().item())
+    # Long segments use different scatter accumulation order.
+    if max_atoms < 0 or max_atoms > MAX_ORDERED_ATOMS:
+        return batch
+    total = counts.sum(-1, keepdim=True)
+    expected_starts = counts.cumsum(-1) - counts
+    padding = torch.arange(mask.shape[-1], device=mask.device) >= total
+    layout_ok = (
+        (counts >= 0).all()
+        & (total <= mask.shape[-1]).all()
+        & ((counts == 0) | (starts == expected_starts)).all()
+        & ((mask == 0) | (mask == 1)).all()
+        & ~(padding & mask.bool()).any()
+    )
+    if not bool(layout_ok):
+        return batch
+    offsets = torch.arange(max_atoms, device=mask.device)
+    valid = offsets < counts[..., None]
+    index = torch.where(valid, starts[..., None] + offsets, 0)
+    flat_index = index.flatten(-2)
+    valid = valid & mask.gather(-1, flat_index).reshape_as(index).bool()
+    token = torch.arange(counts.shape[-1], device=mask.device)
+    mapped = owners.gather(-1, flat_index).reshape_as(index)
+    if not bool(((mapped == token[:, None]) | ~valid).all()):
+        return batch
+    return {
+        **batch,
+        "atom_gather_index": flat_index,
+        "atom_gather_mask": valid,
+        "atom_gather_counts": valid.sum(-1),
+    }
+
+
 def aggregate_atom_feat_to_tokens(
     token_mask: torch.Tensor,
     atom_to_token_index: torch.Tensor,
@@ -114,16 +181,16 @@ def aggregate_atom_feat_to_tokens(
     atom_dim: int | None = -1,
     aggregate_fn: Literal["mean", "sum"] = "mean",
     eps: float = 1e-9,
-):
+    gather_index: torch.Tensor | None = None,
+    gather_mask: torch.Tensor | None = None,
+    gather_counts: torch.Tensor | None = None,
+    num_atoms_per_token: torch.Tensor | None = None,
+) -> torch.Tensor:
     """
     Aggregate atom-level features to token-level features with mean or sum aggregation.
 
-    The atom->token scatter is accumulated under a deterministic-algorithms context (see
-    ``_deterministic_algorithms``), so the result is bit-identical run-to-run;
-    the output is cast back to the input dtype before returning. This matters
-    because the aggregation runs on every diffusion rollout step, where CUDA
-    ``scatter_add_``'s non-deterministic atomic-add order would otherwise
-    compound into divergent structures.
+    Prepared FP32 layouts use ordered reduction; other inputs use the
+    deterministic scatter. Mean normalization preserves its count precision.
 
     Args:
         token_mask:
@@ -141,6 +208,14 @@ def aggregate_atom_feat_to_tokens(
             "mean" and "sum", where mean is the default.
         eps:
             Small float for numerical stability
+        gather_index:
+            Optional packed atom indices prepared before rollout.
+        gather_mask:
+            Valid atom positions in the prepared per-token slots.
+        gather_counts:
+            Valid-atom counts per token for mean aggregation.
+        num_atoms_per_token:
+            Ordered segment lengths for prepared layouts.
     Returns:
         token_feat:
             [*, N_token, *feat_dims] Token-level features
@@ -153,6 +228,10 @@ def aggregate_atom_feat_to_tokens(
         atom_dim=atom_dim,
         aggregate_fn=aggregate_fn,
         eps=eps,
+        gather_index=gather_index,
+        gather_mask=gather_mask,
+        gather_counts=gather_counts,
+        num_atoms_per_token=num_atoms_per_token,
     )
 
 

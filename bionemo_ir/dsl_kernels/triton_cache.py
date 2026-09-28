@@ -275,6 +275,9 @@ def _compile_in_subprocess(
                         "dtype": str(arg.dtype).removeprefix("torch."),
                     }
                 )
+            elif isinstance(arg, float):
+                # Triton types a float argument fp32; int() would warm an i32 variant.
+                variant.append({"type": "float", "value": arg})
             else:
                 variant.append({"type": "int", "value": int(arg)})
         variants.append(variant)

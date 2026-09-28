@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
 import torch
 
 from bionemo_ir._torch.layers.sequence_local_atom import (
@@ -21,6 +22,7 @@ from bionemo_ir._torch.layers.sequence_local_atom import (
     broadcast_token_features_to_atoms,
     compute_atom_broadcast_index,
     gather_token_features_to_atoms,
+    prepare_indexed_reduction,
     select_atoms_from_padded_tokens,
 )
 
@@ -87,6 +89,62 @@ def test_ragged_atom_reduction_excludes_masked_atoms_from_mean():
     )
 
     assert torch.equal(reduced, torch.tensor([[[2.0], [8.0]]]))
+
+
+def test_gather_atom_reduction_matches_masked_mean_with_sample_axis():
+    token_mask = torch.ones((1, 1, 2), dtype=torch.bool)
+    atom_to_token = torch.tensor([[[0, 0, 1, 1]]])
+    atom_mask = torch.tensor([[[True, False, True, True]]])
+    atom_features = torch.arange(60.0).reshape(1, 5, 4, 3)
+    gather_index = torch.tensor([[[0, 1, 2, 3]]])
+    gather_mask = torch.tensor([[[[True, False], [True, True]]]])
+    gather_counts = torch.tensor([[[1, 2]]])
+    kwargs = {
+        "token_mask": token_mask,
+        "atom_to_token_index": atom_to_token,
+        "atom_mask": atom_mask,
+        "atom_features": atom_features,
+        "atom_dim": -2,
+    }
+    reference = aggregate_atom_features_to_tokens(**kwargs)
+    gathered = aggregate_atom_features_to_tokens(
+        **kwargs,
+        gather_index=gather_index,
+        gather_mask=gather_mask,
+        gather_counts=gather_counts,
+    )
+    assert torch.equal(gathered, reference)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("batch_size,channels", [(1, 768), (2, 130)])
+def test_gather_atom_reduction_matches_deterministic_scatter_on_cuda(batch_size, channels):
+    torch.manual_seed(7)
+    token_mask = torch.ones((batch_size, 1, 2), dtype=torch.bool, device="cuda")
+    atom_to_token = torch.tensor([[[0] * 30 + [1] * 30]], device="cuda").expand(batch_size, -1, -1)
+    atom_mask = torch.ones((batch_size, 1, 60), dtype=torch.bool, device="cuda")
+    atom_mask[0, 0, 5] = False
+    if batch_size == 2:
+        atom_mask[1, 0, 33] = False
+    atom_features = torch.randn((batch_size, 5, 60, channels), device="cuda")
+    gather_index = torch.arange(60, device="cuda").reshape(1, 1, 60).expand(batch_size, -1, -1)
+    gather_mask = atom_mask.reshape(batch_size, 1, 2, 30)
+    gather_counts = gather_mask.sum(-1)
+    kwargs = {
+        "token_mask": token_mask,
+        "atom_to_token_index": atom_to_token,
+        "atom_mask": atom_mask,
+        "atom_features": atom_features,
+        "atom_dim": -2,
+    }
+    reference = aggregate_atom_features_to_tokens(**kwargs)
+    gathered = aggregate_atom_features_to_tokens(
+        **kwargs,
+        gather_index=gather_index,
+        gather_mask=gather_mask,
+        gather_counts=gather_counts,
+    )
+    assert torch.equal(gathered, reference)
 
 
 def test_indexed_gather_and_reduction_make_denominator_semantics_explicit():
@@ -215,3 +273,39 @@ def test_select_atoms_from_padded_tokens_tiles_mask_across_sample_axis():
     mask_b1 = mask[:1]
     selected_b1 = select_atoms_from_padded_tokens(features_b1, mask_b1)
     assert torch.equal(selected_b1, selected[:1])
+
+
+@pytest.mark.parametrize("owners", [[[1, 0]], [[0, -1]], [[0, 3]], [[0] * 32]])
+def test_indexed_reduction_fallback(owners: list[list[int]]) -> None:
+    assert prepare_indexed_reduction(torch.tensor(owners), 3) is None
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_protenix_prepared_reduction(device: str, dtype: torch.dtype) -> None:
+    from bionemo_ir._torch.modules.protenix.atom_attention import _aggregate_atom_to_token
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    owners = torch.tensor([[0, 0, 2, 2, 2], [0, 1, 1, 1, 1]], device=device)
+    metadata = prepare_indexed_reduction(owners, 4)
+    assert metadata is not None
+    samples = 3
+    expanded = owners[:, None].expand(-1, samples, -1).reshape(6, 5)
+    if dtype == torch.bfloat16:
+        # Exact sums isolate fallback dispatch from atomics.
+        features = torch.randint(-8, 9, (6, 5, 130), device=device).to(dtype)
+    else:
+        features = torch.randn(6, 5, 130, device=device, dtype=dtype)
+    reduce = _aggregate_atom_to_token
+    expected = reduce(features, expanded, 4)
+    actual = reduce(features, expanded, 4, metadata)
+    torch.testing.assert_close(actual, expected)
+    assert torch.count_nonzero(actual[:, 3]) == 0
+    if device == "cuda" and dtype == torch.float32:
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured = reduce(features, expanded, 4, metadata)
+        features.mul_(2)
+        graph.replay()
+        torch.testing.assert_close(captured, expected * 2)

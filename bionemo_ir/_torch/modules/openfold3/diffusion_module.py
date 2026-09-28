@@ -39,7 +39,7 @@ from bionemo_ir._torch.modules.openfold3.sequence_local_atom_attention import (
     AtomAttentionDecoder,
     AtomAttentionEncoder,
 )
-from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index
+from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index, prepare_atom_reduction
 from bionemo_ir._torch.sampling import (
     AF3EDMIntegrator,
     EDMIntegratorConfig,
@@ -408,6 +408,7 @@ class OpenFold3DiffusionSampler(nn.Module):
                 batch["token_mask"],
                 batch["num_atoms_per_token"],
             )
+        batch = prepare_atom_reduction(batch)
         plan = EDMRolloutPlan(
             schedule=noise_schedule,
             coords_shape=(batch_dim, no_rollout_samples, num_atoms, 3),

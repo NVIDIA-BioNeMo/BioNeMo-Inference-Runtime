@@ -711,6 +711,10 @@ class AtomAttentionEncoder(nn.Module):
             atom_feat=atom_feat,
             atom_dim=-2,
             aggregate_fn="mean",
+            gather_index=batch.get("atom_gather_index"),
+            gather_mask=batch.get("atom_gather_mask"),
+            gather_counts=batch.get("atom_gather_counts"),
+            num_atoms_per_token=batch.get("num_atoms_per_token"),
         )
 
         return ai, ql, cl, plm

@@ -461,7 +461,8 @@ def _sampler_inputs(device: torch.device, sc: Scenario, module):
     return batch, s_inputs, s_trunk, z_trunk
 
 
-def test_sample_diffusion_smoke():
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch) -> None:
     """Check EDM rollout shape and finiteness."""
     # Keep the random-weight smoke in full fp32.
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -486,7 +487,17 @@ def test_sample_diffusion_smoke():
                 param.normal_(mean=0.0, std=0.02)
             else:
                 param.zero_()
-    sampler = ProtenixDiffusionSampler(module).to(device).eval()
+    from bionemo_ir._torch.modules.protenix import atom_attention
+
+    launches = []
+    original_reduce = atom_attention.reduce_atom_slots
+
+    def track_reduction(*args: object, **kwargs: object) -> torch.Tensor:
+        launches.append(args[0].shape[:2])
+        return original_reduce(*args, **kwargs)
+
+    monkeypatch.setattr(atom_attention, "reduce_atom_slots", track_reduction)
+    sampler = ProtenixDiffusionSampler(module, use_cache=use_cache).to(device).eval()
     batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
     s_inputs = s_inputs * 0.1
     s_trunk = s_trunk * 0.1
@@ -497,6 +508,8 @@ def test_sample_diffusion_smoke():
 
     assert x.shape == (B, S, n_atom, 3)
     assert torch.isfinite(x).all()
+    assert len(launches) >= 4
+    assert all(shape == (B, S) for shape in launches)
 
 
 @pytest.mark.parametrize(

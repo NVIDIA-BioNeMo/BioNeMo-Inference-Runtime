@@ -24,17 +24,40 @@ import torch.nn.functional as F
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.layers.sequence_local_atom import (
+    IndexedReduction,
     aggregate_indexed_atom_features,
     gather_token_features_to_atoms,
+    prepare_indexed_reduction,
     to_blocks,
 )
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import reduce_atom_slots
 
 
 def _broadcast_token_to_atom(x_token: torch.Tensor, atom_to_token_idx: torch.Tensor) -> torch.Tensor:
     """Gather per-token features to per-atom (OSS ``broadcast_token_to_atom``)."""
     return gather_token_features_to_atoms(x_token, atom_to_token_idx)
+
+
+def _aggregate_atom_to_token(
+    x_atom: torch.Tensor,
+    atom_to_token_idx: torch.Tensor,
+    n_token: int,
+    reduction: IndexedReduction | None = None,
+) -> torch.Tensor:
+    """Mean per-atom features into tokens (OSS ``aggregate_atom_to_token``).
+
+    Prepared slots run the ordered slot kernel for CUDA FP32 inference; other
+    inputs use scatter.
+    """
+    if reduction is None or not x_atom.is_cuda or x_atom.dtype != torch.float32:
+        return aggregate_indexed_atom_features(x_atom, atom_to_token_idx, n_token, deterministic=False)
+    indices, valid, counts = reduction
+    # The kernel reads [B, S, N_atom, C]; samples arrive folded into the batch axis.
+    features = x_atom.reshape(indices.shape[0], -1, *x_atom.shape[-2:])
+    tokens = reduce_atom_slots(features, indices, valid, counts, n_token, eps=0.0)
+    return tokens.reshape(*x_atom.shape[:-2], n_token, x_atom.shape[-1])
 
 
 def _broadcast_token_pair_to_blocks(
@@ -77,7 +100,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
     With ``has_coords``, also conditions on trunk ``s`` / ``z`` and noisy
     coords ``r_l`` (``N_sample`` folded into batch). ``prepare_coords_cache`` /
     ``run_coords_cached`` split the sample-invariant base from the per-step
-    coord path.
+    coord path; ``prepare_reduction`` builds the token slots they share.
     """
 
     def __init__(self, config: BaseConfig) -> None:
@@ -138,6 +161,21 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         self.atom_transformer = ProtenixDiffusionTransformer(atc)
         self.linear_no_bias_q = Linear(c_atom, c_token, bias=False, dtype=dtype, skip_create_weights=skip)
 
+    def prepare_reduction(self, atom_to_token_idx: torch.Tensor, n_token: int) -> IndexedReduction | None:
+        """Prepare the token slots of the atom-to-token mean, outside graph capture.
+
+        Args:
+            atom_to_token_idx: Token owner of each atom, ``[B, N_atom]``.
+            n_token: Output token count, including empty tokens.
+
+        Returns:
+            Slots reusable across samples and diffusion steps, or ``None`` when
+            the encoder is not FP32 or the layout needs scatter.
+        """
+        if self.dtype != torch.float32:
+            return None
+        return prepare_indexed_reduction(atom_to_token_idx, n_token)
+
     def prepare_cache(
         self,
         ref_pos: torch.Tensor,
@@ -193,6 +231,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         s: torch.Tensor | None = None,
         z: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
+        reduction: IndexedReduction | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed reference-conformer atom features → ``(a, q_l, c_l, p_lm)``.
 
@@ -208,6 +247,10 @@ class ProtenixAtomAttentionEncoder(nn.Module):
             r_l: ``[B, S, N_atom, 3]`` noisy coords when ``has_coords``
             s: ``[B, S, N_token, c_s]`` trunk single when ``has_coords``
             z: ``[B, S, N_token, N_token, c_z]`` pair when ``has_coords``
+            attn_metadata: Optional prebuilt atom-window metadata.
+            reduction: Slots from :meth:`prepare_reduction`. Without them the
+                coordinate path uses scatter; the reference-only path prepares
+                its own.
 
         Returns:
             Without coords: ``a`` ``[B, N_token, c_token]``,
@@ -238,7 +281,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
             attn_metadata = self.atom_transformer.build_attn_metadata(K, self.n_queries, self.n_keys, c_l.device)
 
         if self.has_coords:
-            return self._forward_coords(atom_to_token_idx, p_lm, c_l, r_l, s, z, K, attn_metadata)
+            return self._forward_coords(atom_to_token_idx, p_lm, c_l, r_l, s, z, K, attn_metadata, reduction)
 
         q_l = c_l
         n_token = int(atom_to_token_idx.max().item()) + 1
@@ -251,7 +294,9 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         atom_mask = ref_mask.new_ones(*ref_mask.shape[:-1], n_atom)
         q_l = self.atom_transformer(q_l, c_l, p_lm, atom_mask, self.n_queries, self.n_keys, attn_metadata)
 
-        a = self._aggregate_atom_to_token(F.relu(self.linear_no_bias_q(q_l)), atom_to_token_idx, n_token)
+        if reduction is None:
+            reduction = self.prepare_reduction(atom_to_token_idx, n_token)
+        a = _aggregate_atom_to_token(F.relu(self.linear_no_bias_q(q_l)), atom_to_token_idx, n_token, reduction)
         return a, q_l, c_l, p_lm
 
     def _prepare_coords(
@@ -296,6 +341,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         r_l: torch.Tensor,
         n_token: int,
         attn_metadata: AttentionMetadata,
+        reduction: IndexedReduction | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Noisy-coord-dependent path on pre-conditioned ``c_l`` / ``p_lm``."""
         W, H = self.n_queries, self.n_keys
@@ -303,7 +349,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         q_l = c_l + self.linear_no_bias_r(r_l.reshape(BS, *r_l.shape[2:]))
         atom_mask = c_l.new_ones(BS, c_l.shape[-2])
         q_l = self.atom_transformer(q_l, c_l, p_lm, atom_mask, W, H, attn_metadata)
-        a = self._aggregate_atom_to_token(F.relu(self.linear_no_bias_q(q_l)), a2t, n_token)
+        a = _aggregate_atom_to_token(F.relu(self.linear_no_bias_q(q_l)), a2t, n_token, reduction)
         return a, q_l
 
     def _forward_coords(
@@ -316,11 +362,12 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         z: torch.Tensor,
         K: int,
         attn_metadata: AttentionMetadata,
+        reduction: IndexedReduction | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Coordinate-conditioned (``has_coords``) encoder path -> ``[B, S, ...]``."""
         B, S, n_token = s.shape[0], s.shape[1], s.shape[-2]
         c_l, p_lm, a2t = self._prepare_coords(atom_to_token_idx, p_lm, c_l, s, z, K, attn_metadata)
-        a, q_l = self._run_coords(a2t, c_l, p_lm, r_l, n_token, attn_metadata)
+        a, q_l = self._run_coords(a2t, c_l, p_lm, r_l, n_token, attn_metadata, reduction)
         return (
             a.reshape(B, S, n_token, -1),
             q_l.reshape(B, S, q_l.shape[-2], -1),
@@ -381,6 +428,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         r_l: torch.Tensor,
         n_token: int,
         attn_metadata: AttentionMetadata,
+        reduction: IndexedReduction | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Per-step coord path from cached sample-independent ``c_l`` / ``p_lm``.
 
@@ -390,6 +438,8 @@ class ProtenixAtomAttentionEncoder(nn.Module):
             p_lm: ``[B, K, W, H, c_atompair]``
             r_l: ``[B, S, N_atom, 3]``
             n_token: token count
+            reduction: Slots from :meth:`prepare_reduction`, shared across
+                samples; scatter without them.
 
         Returns:
             ``a`` ``[B, S, N_token, c_token]``,
@@ -401,21 +451,12 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         c_l = _expand_bs(c_l, B, S)
         p_lm = _expand_bs(p_lm, B, S)
         a2t = _expand_bs(atom_to_token_idx, B, S)
-        a, q_l = self._run_coords(a2t, c_l, p_lm, r_l, n_token, attn_metadata)
+        a, q_l = self._run_coords(a2t, c_l, p_lm, r_l, n_token, attn_metadata, reduction)
         return (
             a.reshape(B, S, n_token, -1),
             q_l.reshape(B, S, q_l.shape[-2], -1),
             c_l.reshape(B, S, c_l.shape[-2], -1),
             p_lm.reshape(B, S, *p_lm.shape[1:]),
-        )
-
-    @staticmethod
-    def _aggregate_atom_to_token(x_atom: torch.Tensor, atom_to_token_idx: torch.Tensor, n_token: int) -> torch.Tensor:
-        return aggregate_indexed_atom_features(
-            x_atom,
-            atom_to_token_idx,
-            n_token,
-            deterministic=False,
         )
 
 

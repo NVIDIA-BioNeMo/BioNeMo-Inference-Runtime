@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -26,6 +28,12 @@ from packaging.version import Version
 
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir.dsl_kernels.cache_base import make_driver_launcher
+from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import (
+    _AtomReduction,
+    _cached_reduction,
+    _reduce_atom_slots,
+    reduce_atom_slots,
+)
 from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import (
     _STREAMING_DEFAULT_TUNING,
     _STREAMING_TUNING,
@@ -42,12 +50,14 @@ from bionemo_ir.dsl_kernels.triton_cache import (
     _DRIVER_TRITON_OK,
     _SUPPORTED_TRITON_VERSIONS,
     TritonKernelCache,
+    _compile_in_subprocess,
     _looks_like_compiled_kernel,
     value_specialized_params,
 )
 
-# Kernels whose one CUBIN, compiled from dummy arguments, is reused for every shape.
+# Kernels reusing CUBINs compiled from dummy tensors.
 DRIVER_LAUNCHED_KERNELS = [
+    _reduce_atom_slots,
     _fused_ln_proj_moveaxis_pad_kernel,
     _fused_ln_proj_moveaxis_pad_streaming_kernel,
     _moveaxis_pad_kernel,
@@ -493,3 +503,94 @@ def test_moveaxis_pad_rejects_more_heads_than_compiled_for() -> None:
     too_many = torch.randn(1, 8, 30, 8, device="cuda", dtype=torch.bfloat16)
     with pytest.raises(ValueError, match="heads"):
         op(too_many, multiple=8)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("use_driver", [False, True])
+@pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("strided", [False, True])
+def test_atom_cache_reuses_shapes(
+    monkeypatch: pytest.MonkeyPatch, use_driver: bool, index_dtype: torch.dtype, strided: bool
+) -> None:
+    def reject_compile(*args: object, **kwargs: object) -> None:
+        pytest.fail("Atom reduction recompiled for a new shape")
+
+    # Strided channels force scalar accesses; contiguous rows use 16-byte vectors.
+    vector = 1 if strided else 4
+    for max_slots in (8, 16, 32):
+        kernel = _cached_reduction(
+            torch.cuda.current_device(), (torch.float32, index_dtype, torch.bool, torch.int64), max_slots, vector
+        )
+        if use_driver:
+            if not _DRIVER_TRITON_OK:
+                pytest.skip("Unsupported Triton driver ABI")
+            assert kernel.driver is not None
+        else:
+            monkeypatch.setattr(kernel, "_driver", None)
+    monkeypatch.setattr(_reduce_atom_slots, "run", reject_compile)
+    monkeypatch.setattr(_AtomReduction, "__init__", reject_compile)
+
+    torch.manual_seed(7)
+    shapes = [(1, 1, 1, 1, 4), (2, 3, 5, 31, 132), (3, 2, 7, 3, 16), (1, 5, 9, 14, 768), (2, 1, 4, 25, 8)]
+    for batch, samples, tokens, slots, channels in shapes:
+        atoms = tokens * slots
+        features = torch.randn(batch, samples, atoms, channels * (1 + strided), device="cuda")[..., :: 1 + strided]
+        indices = torch.arange(atoms, device="cuda", dtype=index_dtype).reshape(1, 1, atoms).expand(batch, -1, -1)
+        valid = torch.rand(batch, 1, tokens, slots, device="cuda") > 0.25
+        valid[..., 0, :] = False
+        counts = valid.sum(-1)
+        expected = torch.zeros(batch, samples, tokens, channels, device="cuda")
+        packed = features.reshape(batch, samples, tokens, slots, channels)
+        for slot in range(slots):
+            expected += torch.where(valid[..., slot, None], packed[..., slot, :], 0.0)
+        expected /= counts[..., None] + 1e-6
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            actual = reduce_atom_slots(features, indices, valid, counts, tokens, 1e-6)
+        torch.cuda.current_stream().wait_stream(stream)
+        assert torch.equal(actual, expected)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured = reduce_atom_slots(features, indices, valid, counts, tokens, 1e-6)
+        features.mul_(2)
+        graph.replay()
+        assert torch.equal(captured, expected * 2)
+
+
+def test_subprocess_warmup_keeps_float_scalars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A float dummy argument must reach the subprocess as fp32, not an i32 variant."""
+    specs = []
+
+    def capture(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        specs.append(json.loads(Path(command[-1]).read_text()))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    _compile_in_subprocess(_add_n_kernel, {torch.float32: (torch.empty(1), 0.0, 3)}, (1,), {"BLOCK": 16})
+
+    (variant,) = specs[0]["variants"]
+    assert variant[1:] == [{"type": "float", "value": 0.0}, {"type": "int", "value": 3}]
+    assert isinstance(variant[1]["value"], float)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_atom_offset_views() -> None:
+    features = torch.randn(1, 2, 6, 129, device="cuda")[..., 1:]
+    indices = torch.arange(7, device="cuda")[1:].sub_(1).reshape(1, 1, 6)
+    valid = torch.ones(7, dtype=torch.bool, device="cuda")[1:].reshape(1, 1, 2, 3)
+    counts = valid.sum(-1)
+    actual = reduce_atom_slots(features, indices, valid, counts, 2, 1e-9)
+    expected = reduce_atom_slots(features.contiguous(), indices.clone(), valid.clone(), counts, 2, 1e-9)
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("shape", [(0, 2, 6, 128), (1, 0, 6, 128), (1, 2, 6, 0)])
+def test_atom_empty_features(shape: tuple[int, ...]) -> None:
+    features = torch.empty(shape, device="cuda")
+    indices = torch.arange(6, device="cuda").reshape(1, 1, 6).expand(shape[0], -1, -1)
+    valid = torch.ones(shape[0], 1, 2, 3, dtype=torch.bool, device="cuda")
+    actual = reduce_atom_slots(features, indices, valid, valid.sum(-1), 2, 1e-9)
+    assert actual.shape == (*shape[:2], 2, shape[-1])
+    assert actual.numel() == 0

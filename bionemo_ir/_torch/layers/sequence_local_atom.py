@@ -25,6 +25,7 @@ import torch
 import torch.nn.functional as F
 
 from bionemo_ir._torch.utils.common import _deterministic_algorithms
+from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import MAX_ORDERED_ATOMS, reduce_atom_slots
 
 
 def pad_to_multiple_and_divide(tensor: torch.Tensor, multiple: int, dim: int = 1):
@@ -354,6 +355,10 @@ def aggregate_atom_features_to_tokens(
     atom_dim: int | None = -1,
     aggregate_fn: Literal["mean", "sum"] = "mean",
     eps: float = 1e-9,
+    gather_index: torch.Tensor | None = None,
+    gather_mask: torch.Tensor | None = None,
+    gather_counts: torch.Tensor | None = None,
+    num_atoms_per_token: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Reduce packed atom features into their owning token rows.
 
@@ -372,6 +377,10 @@ def aggregate_atom_features_to_tokens(
         atom_dim: Position of the atom axis in ``atom_features``.
         aggregate_fn: Either ``"sum"`` or a valid-atom ``"mean"``.
         eps: Denominator offset used by mean aggregation.
+        gather_index: Optional packed atom indices prepared before rollout.
+        gather_mask: Valid atom positions in the prepared per-token slots.
+        gather_counts: Valid-atom counts per token for mean aggregation.
+        num_atoms_per_token: Ordered segment lengths for prepared layouts.
 
     Returns:
         Token-level features with the atom axis replaced by ``N_token``.
@@ -387,6 +396,24 @@ def aggregate_atom_features_to_tokens(
     batch_dims = token_mask.shape[:-1]
     feat_batch_dims = atom_features.shape[:atom_dim]
     feat_dims = atom_features.shape[atom_dim:][1:]
+    if gather_index is not None and (gather_mask is None or gather_counts is None):
+        raise ValueError("Gather reduction requires mask and counts")
+    prepared_mean = (
+        gather_index is not None
+        and n_token > 0
+        and atom_dim == -2
+        and aggregate_fn == "mean"
+        and atom_features.dtype == torch.float32
+        and atom_mask.dtype in (torch.float32, torch.bool)
+        # Long segments use different scatter accumulation order.
+        and gather_index.shape[-1] % n_token == 0
+        and gather_index.shape[-1] // n_token <= MAX_ORDERED_ATOMS
+    )
+    if prepared_mean:
+        if atom_features.is_cuda and atom_features.ndim == 4 and batch_dims == (atom_features.shape[0], 1):
+            return reduce_atom_slots(atom_features, gather_index, gather_mask, gather_counts, n_token, eps)
+        if num_atoms_per_token is not None:
+            return _reduce_ordered_atoms(num_atoms_per_token, atom_mask, atom_features, eps)
     atom_features = atom_features * atom_mask.reshape(atom_mask.shape + (1,) * len(feat_dims))
     atom_to_token_index = torch.where(atom_mask.bool(), atom_to_token_index, n_token)
 
@@ -433,6 +460,29 @@ def aggregate_atom_features_to_tokens(
         token_features = token_features / (token_num_atoms.reshape(token_num_atoms.shape + (1,) * len(feat_dims)) + eps)
 
     return token_features
+
+
+def _reduce_ordered_atoms(
+    num_atoms_per_token: torch.Tensor,
+    atom_mask: torch.Tensor,
+    atom_features: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    n_token = num_atoms_per_token.shape[-1]
+    n_atom = atom_features.shape[-2]
+    lengths = num_atoms_per_token.to(torch.int64)
+    padding = n_atom - lengths.sum(dim=-1, keepdim=True)
+    lengths = torch.cat((lengths, padding), dim=-1)
+    while lengths.ndim < atom_features.ndim - 1:
+        lengths = lengths.unsqueeze(-2)
+    while atom_mask.ndim < atom_features.ndim - 1:
+        atom_mask = atom_mask.unsqueeze(-2)
+    lengths = lengths.expand(*atom_features.shape[:-2], n_token + 1)
+    valid = atom_mask.bool().expand(*atom_features.shape[:-2], n_atom)
+    masked = torch.where(valid.unsqueeze(-1), atom_features, 0.0)
+    sums = torch.segment_reduce(masked, "sum", lengths=lengths, axis=-2, unsafe=True)[..., :n_token, :]
+    counts = torch.segment_reduce(valid.float(), "sum", lengths=lengths, axis=-1, unsafe=True)[..., :n_token]
+    return sums / (counts.to(torch.int32).unsqueeze(-1) + eps)
 
 
 def select_atoms_from_padded_tokens(
@@ -546,6 +596,42 @@ def gather_token_features_to_atoms(
         1,
     ).expand(*feature_batch_shape, atom_to_token_index.shape[-1], token_features.shape[-1])
     return torch.gather(token_features, -2, index.long())
+
+
+# Packed atom indices, slot mask, and mean denominators for ``reduce_atom_slots``.
+IndexedReduction = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+
+
+def prepare_indexed_reduction(owners: torch.Tensor, num_tokens: int) -> IndexedReduction | None:
+    """Prepare short, ordered atom segments outside graph capture.
+
+    Args:
+        owners: Integer token owners shaped ``[B, A]``.
+        num_tokens: Output token count, including empty tokens.
+
+    Returns:
+        Packed indices, slot masks, and clamped mean denominators, or ``None``
+        for layouts requiring scatter. Every atom contributes to its token.
+    """
+    if (
+        owners.ndim != 2
+        or owners.numel() == 0
+        or num_tokens <= 0
+        or (owners.is_cuda and torch.cuda.is_current_stream_capturing())
+    ):
+        return None
+    if not bool(((owners >= 0) & (owners < num_tokens)).all() & (owners[:, 1:] >= owners[:, :-1]).all()):
+        return None
+    counts = torch.zeros(owners.shape[0], num_tokens, device=owners.device, dtype=torch.int64)
+    counts.scatter_add_(1, owners.long(), torch.ones_like(owners, dtype=torch.int64))
+    slots = int(counts.max().item())
+    if slots > MAX_ORDERED_ATOMS:
+        return None
+    starts = counts.cumsum(-1) - counts
+    offsets = torch.arange(slots, device=owners.device)
+    valid = offsets < counts[..., None]
+    indices = torch.where(valid, starts[..., None] + offsets, 0)
+    return indices.flatten(-2).unsqueeze(1), valid.unsqueeze(1), counts.clamp_min(1).unsqueeze(1)
 
 
 def aggregate_indexed_atom_features(

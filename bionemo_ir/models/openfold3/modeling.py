@@ -48,6 +48,7 @@ from bionemo_ir._torch.modules.openfold3.embedders import (
     TemplateEmbedderAllAtom,
 )
 from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleStack
+from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import prepare_atom_reduction
 from bionemo_ir._torch.sampling import EDMScheduleConfig
 from bionemo_ir._torch.utils import (
     CHUNK_REGISTRY,
@@ -445,6 +446,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         #   diffusion_samples   → no_rollout_samples (parallel rollout samples)
         num_cycles = recycling_steps + 1
 
+        batch = prepare_atom_reduction(batch)
         attn_metadata = self.generate_attn_metadata(batch)
 
         si_input, si_trunk, zij_trunk = self.feature_extraction(

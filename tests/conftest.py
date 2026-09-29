@@ -35,6 +35,10 @@ differently across containers.
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tests.common.test_utils.openfold3.batched_input_tools import CaptureInputs
 
 os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
 os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
@@ -81,3 +85,20 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     if _is_launcher_free_only(session.config):
         return
     require_public_cutedsl_library()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    # Keep Ray on one pytest worker.
+    for item in items:
+        if item.path.is_relative_to(_TESTS_DIR / "pipeline"):
+            item.add_marker(pytest.mark.xdist_group("pipeline"))
+        if "of3_capture_inputs" in item.fixturenames:
+            item.add_marker(pytest.mark.xdist_group("of3-capture"))
+
+
+@pytest.fixture(scope="session")
+def of3_capture_inputs() -> "CaptureInputs":
+    from tests.common.test_utils.openfold3.batched_input_tools import cached_capture_inputs
+
+    return cached_capture_inputs()

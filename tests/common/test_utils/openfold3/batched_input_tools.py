@@ -23,7 +23,10 @@ batch-size-``len(sample_ids)`` input — with ``attn_metadata`` and the precompu
 ``atom_broadcast_index`` rebuilt for the padded shape.
 """
 
+import os
 import tempfile
+from collections.abc import Callable, Sequence
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
 
@@ -64,12 +67,30 @@ def harness_skip_reason(sample_ids=()) -> str | None:
 _N_QUERY = 32
 _N_KEY = 128
 
+type CaptureInputs = Callable[[Sequence[str]], tuple[DiffusionModule, list[dict]]]
+
+
+def cached_capture_inputs() -> CaptureInputs:
+    """Reuse the eager module with independent inputs per consumer."""
+    captures = {}
+
+    def capture(sample_ids: Sequence[str]) -> tuple[DiffusionModule, list[dict]]:
+        key = (tuple(sample_ids), os.environ.get("CUTEDSL_FORCE_CUBIN", "0"), torch.cuda.current_device())
+        if key not in captures:
+            captures[key] = _capture_per_sample_inputs(sample_ids)
+        module, inputs = captures[key]
+        return module, deepcopy(inputs)
+
+    return capture
+
 
 def clone_tree(x):
     """Deep-clone tensors (detaching inference-mode) so captured inputs are
     normal tensors reusable across calls; pass non-tensors through."""
     if torch.is_tensor(x):
         return x.clone()
+    if isinstance(x, AttentionMetadata):
+        return deepcopy(x)
     if isinstance(x, dict):
         return {k: clone_tree(v) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
@@ -157,7 +178,8 @@ def _capture_per_sample_inputs(sample_ids):
         out = orig_forward(self, **kwargs)
         n_token = kwargs["si_trunk"].shape[-2]
         module_box.setdefault("module", self)
-        by_token_count.setdefault(n_token, clone_tree(kwargs))
+        if n_token not in by_token_count:
+            by_token_count[n_token] = clone_tree(kwargs)
         return out
 
     requests = [_load_request(sid) for sid in sample_ids]
@@ -234,7 +256,7 @@ def _assemble_batched_kwargs(per_sample):
     return batched
 
 
-def capture_and_assemble(sample_ids=("T1038", "T1047s1")):
+def capture_and_assemble(sample_ids=("T1038", "T1047s1"), *, capture_inputs: CaptureInputs | None = None):
     """Capture the samples' real B=1 diffusion inputs once, and return both the
     per-sample inputs and the assembled batch built from the *same* capture.
 
@@ -246,11 +268,11 @@ def capture_and_assemble(sample_ids=("T1038", "T1047s1")):
     (running the samples through separate pipeline invocations would draw
     different noise, since RNG advances across samples within one run).
     """
-    module, per_sample = _capture_per_sample_inputs(sample_ids)
+    module, per_sample = (capture_inputs or _capture_per_sample_inputs)(sample_ids)
     return module, per_sample, _assemble_batched_kwargs(per_sample)
 
 
-def make_batched_diffusion_inputs(sample_ids=("T1038", "T1047s1")):
+def make_batched_diffusion_inputs(sample_ids=("T1038", "T1047s1"), *, capture_inputs: CaptureInputs | None = None):
     """Assemble one batched ``DiffusionModule.forward`` input from ``sample_ids``.
 
     Captures each sample's real (B=1) OpenFold3 diffusion inputs, zero-pads them
@@ -263,5 +285,5 @@ def make_batched_diffusion_inputs(sample_ids=("T1038", "T1047s1")):
         kwargs dict callable as ``module(**batched_kwargs)`` at
         ``B == len(sample_ids)``.
     """
-    module, per_sample = _capture_per_sample_inputs(sample_ids)
+    module, per_sample = (capture_inputs or _capture_per_sample_inputs)(sample_ids)
     return module, _assemble_batched_kwargs(per_sample)

@@ -19,8 +19,7 @@
 # that phase 2 reuses.
 #
 #   phase 1: the xdist-safe bulk (worker count scaled to VRAM);
-#   phase 2: the Ray/model_forwards trees, serial (they OOM / deadlock the
-#            raylet under xdist).
+#   phase 2: serial unless explicitly sharded.
 #
 # Both phases emit a JUnit XML under REPORT_DIR. Coverage is off by default —
 # instrumentation costs wall-clock and nothing local reads the report. COVERAGE=1
@@ -37,6 +36,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/coverage_summary.sh
+source "${SCRIPT_DIR}/coverage_summary.sh"
 # Repo root the test phase cd's into. The CI test job sets PROJECT_WORKDIR
 # explicitly; otherwise derive it from this script's location
 # (<repo>/scripts/ -> one level up).
@@ -62,6 +63,8 @@ Environment:
   PHASE2_TARGETS  paths phase 2 runs
   PHASE2_ADDOPTS  extra pytest args for phase 2
   XDIST_WORKERS   phase 1 worker count (default: scaled to VRAM)
+  OMP_NUM_THREADS CPU threads per process (default: 1)
+  MKL_NUM_THREADS MKL threads (default: OMP_NUM_THREADS)
   COVERAGE        1 to enable coverage instrumentation (default: 0; CI sets 1)
   REPORT_DIR      where JUnit/coverage/metrics land
 EOF
@@ -122,6 +125,9 @@ fi
 [[ -s "${WEIGHTS_ENV_FILE}" ]] && source "${WEIGHTS_ENV_FILE}"
 
 cd "${PROJECT_WORKDIR}"
+# Avoid nested CPU pools across pytest workers.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-${OMP_NUM_THREADS}}"
 # The package is installed by the caller (CI's before_script, or `uv pip install
 # --no-deps -e .` on first attach in the dev container), so we do not reinstall
 # here.
@@ -185,7 +191,7 @@ report_coverage() {
   # pytest-cov already combined each phase's sidecars; this only picks up any
   # stragglers (e.g. a worker that died after writing its data).
   coverage combine --append >/dev/null 2>&1 || true
-  coverage report || rc=1
+  coverage_summary || rc=1
   # `if`, not `((COVERAGE_HTML)) && ... || rc=1`: under `set -e` a false `(( ))`
   # would fall through to the `||` and mark every green shard as failed.
   if ((COVERAGE_HTML)); then
@@ -203,7 +209,7 @@ report_coverage() {
 # which needs a matching arch AND a cold cache — so the same commit measures
 # several points apart on an H100 with a warm cache versus a cold A100.
 write_metrics() {
-  local gpu_name gpu_cap gpu_mem host kcache pct
+  local gpu_name gpu_cap gpu_mem host kcache
   IFS=, read -r gpu_name gpu_cap gpu_mem < <(
     nvidia-smi --query-gpu=name,compute_cap,memory.total \
       --format=csv,noheader,nounits 2>/dev/null | head -1
@@ -217,8 +223,8 @@ write_metrics() {
       "${gpu_name# }" "${gpu_cap# }" "${gpu_mem# }" "${host}"
     printf 'test_xdist_workers{component="%s"} %s\n' "${COVERAGE_COMPONENT}" "${XDIST_WORKERS}"
     printf 'test_kernel_cache_files{component="%s"} %s\n' "${COVERAGE_COMPONENT}" "${kcache}"
-    if ((COVERAGE)) && pct=$(coverage report --format=total 2>/dev/null); then
-      printf 'test_coverage_percent{component="%s"} %s\n' "${COVERAGE_COMPONENT}" "${pct}"
+    if ((COVERAGE)) && [[ -n ${BIOIR_COVERAGE_TOTAL:-} ]]; then
+      printf 'test_coverage_percent{component="%s"} %s\n' "${COVERAGE_COMPONENT}" "${BIOIR_COVERAGE_TOTAL}"
     fi
   } >"${REPORT_DIR}/metrics.txt"
   echo "metrics:"
@@ -241,11 +247,7 @@ esac
 
 # Phase 1 (parallel): the xdist-safe bulk, warmed by the kernel cache.
 #
-# Worker count is sized to VRAM, not core count: the suite is GPU-memory-bound at
-# roughly 8 GB/worker. Do NOT use `-n auto` — it keys off logical CPUs and would
-# spawn a worker per core → OOM. With no nvidia-smi the tiers below fall back to
-# the largest, which is what CI runs on; XDIST_WORKERS overrides them for a
-# smaller dev box without editing this script.
+# Budget roughly 8 GiB per worker.
 auto_workers=8
 gpu_mem_mib=$(
   nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits \
@@ -256,6 +258,8 @@ if [[ -n "${gpu_mem_mib}" ]]; then
     auto_workers=2
   elif ((gpu_mem_mib <= 49152)); then
     auto_workers=4
+  elif ((gpu_mem_mib >= 131072)); then
+    auto_workers=16
   fi
 fi
 XDIST_WORKERS="${XDIST_WORKERS:-${auto_workers}}"
@@ -266,7 +270,7 @@ phase1_rc=0
 if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "1" ]]; then
   echo "==== phase 1: xdist bulk" \
     "(-n ${XDIST_WORKERS}, GPU VRAM ${gpu_mem_mib:-unknown} MiB) ===="
-  phase1_addopts="-n ${XDIST_WORKERS} --dist worksteal"
+  phase1_addopts="-n ${XDIST_WORKERS} --dist loadgroup"
   phase1_addopts+=" --ignore=tests/pipeline"
   phase1_addopts+=" --ignore=tests/_torch/model_forwards"
   PYTEST_ADDOPTS="${phase1_addopts}" pytest -s -ra \
@@ -275,8 +279,7 @@ if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "1" ]]; then
   lap "phase 1 (xdist bulk)"
 fi
 
-# Phase 2 (serial): the xdist-incompatible trees, run after phase 1 so they reuse
-# the on-disk kernel cache phase 1 just warmed.
+# Ray stays serial; graph shards parallelize.
 #
 # Set before pytest: the raylet reads this at startup, and the first test to
 # touch ray.data starts it implicitly. =0 opts into Ray's future behaviour of
@@ -284,7 +287,7 @@ fi
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 phase2_rc=0
 if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "2" ]]; then
-  echo "==== phase 2: serial (${PHASE2_TARGETS}${PHASE2_ADDOPTS:+ ${PHASE2_ADDOPTS}}) ===="
+  echo "==== phase 2: ${PHASE2_TARGETS}${PHASE2_ADDOPTS:+ ${PHASE2_ADDOPTS}} ===="
   # PHASE2_TARGETS is unquoted on purpose — it carries several paths. PHASE2_ADDOPTS
   # goes through PYTEST_ADDOPTS, which pytest shlex-parses, so a quoted -k survives.
   # shellcheck disable=SC2086
@@ -292,7 +295,7 @@ if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "2" ]]; then
     ${cov_append_opts[@]+"${cov_append_opts[@]}"} \
     --junitxml="${REPORT_DIR}/junit-phase2.xml" \
     ${PHASE2_TARGETS} || phase2_rc=$?
-  lap "phase 2 (serial)"
+  lap "phase 2"
 fi
 
 # Only banner a report that is actually coming: with COVERAGE=0 report_coverage

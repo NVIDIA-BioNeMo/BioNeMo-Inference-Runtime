@@ -653,8 +653,8 @@ class TestFoldingEngineStageReplicaMapBatches:
         and at function scope every test in this class paid one. The cluster carries no
         per-test state these tests depend on — each builds its own dataset and its own
         ``ActorPoolStrategy`` pool, and nothing in the package uses named/detached actors
-        — so one cluster serves the class. Phase 2 runs serial (see run_tests.sh), so
-        there is no xdist worker to fight over it.
+        — so one cluster serves the class. Pipeline tests share one xdist group
+        to keep Ray on one worker.
         """
         ray.init(ignore_reinit_error=True, include_dashboard=False)
         yield

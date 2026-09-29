@@ -638,16 +638,20 @@ def _flatten_sample_ids(sample_ids: tuple) -> tuple[str, ...]:
 # tuple of per-batch tuples whose eager and cuda-graph runs fold exactly those
 # targets; the test id joins the flattened member sample ids with '-'.
 _SAMPLE_ID_TUPLE_PARAMS_ALL = [
-    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
+    pytest.param(
+        t,
+        id="-".join(_flatten_sample_ids(t)),
+        # Keep eager baselines on one worker.
+        marks=pytest.mark.xdist_group("-".join(_flatten_sample_ids(t))),
+    )
+    for t in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
 ]
 
 _SAMPLE_ID_TUPLE_PARAMS_D = [pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (SAMPLE_ID_TUPLE_D,)]
 
 # Multi-target tuples only, for the modules exercised with EXACT keying that
 # run over the multi-sample tuples (D, E).
-_SAMPLE_ID_TUPLE_PARAMS_MULTI = [
-    pytest.param(t, id="-".join(_flatten_sample_ids(t))) for t in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
-]
+_SAMPLE_ID_TUPLE_PARAMS_MULTI = _SAMPLE_ID_TUPLE_PARAMS_ALL
 
 # Shared skip/parametrize stack for every per-module parity test: CUDA + sample
 # data required, run each (model_source, input_key_method) combination. Listed

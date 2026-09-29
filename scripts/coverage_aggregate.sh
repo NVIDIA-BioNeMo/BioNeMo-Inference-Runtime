@@ -52,6 +52,10 @@
 #         total and the component count.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/coverage_summary.sh
+source "${SCRIPT_DIR}/coverage_summary.sh"
+
 # Must sit in the CI checkout -- a job only uploads artifacts from its own
 # workspace. Both CIs start the job there, so $PWD is a fallback, not a guess.
 REPORT_DIR="${REPORT_DIR:-${CI_PROJECT_DIR:-${GITHUB_WORKSPACE:-$PWD}}/tmp/reports}"
@@ -82,14 +86,11 @@ rm -f "${COVERAGE_FILE}"
 coverage combine --keep "${data_files[@]}"
 
 echo "==== combined coverage ===="
-coverage report
+coverage_summary
 coverage xml -o "${REPORT_DIR}/coverage.xml"
 coverage html -d "${REPORT_DIR}/htmlcov" --quiet
 
-total=""
-if ! total=$(coverage report --format=total 2>/dev/null); then
-  total=""
-fi
+total="${BIOIR_COVERAGE_TOTAL}"
 
 # Total + how many components fed it, for the CI summary. The per-job GPU
 # metrics (see run_tests.sh) land in the same widget.

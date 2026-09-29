@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
+
 import pytest
 import torch
 import torch.nn as nn
@@ -66,6 +68,8 @@ def test_cuequiv_routes_mask_representation(monkeypatch, use_kv_lengths: bool, s
         aux = q.new_empty(q.shape[:-1], dtype=torch.float32)
         return torch.ones_like(q), aux, aux
 
+    # Register the op before replacing it.
+    importlib.import_module("cuequivariance_ops_torch")
     monkeypatch.setattr(torch.ops.cuequivariance, "triangle_attention", _fake_kernel)
     attention = CuEquivAttention(layer_idx=0, num_heads=2, head_dim=8, num_kv_heads=2)
     attention._sm_version = sm_version

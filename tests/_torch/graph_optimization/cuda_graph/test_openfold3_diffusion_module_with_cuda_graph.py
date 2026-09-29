@@ -57,21 +57,10 @@ _PREPARED_KEYS = ("prepared_zij", "prepared_atom_cl", "prepared_atom_plm", *_BIA
 
 
 @pytest.fixture(scope="module")
-def _of3_diffusion_capture():
-    """Module-scoped cache of ``capture_and_assemble(_SAMPLE_IDS)``.
-
-    Each test below only needs a subset of one real eager-pipeline capture:
-    the B=1 T1038 input (``per_sample[0]``, T1038's 199 tokens sort before
-    T1047s1's 232 — see the token-bucket table in
-    ``test_model_forward_with_cuda_graph.py``), the B=2 assembled batch, or
-    both — and ``capture_and_assemble`` already computes all of them from one
-    pipeline run. Without this cache each test redid that ~30-80s capture
-    independently. Returns ``None`` when the checkpoint/metadata is
-    unavailable; callers skip on that, same as a direct
-    ``capture_and_assemble``/``make_batched_diffusion_inputs`` call would.
-    """
+def _of3_diffusion_capture(of3_capture_inputs):
+    """Assemble parity inputs from the worker's shared eager capture."""
     try:
-        return capture_and_assemble(_SAMPLE_IDS)
+        return capture_and_assemble(_SAMPLE_IDS, capture_inputs=of3_capture_inputs)
     except AVAILABILITY_EXC:
         return None
 

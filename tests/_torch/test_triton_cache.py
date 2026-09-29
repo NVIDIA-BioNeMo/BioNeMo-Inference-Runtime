@@ -34,6 +34,7 @@ from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import (
     _reduce_atom_slots,
     reduce_atom_slots,
 )
+from bionemo_ir.dsl_kernels.triton.edm import _churn
 from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import (
     _STREAMING_DEFAULT_TUNING,
     _STREAMING_TUNING,
@@ -57,6 +58,7 @@ from bionemo_ir.dsl_kernels.triton_cache import (
 
 # Kernels reusing CUBINs compiled from dummy tensors.
 DRIVER_LAUNCHED_KERNELS = [
+    _churn,
     _reduce_atom_slots,
     _fused_ln_proj_moveaxis_pad_kernel,
     _fused_ln_proj_moveaxis_pad_streaming_kernel,

@@ -59,6 +59,7 @@ from bionemo_ir._torch.sampling.contracts import (
 )
 from bionemo_ir._torch.sampling.denoise_integrator import DenoiseIntegratorTemplate
 from bionemo_ir._torch.sampling.hooks import DenoiseHookPipeline
+from bionemo_ir.dsl_kernels.triton.edm import churn_update, supports_churn
 
 EDMFinalMode = Literal["keep", "zero", "append_zero"]
 
@@ -263,6 +264,8 @@ def edm_churn(
     ``noise`` is standard normal here; ``noise_scale`` supplies the paper's
     ``S_noise`` standard-deviation multiplier.
     """
+    if supports_churn(state, noise, sigma_last, sigma_hat):
+        return churn_update(state, noise, sigma_last, sigma_hat, noise_scale)
     variance = sigma_hat.square() - sigma_last.square()
     return state + noise_scale * torch.sqrt(variance) * noise
 

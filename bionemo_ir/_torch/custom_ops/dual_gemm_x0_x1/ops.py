@@ -22,7 +22,7 @@ import torch
 
 from bionemo_ir.utils import get_sm_version
 
-from ._config import supports_fused_residual
+from ._config import _TUNED_SMS, supports_fused_residual
 from .cutedsl import DualGemmX0X1CuTe
 
 
@@ -146,28 +146,25 @@ def get_dual_gemm_x0_x1_op(
     sm = get_sm_version()
     K0 = K if K0 is None else K0
     K1 = K if K1 is None else K1
-    # Keyed on ``(N, K0, K1)``:
-    #   * (128, 128, 128) -- OpenFold3 / Boltz; SM80/86/89/90
-    #   * (256, 256, 256) -- ProtenixV2; SM80/86/89/90
-    #   * (384, 384, 256) -- asymmetric trimul; SM80/86/89/90
+    # Keyed on ``(N, K0, K1)``, each tuned on every SM in ``_TUNED_SMS``:
+    #   * (128, 128, 128) -- OpenFold3 / Boltz
+    #   * (256, 256, 256) -- ProtenixV2
+    #   * (384, 384, 256) -- asymmetric trimul
     cute_shapes = {(128, 128, 128)}
-    if sm in (80, 86, 89, 90):
-        cute_shapes = cute_shapes | {(256, 256, 256)}
-    if sm in (80, 86, 89, 90):
-        cute_shapes.add((384, 384, 256))
-    if sm in (80, 86, 89, 90):
-        cute_shapes = cute_shapes | {
+    if sm in _TUNED_SMS:
+        cute_shapes |= {
+            (256, 256, 256),
+            (384, 384, 256),
             # Template-level trimul in OpenFold2/3 and Protenix.
             (64, 64, 64),
             # Legacy out-projection whose wide output needs independent strides.
             (256, 128, 128),
+            # z12 hero trimul, pair_dim 512 / tri_mult_c 256.
+            (512, 512, 256),
         }
-    if sm in (80, 86, 89, 90):
-        # z12 hero trimul, pair_dim 512 / tri_mult_c 256.
-        cute_shapes.add((512, 512, 256))
-    # The legacy OpenFold3-width out-projection now has direct CuTe tuning on
-    # every shipped SM.
-    cuequiv_shapes: set[tuple[int, int]] = set() if sm in (80, 86, 89, 90) else {(256, 128)}
+    # The legacy OpenFold3-width out-projection has direct CuTe tuning on every
+    # tuned SM.
+    cuequiv_shapes: set[tuple[int, int]] = set() if sm in _TUNED_SMS else {(256, 128)}
 
     if dtype not in (torch.float16, torch.bfloat16):
         return _invoke_vanilla_dual_gemm_x0_x1

@@ -24,6 +24,7 @@ import torch
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
+    CuTeDSLKernelLibraryExecutable,
     launch_compiled_kernel,
     load_source_module,
     populate_compiled_cache_from_library,
@@ -36,8 +37,8 @@ from ._config import (
     DualGemmX0X1KernelConfig,
     bucket_anchors,
     compute_S,
+    config_kernel_abi,
     get_kernel_config,
-    kernel_is_sm90,
     load_bundle,
     needs_independent_operand_strides,
     supports_fused_residual,
@@ -101,7 +102,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         self._last_variant: _DualGemmX0X1Variant | None = None
         # Parsed tuning anchors by (K0, K1, N, has_bias).
         self._bucket_ranges: dict[tuple, list[tuple[int, str]] | None] = {}
-        self._is_sm90: dict[tuple[int, int, int], bool] = {}
+        self._kernel_abis: dict[tuple[int, int, int], str | None] = {}
         self._fused_residual: dict[tuple[int, int, int], bool] = {}
         self._last_bucket: tuple[tuple, int] | None = None
 
@@ -120,14 +121,16 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             variant.fused_residual,
         )
 
+    def _kernel_abi(self, K: int, N: int, K1: int | None = None) -> str | None:
+        """Return the calling convention ``(K, K1, N)`` resolves to."""
+        K1 = K if K1 is None else K1
+        if (K, K1, N) not in self._kernel_abis:
+            self._kernel_abis[(K, K1, N)] = config_kernel_abi(self._sm_version, K, N, K1)
+        return self._kernel_abis[(K, K1, N)]
+
     def _kernel_is_sm90(self, K: int, N: int, K1: int | None = None) -> bool:
         """Whether ``(K, K1, N)`` resolves to the Hopper calling convention."""
-        K1 = K if K1 is None else K1
-        cached = self._is_sm90.get((K, K1, N))
-        if cached is None:
-            cached = kernel_is_sm90(self._sm_version, K, N, K1)
-            self._is_sm90[(K, K1, N)] = cached
-        return cached
+        return self._kernel_abi(K, N, K1) == "sm90"
 
     def _nearest_bucket(self, S: int, K: int, N: int, has_bias: bool, K1: int | None = None) -> int:
         """Return the tuned ``S`` anchor nearest ``S`` for this call site."""
@@ -251,6 +254,8 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             asymmetric=needs_independent_operand_strides(variant.K, variant.K1, variant.N),
             has_mask=variant.fused_residual,
             fused_residual=variant.fused_residual,
+            K=variant.K,
+            K1=variant.K1,
         )
         DualGemmX0X1CuTe._compiled_cache[cache_key] = executable
         self.save_to_cache(disk_key, executable)
@@ -367,7 +372,9 @@ class DualGemmX0X1CuTe(CuteKernelCache):
             raise ValueError(f"X0 row stride must equal output width N={N}, got {X0_2d.stride(0)}")
         has_bias = bias0 is not None
         fused_residual = residual is not None
-        if fused_residual != (actual_seqlen is not None):
+        # Blackwell reads the mask through a nullable pointer, so either operand may come alone.
+        is_sm100 = self._kernel_abi(K, N, K1) == "sm100"
+        if not is_sm100 and fused_residual != (actual_seqlen is not None):
             raise ValueError("actual_seqlen and residual must both be supplied for fused residual output")
         if fused_residual:
             fusable = self._fused_residual.get((K, N, K1))
@@ -407,13 +414,32 @@ class DualGemmX0X1CuTe(CuteKernelCache):
 
         out_2d = torch.empty((M, N), dtype=dtype, device=device)
         i_dim = 1
-        if fused_residual:
+        if actual_seqlen is not None:
             i_dim = x0_orig_shape[-2]
             kernel_B = M // i_dim
             if actual_seqlen.numel() != kernel_B:
                 raise ValueError(f"actual_seqlen must have {kernel_B} elements, got shape {tuple(actual_seqlen.shape)}")
             actual_seqlen = actual_seqlen.to(device=device, dtype=torch.int32).reshape(kernel_B).contiguous()
-        if self._kernel_is_sm90(K, N, K1):
+        if is_sm100:
+            if isinstance(exe, CuTeDSLKernelLibraryExecutable):
+                launch_compiled_kernel(
+                    exe, X0_2d, X1_2d, W0, W1, bias0, bias1, actual_seqlen, residual_2d, out_2d, i_dim
+                )
+            else:
+                load_source_module(__package__).launch_dual_gemm_x0_x1_source(
+                    exe,
+                    x0=X0_2d,
+                    x1=X1_2d,
+                    w0=W0,
+                    w1=W1,
+                    bias0=bias0,
+                    bias1=bias1,
+                    actual_seqlen=actual_seqlen,
+                    residual=residual_2d,
+                    output=out_2d,
+                    i_dim=i_dim,
+                )
+        elif self._kernel_is_sm90(K, N, K1):
             # Hopper carries unused mask and I_dim slots.
             launch_compiled_kernel(
                 exe,

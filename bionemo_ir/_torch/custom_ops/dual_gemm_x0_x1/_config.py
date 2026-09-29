@@ -40,8 +40,8 @@ _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 # N/K/SM are in the filename; keys are ``S=<anchor>[|b=<0|1>]``.
 _VARIANT_KEY_RE = re.compile(r"^S=(?P<s>\d+)(?:\|b=(?P<b>[01]))?$")
 
-# SM80/86/89 use Ampere split-K; SM90 uses Hopper ping-pong.
-_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90)
+# SM80/86/89 use Ampere split-K, SM90 Hopper ping-pong, and SM100/103 Blackwell 2-SM UMMA.
+_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90, 100, 103)
 _FALLBACK_SM: int = 80
 
 
@@ -122,15 +122,22 @@ def _build_kernel_config(
         )
     full_params["ab_dtype"] = dtype_str
     is_sm90 = kernel_abi == "sm90"
+    is_sm100 = kernel_abi == "sm100"
     kernel_params = dict(full_params)
     if N is not None:
         kernel_params["n"] = int(N)
     if K is not None:
         kernel_params["k0"] = int(K)
         kernel_params["k1"] = int(K if K1 is None else K1)
+        if is_sm100:
+            # The resident kernel sizes its weight slices from these.
+            kernel_params["k"] = int(K)
     kernel_config = _kernel_config_dataclass(kernel_cls).from_dict(kernel_params)
 
     def factory():
+        if is_sm100:
+            # The mask is a nullable pointer, not a compile-time operand.
+            return kernel_cls(config=kernel_config, has_bias=has_bias, has_residual=fused_residual)
         if is_sm90:
             return kernel_cls(
                 config=kernel_config,
@@ -149,8 +156,8 @@ def _build_kernel_config(
         )
 
     def can_implement(ct_dtype: type, K: int, N: int) -> bool:
-        if is_sm90:
-            # Hopper derives its stage count from SM90 shared-memory capacity.
+        if is_sm90 or is_sm100:
+            # Hopper and Blackwell derive their stage counts from shared-memory capacity.
             return True
         if asymmetric:
             vector_elements = 128 // ct_dtype.width
@@ -175,7 +182,7 @@ def _build_kernel_config(
         )
 
     return DualGemmX0X1KernelConfig(
-        arch="sm90" if is_sm90 else "sm80",
+        arch=kernel_abi if is_sm90 or is_sm100 else "sm80",
         kernel_factory=factory,
         can_implement=can_implement,
         tile_params=full_params,
@@ -313,24 +320,25 @@ def get_nearest_bucket(sm_version: int, K: int, N: int, S: int, has_bias: bool, 
     return bucket
 
 
-def kernel_is_sm90(sm_version: int, K: int, N: int, K1: int | None = None) -> bool:
-    """Whether this config bundle selects the Hopper call ABI."""
+def config_kernel_abi(sm_version: int, K: int, N: int, K1: int | None = None) -> str | None:
+    """Return the call ABI this config bundle selects, or None without one."""
     try:
         bundle = load_bundle(sm_version, K, N, K1)
     except ValueError:
-        return False
-    return bundle.kernel_abi == "sm90"
+        return None
+    return bundle.kernel_abi
+
+
+def kernel_is_sm90(sm_version: int, K: int, N: int, K1: int | None = None) -> bool:
+    """Whether this config bundle selects the Hopper call ABI."""
+    return config_kernel_abi(sm_version, K, N, K1) == "sm90"
 
 
 def supports_fused_residual(sm_version: int, K: int, N: int, K1: int | None = None) -> bool:
     """Whether this shape has a tuned mask-residual epilogue."""
     if sm_version not in _TUNED_SMS:
         return False
-    try:
-        bundle = load_bundle(sm_version, K, N, K1)
-    except ValueError:
-        return False
-    return bundle.kernel_abi in ("sm80", "sm90")
+    return config_kernel_abi(sm_version, K, N, K1) in ("sm80", "sm90", "sm100")
 
 
 def get_kernel_config(

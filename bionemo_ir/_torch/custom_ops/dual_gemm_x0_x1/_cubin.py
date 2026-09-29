@@ -30,7 +30,7 @@ from bionemo_ir._torch.utils.kernel import (
 
 
 class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
-    """Adapt the Ampere or Hopper source-call ABI to the C++ launcher."""
+    """Adapt the Ampere, Hopper, or Blackwell source-call ABI to the C++ launcher."""
 
     def __init__(
         self,
@@ -76,17 +76,25 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         self._launcher = launcher
         self._config = config
         self._is_sm90 = int(config.spec.kernel_sm) == 90
+        # Blackwell images read the mask through a nullable pointer.
+        self._is_sm100 = int(config.spec.kernel_sm) == 100
         self._fused_residual = bool(fused_residual)
 
     def __call__(self, *args: Any) -> None:
-        if self._is_sm90 or self._fused_residual:
+        actual_seqlen = None
+        if self._is_sm90 or self._is_sm100 or self._fused_residual:
             expected = "(X0, X1, W0, W1, bias0, bias1, actual_seqlen, residual, out, I_dim)"
             if len(args) != 10:
                 raise CuTeDSLKernelVariantUnavailable(
                     f"dual_gemm x0_x1 selected a CUBIN expecting {expected}; got {len(args)} arguments"
                 )
             X0, X1, W0, W1, bias0, bias1, actual_seqlen, residual, out, i_dim = args
-            if self._fused_residual != (actual_seqlen is not None and residual is not None):
+            operands_match = (
+                self._fused_residual == (residual is not None)
+                if self._is_sm100
+                else self._fused_residual == (actual_seqlen is not None and residual is not None)
+            )
+            if not operands_match:
                 raise CuTeDSLKernelVariantUnavailable(
                     "dual_gemm x0_x1 fused-residual operands do not match the selected CUBIN"
                 )
@@ -113,7 +121,13 @@ class DualGemmX0X1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         if has_bias:
             params.bias0 = tensor_s1_d0(self._kernel_library, bias0)
             params.bias1 = tensor_s1_d0(self._kernel_library, bias1)
-        if self._fused_residual:
+        if self._is_sm100:
+            if actual_seqlen is not None:
+                params.actual_seqlen = tensor_s1_d0(self._kernel_library, actual_seqlen)
+            if self._fused_residual:
+                params.residual = tensor_s2_d1(self._kernel_library, residual)
+            params.i_dim = i_dim
+        elif self._fused_residual:
             params.actual_seqlen = tensor_s1_d0(self._kernel_library, actual_seqlen)
             params.residual = tensor_s2_d1(self._kernel_library, residual)
             params.i_dim = i_dim

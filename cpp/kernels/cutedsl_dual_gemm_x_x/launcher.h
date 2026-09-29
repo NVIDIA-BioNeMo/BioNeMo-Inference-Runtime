@@ -34,7 +34,7 @@ namespace bioir::cutedsl::dual_gemm_x_x::embedded
 struct CubinImage;
 }
 
-/* Direct CUDA Driver launch ABIs for Ampere and Hopper dual GEMM.
+/* Direct CUDA Driver launch ABIs for Ampere, Hopper, and Blackwell dual GEMM.
  * These are the lowered device-kernel ABIs read from EIATTR_KPARAM_INFO,
  * not the high-level CuTeDSL __call__ signatures.
  */
@@ -139,8 +139,85 @@ inline std::size_t pack_sm90_kernel_params(
   return count;
 }
 
+inline constexpr std::size_t kSM100MaxParameterCount = 15;
+
+/* The tcgen05 tiled MMA's runtime state, lowered as three bytes the kernel
+ * initializes itself; the launch passes zeros.
+ */
+struct SM100TiledMmaDescriptor
+{
+  std::uint8_t fields[3]{};
+};
+
+/* Blackwell lowers every TMA operand to a tagged non-executable atom plus its
+ * coordinate extents: {M} for x, {N} for each weight, {M, N} for the output.
+ * The streaming kernel passes each bias as a bare pointer (a static SMEM-sized
+ * view) and ends with the CLC scheduler's unrounded tile counts; the resident
+ * kernel passes each bias with its extent N and has no scheduler state.
+ */
+struct SM100Params
+{
+  SM100TiledMmaDescriptor tiled_mma;
+  CUtensorMap x_tma;
+  CoordTensorS1 x_coord;
+  CUtensorMap w0_tma;
+  CoordTensorS1 w0_coord;
+  CUtensorMap w1_tma;
+  CoordTensorS1 w1_coord;
+  CUtensorMap output_tma;
+  CoordTensorS2 output_coord;
+  cute_tensor_s0_d0_t static_bias0;
+  cute_tensor_s0_d0_t static_bias1;
+  cute_tensor_s1_d0_t bias0;
+  cute_tensor_s1_d0_t bias1;
+  cute_tensor_s1_d0_t actual_seqlen;
+  std::int32_t i_dim;
+  std::int32_t scheduler_m_tiles;
+  std::int32_t scheduler_n_tiles;
+};
+
+constexpr std::size_t sm100_parameter_count(bool has_bias, bool resident)
+{
+  return (resident ? 11U : 13U) + (has_bias ? 2U : 0U);
+}
+
+inline std::size_t pack_sm100_kernel_params(
+  SM100Params* params, bool has_bias, bool resident, void* kernel_params[kSM100MaxParameterCount])
+{
+  std::size_t count = 0;
+  kernel_params[count++] = &params->tiled_mma;
+  kernel_params[count++] = &params->x_tma;
+  kernel_params[count++] = &params->x_coord;
+  kernel_params[count++] = &params->w0_tma;
+  kernel_params[count++] = &params->w0_coord;
+  kernel_params[count++] = &params->w1_tma;
+  kernel_params[count++] = &params->w1_coord;
+  kernel_params[count++] = &params->output_tma;
+  kernel_params[count++] = &params->output_coord;
+  if (has_bias)
+  {
+    kernel_params[count++] = resident ? static_cast<void*>(&params->bias0) : static_cast<void*>(&params->static_bias0);
+    kernel_params[count++] = resident ? static_cast<void*>(&params->bias1) : static_cast<void*>(&params->static_bias1);
+  }
+  kernel_params[count++] = &params->actual_seqlen;
+  kernel_params[count++] = &params->i_dim;
+  if (!resident)
+  {
+    kernel_params[count++] = &params->scheduler_m_tiles;
+    kernel_params[count++] = &params->scheduler_n_tiles;
+  }
+  return count;
+}
+
 static_assert(sm80_parameter_count(true, true) == kSM80MaxParameterCount);
 static_assert(sm90_parameter_count(true, true) == kSM90MaxParameterCount);
+static_assert(sm100_parameter_count(true, false) == kSM100MaxParameterCount);
+static_assert(std::is_standard_layout_v<SM100Params>);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 3);
+static_assert(alignof(SM100TiledMmaDescriptor) == 1);
+static_assert(sizeof(cute_tensor_s0_d0_t) == 8);
+static_assert(sizeof(cute_tensor_s1_d0_t) == 16);
+static_assert(alignof(cute_tensor_s1_d0_t) == 8);
 static_assert(std::is_standard_layout_v<SM80Params>);
 static_assert(std::is_standard_layout_v<SM90Params>);
 static_assert(offsetof(SM80Params, x) == 0);

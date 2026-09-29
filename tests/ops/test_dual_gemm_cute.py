@@ -55,6 +55,7 @@ from tests._torch import (
     require_cubin_library,
     skip_if_no_cutedsl,
     skip_if_not_sm90,
+    skip_if_not_sm100_family,
 )
 
 _DUAL_GEMM_XX_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.dual_gemm_x_x._source"
@@ -75,7 +76,7 @@ def test_x_x_arbitrary_mask_matches_dense_projection(
     channels: int, hidden: int, gate: str, transpose_out: bool, dtype: torch.dtype
 ) -> None:
     """Interior gaps and empty samples preserve the dense gated projection."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     torch.manual_seed(17)
     x = torch.randn(2, 7, 31, channels, device="cuda", dtype=dtype)
     weights = [torch.randn(hidden, channels, device="cuda", dtype=dtype) / channels**0.5 for _ in range(2)]
@@ -100,7 +101,7 @@ def test_x_x_arbitrary_mask_matches_dense_projection(
 
 def test_x_x_arbitrary_mask_graph_refreshes_values() -> None:
     """A replay reads updated masks rather than a captured prefix length."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     torch.manual_seed(19)
     dtype = torch.bfloat16
     x = torch.randn(2, 13, 17, 128, device="cuda", dtype=dtype)
@@ -126,10 +127,13 @@ def test_x_x_arbitrary_mask_graph_refreshes_values() -> None:
     assert torch.count_nonzero(output.movedim(0, -1)[~mask]) == 0
 
 
-@pytest.mark.parametrize("selected_sm", [80, 90])
-def test_x_x_nullable_mask_reuses_one_source_kernel(monkeypatch: pytest.MonkeyPatch, selected_sm: int) -> None:
+@pytest.mark.parametrize(("selected_sm", "device_sm"), [(80, 90), (90, 90), (100, 100), (103, 103)])
+def test_x_x_nullable_mask_reuses_one_source_kernel(
+    monkeypatch: pytest.MonkeyPatch, selected_sm: int, device_sm: int
+) -> None:
     """Mask presence changes a pointer value, not the selected machine code."""
-    skip_if_not_sm90()
+    if SM_VERSION != device_sm:
+        pytest.skip(f"requires SM{device_sm} (current SM{SM_VERSION})")
     if os.getenv("CUTEDSL_FORCE_CUBIN"):
         pytest.skip("source-kernel reuse is covered in source mode")
     monkeypatch.setattr(DualGemmXxCuTe, "_compiled_cache", {})
@@ -289,9 +293,7 @@ class Scenario:
 )
 def test_x0_x1_dual_gemm(sc: Scenario):
     """Test CuTe DSL dual GEMM x0_x1 against fp32 reference."""
-    skip_if_no_cutedsl()
-    if (sc.N, sc.K) == (256, 256) and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"Protenix (N=256,K=256) x0_x1 CuTeDSL is SM80/86/89/90 only (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x0_x1")
     torch.manual_seed(42)
 
     cute_op = DualGemmX0X1CuTe()
@@ -324,9 +326,7 @@ def test_x0_x1_dual_gemm(sc: Scenario):
 )
 def test_x0_x1_asymmetric_dual_gemm(N: int, K0: int, K1: int):
     """Asymmetric output gates keep independent pair/hidden K widths."""
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"Asymmetric tuning requires SM80/86/89/90, got SM{SM_VERSION}")
+    skip_if_no_cutedsl("dual_gemm_x0_x1")
 
     torch.manual_seed(42)
     dtype = torch.bfloat16
@@ -365,9 +365,7 @@ def test_x_x_tuned_odd_rectangular_masked(
     J: int,
 ) -> None:
     """Exercise odd M/J tails and per-row masks for both tuned widths."""
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"Tuned x_x shapes requires SM80/86/89/90, got SM{SM_VERSION}")
+    skip_if_no_cutedsl("dual_gemm_x_x")
 
     torch.manual_seed(43)
     dtype = torch.bfloat16
@@ -421,12 +419,12 @@ def test_x_x_tuned_odd_rectangular_masked(
         # Larger N path (most production trimul uses N=256).
         Scenario(N=256, K=128, seq_lens=[100, 512], dtype=torch.bfloat16),
         Scenario(N=256, K=128, seq_lens=[100, 512], dtype=torch.bfloat16, has_bias=True, has_mask=True),
-        # ProtenixV2 trimul (c_z=256, hidden=256) -- CuTeDSL on SM80/86/89/90.
+        # ProtenixV2 trimul (c_z=256, hidden=256).
         Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16),
         Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, has_mask=True),
         Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, transpose_out=True),
         Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, has_mask=True, transpose_out=True),
-        # The N=392 trimul input projections (SM80/86/89/90).
+        # The N=392 trimul input projections.
         Scenario(N=392, K=256, seq_lens=[32], dtype=torch.bfloat16, has_bias=True, has_mask=True),
         Scenario(N=392, K=256, seq_lens=[32], dtype=torch.bfloat16, has_bias=True, has_mask=True, transpose_out=True),
         Scenario(N=392, K=384, seq_lens=[32], dtype=torch.bfloat16, has_bias=True, has_mask=True),
@@ -478,16 +476,8 @@ def test_x_x_dual_gemm(sc: Scenario, cutedsl_mode: str, monkeypatch):
       * has_mask: left-aligned ``[B, I, J]`` row mask
       * transpose_out: optional output transpose
     """
-    skip_if_no_cutedsl()
-    if (sc.N, sc.K) == (512, 256) and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"Protenix (N=512,K=256) x_x CuTeDSL is SM80/86/89/90 only (current SM{SM_VERSION})")
-    if (sc.N, sc.K) in {(392, 256), (392, 384)} and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"These x_x shapes is SM80/86/89/90 only (current SM{SM_VERSION})")
-    if (sc.N, sc.K) == (512, 384) and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"The N=512, K=384 x_x shape requires SM80/86/89/90 (current SM{SM_VERSION})")
-    if (sc.N, sc.K) == (512, 512) and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"The N=512, K=512 x_x shape requires SM80/86/89/90 (current SM{SM_VERSION})")
-    if cutedsl_mode == "cubin" and (sc.N, sc.K) in {(392, 256), (392, 384), (512, 384), (512, 512)}:
+    skip_if_no_cutedsl("dual_gemm_x_x")
+    if cutedsl_mode == "cubin":
         _skip_unless_cubin_has_x_x(
             sc.K, sc.N, transpose_out=sc.transpose_out, has_bias=sc.has_bias, has_mask=sc.has_mask
         )
@@ -537,9 +527,11 @@ def test_x_x_dual_gemm_actual_seqlen_overrides_mask(cutedsl_mode: str, monkeypat
     correct mask alone, confirming the wrapper short-circuits the
     ``mask.sum(-1)`` reduction when ``actual_seqlen`` is supplied.
     """
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     torch.manual_seed(42)
     _configure_dual_gemm_x_x_mode(cutedsl_mode, monkeypatch)
+    if cutedsl_mode == "cubin":
+        _skip_unless_cubin_has_x_x(128, 128, has_bias=False, has_mask=True)
 
     cute_op = DualGemmXxCuTe()
 
@@ -582,9 +574,7 @@ def test_x_x_silu_gate_matches_fused_swiglu(N: int, K: int, has_bias: bool, cute
     therefore expected to be at least as accurate, which the last assertion
     pins down so a regression cannot hide behind a loose tolerance.
     """
-    skip_if_no_cutedsl()
-    if (N, K) == (512, 256) and SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"Protenix (N=512,K=256) x_x CuTeDSL is SM80/86/89/90 only (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x_x")
     from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 
     torch.manual_seed(42)
@@ -624,7 +614,7 @@ def test_x_x_gate_selects_distinct_math(gate: str, cutedsl_mode: str, monkeypatc
     Comparing against the matching fp32 reference catches that in both
     directions.
     """
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     torch.manual_seed(0)
     _configure_dual_gemm_x_x_mode(cutedsl_mode, monkeypatch)
     if cutedsl_mode == "cubin":
@@ -646,7 +636,7 @@ def test_x_x_gate_selects_distinct_math(gate: str, cutedsl_mode: str, monkeypatc
 
 def test_x_x_rejects_unknown_gate(monkeypatch):
     """An unsupported gate is a caller error, not a fallback to sigmoid."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     _configure_dual_gemm_x_x_mode("source", monkeypatch)
 
     dtype, device = torch.bfloat16, "cuda"
@@ -659,7 +649,7 @@ def test_x_x_rejects_unknown_gate(monkeypatch):
 
 
 def test_x_x_rejects_silu_without_declared_tuning(monkeypatch):
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     _configure_dual_gemm_x_x_mode("source", monkeypatch)
 
     dtype, device = torch.bfloat16, "cuda"
@@ -672,7 +662,7 @@ def test_x_x_rejects_silu_without_declared_tuning(monkeypatch):
 
 
 def test_x_x_rank3_uses_sequence_length_for_tuning_bucket(monkeypatch):
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     op = DualGemmXxCuTe()
     captured = None
 
@@ -763,17 +753,16 @@ def test_x_x_cubin_adapter_forwards_gate_axis_to_launcher(gate: str, is_silu: bo
 # ---------------------------------------------------------------------------
 # ProtenixV2 (N, K) dispatcher coverage
 #
-# ``(512, 256)`` / ``(256, 256)`` are gated to SM80/SM86/SM89/SM90. On those
-# SMs the dispatcher must select the CuTe path; elsewhere it must fall back
-# (vanilla / cuequiv) rather than try to load a missing JSON.
+# x_x ``(512, 256)`` is tuned on every dual_gemm_x_x SM and x0_x1
+# ``(256, 256)`` on SM80/SM86/SM89/SM90. On those SMs the dispatcher must
+# select the CuTe path; elsewhere it must fall back (vanilla / cuequiv) rather
+# than try to load a missing JSON.
 # ---------------------------------------------------------------------------
 
 
-def test_x_x_protenix_shape_dispatches_cute_on_sm80_sm86_sm89_sm90():
-    """Protenix ``(N=512, K=256)`` must hit CuTeDSL on SM80/86/89/90."""
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"requires SM80/86/89/90 (current SM{SM_VERSION})")
+def test_x_x_protenix_shape_dispatches_cute_on_tuned_sms():
+    """Protenix ``(N=512, K=256)`` must hit CuTeDSL on every tuned SM."""
+    skip_if_no_cutedsl("dual_gemm_x_x")
     op = get_dual_gemm_x_x_op(torch.bfloat16, N=512, K=256)
     assert op.__name__ == "_invoke_cute_dual_gemm_x_x"
 
@@ -785,10 +774,7 @@ def test_x_x_protenix_shape_dispatches_cute_on_sm80_sm86_sm89_sm90():
 # input projection; ``K`` is the checkpoint's pair width.
 @pytest.mark.parametrize(("N", "K"), [(392, 256), (392, 384), (512, 384)])
 def test_x_x_tuned_shapes_dispatch_cute_on_supported_sms(N: int, K: int):
-    skip_if_no_cutedsl()
-    supported_sms = (80, 86, 89, 90)
-    if SM_VERSION not in supported_sms:
-        pytest.skip(f"shape N={N}, K={K} requires one of {supported_sms} (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x_x")
     op = get_dual_gemm_x_x_op(torch.bfloat16, N=N, K=K, pair_mask_left_aligned=True)
     assert op.__name__ == "_invoke_cute_dual_gemm_x_x"
 
@@ -796,13 +782,11 @@ def test_x_x_tuned_shapes_dispatch_cute_on_supported_sms(N: int, K: int):
 def test_x_x_pair_swiglu_shape_is_reachable_only_through_the_silu_gate():
     """``(N=512, K=128)`` is a SwiGLU-only admission, not a general one.
 
-    The shape has tuned silu coverage on SM80/86/89/90. Admitting it for
-    sigmoid too would move trimul callers of that width onto a backend nobody
-    measured them on, so the dispatcher must keep the old answer there.
+    The shape has tuned silu coverage on every dual_gemm_x_x SM. Admitting it
+    for sigmoid too would move trimul callers of that width onto a backend
+    nobody measured them on, so the dispatcher must keep the old answer there.
     """
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"supported on SM80/86/89/90 only (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x_x")
     silu = get_dual_gemm_x_x_op(torch.bfloat16, N=512, K=128, gate="silu")
     assert silu.__name__ == "_invoke_cute_dual_gemm_x_x"
     sigmoid = get_dual_gemm_x_x_op(torch.bfloat16, N=512, K=128, gate="sigmoid")
@@ -812,9 +796,7 @@ def test_x_x_pair_swiglu_shape_is_reachable_only_through_the_silu_gate():
 @pytest.mark.parametrize("cutedsl_mode", _DUAL_GEMM_XX_TEST_MODES, ids=lambda mode: f"impl-{mode}")
 def test_x_x_pair_swiglu_shape_matches_reference(cutedsl_mode: str, monkeypatch):
     """The K128_N512 tiles must compute the admitted SwiGLU."""
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"supported on SM80/86/89/90 only (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x_x")
     _configure_dual_gemm_x_x_mode(cutedsl_mode, monkeypatch)
     if cutedsl_mode == "cubin":
         _skip_unless_cubin_has_x_x(128, 512, has_bias=False, has_mask=False, bucket=256, gate="silu")
@@ -845,30 +827,26 @@ def test_x_x_pair_swiglu_shape_matches_reference(cutedsl_mode: str, monkeypatch)
     ],
 )
 def test_x_x_model_swiglu_shapes_dispatch_cute_on_supported_sms(K: int, N: int):
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"supported on SM80/86/89/90 only (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x_x")
     op = get_dual_gemm_x_x_op(torch.bfloat16, N=N, K=K, gate="silu")
     assert op.__name__ == "_invoke_cute_dual_gemm_x_x"
 
 
 def test_x0_x1_protenix_plain_shape_uses_only_shipped_abi():
     """Plain Protenix output uses cuEquivariance, not residual-only CUBINs."""
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"requires SM80/86/89/90 (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x0_x1")
     op = get_dual_gemm_x0_x1_op(torch.bfloat16, N=256, K=256)
     assert op is _invoke_cuequiv_dual_gemm_x0_x1
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
 def test_x_x_z12_shape_dispatches_cute_on_tuned_sms(monkeypatch: pytest.MonkeyPatch, sm: int) -> None:
     monkeypatch.setattr(dual_gemm_x_x_ops, "get_sm_version", lambda: sm)
     op = get_dual_gemm_x_x_op(torch.bfloat16, N=512, K=512, gate="sigmoid")
     assert op.__name__ == "_invoke_cute_dual_gemm_x_x"
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
 @pytest.mark.parametrize(
     ("N", "K0", "K1", "expected"),
     [
@@ -891,7 +869,7 @@ def test_x0_x1_plain_calls_fallback_on_residual_only_sms(
     assert get_dual_gemm_x0_x1_op(torch.bfloat16, N=N, K0=K0, K1=K1) is expected
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
 @pytest.mark.parametrize(
     ("N", "K0", "K1"),
     [(256, 256, 196), (256, 256, 200), (384, 384, 196), (384, 384, 200)],
@@ -907,7 +885,7 @@ def test_x0_x1_removed_trimul_shapes_dispatch_vanilla(
     assert get_dual_gemm_x0_x1_op(torch.bfloat16, N=N, K0=K0, K1=K1) is _invoke_vanilla_dual_gemm_x0_x1
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
 def test_x0_x1_residual_dispatches_cute_on_tuned_sms(monkeypatch: pytest.MonkeyPatch, sm: int) -> None:
     monkeypatch.setattr(dual_gemm_x0_x1_ops, "get_sm_version", lambda: sm)
     op = get_cute_dual_gemm_x0_x1_residual_op(torch.bfloat16, N=384, K0=384, K1=256)
@@ -1000,9 +978,8 @@ def test_x_x_selector_rejects_unshipped_targets(monkeypatch, N: int, K: int, exp
 
 def test_tuned_dual_gemms_are_cudagraph_safe():
     """TVM-FFI launches must be recorded on the capture stream."""
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (80, 86, 89, 90):
-        pytest.skip(f"The tuned shapes requires SM80/86/89/90, got SM{SM_VERSION}")
+    skip_if_no_cutedsl("dual_gemm_x0_x1")
+    skip_if_no_cutedsl("dual_gemm_x_x")
 
     torch.manual_seed(42)
     dtype = torch.bfloat16
@@ -1087,6 +1064,16 @@ def test_x0_x1_dual_gemm_sm90_uses_hopper_kernel():
 
 
 @pytest.mark.parametrize(
+    ("K", "K1", "N"),
+    [(64, 64, 64), (128, 128, 128), (128, 128, 256), (256, 256, 256), (384, 256, 384), (512, 256, 512)],
+)
+def test_x0_x1_blackwell_uses_native_kernel(K: int, K1: int, N: int):
+    """Every tuned x0_x1 shape must resolve the native SM100 kernel on Blackwell."""
+    skip_if_not_sm100_family()
+    assert DualGemmX0X1CuTe()._kernel_abi(K, N, K1) == "sm100"
+
+
+@pytest.mark.parametrize(
     "N,transpose_out",
     [(128, False), (128, True), (256, False), (256, True)],
     ids=["N128_t0", "N128_t1", "N256_t0", "N256_t1"],
@@ -1105,10 +1092,12 @@ def test_x_x_dual_gemm_large_anchor(
     distinct compiled kernel -- ``raster_factor=4`` on SM90) while
     ``M = 4 * 2048`` stays small enough to run cheaply.
     """
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     torch.manual_seed(0)
     _configure_dual_gemm_x_x_mode(cutedsl_mode, monkeypatch)
     K, dtype = 128, torch.bfloat16
+    if cutedsl_mode == "cubin":
+        _skip_unless_cubin_has_x_x(K, N, transpose_out=transpose_out, has_bias=False, has_mask=False, bucket=2048)
 
     W0 = torch.randn(N, K, dtype=dtype, device="cuda")
     W1 = torch.randn(N, K, dtype=dtype, device="cuda")
@@ -1142,7 +1131,7 @@ def test_x_x_source_and_cubin_agree_bitwise(
     monkeypatch,
 ):
     """The direct launcher must reproduce the source host launch exactly."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("dual_gemm_x_x")
     torch.manual_seed(123)
     batch, rows, cols, K, N = 1, 4, 31, 128, 128
     x = torch.randn(batch, rows, cols, K, dtype=dtype, device="cuda")

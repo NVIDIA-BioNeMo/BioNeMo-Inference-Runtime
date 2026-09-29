@@ -27,7 +27,7 @@ from ._config import _has_direct_config_for_gate
 from .cutedsl import DualGemmXxCuTe
 
 _GATES = ("sigmoid", "silu")
-_CUTE_SMS = (80, 86, 89, 90)
+_CUTE_SMS = (80, 86, 89, 90, 100, 103)
 _CUEQUIV_FALLBACK_SHAPES = {(128, 128), (256, 128)}
 
 

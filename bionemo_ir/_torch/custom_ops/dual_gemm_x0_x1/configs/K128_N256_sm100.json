@@ -1,0 +1,75 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=128|b=0": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 1
+    },
+    "S=128|b=1": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 2
+    },
+    "S=256|b=0": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 1
+    },
+    "S=256|b=1": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 2
+    },
+    "S=512|b=0": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 1
+    },
+    "S=512|b=1": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 2
+    },
+    "S=768|b=0": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 1
+    },
+    "S=768|b=1": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 1
+    },
+    "S=1536|b=0": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 2
+    },
+    "S=1536|b=1": {
+      "cluster_n": 1,
+      "bias_n": 256,
+      "num_stages": 0,
+      "bias_chunk": 64,
+      "residual_stages": 1
+    }
+  }
+}

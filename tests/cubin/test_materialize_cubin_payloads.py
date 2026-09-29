@@ -66,6 +66,13 @@ _SM90_LAUNCH_SHAPES = {
     "transition_mlp": (("x", "w1", "w2", "residual", "output"), 2, False, 384),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
 }
+# Operand names, TMA rank, whether cluster launch fields are recorded, and threads
+# per block, per native-SM100 family. Dual GEMM runs 2-SM UMMA on a CTA-pair cluster.
+_SM100_LAUNCH_SHAPES = {
+    "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "residual", "output"), 2, True, 256),
+    "dual_gemm_x_x": (("x", "w0", "w1", "output"), 2, True, 256),
+    "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
+}
 
 
 def _stable_json(value: object) -> bytes:
@@ -123,12 +130,16 @@ def _sm90_launch(family: str, dtype: str) -> dict[str, object]:
     return result
 
 
-def _sm100_launch(dtype: str) -> dict[str, object]:
-    names = ("q", "k", "v", "bias", "output")
-    return {
-        "block_dims": [512, 1, 1],
-        "tma_descriptors": {name: _tma_descriptor(dtype, 4) for name in names},
+def _sm100_launch(family: str, dtype: str) -> dict[str, object]:
+    names, rank, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    result: dict[str, object] = {
+        "block_dims": [threads, 1, 1],
+        "tma_descriptors": {name: _tma_descriptor(dtype, rank) for name in names},
     }
+    if clusters:
+        result["cluster_dims"] = [2, 1, 1]
+        result["cluster_scheduling_policy"] = "default"
+    return result
 
 
 def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
@@ -188,7 +199,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "packed_output": False,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
             **(
-                {"sm100_launch": _sm100_launch(dtype) if kernel_sm == 100 else None}
+                {"sm100_launch": _sm100_launch(family, dtype) if kernel_sm == 100 else None}
                 if family == "triangle_attention"
                 else {}
             ),
@@ -221,6 +232,8 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "raster_factor": 1,
             "runtime_aliases": [{"N": 32, "bucket": 64}],
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+            # Omitted below SM100 so the legacy records without the field stay covered.
+            **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
         }
     else:
         concrete = {
@@ -236,6 +249,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "num_threads": 128,
             "raster_factor": 1,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+            **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
         }
     return common | concrete
 
@@ -520,10 +534,64 @@ def test_sm80_registry_rejects_sm100_launch_metadata(tmp_path: Path) -> None:
     index = _write_case(tmp_path / "source", family)
     _mutate_records(
         index,
-        lambda value: value["variants"][0]["runtime_metadata"].update(sm100_launch=_sm100_launch("fp16")),
+        lambda value: value["variants"][0]["runtime_metadata"].update(
+            sm100_launch=_sm100_launch("triangle_attention", "fp16")
+        ),
     )
 
     with pytest.raises(materializer.MaterializationError, match="sm100_launch must be null"):
+        materializer.verify_packs([(family, index)])
+
+
+@pytest.mark.parametrize("family", ["dual_gemm_x_x", "dual_gemm_x0_x1"])
+def test_dual_gemm_sm100_registry_renders_cluster_launch_metadata(tmp_path: Path, family: str) -> None:
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "SM100LaunchInfo sm100;" in header
+    assert "std::uint32_t cluster_dims[3];" in header
+    assert "CUclusterSchedulingPolicy cluster_scheduling_policy;" in header
+    assert "CU_CLUSTER_SCHEDULING_POLICY_DEFAULT" in source
+    assert "CU_TENSOR_MAP_SWIZZLE_128B" in source
+
+
+@pytest.mark.parametrize("family", ["dual_gemm_x_x", "dual_gemm_x0_x1"])
+def test_dual_gemm_sm100_launch_requires_cluster_dims(tmp_path: Path, family: str) -> None:
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    _mutate_records(
+        index,
+        lambda value: value["variants"][0]["runtime_metadata"]["sm100_launch"].pop("cluster_dims"),
+    )
+
+    with pytest.raises(materializer.MaterializationError, match="missing=\\['cluster_dims'\\]"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_dual_gemm_x0_x1_sm100_launch_requires_residual_map(tmp_path: Path) -> None:
+    family = "dual_gemm_x0_x1"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    _mutate_records(
+        index,
+        lambda value: value["variants"][0]["runtime_metadata"]["sm100_launch"]["tma_descriptors"].pop("residual"),
+    )
+
+    with pytest.raises(materializer.MaterializationError, match="missing=\\['residual'\\]"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_triangle_attention_sm100_launch_rejects_cluster_dims(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    _mutate_records(
+        index,
+        lambda value: value["variants"][0]["runtime_metadata"]["sm100_launch"].update(
+            cluster_dims=[2, 1, 1], cluster_scheduling_policy="default"
+        ),
+    )
+
+    with pytest.raises(materializer.MaterializationError, match="extra=\\['cluster_dims'"):
         materializer.verify_packs([(family, index)])
 
 
@@ -727,8 +795,8 @@ def test_all_shards_use_portable_elf_syntax_and_empty_shard_assembles(tmp_path: 
     subprocess.run([assembler, "-o", tmp_path / "payload.o", populated], check=True, capture_output=True, text=True)
 
 
-@pytest.mark.parametrize("triangle_kernel_sm", [90, 100])
-def test_all_generated_registry_sources_compile_as_cpp17(tmp_path: Path, triangle_kernel_sm: int) -> None:
+@pytest.mark.parametrize("native_kernel_sm", [90, 100])
+def test_all_generated_registry_sources_compile_as_cpp17(tmp_path: Path, native_kernel_sm: int) -> None:
     compiler = shutil.which("c++")
     cuda_include = Path("/usr/local/cuda/include")
     if compiler is None or not (cuda_include / "cuda.h").is_file():
@@ -739,7 +807,9 @@ def test_all_generated_registry_sources_compile_as_cpp17(tmp_path: Path, triangl
             _write_case(
                 tmp_path / "source",
                 family,
-                kernel_sm=triangle_kernel_sm if family == "triangle_attention" else 80,
+                kernel_sm=native_kernel_sm
+                if family in {"dual_gemm_x0_x1", "dual_gemm_x_x", "triangle_attention"}
+                else 80,
             ),
         )
         for family in FAMILIES

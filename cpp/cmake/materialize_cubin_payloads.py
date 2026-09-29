@@ -161,10 +161,16 @@ class _Sm90Spec:
 
 @dataclass(frozen=True)
 class _Sm100Spec:
-    """Native-SM100 launch record for Blackwell TMA kernels."""
+    """Native-SM100 launch record for Blackwell TMA kernels.
+
+    ``clusters`` adds the cluster shape and scheduling policy a clustered launch
+    (for example 2-SM ``tcgen05`` UMMA) needs; ``rank`` is the TMA rank.
+    """
 
     enabled_field: str
     operands: tuple[str, ...]
+    rank: int = 4
+    clusters: bool = False
 
 
 @dataclass(frozen=True)
@@ -307,6 +313,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
         alias=_AliasSpec(("N", "bucket"), ("std::int32_t N;", "std::int32_t bucket;")),
         sm90=_Sm90Spec("enabled", ("x0", "x1", "w0", "w1", "output"), rank=2, epi_tile=True),
+        sm100=_Sm100Spec("enabled", ("x", "w0", "w1", "output"), rank=2, clusters=True),
     ),
     "dual_gemm_x0_x1": _FamilySpec(
         fields=(
@@ -324,6 +331,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
         runtime_key=("K", "K1", "N", "bucket", "is_bfloat16", "has_bias", "fused_residual"),
         sm90=_Sm90Spec("is_native", ("x0", "x1", "w0", "w1", "output"), rank=2, epi_tile=True),
+        # Blackwell ships only the fused-residual ABI, so every image carries the residual map.
+        sm100=_Sm100Spec("enabled", ("x0", "x1", "w0", "w1", "residual", "output"), rank=2, clusters=True),
     ),
     "transition_mlp": _FamilySpec(
         fields=(
@@ -640,7 +649,7 @@ def _validate_sm90_launch(spec: _Sm90Spec, value: object, where: str, dtype: str
         _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, spec.rank)
 
 
-def _validate_sm100_launch(value: object, where: str, dtype: str, kernel_sm: int, operands: tuple[str, ...]) -> None:
+def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: str, kernel_sm: int) -> None:
     if kernel_sm != 100:
         if value is not None:
             _fail(f"{where} must be null for a non-SM100 kernel ABI")
@@ -648,16 +657,23 @@ def _validate_sm100_launch(value: object, where: str, dtype: str, kernel_sm: int
     if value is None:
         _fail(f"{where} is required for an SM100 kernel ABI")
     launch = _as_object(value, where)
-    _exact_keys(launch, {"block_dims", "tma_descriptors"}, where)
+    expected_keys = {"block_dims", "tma_descriptors"}
+    if spec.clusters:
+        expected_keys |= {"cluster_dims", "cluster_scheduling_policy"}
+    _exact_keys(launch, expected_keys, where)
     block = _integer_array(launch["block_dims"], f"{where}.block_dims", length=3, minimum=1)
     if block[0] * block[1] * block[2] > 1024:
         _fail(f"{where}.block_dims exceeds 1024 threads")
     if block[1] != 1 or block[2] != 1:
         _fail(f"{where}.block_dims must be [num_threads, 1, 1]")
+    if spec.clusters:
+        _integer_array(launch["cluster_dims"], f"{where}.cluster_dims", length=3, minimum=1)
+        if _string(launch["cluster_scheduling_policy"], f"{where}.cluster_scheduling_policy") not in _CLUSTER_POLICY:
+            _fail(f"{where}.cluster_scheduling_policy is unsupported")
     descriptors = _as_object(launch["tma_descriptors"], f"{where}.tma_descriptors")
-    _exact_keys(descriptors, set(operands), f"{where}.tma_descriptors")
-    for name in operands:
-        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, 4)
+    _exact_keys(descriptors, set(spec.operands), f"{where}.tma_descriptors")
+    for name in spec.operands:
+        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, spec.rank)
 
 
 def _validate_runtime_aliases(value: object, where: str, keys: tuple[str, str]) -> tuple[dict[str, object], ...]:
@@ -777,11 +793,11 @@ def _validate_metadata(family: str, variant: VariantRecord, where: str) -> None:
         )
     if spec.sm100 is not None:
         _validate_sm100_launch(
+            spec.sm100,
             metadata["sm100_launch"],
             f"{where}.sm100_launch",
             variant.dtype,
             variant.kernel_sm,
-            spec.sm100.operands,
         )
     if "num_threads" in metadata and cast(int, metadata["num_threads"]) > 1024:
         _fail(f"{where}.num_threads exceeds 1024")
@@ -1704,7 +1720,7 @@ def _render_sm90(value: object, operands: tuple[str, ...], indent: str) -> list[
     return lines
 
 
-def _render_sm100(value: object, operands: tuple[str, ...], indent: str) -> list[str]:
+def _render_sm100(value: object, spec: _Sm100Spec, indent: str) -> list[str]:
     if value is None:
         return [f"{indent}{{}},"]
     metadata = cast(dict[str, object], value)
@@ -1714,7 +1730,10 @@ def _render_sm100(value: object, operands: tuple[str, ...], indent: str) -> list
         f"{indent}  true,",
         f"{indent}  {_cpp_uint_array(metadata['block_dims'], 3)},",
     ]
-    for operand in operands:
+    if spec.clusters:
+        lines.append(f"{indent}  {_cpp_uint_array(metadata['cluster_dims'], 3)},")
+        lines.append(f"{indent}  {_CLUSTER_POLICY[cast(str, metadata['cluster_scheduling_policy'])]},")
+    for operand in spec.operands:
         lines.extend(_render_tma_descriptor(descriptors[operand], indent + "  "))
     lines.append(f"{indent}}},")
     return lines
@@ -1737,11 +1756,17 @@ def _sm90_declarations(spec: _FamilySpec) -> list[str]:
 
 def _sm100_declarations(spec: _FamilySpec) -> list[str]:
     assert spec.sm100 is not None
+    cluster_members = (
+        ["  std::uint32_t cluster_dims[3];", "  CUclusterSchedulingPolicy cluster_scheduling_policy;"]
+        if spec.sm100.clusters
+        else []
+    )
     return [
         "struct SM100LaunchInfo",
         "{",
         f"  bool {spec.sm100.enabled_field};",
         "  std::uint32_t block_dims[3];",
+        *cluster_members,
         *(f"  TmaDescriptorInfo {operand};" for operand in spec.sm100.operands),
         "};",
         "",
@@ -1851,7 +1876,7 @@ def _family_initializer_lines(family: str, variant: VariantRecord, indent: str) 
     if spec.sm90 is not None:
         lines.extend(_render_sm90(variant.runtime_metadata["sm90_launch"], spec.sm90.operands, indent))
     if spec.sm100 is not None:
-        lines.extend(_render_sm100(variant.runtime_metadata["sm100_launch"], spec.sm100.operands, indent))
+        lines.extend(_render_sm100(variant.runtime_metadata["sm100_launch"], spec.sm100, indent))
     if spec.alias is not None:
         name = _alias_table_name(variant)
         lines.extend([f"{indent}{name},", f"{indent}sizeof({name}) / sizeof({name}[0]),"])

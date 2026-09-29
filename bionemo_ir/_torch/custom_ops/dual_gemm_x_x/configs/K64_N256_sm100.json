@@ -1,0 +1,57 @@
+{
+  "kernel_abi": "sm100",
+  "kernel_variant": "resident",
+  "gates": [
+    "silu"
+  ],
+  "configs": {
+    "S=128|t=0": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=128|t=1": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=256|t=0": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=256|t=1": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=512|t=0": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=512|t=1": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=768|t=0": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=768|t=1": {
+      "k": 64,
+      "cluster_n": 1,
+      "num_stages": 0,
+      "bias_chunk": 64
+    }
+  }
+}

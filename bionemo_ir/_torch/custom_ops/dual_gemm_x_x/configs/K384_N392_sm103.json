@@ -1,0 +1,68 @@
+{
+  "kernel_abi": "sm100",
+  "gates": [
+    "sigmoid"
+  ],
+  "configs": {
+    "S=128|t=0": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=128|t=1": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=256|t=0": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=256|t=1": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=512|t=0": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=512|t=1": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=768|t=0": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=768|t=1": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=1536|t=0": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    },
+    "S=1536|t=1": {
+      "cluster_n": 1,
+      "bias_n": 512,
+      "num_stages": 0,
+      "bias_chunk": 64
+    }
+  }
+}

@@ -34,9 +34,9 @@ from bionemo_ir.logger import logger
 
 _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
-_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90)
+_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90, 100, 103)
 _FALLBACK_SM = 80
-#: SM90 kernel that keeps each CTA's weight slice resident and multicasts X across a cluster.
+#: SM90/Blackwell kernel that keeps each CTA's weight slice resident and multicasts X across a cluster.
 RESIDENT_VARIANT = "resident"
 _VARIANT_KEY_RE = re.compile(r"^S=(\d+)\|t=(\d+)$")
 _DEFAULT_GATES = ("sigmoid",)
@@ -199,7 +199,11 @@ def _kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
 
 
 def _uses_resident_kernel(sm_version: int, K: int, N: int) -> bool:
-    """Whether the shape selects the resident-weight SM90 kernel, which needs a live mask."""
+    """Whether the shape selects the resident-weight SM90 kernel, which needs a live mask.
+
+    The Blackwell resident kernel null-checks the mask like every other image, so
+    only the SM90 one qualifies.
+    """
     bundle = _optional_config_bundle(sm_version, K, N)
     return bundle is not None and bundle.kernel_abi == "sm90" and bundle.kernel_variant == RESIDENT_VARIANT
 

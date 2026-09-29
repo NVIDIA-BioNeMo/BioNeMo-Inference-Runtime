@@ -256,9 +256,9 @@ def test_trimul_output_gate_keeps_native_widths(
 )
 def test_trimul_fused_residual_matches_masked_update(multiplication_type) -> None:
     """Fuse the output gate and masked residual for aligned pair storage."""
-    skip_if_no_cutedsl()
-    if SM_VERSION not in (86, 90):
-        pytest.skip(f"this fused triangle residual integration case requires SM86/90 (current SM{SM_VERSION})")
+    skip_if_no_cutedsl("dual_gemm_x0_x1")
+    if SM_VERSION not in (86, 90, 100, 103):
+        pytest.skip(f"this fused triangle residual integration case requires SM86/90/100/103 (current SM{SM_VERSION})")
 
     torch.manual_seed(73)
     node = TriangleMultiplicationNode(

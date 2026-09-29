@@ -40,7 +40,12 @@ constexpr char kSM90LaunchAbi[] = "dual_gemm_x_x_sm90";
 constexpr char kSM90DynamicMaskLaunchAbi[] = "dual_gemm_x_x_sm90_mask_ptr_v1";
 /* Same kernel parameters as the ping-pong image; a column-owning grid and cluster [1, y, 1]. */
 constexpr char kSM90ResidentLaunchAbi[] = "dual_gemm_x_x_sm90_resident_mask_ptr_v1";
+/* 2-SM UMMA on cluster [2, y, 1] with the CLC scheduler's tile counts. */
+constexpr char kSM100LaunchAbi[] = "dual_gemm_x_x_sm100_mask_ptr_v1";
+/* Resident weights on the static column-owning grid (2, ceil(N / 128), Z). */
+constexpr char kSM100ResidentLaunchAbi[] = "dual_gemm_x_x_sm100_resident_mask_ptr_v1";
 constexpr std::int64_t kElementsPer16Bytes = 8;
+constexpr std::uint32_t kSM100MmaPairCtas = 2;
 
 bool uses_dynamic_mask(embedded::CubinImage const& image)
 {
@@ -48,12 +53,19 @@ bool uses_dynamic_mask(embedded::CubinImage const& image)
   return image.cubin.launch_abi != nullptr
     && (std::strcmp(image.cubin.launch_abi, kSM80DynamicMaskLaunchAbi) == 0
         || std::strcmp(image.cubin.launch_abi, kSM90DynamicMaskLaunchAbi) == 0
-        || std::strcmp(image.cubin.launch_abi, kSM90ResidentLaunchAbi) == 0);
+        || std::strcmp(image.cubin.launch_abi, kSM90ResidentLaunchAbi) == 0
+        || std::strcmp(image.cubin.launch_abi, kSM100LaunchAbi) == 0
+        || std::strcmp(image.cubin.launch_abi, kSM100ResidentLaunchAbi) == 0);
 }
 
 bool uses_resident_grid(embedded::CubinImage const& image)
 {
   return image.cubin.launch_abi != nullptr && std::strcmp(image.cubin.launch_abi, kSM90ResidentLaunchAbi) == 0;
+}
+
+bool uses_sm100_resident_grid(embedded::CubinImage const& image)
+{
+  return image.cubin.launch_abi != nullptr && std::strcmp(image.cubin.launch_abi, kSM100ResidentLaunchAbi) == 0;
 }
 
 bool uses_dynamic_mask(KernelConfig const& config)
@@ -109,21 +121,20 @@ void validate_tma_metadata(
   TmaDescriptorInfo const& info, CUtensorMapDataType expected_dtype, bool is_column_major, char const* name)
 {
   if (info.rank != 2)
-    throw std::invalid_argument(std::string("native SM90 ") + name + " metadata must describe a rank-2 TMA map");
+    throw std::invalid_argument(std::string("native ") + name + " metadata must describe a rank-2 TMA map");
   if (info.data_type != expected_dtype)
-    throw std::invalid_argument(std::string("native SM90 ") + name + " TMA metadata has the wrong dtype");
+    throw std::invalid_argument(std::string("native ") + name + " TMA metadata has the wrong dtype");
 
   std::uint32_t const expected_inner = is_column_major ? 0U : 1U;
   std::uint32_t const expected_outer = is_column_major ? 1U : 0U;
   if (info.global_dim_order[0] != expected_inner || info.global_dim_order[1] != expected_outer)
   {
-    throw std::invalid_argument(
-      std::string("native SM90 ") + name + " TMA metadata has an incompatible dimension order");
+    throw std::invalid_argument(std::string("native ") + name + " TMA metadata has an incompatible dimension order");
   }
   for (std::size_t index = 0; index < 2; ++index)
   {
     if (info.box_dims[index] == 0 || info.element_strides[index] != 1)
-      throw std::invalid_argument(std::string("native SM90 ") + name + " TMA metadata has invalid traversal geometry");
+      throw std::invalid_argument(std::string("native ") + name + " TMA metadata has invalid traversal geometry");
   }
 }
 
@@ -164,6 +175,28 @@ void validate_sm90_metadata(KernelConfig const& config, embedded::CubinImage con
   validate_tma_metadata(sm90.w0, expected_dtype, false, "w0");
   validate_tma_metadata(sm90.w1, expected_dtype, false, "w1");
   validate_tma_metadata(sm90.output, expected_dtype, config.transpose_out, "output");
+}
+
+void validate_sm100_metadata(KernelConfig const& config, embedded::CubinImage const& image)
+{
+  embedded::SM100LaunchInfo const& sm100 = image.sm100;
+  if (!sm100.enabled)
+    throw std::invalid_argument("native SM100 dual_gemm_x_x CUBIN has no host launch metadata");
+  if (sm100.block_dims[0] != image.num_threads || sm100.block_dims[1] != 1 || sm100.block_dims[2] != 1)
+    throw std::invalid_argument("native SM100 block metadata disagrees with the generated launch geometry");
+  /* tcgen05.mma.cta_group::2 pairs the two CTAs along x; y is the multicast width over column tiles. */
+  std::uint32_t const multicast = sm100.cluster_dims[1];
+  if (
+    sm100.cluster_dims[0] != kSM100MmaPairCtas || sm100.cluster_dims[2] != 1
+    || (multicast != 1 && multicast != 2 && multicast != 4) || (!uses_sm100_resident_grid(image) && multicast > 2))
+  {
+    throw std::invalid_argument("native SM100 dual_gemm_x_x CUBIN has an unsupported cluster shape");
+  }
+  CUtensorMapDataType const expected_dtype = tma_data_type(config.dtype == DType::kBFloat16);
+  validate_tma_metadata(sm100.x, expected_dtype, false, "x");
+  validate_tma_metadata(sm100.w0, expected_dtype, false, "w0");
+  validate_tma_metadata(sm100.w1, expected_dtype, false, "w1");
+  validate_tma_metadata(sm100.output, expected_dtype, config.transpose_out, "output");
 }
 
 void validate_config(KernelConfig const& config)
@@ -231,32 +264,40 @@ void validate_config(KernelConfig const& config)
 
   bool const is_sm80 = config.cubin.kernel_sm == 80;
   bool const is_sm90 = config.cubin.kernel_sm == 90;
-  if (!is_sm80 && !is_sm90)
+  bool const is_sm100 = config.cubin.kernel_sm == 100;
+  if (!is_sm80 && !is_sm90 && !is_sm100)
     throw std::invalid_argument("dual_gemm_x_x CUBIN has no registered kernel-SM launcher");
-  if ((config.target_sm == 90) != is_sm90)
+  bool const is_blackwell_target = config.target_sm == 100 || config.target_sm == 103;
+  if ((config.target_sm == 90) != is_sm90 || is_blackwell_target != is_sm100)
     throw std::invalid_argument("dual_gemm_x_x target SM and kernel SM are inconsistent");
 
   char const* expected_abi = is_sm80 ? (uses_dynamic_mask(config) ? kSM80DynamicMaskLaunchAbi : kSM80LaunchAbi)
                                      : (uses_dynamic_mask(config) ? kSM90DynamicMaskLaunchAbi : kSM90LaunchAbi);
   if (is_sm90 && uses_resident_grid(image))
     expected_abi = kSM90ResidentLaunchAbi;
+  if (is_sm100)
+    expected_abi = uses_sm100_resident_grid(image) ? kSM100ResidentLaunchAbi : kSM100LaunchAbi;
   if (!equal_c_strings(config.cubin.launch_abi, expected_abi))
     throw std::invalid_argument("dual_gemm_x_x CUBIN has an incompatible launch ABI");
-  if (config.cubin.non_portable_cluster_size_allowed != is_sm90)
+  if (config.cubin.non_portable_cluster_size_allowed != (is_sm90 || is_sm100))
     throw std::invalid_argument("dual_gemm_x_x CUBIN has inconsistent cluster function metadata");
+  if (image.sm90.enabled != is_sm90 || image.sm100.enabled != is_sm100)
+    throw std::invalid_argument("dual_gemm_x_x CUBIN carries launch metadata for another kernel SM");
 
   if (is_sm80)
   {
-    if (image.sm90.enabled)
-      throw std::invalid_argument("SM80 dual_gemm_x_x CUBIN unexpectedly carries native SM90 launch metadata");
     if (
       image.raster_factor == 0
       || image.raster_factor > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
       throw std::invalid_argument("SM80 dual_gemm_x_x CUBIN requires a positive raster factor");
   }
-  else
+  else if (is_sm90)
   {
     validate_sm90_metadata(config, image);
+  }
+  else
+  {
+    validate_sm100_metadata(config, image);
   }
 }
 
@@ -560,6 +601,131 @@ void launch_sm90(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(dual_gemm_x_x_sm90)");
 }
 
+/* Mirrors the source-built host wrappers. The streaming kernel launches one
+ * cluster per (row pair, column group), all of them along x as
+ * (2 * clusters, cluster_n, 1), so the CLC hands them out N-first and a row
+ * block's column tiles share X through L2; the unrounded tile counts stay the
+ * scheduler's trailing parameters. The resident kernel owns one column tile per
+ * CTA pair, x is the pair, and z is Z persistent clusters per column group,
+ * bounded by the SMs a column group can use.
+ */
+cubin_launch_config_t make_sm100_launch_config(
+  embedded::CubinImage const& image,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes,
+  std::int32_t& scheduler_m_tiles,
+  std::int32_t& scheduler_n_tiles)
+{
+  embedded::SM100LaunchInfo const& metadata = image.sm100;
+  std::uint64_t const M = static_cast<std::uint64_t>(params.x.shape[0]);
+  std::uint64_t const N = static_cast<std::uint64_t>(params.output.shape[1]);
+  std::uint64_t const m_tiles = ceil_div(M, image.tile_m);
+  std::uint64_t const n_tiles = ceil_div(N, image.tile_n);
+  if (m_tiles > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::overflow_error("dual_gemm_x_x SM100 M tile count overflow");
+
+  cubin_launch_config_t launch_config{};
+  if (uses_sm100_resident_grid(image))
+  {
+    std::uint64_t const multicast = metadata.cluster_dims[1];
+    if (n_tiles % multicast != 0)
+      throw std::invalid_argument("dual_gemm_x_x resident SM100 grid requires cluster y dividing the N tiles");
+    std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
+    if (multiprocessor_count <= 0)
+      throw std::invalid_argument("current CUDA device has no active multiprocessors");
+    std::uint64_t const pair_slots = static_cast<std::uint64_t>(multiprocessor_count) / (kSM100MmaPairCtas * multicast);
+    std::uint64_t const clusters_per_group = std::max<std::uint64_t>(1, pair_slots / (n_tiles / multicast));
+    std::uint64_t const m_pairs = ceil_div(M, static_cast<std::uint64_t>(kSM100MmaPairCtas) * image.tile_m);
+    launch_config.grid_x = kSM100MmaPairCtas;
+    launch_config.grid_y = checked_u32(n_tiles, "dual_gemm_x_x resident SM100 grid.y");
+    launch_config.grid_z = checked_u32(std::min(m_pairs, clusters_per_group), "dual_gemm_x_x resident SM100 grid.z");
+  }
+  else
+  {
+    scheduler_m_tiles = static_cast<std::int32_t>(m_tiles);
+    scheduler_n_tiles = static_cast<std::int32_t>(n_tiles);
+    std::uint64_t const clusters = checked_multiply(
+      ceil_div(m_tiles, metadata.cluster_dims[0]),
+      ceil_div(n_tiles, metadata.cluster_dims[1]),
+      "dual_gemm_x_x SM100 cluster count");
+    launch_config.grid_x = checked_u32(
+      checked_multiply(clusters, metadata.cluster_dims[0], "dual_gemm_x_x SM100 grid.x"), "dual_gemm_x_x SM100 grid.x");
+    launch_config.grid_y = metadata.cluster_dims[1];
+    launch_config.grid_z = 1;
+  }
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  return launch_config;
+}
+
+void launch_sm100(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  embedded::CubinImage const& image = *config.embedded_image;
+  embedded::SM100LaunchInfo const& metadata = image.sm100;
+  bool const resident = uses_sm100_resident_grid(image);
+  CUtensorMapDataType const expected_dtype = tma_data_type(config.dtype == DType::kBFloat16);
+
+  abi::SM100Params device_params{};
+  TmaTensorSource const x_source = make_tma_tensor2_source(params.x, false);
+  TmaTensorSource const w0_source = make_tma_tensor2_source(params.w0, false);
+  TmaTensorSource const w1_source = make_tma_tensor2_source(params.w1, false);
+  TmaTensorSource const output_source = make_tma_tensor2_source(params.output, config.transpose_out);
+  /* Only x multicasts, across the cluster's y extent (the column tiles sharing its rows). */
+  encode_tma_descriptor(
+    device_params.x_tma,
+    multicast_tma_descriptor(metadata.x, metadata.cluster_dims[1], "x"),
+    expected_dtype,
+    x_source,
+    "x");
+  encode_tma_descriptor(device_params.w0_tma, metadata.w0, expected_dtype, w0_source, "w0");
+  encode_tma_descriptor(device_params.w1_tma, metadata.w1, expected_dtype, w1_source, "w1");
+  encode_tma_descriptor(device_params.output_tma, metadata.output, expected_dtype, output_source, "output");
+  finalize_sm100_tma_atom(device_params.x_tma);
+  finalize_sm100_tma_atom(device_params.w0_tma);
+  finalize_sm100_tma_atom(device_params.w1_tma);
+  finalize_sm100_tma_atom(device_params.output_tma);
+
+  device_params.x_coord = make_tensor2_s1_coord(params.x);
+  device_params.w0_coord = make_tensor2_s1_coord(params.w0);
+  device_params.w1_coord = make_tensor2_s1_coord(params.w1);
+  device_params.output_coord = make_tensor2_s2_coord(params.output);
+  if (config.has_bias)
+  {
+    device_params.bias0 = make_tensor1_descriptor(params.bias0);
+    device_params.bias1 = make_tensor1_descriptor(params.bias1);
+    device_params.static_bias0.data = static_cast<CUdeviceptr>(params.bias0.data);
+    device_params.static_bias1.data = static_cast<CUdeviceptr>(params.bias1.data);
+  }
+  /* A null pointer disables the mask; the extent is still the mask's row count. */
+  device_params.actual_seqlen.data = static_cast<CUdeviceptr>(params.actual_seqlen.data);
+  device_params.actual_seqlen.dynamic_shapes[0] = static_cast<std::int32_t>(
+    ceil_div(static_cast<std::uint64_t>(params.x.shape[0]), static_cast<std::uint64_t>(params.i_dim)));
+  device_params.i_dim = params.i_dim;
+
+  cubin_launch_config_t const launch_config = make_sm100_launch_config(
+    image, params, context, smem_bytes, device_params.scheduler_m_tiles, device_params.scheduler_n_tiles);
+  void* kernel_params[abi::kSM100MaxParameterCount]{};
+  std::size_t const parameter_count
+    = abi::pack_sm100_kernel_params(&device_params, config.has_bias, resident, kernel_params);
+  if (parameter_count != abi::sm100_parameter_count(config.has_bias, resident))
+    throw std::logic_error("dual_gemm_x_x SM100 parameter packer produced the wrong ABI count");
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(dual_gemm_x_x_sm100)");
+}
+
 EmbeddedSelection find_embedded_cubin(
   std::int32_t target_sm,
   std::int32_t K,
@@ -688,6 +854,11 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   if (config.cubin.kernel_sm == 90)
   {
     launch_sm90(loaded, config, params, context, smem_bytes);
+    return;
+  }
+  if (config.cubin.kernel_sm == 100)
+  {
+    launch_sm100(loaded, config, params, context, smem_bytes);
     return;
   }
   throw std::invalid_argument("dual_gemm_x_x config has no registered SM launcher");

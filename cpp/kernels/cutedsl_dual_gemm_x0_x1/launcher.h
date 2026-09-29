@@ -254,6 +254,108 @@ static_assert(sizeof(SM90Params::tiled_mma) == 0x01, "unexpected dual-GEMM x0_x1
 static_assert(sm90_parameter_count(true, true) == kSM90MaxParameterCount);
 static_assert(sm90_parameter_count(false, false) == 12U);
 
+/* Blackwell device ABI from EIATTR_KPARAM_INFO, for the fused-residual launch
+ * ABIs dual_gemm_x0_x1_sm100[_resident]_residual_mask_ptr_v1. With bias:
+ *
+ *   ord  0  0x000  0x03  tiled_mma          SM100TiledMmaDescriptor
+ *   ord  1  0x040  0x80  x0_tma             CUtensorMap
+ *   ord  2  0x0c0  0x04  x0_coord           CoordTensorS1 (M)
+ *   ord  3  0x100  0x80  x1_tma             CUtensorMap
+ *   ord  4  0x180  0x04  x1_coord           CoordTensorS1 (M)
+ *   ord  5  0x1c0  0x80  w0_tma             CUtensorMap
+ *   ord  6  0x240  0x04  w0_coord           CoordTensorS1 (N)
+ *   ord  7  0x280  0x80  w1_tma             CUtensorMap
+ *   ord  8  0x300  0x04  w1_coord           CoordTensorS1 (N)
+ *   ord  9  0x340  0x80  residual_tma       CUtensorMap
+ *   ord 10  0x3c0  0x08  residual_coord     CoordTensorS2 (M, N)
+ *   ord 11  0x400  0x80  output_tma         CUtensorMap
+ *   ord 12  0x480  0x08  output_coord       CoordTensorS2 (M, N)
+ *
+ * The streaming kernel continues with static_bias0 and static_bias1 (0x08
+ * each: the pointer, the width is static), actual_seqlen (0x10), i_dim, and the
+ * CLC scheduler's M and N tile counts. The resident kernel instead takes
+ * bias0 and bias1 as cute_tensor_s1_d0_t (0x10 each), then actual_seqlen and
+ * i_dim. Without bias both bias slots drop out. Every TMA slot carries the
+ * byte-8-tagged atom finalize_sm100_tma_atom produces; K0 and K1 are static.
+ */
+struct SM100TiledMmaDescriptor
+{
+  std::uint8_t fields[3]{};
+};
+
+struct SM100Params
+{
+  SM100TiledMmaDescriptor tiled_mma;
+  CUtensorMap x0_tma;
+  CoordTensorS1 x0_coord;
+  CUtensorMap x1_tma;
+  CoordTensorS1 x1_coord;
+  CUtensorMap w0_tma;
+  CoordTensorS1 w0_coord;
+  CUtensorMap w1_tma;
+  CoordTensorS1 w1_coord;
+  CUtensorMap residual_tma;
+  CoordTensorS2 residual_coord;
+  CUtensorMap output_tma;
+  CoordTensorS2 output_coord;
+  cute_tensor_s0_d0_t static_bias0;
+  cute_tensor_s0_d0_t static_bias1;
+  cute_tensor_s1_d0_t bias0;
+  cute_tensor_s1_d0_t bias1;
+  cute_tensor_s1_d0_t actual_seqlen;
+  std::int32_t i_dim;
+  std::int32_t scheduler_m_tiles;
+  std::int32_t scheduler_n_tiles;
+};
+
+constexpr std::size_t sm100_parameter_count(bool has_bias, bool resident)
+{
+  return (resident ? 15U : 17U) + (has_bias ? 2U : 0U);
+}
+
+inline constexpr std::size_t kSM100MaxParameterCount = sm100_parameter_count(true, false);
+
+inline std::size_t pack_sm100_kernel_params(
+  SM100Params* params, bool has_bias, bool resident, void* kernel_params[kSM100MaxParameterCount])
+{
+  std::size_t count = 0;
+  kernel_params[count++] = &params->tiled_mma;
+  kernel_params[count++] = &params->x0_tma;
+  kernel_params[count++] = &params->x0_coord;
+  kernel_params[count++] = &params->x1_tma;
+  kernel_params[count++] = &params->x1_coord;
+  kernel_params[count++] = &params->w0_tma;
+  kernel_params[count++] = &params->w0_coord;
+  kernel_params[count++] = &params->w1_tma;
+  kernel_params[count++] = &params->w1_coord;
+  kernel_params[count++] = &params->residual_tma;
+  kernel_params[count++] = &params->residual_coord;
+  kernel_params[count++] = &params->output_tma;
+  kernel_params[count++] = &params->output_coord;
+  if (has_bias)
+  {
+    kernel_params[count++] = resident ? static_cast<void*>(&params->bias0) : static_cast<void*>(&params->static_bias0);
+    kernel_params[count++] = resident ? static_cast<void*>(&params->bias1) : static_cast<void*>(&params->static_bias1);
+  }
+  kernel_params[count++] = &params->actual_seqlen;
+  kernel_params[count++] = &params->i_dim;
+  if (!resident)
+  {
+    kernel_params[count++] = &params->scheduler_m_tiles;
+    kernel_params[count++] = &params->scheduler_n_tiles;
+  }
+  return count;
+}
+
+static_assert(std::is_standard_layout_v<SM100Params>);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 0x03, "unexpected dual-GEMM x0_x1 SM100 tiled-MMA width");
+static_assert(sizeof(CoordTensorS1) == 0x04, "dual-GEMM x0_x1 SM100 inputs carry one dynamic extent");
+static_assert(sizeof(SM100Params::static_bias0) == 0x08, "unexpected dual-GEMM x0_x1 SM100 static bias width");
+static_assert(sizeof(SM100Params::bias0) == 0x10, "unexpected dual-GEMM x0_x1 SM100 bias width");
+static_assert(sizeof(SM100Params::actual_seqlen) == 0x10, "unexpected dual-GEMM x0_x1 SM100 mask width");
+static_assert(sm100_parameter_count(true, false) == 19U);
+static_assert(sm100_parameter_count(false, true) == 15U);
+
 } // namespace bioir::cutedsl::dual_gemm_x0_x1::abi
 
 namespace bioir::cutedsl::dual_gemm_x0_x1

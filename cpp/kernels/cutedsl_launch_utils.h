@@ -28,6 +28,7 @@
 #include "cubin_runtime.h"
 #include "cutedsl_tensor_abi.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -382,6 +383,47 @@ inline void encode_tma_descriptor(
       info.l2_promotion,
       info.oob_fill),
     "cuTensorMapEncodeTiled");
+}
+
+/* A multicast load splits the tile across the cluster: every CTA fetches an
+ * equal share of the outer box extent and multicasts it to its peers, so the
+ * descriptor box is that much shorter than the tile the metadata records.
+ */
+inline TmaDescriptorInfo multicast_tma_descriptor(TmaDescriptorInfo info, std::uint32_t num_multicast, char const* name)
+{
+  if (num_multicast <= 1)
+    return info;
+  if (info.rank < 2)
+    throw std::invalid_argument(std::string(name) + " TMA descriptor is too low-rank to multicast");
+  std::uint32_t& outer_box = info.box_dims[info.rank - 1];
+  if (outer_box % num_multicast != 0)
+  {
+    throw std::invalid_argument(
+      std::string(name) + " TMA box extent " + std::to_string(outer_box) + " does not divide across "
+      + std::to_string(num_multicast) + " multicasting CTAs");
+  }
+  outer_box /= num_multicast;
+  return info;
+}
+
+/* CuTe DSL 4.5.2 passes each Blackwell TMA operand as a by-value
+ * non-executable atom: the encoded tensor map in the low 64 bytes of the
+ * 128-byte parameter slot, tagged at byte 8. Plain, multicast, and 2-SM loads
+ * and the store all carry that one tag; unlike Hopper's asymmetric ABI there
+ * is no multicast tag. The upper half is never read. Captured against the
+ * CuTe host launcher for the dual-GEMM Blackwell launch ABIs, so a compiler
+ * encoding change requires new launch ABIs.
+ */
+inline void finalize_sm100_tma_atom(CUtensorMap& descriptor)
+{
+  constexpr std::size_t kAtomTagOffset = 8;
+  constexpr std::size_t kAtomPayloadBytes = 64;
+  constexpr std::uint8_t kNonExecutableAtom = 0x02U;
+  static_assert(sizeof(CUtensorMap) == 128);
+
+  auto* bytes = reinterpret_cast<std::uint8_t*>(&descriptor);
+  bytes[kAtomTagOffset] |= kNonExecutableAtom;
+  std::fill(bytes + kAtomPayloadBytes, bytes + sizeof(CUtensorMap), 0U);
 }
 
 inline std::uint64_t ceil_div(std::uint64_t value, std::uint64_t divisor)

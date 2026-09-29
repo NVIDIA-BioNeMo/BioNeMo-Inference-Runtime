@@ -23,6 +23,8 @@ import math
 
 import torch
 
+from bionemo_ir.dsl_kernels.triton.quaternion_rotation import quaternion_matrix
+
 
 def compute_random_augmentation(
     batch_size: int = 1,
@@ -109,7 +111,9 @@ def _quaternion_components_to_matrix(
 
 def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
     """
-    Convert rotations given as quaternions to rotation matrices.
+    Convert quaternions to rotation matrices for inference.
+
+    CUDA FP32 dispatch supports eager inference only.
 
     Args:
         quaternions: quaternions with real part first,
@@ -118,6 +122,14 @@ def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
     Returns:
         Rotation matrices as tensor of shape (..., 3, 3).
     """
+    if (
+        quaternions.is_cuda
+        and quaternions.dtype == torch.float32
+        and quaternions.shape[-1] == 4
+        and quaternions.is_contiguous()
+        and quaternions.data_ptr() % 16 == 0
+    ):
+        return quaternion_matrix(quaternions)
     r, i, j, k = torch.unbind(quaternions, -1)
     two_s = 2.0 / (quaternions * quaternions).sum(-1)
     return _quaternion_components_to_matrix(r, i, j, k, two_s)

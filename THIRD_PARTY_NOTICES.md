@@ -53,7 +53,8 @@ files distributed by an upstream package remain authoritative for that package.
     [`LICENSES/BSD-3-Clause.txt`][bsd-3-clause]
   - Source: [PyTorch3D][pytorch3d]
   - Distribution: copied code ships in
-    `bionemo_ir/_torch/layers/random_augmentation.py`
+    `bionemo_ir/_torch/layers/random_augmentation.py`; adapted arithmetic also
+    ships in `bionemo_ir/dsl_kernels/triton/quaternion_rotation.py`
 
 - **Quack source excerpt**
   - Version: source excerpt; no upstream release pin

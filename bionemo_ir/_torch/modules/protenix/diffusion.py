@@ -547,6 +547,7 @@ class ProtenixDiffusionSampler(nn.Module):
             device=device,
             dtype=dtype,
             atom_mask=mask,
+            integrator_config=self.integrator.config,
         )
         context = SamplingContext.create(device, seed)
 

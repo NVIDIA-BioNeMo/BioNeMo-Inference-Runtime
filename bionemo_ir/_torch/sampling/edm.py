@@ -43,7 +43,8 @@ Algorithm 2.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
+from functools import cached_property
 from typing import Literal
 
 import torch
@@ -128,6 +129,28 @@ class EDMIntegratorConfig(SamplingIntegratorConfig):
         if self.step_scale <= 0:
             raise ValueError("step_scale must be positive")
 
+    def churn_rates(self, sigma_next: torch.Tensor) -> torch.Tensor:
+        """Select churn rates for scalar or vector noise levels."""
+        return torch.where(sigma_next > self.gamma_min, sigma_next.new_tensor(self.gamma0), sigma_next.new_zeros(()))
+
+
+@dataclass(frozen=True)
+class _PreparedEDMLevels:
+    config: EDMIntegratorConfig
+    schedule: torch.Tensor
+    gamma: torch.Tensor
+    sigma_hat: torch.Tensor
+
+    @cached_property
+    def tensor_steps(self) -> tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], ...]:
+        return tuple(zip(self.schedule[:-1].unbind(), self.schedule[1:].unbind(), self.sigma_hat.unbind(), strict=True))
+
+    @cached_property
+    def scalar_steps(self) -> tuple[tuple[float, float, float], ...]:
+        # Preserve Boltz's Python arithmetic after dtype rounding.
+        values = torch.stack((self.schedule[:-1], self.schedule[1:], self.gamma), dim=-1).tolist()
+        return tuple((last, next_, gamma) for last, next_, gamma in values)
+
 
 @dataclass(frozen=True)
 class EDMRolloutPlan(SamplingRolloutPlan[torch.Tensor]):
@@ -136,6 +159,7 @@ class EDMRolloutPlan(SamplingRolloutPlan[torch.Tensor]):
     ``schedule[i]`` and ``schedule[i + 1]`` correspond to the paper's ``t_i``
     and ``t_{i+1}``. ``augment_coordinates`` enables a protein-specific rigid
     augmentation before churn; it is not part of EDM Algorithm 2.
+    Prepared plans snapshot the input schedule. Treat plan tensors as read-only.
     """
 
     schedule: torch.Tensor
@@ -144,8 +168,10 @@ class EDMRolloutPlan(SamplingRolloutPlan[torch.Tensor]):
     dtype: torch.dtype
     atom_mask: torch.Tensor | None = None
     augment_coordinates: bool = True
+    integrator_config: InitVar[EDMIntegratorConfig | None] = None
+    churn_levels: _PreparedEDMLevels | None = field(init=False, default=None, repr=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, integrator_config: EDMIntegratorConfig | None) -> None:
         schedule = self.schedule
         if schedule.ndim != 1 or schedule.numel() < 2:
             raise ValueError("schedule must be one-dimensional with at least two points")
@@ -159,6 +185,12 @@ class EDMRolloutPlan(SamplingRolloutPlan[torch.Tensor]):
             raise ValueError("schedule and rollout device must match")
         if len(self.coords_shape) < 2 or self.coords_shape[-1] != 3:
             raise ValueError("coords_shape must end in [N_atom, 3]")
+        if integrator_config is not None:
+            schedule = schedule.clone()
+            object.__setattr__(self, "schedule", schedule)
+            gamma = integrator_config.churn_rates(schedule[1:])
+            levels = _PreparedEDMLevels(integrator_config, schedule, gamma, schedule[:-1] * (gamma + 1))
+            object.__setattr__(self, "churn_levels", levels)
 
     @property
     def num_steps(self) -> int:
@@ -287,13 +319,13 @@ class AF3EDMIntegrator(
                 generator=context.generator,
             ).to(plan.dtype)
 
-        sigma_last = plan.schedule[step_index]
-        sigma_next = plan.schedule[step_index + 1]
-        # Algorithm 2, line 5: sigma_hat = sigma_last * (1 + gamma).
-        gamma = torch.where(
-            sigma_next > self.config.gamma_min, sigma_next.new_tensor(self.config.gamma0), sigma_next.new_zeros(())
-        )
-        sigma_hat = sigma_last * (gamma + 1)
+        if plan.churn_levels is not None and plan.churn_levels.config == self.config:
+            sigma_last, sigma_next, sigma_hat = plan.churn_levels.tensor_steps[step_index]
+        else:
+            sigma_last = plan.schedule[step_index]
+            sigma_next = plan.schedule[step_index + 1]
+            gamma = self.config.churn_rates(sigma_next)
+            sigma_hat = sigma_last * (gamma + 1)
         # Algorithm 2, lines 4 and 6: sample and inject churn noise.
         noise = torch.randn(state.shape, device=plan.device, dtype=plan.dtype, generator=context.generator)
         x_noisy = edm_churn(state, sigma_last, sigma_hat, noise, self.config.noise_scale)

@@ -436,6 +436,7 @@ class OpenFold3DiffusionSampler(nn.Module):
             device=atom_mask.device,
             dtype=noise_schedule.dtype,
             atom_mask=atom_mask,
+            integrator_config=self.integrator.config,
         )
         use_conditioning = self.use_conditioning if use_conditioning is None else use_conditioning
 

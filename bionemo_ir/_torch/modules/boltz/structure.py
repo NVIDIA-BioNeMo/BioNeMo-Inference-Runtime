@@ -993,17 +993,19 @@ class BoltzEDMIntegrator(
         context: SamplingContext,
     ) -> BoltzEDMDenoiseStep:
         del context
-        sigma_last = plan.schedule[step_index]
-        sigma_next = plan.schedule[step_index + 1]
-        gamma = torch.where(
-            sigma_next > self.config.gamma_min, sigma_next.new_tensor(self.config.gamma0), sigma_next.new_zeros(())
-        )
+        if plan.churn_levels is not None and plan.churn_levels.config == self.config:
+            sigma_last, sigma_next, gamma = plan.churn_levels.scalar_steps[step_index]
+        else:
+            last = plan.schedule[step_index]
+            next_ = plan.schedule[step_index + 1]
+            rate = self.config.churn_rates(next_)
+            sigma_last, sigma_next, gamma = last.item(), next_.item(), rate.item()
         return BoltzEDMDenoiseStep(
             step_index=step_index,
             state=state,
-            sigma_last=sigma_last.item(),
-            sigma_next=sigma_next.item(),
-            gamma=gamma.item(),
+            sigma_last=sigma_last,
+            sigma_next=sigma_next,
+            gamma=gamma,
             steering_time=1.0 - (step_index / plan.num_steps),
         )
 
@@ -1284,6 +1286,7 @@ class BoltzDiffusionSampler(nn.Module):
         coords_shape = (*atom_mask.shape, 3)
 
         sigmas = self.sample_schedule(num_sampling_steps)
+        integrator = self.build_edm_integrator(hook_pipeline)
         plan = edm_sampling.EDMRolloutPlan(
             schedule=sigmas,
             coords_shape=coords_shape,
@@ -1291,8 +1294,8 @@ class BoltzDiffusionSampler(nn.Module):
             dtype=torch.float32,
             atom_mask=atom_mask,
             augment_coordinates=False,
+            integrator_config=integrator.config,
         )
-        integrator = self.build_edm_integrator(hook_pipeline)
 
         # Casting dtype for score model before run the loop, this ensure for both with and without autocast modes.
         network_condition_kwargs["q"] = network_condition_kwargs["q"].to(self.diffusion_module.dtype)

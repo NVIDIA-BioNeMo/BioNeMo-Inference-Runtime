@@ -17,6 +17,7 @@
 from math import sqrt
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -32,6 +33,7 @@ from bionemo_ir._torch.sampling import (
     DenoiseHookPipeline,
     DenoiseIntegratorTemplate,
     EDMIntegratorConfig,
+    EDMRolloutPlan,
     SamplingContext,
 )
 
@@ -324,3 +326,42 @@ def test_coordinate_augmentation_gates_the_rigid_hook():
     )
     assert isinstance(pipeline_off.before_denoise_hooks[0], boltz_structure.PotentialGuidanceHook)
     assert isinstance(pipeline_off.before_denoise_hooks[1], boltz_structure.BoltzEDMChurnHook)
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("alignment", [False, True])
+@pytest.mark.parametrize("steering", [False, True])
+def test_prepared_sampler_features(
+    monkeypatch: pytest.MonkeyPatch, version: str, alignment: bool, steering: bool
+) -> None:
+    monkeypatch.setattr(boltz_structure, "get_potentials", lambda *_args, **_kwargs: [])
+    sampler = _StubBoltzDiffusionSampler()
+    sampler.version = version
+    sampler.alignment_reverse_diff = alignment
+    steering_args = (
+        BoltzSteeringParams(
+            fk_steering=True, num_particles=2, physical_guidance_update=False, contact_guidance_update=False
+        )
+        if steering
+        else None
+    )
+    kwargs = {
+        "s_trunk": torch.zeros(1),
+        "s_inputs": torch.zeros(1),
+        "num_sampling_steps": 4,
+        "multiplicity": 2,
+        "max_parallel_samples": 1,
+        "feature_dict": {"atom_pad_mask": torch.ones(1, 5)},
+        "sampling_seed": 17,
+        "steering_args": steering_args,
+    }
+    prepared = sampler(network_condition_kwargs=_network_condition(), **kwargs)
+    post_init = EDMRolloutPlan.__post_init__
+
+    def unprepared(self: EDMRolloutPlan, integrator_config: EDMIntegratorConfig | None) -> None:
+        del integrator_config
+        post_init(self, None)
+
+    monkeypatch.setattr(EDMRolloutPlan, "__post_init__", unprepared)
+    plain = sampler(network_condition_kwargs=_network_condition(), **kwargs)
+    torch.testing.assert_close(prepared["sample_atom_coords"], plain["sample_atom_coords"], atol=0, rtol=0)

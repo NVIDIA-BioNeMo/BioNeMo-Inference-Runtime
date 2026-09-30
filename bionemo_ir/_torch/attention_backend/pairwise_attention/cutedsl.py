@@ -138,11 +138,12 @@ def _resolve_lse_buffer(
     shape: tuple,
     device: torch.device,
 ) -> torch.Tensor:
-    """Reuse ``output_lse`` if it matches the kernel contract, else allocate.
+    """Reuse ``output_lse`` if it matches the kernel contract, else pass a null LSE.
 
     The contract is fixed: ``shape``, dtype float32 (qk_acc_dtype), ``device``.
-    A mismatch falls back to an internal allocation rather than failing, as the
-    ``output`` parameter does.
+    ``None`` or a mismatch yields an empty tensor rather than failing, as the
+    ``output`` parameter does; its null data pointer makes the kernel skip the
+    LSE store.
     """
     if (
         output_lse is not None
@@ -151,7 +152,7 @@ def _resolve_lse_buffer(
         and output_lse.device == device
     ):
         return output_lse
-    return torch.empty(*shape, dtype=torch.float32, device=device)
+    return torch.empty(0, *shape[1:], dtype=torch.float32, device=device)
 
 
 def _batch_size(actual_s_kv: torch.Tensor) -> int:
@@ -490,9 +491,8 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             output: Optional ``[B_flat, Sq, H, D_padded]`` buffer written in
                 place.
             output_lse: Optional ``[B_flat, Sq, H, 1]`` float32 buffer written
-                in place, honored by both the Ampere and Hopper kernels. A
-                shape/dtype/device mismatch falls back to an internal
-                allocation.
+                in place, honored by both the Ampere and Hopper kernels.
+                ``None`` or a shape/dtype/device mismatch skips the LSE store.
 
         Returns:
             Output tensor ``[*, Sq, H, D]``.

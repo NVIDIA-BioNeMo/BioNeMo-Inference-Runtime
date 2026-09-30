@@ -761,7 +761,7 @@ class ProtenixDiffusionTransformer(nn.Module):
             a_in, s_in, z_in, mask_in = a, s, z, mask
             attn_metadata = None
 
-        # CuTeDSL reuses shared output and LSE buffers across layers.
+        # CuTeDSL reuses shared output buffers across layers.
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
 

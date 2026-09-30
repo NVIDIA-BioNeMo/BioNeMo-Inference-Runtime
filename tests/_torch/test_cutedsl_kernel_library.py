@@ -309,6 +309,18 @@ def test_triangle_attention_reuses_pre_padded_pair_bias():
     assert launch_inputs.bias.data_ptr() == padded_bias.data_ptr()
 
 
+def test_triangle_attention_passes_a_null_lse_unless_given_a_buffer():
+    backend, _ = _triangle_backend()
+    q, k, v, actual_s_kv, bias = _triangle_inputs()
+
+    launch_inputs = backend._prepare_launch_inputs(q, k, v, actual_s_kv, bias, False, None, None)
+    assert launch_inputs.lse.data_ptr() == 0
+
+    output_lse = torch.empty(2, 5, 2, 1)
+    launch_inputs = backend._prepare_launch_inputs(q, k, v, actual_s_kv, bias, False, None, output_lse)
+    assert launch_inputs.lse.data_ptr() == output_lse.data_ptr()
+
+
 def test_triangle_attention_rejects_static_inner_stride_mismatches():
     backend, _ = _triangle_backend()
     q, k, v, actual_s_kv, bias = _triangle_inputs()

@@ -82,7 +82,7 @@ def _make_inputs(batch, mult, seqlen_q, seqlen_kv, num_heads, head_dim, dtype, k
     return q, k, v, pair_bias, actual_s_kv
 
 
-def _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, kv_packed):
+def _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, kv_packed, output_lse=None):
     """Run one backend instance through exactly one implementation path."""
     if mode == "cubin":
 
@@ -95,7 +95,7 @@ def _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim
     backend = PairwiseAttentionCuTeLeftMask(0, num_heads, head_dim, num_kv_heads=num_heads)
     metadata = PairwiseAttentionCuTeLeftMaskMetadata()
     metadata.kv_packed = kv_packed
-    out = backend.forward(q, k, v, biases=[actual_s_kv, pair_bias], metadata=metadata)
+    out = backend.forward(q, k, v, biases=[actual_s_kv, pair_bias], metadata=metadata, output_lse=output_lse)
 
     cached = list(PairwiseAttentionCuTeLeftMask._compiled_cache.values())
     assert len(cached) == 1
@@ -139,6 +139,29 @@ def test_pairwise_attention_matches_reference(monkeypatch, mode, dtype, kv_packe
     actual = _run(mode, monkeypatch, *inputs, num_heads, head_dim, kv_packed)
     expected = _reference(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], num_heads, head_dim, seqlen)
     torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[dtype], rtol=1e-2)
+
+
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("head_dim", _HEAD_DIMS)
+def test_lse_is_written_only_when_requested(monkeypatch, mode, head_dim):
+    """A null LSE pointer skips the store; a buffer receives the reference LSE."""
+    if head_dim not in _tuned_head_dims():
+        pytest.skip(f"no tuned D{head_dim} config for SM{SM_VERSION}")
+    num_heads, batch, mult, seqlen = 4, 2, 2, 96
+    q, k, v, pair_bias, actual_s_kv = _make_inputs(
+        batch, mult, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, False
+    )
+    without_lse = _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, False).clone()
+    lse = torch.full((batch * mult, seqlen, num_heads, 1), torch.nan, device="cuda")
+    with_lse = _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, False, output_lse=lse)
+    assert torch.equal(with_lse, without_lse)
+
+    q_heads, k_heads = (t.float().unflatten(-1, (num_heads, head_dim)) for t in (q, k))
+    scores = torch.einsum("bqhd,bkhd->bhqk", q_heads, k_heads) * head_dim**-0.5
+    scores = scores + pair_bias.float().repeat_interleave(mult, dim=0)
+    keep = torch.arange(seqlen, device="cuda") < actual_s_kv.repeat_interleave(mult)[:, None]
+    expected = torch.logsumexp(scores.masked_fill(~keep[:, None, None, :], -torch.inf), dim=-1)
+    torch.testing.assert_close(lse[..., 0], expected.transpose(1, 2), atol=1e-2, rtol=1e-3)
 
 
 @pytest.mark.skipif(

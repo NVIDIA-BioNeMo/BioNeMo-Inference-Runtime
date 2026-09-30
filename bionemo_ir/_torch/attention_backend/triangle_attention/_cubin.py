@@ -70,6 +70,8 @@ class TriangleAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
         self._kernel_library = kernel_library
         self._launcher = launcher
         self._config = config
+        # Images built before the nullable-LSE ABI store LSE unconditionally.
+        self._requires_lse = not config.cubin.launch_abi.endswith("_nullable_lse_v1")
 
     def __call__(
         self,
@@ -84,6 +86,8 @@ class TriangleAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
         softmax_scale: float,
         i_dim: int,
     ) -> None:
+        if lse.data_ptr() == 0 and self._requires_lse:
+            lse = torch.empty(*q.shape[:3], 1, dtype=torch.float32, device=q.device)
         params = self._launcher.LaunchParams()
         params.q = tensor_s3_d2_static(self._kernel_library, q)
         params.k = tensor_s3_d2_static(self._kernel_library, k)

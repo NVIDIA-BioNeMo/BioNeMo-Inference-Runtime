@@ -170,10 +170,7 @@ class TriangleAttention(nn.Module):
             triangle_bias: [B, H, J, J]. ``None`` projects it from
                 ``hidden_states`` when the module has ``bias_proj``.
             buffers: Optional dict of shared pre-allocated output buffers
-                (e.g. ``tri_attn_output`` and ``tri_attn_lse``) to avoid
-                per-call allocation. The LSE buffer is consumed by the
-                left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper
-                SM90).
+                (``tri_attn_output``) to avoid per-call allocation.
             use_kv_lengths: Encode a left-aligned mask as per-row lengths for
                 the cuEquivariance SM100f fast path.
         """
@@ -233,20 +230,6 @@ class TriangleAttention(nn.Module):
             if buffers is not None
             else None
         )
-        # LSE companion: [B*I, J, H, 1] float32. Consumed by the left-mask
-        # CuTeDSL kernels (Ampere SM80/86/89 and Hopper SM90); ignored by all
-        # other backends (they accept it via **kwargs without using it).
-        attn_lse_buf = (
-            ensure_buffer(
-                buffers,
-                "tri_attn_lse",
-                (q.shape[0] * q.shape[1], q.shape[2], self.num_heads, 1),
-                torch.float32,
-                q.device,
-            )
-            if buffers is not None
-            else None
-        )
         mha_o = self.attn.forward(
             q,
             k,
@@ -254,7 +237,6 @@ class TriangleAttention(nn.Module):
             biases=[mask_bias, triangle_bias],
             metadata=attn_metadata,
             output=attn_buf,
-            output_lse=attn_lse_buf,
             use_kv_lengths=use_kv_lengths,
         )
         attn_output = mha_o.reshape(*hidden_states.shape[:-1], self.q_size)
@@ -870,10 +852,7 @@ class AttentionPairBias(nn.Module):
                 Used in sequence-local atom attention to avoid recomputing
                 the gathered mask each layer.
             buffers: Optional dict of shared pre-allocated output buffers
-                (e.g. ``pw_attn_output`` and ``pw_attn_lse``) to avoid
-                per-call allocation. The LSE buffer is consumed by the
-                left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper
-                SM90).
+                (``pw_attn_output``) to avoid per-call allocation.
 
         Returns:
             Output tensor with the same shape as *s*.
@@ -908,18 +887,7 @@ class AttentionPairBias(nn.Module):
             if buffers is not None
             else None
         )
-        # LSE companion: [B_flat, Sq, H, 1] float32. Consumed by the
-        # left-mask CuTeDSL kernels (Ampere SM80/86/89 and Hopper SM90);
-        # ignored by all other backends (they accept it via **kwargs without
-        # using it).
-        attn_lse_buf = (
-            ensure_buffer(buffers, "pw_attn_lse", (_b_flat, q.shape[-2], self.num_heads, 1), torch.float32, q.device)
-            if buffers is not None
-            else None
-        )
-        mha_o = self.attn.forward(
-            q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf, output_lse=attn_lse_buf
-        )
+        mha_o = self.attn.forward(q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf)
         if mha_o.dtype != attn_in_dtype:
             mha_o = mha_o.to(dtype=attn_in_dtype)
 

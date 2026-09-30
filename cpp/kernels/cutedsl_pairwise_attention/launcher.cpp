@@ -37,6 +37,22 @@ namespace
 
 constexpr char kSM80LaunchAbi[] = "pairwise_attention_sm80";
 constexpr char kSM90LaunchAbi[] = "pairwise_attention_sm90";
+// Same parameter bank; these images skip the LSE store for a null LSE pointer.
+constexpr char kSM80NullableLseLaunchAbi[] = "pairwise_attention_sm80_nullable_lse_v1";
+constexpr char kSM90NullableLseLaunchAbi[] = "pairwise_attention_sm90_nullable_lse_v1";
+
+bool accepts_null_lse(KernelConfig const& config)
+{
+  char const* abi = config.cubin.launch_abi;
+  return abi != nullptr
+    && (std::strcmp(abi, kSM80NullableLseLaunchAbi) == 0 || std::strcmp(abi, kSM90NullableLseLaunchAbi) == 0);
+}
+
+/* Older images store LSE unconditionally, so they still need a buffer. */
+bool lse_present(KernelConfig const& config, LaunchParams const& params)
+{
+  return params.lse.data != 0 || !accepts_null_lse(config);
+}
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
 {
@@ -52,10 +68,11 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("pairwise-attention config has no direct launch ABI");
 
   char const* expected_abi = is_sm80 ? kSM80LaunchAbi : kSM90LaunchAbi;
+  char const* expected_nullable_lse_abi = is_sm80 ? kSM80NullableLseLaunchAbi : kSM90NullableLseLaunchAbi;
   std::int32_t const expected_kernel_sm = is_sm80 ? 80 : 90;
   if (
     config.cubin.kernel_sm != expected_kernel_sm || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)
+    || (std::strcmp(config.cubin.launch_abi, expected_abi) != 0 && std::strcmp(config.cubin.launch_abi, expected_nullable_lse_abi) != 0))
   {
     throw std::invalid_argument("pairwise-attention CUBIN has an incompatible launch ABI");
   }
@@ -91,7 +108,8 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   validate_tensor(params.k, "k", 16);
   validate_tensor(params.v, "v", 16);
   validate_tensor(params.output, "output", 16);
-  validate_tensor(params.lse, "lse", 4);
+  if (lse_present(config, params))
+    validate_tensor(params.lse, "lse", 4);
   validate_pointer(params.actual_s_kv.data, 4, "actual_s_kv");
   validate_tensor(params.bias, "bias", 16);
   std::int32_t const head_dim = spec_head_dim(config.spec);
@@ -114,7 +132,7 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("q, k, and v must have the same number of heads");
   if (params.output.shape != params.q.shape)
     throw std::invalid_argument("output shape must match q shape");
-  if (!leading_shape_matches(params.lse, params.q))
+  if (lse_present(config, params) && !leading_shape_matches(params.lse, params.q))
     throw std::invalid_argument("lse dynamic shape must match q [B*mult, Sq, H]");
   if (params.actual_s_kv.shape[0] != batch)
     throw std::invalid_argument("actual_s_kv shape must equal q.shape[0] / mult");
@@ -199,7 +217,8 @@ void validate_operand_devices(LaunchParams const& params, std::int32_t device)
   check(params.actual_s_kv.device, "actual_s_kv");
   check(params.bias.device, "bias");
   check(params.output.device, "output");
-  check(params.lse.device, "lse");
+  if (params.lse.data != 0)
+    check(params.lse.device, "lse");
 }
 
 void launch_sm80(
@@ -218,7 +237,8 @@ void launch_sm80(
   device_params.actual_s_kv = make_tensor1_descriptor(params.actual_s_kv);
   device_params.bias = make_tensor4_descriptor(params.bias);
   device_params.output = make_tensor3_descriptor(params.output);
-  device_params.lse = make_tensor3_descriptor(params.lse);
+  if (params.lse.data != 0)
+    device_params.lse = make_tensor3_descriptor(params.lse);
   device_params.softmax_scale = params.softmax_scale;
   device_params.softmax_scale_log2 = params.softmax_scale_log2;
   device_params.mult = params.mult;
@@ -274,7 +294,8 @@ void launch_sm90(
   device_params.bias_coord = make_sm90_bias_coord(params.bias);
   device_params.actual_s_kv = make_tensor1_descriptor(params.actual_s_kv);
   device_params.output_coord = make_sm90_tensor3_coord(params.output);
-  device_params.lse = make_sm90_lse_descriptor(params.lse);
+  if (params.lse.data != 0)
+    device_params.lse = make_sm90_lse_descriptor(params.lse);
   device_params.softmax_scale_log2 = params.softmax_scale_log2;
   device_params.softmax_scale = params.softmax_scale;
   device_params.mult = params.mult;

@@ -482,6 +482,38 @@ def test_triangle_left_mask_native_sm90(head_dim, I, J, qkv_packed, cutedsl_mode
     assert diff_mean < 1e-2, f"mean diff {diff_mean:.4f} >= 1e-2"
 
 
+@pytest.mark.parametrize("head_dim", [32, 64, 128])
+@pytest.mark.parametrize(
+    "cutedsl_mode", cutedsl_test_modes(_TRIANGLE_CUTEDSL_SOURCE_MODULE), ids=lambda mode: f"impl-{mode}"
+)
+def test_triangle_left_mask_lse_is_written_only_when_requested(head_dim, cutedsl_mode, monkeypatch):
+    """A null LSE pointer skips the store; a buffer receives the reference LSE."""
+    skip_if_no_cutedsl("triangle_attention")
+    _configure_triangle_cutedsl_mode(cutedsl_mode, monkeypatch)
+    torch.manual_seed(42)
+    bs, I, J, H, D = 1, 3, 72, 4, head_dim
+    dtype, device = torch.bfloat16, torch.device("cuda")
+    q, k, v = (torch.randn(bs, I, J, H * D, dtype=dtype, device=device) for _ in range(3))
+    binary_mask = make_left_aligned_mask(bs, I, J, dtype=torch.float32, device=device)
+    actual_s_kv = binary_mask.sum(dim=-1).to(torch.int32)
+    pair_bias = torch.randn(bs, H, J, J, dtype=dtype, device=device)
+
+    cute_attn = TriangleAttentionCuTeLeftMask(0, H, D, num_kv_heads=H)
+    biases = [actual_s_kv, pair_bias]
+    without_lse = cute_attn.forward(q, k, v, biases=biases, metadata=_tri_meta(False)).clone()
+    output_lse = torch.full((bs * I, J, H, 1), torch.nan, device=device)
+    with_lse = cute_attn.forward(q, k, v, biases=biases, metadata=_tri_meta(False), output_lse=output_lse)
+    assert torch.equal(with_lse, without_lse)
+
+    q_heads = q.reshape(bs, I, J, H, D).float()
+    k_heads = k.reshape(bs, I, J, H, D).float()
+    scores = torch.einsum("bijhd,bikhd->bijhk", q_heads, k_heads) * (D**-0.5)
+    scores = scores + pair_bias.float().permute(0, 2, 1, 3).unsqueeze(1)
+    valid_keys = binary_mask[:, :, None, None, :].bool()
+    expected_lse = torch.logsumexp(scores.masked_fill(~valid_keys, -torch.inf), dim=-1)
+    torch.testing.assert_close(output_lse.reshape(bs, I, J, H), expected_lse, atol=1e-2, rtol=1e-3)
+
+
 # ---------------------------------------------------------------------------
 # CuTeDSL left-mask triangle attention — native Blackwell (SM100 ABI)
 # ---------------------------------------------------------------------------

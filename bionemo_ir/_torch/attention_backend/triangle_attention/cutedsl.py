@@ -176,11 +176,12 @@ def _resolve_lse_buffer(
     shape: tuple,
     device: torch.device,
 ) -> torch.Tensor:
-    """Reuse ``output_lse`` if it matches the kernel contract, else allocate.
+    """Reuse ``output_lse`` if it matches the kernel contract, else pass a null LSE.
 
     The contract is fixed: ``shape``, dtype float32 (qk_acc_dtype), ``device``.
-    A shape, dtype, or device mismatch falls back to an internal allocation.
-    A matching buffer with incompatible static inner strides is rejected.
+    ``None`` or a shape, dtype, or device mismatch yields an empty tensor, whose
+    null data pointer makes the kernel skip the LSE store. A matching buffer
+    with incompatible static inner strides is rejected.
     """
     if (
         output_lse is not None
@@ -197,7 +198,7 @@ def _resolve_lse_buffer(
             pointer_alignment=4,
         )
         return output_lse
-    return torch.empty(*shape, dtype=torch.float32, device=device)
+    return torch.empty(0, *shape[1:], dtype=torch.float32, device=device)
 
 
 def _to_actual_s_kv_int32(actual_s_kv: torch.Tensor, batch_size: int, i_dim: int) -> torch.Tensor:
@@ -634,8 +635,8 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
                 must match the input dtype/device and have contiguous H/D axes.
             output_lse: Optional ``[B*I, J, H, 1]`` float32 buffer written in
                 place, honored by the Ampere, Hopper, and Blackwell kernels.
-                A shape/dtype/device mismatch falls back to an internal
-                allocation; incompatible inner strides are rejected.
+                ``None`` or a shape/dtype/device mismatch skips the LSE store;
+                incompatible inner strides are rejected.
         Returns:
             o: [B, I, J, H, D]
         """

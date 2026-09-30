@@ -30,7 +30,7 @@ from bionemo_ir._torch.graph_optimization.config import (
 from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from bionemo_ir._torch.layers.attention import AttentionPairBias
 from bionemo_ir._torch.layers.normalization import AdaLN
-from bionemo_ir._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized, to_blocks
+from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata, to_blocks
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock
 from bionemo_ir._torch.utils import recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
@@ -678,13 +678,12 @@ class ProtenixDiffusionTransformer(nn.Module):
 
     @staticmethod
     def build_attn_metadata(num_blocks: int, n_queries: int, n_keys: int, device: torch.device) -> AttentionMetadata:
-        """Build metadata with local-window gather indices."""
-        gather_indices, _ = create_gather_indices(num_blocks, n_queries, n_keys, device)
+        """Build local-window metadata.
 
-        def _query_to_keys(x: torch.Tensor) -> torch.Tensor:
-            return query_to_keys_optimized(x, gather_indices, W=n_queries, H=n_keys)
-
-        return AttentionMetadata(query_to_keys=_query_to_keys, bias_cache={})
+        ``num_blocks`` and ``device`` are kept for API compatibility; the window
+        gather derives both from its input.
+        """
+        return build_local_attn_metadata(n_queries, n_keys, bias_cache={})
 
     def _precompute_all_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
         # Rebuild to observe direct weight mutations.

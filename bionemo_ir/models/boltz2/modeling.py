@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from functools import partial
 from typing import Any
 
 import torch
@@ -33,7 +32,7 @@ from bionemo_ir._torch.layers.distogram import DistogramModule
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.position_encoders import RelativePositionEncoder
-from bionemo_ir._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
+from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
 from bionemo_ir._torch.modules.boltz.affinity import (
     AffinityModule,
     compute_distogram,
@@ -421,10 +420,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
     def create_attn_metadata(self, n_atoms: int) -> AttentionMetadata:
         W = self.input_embedder_config.atoms_per_window_queries
         H = self.input_embedder_config.atoms_per_window_keys
-        K = n_atoms // W
-        gather_indices, _ = create_gather_indices(K, W, H, device=torch.device("cuda"))
-        query_to_keys_func = partial(query_to_keys_optimized, gather_indices=gather_indices, W=W, H=H)
-        return AttentionMetadata(query_to_keys=query_to_keys_func, bias_cache=None)
+        return build_local_attn_metadata(W, H)
 
     def forward(
         self,

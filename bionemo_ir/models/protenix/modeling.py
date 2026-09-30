@@ -19,7 +19,6 @@ EDM sampling, distogram / confidence heads, and confidence summary. Building
 OSS-facing ``FoldingOutput`` is deferred to the Protenix data pipeline.
 """
 
-from functools import partial
 from typing import Any
 
 import torch
@@ -35,7 +34,7 @@ from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOpt
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.position_encoders import RelativePositionEncoder
-from bionemo_ir._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
+from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
 from bionemo_ir._torch.modules.protenix import (
     ProtenixConfidenceHead,
     ProtenixConfidenceSummary,
@@ -195,13 +194,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         ``d_lm`` (unlike OpenFold3, which appends a trailing block when
         ``N_atom`` is an exact multiple of ``n_queries``).
         """
-        num_atoms = batch["ref_pos"].shape[-2]
-        W, H = self.n_queries, self.n_keys
-        K = (num_atoms + W - 1) // W
-        device = batch["ref_pos"].device
-        gather_indices, _ = create_gather_indices(K, W, H, device)
-        query_to_keys_func = partial(query_to_keys_optimized, gather_indices=gather_indices, W=W, H=H)
-        return AttentionMetadata(query_to_keys=query_to_keys_func, bias_cache={})
+        return build_local_attn_metadata(self.n_queries, self.n_keys, bias_cache={})
 
     def load_weights(self, weights: dict = None) -> None:
         """Load ported-module weights from a protenix-v2 checkpoint (or hub)."""

@@ -13,13 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 
 import torch
 import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import (
-    AttentionMetadata,
     auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend,
 )
@@ -31,10 +29,7 @@ from bionemo_ir._torch.layers.normalization import (
     replace_with_high_precision_layernorm,
 )
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
-from bionemo_ir._torch.layers.sequence_local_atom import (
-    create_gather_indices,
-    query_to_keys_optimized,
-)
+from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.layers.triangle_nodes import TriangleAttentionNode, TriangleMultiplicationNode
 from bionemo_ir._torch.modules.openfold3.confidence import AuxiliaryHeadsAllAtom
@@ -164,20 +159,10 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         return self.diffusion_sampler.diffusion_module
 
     def generate_attn_metadata(self, batch: dict[str, torch.Tensor]):
-        num_atoms = batch["atom_mask"].shape[-1]
-        K = (num_atoms + (self.n_query - (num_atoms % self.n_query))) // self.n_query
-        W = self.n_query
-        H = self.n_key
-        device = batch["atom_mask"].device
-        # The OF3 atom path uses gather indices exclusively. The legacy
-        # one-hot indexing matrix has no consumer here.
-        gather_indices, _ = create_gather_indices(K, W, H, device)
-
-        # Single OSS-equivalent zero-pad query→keys callable, pre-bound to
-        # ``gather_indices``, ``W``, ``H``. Consumed by both atom attention
-        # and ``convert_pair_atom_to_blocks``. Mirrors the Boltz-1/2 pattern.
-        query_to_keys_func = partial(query_to_keys_optimized, gather_indices=gather_indices, W=W, H=H)
-        return AttentionMetadata(query_to_keys=query_to_keys_func, bias_cache={})
+        # Single OSS-equivalent zero-pad query→keys callable, consumed by both
+        # atom attention and ``convert_pair_atom_to_blocks``. The block count
+        # comes from each input, so ``batch`` only fixes the call signature.
+        return build_local_attn_metadata(self.n_query, self.n_key, bias_cache={})
 
     def get_pretrained_config(self, model_name: str = SupMat.OpenFold3) -> BaseConfig:
         config_class = PRETRAINED_CONFIG_REGISTRY.get(model_name)

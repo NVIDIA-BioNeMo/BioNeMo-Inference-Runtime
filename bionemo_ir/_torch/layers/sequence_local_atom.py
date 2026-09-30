@@ -24,8 +24,10 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 
+from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
 from bionemo_ir._torch.utils.common import _deterministic_algorithms
 from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import MAX_ORDERED_ATOMS, reduce_atom_slots
+from bionemo_ir.dsl_kernels.triton.query_to_keys import query_to_keys_triton
 
 
 def pad_to_multiple_and_divide(tensor: torch.Tensor, multiple: int, dim: int = 1):
@@ -159,6 +161,31 @@ def query_to_keys_optimized(
     if input_ndim < 5:
         result = result.squeeze(1)
     return result
+
+
+def build_local_attn_metadata(
+    n_queries: int, n_keys: int, bias_cache: dict[str, torch.Tensor] | None = None
+) -> AttentionMetadata:
+    """Build sequence-local attention metadata shared by the atom models.
+
+    ``query_to_keys`` is the single-launch Triton window gather on CUDA
+    (bit-exact to ``query_to_keys_optimized``, which serves CPU inputs).
+    Inference only: the Triton gather writes a fresh buffer outside autograd.
+
+    Args:
+        n_queries: Query window size ``W``.
+        n_keys: Key window size ``H``.
+        bias_cache: Optional projected pair-bias cache.
+    """
+
+    def _query_to_keys(x: torch.Tensor) -> torch.Tensor:
+        if x.is_cuda:
+            return query_to_keys_triton(x, W=n_queries, H=n_keys)
+        num_blocks = x.shape[-3] if x.ndim > 3 else x.shape[1] // n_queries
+        gather_indices, _ = create_gather_indices(num_blocks, n_queries, n_keys, x.device)
+        return query_to_keys_optimized(x, gather_indices, W=n_queries, H=n_keys)
+
+    return AttentionMetadata(query_to_keys=_query_to_keys, bias_cache=bias_cache)
 
 
 def query_to_keys(

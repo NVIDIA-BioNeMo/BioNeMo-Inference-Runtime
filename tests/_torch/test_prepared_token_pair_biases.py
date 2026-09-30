@@ -18,14 +18,17 @@ from unittest.mock import patch
 import pytest
 import torch
 
+from bionemo_ir._torch.attention_backend.pairwise_attention import _config as pairwise_config
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
     BoltzDiffusionTransformer,
     OpenFold3DiffusionTransformer,
     ProtenixDiffusionTransformer,
 )
+from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 from bionemo_ir.configs import DiffusionTransformerConfig
+from tests._torch import SM_VERSION
 
-# 37 tokens pad the CuTeDSL key axis to 40; head_dim 32 has a CuTeDSL config.
+# 37 tokens pad the CuTeDSL key axis to 40; head_dim 32 has CuTeDSL configs for SM80-SM90.
 TOKENS, SAMPLES, DIM, HEADS, PAIR, LAYERS = 37, 3, 128, 4, 16, 2
 
 
@@ -81,6 +84,10 @@ def _inputs(model_type: type) -> tuple[dict, torch.Tensor]:
 def test_prepared_token_biases_match_per_call_projection(model_type: type, backend: str) -> None:
     if backend == "CuTeDSL" and torch.cuda.get_device_capability() < (8, 0):
         pytest.skip("CuTeDSL attention needs SM80+")
+    head_dim = DIM // HEADS
+    config_file = get_config_file_name(SM_VERSION, D=head_dim)
+    if backend == "CuTeDSL" and load_kernel_configs(pairwise_config._PW_CONFIGS_DIR, config_file) is None:
+        pytest.skip(f"No CuTeDSL pairwise-attention config for SM{SM_VERSION}, head_dim={head_dim}")
     torch.manual_seed(0)
     model = _model(model_type, backend)
     kwargs, z = _inputs(model_type)

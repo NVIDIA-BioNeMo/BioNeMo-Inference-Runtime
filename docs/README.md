@@ -13,6 +13,8 @@ at [docs.nvidia.com/bionemo/inference-runtime][site].
 - [`install.md`](install.md) — requirements and release-wheel installation
 - [`quickstart.md`](quickstart.md) — serial Boltz-2 prediction
 - [`ray.md`](ray.md) — multi-GPU Boltz-2 prediction
+- [`advanced/`](advanced/) — accelerate a custom model with BioIR modules,
+  and port and validate a new model's data pipeline
 - [`dev.md`](dev.md) — build, test, and contribute
 - [`coding.md`](coding.md) — style, naming, and tooling
 - [`contributing.md`](contributing.md),

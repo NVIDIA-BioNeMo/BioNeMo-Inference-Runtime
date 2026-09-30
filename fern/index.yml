@@ -49,6 +49,19 @@ navigation:
           - page: Python API
             path: ../docs/ref/api.md
             slug: api
+      - section: Advanced Guides
+        skip-slug: true
+        collapsed: true
+        contents:
+          - page: Accelerate a Custom Model
+            path: ../docs/advanced/accelerate-custom-model.md
+            slug: accelerate-custom-model
+          - page: Port a Data Pipeline
+            path: ../docs/advanced/port-data-pipeline.md
+            slug: port-data-pipeline
+          - page: Validate a Ported Pipeline
+            path: ../docs/advanced/validate-data-pipeline.md
+            slug: validate-data-pipeline
       - section: Developer Reference
         skip-slug: true
         collapsed: true

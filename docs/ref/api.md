@@ -771,10 +771,10 @@ Pairformer, diffusion transformer, or Evoformer in place of your module — not
 the full folding pipeline — construct the layer, remap weights, and swap it
 in. That path does not use `build_processor`.
 
-The playbook is the
-[module-onboard skill](../../.agents/skills/module-onboard/SKILL.md). Worked RF3
-conversions (config, adapter, weight remap, swap) live under
-[`samples/`](../../.agents/skills/module-onboard/samples/).
+For the walkthrough, refer to
+[Accelerate a Custom Model](../advanced/accelerate-custom-model.md). The
+[module onboarding example](../../examples/module_onboarding/) holds a worked
+RF3 Pairformer conversion: config, adapter, weight remap, and swap.
 
 The same custom-module path can take the **pairwise memory optimizations**
 already used in BioIR (Boltz, OpenFold, Protenix): bf16 pair tensors, shorter
@@ -818,7 +818,9 @@ Fused kernels on supported SKUs:
 - Demo CLI: [`examples/folding/run_demo.py`](../../examples/folding/run_demo.py)
 - Sample JSON / MSA: [`examples/data/samples/`](../../examples/data/samples)
 - Module onboarding (swap Pairformer / DiT / Evoformer into *your* model):
-  [module-onboard skill](../../.agents/skills/module-onboard/SKILL.md)
+  [Accelerate a Custom Model](../advanced/accelerate-custom-model.md)
+- New model end to end (data pipeline and registry):
+  [Port a Data Pipeline](../advanced/port-data-pipeline.md)
 - Pairwise memory optimizations (port BioIR patterns onto *your* module):
   [scan-mem-opt-patterns skill](../../.agents/skills/scan-mem-opt-patterns/SKILL.md)
 

@@ -24,8 +24,9 @@ Handles:
 - Name renames (tri_mul_outgoing -> tri_mul_out, etc.)
 - QKV fusion for triangle attention (separate q,k,v -> fused qkv_proj)
 - KV fusion for attention pair bias (separate k,v -> fused proj_kv)
-- Gate+Input fusion for transition (linear_1,linear_2 -> fused_fc2_fc1)
-- Bias handling (the source to_g has bias, BioIR g_proj has no bias for tri_attn)
+- Transition fusion (linear_2, then the SiLU-activated linear_1 -> fused_fc2_fc1)
+- Triangle attention gate and output biases (to_g.bias, to_out.bias). They load
+  only into the nodes that ``integration.swap.build_pairformer_module`` builds.
 
 No checkpoint needed — works with any state_dict matching the RF3 PairformerBlock layout.
 """
@@ -52,8 +53,8 @@ def convert_tri_attn_weights(state_dict, prefix, bioir_prefix):
 
     Fusions:
     - to_q + to_k + to_v -> mha.qkv_proj (cat dim=0)
-    - to_g -> mha.g_proj (bias dropped — BioIR g_proj has no bias)
-    - to_out -> mha.o_proj (bias dropped — BioIR o_proj has no bias)
+    - to_g -> mha.g_proj, with its bias
+    - to_out -> mha.o_proj, with its bias
     - norm -> layer_norm
     - to_b -> linear
     """
@@ -68,21 +69,26 @@ def convert_tri_attn_weights(state_dict, prefix, bioir_prefix):
         f"{bioir_prefix}.linear.weight": state_dict[f"{prefix}.to_b.weight"],
         f"{bioir_prefix}.mha.qkv_proj.weight": qkv_weight,
         f"{bioir_prefix}.mha.o_proj.weight": state_dict[f"{prefix}.to_out.weight"],
+        f"{bioir_prefix}.mha.o_proj.bias": state_dict[f"{prefix}.to_out.bias"],
         f"{bioir_prefix}.mha.g_proj.weight": state_dict[f"{prefix}.to_g.weight"],
+        f"{bioir_prefix}.mha.g_proj.bias": state_dict[f"{prefix}.to_g.bias"],
     }
 
 
 def convert_transition_weights(state_dict, prefix, bioir_prefix):
     """Convert Transition weights.
 
+    RF3 computes linear_3(silu(linear_1(x)) * linear_2(x)). BioIR applies SiLU
+    to the second half of fused_fc2_fc1.
+
     Fusions:
-    - linear_2 + linear_1 -> fused_fc2_fc1 (gate first! cat dim=0)
+    - linear_2, then linear_1 -> fused_fc2_fc1 (cat dim=0)
     - linear_3 -> fc3
     - layer_norm_1 -> norm
     """
-    gate_weight = state_dict[f"{prefix}.linear_2.weight"]
-    input_weight = state_dict[f"{prefix}.linear_1.weight"]
-    fused_weight = torch.cat([gate_weight, input_weight], dim=0)
+    gate_weight = state_dict[f"{prefix}.linear_1.weight"]  # SiLU-activated
+    value_weight = state_dict[f"{prefix}.linear_2.weight"]
+    fused_weight = torch.cat([value_weight, gate_weight], dim=0)  # gate second
 
     return {
         f"{bioir_prefix}.norm.weight": state_dict[f"{prefix}.layer_norm_1.weight"],
@@ -100,7 +106,7 @@ def convert_attention_pair_bias_weights(state_dict, prefix, bioir_prefix):
 
     Renames:
     - to_q -> proj_q (BioIR adds a bias; initialize to zero)
-    - to_g -> proj_g
+    - to_g -> proj_g (RF3 stores to_g as Sequential(Linear, Sigmoid): to_g.0)
     - to_a -> proj_o
     - to_b -> proj_z.1 (pair bias linear)
     - ln_0 -> proj_z.0 (pair bias norm)
@@ -114,13 +120,15 @@ def convert_attention_pair_bias_weights(state_dict, prefix, bioir_prefix):
     # BioIR proj_q has a bias; the source module does not. Initialize to zero.
     q_bias = torch.zeros(q_weight.shape[0], dtype=q_weight.dtype)
 
+    g_key = f"{prefix}.to_g.0.weight" if f"{prefix}.to_g.0.weight" in state_dict else f"{prefix}.to_g.weight"
+
     return {
         f"{bioir_prefix}.norm_s.weight": state_dict[f"{prefix}.ln_1.weight"],
         f"{bioir_prefix}.norm_s.bias": state_dict[f"{prefix}.ln_1.bias"],
         f"{bioir_prefix}.proj_q.weight": q_weight,
         f"{bioir_prefix}.proj_q.bias": q_bias,
         f"{bioir_prefix}.proj_kv.weight": kv_weight,
-        f"{bioir_prefix}.proj_g.weight": state_dict[f"{prefix}.to_g.weight"],
+        f"{bioir_prefix}.proj_g.weight": state_dict[g_key],
         f"{bioir_prefix}.proj_o.weight": state_dict[f"{prefix}.to_a.weight"],
         f"{bioir_prefix}.proj_z.0.weight": state_dict[f"{prefix}.ln_0.weight"],
         f"{bioir_prefix}.proj_z.0.bias": state_dict[f"{prefix}.ln_0.bias"],
@@ -137,7 +145,7 @@ def convert_pairformer_block_weights(state_dict, prefix="", bioir_prefix=""):
         bioir_prefix: Key prefix for BioIR weights (e.g., "layers.0").
 
     Returns:
-        Dict of converted weights usable by both Torch and TRT backends.
+        Flat dict of converted weights for ``PairformerModule.load_state_dict``.
     """
     dot = "." if prefix else ""
     tdot = "." if bioir_prefix else ""
@@ -179,7 +187,7 @@ def convert_pairformer_stack_weights(state_dict, num_blocks, prefix="pairformer_
         bioir_prefix: BioIR prefix (e.g., "layers").
 
     Returns:
-        Dict of converted weights for the full PairformerModule.
+        Flat dict of converted weights for the full PairformerModule.
     """
     weights = {}
     for i in range(num_blocks):

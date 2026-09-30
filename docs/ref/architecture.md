@@ -40,7 +40,7 @@ supplies optimized building blocks to your architecture:
   transformer, or Evoformer. Your complete model does not need to belong to a
   supported end-to-end family. Start with [optimized modules for custom
   models](#workflow-2-optimized-modules-for-custom-models), then follow the
-  conversion process in [custom architectures][api-custom].
+  conversion process in [Accelerate a Custom Model][custom-model].
 
 These workflows map to the repository's two model trees. Workflow 1 combines the
 data path in `bionemo_ir/pipeline/` with the compute path in
@@ -146,7 +146,7 @@ You do not have to adopt a supported model to get the acceleration. The layers
 below are plain `nn.Module`s with their own configs, so a custom architecture
 can construct one, remap its weights, and swap it in for the equivalent module.
 The step-by-step conversion — config mapping, `state_dict` remapping, adapter
-shims, numerics checks — is in [custom architectures][api-custom].
+shims, numerics checks — is in [Accelerate a Custom Model][custom-model].
 
 ### Transformer Primitives
 
@@ -444,7 +444,8 @@ compute path with no data path at all. Its factory resolves the `Protenix` model
 class, but its pipeline-component methods are not implemented.
 
 The split is why a data-pipeline change never touches a compute-side config,
-and why the same model can be driven by a different front end.
+and why the same model can be driven by a different front end. To add a data
+path for a new family, refer to [Port a Data Pipeline][port-pipeline].
 
 ### Conventions in the Data Path
 
@@ -508,17 +509,20 @@ rather than failing the batch — a bad request does not take down the run.
 - [Model weights][model-weights] — where checkpoints resolve from.
 - [Developer guide][devguide] — environment setup, build, tests.
 - [Coding guidelines][coding] — the rules this code is written to.
+- [Advanced guides][custom-model] — accelerate a custom model, and port and
+  validate a new model's data pipeline.
 - [Agent skills][skills] — automated versions of the patterns above.
 
 [api]: api.md
-[api-custom]: api.md#custom-architectures
 [benchmarks]: benchmark.md
 [coding]: ../coding.md
 [config]: config.md
+[custom-model]: ../advanced/accelerate-custom-model.md
 [devguide]: ../dev.md
 [mem-opt]: ../../.agents/skills/scan-mem-opt-patterns/SKILL.md
 [model-weights]: model-weights.md
 [overview]: ../overview.mdx
+[port-pipeline]: ../advanced/port-data-pipeline.md
 [ray-data]: https://docs.ray.io/en/latest/data/data.html
 [skills]: ../../.agents/skills
 [support-matrix]: support-matrix.md

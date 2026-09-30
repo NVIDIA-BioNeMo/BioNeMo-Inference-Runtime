@@ -30,9 +30,13 @@ def make_rf3_pairformer_config(
     pairwise_head_width: int = 32,
     pairwise_num_heads: int = 4,
     dtype: str = "bfloat16",
-    # Torch backend defaults
-    triangle_attention_backend: str = "CuTeDSL",
-    pairwise_attention_backend: str = "CuTeDSL",
+    # Portable on every supported GPU. CuTeDSL is faster on GPUs that support it.
+    triangle_attention_backend: str = "CUEQUIV",
+    pairwise_attention_backend: str = "SDPA",
+    # RF3's default cuEquivariance triangle multiplication sums over the third
+    # token; its PyTorch fallback divides the sum by the token count. Set True
+    # only to compare against the fallback.
+    trimul_mean_normalization: bool = False,
 ) -> PairformerConfig:
     return PairformerConfig(
         num_blocks=num_blocks,
@@ -44,6 +48,9 @@ def make_rf3_pairformer_config(
         dtype=dtype,
         triangle_attention_backend=triangle_attention_backend,
         pairwise_attention_backend=pairwise_attention_backend,
+        trimul_mean_normalization=trimul_mean_normalization,
+        # RF3's ending node projects its triangle bias before transposing the pair.
+        tri_attn_transposed_bias=True,
         attention_initial_norm=True,
         version="v1",
     )

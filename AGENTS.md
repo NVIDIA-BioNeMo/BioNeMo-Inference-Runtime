@@ -70,9 +70,12 @@ Daily loop is in [`docs/dev.md`][dev]. See also
 Task-specific playbooks live in `.agents/skills/`
 
 - `make-data-pipeline` — porting an open-source data pipeline into the BioIR
-  pipeline architecture.
+  pipeline architecture. The procedure lives in
+  `docs/advanced/port-data-pipeline.md` and
+  `docs/advanced/validate-data-pipeline.md`.
 - `module-onboard` — moving a source model's module onto BioIR layers, with
-  weight conversion and validation.
+  weight conversion and validation. The procedure lives in
+  `docs/advanced/accelerate-custom-model.md`.
 - `scan-mem-opt-patterns` — cutting activation memory or diagnosing large-`N`
   OOM in a pairwise-representation model.
 - `bench-perf-oss` — benchmark BioIR vs OSS **folding** `model.forward()`

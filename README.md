@@ -129,6 +129,12 @@ BioIR documentation lives under [`docs/`](docs/) and is published with Fern:
 - [Quickstart](docs/quickstart.md) — run a serial Boltz-2 prediction
 - [Ray multi-GPU inference](docs/ray.md) — scale independent requests across
   visible GPUs
+- [Accelerate a custom model](docs/advanced/accelerate-custom-model.md) — swap
+  BioIR modules into your own PyTorch model
+- [Port a data pipeline](docs/advanced/port-data-pipeline.md) — run a new model
+  family through `build_processor`
+- [Validate a ported pipeline](docs/advanced/validate-data-pipeline.md) —
+  feature equivalence and end-to-end accuracy against upstream
 - [Developer guide](docs/dev.md) — build, test, stage weights, contribute
 - [API reference](docs/ref/api.md) — `build_processor`, model constructors,
   inputs/outputs

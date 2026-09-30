@@ -36,6 +36,9 @@ GITHUB_REPOSITORY = "github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
 # left alone: one relative path works in a repository checkout and on the site.
 ASSETS_DIR = Path("assets")
 PAGE_ROUTES = {
+    Path("advanced/accelerate-custom-model.md"): "references/accelerate-custom-model",
+    Path("advanced/port-data-pipeline.md"): "references/port-data-pipeline",
+    Path("advanced/validate-data-pipeline.md"): "references/validate-data-pipeline",
     Path("coding.md"): "references/coding",
     Path("CODE_OF_CONDUCT.md"): "community/code-of-conduct",
     Path("contributing.md"): "community/contributing",

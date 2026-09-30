@@ -22,9 +22,8 @@ from importlib import import_module
 import torch
 import torch.nn as nn
 
-from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
-from bionemo_ir._torch.utils import CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy, chunk_apply
+from bionemo_ir._torch.utils import CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy
 from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_transpose
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
 from bionemo_ir.utils import get_sm_version
@@ -174,24 +173,11 @@ class TriangleAttentionNode(nn.Module):
         self.c_hidden = c_hidden
         self.num_heads = num_heads
         self.node_type = node_type
-        self.transposed_bias = transposed_bias
         self.inf = inf
         self.dtype = dtype
         self.attn_backend = attn_backend
         self.pair_mask_left_aligned = pair_mask_left_aligned
-        # Query-row chunking policy (registry default unless overridden). Attention within each row
-        # is independent, so row-chunking is numerically identical; bounds the [chunk, J, H, ...]
-        # attention temporaries at large N.
-        self.chunk_policy = chunk_policy if chunk_policy is not None else CHUNK_REGISTRY.get(TRIANGLE_ATTENTION)
         self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype)
-        self.linear = Linear(
-            self.c_in,
-            self.num_heads,
-            bias=False,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights,
-        )
-
         self.mha = TriangleAttention(
             layer_idx=layer_idx,
             hidden_size=self.c_in,
@@ -200,80 +186,13 @@ class TriangleAttentionNode(nn.Module):
             num_key_value_heads=self.num_heads,
             gating=True,
             bias_flags=mha_bias_flags,
+            bias_proj=True,
+            transposed_bias=transposed_bias,
+            # Row chunks bound the [chunk, J, H, ...] attention temporaries at large N.
+            chunk_policy=chunk_policy if chunk_policy is not None else CHUNK_REGISTRY.get(TRIANGLE_ATTENTION),
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             attn_backend=attn_backend,
-        )
-
-        self.J_padded_multiple = -1
-        if self.attn_backend == "CuTeDSL":
-            self.J_padded_multiple = 8
-        self._ln_proj_moveaxis_pad = LNProjMoveaxisPad(
-            D=self.c_in,
-            H=self.num_heads,
-            dtype=dtype or torch.bfloat16,
-        )
-
-    @staticmethod
-    def _ensure_contiguous(x: torch.Tensor, mask_bias: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """The attention kernels require contiguous inputs"""
-        if not x.is_contiguous():
-            x = x.contiguous()
-        if not mask_bias.is_contiguous():
-            mask_bias = mask_bias.contiguous()
-        return x, mask_bias
-
-    def _ensure_dtype(self, x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Ensure the dtype of the input and mask"""
-        if x.dtype != self.dtype:
-            x = x.to(self.dtype)
-        if mask.dtype != self.dtype:
-            mask = mask.to(self.dtype)
-        return x, mask
-
-    def _prep_bias(
-        self,
-        x: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute triangle bias and apply LayerNorm to x.
-
-        Args:
-            x: input tensor [B, I, J, c_in] (already transposed for ending node)
-
-        Returns:
-            (x_normed, triangle_bias):
-                x_normed: [B, I, J, c_in] after LayerNorm
-                triangle_bias: [B, H, I, J_padded] projected and transposed
-        """
-        x = self.layer_norm(x)
-        # Transpose before projecting, not after: the pad below lands on the
-        # key axis, so swapping the token axes afterwards would misplace it.
-        bias_src = x.transpose(1, 2).contiguous() if self.transposed_bias else x
-        triangle_bias = self._ln_proj_moveaxis_pad(
-            bias_src,
-            ln_weight=None,
-            ln_bias=None,
-            proj_weight=self.linear.weight,
-            pad_multiple=self.J_padded_multiple,
-            proj_z=self.linear,
-        )
-        return x, triangle_bias
-
-    def _mha_slice(
-        self,
-        x: torch.Tensor,
-        mask_bias: torch.Tensor,
-        triangle_bias: torch.Tensor,
-        attn_metadata: AttentionMetadata | None = None,
-        buffers: PreallocatedBuffers | None = None,
-    ) -> torch.Tensor:
-        """Run MHA for a (possibly row-chunked) slice of ``x``; ``triangle_bias`` is shared."""
-        return self.mha(
-            x,
-            biases=[mask_bias, triangle_bias],
-            attn_metadata=attn_metadata,
-            buffers=buffers,
-            use_kv_lengths=self.pair_mask_left_aligned,
         )
 
     def forward(
@@ -311,25 +230,13 @@ class TriangleAttentionNode(nn.Module):
             precomputed = precompute_pair_masks(self.attn_backend, mask, inf=self.inf, dtype=self.dtype)
             mask_bias = precomputed.mask_bias
 
-        x, triangle_bias = self._prep_bias(x)
-
-        x, mask_bias = self._ensure_contiguous(x, mask_bias)
-        # Row-chunk the query dim (mask_bias slices in lockstep; triangle_bias is shared across
-        # rows so it passes through). ``chunk_apply`` falls back to a single dense call below the
-        # policy threshold, so small N is unaffected.
-        if self.chunk_policy is not None:
-            output = chunk_apply(
-                self._mha_slice,
-                x,
-                mask_bias,
-                policy=self.chunk_policy,
-                cat_dim=1,
-                triangle_bias=triangle_bias,
-                attn_metadata=attn_metadata,
-                buffers=buffers,
-            )
-        else:
-            output = self._mha_slice(x, mask_bias, triangle_bias, attn_metadata=attn_metadata, buffers=buffers)
+        output = self.mha(
+            self.layer_norm(x),
+            mask_bias,
+            attn_metadata=attn_metadata,
+            buffers=buffers,
+            use_kv_lengths=self.pair_mask_left_aligned,
+        )
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)
         return output

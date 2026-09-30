@@ -88,17 +88,18 @@ def _tiny_feats(device):
 
 def _run(module, prob_contact, device, multiplicity=1, run_sequentially=True, max_parallel_samples=1):
     torch.manual_seed(0)
-    return module(
-        s_inputs=torch.randn(1, N_TOKENS, TOKEN_S, device=device),
-        s=torch.randn(1, N_TOKENS, TOKEN_S, device=device),
-        z=torch.randn(1, N_TOKENS, N_TOKENS, TOKEN_Z, device=device),
-        x_pred=torch.randn(1, multiplicity, N_ATOMS, 3, device=device),
-        feats=_tiny_feats(device),
-        prob_contact=prob_contact,
-        multiplicity=multiplicity,
-        run_sequentially=run_sequentially,
-        max_parallel_samples=max_parallel_samples,
-    )
+    with torch.inference_mode():
+        return module(
+            s_inputs=torch.randn(1, N_TOKENS, TOKEN_S, device=device),
+            s=torch.randn(1, N_TOKENS, TOKEN_S, device=device),
+            z=torch.randn(1, N_TOKENS, N_TOKENS, TOKEN_Z, device=device),
+            x_pred=torch.randn(1, multiplicity, N_ATOMS, 3, device=device),
+            feats=_tiny_feats(device),
+            prob_contact=prob_contact,
+            multiplicity=multiplicity,
+            run_sequentially=run_sequentially,
+            max_parallel_samples=max_parallel_samples,
+        )
 
 
 @pytest.mark.parametrize("multiplicity", [1, 2])

@@ -500,6 +500,22 @@ def test_moveaxis_pad_masks_the_head_axis(heads: int) -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("transposed", [False, True])
+@pytest.mark.parametrize("offset", [512, 3], ids=["aligned", "misaligned"])
+def test_moveaxis_pad_reads_head_slices_of_a_wider_projection(transposed: bool, offset: int) -> None:
+    heads, tokens, width = 4, 30, 544
+    op = MoveaxisPad(H=heads, dtype=torch.bfloat16)
+    torch.manual_seed(0)
+    projection = torch.randn(1, tokens, tokens, width, device="cuda", dtype=torch.bfloat16)
+    x = projection[..., offset : offset + heads]
+    if transposed:
+        x = x.transpose(1, 2)
+
+    expected = F.pad(x.contiguous().movedim(-1, -3), (0, 32 - tokens))
+    assert torch.equal(op(x, multiple=8), expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_moveaxis_pad_rejects_more_heads_than_compiled_for() -> None:
     op = MoveaxisPad(H=4, dtype=torch.bfloat16)
     too_many = torch.randn(1, 8, 30, 8, device="cuda", dtype=torch.bfloat16)

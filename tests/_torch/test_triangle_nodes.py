@@ -110,7 +110,7 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     def record_qkv_rows(_module, inputs) -> None:
         seen_qkv_rows.append(inputs[0].shape[1])
 
-    handle = node.mha.qkv_proj.register_forward_pre_hook(record_qkv_rows)
+    handle = node.mha.in_proj.register_forward_pre_hook(record_qkv_rows)
     with torch.inference_mode():
         ref_output_float = ref_node(x, mask)
         x = x.to(dtype)

@@ -122,24 +122,14 @@ def convert_hf_pairformer_torch(
                     "bias": module_state_dict[f"layers.{i}.attention.norm_s.bias"],
                 }
             ]
-        bioir_state_dict[f"layers.{i}.attention.proj_q"] = [
+        bioir_state_dict[f"layers.{i}.attention.in_proj"] = [
             {
                 "weight": module_state_dict[f"layers.{i}.attention.proj_q.weight"],
                 "bias": module_state_dict[f"layers.{i}.attention.proj_q.bias"],
-            }
-        ]
-        bioir_state_dict[f"layers.{i}.attention.proj_kv"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.attention.proj_k.weight"],
             },
-            {
-                "weight": module_state_dict[f"layers.{i}.attention.proj_v.weight"],
-            },
-        ]
-        bioir_state_dict[f"layers.{i}.attention.proj_g"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.attention.proj_g.weight"],
-            }
+            {"weight": module_state_dict[f"layers.{i}.attention.proj_g.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.attention.proj_k.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.attention.proj_v.weight"]},
         ]
         if f"layers.{i}.attention.proj_z.0.weight" in module_state_dict:  # for attention pair bias v2
             bioir_state_dict[f"layers.{i}.attention.proj_z.0"] = [
@@ -212,12 +202,7 @@ def convert_hf_pairformer_torch(
                     "bias": module_state_dict[f"layers.{i}.tri_att_{name}.layer_norm.bias"],
                 }
             ]
-            bioir_state_dict[f"layers.{i}.tri_attn_{name}.linear"] = [
-                {
-                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
-                }
-            ]
-            bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.qkv_proj"] = [
+            bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.in_proj"] = [
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_q.weight"],
                 },
@@ -227,15 +212,16 @@ def convert_hf_pairformer_torch(
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_v.weight"],
                 },
+                {
+                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
+                },
+                {
+                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
+                },
             ]
             bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.o_proj"] = [
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_o.weight"],
-                }
-            ]
-            bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.g_proj"] = [
-                {
-                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
                 }
             ]
         # weight for transition_s and transition_z
@@ -425,24 +411,14 @@ def convert_hf_diffusion_transformer_torch(
             ]
 
         # weight for pairwise attention
-        bioir_state_dict[f"layers.{i}.pair_bias_attn.proj_q"] = [
+        bioir_state_dict[f"layers.{i}.pair_bias_attn.in_proj"] = [
             {
                 "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.weight"],
                 "bias": module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.bias"],
-            }
-        ]
-        bioir_state_dict[f"layers.{i}.pair_bias_attn.proj_kv"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_k.weight"],
             },
-            {
-                "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_v.weight"],
-            },
-        ]
-        bioir_state_dict[f"layers.{i}.pair_bias_attn.proj_g"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_g.weight"],
-            }
+            {"weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_g.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_k.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_v.weight"]},
         ]
 
         if getattr(config, "shared_pair_norm", False):
@@ -474,7 +450,7 @@ def convert_hf_diffusion_transformer_torch(
         ]
 
         # weight for output_projection
-        bioir_state_dict[f"layers.{i}.output_projection"] = [
+        bioir_state_dict[f"layers.{i}.pair_bias_attn.output_projection"] = [
             {
                 "weight": module_state_dict[f"layers.{i}.output_projection.0.weight"],
                 "bias": module_state_dict[f"layers.{i}.output_projection.0.bias"],
@@ -632,13 +608,9 @@ def convert_hf_template_embedder_torch(
         "tri_mul_in.linear_g": "tri_mul_in.g_out",
         "tri_mul_in.linear_z": "tri_mul_in.p_out",
         "tri_att_start.layer_norm": "tri_attn_start.layer_norm",
-        "tri_att_start.linear_z": "tri_attn_start.linear",
         "tri_att_start.mha.linear_o": "tri_attn_start.mha.o_proj",
-        "tri_att_start.mha.linear_g": "tri_attn_start.mha.g_proj",
         "tri_att_end.layer_norm": "tri_attn_end.layer_norm",
-        "tri_att_end.linear_z": "tri_attn_end.linear",
         "tri_att_end.mha.linear_o": "tri_attn_end.mha.o_proj",
-        "tri_att_end.mha.linear_g": "tri_attn_end.mha.g_proj",
         "pair_transition.layer_norm": "pair_transition.norm",
         "pair_transition.linear_out": "pair_transition.fc3",
     }
@@ -662,15 +634,19 @@ def convert_hf_template_embedder_torch(
         "tri_mul_out.g_in": ["tri_mul_out.linear_a_g", "tri_mul_out.linear_b_g"],
         "tri_mul_in.p_in": ["tri_mul_in.linear_a_p", "tri_mul_in.linear_b_p"],
         "tri_mul_in.g_in": ["tri_mul_in.linear_a_g", "tri_mul_in.linear_b_g"],
-        "tri_attn_start.mha.qkv_proj": [
+        "tri_attn_start.mha.in_proj": [
             "tri_att_start.mha.linear_q",
             "tri_att_start.mha.linear_k",
             "tri_att_start.mha.linear_v",
+            "tri_att_start.mha.linear_g",
+            "tri_att_start.linear_z",
         ],
-        "tri_attn_end.mha.qkv_proj": [
+        "tri_attn_end.mha.in_proj": [
             "tri_att_end.mha.linear_q",
             "tri_att_end.mha.linear_k",
             "tri_att_end.mha.linear_v",
+            "tri_att_end.mha.linear_g",
+            "tri_att_end.linear_z",
         ],
         "pair_transition.fused_fc2_fc1": ["pair_transition.swiglu.linear_b", "pair_transition.swiglu.linear_a"],
     }
@@ -750,13 +726,9 @@ def convert_hf_msa_stack_torch(
         "pair_stack.tri_mul_in.linear_g": "tri_mul_in.g_out",
         "pair_stack.tri_mul_in.linear_z": "tri_mul_in.p_out",
         "pair_stack.tri_att_start.layer_norm": "tri_attn_start.layer_norm",
-        "pair_stack.tri_att_start.linear_z": "tri_attn_start.linear",
         "pair_stack.tri_att_start.mha.linear_o": "tri_attn_start.mha.o_proj",
-        "pair_stack.tri_att_start.mha.linear_g": "tri_attn_start.mha.g_proj",
         "pair_stack.tri_att_end.layer_norm": "tri_attn_end.layer_norm",
-        "pair_stack.tri_att_end.linear_z": "tri_attn_end.linear",
         "pair_stack.tri_att_end.mha.linear_o": "tri_attn_end.mha.o_proj",
-        "pair_stack.tri_att_end.mha.linear_g": "tri_attn_end.mha.g_proj",
         "pair_stack.pair_transition.layer_norm": "pair_transition.norm",
         "pair_stack.pair_transition.linear_out": "pair_transition.fc3",
     }
@@ -785,15 +757,19 @@ def convert_hf_msa_stack_torch(
         "tri_mul_out.g_in": ["pair_stack.tri_mul_out.linear_a_g", "pair_stack.tri_mul_out.linear_b_g"],
         "tri_mul_in.p_in": ["pair_stack.tri_mul_in.linear_a_p", "pair_stack.tri_mul_in.linear_b_p"],
         "tri_mul_in.g_in": ["pair_stack.tri_mul_in.linear_a_g", "pair_stack.tri_mul_in.linear_b_g"],
-        "tri_attn_start.mha.qkv_proj": [
+        "tri_attn_start.mha.in_proj": [
             "pair_stack.tri_att_start.mha.linear_q",
             "pair_stack.tri_att_start.mha.linear_k",
             "pair_stack.tri_att_start.mha.linear_v",
+            "pair_stack.tri_att_start.mha.linear_g",
+            "pair_stack.tri_att_start.linear_z",
         ],
-        "tri_attn_end.mha.qkv_proj": [
+        "tri_attn_end.mha.in_proj": [
             "pair_stack.tri_att_end.mha.linear_q",
             "pair_stack.tri_att_end.mha.linear_k",
             "pair_stack.tri_att_end.mha.linear_v",
+            "pair_stack.tri_att_end.mha.linear_g",
+            "pair_stack.tri_att_end.linear_z",
         ],
         "pair_transition.fused_fc2_fc1": [
             "pair_stack.pair_transition.swiglu.linear_b",

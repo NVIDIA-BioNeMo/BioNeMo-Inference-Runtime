@@ -349,8 +349,8 @@ def test_confidence_pairformer_uses_scoped_triangle_attention_chunks() -> None:
     assert policy.enabled is True
     assert policy.chunk_size == 512
     for layer in module.pairformer_stack.layers:
-        assert layer.tri_attn_start.chunk_policy is policy
-        assert layer.tri_attn_end.chunk_policy is policy
+        assert layer.tri_attn_start.mha.chunk_policy is policy
+        assert layer.tri_attn_end.mha.chunk_policy is policy
 
 
 def _make_pair_embedding(dtype: torch.dtype) -> PairformerEmbedding:

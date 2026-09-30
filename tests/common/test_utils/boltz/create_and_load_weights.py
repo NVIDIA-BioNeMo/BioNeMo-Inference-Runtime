@@ -97,65 +97,27 @@ def create_triangle_attention_weights(
     return q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias
 
 
-def load_triangle_attention_weights_torch(module, weights_and_biases, dtype=torch.float32):
+def load_triangle_attention_weights_torch(module, weights_and_biases, dtype=torch.float32, pair_bias_weight=None):
     # Load for _torch module
     q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = (
         weights_and_biases
     )
-    if getattr(module, "qkv_proj", None) is not None:
-        qkv_weights = [
-            {
-                "weight": q_weight.to(dtype).to("cuda"),
-                "bias": q_bias.to(dtype).to("cuda") if q_bias is not None else None,
-            },
-            {
-                "weight": k_weight.to(dtype).to("cuda"),
-                "bias": k_bias.to(dtype).to("cuda") if k_bias is not None else None,
-            },
-            {
-                "weight": v_weight.to(dtype).to("cuda"),
-                "bias": v_bias.to(dtype).to("cuda") if v_bias is not None else None,
-            },
-        ]
-        module.qkv_proj.load_weights(qkv_weights)
+
+    def entry(weight, bias=None):
+        return {"weight": weight.to(dtype).to("cuda"), "bias": bias.to(dtype).to("cuda") if bias is not None else None}
+
+    gate = [entry(gating_weight, gating_bias)] if gating_weight is not None else []
+    if getattr(module, "in_proj", None) is not None:
+        pair_bias = [entry(pair_bias_weight)] if pair_bias_weight is not None else []
+        module.in_proj.load_weights(
+            [entry(q_weight, q_bias), entry(k_weight, k_bias), entry(v_weight, v_bias), *gate, *pair_bias]
+        )
     else:
-        q_weights = [
-            {
-                "weight": q_weight.to(dtype).to("cuda"),
-                "bias": q_bias.to(dtype).to("cuda") if q_bias is not None else None,
-            }
-        ]
-        kv_weights = [
-            {
-                "weight": k_weight.to(dtype).to("cuda"),
-                "bias": k_bias.to(dtype).to("cuda") if k_bias is not None else None,
-            },
-            {
-                "weight": v_weight.to(dtype).to("cuda"),
-                "bias": v_bias.to(dtype).to("cuda") if v_bias is not None else None,
-            },
-        ]
-        module.q_proj.load_weights(q_weights)
-        module.kv_proj.load_weights(kv_weights)
-
-    o_proj_weights = [
-        {
-            "weight": out_weight.to(dtype).to("cuda"),
-            "bias": out_bias.to(dtype).to("cuda") if out_bias is not None else None,
-        }
-    ]
-    g_proj_weights = None
-    if gating_weight is not None:
-        g_proj_weights = [
-            {
-                "weight": gating_weight.to(dtype).to("cuda"),
-                "bias": gating_bias.to(dtype).to("cuda") if gating_bias is not None else None,
-            }
-        ]
-
-    module.o_proj.load_weights(o_proj_weights)
-    if g_proj_weights is not None:
-        module.g_proj.load_weights(g_proj_weights)
+        module.q_proj.load_weights([entry(q_weight, q_bias)])
+        module.kv_proj.load_weights([entry(k_weight, k_bias), entry(v_weight, v_bias)])
+        if gate:
+            module.g_proj.load_weights(gate)
+    module.o_proj.load_weights([entry(out_weight, out_bias)])
 
 
 def load_triangle_attention_weights_ref_torch(module, weights_and_biases):
@@ -414,19 +376,18 @@ def load_self_pairwise_attention_weights_torch(module, weights_and_biases, dtype
         norm_z_weight,
         norm_z_bias,
     ) = weights_and_biases
-    q_proj_weights = [
-        {"weight": q_weight.to(dtype).to("cuda"), "bias": q_bias.to(dtype).to("cuda") if q_bias is not None else None}
+
+    def segment(weight, bias):
+        return {"weight": weight.to(dtype).to("cuda"), "bias": bias.to(dtype).to("cuda") if bias is not None else None}
+
+    # BioIR fuses the projections as in_proj = [q; g; k; v].
+    in_proj_weights = [
+        segment(q_weight, q_bias),
+        segment(g_weight, g_bias),
+        segment(k_weight, k_bias),
+        segment(v_weight, v_bias),
     ]
-    kv_proj_weights = [
-        {"weight": k_weight.to(dtype).to("cuda"), "bias": k_bias.to(dtype).to("cuda") if k_bias is not None else None},
-        {"weight": v_weight.to(dtype).to("cuda"), "bias": v_bias.to(dtype).to("cuda") if v_bias is not None else None},
-    ]
-    o_proj_weights = [
-        {"weight": o_weight.to(dtype).to("cuda"), "bias": o_bias.to(dtype).to("cuda") if o_bias is not None else None}
-    ]
-    g_proj_weights = [
-        {"weight": g_weight.to(dtype).to("cuda"), "bias": g_bias.to(dtype).to("cuda") if g_bias is not None else None}
-    ]
+    o_proj_weights = [segment(o_weight, o_bias)]
 
     if (
         hasattr(module, "norm_s")
@@ -436,10 +397,8 @@ def load_self_pairwise_attention_weights_torch(module, weights_and_biases, dtype
     ):
         module.norm_s.weight.data.copy_(init_norm_weight.to(dtype).to("cuda"))
         module.norm_s.bias.data.copy_(init_norm_bias.to(dtype).to("cuda"))
-    module.proj_q.load_weights(q_proj_weights)
-    module.proj_kv.load_weights(kv_proj_weights)
+    module.in_proj.load_weights(in_proj_weights)
     module.proj_o.load_weights(o_proj_weights)
-    module.proj_g.load_weights(g_proj_weights)
 
     if norm_z_weight is not None and z_weight is not None:
         z_1_proj_weights = [
@@ -591,16 +550,9 @@ def load_triangle_attention_node_weights_torch(module, weights_and_biases, dtype
     layer_norm_weight, layer_norm_bias = weights_and_biases["layer_norm"]
     linear_weight = weights_and_biases["linear"]
     mha_weights_and_biases = weights_and_biases["mha"]
-    load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype)
+    load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype, pair_bias_weight=linear_weight)
     module.layer_norm.weight.data.copy_(layer_norm_weight.to(dtype).to("cuda"))
     module.layer_norm.bias.data.copy_(layer_norm_bias.to(dtype).to("cuda"))
-    module.linear.load_weights(
-        [
-            {
-                "weight": linear_weight.to(dtype).to("cuda"),
-            }
-        ]
-    )
 
 
 def create_triangle_multiplication_node_weights(
@@ -1186,7 +1138,7 @@ def load_diffusion_transformer_layer_weights_torch(module, weights_and_biases, d
     load_adaln_weights_torch(module.adaln, weights_and_biases["adaln"], dtype)
     load_self_pairwise_attention_weights_torch(module.pair_bias_attn, weights_and_biases["pair_bias_attn"], dtype)
     load_conditioned_transition_block_weights_torch(module.transition, weights_and_biases["transition"], dtype)
-    module.output_projection.load_weights(
+    module.pair_bias_attn.output_projection.load_weights(
         [
             {
                 "weight": weights_and_biases["output_projection"][0].to(dtype).to("cuda"),

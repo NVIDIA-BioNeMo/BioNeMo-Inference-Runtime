@@ -22,7 +22,8 @@ from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveax
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.layers.normalization import AdaLN
-from bionemo_ir._torch.utils import permute_final_dims
+from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, permute_final_dims
+from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 from ..attention_backend import AttentionMetadata, AttentionType
@@ -38,10 +39,22 @@ def _make_norm(norm_type: str, dim: int, eps: float = 1e-5, dtype: torch.dtype =
     raise ValueError(f"Unsupported norm_type={norm_type!r}; expected 'layer_norm' or 'rms_norm'")
 
 
+# Pad the pair-bias heads to a multiple of 32 so the fused projection width
+# stays one too: cuBLAS runs that GEMM up to 2.8x slower at other widths, and
+# the CuTeDSL triangle kernel needs q/k/v row strides divisible by 8 elements.
+_PAIR_BIAS_ROW_ALIGN = 32
+
+
+def pair_bias_rows(num_heads: int) -> int:
+    """Rows ``TriangleAttention.in_proj`` reserves for pair bias: ``num_heads`` rounded up to a multiple of 32."""
+    return -(-num_heads // _PAIR_BIAS_ROW_ALIGN) * _PAIR_BIAS_ROW_ALIGN
+
+
 class TriangleAttention(nn.Module):
     """
     A module that implements the triangle attention mechanism with tensor parallelism in torch.
-    The module implements lines 2,4, and 5-7 from Algorithm 14 from https://www.nature.com/articles/s41586-024-07487-w#Sec19.
+    The module implements lines 2-7 from Algorithm 14 from https://www.nature.com/articles/s41586-024-07487-w#Sec19;
+    line 3, the triangle bias, only with ``bias_proj``.
     """
 
     def __init__(
@@ -54,10 +67,21 @@ class TriangleAttention(nn.Module):
         layer_idx: int,
         bias_flags: dict[str, bool] | None = None,
         gating: bool = True,
+        bias_proj: bool = False,
+        transposed_bias: bool = False,
+        chunk_policy: ChunkPolicy | None = None,
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
     ):
+        """
+        Args:
+            bias_proj: Project the triangle bias in ``in_proj`` too and use it
+                when the caller passes none.
+            transposed_bias: Project the triangle bias from the transposed
+                ``hidden_states``.
+            chunk_policy: Query-row chunking policy; ``None`` attends densely.
+        """
         super().__init__()
         if bias_flags is None:
             bias_flags = {
@@ -79,13 +103,26 @@ class TriangleAttention(nn.Module):
 
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_key_value_heads * self.head_dim
+        self.gating = gating
+        self.bias_proj = bias_proj
+        self.transposed_bias = transposed_bias
+        self.chunk_policy = chunk_policy
 
-        self.qkv_proj = Linear(
+        # One GEMM projects q, k, v, then the gate and the pair-bias heads when present.
+        self._in_proj_sizes = [self.q_size, self.kv_size, self.kv_size]
+        if gating:
+            self._in_proj_sizes.append(self.q_size)
+        if bias_proj:
+            self._in_proj_sizes.append(pair_bias_rows(self.num_heads))
+        self.in_proj = Linear(
             self.hidden_size,
-            self.q_size + 2 * self.kv_size,
-            bias=bias_flags["q"] or bias_flags["k"] or bias_flags["v"],
+            sum(self._in_proj_sizes),
+            bias=bias_flags["q"] or bias_flags["k"] or bias_flags["v"] or (gating and bias_flags["g"]),
             dtype=dtype,
-            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_QKV_LINEAR),
+            weights_loading_config=WeightsLoadingConfig(
+                weight_mode=WeightMode.FUSED_SEGMENTS_LINEAR,
+                segment_sizes=tuple(self._in_proj_sizes),
+            ),
             skip_create_weights=skip_create_weights,
         )
         self.o_proj = Linear(
@@ -95,21 +132,9 @@ class TriangleAttention(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
         )
-        self.g_proj = None
-        self._gated_sigmoid_op = None
-        if gating:
-            self.g_proj = Linear(
-                self.hidden_size,
-                self.q_size,
-                bias=bias_flags["g"],
-                dtype=dtype,
-                skip_create_weights=skip_create_weights,
-            )
-            self._gated_sigmoid_op = get_gated_sigmoid_op(
-                dtype or torch.get_default_dtype(),
-                N=self.q_size,
-                K=self.hidden_size,
-            )
+        if bias_proj:
+            self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
+            self._moveaxis_pad = MoveaxisPad(H=self.num_heads, dtype=dtype or torch.bfloat16)
         self.attn = create_attention(
             attn_backend,
             self.layer_idx,
@@ -119,10 +144,20 @@ class TriangleAttention(nn.Module):
             attention_type=AttentionType.TRIANGLE,
         )
 
+    def _pair_bias(self, heads: torch.Tensor) -> torch.Tensor:
+        """Lay projected ``[B, I, J, H]`` bias heads out as ``[B, H, I, J_padded]``."""
+        # The projection is position-wise, so transposing its heads equals
+        # projecting the transposed pair. Transpose before padding: the pad
+        # lands on the key axis.
+        if self.transposed_bias:
+            heads = heads.transpose(1, 2)
+        return self._moveaxis_pad(heads, multiple=self._bias_pad_multiple)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
-        biases: list[torch.Tensor] | None = None,
+        mask_bias: torch.Tensor,
+        triangle_bias: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         use_kv_lengths: bool = False,
@@ -130,9 +165,10 @@ class TriangleAttention(nn.Module):
         """
         Args:
             hidden_states: [B, I, J, F]
-            biases: Include two biases:
-                - mask_bias: [B, I, 1, 1, J]
-                - triangle_bias: [B, H, J, J]
+            mask_bias: Per-row mask in the backend's layout, e.g.
+                [B, I, 1, 1, J] additive or CuTeDSL's [B, I] int32 lengths.
+            triangle_bias: [B, H, J, J]. ``None`` projects it from
+                ``hidden_states`` when the module has ``bias_proj``.
             buffers: Optional dict of shared pre-allocated output buffers
                 (e.g. ``tri_attn_output`` and ``tri_attn_lse``) to avoid
                 per-call allocation. The LSE buffer is consumed by the
@@ -141,10 +177,50 @@ class TriangleAttention(nn.Module):
             use_kv_lengths: Encode a left-aligned mask as per-row lengths for
                 the cuEquivariance SM100f fast path.
         """
-        if not hidden_states.is_contiguous():
-            hidden_states = hidden_states.contiguous()
-        qkv = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        if self.chunk_policy is None or not self.chunk_policy.should_chunk(hidden_states):
+            return self._attend(
+                hidden_states,
+                mask_bias,
+                triangle_bias=triangle_bias,
+                attn_metadata=attn_metadata,
+                buffers=buffers,
+                use_kv_lengths=use_kv_lengths,
+            )
+        if triangle_bias is None and self.bias_proj:
+            # A row slice cannot project the bias, which spans every row, so
+            # project just the real bias heads over the whole pair first.
+            start = sum(self._in_proj_sizes[:-1])
+            rows = slice(start, start + self.num_heads)
+            bias = None if self.in_proj.bias is None else self.in_proj.bias[rows]
+            triangle_bias = self._pair_bias(F.linear(hidden_states, self.in_proj.weight[rows], bias))
+        # Query rows attend independently, so row slices are exact; the
+        # triangle bias passes through unsliced.
+        return chunk_apply(
+            self._attend,
+            hidden_states,
+            mask_bias,
+            policy=self.chunk_policy,
+            cat_dim=1,
+            triangle_bias=triangle_bias,
+            attn_metadata=attn_metadata,
+            buffers=buffers,
+            use_kv_lengths=use_kv_lengths,
+        )
+
+    def _attend(
+        self,
+        hidden_states: torch.Tensor,
+        mask_bias: torch.Tensor,
+        *,
+        triangle_bias: torch.Tensor | None,
+        attn_metadata: AttentionMetadata | None,
+        buffers: PreallocatedBuffers | None,
+        use_kv_lengths: bool,
+    ) -> torch.Tensor:
+        """Attend over all or a row slice of ``hidden_states``."""
+        q, k, v, *gate_and_bias = self.in_proj(hidden_states).split(self._in_proj_sizes, dim=-1)
+        if triangle_bias is None and self.bias_proj:
+            triangle_bias = self._pair_bias(gate_and_bias[-1][..., : self.num_heads])
         # q: [B, I, J, H*D] → kernel output: [B*I, J, H, D]
         attn_buf = (
             ensure_buffer(
@@ -175,28 +251,17 @@ class TriangleAttention(nn.Module):
             q,
             k,
             v,
-            biases=biases,
+            biases=[mask_bias, triangle_bias],
             metadata=attn_metadata,
             output=attn_buf,
             output_lse=attn_lse_buf,
             use_kv_lengths=use_kv_lengths,
         )
-        if self.g_proj is not None:
-            mha_flat = mha_o.reshape(-1, self.num_heads * self.head_dim)
-            attn_output = self._gated_sigmoid_op(
-                hidden_states,
-                self.g_proj.weight,
-                mha_flat,
-                self.g_proj.bias,
-                output=mha_flat,
-            )
-            attn_output = attn_output.reshape(hidden_states.shape[:-1] + (self.num_heads * self.head_dim,))
-        else:
-            attn_output = mha_o.reshape(mha_o.shape[:-2] + (self.num_heads * self.head_dim,))
-        if not attn_output.is_contiguous():
-            attn_output = attn_output.contiguous()
-        attn_output = self.o_proj(attn_output)
-        return attn_output
+        attn_output = mha_o.reshape(*hidden_states.shape[:-1], self.q_size)
+        if self.gating:
+            # Nothing reads the gate columns afterwards.
+            attn_output = attn_output.mul_(gate_and_bias[0].sigmoid_())
+        return self.o_proj(attn_output)
 
 
 class CrossTriangleAttention(nn.Module):
@@ -357,12 +422,12 @@ class AttentionPairBias(nn.Module):
         use_separate_layer_norm: bool = False,
         use_ada_layer_norm: bool = True,
         chain_kv_norm: bool = False,
-        gate_bias: bool = False,
         norm_type: str = "layer_norm",
         use_qk_norm: bool = False,
         kv_bias: bool = False,
         out_bias: bool = False,
         pair_norm_type: str = "layer_norm",
+        output_gate_dim: int | None = None,
         skip_create_weights: bool = False,
         attn_backend: str = "VANILLA",
         mask_left_aligned: bool = True,
@@ -379,6 +444,10 @@ class AttentionPairBias(nn.Module):
             out_bias: add a bias to the output projection.
             pair_norm_type: pair-bias norm — ``"layer_norm"`` or
                 ``"rms_norm"``.
+            output_gate_dim: Width of the conditioning that gates the output,
+                ``sigmoid(output_projection(single_embedding)) * update``
+                (the diffusion transformer's adaLN-Zero gate); ``None``
+                leaves the output ungated.
             mask_left_aligned: Whether valid keys form a prefix. Set false for
                 arbitrary valid-token positions.
         """
@@ -428,33 +497,22 @@ class AttentionPairBias(nn.Module):
                 self.layer_norm_a_q = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
                 self.layer_norm_a_k = nn.LayerNorm(c_s, dtype=dtype, eps=eps)
 
-        self.proj_q = Linear(
+        # One GEMM projects q, the gate, k and v when the keys attend over the
+        # query input. Keys from another input, such as a local-window gather,
+        # take separate [q; g] and [k; v] GEMMs over in_proj's row blocks.
+        self._in_proj_sizes = (self.q_size, self.q_size, self.kv_size, self.kv_size)
+        self.in_proj = Linear(
             self.c_s,
-            self.q_size,
+            sum(self._in_proj_sizes),
             bias=True,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
+            weights_loading_config=WeightsLoadingConfig(
+                weight_mode=WeightMode.FUSED_SEGMENTS_LINEAR,
+                segment_sizes=self._in_proj_sizes,
+            ),
         )
-        self.proj_kv = Linear(
-            self.c_s,
-            2 * self.kv_size,
-            bias=kv_bias,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights,
-            weights_loading_config=WeightsLoadingConfig(weight_mode=WeightMode.FUSED_KV_LINEAR),
-        )
-        self.proj_g = Linear(
-            self.c_s,
-            self.q_size,
-            bias=gate_bias,
-            dtype=dtype,
-            skip_create_weights=skip_create_weights,
-        )
-        self._gated_sigmoid_op = get_gated_sigmoid_op(
-            dtype or torch.get_default_dtype(),
-            N=self.q_size,
-            K=self.c_s,
-        )
+        self.kv_bias = kv_bias
         if self.bias_proj:
             linear_z = Linear(
                 c_z,
@@ -477,6 +535,15 @@ class AttentionPairBias(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
         )
+        self.output_projection = None
+        self._output_gate_op = None
+        if output_gate_dim is not None:
+            self.output_projection = Linear(
+                output_gate_dim, self.c_s, dtype=dtype, skip_create_weights=skip_create_weights
+            )
+            self._output_gate_op = get_gated_sigmoid_op(
+                dtype or torch.get_default_dtype(), N=self.c_s, K=output_gate_dim
+            )
         self.attn = create_attention(
             attn_backend,
             self.layer_idx,
@@ -512,7 +579,7 @@ class AttentionPairBias(nn.Module):
 
         Two distinct flows depending on the model family:
 
-        **Boltz family** (``single_embedding=None``, no AdaLN):
+        **Boltz family** (no AdaLN):
             1. ``s`` is LayerNorm'd (``initial_norm``) → ``kv_in = s``.
             2. If ``attn_metadata.query_to_keys`` is provided (sequence-local
                atom attention), ``kv_in`` and ``mask`` are gathered to the
@@ -530,8 +597,9 @@ class AttentionPairBias(nn.Module):
         Args:
             s: Token or atom embedding (see ``forward`` for shapes).
             mask: Sequence mask ``[B, (*), N]``.
-            single_embedding: Single representation for AdaLN conditioning.
-                ``None`` for Boltz family; ``[B, (*), N, C_s]`` for OpenFold3.
+            single_embedding: Single representation ``[B, (*), N, C_s]`` for
+                AdaLN conditioning; ignored without ``use_separate_layer_norm``
+                and ``use_ada_layer_norm``.
             attn_metadata: Optional metadata with ``query_to_keys`` gather
                 indices (used in sequence-local atom attention) and
                 ``bias_cache``.
@@ -579,26 +647,32 @@ class AttentionPairBias(nn.Module):
 
         return s, kv_in, mask, mask_bias
 
-    def _prep_qkv(
+    def _prep_qkvg(
         self,
         s: torch.Tensor,
         kv_in: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Project Q from *s* and packed K/V from *kv_in*.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project Q and the gate from *s* and K/V from *kv_in*.
 
         Returns:
-            (q, k, v) — v is a non-contiguous view of the fused KV buffer
-            (the CuTeDSL / SDPA kernels accept strided v). When ``use_qk_norm``
-            is set, q and k are whole-vector normed, which also
-            makes them contiguous.
+            (q, k, v, g) — non-contiguous views of the projection output (the
+            attention kernels accept strided operands). When ``use_qk_norm``
+            is set, q and k are whole-vector normed, which also makes them
+            contiguous.
         """
-        q = self.proj_q(s)
-        kv = self.proj_kv(kv_in)
-        k, v = kv.split([self.kv_size, self.kv_size], dim=-1)
+        if kv_in is s:
+            q, g, k, v = self.in_proj(s).split(self._in_proj_sizes, dim=-1)
+        else:
+            # Slice per call: in_proj's parameters may be created or replaced after __init__.
+            rows = 2 * self.q_size
+            weight, bias = self.in_proj.weight, self.in_proj.bias
+            q, g = F.linear(s, weight[:rows], bias[:rows]).split(self._in_proj_sizes[:2], dim=-1)
+            kv_bias = bias[rows:] if self.kv_bias else None
+            k, v = F.linear(kv_in, weight[rows:], kv_bias).split(self._in_proj_sizes[2:], dim=-1)
         if self.use_qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
-        return q, k, v
+        return q, k, v, g
 
     def project_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
         """Project a pair representation into this layer's attention bias.
@@ -742,9 +816,11 @@ class AttentionPairBias(nn.Module):
             mask: Sequence-level binary mask (1 = valid, 0 = padded).
                 - Token path: ``[B, N]``.
                 - Atom path: ``[B, K, N_q]``.
-            single_embedding: Optional single representation ``[B, (*), N, C_s]``
-                used by AdaLN conditioning (OpenFold3 diffusion transformer).
-                ``None`` when AdaLN is not used.
+            single_embedding: Optional single representation ``[B, (*), N, C]``
+                conditioning the AdaLN (OpenFold3 diffusion transformer) and
+                the output gate. Its leading dimensions match *s*'s, except
+                that one of them may be 1 and broadcast, such as the
+                multiplicity. Required with an output gate.
             attn_metadata: Optional attention metadata carrying
                 ``query_to_keys`` gather indices for sequence-local attention
                 and an optional ``bias_cache`` for reusing projected pair bias
@@ -768,11 +844,13 @@ class AttentionPairBias(nn.Module):
         Returns:
             Output tensor with the same shape as *s*.
         """
+        if self.output_projection is not None and single_embedding is None:
+            raise ValueError("the output gate needs single_embedding")
         s, kv_in, mask, mask_bias = self._prep_inputs(
             s, mask, single_embedding, attn_metadata, mask_bias, mask_bias_local
         )
 
-        q, k, v = self._prep_qkv(s, kv_in)
+        q, k, v, g = self._prep_qkvg(s, kv_in)
 
         biases = self._prep_mask_bias(s, z, mask, mask_bias)
 
@@ -810,13 +888,18 @@ class AttentionPairBias(nn.Module):
         )
         if mha_o.dtype != attn_in_dtype:
             mha_o = mha_o.to(dtype=attn_in_dtype)
-        batch_dims = mha_o.shape[:-2]
-        o = mha_o.reshape(-1, self.num_heads * self.head_dim)
 
-        o = self._gated_sigmoid_op(s, self.proj_g.weight, o, self.proj_g.bias, output=o)
-        o = o.reshape(*batch_dims, self.num_heads * self.head_dim)
-        o = self.proj_o(o)
-        return o
+        # Nothing reads the attention output or the gate columns again.
+        update = self.proj_o(mha_o.reshape(g.shape).mul_(g.sigmoid_()))
+        if self.output_projection is not None:
+            update = self._output_gate_op(
+                single_embedding,
+                self.output_projection.weight,
+                update,
+                self.output_projection.bias,
+                output=update,
+            )
+        return update
 
 
 class MSAAttention(nn.Module):
@@ -930,10 +1013,9 @@ class MSAAttention(nn.Module):
             if self.triangle_attn_backend != "VANILLA":
                 z_shape = [*m.shape[: m.ndim - 3], self.num_heads, m.size(-2), m.size(-2)]
                 z = torch.zeros(z_shape, dtype=self.dtype, device=m.device)
-        biases = [mask_bias, z]
         m = self.layer_norm_m(m)
 
-        output = self.mha(m, biases=biases, attn_metadata=attn_metadata, buffers=buffers)
+        output = self.mha(m, mask_bias, triangle_bias=z, attn_metadata=attn_metadata, buffers=buffers)
         if self.transpose_input:
             output = permute_final_dims(output, (1, 0, 2))
         return output

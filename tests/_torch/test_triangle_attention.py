@@ -105,7 +105,7 @@ def test_triangle_attention_backend(s: Scenario):
         reference_biases = [bias.to(dtype) for bias in reference_biases]
         ref_attn = ref_attn.to(dtype)
         ref_output = ref_attn(hidden_states, hidden_states, biases=reference_biases)
-        output = attn(hidden_states, biases=backend_biases, attn_metadata=attn_metadata)
+        output = attn(hidden_states, *backend_biases, attn_metadata=attn_metadata)
 
     assert output.shape == ref_output.shape
     if dtype == torch.float32:
@@ -174,7 +174,7 @@ def test_triangle_attention_cutedsl(s: Scenario):
         ref_biases_typed = [b.to(dtype) for b in ref_biases]
         ref_output_typed = ref_attn_typed(hidden_states.to(dtype), hidden_states.to(dtype), biases=ref_biases_typed)
 
-        output = attn(hidden_states.to(dtype), biases=cutedsl_biases, attn_metadata=attn_metadata)
+        output = attn(hidden_states.to(dtype), *cutedsl_biases, attn_metadata=attn_metadata)
 
     assert output.shape == ref_output_typed.shape
 

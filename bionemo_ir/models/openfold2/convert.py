@@ -104,22 +104,17 @@ def get_triattn_torch_weights(state_dict: dict, prefix: str, bioir_prefix: str, 
             "bias": state_dict[f"{prefix}.layer_norm.bias"],
         }
     ]
-    ret[f"{bioir_prefix}.linear"] = [{"weight": state_dict[f"{prefix}.linear.weight"], "bias": None}]
-    ret[f"{bioir_prefix}.mha.qkv_proj"] = [
+    ret[f"{bioir_prefix}.mha.in_proj"] = [
         {"weight": state_dict[f"{prefix}.mha.linear_q.weight"], "bias": None},
         {"weight": state_dict[f"{prefix}.mha.linear_k.weight"], "bias": None},
         {"weight": state_dict[f"{prefix}.mha.linear_v.weight"], "bias": None},
+        {"weight": state_dict[f"{prefix}.mha.linear_g.weight"], "bias": state_dict[f"{prefix}.mha.linear_g.bias"]},
+        {"weight": state_dict[f"{prefix}.linear.weight"], "bias": None},
     ]
     ret[f"{bioir_prefix}.mha.o_proj"] = [
         {
             "weight": state_dict[f"{prefix}.mha.linear_o.weight"],
             "bias": state_dict[f"{prefix}.mha.linear_o.bias"],
-        }
-    ]
-    ret[f"{bioir_prefix}.mha.g_proj"] = [
-        {
-            "weight": state_dict[f"{prefix}.mha.linear_g.weight"],
-            "bias": state_dict[f"{prefix}.mha.linear_g.bias"],
         }
     ]
     return ret
@@ -173,21 +168,19 @@ def convert_hf_evoformer_torch(
         bioir_state_dict[f"blocks.{i}.msa_att_row.proj_z"] = [
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.linear_z.weight"], "bias": None}
         ]
-        bioir_state_dict[f"blocks.{i}.msa_att_row.mha.qkv_proj"] = [
+        bioir_state_dict[f"blocks.{i}.msa_att_row.mha.in_proj"] = [
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_q.weight"], "bias": None},
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_k.weight"], "bias": None},
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_v.weight"], "bias": None},
+            {
+                "weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.weight"],
+                "bias": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.bias"],
+            },
         ]
         bioir_state_dict[f"blocks.{i}.msa_att_row.mha.o_proj"] = [
             {
                 "weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_o.weight"],
                 "bias": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_o.bias"],
-            }
-        ]
-        bioir_state_dict[f"blocks.{i}.msa_att_row.mha.g_proj"] = [
-            {
-                "weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.weight"],
-                "bias": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.bias"],
             }
         ]
 
@@ -198,21 +191,19 @@ def convert_hf_evoformer_torch(
                 "bias": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.layer_norm_m.bias"],
             }
         ]
-        bioir_state_dict[f"blocks.{i}.msa_att_col.mha.qkv_proj"] = [
+        bioir_state_dict[f"blocks.{i}.msa_att_col.mha.in_proj"] = [
             {"weight": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_q.weight"], "bias": None},
             {"weight": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_k.weight"], "bias": None},
             {"weight": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_v.weight"], "bias": None},
+            {
+                "weight": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_g.weight"],
+                "bias": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_g.bias"],
+            },
         ]
         bioir_state_dict[f"blocks.{i}.msa_att_col.mha.o_proj"] = [
             {
                 "weight": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_o.weight"],
                 "bias": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_o.bias"],
-            }
-        ]
-        bioir_state_dict[f"blocks.{i}.msa_att_col.mha.g_proj"] = [
-            {
-                "weight": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_g.weight"],
-                "bias": module_state_dict[f"blocks.{i}.msa_att_col._msa_att.mha.linear_g.bias"],
             }
         ]
 
@@ -334,21 +325,19 @@ def convert_hf_extra_msa_stack_torch(
         bioir_state_dict[f"blocks.{i}.msa_att_row.proj_z"] = [
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.linear_z.weight"], "bias": None}
         ]
-        bioir_state_dict[f"blocks.{i}.msa_att_row.mha.qkv_proj"] = [
+        bioir_state_dict[f"blocks.{i}.msa_att_row.mha.in_proj"] = [
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_q.weight"], "bias": None},
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_k.weight"], "bias": None},
             {"weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_v.weight"], "bias": None},
+            {
+                "weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.weight"],
+                "bias": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.bias"],
+            },
         ]
         bioir_state_dict[f"blocks.{i}.msa_att_row.mha.o_proj"] = [
             {
                 "weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_o.weight"],
                 "bias": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_o.bias"],
-            }
-        ]
-        bioir_state_dict[f"blocks.{i}.msa_att_row.mha.g_proj"] = [
-            {
-                "weight": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.weight"],
-                "bias": module_state_dict[f"blocks.{i}.msa_att_row.mha.linear_g.bias"],
             }
         ]
 

@@ -198,7 +198,7 @@ _VELOCITY_CUTEDSL = Scenario(
     ids=lambda sc: sc.name,
 )
 def test_prep_mask_bias_shapes(sc: Scenario):
-    """pair_bias and mask_bias must be broadcastable to q after _prep_qkv."""
+    """pair_bias and mask_bias must be broadcastable to q after _prep_qkvg."""
     skip_if_cutedsl(sc.backend)
     device = torch.device("cuda")
     attn = AttentionPairBias(
@@ -226,7 +226,7 @@ def test_prep_mask_bias_shapes(sc: Scenario):
         # insert extra dimensions.  mask_bias is just mask.float().
         assert mask_bias.ndim == len(sc.mask_shape)
     else:
-        # After _prep_qkv, q has shape [*batch, H, S_Q, D] — one extra dim
+        # After _prep_qkvg, q has shape [*batch, H, S_Q, D] — one extra dim
         # relative to s.  pair_bias must have the same ndim as q.
         expected_ndim = s.ndim + 1
         assert pair_bias.ndim == expected_ndim, f"pair_bias.ndim={pair_bias.ndim} != s.ndim+1={expected_ndim}"
@@ -588,7 +588,6 @@ def _rms_qk_bias_attention(
         use_qk_norm=use_qk_norm,
         kv_bias=True,
         out_bias=True,
-        gate_bias=True,
         use_ada_layer_norm=False,
         inf=1e4,
         eps=1e-5,
@@ -610,8 +609,8 @@ def test_rms_qk_bias_pair_bias_attention_matches_sdpa_reference() -> None:
     mask = torch.tensor([[1] * n, [1] * 7 + [0] * 4], device=device, dtype=torch.bool)
 
     s = module.norm_s(node)
-    q = module.q_norm(module.proj_q(s)).view(b, n, num_heads, head_dim).transpose(1, 2)
-    k, v = module.proj_kv(s).split([token_dim, token_dim], dim=-1)
+    q, g, k, v = module.in_proj(s).split([token_dim] * 4, dim=-1)
+    q = module.q_norm(q).view(b, n, num_heads, head_dim).transpose(1, 2)
     k = module.k_norm(k).view(b, n, num_heads, head_dim).transpose(1, 2)
     v = v.reshape(b, n, num_heads, head_dim).transpose(1, 2)
     pair_bias = module.proj_z(pair).movedim(-1, 1)
@@ -623,7 +622,7 @@ def test_rms_qk_bias_pair_bias_attention_matches_sdpa_reference() -> None:
         attn_mask=mask_bias + pair_bias,
     )
     reference = reference.transpose(1, 2).reshape_as(s)
-    reference = module.proj_o(torch.sigmoid(module.proj_g(s)) * reference)
+    reference = module.proj_o(torch.sigmoid(g) * reference)
 
     with torch.inference_mode():
         actual = module(node, pair, mask)

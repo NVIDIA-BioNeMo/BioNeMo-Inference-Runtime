@@ -89,23 +89,25 @@ def _convert_adaln(out: dict, weights: dict, src: str, tgt: str, dtype: torch.dt
     out[f"{tgt}.fused_s_scale_s_bias.bias"] = torch.cat([s_bias, torch.zeros_like(s_bias)], dim=0).to(dtype)
 
 
-def _convert_dit_attention(
-    out: dict, weights: dict, src_apb: str, tgt_layer: str, tgt_pba: str, dtype: torch.dtype
-) -> None:
-    """Shared DiT attention remap: fused KV ``[k; v]``, proj_z LN+Linear, gate."""
-    attn = f"{src_apb}.attention"
-    out[f"{tgt_pba}.proj_q.weight"] = weights[f"{attn}.linear_q.weight"].to(dtype)
-    out[f"{tgt_pba}.proj_q.bias"] = weights[f"{attn}.linear_q.bias"].to(dtype)
-    # Fused KV pack order is part of the load contract: [k; v].
-    out[f"{tgt_pba}.proj_kv.weight"] = torch.cat(
-        [weights[f"{attn}.linear_k.weight"], weights[f"{attn}.linear_v.weight"]], dim=0
+def _convert_in_proj(out: dict, weights: dict, attn: str, tgt: str, dtype: torch.dtype) -> None:
+    """Fuse ``linear_q/g/k/v`` into ``in_proj``; its bias is q's, zero over the other segments."""
+    # The segment order [q; g; k; v] is part of the load contract.
+    out[f"{tgt}.in_proj.weight"] = torch.cat(
+        [weights[f"{attn}.linear_{name}.weight"] for name in ("q", "g", "k", "v")], dim=0
     ).to(dtype)
-    out[f"{tgt_pba}.proj_g.weight"] = weights[f"{attn}.linear_g.weight"].to(dtype)
+    q_bias = weights[f"{attn}.linear_q.bias"]
+    out[f"{tgt}.in_proj.bias"] = torch.cat([q_bias, q_bias.new_zeros(3 * q_bias.shape[0])]).to(dtype)
+
+
+def _convert_dit_attention(out: dict, weights: dict, src_apb: str, tgt_pba: str, dtype: torch.dtype) -> None:
+    """Shared DiT attention remap: fused ``in_proj``, proj_z LN+Linear, output gate."""
+    attn = f"{src_apb}.attention"
+    _convert_in_proj(out, weights, attn, tgt_pba, dtype)
     out[f"{tgt_pba}.proj_o.weight"] = weights[f"{attn}.linear_o.weight"].to(dtype)
     out[f"{tgt_pba}.proj_z.0.weight"] = weights[f"{src_apb}.layernorm_z.weight"].to(dtype)
     out[f"{tgt_pba}.proj_z.1.weight"] = weights[f"{src_apb}.linear_nobias_z.weight"].to(dtype)
-    out[f"{tgt_layer}.output_projection.weight"] = weights[f"{src_apb}.linear_a_last.weight"].to(dtype)
-    out[f"{tgt_layer}.output_projection.bias"] = weights[f"{src_apb}.linear_a_last.bias"].to(dtype)
+    out[f"{tgt_pba}.output_projection.weight"] = weights[f"{src_apb}.linear_a_last.weight"].to(dtype)
+    out[f"{tgt_pba}.output_projection.bias"] = weights[f"{src_apb}.linear_a_last.bias"].to(dtype)
 
 
 def _convert_dit_transition(out: dict, weights: dict, src_blk: str, tgt_layer: str, dtype: torch.dtype) -> None:
@@ -131,7 +133,7 @@ def _convert_protenix_atom_dit_block(
     tgt_pba = f"{tgt_layer}.pair_bias_attn"
     _convert_adaln(out, weights, f"{src_apb}.layernorm_a", f"{tgt_pba}.layer_norm_a_q", dtype)
     _convert_adaln(out, weights, f"{src_apb}.layernorm_kv", f"{tgt_pba}.layer_norm_a_k", dtype)
-    _convert_dit_attention(out, weights, src_apb, tgt_layer, tgt_pba, dtype)
+    _convert_dit_attention(out, weights, src_apb, tgt_pba, dtype)
     _convert_dit_transition(out, weights, src_blk, tgt_layer, dtype)
 
 
@@ -142,7 +144,7 @@ def _convert_protenix_token_dit_block(
     src_apb = f"{src_blk}.attention_pair_bias"
     tgt_pba = f"{tgt_layer}.pair_bias_attn"
     _convert_adaln(out, weights, f"{src_apb}.layernorm_a", f"{tgt_layer}.adaln", dtype)
-    _convert_dit_attention(out, weights, src_apb, tgt_layer, tgt_pba, dtype)
+    _convert_dit_attention(out, weights, src_apb, tgt_pba, dtype)
     _convert_dit_transition(out, weights, src_blk, tgt_layer, dtype)
 
 
@@ -354,12 +356,7 @@ def _convert_pairformer_single_path(weights: dict, src_blk: str, tgt_layer: str,
     a = f"{tgt_layer}.attention"
     out[f"{a}.norm_s.weight"] = weights[f"{apb}.layernorm_a.weight"].to(dtype)
     out[f"{a}.norm_s.bias"] = weights[f"{apb}.layernorm_a.bias"].to(dtype)
-    out[f"{a}.proj_q.weight"] = weights[f"{attn}.linear_q.weight"].to(dtype)
-    out[f"{a}.proj_q.bias"] = weights[f"{attn}.linear_q.bias"].to(dtype)
-    out[f"{a}.proj_kv.weight"] = torch.cat(
-        [weights[f"{attn}.linear_k.weight"], weights[f"{attn}.linear_v.weight"]], dim=0
-    ).to(dtype)
-    out[f"{a}.proj_g.weight"] = weights[f"{attn}.linear_g.weight"].to(dtype)
+    _convert_in_proj(out, weights, attn, a, dtype)
     out[f"{a}.proj_o.weight"] = weights[f"{attn}.linear_o.weight"].to(dtype)
     out[f"{a}.proj_z.0.weight"] = weights[f"{apb}.layernorm_z.weight"].to(dtype)
     out[f"{a}.proj_z.0.bias"] = weights[f"{apb}.layernorm_z.bias"].to(dtype)

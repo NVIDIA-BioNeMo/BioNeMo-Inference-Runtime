@@ -27,7 +27,7 @@ used automatically.
 
 Usage sites:
     - ``AttentionPairBias`` (pair bias path in DiffusionTransformer layers)
-    - ``TriangleAttentionNode`` (pair bias path in Pairformer / Evoformer)
+    - ``MSAAttention`` (pair bias path in MSA row attention)
 """
 
 import torch

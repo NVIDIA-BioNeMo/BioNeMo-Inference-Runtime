@@ -206,11 +206,17 @@ def test_protenix_dit_converter_fusion_layout(converter, tgt, has_kv_adaln):
     out: dict[str, torch.Tensor] = {}
     converter(out, src, "blk", tgt, torch.float32)
 
-    # Fused layouts preserve source order.
-    kv = out[f"{tgt}.pair_bias_attn.proj_kv.weight"]
-    assert kv.shape[0] == 2 * c
-    torch.testing.assert_close(kv[:c], src["blk.attention_pair_bias.attention.linear_k.weight"])
-    torch.testing.assert_close(kv[c:], src["blk.attention_pair_bias.attention.linear_v.weight"])
+    # Fused layouts preserve source order: in_proj is [q; g; k; v], biased over q only.
+    in_proj = out[f"{tgt}.pair_bias_attn.in_proj.weight"]
+    assert in_proj.shape[0] == 4 * c
+    for index, name in enumerate(("q", "g", "k", "v")):
+        torch.testing.assert_close(
+            in_proj[index * c : (index + 1) * c], src[f"blk.attention_pair_bias.attention.linear_{name}.weight"]
+        )
+    in_proj_bias = out[f"{tgt}.pair_bias_attn.in_proj.bias"]
+    torch.testing.assert_close(in_proj_bias[:c], src["blk.attention_pair_bias.attention.linear_q.bias"])
+    assert not in_proj_bias[c:].any()
+    assert f"{tgt}.pair_bias_attn.output_projection.weight" in out
 
     sw = out[f"{tgt}.transition.fused_swl_a_to_b.weight"]
     torch.testing.assert_close(sw[:c], src["blk.conditioned_transition_block.linear_nobias_a2.weight"])
@@ -267,8 +273,8 @@ def test_protenix_template_pair_path_keys():
     for key in (
         f"{layer}.tri_mul_out.p_in.weight",
         f"{layer}.tri_mul_in.p_in.weight",
-        f"{layer}.tri_attn_start.mha.qkv_proj.weight",
-        f"{layer}.tri_attn_end.mha.qkv_proj.weight",
+        f"{layer}.tri_attn_start.mha.in_proj.weight",
+        f"{layer}.tri_attn_end.mha.in_proj.weight",
         f"{layer}.transition_z.fused_fc2_fc1.weight",
         f"{layer}.transition_z.fc3.weight",
         "linear_no_bias_a.weight",

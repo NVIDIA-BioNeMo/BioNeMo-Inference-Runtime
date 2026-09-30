@@ -205,8 +205,8 @@ class PairformerEmbedding(nn.Module):
         for layer in self.pairformer_stack.layers:
             # Confidence retains several O(N²) tensors here. Bound the fused
             # QKV transient without changing earlier pairformer stacks.
-            layer.tri_attn_start.chunk_policy = triangle_attention_chunk_policy
-            layer.tri_attn_end.chunk_policy = triangle_attention_chunk_policy
+            layer.tri_attn_start.mha.chunk_policy = triangle_attention_chunk_policy
+            layer.tri_attn_end.mha.chunk_policy = triangle_attention_chunk_policy
 
     def _embed_zij_dense(
         self,

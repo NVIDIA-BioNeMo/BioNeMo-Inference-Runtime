@@ -106,7 +106,8 @@ def test_cuequiv_routes_mask_representation(monkeypatch, use_kv_lengths: bool, s
 def test_triangle_node_forwards_mask_contract(pair_mask_left_aligned: bool):
 
     class _AttentionSpy(nn.Module):
-        def forward(self, x, **kwargs):
+        def forward(self, x, mask_bias, **kwargs):
+            self.mask_bias = mask_bias
             self.kwargs = kwargs
             return x
 
@@ -120,13 +121,10 @@ def test_triangle_node_forwards_mask_contract(pair_mask_left_aligned: bool):
     )
     spy = _AttentionSpy()
     node.mha = spy
-    x = torch.zeros(1, 2, 3, 8)
-    node._mha_slice(
-        x,
-        mask_bias=torch.zeros(1, 2, 1, 1, 3),
-        triangle_bias=torch.zeros(1, 2, 3, 3),
-    )
+    mask_bias = torch.zeros(1, 2, 1, 1, 3)
+    node(torch.zeros(1, 2, 3, 8), mask_bias=mask_bias)
 
+    assert spy.mask_bias is mask_bias
     assert spy.kwargs["use_kv_lengths"] is pair_mask_left_aligned
 
 

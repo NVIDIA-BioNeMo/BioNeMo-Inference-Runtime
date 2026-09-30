@@ -22,7 +22,6 @@ import torch.nn.functional as F
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.attention_backend.utils import PrecomputedSingleMasks, precompute_single_masks
-from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.graph_optimization.config import (
     GraphOptimizationMode,
     InputAcceptanceDimSpec,
@@ -30,14 +29,13 @@ from bionemo_ir._torch.graph_optimization.config import (
 )
 from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from bionemo_ir._torch.layers.attention import AttentionPairBias
-from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import AdaLN
 from bionemo_ir._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized, to_blocks
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock
 from bionemo_ir._torch.utils import recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_transpose
-from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
+from bionemo_ir.runtime.buffers import PreallocatedBuffers
 
 
 def build_bias_mega_weight(layers: nn.ModuleList, attn_attr: str = "pair_bias_attn") -> torch.Tensor:
@@ -188,7 +186,6 @@ class DiffusionTransformerLayer(nn.Module):
         initial_norm: bool = True,
         conditioned_transition_using_silu: bool = False,
         attn_output_gate: bool = True,
-        attn_gate_bias: bool = False,
         transition_expansion_factor: int = 2,
         attn_backend: str = "VANILLA",
     ):
@@ -196,7 +193,6 @@ class DiffusionTransformerLayer(nn.Module):
 
         self.initial_norm = initial_norm
         self.use_separate_layer_norm = use_separate_layer_norm
-        self.attn_output_gate = attn_output_gate
 
         if initial_norm:
             self.adaln = AdaLN(dim, dim_single_cond, eps=eps, dtype=dtype, skip_create_weights=skip_create_weights)
@@ -212,25 +208,13 @@ class DiffusionTransformerLayer(nn.Module):
             use_ada_layer_norm=use_ada_layer_norm,
             use_separate_layer_norm=use_separate_layer_norm,
             chain_kv_norm=chain_kv_norm,
-            gate_bias=attn_gate_bias,
+            output_gate_dim=dim_single_cond if attn_output_gate else None,
             eps=eps,
             inf=inf,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             attn_backend=attn_backend,
         )
-
-        self.output_projection = None
-        self._can_fuse_output_gate = False
-        self._gated_sigmoid_op = None
-        if self.attn_output_gate:
-            self.output_projection = Linear(dim_single_cond, dim, dtype=dtype, skip_create_weights=skip_create_weights)
-            self._can_fuse_output_gate = True
-            self._gated_sigmoid_op = get_gated_sigmoid_op(
-                dtype or torch.get_default_dtype(),
-                N=dim,
-                K=dim_single_cond,
-            )
         self.transition = ConditionedTransitionBlock(
             dim_single=dim,
             dim_single_cond=dim_single_cond,
@@ -256,7 +240,10 @@ class DiffusionTransformerLayer(nn.Module):
     ) -> torch.Tensor:
         """Forward for a single layer.
 
-        Does not support multiplicity > 1, nor the atom encoder / decoder.
+        Args:
+            a: ``[B, (mult), ..., N, C]`` token or windowed atom activations.
+            s: Conditioning with ``a``'s leading dimensions, where one of them
+                may be 1 and broadcast, such as the multiplicity.
         """
         if self.initial_norm:
             b = self.adaln(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
@@ -268,28 +255,13 @@ class DiffusionTransformerLayer(nn.Module):
         b = self.pair_bias_attn(
             s=b,
             z=bias,
-            single_embedding=s if self.use_separate_layer_norm else None,
+            single_embedding=s,
             mask=mask,
             attn_metadata=attn_metadata,
             mask_bias=mask_bias,
             mask_bias_local=mask_bias_local,
             buffers=buffers,
         )
-        if self.attn_output_gate:
-            if self._can_fuse_output_gate:
-                # The gated-sigmoid op broadcasts `s` (gate) across the
-                # multiplicity dim of `b` when their leading shapes differ,
-                # falling back to torch internally for unsupported patterns.
-                gs_buf = ensure_buffer(buffers, "dit_bsd_scratch", b.shape, b.dtype, b.device)
-                b = self._gated_sigmoid_op(
-                    s,
-                    self.output_projection.weight,
-                    b,
-                    self.output_projection.bias,
-                    output=gs_buf,
-                )
-            else:
-                b = F.sigmoid(self.output_projection(s)) * b
         a = a + b
         a = a + self.transition(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
         if self.post_lnorm is not None:
@@ -353,7 +325,6 @@ class BoltzDiffusionTransformer(nn.Module):
                     attention_initial_norm=config.attention_initial_norm,
                     skip_create_weights=config.skip_create_weights,
                     attn_output_gate=getattr(config, "attn_output_gate", True),
-                    attn_gate_bias=getattr(config, "attn_gate_bias", False),
                     transition_expansion_factor=getattr(config, "transition_expansion_factor", 2),
                     attn_backend=config.pairwise_attention_backend,
                 )
@@ -484,7 +455,6 @@ class OpenFold3DiffusionTransformer(nn.Module):
                 if not hasattr(config, "use_separate_layer_norm")
                 else config.use_separate_layer_norm,
                 attn_output_gate=getattr(config, "attn_output_gate", True),
-                attn_gate_bias=getattr(config, "attn_gate_bias", False),
                 transition_expansion_factor=getattr(config, "transition_expansion_factor", 2),
                 attn_backend=config.pairwise_attention_backend,
             )

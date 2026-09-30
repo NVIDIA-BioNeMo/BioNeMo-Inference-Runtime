@@ -79,7 +79,6 @@ class DiffusionTransformerConfig(BaseConfig):
     # independent per-block LayerNorms should leave this False (default).
     shared_pair_norm: bool = False
     attn_output_gate: bool = True
-    attn_gate_bias: bool = False
     transition_expansion_factor: int = 2
     precompute_bias: bool = True
 

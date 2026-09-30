@@ -35,11 +35,16 @@ class WeightMode(enum.StrEnum):
     FUSED_KV_LINEAR = "fused_kv_linear"
     # weight of a fused all linear layer, the last dimension is the fused dimension
     FUSED_ALL_LINEAR_LAST_DIM = "fused_all_linear_last_dim"
+    # weight of linear layers fused along the output dimension; each one fills its
+    # ``segment_sizes`` rows, zero-padded, and a missing bias loads as zeros
+    FUSED_SEGMENTS_LINEAR = "fused_segments_linear"
 
 
 @dataclass(kw_only=True)
 class WeightsLoadingConfig:
     weight_mode: WeightMode = WeightMode.VANILLA
+    # output rows of each fused layer, for ``WeightMode.FUSED_SEGMENTS_LINEAR``
+    segment_sizes: tuple[int, ...] = ()
 
 
 # Module-level singleton so the default below is a plain name lookup rather than
@@ -176,5 +181,20 @@ class Linear(nn.Module):
                     fused_bias.append(bias.unsqueeze(-1))
 
                 copy(self.bias, torch.sum(torch.cat(fused_bias, dim=-1), dim=-1))
+        elif weight_mode == WeightMode.FUSED_SEGMENTS_LINEAR:
+            segment_sizes = self.weights_loading_config.segment_sizes
+            assert len(weights) == len(segment_sizes) and sum(segment_sizes) == self.out_features
+            self.weight.data.zero_()
+            if self.bias is not None:
+                self.bias.data.zero_()
+            start = 0
+            for size, segment in zip(segment_sizes, weights, strict=True):
+                weight = load_weight(segment["weight"], device)
+                rows = weight.shape[0]
+                assert rows <= size, f"a {rows}-row weight does not fit its {size}-row segment"
+                copy(self.weight[start : start + rows], weight)
+                if self.bias is not None and segment.get("bias") is not None:
+                    copy(self.bias[start : start + rows], load_weight(segment["bias"], device))
+                start += size
         else:
             raise ValueError(f"unsupported weight mode: {weight_mode}")

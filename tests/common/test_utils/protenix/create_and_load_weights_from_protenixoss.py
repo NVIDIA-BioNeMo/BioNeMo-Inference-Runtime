@@ -45,27 +45,25 @@ def _convert_block(oss_block, trt_layer) -> None:
 
     The Protenix atom transformer now reuses the shared DiT layer, so the
     Protenix ``AttentionPairBias`` maps onto ``pair_bias_attn`` (separate
-    q/kv AdaLNs, fused KV, ``proj_z`` = LayerNorm + Linear), the AdaLN-zero
-    output gate (OSS ``linear_a_last``) maps onto the layer ``output_projection``,
+    q/kv AdaLNs, fused ``in_proj``, ``proj_z`` = LayerNorm + Linear, and the
+    AdaLN-zero output gate, OSS ``linear_a_last``, as ``output_projection``),
     and the conditioned transition onto ``transition``.
     """
     oa, ta = oss_block.attention_pair_bias, trt_layer.pair_bias_attn
     _convert_adaln(oa.layernorm_a, ta.layer_norm_a_q)
     _convert_adaln(oa.layernorm_kv, ta.layer_norm_a_k)
-    ta.proj_q.weight.data.copy_(oa.attention.linear_q.weight.data)
-    ta.proj_q.bias.data.copy_(oa.attention.linear_q.bias.data)
-    # Fused KV: [k; v].
-    ta.proj_kv.weight.data.copy_(
-        torch.cat([oa.attention.linear_k.weight.data, oa.attention.linear_v.weight.data], dim=0)
+    # Fused in_proj: [q; g; k; v], biased only over q.
+    attn = oa.attention
+    ta.in_proj.weight.data.copy_(
+        torch.cat([getattr(attn, f"linear_{name}").weight.data for name in ("q", "g", "k", "v")], dim=0)
     )
-    ta.proj_g.weight.data.copy_(oa.attention.linear_g.weight.data)
-    ta.proj_o.weight.data.copy_(oa.attention.linear_o.weight.data)
+    ta.in_proj.bias.data.zero_()
+    ta.in_proj.bias.data[: ta.q_size].copy_(attn.linear_q.bias.data)
+    ta.proj_o.weight.data.copy_(attn.linear_o.weight.data)
     ta.proj_z[0].weight.data.copy_(oa.layernorm_z.weight.data)
     ta.proj_z[1].weight.data.copy_(oa.linear_nobias_z.weight.data)
-
-    # AdaLN-zero output gate: OSS linear_a_last -> layer output_projection.
-    trt_layer.output_projection.weight.data.copy_(oa.linear_a_last.weight.data)
-    trt_layer.output_projection.bias.data.copy_(oa.linear_a_last.bias.data)
+    ta.output_projection.weight.data.copy_(oa.linear_a_last.weight.data)
+    ta.output_projection.bias.data.copy_(oa.linear_a_last.bias.data)
 
     oc, tc = oss_block.conditioned_transition_block, trt_layer.transition
     _convert_adaln(oc.adaln, tc.adaln)

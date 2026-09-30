@@ -14,7 +14,9 @@
 # limitations under the License.
 
 import torch
+import torch.nn.functional as F
 
+from bionemo_ir._torch.layers.attention import pair_bias_rows
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import load_weights
 from bionemo_ir.utils import str_dtype_to_torch
@@ -32,15 +34,15 @@ def get_tri_attn_node_weights(state_dict: dict, prefix: str, bioir_prefix: str, 
     mha_o_weight = state_dict[f"{prefix}.mha.linear_o.weight"]
     mha_g_weight = state_dict[f"{prefix}.mha.linear_g.weight"]
 
-    mha_qkv_weights = torch.cat([mha_q_weight, mha_k_weight, mha_v_weight], dim=0)
+    num_heads = linear_weight.shape[0]
+    pair_bias_weight = F.pad(linear_weight, (0, 0, 0, pair_bias_rows(num_heads) - num_heads))
+    mha_in_proj_weight = torch.cat([mha_q_weight, mha_k_weight, mha_v_weight, mha_g_weight, pair_bias_weight], dim=0)
 
     ret = {
         f"{bioir_prefix}.layer_norm.weight": layer_norm_weight.to(torch_dtype),
         f"{bioir_prefix}.layer_norm.bias": layer_norm_bias.to(torch_dtype),
-        f"{bioir_prefix}.linear.weight": linear_weight.to(torch_dtype),
-        f"{bioir_prefix}.mha.qkv_proj.weight": mha_qkv_weights.to(torch_dtype),
+        f"{bioir_prefix}.mha.in_proj.weight": mha_in_proj_weight.to(torch_dtype),
         f"{bioir_prefix}.mha.o_proj.weight": mha_o_weight.to(torch_dtype),
-        f"{bioir_prefix}.mha.g_proj.weight": mha_g_weight.to(torch_dtype),
     }
     return ret
 
@@ -132,24 +134,14 @@ def convert_hf_pairformer_torch(
                     "bias": module_state_dict[f"layers.{i}.attention.norm_s.bias"],
                 }
             ]
-        bioir_state_dict[f"layers.{i}.attention.proj_q"] = [
+        bioir_state_dict[f"layers.{i}.attention.in_proj"] = [
             {
                 "weight": module_state_dict[f"layers.{i}.attention.proj_q.weight"],
                 "bias": module_state_dict[f"layers.{i}.attention.proj_q.bias"],
-            }
-        ]
-        bioir_state_dict[f"layers.{i}.attention.proj_kv"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.attention.proj_k.weight"],
             },
-            {
-                "weight": module_state_dict[f"layers.{i}.attention.proj_v.weight"],
-            },
-        ]
-        bioir_state_dict[f"layers.{i}.attention.proj_g"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.attention.proj_g.weight"],
-            }
+            {"weight": module_state_dict[f"layers.{i}.attention.proj_g.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.attention.proj_k.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.attention.proj_v.weight"]},
         ]
         if f"layers.{i}.attention.proj_z.0.weight" in module_state_dict:  # for attention pair bias v2
             bioir_state_dict[f"layers.{i}.attention.proj_z.0"] = [
@@ -222,12 +214,7 @@ def convert_hf_pairformer_torch(
                     "bias": module_state_dict[f"layers.{i}.tri_att_{name}.layer_norm.bias"],
                 }
             ]
-            bioir_state_dict[f"layers.{i}.tri_attn_{name}.linear"] = [
-                {
-                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
-                }
-            ]
-            bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.qkv_proj"] = [
+            bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.in_proj"] = [
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_q.weight"],
                 },
@@ -237,15 +224,16 @@ def convert_hf_pairformer_torch(
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_v.weight"],
                 },
+                {
+                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
+                },
+                {
+                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
+                },
             ]
             bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.o_proj"] = [
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_o.weight"],
-                }
-            ]
-            bioir_state_dict[f"layers.{i}.tri_attn_{name}.mha.g_proj"] = [
-                {
-                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
                 }
             ]
         # weight for transition_s and transition_z
@@ -316,24 +304,14 @@ def convert_hf_diffusion_transformer_torch(
         ]
 
         # weight for pairwise attention
-        bioir_state_dict[f"layers.{i}.pair_bias_attn.proj_q"] = [
+        bioir_state_dict[f"layers.{i}.pair_bias_attn.in_proj"] = [
             {
                 "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.weight"],
                 "bias": module_state_dict[f"layers.{i}.pair_bias_attn.proj_q.bias"],
-            }
-        ]
-        bioir_state_dict[f"layers.{i}.pair_bias_attn.proj_kv"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_k.weight"],
             },
-            {
-                "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_v.weight"],
-            },
-        ]
-        bioir_state_dict[f"layers.{i}.pair_bias_attn.proj_g"] = [
-            {
-                "weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_g.weight"],
-            }
+            {"weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_g.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_k.weight"]},
+            {"weight": module_state_dict[f"layers.{i}.pair_bias_attn.proj_v.weight"]},
         ]
 
         if f"layers.{i}.pair_bias_attn.proj_z.0.weight" in module_state_dict and config.version == "v1":
@@ -353,7 +331,7 @@ def convert_hf_diffusion_transformer_torch(
         ]
 
         # weight for output_projection
-        bioir_state_dict[f"layers.{i}.output_projection"] = [
+        bioir_state_dict[f"layers.{i}.pair_bias_attn.output_projection"] = [
             {
                 "weight": module_state_dict[f"layers.{i}.output_projection.0.weight"],
                 "bias": module_state_dict[f"layers.{i}.output_projection.0.bias"],
@@ -547,12 +525,7 @@ def convert_hf_msa_module_torch(
                     "bias": module_state_dict[f"layers.{i}.tri_att_{name}.layer_norm.bias"],
                 }
             ]
-            bioir_state_dict[f"layers.{i}.pairformer_layer.tri_attn_{name}.linear"] = [
-                {
-                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
-                }
-            ]
-            bioir_state_dict[f"layers.{i}.pairformer_layer.tri_attn_{name}.mha.qkv_proj"] = [
+            bioir_state_dict[f"layers.{i}.pairformer_layer.tri_attn_{name}.mha.in_proj"] = [
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_q.weight"],
                 },
@@ -562,15 +535,16 @@ def convert_hf_msa_module_torch(
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_v.weight"],
                 },
+                {
+                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
+                },
+                {
+                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.linear.weight"],
+                },
             ]
             bioir_state_dict[f"layers.{i}.pairformer_layer.tri_attn_{name}.mha.o_proj"] = [
                 {
                     "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_o.weight"],
-                }
-            ]
-            bioir_state_dict[f"layers.{i}.pairformer_layer.tri_attn_{name}.mha.g_proj"] = [
-                {
-                    "weight": module_state_dict[f"layers.{i}.tri_att_{name}.mha.linear_g.weight"],
                 }
             ]
         # weight for transition_z

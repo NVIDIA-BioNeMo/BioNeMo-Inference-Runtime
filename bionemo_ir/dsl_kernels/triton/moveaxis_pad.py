@@ -22,9 +22,9 @@
 
 Grid ``(B, I, ceil_div(J_padded, BLOCK_J))`` keeps I and J dynamic without
 recovering ``(b, i)`` from a flat pid. Each program loads a ``[BLOCK_J, BLOCK_H]``
-tile, which is contiguous because H is the fastest input dimension, transposes it
-in registers and stores it transposed. Columns in ``[J, J_padded)`` get zero from
-the masked load's ``other=``.
+tile, whose rows are contiguous because H is the unit-stride input dimension,
+transposes it in registers and stores it transposed. Columns in ``[J, J_padded)``
+get zero from the masked load's ``other=``.
 
 :class:`MoveaxisPad` launches through
 :class:`~bionemo_ir.dsl_kernels.cache_base.DriverLauncher` when ``cuda.bindings``
@@ -63,15 +63,16 @@ from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
     ]
 )
 def _moveaxis_pad_kernel(
-    inp_ptr,  # [B, I, J, H]  contiguous
+    inp_ptr,  # [B, I, J, H], unit stride along H
     out_ptr,  # [B, H, I, J_padded]  contiguous (pre-allocated)
     J,
     J_padded,  # I and B are implicit in the 3D grid; only J/J_padded needed for masks
     H,  # BLOCK_H rounds H up to a power of two, so the h axis needs a mask
-    # input strides  (H=innermost so inp_stride_h=1 — not passed)
-    inp_stride_b,  # = I * J * H
-    inp_stride_i,  # = J * H
-    inp_stride_j,  # = H
+    # input strides  (H=innermost so inp_stride_h=1 — not passed); = I*J*H, J*H, H
+    # when contiguous, larger for a head slice of a wider projection
+    inp_stride_b,
+    inp_stride_i,
+    inp_stride_j,
     # output strides  (J=innermost so out_stride_j=1 — not passed)
     out_stride_b,  # = H * I * J_padded
     out_stride_h,  # = I * J_padded
@@ -174,7 +175,9 @@ class MoveaxisPad(TritonKernelCache):
         """Fused moveaxis(-1, -3) + optional zero-pad.
 
         Args:
-            x: contiguous tensor ``[..., I, J, H]``
+            x: tensor ``[..., I, J, H]`` with unit stride along ``H``. The I and
+                J strides are free, so a head slice of a wider projection or a
+                transposed view is read in place.
             multiple: pad J to next multiple (non-positive = no padding).
 
         Returns:
@@ -189,6 +192,9 @@ class MoveaxisPad(TritonKernelCache):
                 f"input has {H} heads but this MoveaxisPad was built for at most {self._block_h}; "
                 f"construct it with H={H}"
             )
+        # The kernel indexes H at unit stride from a pointer compiled as 16-byte aligned.
+        if x.stride(-1) != 1 or x.data_ptr() % 16:
+            x = x.contiguous()
         B = math.prod(lead) if lead else 1
         x3 = x.reshape(B, I, J, H)
 

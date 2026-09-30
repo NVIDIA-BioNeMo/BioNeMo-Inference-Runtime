@@ -71,7 +71,25 @@ class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
             for bias in biases[1:]:
                 attn_mask = attn_mask + bias.to(q)
 
+        # SDPA's fused kernels take rank-4 operands; a higher rank silently
+        # selects the math backend, which materializes FP32 logits. Fold the
+        # leading axes, such as the atom path's [B, mult, K], into one.
+        batch_dims = q.shape[:-3]
+        flattened = len(batch_dims) > 1
+        if flattened:
+            q_ndim = q.ndim
+            q, k, v = (tensor.reshape(-1, *tensor.shape[-3:]) for tensor in (q, k, v))
+            if attn_mask is not None:
+                # Expand the bias over every folded axis first. Pad it to q's
+                # rank ahead of its head axis, since `expand` aligns trailing
+                # axes and would pair its batch axis with a window axis.
+                while attn_mask.ndim < q_ndim:
+                    attn_mask = attn_mask.unsqueeze(-4)
+                attn_mask = attn_mask.expand(*batch_dims, *attn_mask.shape[-3:]).reshape(-1, *attn_mask.shape[-3:])
+
         a = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
         a = a.transpose(-3, -2)  # [*, S_Q, H, D]
+        if flattened:
+            a = a.reshape(*batch_dims, *a.shape[-3:])
         return a.contiguous()

@@ -132,6 +132,7 @@ def test_incomplete_atom_cache(prepared: str) -> None:
     encoder.add_noisy_pos = True
     encoder.linear_q = nn.Identity()
     encoder.atom_transformer = nn.Identity()
+    encoder.dtype = encoder.atom_transformer.dtype = torch.float32
     atoms = 32
     q = torch.randn(1, atoms, 8)
     c = torch.randn_like(q)

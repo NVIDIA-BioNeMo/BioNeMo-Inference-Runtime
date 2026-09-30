@@ -33,6 +33,34 @@ from bionemo_ir.configs import BaseConfig
 TensorDict = dict[str, torch.Tensor]
 
 
+def _run_atom_transformer(
+    transformer: DiffusionTransformer,
+    out_dtype: torch.dtype,
+    ql: torch.Tensor,
+    cl: torch.Tensor,
+    plm: torch.Tensor,
+    atom_mask: torch.Tensor,
+    attn_metadata: AttentionMetadata,
+    prepared_pair_biases: list[torch.Tensor] | None = None,
+) -> torch.Tensor:
+    """Run the atom transformer in its own dtype and return ``ql`` in ``out_dtype``.
+
+    The transformer may run in bf16 inside an fp32 encoder or decoder. Prepared
+    biases replace ``plm``, which then stays unused.
+    """
+    dtype = transformer.dtype
+    prepared = prepared_pair_biases is not None
+    ql = transformer(
+        a=ql.to(dtype),
+        s=cl.to(dtype),
+        z=plm if prepared else plm.to(dtype),
+        mask=atom_mask.to(dtype),
+        attn_metadata=attn_metadata,
+        prepared_pair_biases=prepared_pair_biases,
+    )
+    return ql.to(out_dtype)
+
+
 def convert_pair_atom_to_blocks(
     batch: dict,
     zij_trunk: torch.Tensor,
@@ -695,13 +723,8 @@ class AtomAttentionEncoder(nn.Module):
             cl = cl.unsqueeze(1)
 
         atom_mask, _ = pad_to_multiple_and_divide(atom_mask, multiple=self.n_query, dim=atom_mask.ndim - 1)
-        ql = self.atom_transformer(
-            a=ql,
-            s=cl,
-            z=plm,
-            mask=atom_mask,
-            attn_metadata=attn_metadata,
-            prepared_pair_biases=prepared_pair_biases,
+        ql = _run_atom_transformer(
+            self.atom_transformer, self.dtype, ql, cl, plm, atom_mask, attn_metadata, prepared_pair_biases
         )
         if not is_contained_diffusion_channel:
             ql = ql.flatten(1, 3)[:, :current_size, :]
@@ -841,13 +864,8 @@ class AtomAttentionDecoder(nn.Module):
         cl, _ = pad_to_multiple_and_divide(cl, multiple=self.n_query, dim=cl.ndim - 2)
         atom_mask, _ = pad_to_multiple_and_divide(atom_mask, multiple=self.n_query, dim=atom_mask.ndim - 1)
 
-        ql = self.atom_transformer(
-            a=ql,
-            s=cl,
-            z=plm,
-            mask=atom_mask,
-            attn_metadata=attn_metadata,
-            prepared_pair_biases=prepared_pair_biases,
+        ql = _run_atom_transformer(
+            self.atom_transformer, self.dtype, ql, cl, plm, atom_mask, attn_metadata, prepared_pair_biases
         )
         ql = ql.flatten(2, 3)[:, :, :current_size, :]
 

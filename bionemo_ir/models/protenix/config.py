@@ -105,6 +105,8 @@ class InputFeatureEmbedderConfig(BaseConfig):
     esm_enabled: bool = False
     esm_embedding_dim: int = 2560
     atom_transformer_config: DiffusionTransformerConfig = _atom_transformer_config()
+    # The atom transformer's precision; ``None`` follows ``dtype``.
+    atom_transformer_dtype: str | None = None
 
 
 class RelativePositionEncodingConfig(BaseConfig):
@@ -205,6 +207,8 @@ class DiffusionAtomAttentionEncoderConfig(BaseConfig):
     has_coords: bool = True
     atom_transformer_config: DiffusionTransformerConfig = _atom_transformer_config()
     dtype: str = "float32"
+    # The atom transformer's precision; ``None`` follows ``dtype``.
+    atom_transformer_dtype: str | None = None
 
 
 class AtomAttentionDecoderConfig(BaseConfig):
@@ -217,6 +221,8 @@ class AtomAttentionDecoderConfig(BaseConfig):
     n_keys: int = _Default.n_keys
     atom_transformer_config: DiffusionTransformerConfig = _atom_transformer_config()
     dtype: str = "float32"
+    # The atom transformer's precision; ``None`` follows ``dtype``.
+    atom_transformer_dtype: str | None = None
 
 
 class EDMSamplingConfig(BaseConfig):

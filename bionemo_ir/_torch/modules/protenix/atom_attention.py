@@ -93,6 +93,38 @@ def _fold_bs(x: torch.Tensor, B: int, S: int) -> torch.Tensor:
     return x.reshape(B * S, *x.shape[2:])
 
 
+def _run_atom_transformer(
+    transformer: ProtenixDiffusionTransformer,
+    out_dtype: torch.dtype,
+    q: torch.Tensor,
+    c: torch.Tensor,
+    p: torch.Tensor,
+    mask: torch.Tensor,
+    n_queries: int,
+    n_keys: int,
+    attn_metadata: AttentionMetadata,
+    prepared_pair_biases: list[torch.Tensor] | None = None,
+) -> torch.Tensor:
+    """Run the atom transformer in its own dtype and return ``q`` in ``out_dtype``.
+
+    The transformer may run in bf16 inside an fp32 encoder or decoder. Prepared
+    biases replace ``p``, which then stays unused.
+    """
+    dtype = transformer.dtype
+    prepared = prepared_pair_biases is not None
+    q = transformer(
+        q.to(dtype),
+        c.to(dtype),
+        p if prepared else p.to(dtype),
+        mask.to(dtype),
+        n_queries,
+        n_keys,
+        attn_metadata,
+        prepared_pair_biases=prepared_pair_biases,
+    )
+    return q.to(out_dtype)
+
+
 class ProtenixAtomAttentionEncoder(nn.Module):
     """Protenix AF3 Algorithm 5 atom attention encoder.
 
@@ -157,7 +189,9 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         )
         # ``model_copy`` skips re-validation, which would reject int fields
         # that are left as ``None`` in the source config.
-        atc = config.atom_transformer_config.model_copy(update={"dtype": config.dtype, "skip_create_weights": skip})
+        atc = config.atom_transformer_config.model_copy(
+            update={"dtype": config.atom_transformer_dtype or config.dtype, "skip_create_weights": skip}
+        )
         self.atom_transformer = ProtenixDiffusionTransformer(atc)
         self.linear_no_bias_q = Linear(c_atom, c_token, bias=False, dtype=dtype, skip_create_weights=skip)
 
@@ -292,7 +326,9 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         p_lm = p_lm + self.small_mlp(p_lm)
 
         atom_mask = ref_mask.new_ones(*ref_mask.shape[:-1], n_atom)
-        q_l = self.atom_transformer(q_l, c_l, p_lm, atom_mask, self.n_queries, self.n_keys, attn_metadata)
+        q_l = _run_atom_transformer(
+            self.atom_transformer, self.dtype, q_l, c_l, p_lm, atom_mask, self.n_queries, self.n_keys, attn_metadata
+        )
 
         if reduction is None:
             reduction = self.prepare_reduction(atom_to_token_idx, n_token)
@@ -350,8 +386,8 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         BS = c_l.shape[0]
         q_l = c_l + self.linear_no_bias_r(r_l.reshape(BS, *r_l.shape[2:]))
         atom_mask = c_l.new_ones(BS, c_l.shape[-2])
-        q_l = self.atom_transformer(
-            q_l, c_l, p_lm, atom_mask, W, H, attn_metadata, prepared_pair_biases=prepared_pair_biases
+        q_l = _run_atom_transformer(
+            self.atom_transformer, self.dtype, q_l, c_l, p_lm, atom_mask, W, H, attn_metadata, prepared_pair_biases
         )
         a = _aggregate_atom_to_token(F.relu(self.linear_no_bias_q(q_l)), a2t, n_token, reduction)
         return a, q_l
@@ -503,7 +539,9 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         self.n_keys = config.n_keys
 
         self.linear_no_bias_a = Linear(config.c_token, c_atom, bias=False, dtype=dtype, skip_create_weights=skip)
-        atc = config.atom_transformer_config.model_copy(update={"dtype": config.dtype, "skip_create_weights": skip})
+        atc = config.atom_transformer_config.model_copy(
+            update={"dtype": config.atom_transformer_dtype or config.dtype, "skip_create_weights": skip}
+        )
         self.atom_transformer = ProtenixDiffusionTransformer(atc)
         # OSS layernorm_q is create_offset=False -> scale-only.
         self.layernorm_q = nn.LayerNorm(c_atom, bias=False, eps=config.norm_epsilon, dtype=dtype)
@@ -559,7 +597,9 @@ class ProtenixAtomAttentionDecoder(nn.Module):
             batch = prepared_pair_biases[0].shape[0]
             samples = q.shape[0] // batch
             prepared_pair_biases = [_expand_bs(bias, batch, samples) for bias in prepared_pair_biases]
-        q = self.atom_transformer(
+        q = _run_atom_transformer(
+            self.atom_transformer,
+            self.dtype,
             q,
             c_skip,
             p_skip,
@@ -567,7 +607,7 @@ class ProtenixAtomAttentionDecoder(nn.Module):
             self.n_queries,
             self.n_keys,
             attn_metadata,
-            prepared_pair_biases=prepared_pair_biases,
+            prepared_pair_biases,
         )
 
         return self.linear_no_bias_out(self.layernorm_q(q))

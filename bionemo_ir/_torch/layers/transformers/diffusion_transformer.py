@@ -495,7 +495,11 @@ class OpenFold3DiffusionTransformer(nn.Module):
         )
 
     def prepare_pair_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
-        """Prepare pair biases once when the pair representation is step-invariant."""
+        """Prepare pair biases once when the pair representation is step-invariant.
+
+        ``z`` is cast to this transformer's dtype first, as :meth:`forward` receives it.
+        """
+        z = z.to(self.dtype)
         if hasattr(self, "layer_norm_z"):
             z = self.layer_norm_z(z)
         if self._precompute_bias:
@@ -579,6 +583,7 @@ class ProtenixDiffusionTransformer(nn.Module):
     def __init__(self, config: BaseConfig) -> None:
         super().__init__()
         dtype = config.torch_dtype
+        self.dtype = dtype
         c_a = config.dim
         # Dims-only configs default to the local atom variant.
         bias_proj = True if config.bias_proj is None else config.bias_proj
@@ -638,7 +643,8 @@ class ProtenixDiffusionTransformer(nn.Module):
         )
 
     def prepare_pair_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
-        """Project static pairs shaped ``[*, Q, K, C_z]`` once per rollout."""
+        """Project static pairs shaped ``[*, Q, K, C_z]`` once per rollout, in this transformer's dtype."""
+        z = z.to(self.dtype)
         if self._precompute_bias:
             return self._precompute_all_biases(z)
         return _prepare_layer_biases(self.layers, z)

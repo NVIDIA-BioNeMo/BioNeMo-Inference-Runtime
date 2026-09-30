@@ -197,6 +197,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         config.diffusion_module_config.diffusion_transformer_config.token_transformer.set_pairwise_attention_backend(
             pair_backend
         )
+        # The atom encoder and decoder stay fp32 around bf16 atom transformers.
+        config.diffusion_module_config.atom_transformer_encoder_config.set_dtype("bfloat16")
+        config.diffusion_module_config.atom_transformer_decoder_config.set_dtype("bfloat16")
 
         config.msa_stack_module_config.set_dtype("bfloat16")
         config.template_embedder_config.template_pair_stack.set_dtype("bfloat16")

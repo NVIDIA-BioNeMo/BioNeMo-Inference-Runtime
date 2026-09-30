@@ -80,11 +80,12 @@ def _configure_inference_precision(config: BaseConfig) -> BaseConfig:
     dm = config.diffusion_module_config
     dm.token_transformer_config.set_dtype("bfloat16")
     dm.token_transformer_config.set_pairwise_attention_backend(pair_backend)
-    # Atom encoder/decoder keep SDPA (windowed layout incompatible with CuTeDSL).
-    dm.atom_encoder_config.set_dtype("float32")
-    dm.atom_encoder_config.set_pairwise_attention_backend("SDPA")
-    dm.atom_decoder_config.set_dtype("float32")
-    dm.atom_decoder_config.set_pairwise_attention_backend("SDPA")
+    # The atom encoder and decoder stay fp32 around bf16 atom transformers, and
+    # keep SDPA (windowed layout incompatible with CuTeDSL).
+    for atom_config in (dm.atom_encoder_config, dm.atom_decoder_config):
+        atom_config.set_dtype("float32")
+        atom_config.atom_transformer_dtype = "bfloat16"
+        atom_config.set_pairwise_attention_backend("SDPA")
 
     ch_pf = config.confidence_head_config.pairformer_config
     ch_pf.set_dtype("bfloat16")

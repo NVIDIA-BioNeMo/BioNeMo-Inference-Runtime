@@ -49,6 +49,7 @@ def support_graph_optimization(
     input_key_method: InputKeyMethod,
     static_args: Sequence[str] = (),
     workspace_kwargs: Sequence[str] = (),
+    stable_kwargs: Sequence[str] = (),
     verify_capture: bool = False,
     input_acceptance_dim_spec: InputAcceptanceDimSpec | None = None,
     padded_dim_spec: PaddedDimSpec | None = None,
@@ -61,6 +62,9 @@ def support_graph_optimization(
         input_key_method: Graph-cache key strategy.
         static_args: ``forward`` arguments omitted from dynamic keys.
         workspace_kwargs: Graph-owned scratch kwargs omitted from keys and copies.
+        stable_kwargs: Keyword inputs the caller passes unchanged across calls and
+            the module never writes; a replay skips copying them while they are
+            the same, unmodified tensor objects.
         verify_capture: Compare a new capture with eager execution.
         input_acceptance_dim_spec: Optional input-length limit.
         padded_dim_spec: Optional shape-bucketing rule.
@@ -74,6 +78,7 @@ def support_graph_optimization(
         input_acceptance_dims=([input_acceptance_dim_spec] if input_acceptance_dim_spec is not None else []),
         static_args=list(static_args),
         internal_workspace_kwargs=list(workspace_kwargs),
+        stable_input_kwargs=list(stable_kwargs),
     )
     if graph_optimization_mode == GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH:
         graph_opt_default = CUDAGraphOptimizationConfig(
@@ -130,12 +135,15 @@ def validate_spec_against_forward(cls_or_instance: type | object) -> None:
 
     named_dim_ties = routing.named_dim_ties if routing is not None else ()
     workspace_kwargs = routing.internal_workspace_kwargs if routing is not None else ()
+    stable_kwargs = routing.stable_input_kwargs if routing is not None else ()
     static_args = routing.static_args if routing is not None else ()
     for dim in named_dim_ties:
         for tensor_name, _axes in dim.input_dims:
             _check(tensor_name, "input-tie tensor")
     for name in workspace_kwargs:
         _check(name, "workspace kwarg")
+    for name in stable_kwargs:
+        _check(name, "stable kwarg")
     for name in static_args:
         _check(name, "static arg")
 

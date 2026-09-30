@@ -20,6 +20,7 @@ permanently revert the affected key to eager execution.
 
 import enum
 import gc
+import weakref
 from typing import Any
 
 import torch
@@ -34,11 +35,13 @@ from bionemo_ir._torch.graph_optimization.cuda_graph.memory import (
     container_device,
     tensor_bytes,
 )
+from bionemo_ir._torch.graph_optimization.decorator import GRAPH_OPT_DEFAULT_ATTR
 from bionemo_ir._torch.graph_optimization.tensor_copy_utils import (
     _assert_equal_but_distinct,
     _clone_tensors,
     _copy_tensors_into,
     _delete_tensors_in_container,
+    _tensor_leaves,
 )
 from bionemo_ir._torch.graph_optimization.tracker import (
     GraphOptimizationTracker,
@@ -78,6 +81,8 @@ class CUDAGraphState:
         self.working_set_bytes: int = 0
         # Peak warmup activations later retained by the graph mempool.
         self.warmup_peak_activation_bytes: int = 0
+        # Per stable kwarg, the tensors (and their versions) its static buffer last received.
+        self.stable_sources: dict[str, list[tuple[weakref.ref, int | None]]] = {}
 
     def release(self) -> None:
         """Drain the device, then drop this key's buffers and graph. Idempotent.
@@ -113,6 +118,7 @@ class CUDAGraphState:
         self.static_output = None
         self.static_unadjusted_input_tensor_shapes = None
         self.static_unadjusted_output_tensor_shapes = None
+        self.stable_sources = {}
 
         # Assign rather than ``del``: later reads must see None, not AttributeError.
         self.graph = None
@@ -125,6 +131,27 @@ class CUDAGraphState:
             self.release()
         except Exception:
             pass
+
+
+def _leaf_sources(value: Any) -> list[tuple[weakref.ref, int | None]]:
+    """Record the tensor objects copied from ``value`` and their version counters."""
+    return [(weakref.ref(leaf), None if leaf.is_inference() else leaf._version) for leaf in _tensor_leaves(value)]
+
+
+def _unchanged_since_copy(sources: list[tuple[weakref.ref, int | None]] | None, value: Any) -> bool:
+    """Whether ``value``'s tensor leaves are the objects ``sources`` recorded, unmodified since.
+
+    Identity, not address, decides: freed storage can return at the same address
+    under a new tensor, but never as the same object. Inference tensors keep no
+    version counter, so identity alone decides for them.
+    """
+    if sources is None:
+        return False
+    leaves = _tensor_leaves(value)
+    return len(leaves) == len(sources) and all(
+        ref() is leaf and (version is None or leaf._version == version)
+        for (ref, version), leaf in zip(sources, leaves, strict=True)
+    )
 
 
 def cudagraph_delete_callback(_input_key: str, value: CUDAGraphState) -> None:
@@ -370,8 +397,9 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
     def _capture_call(self, args: tuple, kwargs: dict, input_key: str) -> Tensor | tuple[Tensor, ...]:
         """Check capacity, capture, optionally verify, and replay.
 
-        Inputs are always copied; recursively checking for changes costs more.
-        Any failure permanently reverts this key to eager.
+        Replays copy every input except stable kwargs whose tensors are the same,
+        unmodified objects as last time. Any failure permanently reverts this key
+        to eager.
         """
         # Synchronize only the warmup stream. Its dependency on the current
         # stream preserves input ordering without a device-wide barrier.
@@ -387,6 +415,9 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             state.static_input_arg = _clone_tensors(args)
         if state.static_input_kwargs is None:
             state.static_input_kwargs = _clone_tensors(kwargs)
+            state.stable_sources = {
+                name: _leaf_sources(kwargs[name]) for name in self._stable_input_kwargs() if name in kwargs
+            }
 
         state.working_set_bytes = (
             tensor_bytes(state.static_input_arg)
@@ -463,13 +494,23 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             return False
 
     def _replay_call(self, args: Tensor | tuple, kwargs: dict, input_key: str) -> Tensor | tuple[Tensor, ...]:
-        # Copy real inputs only; the captured graph owns workspace kwargs.
+        # Copy real inputs only; the captured graph owns workspace kwargs, and an
+        # unchanged stable kwarg's buffer already holds its values.
         state = self.graph_state_by_key[input_key]
 
         _copy_tensors_into(dest=state.static_input_arg, src=args)
-        _copy_tensors_into(
-            dest=self._graph_input_kwargs(state.static_input_kwargs), src=self._graph_input_kwargs(kwargs)
+        static_kwargs = self._graph_input_kwargs(state.static_input_kwargs)
+        live_kwargs = self._graph_input_kwargs(kwargs)
+        assert static_kwargs.keys() == live_kwargs.keys(), (
+            "structure mismatch: static buffer and live input have different keys"
         )
+        stable = self._stable_input_kwargs()
+        for name, value in live_kwargs.items():
+            if name in stable and _unchanged_since_copy(state.stable_sources.get(name), value):
+                continue
+            _copy_tensors_into(dest=static_kwargs[name], src=value)
+            if name in stable:
+                state.stable_sources[name] = _leaf_sources(value)
 
         replay_ok: bool = self._replay(input_key, state)
         if not replay_ok:
@@ -477,6 +518,19 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
 
         adjusted_output = _clone_tensors(state.static_output)
         return adjusted_output
+
+    def _stable_input_kwargs(self) -> frozenset:
+        """Return the kwargs whose unchanged tensors skip replay copies.
+
+        A config that routes none inherits the wrapped module's declared ones: they
+        describe how its caller passes inputs, not a tuning choice.
+        """
+        routing = self.graph_optimization_config.input_routing_config
+        if routing is not None and routing.stable_input_kwargs:
+            return frozenset(routing.stable_input_kwargs)
+        declared = getattr(self.inner_module, GRAPH_OPT_DEFAULT_ATTR, None)
+        declared_routing = declared.input_routing_config if declared is not None else None
+        return frozenset(declared_routing.stable_input_kwargs) if declared_routing is not None else frozenset()
 
     def _evict_key(self, key: str) -> None:
         """Free and remove a key's cached graph state.

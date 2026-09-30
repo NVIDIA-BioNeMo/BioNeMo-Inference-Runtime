@@ -50,6 +50,17 @@ def _copy_tensors_into(dest: Any, src: Any) -> None:
             _copy_tensors_into(d, s)
 
 
+def _tensor_leaves(value: Any) -> list[torch.Tensor]:
+    """List the tensor leaves ``_copy_tensors_into`` visits, in container order."""
+    if isinstance(value, torch.Tensor):
+        return [value]
+    if isinstance(value, dict):
+        return [leaf for item in value.values() for leaf in _tensor_leaves(item)]
+    if isinstance(value, (list, tuple)):
+        return [leaf for item in value for leaf in _tensor_leaves(item)]
+    return []
+
+
 def _assert_equal_but_distinct(original: Any, clone: Any) -> None:
     """Assert that tensor leaves are equal but use distinct storage."""
     if isinstance(original, torch.Tensor):

@@ -215,6 +215,9 @@ class ProtenixDiffusionConditioning(nn.Module):
     # Default input management: accept up to 1024 tokens before falling back to
     # eager.
     input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
+    # Only x_noisy and t_hat_noise_level change between denoising steps; the
+    # sampler passes the same features, trunk outputs and rollout cache.
+    stable_kwargs=("input_feature_dict", "s_inputs", "s_trunk", "z_trunk", "cache"),
 )
 class ProtenixDiffusionModule(nn.Module):
     """AF3 Algorithm 20 diffusion module (Protenix): one EDM denoise step.

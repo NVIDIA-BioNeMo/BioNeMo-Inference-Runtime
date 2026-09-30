@@ -73,6 +73,21 @@ from bionemo_ir.configs import BaseConfig
         name="num_tokens",
         dim_len_max=1024,
     ),
+    # Only xl_noisy and t change between denoising steps; the sampler passes the
+    # same tensors for everything else throughout a rollout.
+    stable_kwargs=(
+        "batch",
+        "token_mask",
+        "atom_mask",
+        "si_input",
+        "si_trunk",
+        "zij_trunk",
+        "prepared_zij",
+        "prepared_atom_cl",
+        "prepared_atom_plm",
+        "prepared_atom_encoder_pair_biases",
+        "prepared_atom_decoder_pair_biases",
+    ),
 )
 class DiffusionModule(nn.Module):
     """

@@ -64,6 +64,8 @@ class InputRoutingConfig(BaseModel):
     """Serializable input-routing and bucketing rules.
 
     Internal workspace kwargs are excluded from graph keys and replay copies.
+    A replay copies a stable input kwarg only when its tensors are not the same,
+    unmodified objects it copied last time.
     """
 
     named_dim_ties: list[NamedDimTies] = Field(default_factory=list)
@@ -71,6 +73,13 @@ class InputRoutingConfig(BaseModel):
     input_acceptance_dims: list[InputAcceptanceDimSpec] = Field(default_factory=list)
     static_args: list[str] = Field(default_factory=list)
     internal_workspace_kwargs: list[str] = Field(default_factory=list)
+    stable_input_kwargs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Keyword inputs the caller passes unchanged across calls, such as caches built once per diffusion "
+            "rollout, and that the module never writes. Under inference mode, identity alone decides the skip."
+        ),
+    )
 
     class Config:
         extra = "allow"
@@ -85,6 +94,7 @@ class InputRoutingConfigFactory:
         self.input_acceptance_dims: list[InputAcceptanceDimSpec] = []
         self.static_args: list[str] = []
         self.internal_workspace_kwargs: list[str] = []
+        self.stable_input_kwargs: list[str] = []
 
     @staticmethod
     def _upsert_by_name(items: list, item) -> None:
@@ -105,6 +115,12 @@ class InputRoutingConfigFactory:
         for name in kwarg_names:
             if name not in self.internal_workspace_kwargs:
                 self.internal_workspace_kwargs.append(name)
+
+    def set_stable_input_kwargs(self, kwarg_names: Sequence[str]) -> None:
+        """Add deduplicated kwargs whose unchanged tensors skip replay copies."""
+        for name in kwarg_names:
+            if name not in self.stable_input_kwargs:
+                self.stable_input_kwargs.append(name)
 
     def set_input_acceptance_dim(self, dim_name: str, dim_len_max: int) -> None:
         """Set an inclusive input-length limit for a named dimension.
@@ -235,6 +251,7 @@ class InputRoutingConfigFactory:
             input_acceptance_dims=list(self.input_acceptance_dims),
             static_args=list(self.static_args),
             internal_workspace_kwargs=list(self.internal_workspace_kwargs),
+            stable_input_kwargs=list(self.stable_input_kwargs),
         )
 
 

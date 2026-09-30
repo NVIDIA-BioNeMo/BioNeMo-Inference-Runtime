@@ -17,6 +17,7 @@
 Real-checkpoint tests skip when the checkpoint is unavailable.
 """
 
+import copy
 import functools
 import os
 from dataclasses import dataclass
@@ -25,11 +26,13 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as graph_runtime
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
+from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _tensor_leaves
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
 from bionemo_ir._torch.modules.protenix import ProtenixDiffusionModule, ProtenixDiffusionSampler
 from bionemo_ir.configs import DiffusionTransformerConfig
@@ -705,3 +708,50 @@ def test_token_transformer_cudagraph_parity(real_case):
         f"rmse={r:.3e} "
         f"max|Δ|={(x_cg - x_eager).abs().max().item():.3e}"
     )
+
+
+def test_diffusion_module_cudagraph_skips_stable_copies(real_case, monkeypatch):
+    """Replaying without re-copying rollout-stable inputs leaves the rollout bitwise unchanged."""
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    # FP32 atom encoder and decoder, as in inference: their atom-to-token mean then
+    # runs the ordered slot kernel, so separate rollouts are bit-identical. A bf16
+    # encoder falls back to atomic scatter, which is not reproducible run to run.
+    sc = Scenario(dtype="float32", token_dtype="bfloat16")
+    model, batch, s_inputs, s_trunk, z_trunk, _ = _real_bioir_module(sc, real_case)
+    n_sample = Scenario().n_sample
+    stable = ProtenixDiffusionModule.graph_opt_default.input_routing_config.stable_input_kwargs
+    assert stable
+
+    copied_bytes = []
+    copy_tensors_into = graph_runtime._copy_tensors_into
+
+    def counting(dest, src):
+        copied_bytes.append(sum(leaf.numel() * leaf.element_size() for leaf in _tensor_leaves(src)))
+        return copy_tensors_into(dest, src)
+
+    monkeypatch.setattr(graph_runtime, "_copy_tensors_into", counting)
+
+    def _roll(skip: bool):
+        config = copy.deepcopy(ProtenixDiffusionModule.graph_opt_default)
+        tracker = CUDAGraphOptimizationTracker(config=config, inner_module=model)
+        tracker.set_fallback_module(model)
+        if not skip:
+            monkeypatch.setattr(tracker, "_stable_input_kwargs", lambda: frozenset())
+        sampler = ProtenixDiffusionSampler(tracker, use_cache=True).eval()
+        copied_bytes.clear()
+        with torch.inference_mode():
+            x = sampler.sample_coords(
+                batch, s_inputs, s_trunk, z_trunk, num_sampling_steps=12, N_sample=n_sample, seed=1234
+            )
+        states = [
+            (s.preparation_state, tracker.fallback_to_eager_by_key.get(k, False))
+            for k, s in tracker.graph_state_by_key.items()
+        ]
+        assert states and all(ps == CUDAGraphPreparationState.GRAPH_VERIFIED and not fb for ps, fb in states)
+        return x, sum(copied_bytes)
+
+    x_copied, bytes_copied = _roll(skip=False)
+    x_skipped, bytes_skipped = _roll(skip=True)
+    assert torch.equal(x_skipped, x_copied)
+    assert bytes_skipped < bytes_copied / 2

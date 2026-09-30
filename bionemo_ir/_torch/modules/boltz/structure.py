@@ -250,6 +250,16 @@ class DiffusionConditioning(nn.Module):
     # Default input management: accept up to 1024 tokens before falling back to
     # eager.
     input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
+    # Only r_noisy and times change between denoising steps; the sampler passes
+    # the same features, trunk outputs and conditioning throughout a rollout.
+    stable_kwargs=(
+        "atom_to_token",
+        "atom_pad_mask",
+        "token_pad_mask",
+        "s_inputs",
+        "s_trunk",
+        "diffusion_conditioning_kwargs",
+    ),
 )
 class DiffusionModule(nn.Module):
     """Diffusion module"""

@@ -26,6 +26,7 @@ from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 _SUPPORTED_FORMATS = {"pdb", "cif"}
 _EXT_MAP = {"pdb": ".pdb", "cif": ".cif"}
+_SCORE_PRECISION = 4
 
 
 class WriterUDF(StatefulStageUDF):
@@ -90,7 +91,7 @@ class WriterUDF(StatefulStageUDF):
         """Primary (first) format — kept for backward compatibility."""
         return self.formats[0]
 
-    def round_floats(self, o: Any, precision: int = 4) -> Any:
+    def round_floats(self, o: Any, precision: int = _SCORE_PRECISION) -> Any:
         if isinstance(o, float):
             return round(o, precision)
         if isinstance(o, dict):
@@ -98,6 +99,26 @@ class WriterUDF(StatefulStageUDF):
         if isinstance(o, (list, tuple)):
             return [self.round_floats(x, precision) for x in o]
         return o
+
+    def _encode_scores(self, record: FoldingOutput) -> str:
+        """Round the scores to :data:`_SCORE_PRECISION` decimals and encode them once.
+
+        float32 arrays are rounded in NumPy. Their product with ``10**4`` is exact
+        in float64 (a 24-bit significand times 625 fits in 34 bits), and both
+        ``np.round`` and Python ``round`` break ties to even and divide with
+        correct rounding, so the result is bit-identical to :meth:`round_floats`
+        without the per-element Python loop. Every other value keeps
+        :meth:`round_floats`.
+        """
+        scores: dict[str, Any] = {}
+        for key, value in record.get_score_values().items():
+            if isinstance(value, np.ndarray) and value.dtype == np.float32:
+                scores[key] = np.round(value.astype(np.float64), _SCORE_PRECISION).tolist()
+            elif isinstance(value, np.ndarray):
+                scores[key] = self.round_floats(value.tolist())
+            else:
+                scores[key] = self.round_floats(value)
+        return json.dumps(scores)
 
     def _create_writer(self, fmt: str):
         res_type_mapping = self.mappings.get("res_type_mapping", None)
@@ -200,13 +221,13 @@ class WriterUDF(StatefulStageUDF):
             if primary_raw is None:
                 primary_raw = raw
 
-        scores = self.round_floats(record.get_scores())
+        scores_json = self._encode_scores(record)
 
         score_path = self._resolve_path(row, row_id, "_scores.json")
 
         if score_path:
             with open(score_path, "w") as f:
-                json.dump(scores, f)
+                f.write(scores_json)
 
         primary_path = output_paths.get(self.format)
         result = {
@@ -214,7 +235,7 @@ class WriterUDF(StatefulStageUDF):
             "output_paths": json.dumps(output_paths),
             "format": self.format,
             "output_raw": primary_raw,
-            "scores": json.dumps(scores),
+            "scores": scores_json,
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
         for timing_key in ("time_taken", "model_inference_time", "model_inference_time_samples", "stage_timing_s"):

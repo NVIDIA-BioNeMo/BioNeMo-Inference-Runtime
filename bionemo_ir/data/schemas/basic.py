@@ -960,29 +960,30 @@ class FoldingOutput(dict):
             mol_types=mol_types,
         )
 
+    def get_score_values(self) -> dict[str, np.ndarray | float | None]:
+        """Score fields as stored: arrays for ``plddt`` and ``pae``, floats otherwise.
+
+        ``plddt`` and ``pae`` are reported only when they are NumPy arrays; the
+        scalar scores are ``None`` when missing or NaN.
+        """
+        values: dict[str, np.ndarray | float | None] = {
+            "plddt": None,
+            "ptm": None,
+            "iptm": None,
+            "pae": None,
+            "max_pae": None,
+        }
+        for key in ("plddt", "pae"):
+            if isinstance(self[key], np.ndarray):
+                values[key] = self[key]
+        for key in ("ptm", "iptm", "max_pae"):
+            if self[key] is not None and not np.isnan(self[key]):
+                values[key] = float(self[key])
+        return values
+
     def get_scores(self) -> dict:
-        # Ensure all scores are json-able.
-        ptm = None
-        iptm = None
-        max_pae = None
-        plddt = None
-        pae = None
-        if self["plddt"] is not None:
-            if isinstance(self["plddt"], np.ndarray):
-                plddt = self["plddt"].tolist()
-        if self["pae"] is not None:
-            if isinstance(self["pae"], np.ndarray):
-                pae = self["pae"].tolist()
-        if self["ptm"] is not None and not np.isnan(self["ptm"]):
-            ptm = float(self["ptm"])
-        if self["iptm"] is not None and not np.isnan(self["iptm"]):
-            iptm = float(self["iptm"])
-        if self["max_pae"] is not None and not np.isnan(self["max_pae"]):
-            max_pae = float(self["max_pae"])
+        """JSON-able scores: :meth:`get_score_values` with arrays as nested lists."""
         return {
-            "plddt": plddt,
-            "ptm": ptm,
-            "iptm": iptm,
-            "pae": pae,
-            "max_pae": max_pae,
+            key: value.tolist() if isinstance(value, np.ndarray) else value
+            for key, value in self.get_score_values().items()
         }

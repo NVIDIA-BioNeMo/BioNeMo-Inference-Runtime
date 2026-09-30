@@ -21,6 +21,8 @@ batch (outputs of prior generators) and returns one group of feature tensors.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from functools import cache
 from typing import Any
 
 import numpy as np
@@ -28,17 +30,23 @@ import torch
 import torch.nn.functional as F
 
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
+from bionemo_ir.pipeline.utils.msa import a3m_columns, code_points, map_code_points, ragged_mask, truncate_rows
 
 from .common import centre_random_augmentation, compute_deletion_value, encode_atom_name_chars_one_hot, encode_one_hot
 from .const import (
     DEFAULT_N_TEMPLATES,
     GAP_IDX,
     MAX_MSA_ROWS,
+    MOL_TYPE_DNA,
     MOL_TYPE_LIGAND,
+    MOL_TYPE_PROTEIN,
+    MOL_TYPE_RNA,
+    MSA_CHAR_TO_IDX,
     NUM_ELEMENT_CLASSES,
     NUM_MSA_CLASSES,
     NUM_RESTYPE_CLASSES,
     RESNAME_TO_IDX,
+    RNA_1_TO_IDX,
     TEMPLATE_DISTOGRAM_N_BINS,
     UNK_IDX,
 )
@@ -419,8 +427,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # Used by _resolve_msa_char for polymer-type-aware MSA encoding.
             group_mol_type = token_mol_types[start] if start < len(token_mol_types) else 0
 
-            poly_rows: list[list[int]] = []
-            poly_dels: list[list[int]] = []
+            poly_rows: list[np.ndarray] = []
+            poly_dels: list[np.ndarray] = []
 
             # Track whether THIS polymer group has any MSA content. When False,
             # OSS leaves the chain's token slots at the pre-allocated gap fill
@@ -455,25 +463,19 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # final MSA.
             if has_msa_for_polymer and msa_entry is not None and msa_entry.get("sequences"):
                 qseq = msa_entry["sequences"][0]
-                qrow = [_resolve_msa_char(c, group_mol_type) for c in qseq[:n_res]]
-                qrow += [GAP_IDX] * (n_res - len(qrow))
-                poly_rows.append(qrow)
-                poly_dels.append([0] * n_res)
+                poly_rows.append(_encode_msa_rows([qseq], group_mol_type, n_res))
             elif has_msa_for_polymer:
                 # Has paired MSA but no main MSA — use paired row 0 as query
                 # (matches OSS's behavior of `all_msas_per_chain[first_key]`
                 # ordering: paired comes first in `aln_order`).
                 pseq = paired_entry["sequences"][0]
-                qrow = [_resolve_msa_char(c, group_mol_type) for c in pseq[:n_res]]
-                qrow += [GAP_IDX] * (n_res - len(qrow))
-                poly_rows.append(qrow)
-                poly_dels.append([0] * n_res)
+                poly_rows.append(_encode_msa_rows([pseq], group_mol_type, n_res))
             else:
                 # No MSA for this polymer — emit an all-gap row. The chain's
                 # token slots will read as GAP_IDX in the final MSA tensor,
                 # matching upstream `create_msa_feature_precursor_of3`.
-                poly_rows.append([GAP_IDX] * n_res)
-                poly_dels.append([0] * n_res)
+                poly_rows.append(np.full((1, n_res), GAP_IDX, dtype=np.int64))
+            poly_dels.append(np.zeros((1, n_res), dtype=np.int64))
 
             # ------------------------------------------------------------
             # Paired-MSA semantics, matching upstream.
@@ -536,40 +538,26 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # (because their byte-exact matches sit beyond paired_idx=2047).
             from .const import MAX_MSA_ROWS_PAIRED
 
-            paired_rows_full: list[list[int]] = []
+            paired_rows_full = np.zeros((0, 0), dtype=np.int64)
             paired_full_width = 0
             if paired_entry is not None:
                 paired_seqs = paired_entry.get("sequences", [])
                 paired_seqs = paired_seqs[:MAX_MSA_ROWS_PAIRED]
                 paired_full_width = max((len(s) for s in paired_seqs), default=0)
-                for pseq in paired_seqs:
-                    prow_full = [GAP_IDX] * paired_full_width
-                    for j in range(min(len(pseq), paired_full_width)):
-                        prow_full[j] = _resolve_msa_char(pseq[j], group_mol_type)
-                    paired_rows_full.append(prow_full)
+                paired_rows_full = _encode_msa_rows(paired_seqs, group_mol_type, paired_full_width)
 
             # Build main MSA rows at FILE WIDTH for is_unique / profile.
             # `unpaired_rows_full` / `unpaired_dels_full` mirror OSS
             # `main_msa_redundant` exactly (pre-filter, pre-crop).
-            unpaired_rows_full: list[list[int]] = []
-            unpaired_dels_full: list[list[int]] = []
+            unpaired_rows_full = np.zeros((0, 0), dtype=np.int64)
+            unpaired_dels_full = np.zeros((0, 0), dtype=np.int64)
             main_full_width = 0
             if msa_entry is not None:
                 msa_seqs = msa_entry.get("sequences", [])
                 msa_raw = msa_entry.get("raw", msa_seqs)
                 main_full_width = max((len(s) for s in msa_seqs), default=0)
-                for seq_idx in range(len(msa_seqs)):
-                    useq = msa_seqs[seq_idx]
-                    uraw = msa_raw[seq_idx] if seq_idx < len(msa_raw) else useq
-                    del_counts = _extract_deletion_counts(uraw)
-                    urow_full = [GAP_IDX] * main_full_width
-                    drow_full = [0] * main_full_width
-                    for j in range(min(len(useq), main_full_width)):
-                        urow_full[j] = _resolve_msa_char(useq[j], group_mol_type)
-                        if j < len(del_counts):
-                            drow_full[j] = del_counts[j]
-                    unpaired_rows_full.append(urow_full)
-                    unpaired_dels_full.append(drow_full)
+                unpaired_rows_full = _encode_msa_rows(msa_seqs, group_mol_type, main_full_width)
+                unpaired_dels_full = _deletion_rows(msa_raw, msa_seqs, main_full_width)
 
             # `is_unique` filter — drop main rows whose byte-exact encoded
             # value matches any paired row. OSS pads both to the same width
@@ -579,32 +567,20 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # well-defined; this matches OSS's behavior since the
             # `chain_data[aln].msa` arrays for a single chain all have the
             # same column count (the chain's aligned width).
-            is_unique_mask: list[bool] | None = None
-            if paired_rows_full and unpaired_rows_full:
-                # Build numpy arrays at a common width = max(main_w, paired_w).
+            is_unique_mask: np.ndarray | None = None
+            if paired_rows_full.shape[0] and unpaired_rows_full.shape[0]:
+                # Pad both to a common width = max(main_w, paired_w).
                 common_w = max(main_full_width, paired_full_width)
-                main_arr = np.full(
-                    (len(unpaired_rows_full), common_w),
-                    GAP_IDX,
-                    dtype=np.int64,
+                main_arr = _pad_columns(unpaired_rows_full, common_w, GAP_IDX)
+                paired_arr = _pad_columns(paired_rows_full, common_w, GAP_IDX)
+                # Byte-exact row membership, as OSS `np.isin` on void rows;
+                # hashing avoids sorting the void rows.
+                paired_keys = {row.tobytes() for row in paired_arr}
+                is_unique_mask = np.fromiter(
+                    (row.tobytes() not in paired_keys for row in main_arr), dtype=bool, count=main_arr.shape[0]
                 )
-                for i, r in enumerate(unpaired_rows_full):
-                    main_arr[i, : len(r)] = r
-                paired_arr = np.full(
-                    (len(paired_rows_full), common_w),
-                    GAP_IDX,
-                    dtype=np.int64,
-                )
-                for i, r in enumerate(paired_rows_full):
-                    paired_arr[i, : len(r)] = r
-                # Match OSS `np.isin` on void-view trick: each row becomes
-                # a single void item with size n_cols * itemsize.
-                main_view = main_arr.view(np.dtype((np.void, main_arr.dtype.itemsize * common_w)))
-                paired_view = paired_arr.view(np.dtype((np.void, paired_arr.dtype.itemsize * common_w)))
-                is_unique_arr = np.squeeze(~np.isin(main_view, paired_view), axis=-1)
-                is_unique_mask = is_unique_arr.tolist()
-            elif unpaired_rows_full:
-                is_unique_mask = [True] * len(unpaired_rows_full)
+            elif unpaired_rows_full.shape[0]:
+                is_unique_mask = np.ones(unpaired_rows_full.shape[0], dtype=bool)
 
             # Filter main rows for the final MSA output (poly_rows). OSS
             # vstacks `[query] + [main_filtered]` only — paired is NOT
@@ -614,31 +590,21 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # Main cap in OSS: `n_rows_main_msa_lim = max(0, max_rows -
             # n_rows_paired_subsampled - 1) = max_rows - 1` for our path.
             main_cap = max(0, MAX_MSA_ROWS - 1)
-            n_main_appended = 0
-            if msa_entry is not None and unpaired_rows_full and is_unique_mask:
-                for seq_idx in range(len(unpaired_rows_full)):
-                    if not is_unique_mask[seq_idx]:
-                        continue
-                    if n_main_appended >= main_cap:
-                        break
-                    # Crop the filtered row to n_res for the output tensor.
-                    # Mirrors upstream featurization-time
+            if msa_entry is not None and is_unique_mask is not None:
+                selected = np.flatnonzero(is_unique_mask)[:main_cap]
+                if selected.size:
+                    # Crop the filtered rows to n_res for the output tensor,
+                    # right-padding with GAP_IDX / 0 when the file rows are
+                    # shorter. Mirrors upstream featurization-time
                     # `msa_array_vstack.msa[:, msa_column_positions]` in
                     # `map_msas_to_tokens`, where
                     # `msa_column_positions = res_id - 1`.
-                    urow_full = unpaired_rows_full[seq_idx]
-                    drow_full = unpaired_dels_full[seq_idx]
-                    urow_cropped = urow_full[:n_res]
-                    drow_cropped = drow_full[:n_res]
-                    # Right-pad with GAP_IDX / 0 if file row is shorter.
-                    if len(urow_cropped) < n_res:
-                        urow_cropped = urow_cropped + [GAP_IDX] * (n_res - len(urow_cropped))
-                        drow_cropped = drow_cropped + [0] * (n_res - len(drow_cropped))
-                    poly_rows.append(urow_cropped)
-                    poly_dels.append(drow_cropped)
-                    n_main_appended += 1
+                    poly_rows.append(_pad_columns(unpaired_rows_full[selected], n_res, GAP_IDX))
+                    poly_dels.append(_pad_columns(unpaired_dels_full[selected], n_res, 0))
 
-            n_poly_rows = len(poly_rows)
+            poly_rows_arr = np.concatenate(poly_rows, axis=0)
+            poly_dels_arr = np.concatenate(poly_dels, axis=0)
+            n_poly_rows = poly_rows_arr.shape[0]
             if n_poly_rows > max_rows:
                 max_rows = n_poly_rows
             # `n_paired_poly` is kept at 0 because OSS does NOT vstack paired
@@ -658,11 +624,11 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             # When the polymer has no MSA at all, OSS emits zero profile and
             # zero deletion_mean (`create_msa_feature_precursor_of3` uses
             # np.zeros for both fields in the no-MSA "else" branch).
-            if has_msa_for_polymer and unpaired_rows_full:
+            if has_msa_for_polymer and unpaired_rows_full.shape[0]:
                 # deletion_mean: full-width then crop. Each chain's polymer
                 # has res_ids = [1..n_res] (sequential), so cropping to
                 # [0:n_res] matches `del_mean[msa_column_positions]`.
-                del_t_full = torch.tensor(unpaired_dels_full, dtype=torch.float32)
+                del_t_full = torch.from_numpy(unpaired_dels_full).to(torch.float32)
                 deletion_mean_full = del_t_full.mean(dim=0)  # [main_full_width]
                 if deletion_mean_full.numel() >= n_res:
                     deletion_mean = deletion_mean_full[:n_res].clone()
@@ -721,8 +687,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
             polymer_data.append(
                 {
                     "chains": group["chains"],
-                    "poly_rows": poly_rows,
-                    "poly_dels": poly_dels,
+                    "poly_rows": poly_rows_arr,
+                    "poly_dels": poly_dels_arr,
                     "n_rows": n_poly_rows,
                     "deletion_mean": deletion_mean,
                     "profile": profile,
@@ -749,8 +715,8 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
 
         for pd in polymer_data:
             r = pd["n_rows"]
-            rows_t = torch.tensor(pd["poly_rows"], dtype=torch.long)  # [r, n_res]
-            dels_t = torch.tensor(pd["poly_dels"], dtype=torch.long)  # [r, n_res]
+            rows_t = torch.from_numpy(pd["poly_rows"])  # [r, n_res] int64
+            dels_t = torch.from_numpy(pd["poly_dels"])  # [r, n_res] int64
 
             # Broadcast to ALL chains of this polymer
             for _, cid in pd["chains"]:
@@ -782,17 +748,82 @@ class MsaFeatureGenerator(FeatureGeneratorBase):
         return feats
 
 
-def _extract_deletion_counts(raw_seq: str) -> list[int]:
-    """Extract per-position deletion counts from a raw A3M sequence."""
-    counts = []
-    del_count = 0
-    for char in raw_seq:
-        if char.islower():
-            del_count += 1
-        else:
-            counts.append(del_count)
-            del_count = 0
-    return counts
+_ASCII_LIMIT = 128
+_UNRESOLVED = -1
+
+
+@cache
+def _msa_char_table(mol_type: int) -> np.ndarray | None:
+    """ASCII lookup table with the ``_resolve_msa_char`` dispatch for one mol type.
+
+    RNA characters that ``_resolve_msa_char`` warns about hold ``_UNRESOLVED`` so
+    the caller can route them through it and keep the warning. ``None`` means
+    the mol type has no table and every character takes the per-character path.
+    """
+    chars = [chr(code) for code in range(_ASCII_LIMIT)]
+    if mol_type == MOL_TYPE_PROTEIN:
+        table = np.array([MSA_CHAR_TO_IDX.get(c.upper(), UNK_IDX) for c in chars], dtype=np.int64)
+    elif mol_type == MOL_TYPE_RNA:
+        table = np.array([RNA_1_TO_IDX.get(c.upper(), _UNRESOLVED) for c in chars], dtype=np.int64)
+    elif mol_type in (MOL_TYPE_DNA, MOL_TYPE_LIGAND):
+        table = np.full(_ASCII_LIMIT, GAP_IDX, dtype=np.int64)
+    else:
+        return None
+    table[ord("-")] = GAP_IDX
+    table[ord(".")] = GAP_IDX
+    return table
+
+
+def _encode_msa_rows(seqs: Sequence[str], mol_type: int, width: int) -> np.ndarray:
+    """Encode aligned MSA rows as ``[len(seqs), width]`` int64 class indices.
+
+    Rows are cropped or right-padded with ``GAP_IDX`` to ``width``. All rows are
+    encoded in one pass through :func:`_msa_char_table`; characters it cannot
+    resolve take :func:`_resolve_msa_char` in first-seen order, which keeps its
+    warnings. Unknown mol types warn per character, so they keep the loop.
+    """
+    table = _msa_char_table(mol_type)
+    if table is None:
+        rows = np.full((len(seqs), width), GAP_IDX, dtype=np.int64)
+        for i, seq in enumerate(seqs):
+            rows[i, : min(len(seq), width)] = [_resolve_msa_char(c, mol_type) for c in seq[:width]]
+        return rows
+    cropped = [seq[:width] for seq in seqs]
+    values = map_code_points(
+        code_points("".join(cropped)), table, lambda char: _resolve_msa_char(char, mol_type), _UNRESOLVED
+    )
+    lengths = np.fromiter(map(len, cropped), dtype=np.intp, count=len(cropped))
+    if np.all(lengths == width):
+        return values.reshape(len(seqs), width)
+    rows = np.full((len(seqs), width), GAP_IDX, dtype=np.int64)
+    rows[ragged_mask(lengths, width)] = values
+    return rows
+
+
+def _deletion_rows(raw: Sequence[str], seqs: Sequence[str], width: int) -> np.ndarray:
+    """``[len(seqs), width]`` insertion counts before each aligned column.
+
+    Row ``i`` reads ``raw[i]``, or ``seqs[i]`` past the end of ``raw``, and
+    fills at most ``len(seqs[i])`` columns; the rest stay 0.
+    """
+    rows = list(raw[: len(seqs)]) + list(seqs[len(raw) :])
+    _, deletions, counts = a3m_columns(rows)
+    limits = np.minimum(counts, np.fromiter(map(len, seqs), dtype=np.intp, count=len(seqs)))
+    if np.all(limits == width):
+        return truncate_rows(deletions, counts, limits).reshape(len(seqs), width)
+    out = np.zeros((len(seqs), width), dtype=np.int64)
+    out[ragged_mask(limits, width)] = truncate_rows(deletions, counts, limits)
+    return out
+
+
+def _pad_columns(rows: np.ndarray, width: int, fill: int) -> np.ndarray:
+    """Right-pad with ``fill`` or crop the columns of ``rows`` to ``width``."""
+    if rows.shape[1] == width:
+        return rows
+    out = np.full((rows.shape[0], width), fill, dtype=rows.dtype)
+    keep = min(rows.shape[1], width)
+    out[:, :keep] = rows[:, :keep]
+    return out
 
 
 class TemplateFeatureGenerator(FeatureGeneratorBase):

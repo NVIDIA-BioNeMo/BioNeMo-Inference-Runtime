@@ -170,18 +170,35 @@ def create_template_distogram(
     import numpy as np
 
     coords = np.asarray(pseudo_beta_atom_coords)
-    distogram = np.sum(
-        (coords[..., None, :] - coords[..., None, :, :]) ** 2,
-        axis=-1,
-        keepdims=True,
-    )
+    if coords.dtype in (np.float32, np.float64):
+        # Same left-to-right sum as ``np.sum`` over the last axis, without the
+        # [..., N, N, 3] temporaries. Other dtypes may accumulate wider.
+        squares = [(coords[..., :, None, k] - coords[..., None, :, k]) ** 2 for k in range(3)]
+        distances = squares[0] + squares[1] + squares[2]
+        del squares
+    else:
+        distances = np.sum((coords[..., None, :] - coords[..., None, :, :]) ** 2, axis=-1)
     lower = np.linspace(min_bin, max_bin, n_bins) ** 2
     upper = np.concatenate([lower[1:], np.array([inf_value], dtype=lower.dtype)], axis=-1)
-    binned = ((distogram > lower) * (distogram < upper)).astype(distogram.dtype)
-    template_distogram = torch.tensor(binned, dtype=torch.float32)
+    if n_bins and np.all(np.isfinite(lower)) and np.all(lower[1:] > lower[:-1]):
+        indices = np.searchsorted(lower, distances, side="left") - 1
+        valid = (indices >= 0) & (distances < upper[np.clip(indices, 0, n_bins - 1)])
+        binned = np.zeros((*distances.shape, n_bins), dtype=np.float32)
+        rows = np.flatnonzero(valid.ravel())
+        binned.reshape(-1, n_bins)[rows, indices.ravel()[rows]] = 1.0
+    else:
+        # Nonmonotone edges can describe overlapping bins.
+        distogram = distances[..., None]
+        binned = ((distogram > lower) * (distogram < upper)).astype(np.float32)
+    template_distogram = torch.as_tensor(binned)
 
     pb = pseudo_beta_mask
     pair = (pb[..., None] * pb[..., None, :])[..., None]
+    shape = torch.broadcast_shapes(template_distogram.shape, pair.shape, multichain_pair_mask.shape)
+    same_layout = shape == template_distogram.shape and template_distogram.numel()
+    if same_layout and pair.dtype == multichain_pair_mask.dtype == torch.float32:
+        # Same float32 products in place; skips two dense temporaries.
+        return template_distogram.mul_(pair).mul_(multichain_pair_mask)
     return template_distogram * pair * multichain_pair_mask
 
 

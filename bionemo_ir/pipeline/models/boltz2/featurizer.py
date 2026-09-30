@@ -27,6 +27,7 @@ from torch.nn.functional import one_hot
 from bionemo_ir._torch.layers.random_augmentation import random_rotations
 from bionemo_ir._torch.utils import pad_dim
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars
+from bionemo_ir.pipeline.utils.msa import a3m_columns, map_code_points
 
 from .const import (
     Structure,
@@ -574,6 +575,7 @@ def _msa_from_parsed(
     prot_letter_to_token: dict,
     default_query: list[int] | None = None,
     visited: set[str] | None = None,
+    limit: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[str]]:
     """Build (msa, deletion, paired, keys) from MSAParsed.
 
@@ -588,6 +590,9 @@ def _msa_from_parsed(
     already accepted (used for cross-pool dedup between paired+unpaired
     MSAs). The canonical query key is always inserted up-front so neither
     pool re-emits it as a non-query row.
+
+    ``limit``: optional cap on non-query rows. Scanning stops once the cap
+    is reached, so later rows are neither decoded nor added to ``visited``.
     """
 
     if default_query is not None:
@@ -614,34 +619,49 @@ def _msa_from_parsed(
     raw_val = msa_parsed.get("raw")
     raw_list = raw_val if raw_val is not None else msa_parsed["sequences"]
 
-    rows = []
-    del_rows = []
-    kept_keys: list[str] = [query_key]
-    for raw in raw_list:
-        s = str(raw)
-        key = s.replace("-", "").upper()
-        if key in local_visited:
+    def _residue(char: str) -> int:
+        return token_ids.get(prot_letter_to_token.get(char.upper(), "UNK"), token_ids["UNK"])
+
+    residue_lookup = np.array([_residue(chr(c)) for c in range(128)], dtype=np.int64)
+    kept_keys = [query_key]
+    res_blocks: list[np.ndarray] = []
+    del_blocks: list[np.ndarray] = []
+    n_body = 0
+    # With a cap, decode in cap-sized chunks so deep MSAs stop early.
+    step = max(len(raw_list), 1) if limit is None else max(limit, 1)
+    for start in range(0, len(raw_list), step):
+        if limit is not None and n_body >= limit:
+            break
+        candidates: list[str] = []
+        candidate_keys: list[str] = []
+        for raw in raw_list[start : start + step]:
+            s = str(raw)
+            key = s.replace("-", "").upper()
+            if key in local_visited:
+                continue
+            local_visited.add(key)
+            candidates.append(s)
+            candidate_keys.append(key)
+        if not candidates:
             continue
-        local_visited.add(key)
-        res_types = []
-        del_counts = []
-        del_count = 0
-        for c in s:
-            if c.islower():
-                del_count += 1
-            else:
-                three = prot_letter_to_token.get(c.upper(), "UNK")
-                res_types.append(token_ids.get(three, token_ids["UNK"]))
-                del_counts.append(del_count)
-                del_count = 0
-        if len(res_types) == num_residues:
-            rows.append(res_types)
-            del_rows.append(del_counts)
-            kept_keys.append(key)
-    if not rows:
+        codes, deletions, counts = a3m_columns(candidates)
+        accepted = counts == num_residues
+        n_accepted = int(accepted.sum())
+        if not n_accepted:
+            continue
+        if n_accepted < len(candidates):
+            columns = np.repeat(accepted, counts)
+            codes, deletions = codes[columns], deletions[columns]
+        res_blocks.append(map_code_points(codes, residue_lookup, _residue).reshape(n_accepted, num_residues))
+        del_blocks.append(deletions.astype(np.float32).reshape(n_accepted, num_residues))
+        kept_keys += [key for key, ok in zip(candidate_keys, accepted, strict=True) if ok]
+        n_body += n_accepted
+    if not n_body:
         return _empty()
-    body = torch.tensor(rows, dtype=torch.long)
-    body_del = torch.tensor(del_rows, dtype=torch.float32)
+    if limit is not None and n_body > limit:
+        kept_keys = kept_keys[: 1 + limit]
+    body = torch.as_tensor(np.concatenate(res_blocks)[:limit], device=query_row.device)
+    body_del = torch.as_tensor(np.concatenate(del_blocks)[:limit], device=query_del.device)
     msa = torch.cat([query_row, body], dim=0)
     deletion = torch.cat([query_del, body_del], dim=0)
     n_rows = msa.shape[0]
@@ -735,8 +755,16 @@ def process_msa_features(
         for i in range(num_chains):
             Lc = residues_per_chain[i]
             mp = msa_parsed_per_chain[i] if i < len(msa_parsed_per_chain) else None
+            # The body keeps at most max_seqs - 1 rows, paired rows first, so
+            # later unpaired rows never reach the output.
+            n_paired_body = paired_parts_msa[i].shape[0] - 1 if paired_parts_msa else 0
             m, d, p, _ = _msa_from_parsed(
-                mp, Lc, prot_letter_to_token, default_query=chain_tokens[i], visited=chain_visited[i]
+                mp,
+                Lc,
+                prot_letter_to_token,
+                default_query=chain_tokens[i],
+                visited=chain_visited[i],
+                limit=max(max_seqs - 1 - n_paired_body, 0),
             )
             parts_msa.append(m)
             parts_del.append(d)

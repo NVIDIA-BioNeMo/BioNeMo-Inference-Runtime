@@ -1,0 +1,141 @@
+{
+  "executables": {
+    "d43a86f720ca79ed042b98658360989b45ebb44534fcc5bc1b9f929d76463d7a": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 20480,
+      "image_sha256": "feb22ab340c25b97e6836ccb9491a4f6abac76ff84eeacc06e04df7fe2442172",
+      "image_size": 29856,
+      "kernel_sm": 80,
+      "kernel_symbol": "2f343f6978e66dd22ef17ee91b9c3f2f04ed5f674b48f198ac4983e9f64d60cf",
+      "launch_abi": "triangle_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_80",
+      "target_sm": 80
+    },
+    "dba03e0446593aeb89b3a50ebfbd61705b38c13a34989380a0705df6d0a59a7e": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 232448,
+      "image_sha256": "45b799199b77ace9e8f2902c0db12d7771df04dcf2d150a17153d27213ecfc1f",
+      "image_size": 148064,
+      "kernel_sm": 100,
+      "kernel_symbol": "bf17abcc5e01c858f90d092e5e502d13ca31788742a8ad1e608f2d566497b85c",
+      "launch_abi": "triangle_attention_sm100_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "a008646bb159cae2bb82ad762cb44a840da9dbee269c27347bf5b261b520cd4e",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 32,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "d141f641b86b85b27eed"
+    },
+    {
+      "executable": "7094d8366b71cad24a629a4cafbe50dd21449d723a34acc5936bbf64e8253cec",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "d1fee651c907337120b7"
+    },
+    {
+      "executable": "c2a281ce7e4bfa745cfbc31520f46e7fdde3a129af981c06578b3859dfd393cb",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "d41987cf95f5a2ec5bbe"
+    },
+    {
+      "executable": "caf7ab676a5eb5932447bc6d7c3195653e600cf8a93031853a89a0a3beef3af5",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "d42a3d5d011b402758d5"
+    },
+    {
+      "executable": "46a904299011c12fc8252e42a9f9c67cd884b6494666412065938d5769fd6b37",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "d484d3b963b32dc9a5d1"
+    },
+    {
+      "executable": "c7f84d59220b94eca89e5652f66e5219996f774eaee128128b8ab280a4209e30",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "d7939b9621b431d2d1a6"
+    },
+    {
+      "executable": "370a4cffb2e568387e62226f8d6687918f75890dcba439ebb7a338fc83354ee2",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 128,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "d83e29b6657c692e3e09"
+    },
+    {
+      "executable": "a3bb03f67305c4bb797c06b8afd14ff37321375574ade3bfe6868cd8eae707b4",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "db7ce4a0181254df8875"
+    },
+    {
+      "executable": "caf7ab676a5eb5932447bc6d7c3195653e600cf8a93031853a89a0a3beef3af5",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 256,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "dbc70bb1135413139df5"
+    },
+    {
+      "executable": "72bb7117d53dceb7957f43e4cad81710ac77485d6f29012dc99cb8b7f3ad0b66",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 64,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "dce4cae476e01a83a55f"
+    },
+    {
+      "executable": "4e23806cfce14aded5a5da448d091eb77bc482c2b6e0d25b2c36f46851840a50",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 128,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "de7f08c2746452ecd641"
+    }
+  ]
+}

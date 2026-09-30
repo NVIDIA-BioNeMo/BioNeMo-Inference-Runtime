@@ -1,0 +1,101 @@
+{
+  "executables": {
+    "f1515c2c3de803d552e7d348dd09a84c91dddaa87c8a08572413ad0bf948e6a2": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 123904,
+      "image_sha256": "6c75a20a06d614f2a35aa18fc99277713a4d3a18af9437aed4e4700117cf2003",
+      "image_size": 55152,
+      "kernel_sm": 90,
+      "kernel_symbol": "a2d777d50cefbb49fd0eb52a496b0240eb366f520acf8de90a367947e351be69",
+      "launch_abi": "pairwise_attention_sm90_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "sm90_launch": "a3f4bf5e9c01f3101d4c9d5b4008b5d996d186fcb72dc34012bbf8c387210683",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "f3995488f36f8cc44ebbbfa4d042305c97ffa41ebf9b75d47832b45f8d8b9110": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 32768,
+      "image_sha256": "2f68e2ac4395ede12a5fdf2bf2a2025e5ac392c26376589499e895de1c2b3d3b",
+      "image_size": 34976,
+      "kernel_sm": 80,
+      "kernel_symbol": "2633baa2b0a71946ecb74c6c7c31d0ba4ed82aaeabf4f7e66dd340ed59727d2a",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    },
+    "faa4e36c1650f707e4174a1a948e65351e013084c6c498ce3c268fa13e3734ec": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 40960,
+      "image_sha256": "c60604534e893d6bc4e5185bedb74459cd0052d6bfe30b34c576a1dfdf8ef130",
+      "image_size": 44192,
+      "kernel_sm": 80,
+      "kernel_symbol": "dc76db2bd0c38eee5af5446deb15459c295358fa81871ddf1c0aa353b8d6cc5f",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_89",
+      "target_sm": 89
+    },
+    "fbd1d30c2f863d3355e505e36016db8c3d72dfc30dc5b055faabac3ddcc76d7a": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 57344,
+      "image_sha256": "77d4f4ef02097e42e31b227e23c7608087f1670292d7ba214c06e037ce7a9ece",
+      "image_size": 68768,
+      "kernel_sm": 80,
+      "kernel_symbol": "37a99e078a2ae10f9a88e237186107b9983efb19aec8712e9d2d5f64c5f3ac2c",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_80",
+      "target_sm": 80
+    }
+  },
+  "kernel_symbols": {
+    "f2815d718eede462c311b48d9e1b666b3ca9a0b5c2eb237f264e1bf75fef14c7": "k7464f2e04e6021c73491519083b11d75cd677e7a0972500a72475b0cbc9d26fe____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "1495c5d99de685b22d3bb37931787d168d8c592f6cfd23c88123971d87f0353e",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 32,
+        "packed_output": false
+      },
+      "variant_id": "f496506d78f88c1233df"
+    },
+    {
+      "executable": "0ad7fc4b54ab9373c9ab262fe6cbea6b5fb47fca667545f4ccb5dc1aa2c3ebf7",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 48,
+        "packed_output": true
+      },
+      "variant_id": "f6c876b08cdb3900a1a5"
+    },
+    {
+      "executable": "3df17eccf6456d116c6210c5da2dd2289ba7a5a3150bed68f241088d3e1888a6",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 32,
+        "packed_output": false
+      },
+      "variant_id": "f82903b57617950b18af"
+    },
+    {
+      "executable": "f1515c2c3de803d552e7d348dd09a84c91dddaa87c8a08572413ad0bf948e6a2",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": false
+      },
+      "variant_id": "f99342c41c937259c1a0"
+    },
+    {
+      "executable": "f3995488f36f8cc44ebbbfa4d042305c97ffa41ebf9b75d47832b45f8d8b9110",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": false
+      },
+      "variant_id": "fbf1246bac2ac6e4fe34"
+    }
+  ]
+}

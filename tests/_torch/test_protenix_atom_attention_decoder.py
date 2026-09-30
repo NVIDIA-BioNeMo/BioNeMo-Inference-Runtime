@@ -157,7 +157,8 @@ def test_cached_decoder_biases(dtype: str, batch_size: int, n_sample: int, preco
     p_skip = p_lm.unsqueeze(1).expand(batch_size, n_sample, *p_lm.shape[1:]).reshape(rows, *p_lm.shape[1:])
     reject = AssertionError("Bias recomputed")
     with torch.inference_mode():
-        biases = model.prepare_pair_biases(p_lm)
+        metadata = model.atom_transformer.build_attn_metadata(K, sc.n_queries, sc.n_keys, device)
+        biases = model.prepare_pair_biases(p_lm, sc.n_atoms, metadata)
         assert all(bias.shape[0] == batch_size for bias in biases)
         expected = model(a2t, a, q_skip, c_skip, p_skip)
         with (

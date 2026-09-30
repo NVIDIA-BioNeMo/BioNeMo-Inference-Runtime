@@ -53,7 +53,7 @@ _NUM_DRIVE_CALLS = 4
 _SAMPLE_IDS = ("T1038", "T1047s1")
 # Rollout caches a capture may carry; tests needing a raw step drop them.
 _BIAS_KEYS = ("prepared_atom_encoder_pair_biases", "prepared_atom_decoder_pair_biases")
-_PREPARED_KEYS = ("prepared_zij", "prepared_atom_cl", "prepared_atom_plm", *_BIAS_KEYS)
+_PREPARED_KEYS = ("prepared_zij", "prepared_atom_cl", "prepared_atom_plm", *_BIAS_KEYS, "prepared_token_pair_biases")
 
 
 @pytest.fixture(scope="module")
@@ -161,6 +161,8 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
                 batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"]
             )
             assert torch.equal(module(**kwargs), eager_out)
+            kwargs.update(_prepare_token_biases(module, kwargs["prepared_zij"]))
+            assert torch.equal(module(**kwargs), eager_out)
 
     # --- Drive the CUDA-graph tracker: warmup -> capture -> replay ------------
     tracker = CUDAGraphOptimizationTracker(_diffusion_graph_config(), inner_module=module).eval()
@@ -194,6 +196,7 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
             kwargs["prepared_zij"] = module.diffusion_conditioning.prepare_pair(
                 batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"]
             )
+            kwargs.update(_prepare_token_biases(module, kwargs["prepared_zij"]))
             refreshed_eager = module(**kwargs).clone()
             refreshed_graph = tracker(**kwargs).clone()
         assert len(tracker.graph_state_by_key) == 1
@@ -212,13 +215,21 @@ def _prepare_atom_cache(module: DiffusionModule, kwargs: dict, pair: torch.Tenso
     return {
         "prepared_atom_cl": cl,
         "prepared_atom_plm": plm,
-        "prepared_atom_encoder_pair_biases": module.atom_attn_enc.atom_transformer.prepare_pair_biases(plm),
-        "prepared_atom_decoder_pair_biases": module.atom_attn_dec.atom_transformer.prepare_pair_biases(plm),
+        "prepared_atom_encoder_pair_biases": module.atom_attn_enc.prepare_pair_biases(
+            plm, kwargs["atom_mask"], kwargs["attn_metadata"]
+        ),
+        "prepared_atom_decoder_pair_biases": module.atom_attn_dec.prepare_pair_biases(
+            plm, kwargs["atom_mask"], kwargs["attn_metadata"]
+        ),
     }
 
 
+def _prepare_token_biases(module: DiffusionModule, pair: torch.Tensor) -> dict:
+    return {"prepared_token_pair_biases": module.diffusion_transformer.prepare_pair_biases(pair)}
+
+
 def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_capture):
-    """Reference and trunk atom embeddings are invariant across denoising steps."""
+    """Atom conditioning and the token pair biases are invariant across denoising steps."""
     reason = harness_skip_reason((_SAMPLE_IDS[0],))
     if reason is not None:
         pytest.skip(reason)
@@ -236,8 +247,12 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
         biases = {key: atom_cache.pop(key) for key in _BIAS_KEYS}
         cached = module(**kwargs, prepared_zij=pair, **atom_cache)
         cached_biases = module(**kwargs, prepared_zij=pair, **atom_cache, **biases)
+        cached_token = module(
+            **kwargs, prepared_zij=pair, **atom_cache, **biases, **_prepare_token_biases(module, pair)
+        )
     assert torch.equal(cached, uncached)
     assert torch.equal(cached_biases, uncached)
+    assert torch.equal(cached_token, uncached)
 
 
 @pytest.mark.parametrize("prepare_pair", [False, True])
@@ -262,6 +277,7 @@ def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_captur
     if prepare_pair:
         with torch.no_grad():
             batched.update(_prepare_atom_cache(module, batched, batched["prepared_zij"]))
+            batched.update(_prepare_token_biases(module, batched["prepared_zij"]))
     assert batched["xl_noisy"].shape[0] == len(_SAMPLE_IDS), (
         f"expected a B={len(_SAMPLE_IDS)} input, got {tuple(batched['xl_noisy'].shape)}"
     )

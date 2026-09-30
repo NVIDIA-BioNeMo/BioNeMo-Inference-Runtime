@@ -382,8 +382,13 @@ class DiffusionModule(nn.Module):
                 - q: (B, N, token_z)
                 - c: (B, N, token_s)
                 - atom_enc_bias: (B, N, atom_encoder_heads)
-                - token_trans_bias: (B, N, token_transformer_heads)
+                - token_trans_bias: (B, N, token_transformer_heads), or instead
+                  prepared_token_trans_bias: its per-layer layout from the token
+                  transformer's prepare_pair_biases
                 - atom_dec_bias: (B, N, atom_decoder_heads)
+                - prepared_atom_enc_bias / prepared_atom_dec_bias: optional
+                  per-layer layouts from the atom encoder's and decoder's
+                  prepare_pair_biases, which replace the raw biases
             attn_metadata: AttentionMetadata | None
                 The attention metadata.
         Returns:
@@ -397,7 +402,7 @@ class DiffusionModule(nn.Module):
         q = diffusion_conditioning_kwargs["q"]
         c = diffusion_conditioning_kwargs["c"]
         atom_enc_bias = diffusion_conditioning_kwargs["atom_enc_bias"]
-        token_trans_bias = diffusion_conditioning_kwargs["token_trans_bias"]
+        prepared_token_bias = diffusion_conditioning_kwargs.get("prepared_token_trans_bias")
         atom_dec_bias = diffusion_conditioning_kwargs["atom_dec_bias"]
 
         s_trunk = s_trunk.to(self.dtype)
@@ -424,6 +429,7 @@ class DiffusionModule(nn.Module):
             r=r_noisy.to(self.dtype),
             attn_metadata=attn_metadata,
             buffers=buffers,
+            prepared_pair_biases=diffusion_conditioning_kwargs.get("prepared_atom_enc_bias"),
         )
         # a: [B, multiplicity, N_res, 2 * token_s]
         # q_skip: [B, multiplicity, N_atoms, atom_s]
@@ -431,7 +437,10 @@ class DiffusionModule(nn.Module):
 
         # Full self-attention on token level, expand dims for broadcasting
         mask = token_pad_mask.unsqueeze(1)
-        token_trans_bias = token_trans_bias.unsqueeze(1)
+        if prepared_token_bias is None:
+            token_kwargs = {"z": diffusion_conditioning_kwargs["token_trans_bias"].unsqueeze(1)}
+        else:
+            token_kwargs = {"z": None, "prepared_pair_biases": prepared_token_bias}
         a = a + self.s_to_a_linear(s.to(self.dtype))
 
         # Token transformer doesn't need query to keys, it's self-attention on token level.
@@ -439,10 +448,10 @@ class DiffusionModule(nn.Module):
         a = self.token_transformer(
             a=a,
             s=s,
-            z=token_trans_bias,
             mask=mask,
             attn_metadata=token_transformer_attn_metadata,
             buffers=buffers,
+            **token_kwargs,
         )
         a = self.a_norm(a)
 
@@ -456,6 +465,7 @@ class DiffusionModule(nn.Module):
             bias=atom_dec_bias,
             attn_metadata=attn_metadata,
             buffers=buffers,
+            prepared_pair_biases=diffusion_conditioning_kwargs.get("prepared_atom_dec_bias"),
         )
 
         return r_update, a
@@ -1319,6 +1329,24 @@ class BoltzDiffusionSampler(nn.Module):
         network_condition_kwargs["atom_dec_bias"] = network_condition_kwargs["atom_dec_bias"].to(
             self.diffusion_module.dtype
         )
+        # The token bias is step-invariant, so lay it out once rather than on every
+        # step. A wrapped or engine-backed token transformer keeps its own path.
+        token_transformer = getattr(self.diffusion_module, "token_transformer", None)
+        if isinstance(token_transformer, BoltzDiffusionTransformer):
+            network_condition_kwargs = dict(network_condition_kwargs)
+            token_bias = network_condition_kwargs.pop("token_trans_bias").unsqueeze(1)
+            network_condition_kwargs["prepared_token_trans_bias"] = token_transformer.prepare_pair_biases(token_bias)
+        # The atom biases and the atom mask are step-invariant too: lay the
+        # biases out once and add their key mask once.
+        atom_encoder = getattr(self.diffusion_module, "atom_attention_encoder", None)
+        atom_decoder = getattr(self.diffusion_module, "atom_attention_decoder", None)
+        if isinstance(atom_encoder, AtomAttentionEncoder) and isinstance(atom_decoder, AtomAttentionDecoder):
+            network_condition_kwargs = dict(network_condition_kwargs)
+            atom_pad_mask = feature_dict["atom_pad_mask"]
+            for name, attention in (("atom_enc_bias", atom_encoder), ("atom_dec_bias", atom_decoder)):
+                network_condition_kwargs[f"prepared_{name}"] = attention.prepare_pair_biases(
+                    network_condition_kwargs[name], atom_pad_mask, attn_metadata
+                )
 
         def predict(atom_coords_noisy: torch.Tensor, sigma_hat: float) -> BoltzDenoisePrediction:
             atom_coords_denoised = torch.zeros_like(atom_coords_noisy)

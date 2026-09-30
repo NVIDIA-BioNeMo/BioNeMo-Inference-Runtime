@@ -245,7 +245,7 @@ def test_cached_atom_biases(dtype: str, batch_size: int, n_sample: int, precompu
     z = torch.randn(batch_size, sc.n_token, sc.n_token, sc.c_z, device="cuda")
     with torch.inference_mode():
         cl, plm, metadata = model.prepare_coords_cache(**args, s=s, z=z)
-        biases = model.prepare_pair_biases(plm)
+        biases = model.prepare_pair_biases(plm, sc.n_atom, metadata)
         assert all(bias.shape[0] == batch_size for bias in biases)
         for _ in range(2):
             coords = torch.randn(batch_size, n_sample, sc.n_atom, 3, device="cuda")

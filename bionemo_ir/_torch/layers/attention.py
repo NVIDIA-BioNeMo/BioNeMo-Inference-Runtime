@@ -624,7 +624,7 @@ class AttentionPairBias(nn.Module):
             if query_to_keys is not None:
                 if mask_bias_local is not None:
                     mask_bias = mask_bias_local
-                else:
+                elif mask is not None:
                     mask = query_to_keys(mask.unsqueeze(-1)).squeeze(-1)
                     mask_bias = None
                 if self.use_separate_layer_norm and self.chain_kv_norm:
@@ -673,6 +673,30 @@ class AttentionPairBias(nn.Module):
             q = self.q_norm(q)
             k = self.k_norm(k)
         return q, k, v, g
+
+    def add_key_mask(
+        self, pair_bias: torch.Tensor, mask: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> torch.Tensor:
+        """Add a sequence-local key mask to a projected pair bias, as :meth:`forward` does per call.
+
+        :meth:`forward` then takes the sum as ``z`` with ``mask=None``.
+
+        Args:
+            pair_bias: Projected ``[B, (*), H, N_q, N_k]`` bias this layer takes as ``z``.
+            mask: The ``[B, (*), N_q]`` query-window mask this layer takes as ``mask``.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+
+        Returns:
+            The pair bias with the key mask added, in the pair bias's dtype.
+        """
+        if self.attn_backend == "CuTeDSL" or attn_metadata is None or attn_metadata.query_to_keys is None:
+            raise ValueError("adding the key mask needs sequence-local attention with an additive mask")
+        # As _prep_inputs and _prep_mask_bias build it and the backend adds it.
+        key_mask = attn_metadata.query_to_keys(mask.unsqueeze(-1)).squeeze(-1)
+        mask_bias = (1 - key_mask[..., None, None, :].float()) * -self.inf
+        while mask_bias.ndim < pair_bias.ndim:
+            mask_bias = mask_bias.unsqueeze(1)
+        return mask_bias.to(pair_bias.dtype) + pair_bias
 
     def project_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
         """Project a pair representation into this layer's attention bias.
@@ -737,9 +761,18 @@ class AttentionPairBias(nn.Module):
                   q ``[B, mult, K, H, N_q, D]``.
 
         Returns:
-            ``[mask_bias, pair_bias]``, or ``[mask_bias]`` when ``z`` is
-            ``None``.
+            ``[mask_bias, pair_bias]``, ``[mask_bias]`` when ``z`` is ``None``,
+            or ``[pair_bias]`` when *mask* and *mask_bias* are ``None`` because
+            ``z`` carries the key mask (see :meth:`add_key_mask`).
         """
+        if mask is None and mask_bias is None:
+            if z is None or self.attn_backend == "CuTeDSL":
+                raise ValueError("attention without a mask needs a pair bias that carries the key mask")
+            pair_bias = self.project_pair_bias(z) if self.bias_proj else z
+            while pair_bias.ndim < s.ndim + 1:
+                pair_bias = pair_bias.unsqueeze(1)
+            return [pair_bias]
+
         sequence_mask = mask
         if mask_bias is None:
             if self.attn_backend == "CuTeDSL":
@@ -815,7 +848,8 @@ class AttentionPairBias(nn.Module):
                   already projected by the caller.
             mask: Sequence-level binary mask (1 = valid, 0 = padded).
                 - Token path: ``[B, N]``.
-                - Atom path: ``[B, K, N_q]``.
+                - Atom path: ``[B, K, N_q]``, or ``None`` when ``z`` comes from
+                  :meth:`add_key_mask` and carries the key mask.
             single_embedding: Optional single representation ``[B, (*), N, C]``
                 conditioning the AdaLN (OpenFold3 diffusion transformer) and
                 the output gate. Its leading dimensions match *s*'s, except

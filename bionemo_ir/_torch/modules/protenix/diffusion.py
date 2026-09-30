@@ -271,26 +271,38 @@ class ProtenixDiffusionModule(nn.Module):
             ``atom_p_lm`` ``[B, K, W, H, c_atompair]``,
             ``atom_encoder_pair_biases`` / ``atom_decoder_pair_biases``
             (sample-independent atom-transformer projections of ``atom_p_lm``),
-            ``attn_metadata``, ``n_token``, and ``atom_reduction`` (token slots,
-            or ``None`` for scatter).
+            ``token_pair_biases`` (the token transformer's projections of
+            ``pair_z``, when it can prepare them), ``attn_metadata``,
+            ``n_token``, and ``atom_reduction`` (token slots, or ``None`` for
+            scatter).
         """
         pair_z = self.diffusion_conditioning.prepare_pair(input_feature_dict["relp"], z_trunk)
         atom_c_l, atom_p_lm, attn_metadata = self.atom_attention_encoder.prepare_coords_cache(
             **atom_encoder_kwargs(input_feature_dict), s=s_trunk, z=pair_z, attn_metadata=attn_metadata
         )
-        return {
+        # Both also add their atom windows' fixed key mask once.
+        n_atom = atom_c_l.shape[-2]
+        cache = {
             "pair_z": pair_z,
             "atom_c_l": atom_c_l,
             "atom_p_lm": atom_p_lm,
-            "atom_encoder_pair_biases": self.atom_attention_encoder.prepare_pair_biases(atom_p_lm),
+            "atom_encoder_pair_biases": self.atom_attention_encoder.prepare_pair_biases(
+                atom_p_lm, n_atom, attn_metadata
+            ),
             # The cached path decodes with the same step-invariant p_lm as its skip.
-            "atom_decoder_pair_biases": self.atom_attention_decoder.prepare_pair_biases(atom_p_lm),
+            "atom_decoder_pair_biases": self.atom_attention_decoder.prepare_pair_biases(
+                atom_p_lm, n_atom, attn_metadata
+            ),
             "attn_metadata": attn_metadata,
             "n_token": s_trunk.shape[-2],
             "atom_reduction": self.atom_attention_encoder.prepare_reduction(
                 input_feature_dict["atom_to_token_idx"], s_trunk.shape[-2]
             ),
         }
+        # A wrapped or engine-backed token transformer keeps its own bias path.
+        if isinstance(self.diffusion_transformer, ProtenixDiffusionTransformer):
+            cache["token_pair_biases"] = self.diffusion_transformer.prepare_pair_biases(pair_z)
+        return cache
 
     def f_forward(
         self,
@@ -368,9 +380,13 @@ class ProtenixDiffusionModule(nn.Module):
         BS = B * S
         a_bs = a_token.reshape(BS, n_token, -1).to(self._token_dtype)
         s_bs = s_single.reshape(BS, n_token, -1).to(self._token_dtype)
-        z_token = z_pair.to(self._token_dtype)
+        token_kwargs = {}
+        if cache is not None and "token_pair_biases" in cache:
+            token_kwargs["prepared_pair_biases"] = cache["token_pair_biases"]
+        # Prepared biases replace the pair, which then skips its cast.
+        z_token = z_pair if token_kwargs else z_pair.to(self._token_dtype)
         token_mask = a_bs.new_ones(B, n_token)
-        a_bs = self.diffusion_transformer(a_bs, s_bs, z_token, token_mask)
+        a_bs = self.diffusion_transformer(a_bs, s_bs, z_token, token_mask, **token_kwargs)
         a_bs = self.layernorm_a(a_bs.to(self.dtype))
 
         a2t_bs = input_feature_dict["atom_to_token_idx"].unsqueeze(1).expand(B, S, -1).reshape(BS, -1)

@@ -108,7 +108,7 @@ def _run_atom_transformer(
     """Run the atom transformer in its own dtype and return ``q`` in ``out_dtype``.
 
     The transformer may run in bf16 inside an fp32 encoder or decoder. Prepared
-    biases replace ``p``, which then stays unused.
+    biases replace ``p`` and carry the key mask, so both then stay unused.
     """
     dtype = transformer.dtype
     prepared = prepared_pair_biases is not None
@@ -116,7 +116,7 @@ def _run_atom_transformer(
         q.to(dtype),
         c.to(dtype),
         p if prepared else p.to(dtype),
-        mask.to(dtype),
+        None if prepared else mask.to(dtype),
         n_queries,
         n_keys,
         attn_metadata,
@@ -460,17 +460,23 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         c_l, p_lm, _ = self._prepare_coords(atom_to_token_idx, p_lm, c_l, s, z, K, attn_metadata)
         return c_l, p_lm, attn_metadata
 
-    def prepare_pair_biases(self, p_lm: torch.Tensor) -> list[torch.Tensor]:
-        """Project the cached ``p_lm`` into every atom-transformer layer's bias once per rollout.
+    def prepare_pair_biases(
+        self, p_lm: torch.Tensor, num_atoms: int, attn_metadata: AttentionMetadata
+    ) -> list[torch.Tensor]:
+        """Project the cached ``p_lm`` and its key mask into every atom-transformer layer's bias once per rollout.
 
         Args:
             p_lm: ``[B, K, W, H, c_atompair]`` from :meth:`prepare_coords_cache`
+            num_atoms: Atom count. The coordinate path attends over every atom, so
+                the key mask only drops window padding.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
 
         Returns:
             One bias per layer with the local path's singleton sample axis, for
             :meth:`run_coords_cached`.
         """
-        return self.atom_transformer.prepare_pair_biases(p_lm.unsqueeze(1))
+        mask = p_lm.new_ones(p_lm.shape[0], num_atoms)
+        return self.atom_transformer.prepare_pair_biases(p_lm.unsqueeze(1), mask, attn_metadata)
 
     def run_coords_cached(
         self,
@@ -547,17 +553,23 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         self.layernorm_q = nn.LayerNorm(c_atom, bias=False, eps=config.norm_epsilon, dtype=dtype)
         self.linear_no_bias_out = Linear(c_atom, 3, bias=False, dtype=dtype, skip_create_weights=skip)
 
-    def prepare_pair_biases(self, p_lm: torch.Tensor) -> list[torch.Tensor]:
-        """Project a step-invariant ``p_lm`` into every atom-transformer layer's bias once per rollout.
+    def prepare_pair_biases(
+        self, p_lm: torch.Tensor, num_atoms: int, attn_metadata: AttentionMetadata
+    ) -> list[torch.Tensor]:
+        """Project a step-invariant ``p_lm`` and its key mask into every atom-transformer layer's bias once per rollout.
 
         Args:
             p_lm: ``[B, K, W, H, c_atompair]``, the cached encoder pair
+            num_atoms: Atom count. :meth:`forward` attends over every atom, so the
+                key mask only drops window padding.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
 
         Returns:
             One bias per layer with the local path's singleton sample axis, for
             :meth:`forward`.
         """
-        return self.atom_transformer.prepare_pair_biases(p_lm.unsqueeze(1))
+        mask = p_lm.new_ones(p_lm.shape[0], num_atoms)
+        return self.atom_transformer.prepare_pair_biases(p_lm.unsqueeze(1), mask, attn_metadata)
 
     def forward(
         self,

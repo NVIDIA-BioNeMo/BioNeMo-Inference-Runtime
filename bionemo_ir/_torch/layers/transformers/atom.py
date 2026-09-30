@@ -56,6 +56,24 @@ class AtomTransformer(nn.Module):
     def load_weights(self, weights: dict):
         self.diffusion_transformer.load_weights(weights["diffusion_transformer"])
 
+    def prepare_pair_biases(
+        self, bias: torch.Tensor, mask: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[torch.Tensor]:
+        """Lay out a rollout-invariant bias and its key mask per layer once.
+
+        Args:
+            bias: The rollout-invariant bias :meth:`forward` would receive,
+                ``[B, N, H, L * heads]`` or Boltz-2's windowed ``[B, N // W, W, H, L * heads]``.
+            mask: The ``[B, N]`` mask :meth:`forward` would receive, fixed for as long as
+                the biases are used.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+        """
+        # The mask, not the bias, gives the atom count, as the query does in forward.
+        B, N = mask.shape[:2]
+        W, H = self.attn_window_queries, self.attn_window_keys
+        z = bias.view((B, 1, N // W, W, H, -1))
+        return self.diffusion_transformer.prepare_pair_biases(z, mask.view(B, 1, N // W, W), attn_metadata)
+
     def forward(
         self,
         q: torch.Tensor,
@@ -64,6 +82,7 @@ class AtomTransformer(nn.Module):
         mask: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -75,9 +94,12 @@ class AtomTransformer(nn.Module):
                 The bias tensor. Shape [B, N, H, D]
             mask: torch.Tensor
                 The mask tensor. Shape [B, N]
+            prepared_pair_biases: list[torch.Tensor]
+                Biases from :meth:`prepare_pair_biases`; they replace ``bias`` and
+                carry the key mask.
         Returns:
             torch.Tensor
-            The output tensor. Shape [B, multiplicity, N, D]
+                The output tensor. Shape [B, multiplicity, N, D]
         Usage: Example for Boltz1x AtomTransformer:
         >>> W = 32; H = 128;
         >>> batch_size = 2; n_atoms = 928; multiplicity = 1;
@@ -115,7 +137,8 @@ class AtomTransformer(nn.Module):
 
         # Broadcast over dim 1 (multiplicity) instead of materializing a
         # repeated copy, unlike the upstream Boltz implementation.
-        bias = bias.view((B, 1, NW, W, H, -1))  # expand dim 1 for broadcasting
+        if prepared_pair_biases is None:
+            bias = bias.view((B, 1, NW, W, H, -1))  # expand dim 1 for broadcasting
 
         # q: [B, multiplicity, NW, W, D]
         # c: [B, 1, NW, W, D]
@@ -124,10 +147,11 @@ class AtomTransformer(nn.Module):
         a = self.diffusion_transformer(
             a=q,
             s=c,
-            z=bias,
-            mask=mask,
+            z=None if prepared_pair_biases is not None else bias,
+            mask=None if prepared_pair_biases is not None else mask,
             attn_metadata=attn_metadata,
             buffers=buffers,
+            prepared_pair_biases=prepared_pair_biases,
         )
         a = a.view((B, multiplicity, N, -1))
         return a
@@ -201,6 +225,20 @@ class AtomAttentionEncoder(nn.Module):
         if hasattr(self, "r_to_q_trans"):
             self.r_to_q_trans.load_weights(weights["r_to_q_trans"])
 
+    def prepare_pair_biases(
+        self, bias: torch.Tensor, atom_pad_mask: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[torch.Tensor]:
+        """Lay out a rollout-invariant ``bias`` and its key mask per atom-transformer layer once, for :meth:`forward`.
+
+        Args:
+            bias: The rollout-invariant bias :meth:`forward` would receive.
+            atom_pad_mask: The ``[B, N_atoms]`` mask :meth:`forward` would receive, fixed
+                for as long as the biases are used.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+        """
+        mask = atom_pad_mask.bool().to(self.atom_encoder_dtype)
+        return self.atom_encoder.prepare_pair_biases(bias.to(self.atom_encoder_dtype), mask, attn_metadata)
+
     def forward(
         self,
         atom_to_token: torch.Tensor,
@@ -211,6 +249,7 @@ class AtomAttentionEncoder(nn.Module):
         r: torch.Tensor = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -226,6 +265,8 @@ class AtomAttentionEncoder(nn.Module):
                 The bias tensor. Shape [B, N_atoms, H, D]
             r: torch.Tensor
                 The residue coordinates. Shape [B, multiplicity, N_atoms, 3]
+            prepared_pair_biases: list[torch.Tensor]
+                Biases from :meth:`prepare_pair_biases`; they replace ``bias`` and carry the key mask.
         Returns:
             a: torch.Tensor
                 The atom feature tensor. Shape [B, multiplicity, N_res, 2 * token_s]
@@ -265,10 +306,11 @@ class AtomAttentionEncoder(nn.Module):
         q = self.atom_encoder(
             q=q.to(self.atom_encoder_dtype),
             c=c.to(self.atom_encoder_dtype),
-            bias=bias.to(self.atom_encoder_dtype),
+            bias=bias if prepared_pair_biases is not None else bias.to(self.atom_encoder_dtype),
             mask=atom_mask.to(self.atom_encoder_dtype),
             attn_metadata=attn_metadata,
             buffers=buffers,
+            prepared_pair_biases=prepared_pair_biases,
         )
         q = q.to(self.dtype)
         with torch.autocast("cuda", enabled=False):
@@ -345,6 +387,20 @@ class AtomAttentionDecoder(nn.Module):
 
         self.atom_feat_to_atom_pos_update[1].load_weights(weights["atom_feat_to_atom_pos_update.1"])
 
+    def prepare_pair_biases(
+        self, bias: torch.Tensor, atom_pad_mask: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[torch.Tensor]:
+        """Lay out a rollout-invariant ``bias`` and its key mask per atom-transformer layer once, for :meth:`forward`.
+
+        Args:
+            bias: The rollout-invariant bias :meth:`forward` would receive.
+            atom_pad_mask: The ``[B, N_atoms]`` mask :meth:`forward` would receive, fixed
+                for as long as the biases are used.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+        """
+        mask = atom_pad_mask.bool().to(self.atom_decoder_dtype)
+        return self.atom_decoder.prepare_pair_biases(bias.to(self.atom_decoder_dtype), mask, attn_metadata)
+
     def forward(
         self,
         atom_to_token: torch.Tensor,
@@ -355,6 +411,7 @@ class AtomAttentionDecoder(nn.Module):
         bias: torch.Tensor,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -372,6 +429,8 @@ class AtomAttentionDecoder(nn.Module):
                 The bias tensor. Shape [B, N_atoms, H, D]
             multiplicity: int
                 The multiplicity that used for the structure prediction.
+            prepared_pair_biases: list[torch.Tensor]
+                Biases from :meth:`prepare_pair_biases`; they replace ``bias`` and carry the key mask.
         """
         assert a.ndim == 4, "a must be 4D, shape: (B, multiplicity, N_res, 2 * token_s)"
         assert attn_metadata is not None, "Attention metadata is required for AtomAttentionDecoder"
@@ -399,10 +458,11 @@ class AtomAttentionDecoder(nn.Module):
         q = self.atom_decoder(
             q=q.to(self.atom_decoder_dtype),
             c=c.to(self.atom_decoder_dtype),
-            bias=bias.to(self.atom_decoder_dtype),
+            bias=bias if prepared_pair_biases is not None else bias.to(self.atom_decoder_dtype),
             mask=atom_mask.to(self.atom_decoder_dtype),
             attn_metadata=attn_metadata,
             buffers=buffers,
+            prepared_pair_biases=prepared_pair_biases,
         )
         q = q.to(self.dtype)
         # [B, multiplicity, N_atoms, 3]

@@ -37,6 +37,7 @@ from bionemo_ir._torch.layers.random_augmentation import (
     quaternion_to_matrix,
     random_quaternions,
 )
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
 from bionemo_ir._torch.modules.openfold3.diffusion_module import OpenFold3DiffusionSampler
 
 _SD, _SMAX, _SMIN, _RHO = 16.0, 160.0, 4e-4, 7.0
@@ -314,18 +315,22 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     prepare_encoder_biases = Mock(return_value=encoder_biases)
     prepare_decoder_biases = Mock(return_value=decoder_biases)
     prepare_biases = (prepare_encoder_biases, prepare_decoder_biases)
+    token_biases = (torch.full((1, 1, 1, 2, 2), 2.0),)
+    token_transformer = Mock(spec=OpenFold3DiffusionTransformer)
+    token_transformer.prepare_pair_biases.return_value = token_biases
+    prepare_token_biases = token_transformer.prepare_pair_biases
 
     class _Denoiser(nn.Module):
         def __init__(self):
             super().__init__()
             self.calls = 0
+            # The encoder and decoder prepare their biases with the atom key mask.
             self.atom_attn_enc = SimpleNamespace(
                 get_atom_reps=get_atom_reps,
-                atom_transformer=SimpleNamespace(prepare_pair_biases=prepare_encoder_biases),
+                prepare_pair_biases=prepare_encoder_biases,
             )
-            self.atom_attn_dec = SimpleNamespace(
-                atom_transformer=SimpleNamespace(prepare_pair_biases=prepare_decoder_biases)
-            )
+            self.atom_attn_dec = SimpleNamespace(prepare_pair_biases=prepare_decoder_biases)
+            self.diffusion_transformer = token_transformer
 
         def forward(self, *, xl_noisy, **_kwargs):
             self.calls += 1
@@ -335,6 +340,7 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
             assert _kwargs.get("prepared_atom_plm") is (prepared_plm if cache_atoms else None)
             assert _kwargs.get("prepared_atom_encoder_pair_biases") is (encoder_biases if cache_atoms else None)
             assert _kwargs.get("prepared_atom_decoder_pair_biases") is (decoder_biases if cache_atoms else None)
+            assert _kwargs.get("prepared_token_pair_biases") is (token_biases if cache_atoms else None)
             return 0.7 * xl_noisy
 
     config = SimpleNamespace(
@@ -362,14 +368,17 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     first = sampler(**kwargs)
     assert get_atom_reps.call_count == int(cache_atoms)
     assert [prepare.call_count for prepare in prepare_biases] == [int(cache_atoms)] * 2
+    assert prepare_token_biases.call_count == int(cache_atoms)
     if cache_atoms:
         assert all(prepare.call_args.args[0] is prepared_plm for prepare in prepare_biases)
+        assert prepare_token_biases.call_args.args[0] is prepared_zij
         assert get_atom_reps.call_args.kwargs["zij_trunk"] is prepared_zij
         assert get_atom_reps.call_args.kwargs["si_trunk"] is kwargs["si_trunk"]
     torch.manual_seed(123456)
     second = sampler(**kwargs)
     assert get_atom_reps.call_count == 2 * int(cache_atoms)
     assert [prepare.call_count for prepare in prepare_biases] == [2 * int(cache_atoms)] * 2
+    assert prepare_token_biases.call_count == 2 * int(cache_atoms)
     assert first.shape == (1, 2, 4, 3)
     assert denoiser.calls == 2 * (schedule.numel() - 1)
     torch.testing.assert_close(first, second)
@@ -381,6 +390,7 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     graph_safe_second = sampler(**graph_safe_kwargs)
     assert get_atom_reps.call_count == 4 * int(cache_atoms)
     assert [prepare.call_count for prepare in prepare_biases] == [4 * int(cache_atoms)] * 2
+    assert prepare_token_biases.call_count == 4 * int(cache_atoms)
     assert denoiser.calls == 4 * (schedule.numel() - 1)
     torch.testing.assert_close(graph_safe_first, graph_safe_second)
 

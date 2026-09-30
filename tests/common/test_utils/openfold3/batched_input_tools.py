@@ -210,12 +210,13 @@ def _assemble_batched_kwargs(per_sample):
     for kwargs, n_atom, n_token in zip(per_sample, atoms, tokens, strict=False):
         kw = dict(kwargs)
         kw.pop("attn_metadata", None)
-        # Windowed caches depend on the original layout.
+        # Rollout caches depend on the original atom windows and token padding.
         for key in (
             "prepared_atom_cl",
             "prepared_atom_plm",
             "prepared_atom_encoder_pair_biases",
             "prepared_atom_decoder_pair_biases",
+            "prepared_token_pair_biases",
         ):
             kw.pop(key, None)
         batch = dict(kw["batch"])

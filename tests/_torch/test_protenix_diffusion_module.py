@@ -500,15 +500,20 @@ def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch
         return original_reduce(*args, **kwargs)
 
     monkeypatch.setattr(atom_attention, "reduce_atom_slots", track_reduction)
-    decoder_transformer = module.atom_attention_decoder.atom_transformer
-    decoder_forward = decoder_transformer.forward
-    decoder_prepared = []
 
-    def track_decoder(*args: object, **kwargs: object) -> torch.Tensor:
-        decoder_prepared.append(kwargs.get("prepared_pair_biases") is not None)
-        return decoder_forward(*args, **kwargs)
+    def track_prepared(transformer: torch.nn.Module) -> list[bool]:
+        forward = transformer.forward
+        prepared = []
 
-    monkeypatch.setattr(decoder_transformer, "forward", track_decoder)
+        def tracked(*args: object, **kwargs: object) -> torch.Tensor:
+            prepared.append(kwargs.get("prepared_pair_biases") is not None)
+            return forward(*args, **kwargs)
+
+        monkeypatch.setattr(transformer, "forward", tracked)
+        return prepared
+
+    decoder_prepared = track_prepared(module.atom_attention_decoder.atom_transformer)
+    token_prepared = track_prepared(module.diffusion_transformer)
     sampler = ProtenixDiffusionSampler(module, use_cache=use_cache).to(device).eval()
     batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
     s_inputs = s_inputs * 0.1
@@ -522,9 +527,11 @@ def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch
     assert torch.isfinite(x).all()
     assert len(launches) >= 4
     assert all(shape == (B, S) for shape in launches)
-    # Only the cached rollout decodes every step from biases prepared once.
-    assert len(decoder_prepared) >= 4
-    assert decoder_prepared == [use_cache] * len(decoder_prepared)
+    # Only the cached rollout decodes and runs the token transformer every step
+    # from biases prepared once.
+    for prepared in (decoder_prepared, token_prepared):
+        assert len(prepared) >= 4
+        assert prepared == [use_cache] * len(prepared)
 
 
 @pytest.mark.parametrize(

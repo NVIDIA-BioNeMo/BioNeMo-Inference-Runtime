@@ -46,7 +46,7 @@ def _run_atom_transformer(
     """Run the atom transformer in its own dtype and return ``ql`` in ``out_dtype``.
 
     The transformer may run in bf16 inside an fp32 encoder or decoder. Prepared
-    biases replace ``plm``, which then stays unused.
+    biases replace ``plm`` and carry the key mask, so both then stay unused.
     """
     dtype = transformer.dtype
     prepared = prepared_pair_biases is not None
@@ -54,11 +54,23 @@ def _run_atom_transformer(
         a=ql.to(dtype),
         s=cl.to(dtype),
         z=plm if prepared else plm.to(dtype),
-        mask=atom_mask.to(dtype),
+        mask=None if prepared else atom_mask.to(dtype),
         attn_metadata=attn_metadata,
         prepared_pair_biases=prepared_pair_biases,
     )
     return ql.to(out_dtype)
+
+
+def _prepare_atom_pair_biases(
+    transformer: DiffusionTransformer,
+    n_query: int,
+    plm: torch.Tensor,
+    atom_mask: torch.Tensor,
+    attn_metadata: AttentionMetadata,
+) -> list[torch.Tensor]:
+    """Prepare ``transformer``'s pair biases with the key mask of the mask ``forward`` would pass it."""
+    mask, _ = pad_to_multiple_and_divide(atom_mask, multiple=n_query, dim=atom_mask.ndim - 1)
+    return transformer.prepare_pair_biases(plm, mask.to(transformer.dtype), attn_metadata)
 
 
 def convert_pair_atom_to_blocks(
@@ -640,6 +652,22 @@ class AtomAttentionEncoder(nn.Module):
         plm = plm * atom_mask.unsqueeze(-1)
         return ql, cl, plm
 
+    def prepare_pair_biases(
+        self, plm: torch.Tensor, atom_mask: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[torch.Tensor]:
+        """Project a rollout-invariant ``plm`` and its key mask into every atom-transformer layer's bias once.
+
+        Args:
+            plm: ``[*, N_blocks, N_query, N_key, c_atom_pair]`` pair shared by every step.
+            atom_mask: The ``[*, N_atom]`` mask :meth:`forward` will receive, fixed for
+                as long as the biases are used.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+
+        Returns:
+            One bias per layer, for :meth:`forward`'s ``prepared_pair_biases``.
+        """
+        return _prepare_atom_pair_biases(self.atom_transformer, self.n_query, plm, atom_mask, attn_metadata)
+
     def forward(
         self,
         batch: TensorDict,
@@ -811,6 +839,22 @@ class AtomAttentionDecoder(nn.Module):
 
         self.layer_norm = nn.LayerNorm(c_atom, bias=False, dtype=self.dtype, eps=eps)
         self.linear_q_out = Linear(c_atom, 3, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)
+
+    def prepare_pair_biases(
+        self, plm: torch.Tensor, atom_mask: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[torch.Tensor]:
+        """Project a rollout-invariant ``plm`` and its key mask into every atom-transformer layer's bias once.
+
+        Args:
+            plm: ``[*, N_blocks, N_query, N_key, c_atom_pair]`` pair shared by every step.
+            atom_mask: The ``[*, N_atom]`` mask :meth:`forward` will receive, fixed for
+                as long as the biases are used.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+
+        Returns:
+            One bias per layer, for :meth:`forward`'s ``prepared_pair_biases``.
+        """
+        return _prepare_atom_pair_biases(self.atom_transformer, self.n_query, plm, atom_mask, attn_metadata)
 
     def forward(
         self,

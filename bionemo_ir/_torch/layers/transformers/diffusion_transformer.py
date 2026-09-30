@@ -150,6 +150,21 @@ def _prepare_layer_biases(layers: nn.ModuleList, z: torch.Tensor) -> list[torch.
     return [layer.pair_bias_attn.project_pair_bias(z) for layer in layers]
 
 
+def _add_key_masks(
+    layers: nn.ModuleList,
+    pair_biases: list[torch.Tensor],
+    mask: torch.Tensor | None,
+    attn_metadata: AttentionMetadata | None,
+) -> list[torch.Tensor]:
+    """Add each layer's key mask to its prepared pair bias; unchanged without a mask."""
+    if mask is None:
+        return pair_biases
+    return [
+        layer.pair_bias_attn.add_key_mask(pair_bias, mask, attn_metadata)
+        for layer, pair_bias in zip(layers, pair_biases, strict=True)
+    ]
+
+
 @contextlib.contextmanager
 def _projected_pair_biases(layers: nn.ModuleList, biases: list[torch.Tensor]) -> Iterator[None]:
     """Let every layer take its entry of ``biases`` as an already projected pair bias."""
@@ -359,6 +374,34 @@ class BoltzDiffusionTransformer(nn.Module):
         # Move L (layer index, last dim) to front: [*, H, Sq, Sk_padded, L] → [L, *, H, Sq, Sk_padded]
         return z.movedim(-1, 0).contiguous()
 
+    def prepare_pair_biases(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> list[torch.Tensor]:
+        """Lay out a step-invariant ``[*, N, N, L*heads]`` bias once, as :meth:`forward` does per call.
+
+        Args:
+            z: The step-invariant bias.
+            mask: The sequence-local mask :meth:`forward` would receive. Each bias
+                then carries its key mask, and :meth:`forward` takes them with
+                ``mask=None``.
+            attn_metadata: Sequence-local metadata, required with ``mask``.
+
+        Returns:
+            One bias per layer: a contiguous ``[*, heads, N, N_padded]`` for
+            CuTeDSL, otherwise a ``[*, heads, N, N]`` view.
+        """
+        L = self.num_blocks
+        N, M, D = z.shape[-3:]
+        z = z.view(*z.shape[:-3], N, M, L, D // L)  # [*, N, N, L, heads]
+        z = self._pad_bias(torch.moveaxis(z, -1, -4))  # [*, heads, N, N, L]
+        # CuTeDSL: z is [L, *, H, Sq, Sk_padded] -> z[i] is contiguous
+        # Others:  z is [*, H, Sq, Sk, L]        -> z[..., i]
+        biases = list(z.unbind(0)) if self.pairwise_attention_backend == "CuTeDSL" else list(z.unbind(-1))
+        return _add_key_masks(self.layers, biases, mask, attn_metadata)
+
     def forward(
         self,
         a: torch.Tensor = None,
@@ -368,16 +411,13 @@ class BoltzDiffusionTransformer(nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         precomputed_single_masks: PrecomputedSingleMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
+        prepared_pair_biases: list[torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        L = self.num_blocks
-        # Transformer z -> [*, heads, N, N, L]
-        N, M, D = z.shape[-3:]
-        heads = D // L
-        batch_dims = z.shape[:-3]
-        z = z.view(*batch_dims, N, M, L, heads)  # [*, N, N, L, heads]
-        z = torch.moveaxis(z, -1, -4)  # [*, heads, N, N, L]
-        z = self._pad_bias(z)
+        """Apply every layer; ``prepared_pair_biases`` from :meth:`prepare_pair_biases` replaces ``z``."""
+        biases = prepared_pair_biases if prepared_pair_biases is not None else self.prepare_pair_biases(z)
+        if len(biases) != len(self.layers):
+            raise ValueError("Prepared pair bias count must match transformer depth")
 
         if precomputed_single_masks is None and mask is not None:
             query_to_keys = attn_metadata.query_to_keys if attn_metadata else None
@@ -388,10 +428,7 @@ class BoltzDiffusionTransformer(nn.Module):
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
 
-        for i, layer in enumerate(self.layers):
-            # CuTeDSL: z is [L, *, H, Sq, Sk_padded] -> z[i] is contiguous
-            # Others:  z is [*, H, Sq, Sk, L]        -> z[..., i]
-            bias = z[i] if self.pairwise_attention_backend == "CuTeDSL" else z[..., i]
+        for layer, bias in zip(self.layers, biases, strict=True):
             a = layer(
                 a, s, bias, mask, attn_metadata, precomputed_single_masks=precomputed_single_masks, buffers=buffers
             )
@@ -494,17 +531,31 @@ class OpenFold3DiffusionTransformer(nn.Module):
             z, self._W_mega, len(self.layers), self._num_heads, self._norm_eps, self._bias_pad_multiple
         )
 
-    def prepare_pair_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
+    def prepare_pair_biases(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> list[torch.Tensor]:
         """Prepare pair biases once when the pair representation is step-invariant.
 
         ``z`` is cast to this transformer's dtype first, as :meth:`forward` receives it.
+
+        Args:
+            z: The step-invariant pair representation.
+            mask: The sequence-local mask :meth:`forward` would receive. Each bias
+                then carries its key mask, and :meth:`forward` takes them with
+                ``mask=None``.
+            attn_metadata: Sequence-local metadata, required with ``mask``.
         """
         z = z.to(self.dtype)
         if hasattr(self, "layer_norm_z"):
             z = self.layer_norm_z(z)
         if self._precompute_bias:
-            return self._precompute_all_biases(z)
-        return _prepare_layer_biases(self.layers, z)
+            biases = self._precompute_all_biases(z)
+        else:
+            biases = _prepare_layer_biases(self.layers, z)
+        return _add_key_masks(self.layers, biases, mask, attn_metadata)
 
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
@@ -642,12 +693,27 @@ class ProtenixDiffusionTransformer(nn.Module):
             z, w_mega, len(self.layers), self._num_heads, self._norm_eps, self._bias_pad_multiple
         )
 
-    def prepare_pair_biases(self, z: torch.Tensor) -> list[torch.Tensor]:
-        """Project static pairs shaped ``[*, Q, K, C_z]`` once per rollout, in this transformer's dtype."""
+    def prepare_pair_biases(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> list[torch.Tensor]:
+        """Project static pairs shaped ``[*, Q, K, C_z]`` once per rollout, in this transformer's dtype.
+
+        Args:
+            z: Static pairs; the local path's ``[B, 1, blocks, W, Kv, C_z]``.
+            mask: The local path's ``[B, N]`` mask :meth:`forward` would receive. Each
+                bias then carries its key mask, and :meth:`forward` takes them with
+                ``mask=None``.
+            attn_metadata: Local-window metadata, required with ``mask``.
+        """
         z = z.to(self.dtype)
-        if self._precompute_bias:
-            return self._precompute_all_biases(z)
-        return _prepare_layer_biases(self.layers, z)
+        biases = self._precompute_all_biases(z) if self._precompute_bias else _prepare_layer_biases(self.layers, z)
+        if mask is not None:
+            # Blocked as forward blocks it for the local path.
+            mask = to_blocks(mask.unsqueeze(-1).to(self.dtype), z.shape[-4], z.shape[-3]).squeeze(-1).unsqueeze(1)
+        return _add_key_masks(self.layers, biases, mask, attn_metadata)
 
     def forward(
         self,
@@ -668,7 +734,8 @@ class ProtenixDiffusionTransformer(nn.Module):
             s: conditioning with the same leading dimensions as ``a``.
             z: ``[B, K, Q, Kv, C_z]`` locally or ``[B, N, N, C_z]`` globally;
                 global ``z`` broadcasts over ``S``.
-            mask: validity mask ``[B, N]``.
+            mask: validity mask ``[B, N]``; locally ``None`` when the prepared
+                biases carry the key mask.
             n_queries / n_keys: window sizes; both enable the local path.
             attn_metadata: optional local gather metadata.
             buffers: optional shared layer-stack buffers.
@@ -686,7 +753,9 @@ class ProtenixDiffusionTransformer(nn.Module):
             a_in = to_blocks(a, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
             s_in = to_blocks(s, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
             z_in = z.unsqueeze(1)  # [B, 1, K, W, H, c_z]
-            mask_in = to_blocks(mask.unsqueeze(-1).to(a.dtype), K, W).squeeze(-1).unsqueeze(1)  # [B, 1, K, W]
+            mask_in = None
+            if mask is not None:
+                mask_in = to_blocks(mask.unsqueeze(-1).to(a.dtype), K, W).squeeze(-1).unsqueeze(1)  # [B, 1, K, W]
         else:
             # Global self-attention: no windowing, full pair bias, no gather.
             a_in, s_in, z_in, mask_in = a, s, z, mask

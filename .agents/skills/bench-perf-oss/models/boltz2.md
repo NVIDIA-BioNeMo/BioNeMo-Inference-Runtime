@@ -344,7 +344,10 @@ module executes once per recycle on both sides.
 ## Fast synthetic compile probe
 
 Boltz-2 is AF3-style. Start with Pairformer and DiffusionModule as
-candidate roles, but validate them before any expensive real sample:
+the main candidate roles; the published column also compiles the MSA
+and template modules (see
+[Published compile configuration](#published-compile-configuration)).
+Validate each role before any expensive real sample:
 
 1. build deterministic synthetic direct inputs from each selected
    module's actual config
@@ -354,8 +357,8 @@ candidate roles, but validate them before any expensive real sample:
 1. run the real two-sample integration probe once on the largest
    passing set
 
-Compile each selected child with `torch.compile(module)`: omit
-`dynamic`, keep Dynamo's global defaults, and do not mark any input
+Compile each selected child with its published settings: omit
+`dynamic`, keep Dynamo's shape defaults, and do not mark any input
 dimensions. Initial A and first B may compile as `dynamic=None`
 adapts; immediate repeats must not. Synthetic timings are diagnostics,
 never benchmark results. Follow the generic retry ladder and publish
@@ -383,18 +386,98 @@ On the `v2.2.1` / PyTorch 26.05 H100 stack tested for this profile:
   recapture on immediate repeats.
 
 Publish every role that stays finite and measurement-stable, including
-Pairformer. The default compile column compiles both
-`pairformer_module` and `structure_module.score_model` with
-`torch.compile(module)`. Do not drop Pairformer solely because child
-tensors drifted. Re-run the probes when the PyTorch or cuEquivariance
-pin changes, and keep lDDT/DockQ as the downstream fitness check.
+Pairformer. Do not drop Pairformer solely because child tensors
+drifted. Re-run the probes when the PyTorch or cuEquivariance pin
+changes, and keep lDDT/DockQ as the downstream fitness check. Probe
+`score_model` only after the
+[attention patch](#score_model-attention-patch) is installed, so the
+probe traces the same forward the compile column times.
 
-The published compile column compiles both roles with `dynamic=None`.
-Record every warmup-only adaptation, including same-bin events.
-Measured forwards must capture zero new graphs. Compile latency versus
-eager can be mixed across the residue range; that is an outcome for
-the run report, not a compile-validity gate. Put speedup, lDDT, and
-DockQ numbers only in `$WORKDIR/results/`, not in this profile.
+## Published compile configuration
+
+Boltz-2 overrides the generic bare `torch.compile(module)` rule. The
+harness `models/boltz2/run_oss.py` builds the compile column in this
+order, and the run must reproduce it exactly:
+
+1. strict-load the model, then `model.cuda().eval()`
+1. install the [`score_model` attention patch](#score_model-attention-patch)
+   with `patch_simple_modules(model)`; this is mandatory, not optional
+1. call `set_recompile_limit()` immediately before the first
+   `torch.compile`
+1. wrap the four targets below in their parent slots
+
+The targets are:
+
+- `msa_module`: `torch.compile(module, **compile_kwargs())`
+- `template_module`: `torch.compile(module, **compile_kwargs())`
+- `pairformer_module`: `torch.compile(module,
+  options={"max_autotune_gemm": True}, **compile_kwargs())`
+- `structure_module.score_model`: `_BucketedScoreModel`, which holds
+  two compiled copies of the patched module and routes each call on
+  `s_inputs.shape[1]`: `mode="max-autotune"` below 512 tokens and
+  `mode="default"` at or above 512 tokens. `max-autotune` is the
+  faster profile below 512 tokens, but it captures CUDA graphs
+  internally, so on larger inputs it risks growing memory; `default`
+  skips CUDA graphs there
+
+`compile_kwargs()` passes `dynamic=None` and `fullgraph=False` unless
+`BENCH_COMPILE_DYNAMIC` or `OSS_COMPILE_FULLGRAPH` asks otherwise.
+Leave both unset for the published column.
+
+Each CUDA graph keeps its memory pool resident for the process
+lifetime. On the largest sample (1734 residues on a 48 GiB card)
+`max-autotune` pushed reserved memory past the physical limit and the
+forward returned no structure instead of raising OOM. Treat an empty
+prediction as a failed row, never as a skipped one.
+
+`boltz/model/models/boltz2.py` sets Dynamo `cache_size_limit` and
+`accumulated_cache_size_limit` to 512 while the model is built, so the
+effective limits are Boltz's, not the image's. `set_recompile_limit()`
+changes them only when `OSS_RECOMPILE_LIMIT`,
+`OSS_ACCUM_RECOMPILE_LIMIT`, or `OSS_FAIL_ON_RECOMPILE_LIMIT` is set.
+Record the effective values from `dynamo_limits()` and the wrapped
+target list in the compile result.
+
+Record every warmup-only adaptation, including same-bin events and the
+first call on each side of the 512-token split. Measured forwards must
+capture zero new graphs. Compile latency versus eager can be mixed
+across the residue range; that is an outcome for the run report, not a
+compile-validity gate. Put speedup, lDDT, and DockQ numbers only in
+`$WORKDIR/results/`, not in this profile.
+
+## `score_model` attention patch
+
+`patch_simple_modules()` in `models/boltz2/patching_modules.py`
+replaces two forwards inside `structure_module.score_model`
+(`DiffusionModule`) after `eval()` and before any compile wrapper:
+
+- `DiffusionModule.forward` drops the training-only activation
+  checkpointing branch. It calls the same submodules in the same order.
+- `AttentionPairBias.forward` in every layer of the three
+  `DiffusionTransformer` stacks: the atom encoder (3), the
+  `token_transformer` (24), and the atom decoder (3).
+
+With the upstream attention left unchanged, `torch.compile` runs
+unstably. Patch the attention this way: replace the upstream manual
+einsum and softmax, which run inside `autocast(enabled=False)`, with
+one `F.scaled_dot_product_attention` call, and keep the `q`, `k`, `v`,
+`z`, `g`, and `o` projections:
+
+- the pair bias and the padding mask (`-inf` on padded keys) merge
+  into a single additive `attn_mask`, cast to the query dtype
+- the scale stays the default `1/sqrt(head_dim)`, as upstream
+- the sigmoid gate and output projection are unchanged
+
+The attention runs under the outer bf16 autocast instead of float32,
+so child outputs drift from upstream; judge that with lDDT and DockQ,
+not with tensor diffs.
+
+This is a compute-path change and therefore a declared Boltz-2
+exception to the generic input-side-only patch rule. The harness
+installs it before the compile wrappers on the same model the eager
+column times, so both OSS columns run the patched `score_model`.
+Record it in `oss_patches` with its file, what it replaces, and why,
+and state it in the report next to every OSS number.
 
 ## Scoring and report checks
 
@@ -414,5 +497,6 @@ Before reporting, require:
 - DockQ status on every row
 - checkpoint and runtime locks identical
 - cuEquivariance enabled in OSS
+- `score_model` attention patch installed and recorded in `oss_patches`
 - compile stats valid for every published compile target
 - required latency and speedup graphs generated from result JSON

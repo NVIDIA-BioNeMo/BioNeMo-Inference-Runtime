@@ -250,8 +250,12 @@ class EvoformerBlock(nn.Module):
         else:
             mb_start = mb_end = None
 
-        z = z + self.tri_attn_start(z, mask=pair_mask, mask_bias=mb_start, attn_metadata=attn_metadata, buffers=buffers)
-        z = z + self.tri_attn_end(z, mask=pair_mask, mask_bias=mb_end, attn_metadata=attn_metadata, buffers=buffers)
+        z = self.tri_attn_start(
+            z, mask=pair_mask, mask_bias=mb_start, attn_metadata=attn_metadata, buffers=buffers, residual=True
+        )
+        z = self.tri_attn_end(
+            z, mask=pair_mask, mask_bias=mb_end, attn_metadata=attn_metadata, buffers=buffers, residual=True
+        )
 
         z = self.pair_transition(z, mask=pair_mask, residual=True)
 

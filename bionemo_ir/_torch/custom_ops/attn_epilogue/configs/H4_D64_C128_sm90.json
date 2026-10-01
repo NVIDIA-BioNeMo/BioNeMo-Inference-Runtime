@@ -1,0 +1,89 @@
+{
+  "kernel_abi": "sm90",
+  "configs": {
+    "R=1024": {
+      "kernel_abi": "sm80",
+      "tile_m": 32,
+      "tile_k": 64,
+      "num_stages": 4,
+      "atom_layout_mnk": [2, 2, 1]
+    },
+    "R=4096": {
+      "kernel_abi": "sm80",
+      "tile_m": 32,
+      "tile_k": 64,
+      "num_stages": 4,
+      "atom_layout_mnk": [2, 2, 1]
+    },
+    "R=16384": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 32,
+      "num_stages": 4,
+      "z_stages": 2,
+      "epi_tile_n": 32,
+      "epi_stage": 2
+    },
+    "R=36864": {
+      "kernel_abi": "sm80",
+      "tile_m": 32,
+      "tile_k": 32,
+      "num_stages": 3,
+      "atom_layout_mnk": [2, 2, 1]
+    },
+    "R=65536": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 128,
+      "num_stages": 0,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1
+    },
+    "R=147456": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 128,
+      "num_stages": 0,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1
+    },
+    "R=262144": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 128,
+      "num_stages": 0,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1
+    },
+    "R=589824": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 128,
+      "num_stages": 0,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1
+    },
+    "R=1048576": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 128,
+      "num_stages": 0,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1
+    },
+    "R=2359296": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 128,
+      "num_stages": 0,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1
+    }
+  }
+}

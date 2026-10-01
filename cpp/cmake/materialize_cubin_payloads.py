@@ -41,6 +41,7 @@ FINGERPRINT_FORMAT = "bioir-cubin-materialization-fingerprint-v1"
 _FAMILIES = frozenset(
     {
         "adaln_layernorm_sigmoid",
+        "attn_epilogue",
         "dual_gemm_x0_x1",
         "dual_gemm_x_x",
         "gated_sigmoid",
@@ -63,6 +64,7 @@ _PREVIOUS_FAMILIES = frozenset(
         "outer_product_mean",
         "pair_weighted_averaging",
         "pairwise_attention",
+        "transition_mlp",
         "triangle_attention",
     }
 )
@@ -151,12 +153,14 @@ class _AliasSpec:
 
 @dataclass(frozen=True)
 class _Sm90Spec:
-    """Native-SM90 launch record; families differ in name, operands, TMA rank and epilogue tile."""
+    """Native-SM90 launch record; families differ in name, operands, TMA ranks and epilogue tile."""
 
     enabled_field: str
     operands: tuple[str, ...]
     rank: int = 4
     epi_tile: bool = False
+    # Per-operand TMA ranks in ``operands`` order, for families whose operands differ; empty uses ``rank``.
+    ranks: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -360,6 +364,26 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
         sm90=_Sm90Spec("enabled", ("x", "w1", "w2", "residual", "output"), rank=2),
     ),
+    "attn_epilogue": _FamilySpec(
+        fields=(
+            _Field("heads", _POSITIVE, "std::int32_t heads;"),
+            _Field("head_dim", _POSITIVE, "std::int32_t head_dim;"),
+            _Field("channels", _POSITIVE, "std::int32_t channels;"),
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("has_bias", _BOOL, "bool has_bias;"),
+            _Field("has_output_gate", _BOOL, "bool has_output_gate;"),
+            _Field("tile_j", _POSITIVE, "std::uint32_t tile_j;", suffix="U"),
+            # Every image published before streamed Wo covered all 128 channels in one tile.
+            _Field("tile_n", _POSITIVE, "std::uint32_t tile_n;", suffix="U", default=128),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+            # The folded-rows tuning anchor; every image published before
+            # anchors existed served all rows from a single tuning.
+            _Field("bucket", _INDEX, "std::int32_t bucket;", default=0),
+        ),
+        runtime_key=("heads", "head_dim", "channels", "is_bfloat16", "has_bias", "has_output_gate", "bucket"),
+        # Every Hopper image records the output gate's y map; only a gated one encodes it.
+        sm90=_Sm90Spec("is_native", ("o", "g", "w", "z", "y", "d"), ranks=(4, 3, 2, 3, 3, 3)),
+    ),
 }
 
 # Public tuning aliases are index records, not launch metadata: each family
@@ -388,6 +412,13 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
         ("has_residual", None),
     ),
     "triangle_attention": (("head_dim", 1), ("packed", None)),
+    "attn_epilogue": (
+        ("heads", 1),
+        ("head_dim", 1),
+        ("channels", 1),
+        ("has_bias", None),
+        ("has_output_gate", None),
+    ),
 }
 # Implementation changes must remain buildable with the last protected artifact
 # corpus. The previous dual-GEMM index predates asymmetric K1: public aliases
@@ -645,8 +676,9 @@ def _validate_sm90_launch(spec: _Sm90Spec, value: object, where: str, dtype: str
         _integer_array(launch["epi_tile"], f"{where}.epi_tile", length=2, minimum=1)
     descriptors = _as_object(launch["tma_descriptors"], f"{where}.tma_descriptors")
     _exact_keys(descriptors, set(spec.operands), f"{where}.tma_descriptors")
-    for name in spec.operands:
-        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, spec.rank)
+    ranks = spec.ranks or (spec.rank,) * len(spec.operands)
+    for name, rank in zip(spec.operands, ranks, strict=True):
+        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
 
 
 def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: str, kernel_sm: int) -> None:

@@ -267,7 +267,7 @@ class DiffusionTransformerLayer(nn.Module):
 
         mask_bias = precomputed_single_masks.mask_bias if precomputed_single_masks else None
         mask_bias_local = precomputed_single_masks.mask_bias_local if precomputed_single_masks else None
-        b = self.pair_bias_attn(
+        a = self.pair_bias_attn(
             s=b,
             z=bias,
             single_embedding=s,
@@ -276,8 +276,8 @@ class DiffusionTransformerLayer(nn.Module):
             mask_bias=mask_bias,
             mask_bias_local=mask_bias_local,
             buffers=buffers,
+            residual=a,
         )
-        a = a + b
         a = a + self.transition(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
         if self.post_lnorm is not None:
             a = self.post_lnorm(a)

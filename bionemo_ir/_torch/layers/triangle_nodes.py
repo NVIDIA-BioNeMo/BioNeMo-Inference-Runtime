@@ -202,6 +202,9 @@ class TriangleAttentionNode(nn.Module):
         mask_bias: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        *,
+        residual: bool = False,
+        inplace_residual: bool = False,
     ) -> torch.Tensor:
         """
         Forward pass for the triangle attention node. Currently supports only
@@ -216,6 +219,9 @@ class TriangleAttentionNode(nn.Module):
                 When supplied, the per-layer mask->bias computation is skipped.
             attn_metadata (AttentionMetadata | None): attention metadata
             buffers: Shared pre-allocated buffer dict.
+            residual: Return ``x + update`` instead of the update; on SM90 the
+                output projection's epilogue adds ``x``.
+            inplace_residual: Accumulate into ``x``, which the caller must own.
         """
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
@@ -236,6 +242,8 @@ class TriangleAttentionNode(nn.Module):
             attn_metadata=attn_metadata,
             buffers=buffers,
             use_kv_lengths=self.pair_mask_left_aligned,
+            residual=x if residual else None,
+            inplace_residual=inplace_residual,
         )
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)

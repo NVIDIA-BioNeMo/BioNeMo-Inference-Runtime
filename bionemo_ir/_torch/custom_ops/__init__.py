@@ -31,12 +31,14 @@ __all__ = [
     "get_gated_sigmoid_op",
     "get_outer_product_mean_op",
     "get_pair_weighted_averaging_op",
+    "get_attn_epilogue_op",
     "LNProjMoveaxisPad",
 ]
 
 _EXPORTS = {
     "LNProjMoveaxisPad": ".fused_ln_proj_moveaxis_pad",
     "get_adaln_layernorm_sigmoid_op": ".adaln_layernorm_sigmoid",
+    "get_attn_epilogue_op": ".attn_epilogue",
     "get_dual_gemm_x0_x1_op": ".dual_gemm_x0_x1",
     "get_dual_gemm_x_x_op": ".dual_gemm_x_x",
     "get_gated_sigmoid_op": ".gated_sigmoid",

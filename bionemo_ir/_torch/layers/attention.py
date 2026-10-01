@@ -13,16 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from bionemo_ir._torch.custom_ops.attn_epilogue import get_attn_epilogue_op
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.layers.normalization import AdaLN
-from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, permute_final_dims
+from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, iter_chunks, permute_final_dims
 from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
@@ -48,6 +50,33 @@ _PAIR_BIAS_ROW_ALIGN = 32
 def pair_bias_rows(num_heads: int) -> int:
     """Rows ``TriangleAttention.in_proj`` reserves for pair bias: ``num_heads`` rounded up to a multiple of 32."""
     return -(-num_heads // _PAIR_BIAS_ROW_ALIGN) * _PAIR_BIAS_ROW_ALIGN
+
+
+def _narrow_rows(tensor: torch.Tensor | None, rows: int, start: int, length: int) -> torch.Tensor | None:
+    """Slice query rows as :func:`chunk_apply` does, passing broadcast tensors through."""
+    if tensor is None or tensor.dim() <= 1 or tensor.shape[1] != rows:
+        return tensor
+    return tensor.narrow(1, start, length)
+
+
+def _broadcast_rows(lead: torch.Size, gate_lead: torch.Size) -> tuple[int, int, int] | None:
+    """Split the rows ``lead`` into ``(outer, mult, inner)`` whose gate rows repeat across ``mult``.
+
+    ``gate_lead`` holds the same rows, or matches ``lead`` except for one
+    dimension of size 1 that broadcasts, as the gated-sigmoid op accepts;
+    ``None`` for any other pattern.
+    """
+    if math.prod(gate_lead) == math.prod(lead):
+        return 1, 1, math.prod(lead)
+    if len(gate_lead) != len(lead):
+        return None
+    mismatched = [
+        index for index, (size, gate_size) in enumerate(zip(lead, gate_lead, strict=True)) if size != gate_size
+    ]
+    if len(mismatched) != 1 or gate_lead[mismatched[0]] != 1:
+        return None
+    dim = mismatched[0]
+    return math.prod(lead[:dim]), lead[dim], math.prod(lead[dim + 1 :])
 
 
 class TriangleAttention(nn.Module):
@@ -132,6 +161,12 @@ class TriangleAttention(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
         )
+        # Serves calls with a residual.
+        self._epilogue = (
+            get_attn_epilogue_op(dtype, self.num_heads, self.head_dim, self.hidden_size, has_bias=bias_flags["o"])
+            if gating
+            else None
+        )
         if bias_proj:
             self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
             self._moveaxis_pad = MoveaxisPad(H=self.num_heads, dtype=dtype or torch.bfloat16)
@@ -161,6 +196,8 @@ class TriangleAttention(nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         use_kv_lengths: bool = False,
+        residual: torch.Tensor | None = None,
+        inplace_residual: bool = False,
     ) -> torch.Tensor:
         """
         Args:
@@ -173,11 +210,19 @@ class TriangleAttention(nn.Module):
                 (``tri_attn_output``) to avoid per-call allocation.
             use_kv_lengths: Encode a left-aligned mask as per-row lengths for
                 the cuEquivariance SM100f fast path.
+            residual: [B, I, J, F]. Return ``residual + update`` instead of the
+                update; on SM90 one kernel runs the gate, the output projection
+                and this add.
+            inplace_residual: Accumulate into ``residual``, which the caller
+                must own.
         """
+        output = residual if inplace_residual else None
         if self.chunk_policy is None or not self.chunk_policy.should_chunk(hidden_states):
             return self._attend(
                 hidden_states,
                 mask_bias,
+                residual,
+                output,
                 triangle_bias=triangle_bias,
                 attn_metadata=attn_metadata,
                 buffers=buffers,
@@ -192,29 +237,54 @@ class TriangleAttention(nn.Module):
             triangle_bias = self._pair_bias(F.linear(hidden_states, self.in_proj.weight[rows], bias))
         # Query rows attend independently, so row slices are exact; the
         # triangle bias passes through unsliced.
-        return chunk_apply(
-            self._attend,
-            hidden_states,
-            mask_bias,
-            policy=self.chunk_policy,
-            cat_dim=1,
-            triangle_bias=triangle_bias,
-            attn_metadata=attn_metadata,
-            buffers=buffers,
-            use_kv_lengths=use_kv_lengths,
-        )
+        if residual is None:
+            return chunk_apply(
+                self._attend,
+                hidden_states,
+                mask_bias,
+                policy=self.chunk_policy,
+                cat_dim=1,
+                triangle_bias=triangle_bias,
+                attn_metadata=attn_metadata,
+                buffers=buffers,
+                use_kv_lengths=use_kv_lengths,
+            )
+        # Each slice writes its rows of the output, which saves the
+        # concatenation copy.
+        if output is None:
+            output = torch.empty_like(residual)
+        rows = hidden_states.shape[1]
+        for start, length in iter_chunks(rows, self.chunk_policy.chunk_size):
+            residual_rows = residual.narrow(1, start, length)
+            self._attend(
+                hidden_states.narrow(1, start, length),
+                _narrow_rows(mask_bias, rows, start, length),
+                residual_rows,
+                residual_rows if output is residual else output.narrow(1, start, length),
+                triangle_bias=triangle_bias,
+                attn_metadata=attn_metadata,
+                buffers=buffers,
+                use_kv_lengths=use_kv_lengths,
+            )
+        return output
 
     def _attend(
         self,
         hidden_states: torch.Tensor,
         mask_bias: torch.Tensor,
+        residual: torch.Tensor | None = None,
+        output: torch.Tensor | None = None,
         *,
         triangle_bias: torch.Tensor | None,
         attn_metadata: AttentionMetadata | None,
         buffers: PreallocatedBuffers | None,
         use_kv_lengths: bool,
     ) -> torch.Tensor:
-        """Attend over all or a row slice of ``hidden_states``."""
+        """Attend over all or a row slice of ``hidden_states``.
+
+        With a ``residual``, return ``residual + update``, written to
+        ``output`` when given; ``output`` may be ``residual`` itself.
+        """
         q, k, v, *gate_and_bias = self.in_proj(hidden_states).split(self._in_proj_sizes, dim=-1)
         if triangle_bias is None and self.bias_proj:
             triangle_bias = self._pair_bias(gate_and_bias[-1][..., : self.num_heads])
@@ -239,11 +309,23 @@ class TriangleAttention(nn.Module):
             output=attn_buf,
             use_kv_lengths=use_kv_lengths,
         )
+        gate = gate_and_bias[0] if self.gating else None
+        if residual is not None and self._epilogue is not None:
+            fused = self._epilogue(mha_o, gate, self.o_proj.weight, residual, output, bias=self.o_proj.bias)
+            if fused is not None:
+                return fused
         attn_output = mha_o.reshape(*hidden_states.shape[:-1], self.q_size)
-        if self.gating:
+        if gate is not None:
             # Nothing reads the gate columns afterwards.
-            attn_output = attn_output.mul_(gate_and_bias[0].sigmoid_())
-        return self.o_proj(attn_output)
+            attn_output = attn_output.mul_(gate.sigmoid_())
+        update = self.o_proj(attn_output)
+        if residual is None:
+            return update
+        if output is residual:
+            return residual.add_(update)
+        if output is None:
+            return residual + update
+        return output.copy_(residual + update)
 
 
 class CrossTriangleAttention(nn.Module):
@@ -526,6 +608,15 @@ class AttentionPairBias(nn.Module):
             self._output_gate_op = get_gated_sigmoid_op(
                 dtype or torch.get_default_dtype(), N=self.c_s, K=output_gate_dim
             )
+        # Serves calls with a residual.
+        self._epilogue = get_attn_epilogue_op(
+            dtype,
+            self.num_heads,
+            self.head_dim,
+            self.c_s,
+            has_bias=out_bias,
+            has_output_gate=output_gate_dim is not None,
+        )
         self.attn = create_attention(
             attn_backend,
             self.layer_idx,
@@ -812,6 +903,7 @@ class AttentionPairBias(nn.Module):
         mask_bias: torch.Tensor | None = None,
         mask_bias_local: torch.Tensor | None = None,
         buffers: PreallocatedBuffers | None = None,
+        residual: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Single and TP Distributed version for AttentionPairBias.
 
@@ -853,6 +945,9 @@ class AttentionPairBias(nn.Module):
                 the gathered mask each layer.
             buffers: Optional dict of shared pre-allocated output buffers
                 (``pw_attn_output``) to avoid per-call allocation.
+            residual: Same shape as *s*. Return ``residual + update`` instead
+                of the update; with a tuned kernel, one launch runs the gate,
+                the output projection, the output gate and this add.
 
         Returns:
             Output tensor with the same shape as *s*.
@@ -890,6 +985,10 @@ class AttentionPairBias(nn.Module):
         mha_o = self.attn.forward(q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf)
         if mha_o.dtype != attn_in_dtype:
             mha_o = mha_o.to(dtype=attn_in_dtype)
+        if residual is not None and self._epilogue is not None:
+            fused = self._fused_output(mha_o, g, residual, single_embedding)
+            if fused is not None:
+                return fused
 
         # Nothing reads the attention output or the gate columns again.
         update = self.proj_o(mha_o.reshape(g.shape).mul_(g.sigmoid_()))
@@ -901,7 +1000,42 @@ class AttentionPairBias(nn.Module):
                 self.output_projection.bias,
                 output=update,
             )
-        return update
+        return update if residual is None else residual + update
+
+    def _fused_output(
+        self,
+        mha_o: torch.Tensor,
+        gate: torch.Tensor,
+        residual: torch.Tensor,
+        single_embedding: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        """Run the epilogue kernel over rows grouped as ``(outer, mult, inner)``.
+
+        The output gate's rows repeat across ``mult``, so the kernel reads
+        one gate row per ``(outer, inner)``. Returns ``None`` when the
+        operands need a copy to fit the kernel.
+        """
+        lead = residual.shape[:-1]
+        if self.output_projection is None:
+            split = (1, 1, math.prod(lead))
+        else:
+            split = _broadcast_rows(lead, single_embedding.shape[:-1])
+        if split is None:
+            return None
+        outer, mult, inner = split
+        try:
+            attention = mha_o.view(outer * mult, inner, self.num_heads, self.head_dim)
+            gate_rows = gate.view(outer, mult, inner, self.q_size)
+            residual_rows = residual.view(outer, mult, inner, self.c_s)
+        except RuntimeError:
+            return None
+        output_gate = None
+        if self.output_projection is not None:
+            output_gate = self.output_projection(single_embedding).view(outer, 1, inner, self.c_s)
+        fused = self._epilogue(
+            attention, gate_rows, self.proj_o.weight, residual_rows, bias=self.proj_o.bias, output_gate=output_gate
+        )
+        return None if fused is None else fused.view(residual.shape)
 
 
 class MSAAttention(nn.Module):

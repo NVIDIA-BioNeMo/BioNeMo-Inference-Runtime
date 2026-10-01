@@ -184,11 +184,15 @@ class MSAModuleBlock(EvoformerBlock):
         z = self.tri_mul_in(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
 
         if precomputed_masks is not None:
-            z = z + self.tri_attn_start(z, mask_bias=precomputed_masks.mask_bias, attn_metadata=attn_metadata)
-            z = z + self.tri_attn_end(z, mask_bias=precomputed_masks.mask_bias_transposed, attn_metadata=attn_metadata)
+            z = self.tri_attn_start(
+                z, mask_bias=precomputed_masks.mask_bias, attn_metadata=attn_metadata, residual=True
+            )
+            z = self.tri_attn_end(
+                z, mask_bias=precomputed_masks.mask_bias_transposed, attn_metadata=attn_metadata, residual=True
+            )
         else:
-            z = z + self.tri_attn_start(z, mask=pair_mask, attn_metadata=attn_metadata)
-            z = z + self.tri_attn_end(z, mask=pair_mask, attn_metadata=attn_metadata)
+            z = self.tri_attn_start(z, mask=pair_mask, attn_metadata=attn_metadata, residual=True)
+            z = self.tri_attn_end(z, mask=pair_mask, attn_metadata=attn_metadata, residual=True)
 
         pair_trans_mask = pair_mask
         z = z + self.pair_transition(z, mask=pair_trans_mask.unsqueeze(-1))

@@ -145,6 +145,16 @@ def require_cubin_library() -> ModuleType:
         pytest.fail(f"CUBIN test mode requires the _cutedsl_kernels extension: {error}")
 
 
+def require_cubin_family(family: str) -> None:
+    """Skip a CUBIN-mode test of a family the extension does not carry yet.
+
+    A new family's kernel directory, and with it its extension submodule, lands
+    only after the protected publisher has added the family's CUBIN corpus.
+    """
+    if not hasattr(require_cubin_library(), family):
+        pytest.skip(f"this _cutedsl_kernels extension carries no {family} family yet")
+
+
 def run_cutedsl_test_mode(
     mode: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -249,6 +259,37 @@ def skip_if_not_sm100_family():
     """Skip when the current GPU cannot run the native SM100 launch ABI."""
     if SM_VERSION not in (100, 103):
         pytest.skip(f"requires SM100/SM103 (current SM{SM_VERSION})")
+
+
+def skip_if_epilogue_tile_exceeds_smem(backend) -> None:
+    """Skip when the SM80 attention-epilogue tile ``backend`` builds needs more shared memory than this GPU has.
+
+    The SM80 kernel runs on any SM80+ GPU, so tests pin other SMs' tunings; an A100 tile can ask for more
+    than the 99 KiB per block of an SM86 or SM89 part, whose launch then fails with an invalid value.
+    """
+    from bionemo_ir._torch.custom_ops.attn_epilogue import _source
+
+    tuning = backend._tuning()
+    heads, head_dim, channels = backend._shape
+    kernel = _source.make_kernel(
+        tuning.kernel_abi,
+        tuning.tile_params,
+        heads,
+        head_dim,
+        has_bias=backend._has_bias,
+        has_output_gate=backend._has_output_gate,
+        channels=channels,
+        kernel_variant=tuning.kernel_variant,
+    )
+    needed = kernel.dynamic_smem_bytes(
+        kernel.bM, kernel.bK, kernel.num_stages, kernel.has_output_gate, kernel.bN, kernel.atom_layout_mnk[2]
+    )
+    available = torch.cuda.get_device_properties(torch.cuda.current_device()).shared_memory_per_block_optin
+    if needed > available:
+        pytest.skip(
+            f"the SM{backend._sm_version} R={tuning.rows} epilogue tile needs {needed} bytes of shared memory "
+            f"per block; this GPU has {available}"
+        )
 
 
 def make_left_aligned_mask(

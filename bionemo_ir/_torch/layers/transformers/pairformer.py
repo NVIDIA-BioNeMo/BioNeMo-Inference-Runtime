@@ -191,13 +191,6 @@ class PairformerLayerV1(nn.Module):
     ) -> torch.Tensor:
         can_update_inplace = inplace_safe and (not z.is_cuda or not torch.cuda.is_current_stream_capturing())
 
-        def add_residual(update: torch.Tensor) -> None:
-            nonlocal z
-            if can_update_inplace:
-                z.add_(update)
-            else:
-                z = z + update
-
         # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
         # Otherwise, let the wrapper derive masking from ``pair_mask``.
         z = self.tri_mul_out(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
@@ -214,12 +207,16 @@ class PairformerLayerV1(nn.Module):
             mb_start = mb_end = None
             pair_mask = pair_mask.to(self.dtype)
 
-        add_residual(
-            self.tri_attn_start(z, mask=pair_mask, mask_bias=mb_start, attn_metadata=tri_attn_metadata, buffers=buffers)
-        )
-        add_residual(
-            self.tri_attn_end(z, mask=pair_mask, mask_bias=mb_end, attn_metadata=tri_attn_metadata, buffers=buffers)
-        )
+        for node, node_mask_bias in ((self.tri_attn_start, mb_start), (self.tri_attn_end, mb_end)):
+            z = node(
+                z,
+                mask=pair_mask,
+                mask_bias=node_mask_bias,
+                attn_metadata=tri_attn_metadata,
+                buffers=buffers,
+                residual=True,
+                inplace_residual=can_update_inplace,
+            )
 
         return self.transition_z(z, residual=True, inplace=can_update_inplace)
 

@@ -93,6 +93,13 @@ void bind(nb::module_& module);
 
 } // namespace bioir::cutedsl::transition_mlp
 
+namespace bioir::cutedsl::attn_epilogue
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::cutedsl::attn_epilogue
+
 namespace
 {
 
@@ -164,5 +171,6 @@ NB_MODULE(_cutedsl_kernels, module)
   dual_gemm_x0_x1::bind(module);
   pair_weighted_averaging::bind(module);
   transition_mlp::bind(module);
+  attn_epilogue::bind(module);
   (void) preload_registered_kernels_if_context_active();
 }

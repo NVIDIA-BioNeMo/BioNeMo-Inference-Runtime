@@ -83,6 +83,14 @@ extern "C"
     int64_t dynamic_strides[1];
   } cute_tensor_s2_d1_t;
 
+  /* Two dynamic extents and two dynamic outer strides. */
+  typedef struct
+  {
+    CUdeviceptr data;
+    int32_t dynamic_shapes[2];
+    int64_t dynamic_strides[2];
+  } cute_tensor_s2_d2_t;
+
   /* Two dynamic extents and three independently dynamic outer strides. */
   typedef struct
   {

@@ -56,10 +56,13 @@ FAMILIES = (
     "pairwise_attention",
     "transition_mlp",
     "triangle_attention",
+    "attn_epilogue",
 )
-# Operand names, TMA rank, whether an epilogue tile is recorded, and threads per block, per
-# native-SM90 family. The transition MLP runs one load and two compute warpgroups.
+# Operand names, TMA rank (per operand where they differ), whether an epilogue tile is recorded,
+# and threads per block, per native-SM90 family. The attention epilogue and transition MLP run one
+# load and two compute warpgroups.
 _SM90_LAUNCH_SHAPES = {
+    "attn_epilogue": (("o", "g", "w", "z", "y", "d"), (4, 3, 2, 3, 3, 3), False, 384),
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
     "dual_gemm_x_x": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
@@ -100,6 +103,7 @@ def _aliases(family: str) -> list[dict[str, object]]:
             }
         ],
         "triangle_attention": [{"head_dim": 64, "packed": False}],
+        "attn_epilogue": [{"heads": 4, "head_dim": 32, "channels": 128, "has_bias": False, "has_output_gate": False}],
     }[family]
 
 
@@ -119,11 +123,12 @@ def _tma_descriptor(dtype: str, rank: int) -> dict[str, object]:
 
 def _sm90_launch(family: str, dtype: str) -> dict[str, object]:
     names, rank, epi_tile, threads = _SM90_LAUNCH_SHAPES[family]
+    ranks = rank if isinstance(rank, tuple) else (rank,) * len(names)
     result: dict[str, object] = {
         "block_dims": [threads, 1, 1],
         "cluster_dims": [1, 1, 1],
         "cluster_scheduling_policy": "default",
-        "tma_descriptors": {name: _tma_descriptor(dtype, rank) for name in names},
+        "tma_descriptors": {name: _tma_descriptor(dtype, r) for name, r in zip(names, ranks, strict=True)},
     }
     if epi_tile:
         result["epi_tile"] = [32, 32]
@@ -234,6 +239,18 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
             # Omitted below SM100 so the legacy records without the field stay covered.
             **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
+        }
+    elif family == "attn_epilogue":
+        concrete = {
+            "heads": 4,
+            "head_dim": 32,
+            "channels": 128,
+            "is_bfloat16": dtype == "bf16",
+            "has_bias": False,
+            "has_output_gate": False,
+            "tile_j": 64,
+            "num_threads": 384,
+            "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
         }
     else:
         concrete = {
@@ -485,6 +502,29 @@ def test_sm90_registry_renders_tma_metadata(tmp_path: Path) -> None:
     assert "CU_TENSOR_MAP_DATA_TYPE_FLOAT16" in source
     assert "CU_TENSOR_MAP_SWIZZLE_128B" in source
     assert "CU_CLUSTER_SCHEDULING_POLICY_DEFAULT" in source
+
+
+def test_sm90_registry_renders_mixed_rank_operands(tmp_path: Path) -> None:
+    family = "attn_epilogue"
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert all(f"  TmaDescriptorInfo {name};" in header for name in ("o", "g", "w", "z", "y", "d"))
+    assert "  SM90LaunchInfo sm90;" in header
+    for rank in (4, 3, 2, 3, 3, 3):
+        assert f"    {rank}U," in source
+
+
+def test_sm90_rejects_an_operand_with_another_rank(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    family = "attn_epilogue"
+    names, _, epi_tile, threads = _SM90_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, (names, (4, 3, 3, 3, 3, 3), epi_tile, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+
+    with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.w\.rank must be 2"):
+        materializer.verify_packs([(family, index)])
 
 
 def test_sm100_registry_renders_tma_metadata(tmp_path: Path) -> None:

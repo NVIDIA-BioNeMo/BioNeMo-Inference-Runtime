@@ -29,10 +29,15 @@ class _ScaledPairUpdate(torch.nn.Module):
     def __init__(self, scale: float) -> None:
         super().__init__()
         self.scale = scale
+        # Hold the output so its storage cannot be recycled into a later
+        # tensor and make the pointer comparisons below coincide.
         self.last_output: torch.Tensor | None = None
 
-    def forward(self, value: torch.Tensor, *_args, **_kwargs) -> torch.Tensor:
+    def forward(self, value: torch.Tensor, *_args, **kwargs) -> torch.Tensor:
         output = value * self.scale
+        # The triangle nodes take ``residual=True`` to add their own input.
+        if kwargs.get("residual", False):
+            output = value.add_(output) if kwargs.get("inplace_residual", False) else value + output
         self.last_output = output
         return output
 

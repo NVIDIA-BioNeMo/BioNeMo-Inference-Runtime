@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any
 
 import biotite.structure as struc
@@ -175,7 +176,12 @@ def _nucleotide_rdkit_topology(ccd_code: str) -> tuple[Chem.Mol, np.ndarray]:
     return mol, crop_mask
 
 
-def _embed_conformer_inplace(mol_h: Chem.Mol, random_seed: int | None = None) -> int:
+def _embed_conformer_inplace(
+    mol_h: Chem.Mol,
+    random_seed: int | None = None,
+    *,
+    retry_seed: Callable[[], int] | None = None,
+) -> int:
     """Embed one 3-D conformer into *mol_h*; return its id (-1 on failure).
 
     Monatomic species — e.g. metal-ion ligands like CD (cadmium), CO
@@ -199,9 +205,12 @@ def _embed_conformer_inplace(mol_h: Chem.Mol, random_seed: int | None = None) ->
     conf_id = AllChem.EmbedMolecule(mol_h, params)
     if conf_id == -1:
         params.useRandomCoords = True
-        params.randomSeed = (
-            random.randint(0, 10**9) if random_seed is None else random.Random(random_seed).randint(0, 10**9)
-        )
+        if retry_seed is not None:
+            params.randomSeed = retry_seed()
+        else:
+            params.randomSeed = (
+                random.randint(0, 10**9) if random_seed is None else random.Random(random_seed).randint(0, 10**9)
+            )
         conf_id = AllChem.EmbedMolecule(mol_h, params)
     return conf_id
 
@@ -255,8 +264,28 @@ def _embed_smiles_mol(mol: Chem.Mol) -> Chem.Mol:
     return Chem.RemoveHs(mol_h)
 
 
+@lru_cache(maxsize=500)
+def _residue_rdkit_topology(ccd_code: str) -> tuple[Chem.Mol, np.ndarray]:
+    res_full = _get_residue_from_ccd_with_oxt(ccd_code)
+    mol = biotite_to_mol(res_full, kekulize=True)
+    Chem.SanitizeMol(mol)
+    mol.RemoveConformer(0)
+    return mol, np.asarray(res_full.atom_name != "OXT", dtype=bool)
+
+
+def _draw_conformer_seed() -> int:
+    return random.randint(0, 10**9)
+
+
+def _defer_conformer_retry() -> int:
+    raise RuntimeError("Conformer retry requires serial seed allocation")
+
+
 def _build_residue_rdkit_mol(
     ccd_code: str,
+    random_seed: int | None = None,
+    *,
+    retry_seed: Callable[[], int] = _draw_conformer_seed,
 ) -> tuple[Chem.Mol | None, np.ndarray]:
     """Convert a CCD residue to an RDKit Mol with 3D conformer.
 
@@ -268,28 +297,52 @@ def _build_residue_rdkit_mol(
         (mol, in_crop_mask): mol with conformer, boolean mask over mol atoms.
         in_crop_mask[i] = True for atoms to keep (non-OXT).
     """
-    # Use the full residue (with OXT) for conformer generation
-    res_full = _get_residue_from_ccd_with_oxt(ccd_code)
+    # Preserve missing-CCD error propagation.
+    _get_residue_from_ccd_with_oxt(ccd_code)
 
     try:
-        # Use biotite.interface.rdkit.to_mol (matches OSS exactly)
-        mol = biotite_to_mol(res_full, kekulize=True)
-        Chem.SanitizeMol(mol)
-        # Remove CCD conformer (OSS: mol.RemoveConformer(0))
-        mol.RemoveConformer(0)
-        # Generate fresh conformer using ETKDGv3 (single-atom ions are placed
-        # at the origin without embedding — see _embed_conformer_inplace).
-        mol_h = Chem.AddHs(mol)
-        _embed_conformer_inplace(mol_h)
+        mol, in_crop_mask = _residue_rdkit_topology(ccd_code)
+        mol_h = Chem.AddHs(Chem.Mol(mol))
+        _embed_conformer_inplace(mol_h, random_seed, retry_seed=retry_seed)
         mol_h = Chem.RemoveHs(mol_h)
-
-        # Build mask: exclude OXT
-        in_crop_mask = np.array([res_full.atom_name[i] != "OXT" for i in range(len(res_full))], dtype=bool)
-
-        return mol_h, in_crop_mask
+        return mol_h, in_crop_mask.copy()
     except Exception as e:
         _logger.debug("Failed to build RDKit mol for %s: %s", ccd_code, e)
         return None, np.array([], dtype=bool)
+
+
+def _prefetch_protein_mols(ccd_codes: list[str]) -> list[tuple[Chem.Mol | None, np.ndarray]] | None:
+    """Speculate primary embeddings; commit draws in order.
+
+    Failed speculation and shifted seeds replay serially. Workers never draw
+    from the global RNG, and replay never restores its state.
+    """
+    try:
+        for ccd_code in dict.fromkeys(ccd_codes):
+            mol, _ = _residue_rdkit_topology(ccd_code)
+            if mol.GetNumAtoms() < 2:
+                return None
+        predictor = random.Random()
+        predictor.setstate(random.getstate())
+        seeds = [predictor.randint(0, 10**9) for _ in ccd_codes]
+        build = partial(_build_residue_rdkit_mol, retry_seed=_defer_conformer_retry)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            speculative = list(executor.map(build, ccd_codes, seeds))
+    except Exception as e:
+        _logger.debug("Protein conformer prefetch failed: %s", e)
+        return None
+
+    results = []
+    for ccd_code, predicted_seed, result in zip(ccd_codes, seeds, speculative, strict=True):
+        if result[0] is None:
+            result = _build_residue_rdkit_mol(ccd_code)
+        else:
+            # Never rewind another caller's random draws.
+            seed = _draw_conformer_seed()
+            if seed != predicted_seed:
+                result = _build_residue_rdkit_mol(ccd_code, seed)
+        results.append(result)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +621,8 @@ def _build_structure_from_polymers(
 
         for cid in chain_ids:
             prebuilt_mols = None
+            if polymer_type == "protein" and len(sequence) >= 32 and all(char in resname_1_to_3 for char in sequence):
+                prebuilt_mols = _prefetch_protein_mols([resname_1_to_3[char] for char in sequence])
             if (
                 polymer_type in ("rna", "dna")
                 and len(sequence) >= 32

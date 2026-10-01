@@ -24,6 +24,7 @@ import torch
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
+    current_stream_handle,
     tensor_s1_d0,
     tensor_s2_d1,
 )
@@ -101,5 +102,5 @@ class GatedSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.output = tensor_s2_d1(self._kernel_library, output)
         params.mult = int(mult)
         params.inner = int(inner)
-        params.stream = torch.cuda.current_stream(s.device).cuda_stream
+        params.stream = current_stream_handle(s)
         self._launcher.launch(self._config, params)

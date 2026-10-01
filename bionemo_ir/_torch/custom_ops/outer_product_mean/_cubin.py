@@ -24,6 +24,7 @@ import torch
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
+    current_stream_handle,
     tensor_s1_d0,
     tensor_s2_d1,
     tensor_s3_d2,
@@ -91,5 +92,5 @@ class OuterProductMeanCubinExecutable(CuTeDSLKernelLibraryExecutable):
         if bias is not None:
             params.bias = tensor_s1_d0(self._kernel_library, bias)
         params.output = tensor_s3_d2_static(self._kernel_library, out)
-        params.stream = torch.cuda.current_stream(a.device).cuda_stream
+        params.stream = current_stream_handle(a)
         self._launcher.launch(self._config, params)

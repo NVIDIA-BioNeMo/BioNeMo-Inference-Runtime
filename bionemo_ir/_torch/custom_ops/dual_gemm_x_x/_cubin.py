@@ -24,6 +24,7 @@ import torch
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
+    current_stream_handle,
     tensor_s1_d0,
     tensor_s2_d1,
 )
@@ -148,5 +149,5 @@ class DualGemmXxCubinExecutable(CuTeDSLKernelLibraryExecutable):
             dynamic_stride_dim=1 if self._transpose_out else 0,
         )
         params.i_dim = i_dim
-        params.stream = torch.cuda.current_stream(x.device).cuda_stream
+        params.stream = current_stream_handle(x)
         self._launcher.launch(self._config, params)

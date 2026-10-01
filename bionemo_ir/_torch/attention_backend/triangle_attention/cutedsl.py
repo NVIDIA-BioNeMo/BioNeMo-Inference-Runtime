@@ -158,11 +158,12 @@ def _validate_kernel_tensor_layout(
     pointer_alignment: int,
 ) -> None:
     """Validate layout facts omitted from the direct-launch tensor descriptor."""
-    actual_inner_strides = tuple(tensor.stride()[-len(static_inner_strides) :])
+    strides = tensor.stride()
+    actual_inner_strides = strides[-len(static_inner_strides) :]
     if actual_inner_strides != static_inner_strides:
         raise ValueError(f"{name} inner strides must be {static_inner_strides}; got {actual_inner_strides}")
     for dim in dynamic_stride_dims:
-        stride = tensor.stride(dim)
+        stride = strides[dim]
         if stride <= 0 or stride % stride_divisibility:
             raise ValueError(
                 f"{name} stride({dim}) must be positive and divisible by {stride_divisibility}; got {stride}"
@@ -263,6 +264,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         self._last_executable = None
         self._last_variant: _TriangleAttentionVariant | None = None
         self._last_force_cubin: bool | None = None
+        self._last_variant_slot: tuple[tuple, _TriangleAttentionVariant] | None = None
 
     def _cubin_cache_key(self, variant: _TriangleAttentionVariant) -> tuple[object, ...]:
         return ("cubin", self._sm_version, variant)
@@ -583,13 +585,20 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             (batch_size * i_dim, seqlen, num_heads, 1),
             q.device,
         )
-        S = int(round(math.sqrt(max(i_dim * seqlen, 1))))
-        variant = _TriangleAttentionVariant(
-            dtype=q_flat.dtype,
-            head_dim=padded_head_dim,
-            bucket=get_nearest_bucket(self._sm_version, padded_head_dim, S),
-            qkv_packed=qkv_packed,
-        )
+        # Bucket selection scans the tuning bundle; a layer repeats its shape across a forward.
+        variant_key = (self._sm_version, q_flat.dtype, padded_head_dim, i_dim, seqlen, qkv_packed)
+        last = self._last_variant_slot
+        if last is not None and last[0] == variant_key:
+            variant = last[1]
+        else:
+            S = int(round(math.sqrt(max(i_dim * seqlen, 1))))
+            variant = _TriangleAttentionVariant(
+                dtype=q_flat.dtype,
+                head_dim=padded_head_dim,
+                bucket=get_nearest_bucket(self._sm_version, padded_head_dim, S),
+                qkv_packed=qkv_packed,
+            )
+            self._last_variant_slot = (variant_key, variant)
         return _TriangleAttentionLaunchInputs(
             q=q_flat,
             k=k_flat,

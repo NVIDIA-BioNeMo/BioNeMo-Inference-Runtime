@@ -24,6 +24,7 @@ import torch
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
+    current_stream_handle,
     tensor_s2_d1,
     tensor_s4_d3,
 )
@@ -101,5 +102,5 @@ class PairWeightedAveragingCubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.g = tensor_s4_d3(self._kernel_library, g)
         params.weight = tensor_s2_d1(self._kernel_library, Wo)
         params.output = tensor_s4_d3(self._kernel_library, out)
-        params.stream = torch.cuda.current_stream(w.device).cuda_stream
+        params.stream = current_stream_handle(w)
         self._launcher.launch(self._config, params)

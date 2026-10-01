@@ -93,9 +93,12 @@ class DualGemmXxCuTe(CuteKernelCache):
         self._last_exe = None
         self._last_key: _DualGemmXxVariant | None = None
         self._bucket_ranges: dict[tuple[int, int, bool], list[tuple[int, str]] | None] = {}
+        # Last (S, bucket) per shape: one instance serves every layer, and the layers alternate shapes.
+        self._last_buckets: dict[tuple[int, int, bool], tuple[int, int]] = {}
         # Per-(K, N) bundle facts, cached so each launch skips re-reading its config.
         self._is_sm90: dict[tuple[int, int], bool] = {}
         self._resident: dict[tuple[int, int], bool] = {}
+        self._gate_configs: dict[tuple[int, int, str], bool] = {}
 
     def _disk_cache_key(self, variant: _DualGemmXxVariant) -> tuple:
         """Return the source-object disk cache key.
@@ -128,6 +131,15 @@ class DualGemmXxCuTe(CuteKernelCache):
         cached = self._resident.get((K, N))
         if cached is None:
             cached = self._resident.setdefault((K, N), _uses_resident_kernel(self._sm_version, K, N))
+        return cached
+
+    def _has_gate_config(self, K: int, N: int, gate: str) -> bool:
+        """Whether this target ships a tuning bundle for ``gate`` at this shape."""
+        cached = self._gate_configs.get((K, N, gate))
+        if cached is None:
+            cached = self._gate_configs.setdefault(
+                (K, N, gate), _has_direct_config_for_gate(self._sm_version, K, N, gate)
+            )
         return cached
 
     def _source_variant(self, variant: _DualGemmXxVariant) -> _DualGemmXxVariant:
@@ -302,7 +314,7 @@ class DualGemmXxCuTe(CuteKernelCache):
         N = w0.shape[0]
         M = kernel_B * I_dim
         device = x.device
-        if gate == "silu" and not _has_direct_config_for_gate(self._sm_version, K, N, gate):
+        if gate == "silu" and not self._has_gate_config(K, N, gate):
             raise ValueError(f"No dual_gemm x_x silu tuning for SM{self._sm_version}, K={K}, N={N}")
 
         if (bias0 is None) != (bias1 is None):
@@ -315,8 +327,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             runtime_mask = True
         _dtype_str(x.dtype)
 
-        ranges = self._get_bucket_ranges(K, N, transpose_out)
-        bucket = min(ranges, key=lambda candidate: (abs(candidate[0] - S), candidate[0]))[0] if ranges else S
+        bucket = self._nearest_bucket(S, K, N, transpose_out)
         variant = _DualGemmXxVariant(
             dtype=x.dtype,
             K=K,
@@ -328,9 +339,9 @@ class DualGemmXxCuTe(CuteKernelCache):
             gate=gate,
         )
 
-        force_cubin = self.force_cubin()
+        # A CUBIN executable serves either mode, so only a source one needs the environment read.
         if variant == self._last_key and (
-            not force_cubin or isinstance(self._last_exe, CuTeDSLKernelLibraryExecutable)
+            isinstance(self._last_exe, CuTeDSLKernelLibraryExecutable) or not self.force_cubin()
         ):
             executable = self._last_exe
         else:
@@ -421,6 +432,17 @@ class DualGemmXxCuTe(CuteKernelCache):
                 transpose_out,
             )
         return self._bucket_ranges[cache_key]
+
+    def _nearest_bucket(self, S: int, K: int, N: int, transpose_out: bool) -> int:
+        """Return the anchor nearest ``S``, preferring the lower anchor on ties."""
+        shape_key = (K, N, bool(transpose_out))
+        last = self._last_buckets.get(shape_key)
+        if last is not None and last[0] == S:
+            return last[1]
+        ranges = self._get_bucket_ranges(K, N, transpose_out)
+        bucket = min(ranges, key=lambda candidate: (abs(candidate[0] - S), candidate[0]))[0] if ranges else S
+        self._last_buckets[shape_key] = (S, bucket)
+        return bucket
 
     def _nearest_anchor_key(self, S: int, K: int, N: int, transpose_out: bool) -> str:
         """Return the nearest JSON key, preferring the lower anchor on ties."""

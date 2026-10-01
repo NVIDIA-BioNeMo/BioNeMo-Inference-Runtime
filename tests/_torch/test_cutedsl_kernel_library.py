@@ -266,6 +266,7 @@ def _triangle_backend(head_dim: int = 32):
     backend._last_executable = None
     backend._last_variant = None
     backend._last_force_cubin = None
+    backend._last_variant_slot = None
     return backend, triangle_cutedsl
 
 

@@ -24,6 +24,7 @@ import torch
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
+    current_stream_handle,
     tensor_s1_d0,
     tensor_s3_d2,
     tensor_s3_d2_static,
@@ -99,5 +100,5 @@ class PairwiseAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.softmax_scale = softmax_scale
         params.softmax_scale_log2 = softmax_scale_log2
         params.mult = mult
-        params.stream = torch.cuda.current_stream(q.device).cuda_stream
+        params.stream = current_stream_handle(q)
         self._launcher.launch(self._config, params)

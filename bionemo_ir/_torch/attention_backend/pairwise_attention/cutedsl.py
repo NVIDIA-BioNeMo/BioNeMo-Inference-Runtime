@@ -155,39 +155,20 @@ def _resolve_lse_buffer(
     return torch.empty(0, *shape[1:], dtype=torch.float32, device=device)
 
 
-def _batch_size(actual_s_kv: torch.Tensor) -> int:
-    """Infer the per-batch count carried by ``actual_s_kv``.
+def _to_actual_s_kv_int32(actual_s_kv: torch.Tensor) -> torch.Tensor:
+    """Normalize ``actual_s_kv`` to a contiguous ``[B]`` int32 tensor.
 
-    A float tensor is the ``[*, Sk]`` binary-mask convenience form, whose
-    leading dimensions collapse to the batch axis. An integer tensor is already
-    one leading-1s count per batch.
+    Accepts a ``[B]`` integer count of leading 1s, or a left-aligned ``[*, Sk]``
+    float binary mask whose leading dimensions collapse to the batch axis and
+    whose count is ``(mask > 0.5).sum(-1)``.
     """
     if actual_s_kv.is_floating_point():
         if actual_s_kv.ndim < 2:
             raise ValueError(f"binary mask must have ndim >= 2 (last dim = Sk); got shape {tuple(actual_s_kv.shape)}")
-        return actual_s_kv.reshape(-1, actual_s_kv.shape[-1]).shape[0]
-    return actual_s_kv.reshape(-1).shape[0]
-
-
-def _to_actual_s_kv_int32(actual_s_kv: torch.Tensor, batch_size: int) -> torch.Tensor:
-    """Normalize ``actual_s_kv`` to a contiguous ``[B]`` int32 tensor.
-
-    Accepts a ``[B]`` integer count of leading 1s, or a left-aligned ``[*, Sk]``
-    float binary mask whose count is reduced with ``(mask > 0.5).sum(-1)``.
-    """
-    if actual_s_kv.is_floating_point():
-        flat = actual_s_kv.reshape(-1, actual_s_kv.shape[-1])
-        out = (flat > 0.5).sum(dim=-1).to(torch.int32).contiguous()
-    else:
-        if actual_s_kv.dtype != torch.int32:
-            actual_s_kv = actual_s_kv.to(torch.int32)
-        out = actual_s_kv.reshape(-1).contiguous()
-    if out.numel() != batch_size:
-        raise ValueError(
-            f"actual_s_kv must have B={batch_size} entries (got {out.numel()}). "
-            f"Original shape: {tuple(actual_s_kv.shape)}"
-        )
-    return out
+        return (actual_s_kv > 0.5).sum(dim=-1, dtype=torch.int32).reshape(-1)
+    if actual_s_kv.dtype != torch.int32:
+        actual_s_kv = actual_s_kv.to(torch.int32)
+    return actual_s_kv.reshape(-1).contiguous()
 
 
 class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAttentionCuTeLeftMaskMetadata]):
@@ -228,6 +209,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         self._sm_version = major * 10 + minor
         self._last_executable = None
         self._last_variant: _PairwiseAttentionVariant | None = None
+        self._last_variant_slot: tuple[tuple, _PairwiseAttentionVariant] | None = None
 
     def _disk_cache_key(self, variant: _PairwiseAttentionVariant) -> tuple:
         return (
@@ -422,11 +404,11 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             output_flat = torch.empty(output_shape, dtype=q.dtype, device=q.device)
 
         # B comes from actual_s_kv; mult = B_flat // B is the sample multiplicity.
-        batch_size = _batch_size(actual_s_kv)
+        actual_s_kv_flat = _to_actual_s_kv_int32(actual_s_kv)
+        batch_size = actual_s_kv_flat.shape[0]
         if batch_size == 0 or batch_flat % batch_size != 0:
             raise ValueError(f"Q batch dim {batch_flat} is not a multiple of the actual_s_kv batch dim {batch_size}")
         mult = batch_flat // batch_size
-        actual_s_kv_flat = _to_actual_s_kv_int32(actual_s_kv, batch_size)
         if actual_s_kv_flat.device != q.device:
             raise ValueError(f"actual_s_kv must be on {q.device}; got {actual_s_kv_flat.device}")
 
@@ -440,13 +422,19 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             (batch_flat, seqlen_q, num_heads, 1),
             q.device,
         )
-        S = _compute_S(seqlen_q, seqlen_kv)
-        variant = _PairwiseAttentionVariant(
-            dtype=q_flat.dtype,
-            head_dim=padded_head_dim,
-            bucket=get_nearest_bucket(self._sm_version, padded_head_dim, S),
-            kv_packed=kv_packed,
-        )
+        # Bucket selection scans the tuning bundle; a layer repeats its shape across a forward.
+        variant_key = (self._sm_version, q_flat.dtype, padded_head_dim, seqlen_q, seqlen_kv, kv_packed)
+        last = self._last_variant_slot
+        if last is not None and last[0] == variant_key:
+            variant = last[1]
+        else:
+            variant = _PairwiseAttentionVariant(
+                dtype=q_flat.dtype,
+                head_dim=padded_head_dim,
+                bucket=get_nearest_bucket(self._sm_version, padded_head_dim, _compute_S(seqlen_q, seqlen_kv)),
+                kv_packed=kv_packed,
+            )
+            self._last_variant_slot = (variant_key, variant)
         return _PairwiseAttentionLaunchInputs(
             q=q_flat,
             k=k_flat,

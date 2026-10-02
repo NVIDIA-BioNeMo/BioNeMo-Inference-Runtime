@@ -97,7 +97,9 @@ class DualGemmXxCuTe(CuteKernelCache):
         self._last_buckets: dict[tuple[int, int, bool], tuple[int, int]] = {}
         # Per-(K, N) bundle facts, cached so each launch skips re-reading its config.
         self._is_sm90: dict[tuple[int, int], bool] = {}
-        self._resident: dict[tuple[int, int], bool] = {}
+        # Keyed by (K, N, S, transpose_out): a bucket's tile_params may override
+        # kernel_variant for just that anchor, so this can vary within one (K, N).
+        self._resident: dict[tuple[int, int, int, bool], bool] = {}
         self._gate_configs: dict[tuple[int, int, str], bool] = {}
 
     def _disk_cache_key(self, variant: _DualGemmXxVariant) -> tuple:
@@ -126,11 +128,12 @@ class DualGemmXxCuTe(CuteKernelCache):
             cached = self._is_sm90.setdefault((K, N), _kernel_is_sm90(self._sm_version, K, N))
         return cached
 
-    def _uses_resident_kernel(self, K: int, N: int) -> bool:
-        """Whether this shape's bundle selects the resident-weight kernel."""
-        cached = self._resident.get((K, N))
+    def _uses_resident_kernel(self, K: int, N: int, S: int, transpose_out: bool) -> bool:
+        """Whether this shape's selected anchor uses the resident-weight kernel."""
+        key = (K, N, S, transpose_out)
+        cached = self._resident.get(key)
         if cached is None:
-            cached = self._resident.setdefault((K, N), _uses_resident_kernel(self._sm_version, K, N))
+            cached = self._resident.setdefault(key, _uses_resident_kernel(self._sm_version, K, N, S, transpose_out))
         return cached
 
     def _has_gate_config(self, K: int, N: int, gate: str) -> bool:
@@ -321,7 +324,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             raise ValueError("bias0 and bias1 must both be supplied or both None.")
         has_bias = bias0 is not None
         runtime_mask = mask is not None or actual_seqlen is not None
-        if not runtime_mask and self._uses_resident_kernel(K, N):
+        if not runtime_mask and self._uses_resident_kernel(K, N, S, transpose_out):
             # The resident kernel reads the lengths without a null check.
             actual_seqlen = torch.full((kernel_B,), I_dim, dtype=torch.int32, device=device)
             runtime_mask = True

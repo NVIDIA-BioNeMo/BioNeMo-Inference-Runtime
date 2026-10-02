@@ -296,6 +296,11 @@ class _FeatureExtractionCacheProbe:
     def __init__(self, device: torch.device, *, min_size: int = 1) -> None:
         tokens, channels = 4, 2
         self.config = SimpleNamespace(trunk=SimpleNamespace(pairformer=SimpleNamespace(torch_dtype=torch.float32)))
+        # This probe's batch/stub embedders don't model token-count padding
+        # (OpenFold3.feature_extraction's new trunk-level padding); it's
+        # testing cache-reclaim lifetime, not padding, and tokens=4 isn't
+        # 8-aligned anyway.
+        self.enable_token_pad = False
         input_values = (
             torch.randn(1, tokens, channels, device=device),
             torch.randn(1, tokens, channels, device=device),

@@ -22,6 +22,7 @@ from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, prec
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
+from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule, PairformerNoSeqLayer
 from bionemo_ir._torch.layers.transition import Transition
 from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata, precompute_trimul_metadata
@@ -273,6 +274,8 @@ class Trunk(nn.Module):
 
         self.msa_module = MSAModule(config.msa_module)
         self.pairformer_module = PairformerModule(config.pairformer)
+        self.enable_token_pad = config.pairformer.enable_token_pad
+        self.token_pad_spec = config.token_pad_spec
 
         token_s = config.pairformer.token_s
         token_z = config.pairformer.token_z
@@ -374,10 +377,37 @@ class Trunk(nn.Module):
         # Ensure the inputs are in the correct dtype
         s_init = s_init.to(self.dtype)
         z_init = z_init.to(self.dtype)
-        mask = token_pad_mask.to(self.dtype)
-        pair_mask = mask[:, :, None] * mask[:, None, :]
         s_inputs = s_inputs.to(self.dtype)
         msa_mask = msa_mask.to(self.dtype)
+
+        n_true = z_init.shape[1]
+        if self.enable_token_pad:
+            padded, template_feats, n_true = pad_trunk_tokens(
+                {
+                    "s_init": s_init,
+                    "z_init": z_init,
+                    "s_inputs": s_inputs,
+                    "msa": msa,
+                    "has_deletion": has_deletion,
+                    "deletion_value": deletion_value,
+                    "msa_paired": msa_paired,
+                    "msa_mask": msa_mask,
+                    "token_pad_mask": token_pad_mask,
+                },
+                n_true,
+                self.token_pad_spec,
+                template_feats,
+            )
+            s_init, z_init, s_inputs = padded["s_init"], padded["z_init"], padded["s_inputs"]
+            msa, has_deletion, deletion_value = padded["msa"], padded["has_deletion"], padded["deletion_value"]
+            msa_paired, msa_mask, token_pad_mask = (
+                padded["msa_paired"],
+                padded["msa_mask"],
+                padded["token_pad_mask"],
+            )
+
+        mask = token_pad_mask.to(self.dtype)
+        pair_mask = mask[:, :, None] * mask[:, None, :]
 
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
@@ -404,4 +434,5 @@ class Trunk(nn.Module):
             )
 
             s, z = self.pairformer_module(s, z, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
+        s, z = unpad_trunk_tokens(s, z, n_true=n_true)
         return s, z

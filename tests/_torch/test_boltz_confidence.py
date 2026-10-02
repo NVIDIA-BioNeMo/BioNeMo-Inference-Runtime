@@ -156,6 +156,29 @@ def test_run_sequentially_controls_iteration_count(
     assert len(iterations) == expected_iterations
 
 
+def test_pairformer_runs_on_padded_tokens_and_matches_the_unpadded_run():
+    """The pairformer sees 8-aligned tokens, and the heads see the caller's with unchanged values."""
+    device = torch.device("cuda")
+    module = _tiny_module(device)
+    assert module.enable_token_pad
+    tokens_seen = []
+    hook = module.pairformer_stack.register_forward_pre_hook(
+        lambda _module, args: tokens_seen.append(args[1].shape[-2])
+    )
+    prob_contact = torch.rand(1, N_TOKENS, N_TOKENS, device=device)
+
+    try:
+        padded = _run(module, prob_contact, device, multiplicity=2)
+        module.enable_token_pad = False
+        unpadded = _run(module, prob_contact, device, multiplicity=2)
+    finally:
+        hook.remove()
+
+    assert tokens_seen == [8, 8, N_TOKENS, N_TOKENS]
+    for key in ("pde", "pae", "plddt", "ptm", "iptm", "complex_plddt", "complex_pde"):
+        torch.testing.assert_close(padded[key], unpadded[key], rtol=1e-4, atol=1e-4)
+
+
 def test_prob_contact_weights_the_pde_aggregate():
     """``prob_contact`` must land as the pair weight of the gPDE average, off-diagonal only."""
     device = torch.device("cuda")

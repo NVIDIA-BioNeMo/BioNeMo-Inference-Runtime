@@ -32,6 +32,9 @@ navigation:
           - page: Configuration
             path: ../docs/ref/config.md
             slug: config
+          - page: Token Padding
+            path: ../docs/ref/token-padding.md
+            slug: token-padding
       - section: Performance and Scaling
         skip-slug: true
         collapsed: true

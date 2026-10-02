@@ -160,3 +160,49 @@ def test_protenix_bf16_pair_state_parity_and_input_safety():
 
     assert rmse_ratio(s_bf16, s_fp32) < 5e-2
     assert rmse_ratio(z_bf16, z_fp32) < 5e-2
+
+
+def test_protenix_trunk_pads_template_features_at_unaligned_token_counts():
+    """With templates on, an unaligned token count runs padded and matches the unpadded trunk."""
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    B, N, S, T = 1, 13, 6, 2
+    c_s, c_z, c_s_inputs = 64, 64, 449
+
+    trunk = ProtenixTrunk(_small_trunk_config(c_s, c_z, c_s_inputs)).to(device).eval()
+    assert trunk.use_template and trunk.enable_token_pad
+    with torch.no_grad():
+        for name, p in trunk.named_parameters():
+            if p.ndim >= 2:
+                p.normal_(mean=0.0, std=0.05)
+            elif name.endswith("weight"):
+                p.fill_(1)
+            else:
+                p.zero_()
+
+    feat = {
+        "asym_id": (torch.arange(N, device=device) >= 7).long().unsqueeze(0),
+        "msa": torch.randint(0, 32, (B, S, N), device=device),
+        "has_deletion": (torch.randn(B, S, N, device=device) > 0).float(),
+        "deletion_value": torch.rand(B, S, N, device=device),
+        "template_aatype": torch.randint(0, 32, (B, T, N), device=device),
+        "template_distogram": torch.randn(B, T, N, N, 39, device=device),
+        "template_unit_vector": torch.randn(B, T, N, N, 3, device=device),
+        "template_pseudo_beta_mask": (torch.randn(B, T, N, N, device=device) > 0).float(),
+        "template_backbone_frame_mask": (torch.randn(B, T, N, N, device=device) > 0).float(),
+    }
+    inputs = (
+        0.1 * torch.randn(B, N, c_s_inputs, device=device),
+        0.1 * torch.randn(B, N, c_s, device=device),
+        0.1 * torch.randn(B, N, N, c_z, device=device),
+    )
+
+    with torch.inference_mode():
+        padded = trunk(dict(feat), *inputs)
+        trunk.enable_token_pad = False
+        unpadded = trunk(dict(feat), *inputs)
+
+    for actual, expected in zip(padded, unpadded, strict=True):
+        assert actual.shape == expected.shape
+        # fp32 GEMMs over the padded shapes round differently (TF32 in the dev container).
+        torch.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)

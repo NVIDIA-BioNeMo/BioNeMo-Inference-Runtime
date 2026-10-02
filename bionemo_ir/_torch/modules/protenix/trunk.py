@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
 from bionemo_ir._torch.layers.linear import Linear
+from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleStack
 from bionemo_ir._torch.modules.protenix.template import ProtenixTemplateEmbedder
@@ -145,6 +146,8 @@ class ProtenixTrunk(nn.Module):
         self.msa_module = ProtenixMSAModule(config.msa_module_config)
         self.pairformer_stack = PairformerModule(config.pairformer_config)
         self.pairformer_dtype = config.pairformer_config.torch_dtype
+        self.enable_token_pad = config.pairformer_config.enable_token_pad
+        self.token_pad_spec = config.token_pad_spec
 
         self.layernorm_z_cycle = nn.LayerNorm(c_z, eps=config.norm_epsilon, dtype=dtype)
         self.linear_no_bias_z_cycle = Linear(
@@ -180,12 +183,34 @@ class ProtenixTrunk(nn.Module):
         # Persistent pair state in configured storage dtype (fp32 default;
         # bf16 opt-in). Recycling/template projections stay in self.dtype.
         z_init = z_init.to(self.pair_state_dtype)
-        z = torch.zeros_like(z_init)
-        s = torch.zeros_like(s_init)
         if pair_mask is None:
             pair_mask = z_init.new_ones(z_init.shape[:-1])
         if token_mask is None:
             token_mask = s_init.new_ones(s_init.shape[:-1])
+
+        n_true = z_init.shape[1]
+        if self.enable_token_pad:
+            padded, input_feature_dict, n_true = pad_trunk_tokens(
+                {
+                    "s_inputs": s_inputs,
+                    "s_init": s_init,
+                    "z_init": z_init,
+                    "pair_mask": pair_mask,
+                    "token_mask": token_mask,
+                },
+                n_true,
+                self.token_pad_spec,
+                input_feature_dict,
+            )
+            s_inputs, s_init, z_init, pair_mask, token_mask = (
+                padded["s_inputs"],
+                padded["s_init"],
+                padded["z_init"],
+                padded["pair_mask"],
+                padded["token_mask"],
+            )
+        z = torch.zeros_like(z_init)
+        s = torch.zeros_like(s_init)
 
         msa_precomputed = self.msa_module.build_pair_masks(pair_mask)
 
@@ -211,4 +236,5 @@ class ProtenixTrunk(nn.Module):
             )
             s = s_pf.to(self.dtype)
             z = z_pf.to(self.pair_state_dtype)
+        s, z = unpad_trunk_tokens(s, z, n_true=n_true)
         return s, z

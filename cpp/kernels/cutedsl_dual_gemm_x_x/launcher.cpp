@@ -38,7 +38,7 @@ constexpr char kSM80LaunchAbi[] = "dual_gemm_x_x_sm80";
 constexpr char kSM80DynamicMaskLaunchAbi[] = "dual_gemm_x_x_sm80_mask_ptr_v1";
 constexpr char kSM90LaunchAbi[] = "dual_gemm_x_x_sm90";
 constexpr char kSM90DynamicMaskLaunchAbi[] = "dual_gemm_x_x_sm90_mask_ptr_v1";
-/* Same kernel parameters as the ping-pong image; a column-owning grid and cluster [1, y, 1]. */
+/* Ping-pong parameter order with tagged non-executable TMA atoms; a column-owning grid and cluster [1, y, 1]. */
 constexpr char kSM90ResidentLaunchAbi[] = "dual_gemm_x_x_sm90_resident_mask_ptr_v1";
 /* 2-SM UMMA on cluster [2, y, 1] with the CLC scheduler's tile counts. */
 constexpr char kSM100LaunchAbi[] = "dual_gemm_x_x_sm100_mask_ptr_v1";
@@ -157,11 +157,9 @@ void validate_sm90_metadata(KernelConfig const& config, embedded::CubinImage con
     throw std::invalid_argument("native SM90 block metadata disagrees with the generated launch geometry");
   if (uses_resident_grid(image))
   {
-    /* A clustered image multicasts x, which needs each CTA's share of the box encoded as the
-     * x0_x1 launcher's multicast_tma_descriptor does; the full box never completes the barrier.
-     */
-    if (sm90.cluster_dims[0] != 1 || sm90.cluster_dims[1] != 1 || sm90.cluster_dims[2] != 1)
-      throw std::invalid_argument("native SM90 dual_gemm_x_x resident grid supports only unclustered images");
+    /* The column tiles of one cluster share their x rows through multicast. */
+    if (sm90.cluster_dims[0] != 1 || sm90.cluster_dims[2] != 1)
+      throw std::invalid_argument("native SM90 dual_gemm_x_x resident grid requires cluster dimensions [1, y, 1]");
   }
   else if (sm90.cluster_dims[1] != 1 || sm90.cluster_dims[2] != 1)
   {
@@ -563,11 +561,29 @@ void launch_sm90(
   TmaTensorSource const w0_source = make_tma_tensor2_source(params.w0, false);
   TmaTensorSource const w1_source = make_tma_tensor2_source(params.w1, false);
   TmaTensorSource const output_source = make_tma_tensor2_source(params.output, config.transpose_out);
-  encode_tma_descriptor(device_params.x0_tma, metadata.x0, expected_dtype, x_source, "x0");
-  encode_tma_descriptor(device_params.x1_tma, metadata.x1, expected_dtype, x_source, "x1");
+  /* Each CTA of a resident cluster loads its share of the x tile and multicasts it to the
+   * column tiles beside it; a full box would never complete their transaction barriers.
+   */
+  bool const resident = uses_resident_grid(image);
+  std::uint32_t const x_multicast = resident ? metadata.cluster_dims[1] : 1;
+  encode_tma_descriptor(
+    device_params.x0_tma, multicast_tma_descriptor(metadata.x0, x_multicast, "x0"), expected_dtype, x_source, "x0");
+  encode_tma_descriptor(
+    device_params.x1_tma, multicast_tma_descriptor(metadata.x1, x_multicast, "x1"), expected_dtype, x_source, "x1");
   encode_tma_descriptor(device_params.w0_tma, metadata.w0, expected_dtype, w0_source, "w0");
   encode_tma_descriptor(device_params.w1_tma, metadata.w1, expected_dtype, w1_source, "w1");
   encode_tma_descriptor(device_params.output_tma, metadata.output, expected_dtype, output_source, "output");
+  if (resident)
+  {
+    /* The resident kernel takes non-executable atoms; only its weights are static. */
+    bool const weight_tag
+      = sm90_static_tma_operation_tag(std::int64_t{params.w0.shape[0]} * std::int64_t{params.w0.shape[1]});
+    finalize_sm90_tma_atom(device_params.x0_tma, true);
+    finalize_sm90_tma_atom(device_params.x1_tma, true);
+    finalize_sm90_tma_atom(device_params.w0_tma, weight_tag);
+    finalize_sm90_tma_atom(device_params.w1_tma, weight_tag);
+    finalize_sm90_tma_atom(device_params.output_tma, true);
+  }
 
   device_params.x0_coord = make_tensor2_s1_coord(params.x);
   device_params.x1_coord = device_params.x0_coord;

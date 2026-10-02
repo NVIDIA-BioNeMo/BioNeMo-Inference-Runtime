@@ -24,6 +24,7 @@ import torch
 import torch.nn as nn
 
 from bionemo_ir._torch.layers.linear import Linear
+from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import (
     broadcast_token_feat_to_atoms,
@@ -42,6 +43,7 @@ from bionemo_ir._torch.utils import (
 )
 
 if TYPE_CHECKING:
+    from bionemo_ir.configs import TrunkPadSpec
     from bionemo_ir.models.openfold3.config import PairformerConfig
 
 
@@ -155,6 +157,7 @@ class PairformerEmbedding(nn.Module):
         inf: float,
         dtype: torch.dtype = torch.float32,
         skip_create_weights: bool = False,
+        token_pad_spec: TrunkPadSpec | None = None,
     ):
         """
         Args:
@@ -172,6 +175,9 @@ class PairformerEmbedding(nn.Module):
                 Maximum value for bin (20.75). ibid
             no_bin:
                 Number of bins (15). ibid
+            token_pad_spec:
+                Pairformer inputs to pad to a multiple of 8 tokens when
+                ``pairformer.enable_token_pad``; ``None`` never pads.
         """
         super().__init__()
         self.min_bin = min_bin
@@ -201,12 +207,31 @@ class PairformerEmbedding(nn.Module):
         self.register_buffer("upper", upper, persistent=False)
         self.pair_embedding_chunk_policy = CHUNK_REGISTRY.get(CONFIDENCE_PAIR_EMBEDDING)
         self.pairformer_stack = PairformerModule(config=pairformer)
+        self.token_pad_spec = token_pad_spec if pairformer.enable_token_pad else None
         triangle_attention_chunk_policy = CHUNK_REGISTRY[CONFIDENCE_TRIANGLE_ATTENTION]
         for layer in self.pairformer_stack.layers:
             # Confidence retains several O(N²) tensors here. Bound the fused
             # QKV transient without changing earlier pairformer stacks.
             layer.tri_attn_start.mha.chunk_policy = triangle_attention_chunk_policy
             layer.tri_attn_end.mha.chunk_policy = triangle_attention_chunk_policy
+
+    def _run_pairformer(
+        self,
+        si: torch.Tensor,
+        zij: torch.Tensor,
+        single_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the pairformer stack on token axes padded per ``token_pad_spec``, returning unpadded outputs."""
+        n_true = zij.shape[-2]
+        if self.token_pad_spec is not None:
+            padded, _, n_true = pad_trunk_tokens(
+                {"s": si, "z": zij, "mask": single_mask, "pair_mask": pair_mask}, n_true, self.token_pad_spec
+            )
+            si, zij = padded["s"], padded["z"]
+            single_mask, pair_mask = padded["mask"], padded["pair_mask"]
+        si, zij = self.pairformer_stack(si, zij, single_mask, pair_mask, inplace_safe=True)
+        return unpad_trunk_tokens(si, zij, n_true=n_true, kinds=("single", "pair"))
 
     def _embed_zij_dense(
         self,
@@ -320,12 +345,11 @@ class PairformerEmbedding(nn.Module):
             )
             si_chunk = select_sample(si, 2, i)
 
-            si_chunk, zij_chunk = self.pairformer_stack(
+            si_chunk, zij_chunk = self._run_pairformer(
                 si_chunk,
                 zij_chunk,
                 select_sample(single_mask, 1, i),
                 select_sample(pair_mask, 2, i),
-                inplace_safe=True,
             )
             yield i, si_chunk, zij_chunk
             # A suspended generator retains its locals. Release the completed
@@ -422,13 +446,7 @@ class PairformerEmbedding(nn.Module):
         zij = reshape_inputs(x=zij, feat_dims=zij.shape[-3:])
         single_mask = reshape_inputs(x=single_mask, feat_dims=single_mask.shape[-1:])
         pair_mask = reshape_inputs(x=pair_mask, feat_dims=pair_mask.shape[-2:])
-        si, zij = self.pairformer_stack(
-            si,
-            zij,
-            single_mask,
-            pair_mask,
-            inplace_safe=True,
-        )
+        si, zij = self._run_pairformer(si, zij, single_mask, pair_mask)
 
         si = reshape_outputs(x=si, feat_dims=si.shape[-2:])
         zij = reshape_outputs(x=zij, feat_dims=zij.shape[-3:])
@@ -845,6 +863,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             inf=config.inf,
             dtype=self.dtype,
             skip_create_weights=self.skip_create_weights,
+            token_pad_spec=config.token_pad_spec,
         )
 
         self.pde = PredictedDistanceErrorHead(

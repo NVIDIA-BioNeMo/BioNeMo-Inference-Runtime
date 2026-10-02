@@ -14,7 +14,13 @@
 # limitations under the License.
 from pydantic import model_validator
 
-from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, PairformerConfig
+from bionemo_ir.configs import (
+    BaseConfig,
+    DiffusionTransformerConfig,
+    FeatureDictPadSpec,
+    PairformerConfig,
+    TrunkPadSpec,
+)
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.models.boltz2.config import MSAModuleConfig
 from bionemo_ir.pipeline.models.boltz2.const import num_tokens
@@ -74,6 +80,12 @@ class TrunkConfig(BaseConfig):
         trimul_high_precision=False,
         attention_initial_norm=True,
         version="v1",
+    )
+    # Tensors the trunk pads to a multiple of 8 tokens; the v1 msa is one-hot.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s_init", "s_inputs", "msa"),
+        pair_channel=("z_init",),
+        single_last=("has_deletion", "deletion_value", "msa_paired", "msa_mask", "token_pad_mask"),
     )
 
 
@@ -176,6 +188,17 @@ class ConfidenceModuleConfig(BaseConfig):
     msa_module: MSAModuleConfig = MSAModuleConfig()
     pairformer: PairformerConfig = PairformerConfig()
     input_embedder: InputEmbedderConfig = InputEmbedderConfig()
+    # Tensors padded around the confidence MSA module and pairformer.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s", "s_inputs"),
+        pair_channel=("z",),
+        single_last=("mask",),
+        pair_last=("pair_mask",),
+        feature_dict=FeatureDictPadSpec(
+            single_channel=("msa",),
+            single_last=("has_deletion", "deletion_value", "msa_paired", "msa_mask"),
+        ),
+    )
 
 
 class Boltz1Config(BaseConfig):

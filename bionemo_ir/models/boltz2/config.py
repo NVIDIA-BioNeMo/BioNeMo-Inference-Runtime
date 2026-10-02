@@ -14,7 +14,13 @@
 # limitations under the License.
 
 
-from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, PairformerConfig
+from bionemo_ir.configs import (
+    BaseConfig,
+    DiffusionTransformerConfig,
+    FeatureDictPadSpec,
+    PairformerConfig,
+    TrunkPadSpec,
+)
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.pipeline.models.boltz2.const import num_tokens
 
@@ -132,6 +138,17 @@ class TrunkConfig(BaseConfig):
         version="v2",
     )
     template_module: TemplateV2ModuleConfig = TemplateV2ModuleConfig()
+    # Tensors the trunk pads to a multiple of 8 tokens; feature_dict covers the template features.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s_init", "s_inputs"),
+        pair_channel=("z_init",),
+        single_last=("msa", "has_deletion", "deletion_value", "msa_paired", "msa_mask", "token_pad_mask"),
+        feature_dict=FeatureDictPadSpec(
+            single_last=("template_mask_frame", "template_mask_cb", "visibility_ids", "template_mask"),
+            single_channel=("template_restype", "template_frame_t", "template_cb", "template_ca"),
+            single_matrix=("template_frame_rot",),
+        ),
+    )
 
 
 class AtomDiffusionConfig(BaseConfig):
@@ -253,6 +270,13 @@ class ConfidenceModuleConfig(BaseConfig):
         version="v2",
     )
     confidence_heads: ConfidenceHeadsConfig = ConfidenceHeadsConfig()
+    # Tensors padded around the confidence pairformer.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s",),
+        pair_channel=("z",),
+        single_last=("mask",),
+        pair_last=("pair_mask",),
+    )
 
 
 class Boltz2Config(BaseConfig):

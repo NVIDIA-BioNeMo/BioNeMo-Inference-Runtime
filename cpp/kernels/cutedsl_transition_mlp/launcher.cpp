@@ -36,38 +36,6 @@ namespace
 constexpr char kSM90LaunchAbi[] = "transition_mlp_sm90_v1";
 constexpr char kSM80LaunchAbi[] = "transition_mlp_sm80_v1";
 
-/* CuTe DSL 4.5.2 sets the operation tag on every atom, the store included, unless the atom's tensor
- * is static and holds fewer than 2^16 elements. Only the weights are static. The lowering does not
- * document this rule, so a new shape needs its parameter bank compared against the source launch.
- */
-bool has_operation_tag(std::int64_t static_elements)
-{
-  return static_elements >= (std::int64_t{1} << 16);
-}
-
-void finalize_tma_atom(CUtensorMap& descriptor, bool operation_tag)
-{
-  /* CuTe DSL 4.5.2 lowers each by-value non-executable TMA CopyAtom into a 64-byte Hopper atom
-   * payload carried in a 128-byte kernel parameter slot. cuTensorMapEncodeTiled returns the
-   * standalone tensor-map form, which differs only in the atom and operation tags. Add them and
-   * clear the unused upper half; every other field belongs in the encoded descriptor.
-   *
-   * These offsets are part of launch ABI transition_mlp_sm90_v1. The builder pins the CuTe DSL
-   * toolchain, so a compiler encoding change requires a new launch ABI.
-   */
-  constexpr std::size_t kAtomTagOffset = 8;
-  constexpr std::size_t kOperationTagOffset = 10;
-  constexpr std::size_t kAtomPayloadBytes = 64;
-  constexpr std::uint8_t kNonExecutableAtom = 0x02U;
-  constexpr std::uint8_t kOperationTag = 0x20U;
-
-  auto* bytes = reinterpret_cast<std::uint8_t*>(&descriptor);
-  bytes[kAtomTagOffset] |= kNonExecutableAtom;
-  if (operation_tag)
-    bytes[kOperationTagOffset] |= kOperationTag;
-  std::fill(bytes + kAtomPayloadBytes, bytes + sizeof(CUtensorMap), 0U);
-}
-
 /* Bare device pointers require explicit cross-device validation. */
 void validate_operand_devices(KernelConfig const& config, LaunchParams const& params, std::int32_t device)
 {
@@ -277,10 +245,11 @@ void launch_sm90(
     device_params.output_tma, metadata.output, expected_dtype, make_tma_tensor2_source(params.output, false), "output");
   std::int64_t const w1_elements = std::int64_t{w1_row_count(config.spec)} * config.spec.width;
   std::int64_t const w2_elements = std::int64_t{config.spec.width} * config.spec.hidden;
-  finalize_tma_atom(device_params.x_tma, true);
-  finalize_tma_atom(device_params.w1_tma, has_operation_tag(w1_elements));
-  finalize_tma_atom(device_params.w2_tma, has_operation_tag(w2_elements));
-  finalize_tma_atom(device_params.output_tma, true);
+  /* Only the weights are static. */
+  finalize_sm90_tma_atom(device_params.x_tma, true);
+  finalize_sm90_tma_atom(device_params.w1_tma, sm90_static_tma_operation_tag(w1_elements));
+  finalize_sm90_tma_atom(device_params.w2_tma, sm90_static_tma_operation_tag(w2_elements));
+  finalize_sm90_tma_atom(device_params.output_tma, true);
   if (config.spec.has_residual)
   {
     encode_tma_descriptor(
@@ -289,7 +258,7 @@ void launch_sm90(
       expected_dtype,
       make_tma_tensor2_source(params.residual, false),
       "residual");
-    finalize_tma_atom(device_params.residual_tma, true);
+    finalize_sm90_tma_atom(device_params.residual_tma, true);
     device_params.residual_coord = make_tensor2_s1_coord(params.residual);
   }
 

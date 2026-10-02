@@ -152,6 +152,8 @@ BioIR documentation lives under [`docs/`](docs/) and is published with Fern:
 - [Config architecture](docs/ref/config.md) — model `BaseConfig` tree and
   pipeline stage configs
 - [Support matrix](docs/ref/support-matrix.md) — models, GPUs, and fused kernels
+- [Token padding](docs/ref/token-padding.md) — what BioIR pads to a multiple
+  of 8 tokens, and why it runs faster
 - [Benchmarks](docs/ref/benchmark.md) — measured speedup and memory against OSS
   PyTorch
 - [Model weights](docs/ref/model-weights.md) — checkpoint resolution and staging

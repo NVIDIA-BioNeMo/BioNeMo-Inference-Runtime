@@ -57,6 +57,7 @@ PAGE_ROUTES = {
     Path("ref/sampling.md"): "references/sampling",
     Path("ref/support-matrix.md"): "references/support-matrix",
     Path("ref/system-information.md"): "references/system-information",
+    Path("ref/token-padding.md"): "references/token-padding",
     Path("SECURITY.md"): "community/security",
 }
 # Trees omitted from the public GitHub subset. Canonical pages must not link

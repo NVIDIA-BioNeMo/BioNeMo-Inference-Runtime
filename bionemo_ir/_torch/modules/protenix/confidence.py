@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 
 from bionemo_ir._torch.layers.linear import Linear
+from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.dsl_kernels.triton.indexed_projection import IndexedRows, indexed_projection, prepare_indexed_rows
@@ -70,6 +71,8 @@ class ProtenixConfidenceHead(nn.Module):
 
         self.pairformer_stack = PairformerModule(config.pairformer_config)
         self.pairformer_dtype = config.pairformer_config.torch_dtype
+        self.enable_token_pad = config.pairformer_config.enable_token_pad
+        self.token_pad_spec = config.token_pad_spec
 
         self.linear_no_bias_pae = Linear(self.c_z, self.b_pae, bias=False, dtype=self.dtype, skip_create_weights=skip)
         self.linear_no_bias_pde = Linear(self.c_z, self.b_pde, bias=False, dtype=self.dtype, skip_create_weights=skip)
@@ -111,9 +114,16 @@ class ProtenixConfidenceHead(nn.Module):
         """AF3 Alg. 31 for one diffusion sample (memory-efficient path)."""
         z_pair = self._distance_embed(z_pair, x_rep)
 
-        s_single, z_pair = self.pairformer_stack(
-            s_trunk.to(self.pairformer_dtype), z_pair.to(self.pairformer_dtype), single_mask, pair_mask
-        )
+        s_single, z_pair = s_trunk.to(self.pairformer_dtype), z_pair.to(self.pairformer_dtype)
+        n_true = z_pair.shape[-2]
+        if self.enable_token_pad:
+            padded, _, n_true = pad_trunk_tokens(
+                {"s": s_single, "z": z_pair, "mask": single_mask, "pair_mask": pair_mask}, n_true, self.token_pad_spec
+            )
+            s_single, z_pair = padded["s"], padded["z"]
+            single_mask, pair_mask = padded["mask"], padded["pair_mask"]
+        s_single, z_pair = self.pairformer_stack(s_single, z_pair, single_mask, pair_mask)
+        s_single, z_pair = unpad_trunk_tokens(s_single, z_pair, n_true=n_true, kinds=("single", "pair"))
         z_pair = z_pair.to(self.dtype)
         s_single = s_single.to(self.dtype)
 

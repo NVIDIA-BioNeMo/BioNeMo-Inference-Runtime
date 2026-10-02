@@ -33,13 +33,21 @@
       "raster_factor": 0
     },
     "S=384|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 1
+      "kernel_variant": "resident",
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 2,
+      "cluster_n": 1,
+      "bias_smem": false,
+      "bias_regs": false,
+      "n": 256,
+      "k0": 128,
+      "k1": 128
     },
     "S=512|t=0": {
       "tile_shape_mn": [
@@ -51,13 +59,21 @@
       "raster_factor": 2
     },
     "S=512|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 1
+      "kernel_variant": "resident",
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 128,
+      "epi_stage": 2,
+      "k_group": 1,
+      "cluster_n": 1,
+      "bias_smem": false,
+      "bias_regs": false,
+      "n": 256,
+      "k0": 128,
+      "k1": 128
     },
     "S=768|t=0": {
       "tile_shape_mn": [
@@ -69,13 +85,21 @@
       "raster_factor": 0
     },
     "S=768|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 0
+      "kernel_variant": "resident",
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "cluster_n": 1,
+      "bias_smem": false,
+      "bias_regs": false,
+      "n": 256,
+      "k0": 128,
+      "k1": 128
     },
     "S=1536|t=0": {
       "tile_shape_mn": [
@@ -87,13 +111,21 @@
       "raster_factor": 1
     },
     "S=1536|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 8,
-      "raster_factor": 1
+      "kernel_variant": "resident",
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 4,
+      "stages1": 4,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "cluster_n": 1,
+      "bias_smem": false,
+      "bias_regs": false,
+      "n": 256,
+      "k0": 128,
+      "k1": 128
     },
     "S=2048|t=0": {
       "tile_shape_mn": [
@@ -105,13 +137,21 @@
       "raster_factor": 1
     },
     "S=2048|t=1": {
-      "tile_shape_mn": [
-        64,
-        128
-      ],
-      "num_stages": 0,
-      "tile_k_multiplier": 4,
-      "raster_factor": 0
+      "kernel_variant": "resident",
+      "tile_n": 128,
+      "km0": 8,
+      "km1": 8,
+      "stages0": 0,
+      "stages1": 0,
+      "epi_n": 64,
+      "epi_stage": 2,
+      "k_group": 1,
+      "cluster_n": 2,
+      "bias_smem": false,
+      "bias_regs": false,
+      "n": 256,
+      "k0": 128,
+      "k1": 128
     }
   }
 }

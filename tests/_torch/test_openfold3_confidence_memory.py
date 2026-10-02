@@ -58,6 +58,7 @@ class _FakePairformerEmbedding(PairformerEmbedding):
     def __init__(self) -> None:
         nn.Module.__init__(self)
         self.pairformer_stack = _FakePairformer()
+        self.token_pad_spec = None
 
     def embed_zij(
         self,

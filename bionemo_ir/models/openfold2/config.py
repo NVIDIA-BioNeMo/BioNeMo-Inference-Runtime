@@ -15,7 +15,7 @@
 
 from pydantic import model_validator
 
-from bionemo_ir.configs import BaseConfig, EvoformerStackConfig
+from bionemo_ir.configs import BaseConfig, EvoformerStackConfig, FeatureDictPadSpec, TrunkPadSpec
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 
 
@@ -193,6 +193,25 @@ class TrunkConfig(BaseConfig):
         opm_first=False,
         transition_n=4,
         trimul_high_precision=False,
+    )
+    # Pad residues to a multiple of 8 for the extra-MSA and Evoformer stacks.
+    enable_token_pad: bool = True
+    # Tensors padded before those stacks; the template stack runs unpadded.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("m",),  # [*, S, N, C_m]
+        pair_channel=("z",),
+        single_last=("msa_mask",),  # [*, S, N]
+        pair_last=("pair_mask",),
+        feature_dict=FeatureDictPadSpec(
+            # [*, S_extra, N]; extra_deletion_matrix is the multimer form.
+            single_last=(
+                "extra_msa",
+                "extra_has_deletion",
+                "extra_deletion_value",
+                "extra_deletion_matrix",
+                "extra_msa_mask",
+            ),
+        ),
     )
 
 

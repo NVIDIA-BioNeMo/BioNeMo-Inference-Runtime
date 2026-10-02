@@ -15,7 +15,14 @@
 
 from pydantic import Field
 
-from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, EvoformerStackConfig, PairformerConfig
+from bionemo_ir.configs import (
+    BaseConfig,
+    DiffusionTransformerConfig,
+    EvoformerStackConfig,
+    FeatureDictPadSpec,
+    PairformerConfig,
+    TrunkPadSpec,
+)
 from bionemo_ir.registry import SupMat
 
 
@@ -253,6 +260,37 @@ class AuxiliaryHeadsConfig(BaseConfig):
         c_z=128,
         c_out=64,
     )
+    # Tensors padded around the confidence pairformer.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s",),
+        pair_channel=("z",),
+        single_last=("mask",),
+        pair_last=("pair_mask",),
+    )
+
+
+class TrunkConfig(BaseConfig):
+    pairformer: PairformerConfig = PairformerConfig()
+    # Tensors padded to a multiple of 8 tokens before the trunk; feature_dict covers the batch keys.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s_input", "s_init"),
+        pair_channel=("z_init",),
+        feature_dict=FeatureDictPadSpec(
+            single_last=(
+                "token_mask",
+                "asym_id",
+                "residue_index",
+                "entity_id",
+                "has_deletion",
+                "deletion_value",
+                "msa_mask",
+                "template_pseudo_beta_mask",
+                "template_backbone_frame_mask",
+            ),
+            single_channel=("msa", "template_restype"),
+            pair_channel=("template_distogram", "template_unit_vector"),
+        ),
+    )
 
 
 class NoiseScheduleConfig(BaseConfig):
@@ -284,7 +322,7 @@ class OpenFold3Config(BaseConfig):
     edm_sampling_config: BaseConfig = EDMSamplingConfig()
     noise_schedule_config: BaseConfig = NoiseScheduleConfig()
 
-    trunk: BaseConfig = BaseConfig(
+    trunk: TrunkConfig = TrunkConfig(
         pairformer=PairformerConfig(
             token_s=c_s,
             token_z=c_z,

@@ -23,6 +23,7 @@ from bionemo_ir.logger import logger
 import bionemo_ir.pipeline.models.openfold2.const as residue_constants
 from bionemo_ir._torch.attention_backend import auto_select_triangle_attention_backend, get_attention_backend
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
+from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.modules.openfold2.confidence import AuxiliaryHeads
 from bionemo_ir._torch.modules.openfold2.embedders import (
     ExtraMSAEmbedder,
@@ -89,6 +90,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             else:
                 self.template_embedder = TemplateEmbedder(self.config.template_embedder)
         self.evoformer = EvoformerStack(self.config.trunk.evoformer_stack)
+        self.enable_token_pad = self.config.trunk.enable_token_pad
         self.structure_module = StructureModule(self.config.structure_module)
         self.aux_heads = AuxiliaryHeads(self.config.confidence_module)
 
@@ -333,9 +335,21 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                         [feats["msa_mask"], template_embeds["template_mask"]],
                         dim=-2,
                     )
+
+        n_true = seq_mask.shape[-1]
+        trunk_feats = feats
+        if self.enable_token_pad:
+            padded, trunk_feats, n_true = pad_trunk_tokens(
+                {"m": m, "z": z, "msa_mask": msa_mask, "pair_mask": pair_mask},
+                n_true,
+                self.config.trunk.token_pad_spec,
+                feats,
+            )
+            m, z, msa_mask, pair_mask = padded["m"], padded["z"], padded["msa_mask"], padded["pair_mask"]
+
         a = None
         if self.config.enable_extra_msa:
-            extra_msa_feat = self.extra_msa_fn(**self.get_module_feed_dict(feats, "extra_msa_feat")).to(
+            extra_msa_feat = self.extra_msa_fn(**self.get_module_feed_dict(trunk_feats, "extra_msa_feat")).to(
                 self.config.extra_msa_embedder.torch_dtype
             )
 
@@ -348,7 +362,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             z = self.extra_msa_stack(
                 a,
                 z,
-                msa_mask=feats["extra_msa_mask"].to(m),
+                msa_mask=trunk_feats["extra_msa_mask"].to(m),
                 pair_mask=pair_mask.to(m),
                 attn_metadata=triangle_metadata_cls(),
             )
@@ -363,6 +377,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             pair_mask=pair_mask.to(m),
             attn_metadata=triangle_metadata_cls(),
         )
+        m, z, s = unpad_trunk_tokens(m, z, s, n_true=n_true, kinds=("single_channel", "pair_channel", "single_channel"))
 
         structure_output = {}
         structure_output = self.structure_module(s, z, feats["aatype"], mask=feats["seq_mask"].to(dtype=s.dtype))

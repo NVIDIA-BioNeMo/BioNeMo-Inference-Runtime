@@ -22,6 +22,12 @@ from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.layers.conditioning import ContactConditioning
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.position_encoders import RelativePositionEncoder
+from bionemo_ir._torch.layers.token_padding import (
+    pad_feature_dict,
+    pad_trunk_tokens,
+    round_up_tokens,
+    unpad_trunk_tokens,
+)
 from bionemo_ir._torch.utils import recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.pipeline.models.boltz2.const import (
@@ -375,6 +381,8 @@ class Boltz2ConfidenceModule(nn.Module):
             )
 
         self.pairformer_stack = PairformerModule(config=config.pairformer)
+        self.enable_token_pad = config.pairformer.enable_token_pad
+        self.token_pad_spec = config.token_pad_spec
 
         self.return_latent_feats = config.return_latent_feats
 
@@ -544,7 +552,14 @@ class Boltz2ConfidenceModule(nn.Module):
                 x_pred_chunk, s, z, feats, token_to_rep_atom, current_multiplicity
             )
 
+            n_true = z_t.shape[-2]
+            if self.enable_token_pad:
+                padded, _, n_true = pad_trunk_tokens(
+                    {"s": s_t, "z": z_t, "mask": mask, "pair_mask": pair_mask}, n_true, self.token_pad_spec
+                )
+                s_t, z_t, mask, pair_mask = padded["s"], padded["z"], padded["mask"], padded["pair_mask"]
             s_t, z_t = self.pairformer_stack(s_t, z_t, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
+            s_t, z_t = unpad_trunk_tokens(s_t, z_t, n_true=n_true, kinds=("single", "pair"))
             s_t = s_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             z_t = z_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             out_dict = {}
@@ -742,6 +757,8 @@ class Boltz1ConfidenceModule(nn.Module):
 
         self.max_num_atoms_per_token = 23
         self.no_update_s = self.pairformer_config.no_update_s
+        self.enable_token_pad = self.pairformer_config.enable_token_pad
+        self.token_pad_spec = config.token_pad_spec
 
         self.max_dist = self.config.max_dist
         self.num_dist_bins = self.config.num_dist_bins
@@ -1007,6 +1024,13 @@ class Boltz1ConfidenceModule(nn.Module):
         # drop it so its [N, N, 1] buffer frees before the per-sample pairformer loop.
         feature_dict.pop("token_bonds", None)
 
+        # Every chunk reads the same MSA features, so pad them once here.
+        n_tokens = s.shape[-2]
+        token_pad = round_up_tokens(n_tokens) - n_tokens if self.enable_token_pad else 0
+        msa_feats = self.get_module_feed_dict(feature_dict, "msa_module")
+        if token_pad:
+            msa_feats = pad_feature_dict(msa_feats, token_pad, self.token_pad_spec.feature_dict)
+
         s = repeat_with_multiplicity(s, multiplicity)
         z = repeat_with_multiplicity(z, multiplicity)
         s_inputs = repeat_with_multiplicity(s_inputs, multiplicity)
@@ -1043,15 +1067,25 @@ class Boltz1ConfidenceModule(nn.Module):
             mask = mask.flatten(0, 1).to(input_dtype)
             pair_mask = pair_mask.flatten(0, 1).to(input_dtype)
 
+            if token_pad:
+                padded, _, _ = pad_trunk_tokens(
+                    {"s": s_chunk, "s_inputs": s_inputs_chunk, "z": z_chunk, "mask": mask, "pair_mask": pair_mask},
+                    n_tokens,
+                    self.token_pad_spec,
+                )
+                s_chunk, s_inputs_chunk, z_chunk = padded["s"], padded["s_inputs"], padded["z"]
+                mask, pair_mask = padded["mask"], padded["pair_mask"]
+
             # FIXME: create attn_metadata for msa_module and pairformer_module
             z_chunk = z_chunk + self.msa_module(
                 z=z_chunk,
                 emb=s_inputs_chunk,
                 token_pad_mask=pair_mask,
-                **self.get_module_feed_dict(feature_dict, "msa_module"),
+                **msa_feats,
             )
 
             s_chunk, z_chunk = self.pairformer_module(s=s_chunk, z=z_chunk, mask=mask, pair_mask=pair_mask)
+            s_chunk, z_chunk = unpad_trunk_tokens(s_chunk, z_chunk, n_true=n_tokens, kinds=("single", "pair"))
 
             # Recover dtype for the final output
             s_chunk = s_chunk.to(self.config.torch_dtype)

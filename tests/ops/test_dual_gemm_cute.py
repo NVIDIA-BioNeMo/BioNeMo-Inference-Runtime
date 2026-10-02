@@ -419,6 +419,11 @@ def test_x_x_tuned_odd_rectangular_masked(
         # Larger N path (most production trimul uses N=256).
         Scenario(N=256, K=128, seq_lens=[100, 512], dtype=torch.bfloat16),
         Scenario(N=256, K=128, seq_lens=[100, 512], dtype=torch.bfloat16, has_bias=True, has_mask=True),
+        # Boltz-2/OpenFold3 trimul: the S=128 anchor stays ping-pong, larger anchors run the resident kernel.
+        Scenario(N=256, K=128, seq_lens=[100, 384, 512], dtype=torch.bfloat16, transpose_out=True),
+        Scenario(
+            N=256, K=128, seq_lens=[100, 512], dtype=torch.bfloat16, has_bias=True, has_mask=True, transpose_out=True
+        ),
         # ProtenixV2 trimul (c_z=256, hidden=256).
         Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16),
         Scenario(N=512, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, has_mask=True),
@@ -450,6 +455,8 @@ def test_x_x_tuned_odd_rectangular_masked(
         "sc_N128_K128_b0_m1_fp16",
         "sc_N256_K128_b0_m0_bf16",
         "sc_N256_K128_b1_m1_bf16",
+        "sc_N256_K128_b0_m0_bf16_t1",
+        "sc_N256_K128_b1_m1_bf16_t1",
         "sc_N512_K256_b0_m0_bf16",
         "sc_N512_K256_b0_m1_bf16",
         "sc_N512_K256_b0_m0_bf16_t1",

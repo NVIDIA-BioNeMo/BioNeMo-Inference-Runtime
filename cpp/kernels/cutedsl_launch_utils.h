@@ -406,6 +406,37 @@ inline TmaDescriptorInfo multicast_tma_descriptor(TmaDescriptorInfo info, std::u
   return info;
 }
 
+/* CuTe DSL 4.5.2 passes each Hopper TMA operand of a non-executable atom as the
+ * encoded tensor map in the low 64 bytes of the 128-byte parameter slot. Its
+ * host wrapper tags byte 8 of every atom, and byte 10 of every atom, the store
+ * included, unless the atom's tensor is static and holds fewer than 2^16
+ * elements. The upper half is never read. The lowering does not document this
+ * rule, so a new shape needs its parameter bank compared against the source
+ * launch. Captured against the CuTe host launcher for transition_mlp_sm90_v1
+ * and dual_gemm_x_x_sm90_resident_mask_ptr_v1, so a compiler encoding change
+ * requires new launch ABIs.
+ */
+inline bool sm90_static_tma_operation_tag(std::int64_t static_elements)
+{
+  return static_elements >= (std::int64_t{1} << 16);
+}
+
+inline void finalize_sm90_tma_atom(CUtensorMap& descriptor, bool operation_tag)
+{
+  constexpr std::size_t kAtomTagOffset = 8;
+  constexpr std::size_t kOperationTagOffset = 10;
+  constexpr std::size_t kAtomPayloadBytes = 64;
+  constexpr std::uint8_t kNonExecutableAtom = 0x02U;
+  constexpr std::uint8_t kOperationTag = 0x20U;
+  static_assert(sizeof(CUtensorMap) == 128);
+
+  auto* bytes = reinterpret_cast<std::uint8_t*>(&descriptor);
+  bytes[kAtomTagOffset] |= kNonExecutableAtom;
+  if (operation_tag)
+    bytes[kOperationTagOffset] |= kOperationTag;
+  std::fill(bytes + kAtomPayloadBytes, bytes + sizeof(CUtensorMap), 0U);
+}
+
 /* CuTe DSL 4.5.2 passes each Blackwell TMA operand as a by-value
  * non-executable atom: the encoded tensor map in the low 64 bytes of the
  * 128-byte parameter slot, tagged at byte 8. Plain, multicast, and 2-SM loads

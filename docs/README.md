@@ -21,7 +21,7 @@ at [docs.nvidia.com/bionemo/inference-runtime][site].
   [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and [`SECURITY.md`](SECURITY.md) —
   community policies
 - [`ref/`](ref/) — API, architecture, config, images, support, model weights,
-  and benchmarks
+  token padding, and benchmarks
 - [`assets/`](assets/) — images and other media referenced by these pages
 
 The linked Markdown files and `ref/` are the public sources. `fern/` at the

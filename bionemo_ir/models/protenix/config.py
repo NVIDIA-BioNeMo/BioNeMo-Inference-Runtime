@@ -18,7 +18,13 @@ Defaults track the ``protenix-v2`` checkpoint (ByteDance OSS
 ``configs_base.py`` + ``configs_model_type.py`` overrides).
 """
 
-from bionemo_ir.configs import BaseConfig, DiffusionTransformerConfig, PairformerConfig
+from bionemo_ir.configs import (
+    BaseConfig,
+    DiffusionTransformerConfig,
+    FeatureDictPadSpec,
+    PairformerConfig,
+    TrunkPadSpec,
+)
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.models.openfold3.config import MSAModuleStackConfig
 
@@ -299,6 +305,13 @@ class ConfidenceHeadConfig(BaseConfig):
     distance_bin_step: float = 1.25
     pairformer_config: BaseConfig = _pairformer_config(num_blocks=4)
     dtype: str = "float32"
+    # Tensors padded around the confidence pairformer.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s",),
+        pair_channel=("z",),
+        single_last=("mask",),
+        pair_last=("pair_mask",),
+    )
 
 
 class ProtenixMSAModuleConfig(MSAModuleStackConfig):
@@ -343,6 +356,18 @@ class TrunkConfig(BaseConfig):
     template_embedder_config: BaseConfig = TemplateEmbedderConfig()
     msa_module_config: BaseConfig = ProtenixMSAModuleConfig()
     pairformer_config: BaseConfig = _pairformer_config()
+    # Tensors the trunk pads to a multiple of 8 tokens, MSA and template features included.
+    token_pad_spec: TrunkPadSpec = TrunkPadSpec(
+        single_channel=("s_inputs", "s_init"),
+        pair_channel=("z_init",),
+        single_last=("token_mask",),
+        pair_last=("pair_mask",),
+        feature_dict=FeatureDictPadSpec(
+            single_last=("msa", "has_deletion", "deletion_value", "asym_id", "template_aatype"),
+            pair_last=("template_pseudo_beta_mask", "template_backbone_frame_mask"),
+            pair_channel=("template_distogram", "template_unit_vector"),
+        ),
+    )
 
 
 class ConfidenceSummaryConfig(BaseConfig):

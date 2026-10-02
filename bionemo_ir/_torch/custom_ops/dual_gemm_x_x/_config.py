@@ -154,15 +154,24 @@ def _get_config_selection(
     S: int,
     transpose_out: bool,
 ) -> _DualGemmXxConfigSelection:
-    """Return implementation metadata and the nearest tuned tile."""
+    """Return implementation metadata and the nearest tuned tile.
+
+    ``kernel_variant`` is normally the bundle-wide default, but one bucket's
+    tile_params may name its own ``"kernel_variant"`` to select a different
+    kernel class for just that anchor (e.g. the resident-weight kernel wins
+    at larger N but regresses at the smallest anchor, where the bundle
+    default stays in force). Popped from ``tile_params`` so it never leaks
+    into a ``KernelConfig.from_dict`` call as an unrecognized field.
+    """
     bundle = _load_config_bundle(sm_version, K, N)
     chosen_key, tile_params = _nearest_variant(bundle.configs, S, transpose_out)
     match = _VARIANT_KEY_RE.fullmatch(chosen_key)
     if match is None:
         raise ValueError(f"Invalid dual_gemm x_x variant key {chosen_key!r}")
+    kernel_variant = tile_params.pop("kernel_variant", bundle.kernel_variant)
     return _DualGemmXxConfigSelection(
         kernel_abi=bundle.kernel_abi,
-        kernel_variant=bundle.kernel_variant,
+        kernel_variant=kernel_variant,
         chosen_key=chosen_key,
         bucket=int(match.group(1)),
         tile_params=tile_params,
@@ -198,14 +207,20 @@ def _kernel_is_sm90(sm_version: int, K: int, N: int) -> bool:
     return bundle is not None and bundle.kernel_abi == "sm90"
 
 
-def _uses_resident_kernel(sm_version: int, K: int, N: int) -> bool:
-    """Whether the shape selects the resident-weight SM90 kernel, which needs a live mask.
+def _uses_resident_kernel(sm_version: int, K: int, N: int, S: int, transpose_out: bool) -> bool:
+    """Whether this (shape, anchor) selects the resident-weight SM90 kernel, which needs a live mask.
 
     The Blackwell resident kernel null-checks the mask like every other image, so
-    only the SM90 one qualifies.
+    only the SM90 one qualifies. Bucket-aware (not just bundle-wide) because a
+    bucket's tile_params may override ``kernel_variant`` for just that anchor --
+    goes through the same ``_get_config_selection`` resolution every other caller
+    uses, so this can never disagree with which kernel actually gets built.
     """
     bundle = _optional_config_bundle(sm_version, K, N)
-    return bundle is not None and bundle.kernel_abi == "sm90" and bundle.kernel_variant == RESIDENT_VARIANT
+    if bundle is None or bundle.kernel_abi != "sm90":
+        return False
+    selection = _get_config_selection(sm_version, K, N, S, transpose_out)
+    return selection.kernel_variant == RESIDENT_VARIANT
 
 
 def get_nearest_bucket(

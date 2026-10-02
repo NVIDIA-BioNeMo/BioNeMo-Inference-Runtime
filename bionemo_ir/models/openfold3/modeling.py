@@ -30,6 +30,7 @@ from bionemo_ir._torch.layers.normalization import (
 )
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
+from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.layers.triangle_nodes import TriangleAttentionNode, TriangleMultiplicationNode
 from bionemo_ir._torch.modules.openfold3.confidence import AuxiliaryHeadsAllAtom
@@ -125,6 +126,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         )
 
         self.pairformer_stack = PairformerModule(config=self.config.trunk.pairformer)
+        self.enable_token_pad = self.config.trunk.pairformer.enable_token_pad
         diffusion_module = DiffusionModule(config=self.config.diffusion_module_config)
         self.diffusion_sampler = OpenFold3DiffusionSampler(
             config=self.config.edm_sampling_config, diffusion_module=diffusion_module
@@ -259,6 +261,16 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         # Long inference writes pair rows directly into this final storage.
         s_init = s_init.to(dtype=pairformer_dtype)
 
+        n_true = z_init.shape[1]
+        if self.enable_token_pad:
+            padded, batch, n_true = pad_trunk_tokens(
+                {"s_input": s_input, "s_init": s_init, "z_init": z_init},
+                n_true,
+                self.config.trunk.token_pad_spec,
+                batch,
+            )
+            s_input, s_init, z_init = padded["s_input"], padded["s_init"], padded["z_init"]
+
         pair_build_policy = getattr(self.input_embedder, "pair_build_chunk_policy", None)
         reclaim_recycle_cache = (
             z_init.is_cuda
@@ -310,6 +322,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             if reclaim_recycle_cache and cycle_index + 1 < num_cycles:
                 torch.cuda.empty_cache()
 
+        s_input, s, z = unpad_trunk_tokens(s_input, s, z, n_true=n_true, kinds=("single", "single", "pair"))
         return s_input, s, z
 
     def prediction(

@@ -41,6 +41,13 @@ class PairformerConfig(BaseConfig):
     # OpenFold-3 v0.5.0 builds the ending node's triangle bias from the
     # transposed pair representation; AlphaFold-2, Boltz and Protenix do not.
     tri_attn_transposed_bias: bool = False
+    # Pad s/z/mask token dims to a multiple of 8 once before the owning
+    # trunk's recycling/layer loop (bionemo_ir._torch.layers.token_padding).
+    # TriangleMultiplicationNode's fused residual epilogue
+    # (triangle_nodes.can_fuse_residual) requires 8-aligned pair dims; real
+    # sequence lengths essentially never are, so every trimul layer in every
+    # block otherwise falls back to an unfused, much slower residual add.
+    enable_token_pad: bool = True
 
     @field_serializer("s_path_dtype")
     @classmethod

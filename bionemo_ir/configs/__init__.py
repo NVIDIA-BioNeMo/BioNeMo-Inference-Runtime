@@ -15,6 +15,7 @@
 
 from .base import AcceleratedConfig, BackendType, BaseConfig, print_model_tree
 from .modules import DiffusionTransformerConfig, EvoformerStackConfig, PairformerConfig
+from .token_padding import FeatureDictPadSpec, TrunkPadSpec
 
 __all__ = [
     "BaseConfig",
@@ -24,4 +25,6 @@ __all__ = [
     "EvoformerStackConfig",
     "print_model_tree",
     "AcceleratedConfig",
+    "FeatureDictPadSpec",
+    "TrunkPadSpec",
 ]

@@ -41,6 +41,7 @@ from ._config import (
     nearest_bucket,
     pseudo_seqlen,
     shipped_variants,
+    w1_rows,
 )
 from ._cubin import TransitionMlpCubinExecutable
 
@@ -58,10 +59,6 @@ def _rows_aligned(tensor: torch.Tensor) -> bool:
         and tensor.data_ptr() % _ROW_ALIGNMENT_BYTES == 0
         and row_bytes % _ROW_ALIGNMENT_BYTES == 0
     )
-
-
-def _w1_rows(variant: TransitionMlpVariant) -> int:
-    return 2 * variant.hidden if variant.activation == "silu_gate" else variant.hidden
 
 
 class TransitionMlpCuTe(CuteKernelCache):
@@ -201,7 +198,7 @@ class TransitionMlpCuTe(CuteKernelCache):
             or not like.is_cuda
             or dtype not in _TORCH_TO_CUTLASS_DTYPE
             or like.shape[-1] != width
-            or w1.shape != (_w1_rows(variant), width)
+            or w1.shape != (w1_rows(variant), width)
             or w2.shape != (width, hidden)
             or any((bias is not None) != variant.has_bias for bias in biases)
             or (mask is not None) != variant.has_mask
@@ -285,6 +282,31 @@ class TransitionMlpOp:
     backend: TransitionMlpCuTe
     variant: TransitionMlpVariant
 
+    def prefers_fused(self, like: torch.Tensor, *, fp32_projection: bool = False) -> bool:
+        """Whether layers should fuse this shape, independently of operand compatibility.
+
+        SM8x SwiGLU provides little benefit below 4096 flattened rows. Keep those
+        calls on the existing projection path, including its numerical behavior.
+        Its rounded BF16 projections also cannot replace a caller's FP32 gated
+        projection. The conditioned two-way block keeps its dual-GEMM path.
+        Cap SM86 two-way fusion at 896 squared rows; larger pair
+        transitions retain their original arithmetic for iterative model accuracy.
+        Direct kernel calls remain available for every legal row count.
+        """
+        return not (
+            self.backend._sm_version in (80, 86, 89)
+            and self.variant.activation in ("silu_gate", "silu_gate_3way")
+            and (
+                fp32_projection
+                or like.numel() // self.variant.width < 4096
+                or (
+                    self.backend._sm_version == 86
+                    and self.variant.activation == "silu_gate"
+                    and like.numel() // self.variant.width > 896 * 896
+                )
+            )
+        )
+
     def accepts(
         self,
         like: torch.Tensor,
@@ -315,7 +337,8 @@ class TransitionMlpOp:
 
         Args:
             x: Normalized input with shape ``[..., C]``.
-            w1: ``[H, C]``, or ``[2H, C]`` holding value rows then gate rows for ``"silu_gate"``.
+            w1: ``[H, C]``, or ``[2H, C]`` holding value rows then gate rows for ``"silu_gate"``, or
+                ``[3H, C]`` holding value, gate and second-value rows for ``"silu_gate_3way"``.
             b1: One bias per ``w1`` row, present exactly when the variant has biases.
             w2: Second weight with shape ``[C, H]``.
             b2: ``[C]`` bias, present exactly when the variant has biases.

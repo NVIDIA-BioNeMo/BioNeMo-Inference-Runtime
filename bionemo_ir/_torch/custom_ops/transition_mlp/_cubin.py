@@ -51,7 +51,8 @@ class TransitionMlpCubinExecutable(CuTeDSLKernelLibraryExecutable):
             config = launcher.make_kernel_config(
                 target_sm,
                 launcher.DType.BFLOAT16,
-                variant.activation == "silu_gate",
+                variant.activation != "relu",
+                variant.activation == "silu_gate_3way",
                 variant.has_bias,
                 variant.has_mask,
                 variant.has_residual,

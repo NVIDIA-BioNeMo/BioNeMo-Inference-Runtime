@@ -218,7 +218,9 @@ class PairformerLayerV1(nn.Module):
                 inplace_residual=can_update_inplace,
             )
 
-        return self.transition_z(z, residual=True, inplace=can_update_inplace)
+        # ``z`` is owned here either way: the in-place path runs on storage
+        # the caller handed over, and the default path just built ``z + update``.
+        return self.transition_z(z, residual=True, inplace=True)
 
     def forward(
         self,
@@ -252,7 +254,8 @@ class PairformerLayerV1(nn.Module):
                 mask_bias=mask_bias,
                 buffers=buffers,
             )
-            s = s + self.transition_s(s)
+            # ``s + attention`` above is a fresh tensor, so update it in place.
+            s = self.transition_s(s, residual=True, inplace=True)
         return s, z
 
 
@@ -410,7 +413,8 @@ class PairformerLayerV2(PairformerLayerV1):
             mask_bias=mask_bias,
             buffers=buffers,
         )
-        s = s + self.transition_s(s)
+        # ``s + attention`` above is a fresh tensor, so update it in place.
+        s = self.transition_s(s, residual=True, inplace=True)
         if self.post_layer_norm:
             s = self.post_norm_s(s)
         s = s.to(original_s_dtype)

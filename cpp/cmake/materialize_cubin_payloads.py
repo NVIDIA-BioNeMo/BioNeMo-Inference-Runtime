@@ -346,6 +346,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("bucket", _INDEX, "std::int32_t bucket;"),
             _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
             _Field("is_silu_gate", _BOOL, "bool is_silu_gate;"),
+            # Every image published before the 3-way SwiGLU existed gates a single value.
+            _Field("is_three_way", _BOOL, "bool is_three_way;", default=False),
             _Field("has_bias", _BOOL, "bool has_bias;"),
             _Field("has_mask", _BOOL, "bool has_mask;"),
             _Field("has_residual", _BOOL, "bool has_residual;"),
@@ -355,6 +357,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         runtime_key=(
             "is_bfloat16",
             "is_silu_gate",
+            "is_three_way",
             "has_bias",
             "has_mask",
             "has_residual",
@@ -407,6 +410,7 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
         ("hidden", 1),
         ("bucket", 0),
         ("is_silu_gate", None),
+        ("is_three_way", None),
         ("has_bias", None),
         ("has_mask", None),
         ("has_residual", None),

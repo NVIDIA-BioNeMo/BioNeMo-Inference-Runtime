@@ -170,8 +170,9 @@ class ProtenixDiffusionConditioning(nn.Module):
         # The FP32 relative-position pair is dead once projected; keeping it
         # alive through the transitions' hidden activations raises the peak.
         del relpe_z
+        # ``pair_z`` is the fresh projection output, so update it in place.
         for layer in self.transition_z:
-            pair_z = pair_z + layer(pair_z)
+            pair_z = layer(pair_z, residual=True, inplace=True)
         return pair_z
 
     def forward_single(
@@ -191,8 +192,9 @@ class ProtenixDiffusionConditioning(nn.Module):
         single_s = self.linear_no_bias_s(self.layernorm_s(single_s))
         noise_n = self.fourier_embedding(torch.log(t_hat_noise_level / self.sigma_data) / 4).to(single_s.dtype)
         single_s = single_s.unsqueeze(-3) + self.linear_no_bias_n(self.layernorm_n(noise_n)).unsqueeze(-2)
+        # ``single_s`` is a fresh broadcast sum, so update it in place.
         for layer in self.transition_s:
-            single_s = single_s + layer(single_s)
+            single_s = layer(single_s, residual=True, inplace=True)
         return single_s
 
 

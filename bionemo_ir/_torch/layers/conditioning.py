@@ -133,8 +133,9 @@ class PairwiseConditioning(nn.Module):
         z = torch.cat((z_trunk, token_rel_pos_feats), dim=-1)
         z = self.init_proj_norm(z)
         z = self.init_proj_linear(z)
+        # ``z`` is the fresh projection output, so update it in place.
         for transition in self.transitions:
-            z = transition(z) + z
+            z = transition(z, residual=True, inplace=True)
         return z
 
 
@@ -209,8 +210,9 @@ class SingleConditioning(nn.Module):
             fourier_to_single = self.fourier_to_single(normed_fourier)
             s = fourier_to_single.unsqueeze(2).to(s) + s.unsqueeze(1)
 
+        # ``s`` is a fresh embedding sum, so update it in place.
         for transition in self.transitions:
-            s = transition(s) + s
+            s = transition(s, residual=True, inplace=True)
 
         return s, normed_fourier if not self.disable_times else None
 
@@ -380,29 +382,23 @@ class DiffusionConditioning(nn.Module):
             raise RuntimeError("diffusion pair conditioning requires at least one token row")
         return output
 
-    def _apply_pair_transitions(
-        self,
-        zij: torch.Tensor,
-        token_mask: torch.Tensor,
-        *,
-        inplace_safe: bool,
-    ) -> torch.Tensor:
+    # OpenFold3 masks these transition updates by ``token_mask``, but not the
+    # residual, so padded tokens already hold nonzero values. The transitions
+    # are position-wise and no consumer reads a padded token into a valid one
+    # (padded tokens broadcast to no atoms, the atom-pair gather zeroes padded
+    # atoms, the token transformer masks padded keys). Unmasked updates change
+    # only padded entries and skip building the ``[N, N]`` pair mask.
+    def _apply_pair_transitions(self, zij: torch.Tensor, *, inplace_safe: bool) -> torch.Tensor:
         """Apply pair transitions, optionally reusing owned inference storage."""
-        pair_token_mask = token_mask.unsqueeze(-1) * token_mask.unsqueeze(-2)
         can_update_inplace = inplace_safe and (not zij.is_cuda or not torch.cuda.is_current_stream_capturing())
         for layer in self.transition_z:
-            update = layer(zij, mask=pair_token_mask.unsqueeze(-1))
-            if can_update_inplace:
-                zij.add_(update)
-            else:
-                zij = zij + update
-            del update
+            zij = layer(zij, residual=True, inplace=can_update_inplace)
         return zij
 
-    def _apply_single_transitions(self, si: torch.Tensor, token_mask: torch.Tensor) -> torch.Tensor:
-        """Apply the noise-dependent single transitions."""
+    def _apply_single_transitions(self, si: torch.Tensor) -> torch.Tensor:
+        """Apply the noise-dependent single transitions to a freshly built ``si``."""
         for layer in self.transition_s:
-            si = si + layer(si, mask=token_mask.unsqueeze(-1))
+            si = layer(si, residual=True, inplace=True)
         return si
 
     def prepare_pair(
@@ -416,7 +412,7 @@ class DiffusionConditioning(nn.Module):
             zij_trunk = zij_trunk.zero_()
 
         zij = self._project_pair_inputs(zij_trunk, batch)
-        return self._apply_pair_transitions(zij, batch["token_mask"], inplace_safe=True)
+        return self._apply_pair_transitions(zij, inplace_safe=True)
 
     def prepare_single(self, si_input: torch.Tensor, si_trunk: torch.Tensor) -> torch.Tensor:
         """Project the noise-independent single inputs once per rollout."""
@@ -446,7 +442,7 @@ class DiffusionConditioning(nn.Module):
         n = self.fourier_emb(n)
 
         si = si + self.linear_n(self.layer_norm_n(n)).unsqueeze(-2)
-        return self._apply_single_transitions(si, batch["token_mask"])
+        return self._apply_single_transitions(si)
 
     def forward(
         self,

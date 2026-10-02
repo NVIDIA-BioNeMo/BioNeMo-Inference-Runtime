@@ -42,6 +42,7 @@ void bind(nb::module_& parent)
     .def_ro("hidden", &KernelSpec::hidden)
     .def_ro("bucket", &KernelSpec::bucket)
     .def_ro("is_silu_gate", &KernelSpec::is_silu_gate)
+    .def_ro("is_three_way", &KernelSpec::is_three_way)
     .def_ro("has_bias", &KernelSpec::has_bias)
     .def_ro("has_mask", &KernelSpec::has_mask)
     .def_ro("has_residual", &KernelSpec::has_residual)
@@ -75,6 +76,7 @@ void bind(nb::module_& parent)
     "target_sm"_a,
     "dtype"_a,
     "is_silu_gate"_a,
+    "is_three_way"_a,
     "has_bias"_a,
     "has_mask"_a,
     "has_residual"_a,

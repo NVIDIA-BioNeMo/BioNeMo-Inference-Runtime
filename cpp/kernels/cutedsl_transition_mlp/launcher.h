@@ -66,6 +66,60 @@ struct CubinImage;
 namespace bioir::cutedsl::transition_mlp::abi
 {
 
+/* Ampere device ABI transition_mlp_sm80_v1, verified from EIATTR_KPARAM_INFO.
+ * Dynamic row operands carry one extent and one stride (24 bytes); static
+ * weights and biases carry only a pointer (8 bytes). The optional mask carries
+ * one extent (16 bytes). Layout, copy and MMA objects occupy no parameter slot.
+ * With all optional operands: x@0x00, w1@0x18, b1@0x20, w2@0x28,
+ * b2@0x30, residual@0x38, mask@0x50, output@0x60, ending at 0x78.
+ */
+struct SM80Params
+{
+  cute_tensor_s1_d1_t x;
+  cute_tensor_s0_d0_t w1;
+  cute_tensor_s0_d0_t b1;
+  cute_tensor_s0_d0_t w2;
+  cute_tensor_s0_d0_t b2;
+  cute_tensor_s1_d1_t residual;
+  cute_tensor_s1_d0_t mask;
+  cute_tensor_s1_d1_t output;
+};
+
+constexpr std::size_t sm80_parameter_count(bool has_residual, bool has_bias, bool has_mask)
+{
+  return 4U + (has_residual ? 1U : 0U) + (has_bias ? 2U : 0U) + (has_mask ? 1U : 0U);
+}
+
+inline constexpr std::size_t kSM80MaxParameterCount = sm80_parameter_count(true, true, true);
+
+inline std::size_t pack_sm80_kernel_params(
+  SM80Params* params, bool has_residual, bool has_bias, bool has_mask, void* kernel_params[kSM80MaxParameterCount])
+{
+  std::size_t count = 0;
+  kernel_params[count++] = &params->x;
+  kernel_params[count++] = &params->w1;
+  if (has_bias)
+    kernel_params[count++] = &params->b1;
+  kernel_params[count++] = &params->w2;
+  if (has_bias)
+    kernel_params[count++] = &params->b2;
+  if (has_residual)
+    kernel_params[count++] = &params->residual;
+  if (has_mask)
+    kernel_params[count++] = &params->mask;
+  kernel_params[count++] = &params->output;
+  return count;
+}
+
+static_assert(std::is_standard_layout_v<SM80Params>);
+static_assert(sizeof(SM80Params::x) == 0x18 && sizeof(SM80Params::output) == 0x18);
+static_assert(sizeof(SM80Params::w1) == 0x08 && sizeof(SM80Params::w2) == 0x08);
+static_assert(sizeof(SM80Params::b1) == 0x08 && sizeof(SM80Params::b2) == 0x08);
+static_assert(sizeof(SM80Params::mask) == 0x10 && sizeof(SM80Params::residual) == 0x18);
+static_assert(offsetof(SM80Params, output) == 0x60 && sizeof(SM80Params) == 0x78);
+static_assert(sm80_parameter_count(true, true, true) == 8U);
+static_assert(sm80_parameter_count(false, false, false) == 4U);
+
 struct SM90Params
 {
   std::uint8_t qk_tiled_mma;
@@ -158,6 +212,7 @@ struct KernelSpec
   std::int32_t hidden;
   std::int32_t bucket;
   bool is_silu_gate;
+  bool is_three_way;
   bool has_bias;
   bool has_mask;
   bool has_residual;
@@ -181,8 +236,9 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
 }
 
 /* x, residual and output are [rows, width]; w1 is [hidden, width], or [2 * hidden, width] holding
- * value rows then gate rows for the SwiGLU; w2 is [width, hidden]. b1, b2, mask and residual are
- * read only when the CUBIN has them. output may alias residual.
+ * value rows then gate rows for the SwiGLU, or [3 * hidden, width] holding value, gate and second-value
+ * rows for the 3-way SwiGLU; w2 is [width, hidden]. b1, b2, mask and residual are read only when the
+ * CUBIN has them. output may alias residual.
  */
 struct LaunchParams
 {
@@ -203,6 +259,7 @@ KernelConfig make_kernel_config(
   std::int32_t target_sm,
   DType dtype,
   bool is_silu_gate,
+  bool is_three_way,
   bool has_bias,
   bool has_mask,
   bool has_residual,

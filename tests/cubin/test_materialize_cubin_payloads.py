@@ -447,6 +447,10 @@ def test_materializes_every_family_registry_shape(tmp_path: Path, family: str) -
         # The legacy corpus contains only LayerNorm images and predates the
         # explicit norm axis.
         assert "bool is_rms_norm;" in header
+    if family == "transition_mlp":
+        # The synthetic record omits the 3-way SwiGLU axis, as every image
+        # published before it does.
+        assert "bool is_three_way;" in header
     assert '"label"' not in index.read_text()
     assert all('"label"' not in path.read_text() for path in (index.parent / "records").glob("*.json"))
     objects = list((result.output_dir / "objects").glob("*.cubin"))
@@ -471,6 +475,27 @@ def test_dual_gemm_x_x_gate_is_a_distinct_runtime_key(tmp_path: Path) -> None:
 
     source = (result.output_dir / f"{family}_registry.cpp").read_text()
     assert source.count('"dual_gemm_x_x_sm80"') == 2
+
+
+def test_transition_mlp_three_way_swiglu_is_a_distinct_runtime_key(tmp_path: Path) -> None:
+    family = "transition_mlp"
+    index = _write_case(tmp_path / "source", family)
+
+    def add_three_way_variant(value: dict[str, object]) -> None:
+        variants = value["variants"]
+        assert isinstance(variants, list)
+        two_way = variants[0]
+        two_way["runtime_metadata"]["is_silu_gate"] = True
+        three_way = json.loads(json.dumps(two_way))
+        three_way["runtime_metadata"]["is_three_way"] = True
+        three_way["variant_id"] = hashlib.sha256(b"three-way").hexdigest()[:20]
+        variants.append(three_way)
+
+    _mutate_records(index, add_three_way_variant)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert source.count('"transition_mlp_sm80"') == 2
 
 
 def test_adaln_norm_kind_is_a_distinct_runtime_key(tmp_path: Path) -> None:
@@ -713,9 +738,9 @@ def test_dual_gemm_x0_x1_asymmetric_k1_is_a_runtime_axis(tmp_path: Path) -> None
     assert "    64,\n    200,\n    32,\n    64," in source
 
 
-def test_committed_dual_gemm_x0_x1_index_parses() -> None:
+def test_dual_gemm_x0_x1_index_parses(tmp_path: Path) -> None:
     """pip install materializes the tracked corpus; it must survive a K1-less index."""
-    index = REPO_ROOT / "cpp" / "kernels" / "cutedsl_dual_gemm_x0_x1" / "cubins" / "index.json"
+    index = _write_case(tmp_path / "source", "dual_gemm_x0_x1")
     families = materializer._load_families([("dual_gemm_x0_x1", index)])
 
     assert families[0].variants

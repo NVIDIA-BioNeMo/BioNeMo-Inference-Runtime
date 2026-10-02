@@ -156,6 +156,7 @@ cache-keys = [
   { file = "cpp/kernels/**/*.h" },
   { file = "cpp/kernels/cutedsl_*/cubins/index.json" },
   { file = "cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz" },
+  { env = "BIOIR_CUBIN_ARTIFACT_ROOT" },
   { env = "BIOIR_BUILD_CUTEDSL_KERNELS" },
   { env = "BIOIR_VERSION_LOCAL" },
   { env = "CUDA_TAG" },

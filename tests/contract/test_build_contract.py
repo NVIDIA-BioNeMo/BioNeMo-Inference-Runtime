@@ -171,8 +171,6 @@ def test_manifest_patterns_do_not_walk_local_build_trees(monkeypatch: pytest.Mon
         prefix = f"cpp/kernels/cutedsl_{family}"
         assert f"{prefix}/launcher.cpp" in selected
         assert f"{prefix}/cubins/index.json" in selected
-        assert any(path.startswith(f"{prefix}/cubins/records/") for path in selected)
-        assert any(path.startswith(f"{prefix}/cubins/packs/") for path in selected)
 
     for path in selected:
         parts = PurePosixPath(path).parts
@@ -186,7 +184,7 @@ def test_families_do_not_ship_private_cmake() -> None:
     assert not list(KERNELS_DIR.glob("cutedsl_*/CMakeLists.txt"))
 
 
-def test_git_rules_track_only_indexes_and_packs() -> None:
+def test_git_rules_track_only_indexes() -> None:
     git = ["git", "-c", f"safe.directory={REPO_ROOT}"]
     probe = subprocess.run(
         [*git, "rev-parse", "--is-inside-work-tree"],
@@ -208,7 +206,8 @@ def test_git_rules_track_only_indexes_and_packs() -> None:
         return result.returncode == 0
 
     assert not ignored(f"{prefix}/index.json")
-    assert not ignored(f"{prefix}/packs/{family}_sm80_deadbeef.tar.xz")
+    assert ignored(f"{prefix}/packs/{family}_sm80_deadbeef.tar.xz")
+    assert ignored(f"{prefix}/records/deadbeef.json")
     assert ignored(f"{prefix}/.cache/objects/deadbeef.cubin")
     assert ignored(f"{prefix}/embedded_cubins.h")
 
@@ -265,7 +264,8 @@ def _stage_indexed_corpus(staging: Path) -> list[tuple[str, Path]]:
     """
     indexes: list[tuple[str, Path]] = []
     for family in PUBLISHED_FAMILIES:
-        source = KERNELS_DIR / f"cutedsl_{family}" / "cubins"
+        artifact_root = os.environ.get("BIOIR_CUBIN_ARTIFACT_ROOT")
+        source = Path(artifact_root) / family if artifact_root else KERNELS_DIR / f"cutedsl_{family}" / "cubins"
         source_index = source / "index.json"
         destination = staging / family
         (destination / "packs").mkdir(parents=True)
@@ -301,6 +301,7 @@ def test_stage_indexed_corpus_ignores_unreferenced_builder_packs(
 ) -> None:
     """A rebuild may leave previous packs beside the indexed ones; only copy those."""
     family = "dual_gemm_x_x"
+    monkeypatch.delenv("BIOIR_CUBIN_ARTIFACT_ROOT", raising=False)
     monkeypatch.setattr("tests.contract.test_build_contract.KERNELS_DIR", tmp_path)
     monkeypatch.setattr("tests.contract.test_build_contract.PUBLISHED_FAMILIES", (family,))
     cubins = tmp_path / f"cutedsl_{family}" / "cubins"
@@ -317,9 +318,49 @@ def test_stage_indexed_corpus_ignores_unreferenced_builder_packs(
     assert {path.name for path in (staged_index.parent / "packs").iterdir()} == {indexed_name}
 
 
-def test_committed_corpus_materializes(tmp_path: Path) -> None:
+def test_build_artifact_corpus_materializes(tmp_path: Path) -> None:
     """An LFS pointer or a corrupt indexed pack fails here, not at pip install time."""
     from tests.cubin.test_materialize_cubin_payloads import materializer
 
+    if not os.environ.get("BIOIR_CUBIN_ARTIFACT_ROOT"):
+        pytest.skip("Full corpus verification runs with the generated build artifacts in build:extension")
     indexes = _stage_indexed_corpus(tmp_path / "corpus")
     materializer.materialize(indexes, tmp_path / "materialized")
+
+
+def test_external_cubin_artifacts_materialize_without_source_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.cubin.test_materialize_cubin_payloads import _write_case
+
+    root = tmp_path / "corpus"
+    for family in ACTIVE_FAMILIES:
+        index = _write_case(tmp_path / "fixtures", family)
+        shutil.copytree(index.parent, root / family)
+    metadata = _setup_metadata(monkeypatch, BIOIR_CUBIN_ARTIFACT_ROOT=str(root), CUDA_TAG="cu132")
+    build_class = metadata["cmdclass"]["build_ext"]
+    helpers = build_class.build_extension.__globals__
+    output = helpers["_materialize_cutedsl_kernel_payloads"](tmp_path / "materialized")
+    assert (output / "materialization.json").is_file()
+    assert all((output / f"{family}_registry.cpp").is_file() for family in ACTIVE_FAMILIES)
+
+
+def test_sdist_stages_verified_external_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from setuptools import Distribution
+
+    from tests.cubin.test_materialize_cubin_payloads import _write_case
+
+    root = tmp_path / "corpus"
+    for family in ACTIVE_FAMILIES:
+        index = _write_case(tmp_path / "fixtures", family)
+        shutil.copytree(index.parent, root / family)
+    metadata = _setup_metadata(monkeypatch, BIOIR_CUBIN_ARTIFACT_ROOT=str(root), CUDA_TAG="cu132")
+    command = metadata["cmdclass"]["sdist"](Distribution())
+    monkeypatch.setattr("setuptools.command.sdist.sdist.make_release_tree", lambda *args: None)
+    release = tmp_path / "release"
+    command.make_release_tree(str(release), [])
+    for family in ACTIVE_FAMILIES:
+        directory = release / "cpp/kernels" / f"cutedsl_{family}" / "cubins"
+        assert (directory / "index.json").is_file()
+        assert list((directory / "packs").glob("*.tar.xz"))
+        assert list((directory / "records").glob("*.json"))

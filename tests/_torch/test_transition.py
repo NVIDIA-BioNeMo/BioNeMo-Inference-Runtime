@@ -295,32 +295,38 @@ class _CountingKernel:
     def accepts(self, *args):
         return self.op.accepts(*args)
 
+    def prefers_fused(self, like, **kwargs):
+        return self.op.prefers_fused(like, **kwargs)
+
     def __call__(self, *args, **kwargs):
         self.calls += 1
         return self.op(*args, **kwargs)
 
 
 @pytest.mark.parametrize(
-    ("dim_single", "kernel_attr"),
-    [(128, "_fused_mlp_op"), (768, "_dual_gemm_silu_op")],
-    ids=["atom-128-fused-mlp", "token-768-dual-gemm"],
+    ("dim_single", "using_silu", "kernel_attr"),
+    [(128, True, "_fused_mlp_op"), (768, True, "_dual_gemm_silu_op"), (128, False, "_fused_mlp_op")],
+    ids=["atom-128-fused-mlp", "token-768-dual-gemm", "atom-128-3way-fused-mlp"],
 )
 @pytest.mark.parametrize(
     "leading_shape",
-    [(2, 64), (2, 1, 2, 32)],
-    ids=["3d", "protenix-5d"],
+    [(2, 64), (2, 2048), (2, 1, 2, 32), (2, 1, 2, 1024)],
+    ids=["3d-small", "3d-large", "protenix-5d-small", "protenix-5d-large"],
 )
 def test_conditioned_transition_kernel_path_matches_split_projection(
-    dim_single: int, kernel_attr: str, leading_shape: tuple[int, ...]
+    dim_single: int, using_silu: bool, kernel_attr: str, leading_shape: tuple[int, ...]
 ) -> None:
-    """A 2-way SwiGLU block runs its width's one kernel path, matching the unfused projection."""
+    """A SwiGLU block selects its shape's kernel path, matching the split projection.
+
+    A 3-way block has no dual-GEMM path, so its unfused projection is the one it falls back to.
+    """
     torch.manual_seed(7)
     module = (
         ConditionedTransitionBlock(
             dim_single=dim_single,
             dim_single_cond=128,
             expansion_factor=2,
-            using_silu=True,
+            using_silu=using_silu,
             dtype=torch.bfloat16,
         )
         .cuda()
@@ -328,13 +334,18 @@ def test_conditioned_transition_kernel_path_matches_split_projection(
     )
     if getattr(module, kernel_attr) is None:
         pytest.skip(f"{kernel_attr} does not ship for width {dim_single} on this GPU")
-    assert (module._fused_mlp_op is None) != (module._dual_gemm_silu_op is None)
+    assert (module._dual_gemm_silu_op is not None) == using_silu
     with torch.no_grad():
         for parameter in module.parameters():
             parameter.normal_(mean=0.0, std=0.02)
 
     a = torch.randn(*leading_shape, dim_single, device="cuda", dtype=torch.bfloat16)
     s = torch.randn(*leading_shape, 128, device="cuda", dtype=torch.bfloat16)
+    expected_calls = (
+        int(module._fused_mlp_op.prefers_fused(a, fp32_projection=module._dual_gemm_silu_op is not None))
+        if kernel_attr == "_fused_mlp_op"
+        else 1
+    )
     kernel = _CountingKernel(getattr(module, kernel_attr))
     setattr(module, kernel_attr, kernel)
     with torch.inference_mode():
@@ -342,5 +353,5 @@ def test_conditioned_transition_kernel_path_matches_split_projection(
         setattr(module, kernel_attr, None)
         split = module(a, s)
 
-    assert kernel.calls == 1
+    assert kernel.calls == expected_calls
     torch.testing.assert_close(fused, split, atol=2e-2, rtol=2e-2)

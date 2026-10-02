@@ -161,7 +161,7 @@ class Transition(nn.Module):
         if op is None or (self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(x)):
             return None
         weights = (self.fused_fc2_fc1.weight, None, self.fc3.weight, None)
-        if not op.accepts(x, mask, *weights):
+        if not op.prefers_fused(x) or not op.accepts(x, mask, *weights):
             return None
         normed = x if self.norm is None else self.norm(x)
         if not residual:
@@ -235,23 +235,21 @@ class ConditionedTransitionBlock(nn.Module):
         self.b_to_a = Linear(
             self.dim_inner, self.dim_single, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
         )
-        # A 2-way SwiGLU MLP runs on one kernel path: the fused transition op, which keeps the hidden
-        # activation on chip and ships for widths up to 256, or else the dual GEMM for the gated
-        # projection ahead of b_to_a.
-        self._fused_mlp_op = None
+        # The SwiGLU MLP runs on one kernel path: the fused transition op, which keeps the hidden
+        # activation on chip where a config ships for this width, or else, for a 2-way SwiGLU, the
+        # dual GEMM for the gated projection ahead of b_to_a.
+        self._fused_mlp_op = get_transition_mlp_op(
+            dtype or torch.get_default_dtype(),
+            width=self.dim_single,
+            hidden=self.dim_inner,
+            activation="silu_gate" if using_silu else "silu_gate_3way",
+            has_bias=False,
+            has_mask=False,
+            has_residual=False,
+        )
         self._dual_gemm_silu_op = None
         if using_silu:
-            self._fused_mlp_op = get_transition_mlp_op(
-                dtype or torch.get_default_dtype(),
-                width=self.dim_single,
-                hidden=self.dim_inner,
-                activation="silu_gate",
-                has_bias=False,
-                has_mask=False,
-                has_residual=False,
-            )
-            if self._fused_mlp_op is None:
-                self._dual_gemm_silu_op = _get_silu_projection_op(dtype, K=self.dim_single, N=self.dim_inner)
+            self._dual_gemm_silu_op = _get_silu_projection_op(dtype, K=self.dim_single, N=self.dim_inner)
 
         self.output_projection = Linear(
             self.dim_single_cond, self.dim_single, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
@@ -311,7 +309,11 @@ class ConditionedTransitionBlock(nn.Module):
         weight = self.fused_swl_a_to_b.weight
         if self._fused_mlp_op is not None:
             weights = (weight, None, self.b_to_a.weight, None)
-            if self._fused_mlp_op.accepts(a, None, *weights):
+            # The dual GEMM gates FP32 accumulators, while SM8x full fusion rounds
+            # its first projections to BF16. Preserve the caller's arithmetic.
+            if self._fused_mlp_op.prefers_fused(
+                a, fp32_projection=self._dual_gemm_silu_op is not None
+            ) and self._fused_mlp_op.accepts(a, None, *weights):
                 output = self._fused_mlp_op(a, *weights, None, None)
                 if output is not None:
                     return output

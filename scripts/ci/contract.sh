@@ -20,13 +20,11 @@
 # pyproject.toml.
 #
 # Nothing here imports torch or the package itself, so there is no install
-# step and no build. tests/pytest.ini supplies the options. The committed packs
-# are load-bearing: test_committed_corpus_materializes reads them and fails on
-# a pointer, which is it doing its job.
+# step and no build. tests/pytest.ini supplies the options. Full generated corpus
+# verification runs in build:extension before the native extension is linked.
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 # shellcheck source=/dev/null
 source scripts/ci/uv_env.sh
 
-scripts/ci/fetch_cubin_packs.sh
 uv run --locked --only-group test pytest tests/contract tests/cubin

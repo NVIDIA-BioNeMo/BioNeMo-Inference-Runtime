@@ -37,6 +37,7 @@ from types import ModuleType
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
+from setuptools.command.sdist import sdist
 
 ROOT_DIR = Path(__file__).parent.resolve()
 _README = ROOT_DIR / "README.md"
@@ -102,13 +103,17 @@ def _remove_stale_kernel_libraries(directories: set[Path]) -> None:
                 path.unlink()
 
 
-def _cubin_family_indexes() -> tuple[tuple[str, Path], ...]:
-    """Return every CMake CUBIN family's committed public artifact index."""
+def _cubin_family_indexes(artifact_root: Path | None = None) -> tuple[tuple[str, Path], ...]:
+    """Return every CMake family's index from generated artifacts or an sdist."""
     family_indexes: list[tuple[str, Path]] = []
     missing: list[Path] = []
     for launcher in sorted(_KERNELS_DIR.glob("cutedsl_*/launcher.cpp")):
         family = launcher.parent.name.removeprefix("cutedsl_")
-        index = launcher.parent / "cubins" / "index.json"
+        index = (
+            artifact_root / family / "index.json"
+            if artifact_root is not None
+            else launcher.parent / "cubins" / "index.json"
+        )
         if index.is_file():
             family_indexes.append((family, index))
         else:
@@ -116,8 +121,7 @@ def _cubin_family_indexes() -> tuple[tuple[str, Path], ...]:
     if missing:
         formatted = "\n  ".join(str(path) for path in missing)
         raise RuntimeError(
-            "Missing committed CUBIN family indexes:\n  "
-            f"{formatted}\nRestore the complete public artifact corpus before building."
+            f"Missing CUBIN family indexes:\n  {formatted}\nPrepare the complete build artifact corpus before building."
         )
     if not family_indexes:
         raise RuntimeError(f"No CuTeDSL kernel families found below {_KERNELS_DIR}")
@@ -137,10 +141,54 @@ def _load_cubin_materializer() -> ModuleType:
     return module
 
 
+def _build_cubin_indexes() -> tuple[tuple[str, Path], ...]:
+    """Use verified build artifacts; source checkouts generate into an ignored cache."""
+    configured = os.environ.get("BIOIR_CUBIN_ARTIFACT_ROOT")
+    if configured:
+        return _cubin_family_indexes(Path(configured).expanduser().resolve())
+    # Source distributions retain their payloads, so building them needs no compiler DSL.
+    committed = _cubin_family_indexes()
+    if all((index.parent / "packs").is_dir() and (index.parent / "records").is_dir() for _, index in committed):
+        return committed
+    artifact_root = ROOT_DIR / "build" / "cubin_corpus"
+    if all(
+        (artifact_root / family / name).exists()
+        for family, _ in committed
+        for name in ("index.json", "packs", "records")
+    ):
+        return _cubin_family_indexes(artifact_root)
+    prepare = ROOT_DIR / "cpp" / "tools" / "prepare_cubins.py"
+    if not prepare.is_file() or importlib_util.find_spec("cutlass") is None:
+        raise RuntimeError(
+            "Native builds require generated CUBIN artifacts. Prepare the complete corpus in the "
+            "pinned development environment, then set BIOIR_CUBIN_ARTIFACT_ROOT to its absolute directory. "
+            "Source-free checkouts must use the matching CI artifact corpus."
+        )
+    subprocess.run(
+        [
+            sys.executable,
+            str(prepare),
+            "--artifact-root",
+            str(artifact_root),
+            "--refresh-stale",
+            "--jobs",
+            os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "1"),
+        ],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+    subprocess.run(
+        [sys.executable, str(prepare), "--artifact-root", str(artifact_root), "--verify"],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+    return _cubin_family_indexes(artifact_root)
+
+
 def _materialize_cutedsl_kernel_payloads(output_root: Path) -> Path:
-    """Verify committed packs and create CMake inputs below ``output_root``."""
+    """Verify build artifacts and create CMake inputs below ``output_root``."""
     module = _load_cubin_materializer()
-    result = module.materialize(_cubin_family_indexes(), output_root.resolve())
+    result = module.materialize(_build_cubin_indexes(), output_root.resolve())
     output_dir = Path(result.output_dir).resolve()
     if not output_dir.is_relative_to(output_root.resolve()):
         raise RuntimeError(f"CUBIN materializer returned a path outside its output root: {output_dir}")
@@ -468,6 +516,21 @@ class CMakeBuild(build_ext):
             raise RuntimeError(f"CMake did not produce the expected extension: {extension_path}")
 
 
+class CUBINSdist(sdist):
+    """Stage verified payloads in the distribution without adding them to Git."""
+
+    def make_release_tree(self, base_dir: str, files: list[str]) -> None:
+        super().make_release_tree(base_dir, files)
+        indexes = _build_cubin_indexes()
+        _load_cubin_materializer().verify_packs(indexes)
+        for family, index in indexes:
+            destination = Path(base_dir) / "cpp" / "kernels" / f"cutedsl_{family}" / "cubins"
+            destination.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(index, destination / "index.json")
+            for directory in ("packs", "records"):
+                shutil.copytree(index.parent / directory, destination / directory, dirs_exist_ok=True)
+
+
 setup(
     version=f"{_base_version()}{_local_version()}",
     long_description=_long_description(),
@@ -475,5 +538,5 @@ setup(
     ext_modules=(
         [CMakeExtension("bionemo_ir.libs._cutedsl_kernels", ROOT_DIR / "cpp")] if _BUILD_CUTEDSL_KERNELS else []
     ),
-    cmdclass={"build_ext": CMakeBuild},
+    cmdclass={"build_ext": CMakeBuild, "sdist": CUBINSdist},
 )

@@ -43,12 +43,17 @@ def transition_mlp_reference(
     """``[residual +] mask[..., None] * (act(x @ w1.T + b1) @ w2.T + b2)`` in PyTorch.
 
     ``act`` is ReLU, or for ``"silu_gate"`` ``silu(gate) * value`` where ``w1``'s first half of
-    rows produces ``value`` and its second half ``gate``, as in :class:`Transition`.
+    rows produces ``value`` and its second half ``gate``, as in :class:`Transition`. For
+    ``"silu_gate_3way"``, ``w1``'s thirds produce ``value``, ``gate`` and ``second`` and ``act`` is
+    ``silu(gate) * value * second``, as in a 3-way :class:`ConditionedTransitionBlock`.
     """
     projected = torch.nn.functional.linear(x, w1, b1)
     if activation == "silu_gate":
         value, gate = projected.chunk(2, dim=-1)
         hidden = torch.nn.functional.silu(gate) * value
+    elif activation == "silu_gate_3way":
+        value, gate, second = projected.chunk(3, dim=-1)
+        hidden = torch.nn.functional.silu(gate) * value * second
     else:
         hidden = torch.relu(projected)
     update = torch.nn.functional.linear(hidden, w2, b2)

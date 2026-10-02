@@ -14,9 +14,10 @@
 # limitations under the License.
 """Fused transition MLP: ``[residual +] mask * (act(x @ W1.T + b1) @ W2.T + b2)``.
 
-``act`` is ReLU (PairTransition, MSATransition) or a SiLU-gated linear unit (the SwiGLU
-Transition). A source-free build carries no private kernel adapter; everything re-exported here
-must keep working with it absent.
+``act`` is ReLU (PairTransition, MSATransition) or a SiLU-gated linear unit: the SwiGLU Transition
+and 2-way ConditionedTransitionBlock, or the 3-way ConditionedTransitionBlock's SwiGLU, which also
+multiplies in a second value. A source-free build carries no private kernel adapter; everything
+re-exported here must keep working with it absent.
 """
 
 from ._config import TransitionMlpVariant, shipped_variants

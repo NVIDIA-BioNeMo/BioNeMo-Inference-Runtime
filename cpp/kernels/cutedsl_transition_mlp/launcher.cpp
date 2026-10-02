@@ -34,6 +34,7 @@ namespace
 {
 
 constexpr char kSM90LaunchAbi[] = "transition_mlp_sm90_v1";
+constexpr char kSM80LaunchAbi[] = "transition_mlp_sm80_v1";
 
 /* CuTe DSL 4.5.2 sets the operation tag on every atom, the store included, unless the atom's tensor
  * is static and holds fewer than 2^16 elements. Only the weights are static. The lowering does not
@@ -100,7 +101,7 @@ void validate_operand_devices(KernelConfig const& config, LaunchParams const& pa
     check(params.mask.device, "mask");
 }
 
-/* x, the residual and the output are TMA row tiles: [rows, width] with 16-byte rows. */
+/* x, the residual and the output are [rows, width] with 16-byte rows. */
 void validate_row_operand(Tensor2View const& view, std::int32_t rows, std::int32_t width, char const* name)
 {
   validate_tensor(view, name, 16);
@@ -108,6 +109,14 @@ void validate_row_operand(Tensor2View const& view, std::int32_t rows, std::int32
     throw std::invalid_argument(std::string(name) + " must be [rows, " + std::to_string(width) + "]");
   if (view.strides[0] < width || view.strides[0] % 8 != 0)
     throw std::invalid_argument(std::string(name) + " row stride must cover the width and keep 16-byte rows");
+}
+
+/* One block of hidden rows for ReLU, two for the SwiGLU's value and gate, three with the 3-way SwiGLU's
+ * second value.
+ */
+std::int32_t w1_row_count(KernelSpec const& spec)
+{
+  return spec.hidden * (spec.is_three_way ? 3 : spec.is_silu_gate ? 2 : 1);
 }
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
@@ -118,14 +127,16 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("embedded CUBIN variant_id must not be empty");
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
+  bool const is_sm80 = config.cubin.kernel_sm == 80;
+  char const* expected_abi = is_sm80 ? kSM80LaunchAbi : kSM90LaunchAbi;
   if (
-    config.cubin.kernel_sm != 90 || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, kSM90LaunchAbi) != 0)
+    (config.cubin.kernel_sm != 80 && config.cubin.kernel_sm != 90) || config.cubin.launch_abi == nullptr
+    || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)
   {
     throw std::invalid_argument("transition MLP CUBIN has an incompatible launch ABI");
   }
-  if (config.embedded_image == nullptr || !config.embedded_image->sm90.enabled)
-    throw std::invalid_argument("transition MLP CUBIN is missing its Hopper launch metadata");
+  if (config.embedded_image == nullptr || config.embedded_image->sm90.enabled == is_sm80)
+    throw std::invalid_argument("transition MLP CUBIN has incompatible architecture launch metadata");
   if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
     throw std::invalid_argument(
       "embedded CUBIN does not support configured device SM" + std::to_string(config.spec.target_sm));
@@ -134,7 +145,7 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   if (spec.width <= 0 || spec.hidden <= 0 || spec.tile_m == 0 || spec.num_threads == 0)
     throw std::invalid_argument("transition MLP CUBIN has invalid launch geometry");
   std::int32_t const rows = params.x.shape[0];
-  std::int32_t const w1_rows = spec.hidden * (spec.is_silu_gate ? 2 : 1);
+  std::int32_t const w1_rows = w1_row_count(spec);
   validate_row_operand(params.x, rows, spec.width, "x");
   if (spec.has_residual)
     validate_row_operand(params.residual, rows, spec.width, "residual");
@@ -165,6 +176,47 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     if (params.mask.shape[0] != rows)
       throw std::invalid_argument("mask needs one entry per row");
   }
+}
+
+void launch_sm80(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  validate_operand_devices(config, params, cuda_device_for_context(context));
+  abi::SM80Params device_params{};
+  device_params.x = make_tensor2_s1_d1_descriptor(params.x);
+  device_params.w1.data = params.w1.data;
+  device_params.w2.data = params.w2.data;
+  if (config.spec.has_bias)
+  {
+    device_params.b1.data = params.b1.data;
+    device_params.b2.data = params.b2.data;
+  }
+  if (config.spec.has_residual)
+    device_params.residual = make_tensor2_s1_d1_descriptor(params.residual);
+  if (config.spec.has_mask)
+    device_params.mask = make_tensor1_descriptor(params.mask);
+  device_params.output = make_tensor2_s1_d1_descriptor(params.output);
+  void* kernel_params[abi::kSM80MaxParameterCount];
+  std::size_t const count = abi::pack_sm80_kernel_params(
+    &device_params, config.spec.has_residual, config.spec.has_bias, config.spec.has_mask, kernel_params);
+  if (count != abi::sm80_parameter_count(config.spec.has_residual, config.spec.has_bias, config.spec.has_mask))
+    throw std::invalid_argument("transition MLP packed an unexpected number of kernel parameters");
+
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(
+    (static_cast<std::uint64_t>(params.x.shape[0]) + config.spec.tile_m - 1) / config.spec.tile_m,
+    "transition MLP grid.x");
+  launch_config.grid_y = launch_config.grid_z = 1;
+  launch_config.block_x = config.spec.num_threads;
+  launch_config.block_y = launch_config.block_z = 1;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(transition_mlp_sm80)");
 }
 
 cubin_launch_config_t make_sm90_launch_config(
@@ -223,8 +275,7 @@ void launch_sm90(
     device_params.w2_tma, metadata.w2, expected_dtype, make_tma_tensor2_source(params.w2, false), "w2");
   encode_tma_descriptor(
     device_params.output_tma, metadata.output, expected_dtype, make_tma_tensor2_source(params.output, false), "output");
-  std::int64_t const w1_elements
-    = std::int64_t{config.spec.hidden} * (config.spec.is_silu_gate ? 2 : 1) * config.spec.width;
+  std::int64_t const w1_elements = std::int64_t{w1_row_count(config.spec)} * config.spec.width;
   std::int64_t const w2_elements = std::int64_t{config.spec.width} * config.spec.hidden;
   finalize_tma_atom(device_params.x_tma, true);
   finalize_tma_atom(device_params.w1_tma, has_operation_tag(w1_elements));
@@ -277,6 +328,7 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.hidden,
     image.bucket,
     image.is_silu_gate,
+    image.is_three_way,
     image.has_bias,
     image.has_mask,
     image.has_residual,
@@ -289,6 +341,7 @@ embedded::CubinImage const& find_embedded_cubin(
   std::int32_t target_sm,
   DType dtype,
   bool is_silu_gate,
+  bool is_three_way,
   bool has_bias,
   bool has_mask,
   bool has_residual,
@@ -303,15 +356,17 @@ embedded::CubinImage const& find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[index];
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.is_bfloat16 == is_bfloat16
-      && image.is_silu_gate == is_silu_gate && image.has_bias == has_bias && image.has_mask == has_mask
-      && image.has_residual == has_residual && image.width == width && image.hidden == hidden && image.bucket == bucket)
+      && image.is_silu_gate == is_silu_gate && image.is_three_way == is_three_way && image.has_bias == has_bias
+      && image.has_mask == has_mask && image.has_residual == has_residual && image.width == width
+      && image.hidden == hidden && image.bucket == bucket)
       return image;
   }
   throw std::invalid_argument(
     "No embedded transition MLP CUBIN for SM" + std::to_string(target_sm) + ", width=" + std::to_string(width)
     + ", hidden=" + std::to_string(hidden) + ", bucket=" + std::to_string(bucket)
-    + ", silu_gate=" + (is_silu_gate ? "true" : "false") + ", has_bias=" + (has_bias ? "true" : "false")
-    + ", has_mask=" + (has_mask ? "true" : "false") + ", has_residual=" + (has_residual ? "true" : "false"));
+    + ", silu_gate=" + (is_silu_gate ? "true" : "false") + ", three_way=" + (is_three_way ? "true" : "false")
+    + ", has_bias=" + (has_bias ? "true" : "false") + ", has_mask=" + (has_mask ? "true" : "false")
+    + ", has_residual=" + (has_residual ? "true" : "false"));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -335,6 +390,7 @@ KernelConfig make_kernel_config(
   std::int32_t target_sm,
   DType dtype,
   bool is_silu_gate,
+  bool is_three_way,
   bool has_bias,
   bool has_mask,
   bool has_residual,
@@ -342,8 +398,8 @@ KernelConfig make_kernel_config(
   std::int32_t hidden,
   std::int32_t bucket)
 {
-  embedded::CubinImage const& image
-    = find_embedded_cubin(target_sm, dtype, is_silu_gate, has_bias, has_mask, has_residual, width, hidden, bucket);
+  embedded::CubinImage const& image = find_embedded_cubin(
+    target_sm, dtype, is_silu_gate, is_three_way, has_bias, has_mask, has_residual, width, hidden, bucket);
   return KernelConfig{make_kernel_spec(image), dtype, image.cubin, &image};
 }
 
@@ -359,7 +415,10 @@ void launch(KernelConfig const& config, LaunchParams const& params)
       + std::to_string(device_sm));
   }
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
+  if (config.cubin.kernel_sm == 80)
+    launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
+  else
+    launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
 } // namespace bioir::cutedsl::transition_mlp

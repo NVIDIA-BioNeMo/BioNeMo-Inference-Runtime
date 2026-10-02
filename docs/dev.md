@@ -177,8 +177,18 @@ uv pip install --no-deps -e .
 ```
 
 Both paths compile `bionemo_ir.libs._cutedsl_kernels`, a nanobind extension
-embedding the CUBIN packs under `cpp/kernels/cutedsl_*/cubins/`. Verify the
-active environment:
+embedding verified CUBIN build artifacts. Generated packs and records are
+excluded from Git. Before an isolated build, obtain the matching complete
+`build/cubin_corpus` artifact from CI and select its extracted directory:
+
+```bash
+export BIOIR_CUBIN_ARTIFACT_ROOT="$PWD/build/cubin_corpus"
+```
+
+A source-free checkout uses the matching corpus from CI with the same
+`BIOIR_CUBIN_ARTIFACT_ROOT` setting. Source distributions stage verified
+payloads inside the archive, so their native build needs no private compiler
+code. Verify the active environment:
 
 ```bash
 python -c "import bionemo_ir.libs._cutedsl_kernels; print('ok')"

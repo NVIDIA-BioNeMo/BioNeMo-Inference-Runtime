@@ -39,14 +39,16 @@ from typing import Any, NamedTuple
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
-ACTIVATIONS = ("relu", "silu_gate")
+# W1 row blocks per activation, as the kernels count them: the ReLU input; the SwiGLU value and gate; the
+# 3-way SwiGLU value, gate and second value.
+ACTIVATIONS = {"relu": 1, "silu_gate": 2, "silu_gate_3way": 3}
 KERNEL_ABIS = {80: "sm80", 86: "sm80", 89: "sm80", 90: "sm90"}
 # The bucket of a size-independent entry.
 ANY_SIZE = 0
 _FILE_RE = re.compile(r"^W(?P<width>\d+)_H(?P<hidden>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(
-    r"^(?:S=(?P<bucket>[1-9]\d*)\|)?act=(?P<activation>relu|silu_gate)\|bias=(?P<bias>[01])\|mask=(?P<mask>[01])"
-    r"(?:\|res=(?P<residual>[01]))?$"
+    r"^(?:S=(?P<bucket>[1-9]\d*)\|)?act=(?P<activation>relu|silu_gate|silu_gate_3way)\|bias=(?P<bias>[01])"
+    r"\|mask=(?P<mask>[01])(?:\|res=(?P<residual>[01]))?$"
 )
 
 
@@ -69,6 +71,11 @@ class ConfigKey(NamedTuple):
     has_bias: bool
     has_mask: bool
     has_residual: bool | None
+
+
+def w1_rows(variant: TransitionMlpVariant) -> int:
+    """Rows of the first weight: the hidden width once per W1 block of the variant's activation."""
+    return ACTIVATIONS[variant.activation] * variant.hidden
 
 
 def variant_key(variant: TransitionMlpVariant) -> str:

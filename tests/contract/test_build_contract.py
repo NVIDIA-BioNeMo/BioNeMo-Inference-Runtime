@@ -184,8 +184,8 @@ def test_families_do_not_ship_private_cmake() -> None:
     assert not list(KERNELS_DIR.glob("cutedsl_*/CMakeLists.txt"))
 
 
-def test_git_rules_track_only_indexes() -> None:
-    git = ["git", "-c", f"safe.directory={REPO_ROOT}"]
+def test_git_rules_track_canonical_corpus(tmp_path: Path) -> None:
+    git = ["git", "-c", f"safe.directory={REPO_ROOT}", "-c", "core.excludesFile=/dev/null"]
     probe = subprocess.run(
         [*git, "rev-parse", "--is-inside-work-tree"],
         cwd=REPO_ROOT,
@@ -194,20 +194,25 @@ def test_git_rules_track_only_indexes() -> None:
     )
     if probe.returncode != 0:
         pytest.skip("Git ignore rules require checkout metadata")
+    # Exclude developer-local rules from this contract.
+    subprocess.run([*git, "init", "--quiet", "--template=", str(tmp_path)], check=True)
+    shutil.copyfile(REPO_ROOT / ".gitignore", tmp_path / ".gitignore")
     family = ACTIVE_FAMILIES[0]
     prefix = f"cpp/kernels/cutedsl_{family}/cubins"
 
     def ignored(path: str) -> bool:
         result = subprocess.run(
             [*git, "check-ignore", "--no-index", "--quiet", path],
-            cwd=REPO_ROOT,
+            cwd=tmp_path,
             check=False,
         )
         return result.returncode == 0
 
     assert not ignored(f"{prefix}/index.json")
-    assert ignored(f"{prefix}/packs/{family}_sm80_deadbeef.tar.xz")
-    assert ignored(f"{prefix}/records/deadbeef.json")
+    assert not ignored(f"{prefix}/packs/{family}_sm80_deadbeef.tar.xz")
+    assert not ignored(f"{prefix}/records/deadbeef.json")
+    assert ignored(f"{prefix}/packs/unexpected.txt")
+    assert ignored(f"{prefix}/records/unexpected.tmp")
     assert ignored(f"{prefix}/.cache/objects/deadbeef.cubin")
     assert ignored(f"{prefix}/embedded_cubins.h")
 

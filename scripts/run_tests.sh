@@ -60,6 +60,7 @@ work as expected. See fetch_weights.sh --help for the full set.
 
 Environment:
   TEST_PHASE      1 | 2 | all (default)
+  PHASE1_TARGETS  paths phase 1 runs (default: tests)
   PHASE2_TARGETS  paths phase 2 runs
   PHASE2_ADDOPTS  extra pytest args for phase 2
   XDIST_WORKERS   phase 1 worker count (default: scaled to VRAM)
@@ -235,6 +236,7 @@ write_metrics() {
 # shards must partition PHASE2_TARGETS between them. Unset, both phases run back
 # to back. See print_help above for the variables.
 TEST_PHASE="${TEST_PHASE:-all}"
+read -r -a phase1_targets <<<"${PHASE1_TARGETS:-tests}"
 PHASE2_TARGETS="${PHASE2_TARGETS:-tests/pipeline tests/_torch/model_forwards}"
 PHASE2_ADDOPTS="${PHASE2_ADDOPTS:-}"
 case "${TEST_PHASE}" in
@@ -275,7 +277,7 @@ if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "1" ]]; then
   phase1_addopts+=" --ignore=tests/_torch/model_forwards"
   PYTEST_ADDOPTS="${phase1_addopts}" pytest -s -ra \
     ${cov_opts[@]+"${cov_opts[@]}"} --junitxml="${REPORT_DIR}/junit-phase1.xml" \
-    tests || phase1_rc=$?
+    "${phase1_targets[@]}" || phase1_rc=$?
   lap "phase 1 (xdist bulk)"
 fi
 

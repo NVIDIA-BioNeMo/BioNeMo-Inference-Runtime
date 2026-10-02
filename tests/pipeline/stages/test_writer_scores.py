@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 
 from bionemo_ir.data.schemas.basic import FoldingOutput
-from bionemo_ir.pipeline.stages.writer_stage import WriterUDF
+from bionemo_ir.pipeline.stages.writer_stage import WriterUDF, _encode_float_array
 
 
 def _udf(output_path: str | None) -> WriterUDF:
@@ -119,6 +119,14 @@ def test_scores_without_arrays_keep_none_fields() -> None:
 
     assert result["scores"] == _expected_scores(udf, row)
     assert json.loads(result["scores"]) == {"plddt": None, "ptm": None, "iptm": None, "pae": None, "max_pae": None}
+
+
+@pytest.mark.parametrize("shape", [(0,), (3, 0), (0, 3), (5,), (2, 3, 4)])
+def test_float_array_encoding_matches_json(shape: tuple[int, ...]) -> None:
+    values = np.random.default_rng(2).uniform(-2, 2, shape).round(1)
+    values.flat[: min(values.size, 2)] = [-0.0, np.nan][: min(values.size, 2)]
+
+    assert _encode_float_array(values) == json.dumps(values.tolist())
 
 
 def test_get_score_values_keeps_arrays_and_drops_nan_scalars() -> None:

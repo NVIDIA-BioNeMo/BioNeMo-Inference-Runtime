@@ -22,6 +22,7 @@ everything in a context dict for downstream feature generators.
 from __future__ import annotations
 
 import logging
+import os
 import random
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -176,6 +177,10 @@ def _nucleotide_rdkit_topology(ccd_code: str) -> tuple[Chem.Mol, np.ndarray]:
     return mol, crop_mask
 
 
+# Embedding releases the GIL; gains flatten past 16.
+_CONFORMER_WORKERS = min(16, len(os.sched_getaffinity(0)))
+
+
 def _embed_conformer_inplace(
     mol_h: Chem.Mol,
     random_seed: int | None = None,
@@ -326,7 +331,7 @@ def _prefetch_protein_mols(ccd_codes: list[str]) -> list[tuple[Chem.Mol | None, 
         predictor.setstate(random.getstate())
         seeds = [predictor.randint(0, 10**9) for _ in ccd_codes]
         build = partial(_build_residue_rdkit_mol, retry_seed=_defer_conformer_retry)
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
             speculative = list(executor.map(build, ccd_codes, seeds))
     except Exception as e:
         _logger.debug("Protein conformer prefetch failed: %s", e)
@@ -636,7 +641,7 @@ def _build_structure_from_polymers(
                     _logger.debug("Nucleotide topology prefetch failed: %s", e)
                 else:
                     seeds = [random.randint(0, 10**9) for _ in sequence]
-                    with ThreadPoolExecutor(max_workers=4) as executor:
+                    with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
                         prebuilt_mols = list(executor.map(_build_nucleotide_rdkit_mol, ccd_codes, seeds))
             for res_idx, res_char in enumerate(sequence):
                 # Resolve 3-letter residue code

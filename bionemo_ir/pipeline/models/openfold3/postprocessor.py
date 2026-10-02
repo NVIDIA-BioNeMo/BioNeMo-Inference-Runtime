@@ -130,9 +130,7 @@ class PostProcessor(PostProcessorBase):
         plddt = _compute_plddt(plddt_per_atom, best_idx, n_tokens, atom_to_token, atom_mask_bool)
         pae_logits = _pae_logits(output, best_idx, n_tokens)
         has_frame = _frame_mask(output, best_idx, n_tokens)
-        ptm = _compute_ptm(pae_logits, n_tokens, has_frame=has_frame)
-        iptm = _compute_iptm(pae_logits, n_tokens, chain_indices, has_frame=has_frame)
-        pae = _compute_pae(pae_logits)
+        ptm, iptm, pae = _compute_pae_scores(pae_logits, n_tokens, chain_indices, has_frame=has_frame)
         max_pae = float(np.max(pae)) if pae is not None else None
 
         b_factors = np.repeat(plddt[:, None], NUM_ATOM_TYPES, axis=-1) * atom_mask_out
@@ -298,6 +296,30 @@ def _compute_plddt(
     return (totals[:n_tokens] / np.maximum(counts[:n_tokens], 1)).astype(np.float32)
 
 
+def _compute_pae_scores(
+    logits: torch.Tensor | None,
+    n_tokens: int,
+    chain_indices: np.ndarray,
+    has_frame: torch.Tensor | None = None,
+) -> tuple[float, float, np.ndarray | None]:
+    """pTM, ipTM and the PAE matrix from one softmax of the PAE logits.
+
+    Same values as :func:`_compute_ptm`, :func:`_compute_iptm` and
+    :func:`_compute_pae`, which each normalize the full ``(N, N, n_bins)``
+    logits again.
+    """
+    if logits is None:
+        return float("nan"), float("nan"), None
+    probs = torch.softmax(logits.float(), dim=-1)
+    tm_per_pair = _expected_tm_per_pair(probs, n_tokens)
+    pae = _expected_pae(probs)
+    del probs
+    ptm = _max_mean_tm(tm_per_pair, has_frame=has_frame)
+    pair_mask = _interface_pair_mask(chain_indices, tm_per_pair.device)
+    iptm = float("nan") if pair_mask is None else _max_mean_tm(tm_per_pair, pair_mask, has_frame)
+    return ptm, iptm, pae
+
+
 def _compute_ptm(logits: torch.Tensor | None, n_tokens: int, has_frame: torch.Tensor | None = None) -> float:
     """Compute predicted TM-score from PAE logits."""
     if logits is None:
@@ -314,14 +336,19 @@ def _compute_iptm(
     """Compute interface pTM from PAE logits (inter-chain pairs only)."""
     if logits is None:
         return float("nan")
+    pair_mask = _interface_pair_mask(chain_indices, logits.device)
+    if pair_mask is None:
+        return float("nan")
+    return _tm_score_from_pae_logits(logits, n_tokens, pair_mask=pair_mask, has_frame=has_frame)
 
-    # Score only pairs that cross a chain boundary; a single chain has no interface.
-    ci = torch.as_tensor(chain_indices, dtype=torch.long, device=logits.device)
+
+def _interface_pair_mask(chain_indices: np.ndarray, device: torch.device) -> torch.Tensor | None:
+    """(N, N) 0/1 mask of the pairs that cross a chain boundary; ``None`` for a single chain."""
+    ci = torch.as_tensor(chain_indices, dtype=torch.long, device=device)
     pair_mask = (ci.unsqueeze(-1) != ci.unsqueeze(-2)).to(dtype=torch.float32)
     if not bool(pair_mask.any()):
-        return float("nan")
-
-    return _tm_score_from_pae_logits(logits, n_tokens, pair_mask=pair_mask, has_frame=has_frame)
+        return None
+    return pair_mask
 
 
 def _tm_score_from_pae_logits(
@@ -361,16 +388,27 @@ def _tm_score_from_pae_logits(
         matching how this module already reports the ipTM of a single chain.
     """
     probs = torch.softmax(logits.float(), dim=-1)
+    return _max_mean_tm(_expected_tm_per_pair(probs, n_tokens), pair_mask, has_frame)
+
+
+def _expected_tm_per_pair(probs: torch.Tensor, n_tokens: int) -> torch.Tensor:
+    """(N, N) expected TM term ``E_bins[1 / (1 + (e_ij / d0)^2)]`` from PAE bin probabilities."""
     n_bins = probs.shape[-1]
 
     # d0 = 1.24 * (max(N, 19) - 15)^(1/3) - 1.8, so the N floor of 19 keeps d0 > 0
     d0 = 1.24 * (max(n_tokens, 19) - 15) ** (1.0 / 3.0) - 1.8
 
-    # Expected TM term per pair: E_bins[1 / (1 + (e_ij / d0)^2)]
     bin_centers = _bin_centers(0.0, 32.0, n_bins).to(device=probs.device)
     tm_per_bin = 1.0 / (1.0 + (bin_centers / d0) ** 2)
-    tm_per_pair = (probs * tm_per_bin).sum(dim=-1)  # (N, N)
+    return (probs * tm_per_bin).sum(dim=-1)
 
+
+def _max_mean_tm(
+    tm_per_pair: torch.Tensor,
+    pair_mask: torch.Tensor | None = None,
+    has_frame: torch.Tensor | None = None,
+) -> float:
+    """Maximum over eligible aligned tokens of the mean TM term over scored tokens."""
     # Mean over the scored tokens j, for each aligned token i
     if pair_mask is None:
         pair_mask = torch.ones_like(tm_per_pair)
@@ -394,8 +432,11 @@ def _compute_pae(logits: torch.Tensor | None) -> np.ndarray | None:
     """
     if logits is None:
         return None
-    probs = torch.softmax(logits.float(), dim=-1)
-    n_bins = probs.shape[-1]
-    bin_centers = _bin_centers(0.0, 32.0, n_bins).to(device=probs.device)
+    return _expected_pae(torch.softmax(logits.float(), dim=-1))
+
+
+def _expected_pae(probs: torch.Tensor) -> np.ndarray:
+    """(N, N) host PAE matrix, rounded to 0.001, from PAE bin probabilities."""
+    bin_centers = _bin_centers(0.0, 32.0, probs.shape[-1]).to(device=probs.device)
     pae = (probs * bin_centers).sum(dim=-1).cpu().numpy()
     return np.round(pae, 3)

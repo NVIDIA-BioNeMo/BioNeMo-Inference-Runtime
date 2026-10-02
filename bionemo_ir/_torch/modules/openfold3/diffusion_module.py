@@ -511,11 +511,14 @@ class OpenFold3DiffusionSampler(nn.Module):
             if isinstance(module.diffusion_transformer, DiffusionTransformer):
                 prepared_token_pair_biases = module.diffusion_transformer.prepare_pair_biases(prepared_zij)
 
+        # Non-tensor leaves would make graph keys request-specific.
+        denoise_batch = {key: value for key, value in batch.items() if isinstance(value, torch.Tensor)}
+
         def predict(x_noisy: torch.Tensor, sigma_hat: torch.Tensor) -> torch.Tensor:
             return self.denoise(
                 x_noisy,
                 sigma_hat,
-                batch=batch,
+                batch=denoise_batch,
                 atom_mask=atom_mask,
                 si_input=si_input,
                 si_trunk=si_trunk,

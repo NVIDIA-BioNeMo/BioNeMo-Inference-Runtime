@@ -67,6 +67,9 @@ class StatefulStageUDF:
     _TOP_LEVEL_KEYS = frozenset({"__inference_error__", "__record_id"})
 
     pack_output: bool = True
+    # In-process serial execution hands rows to the next stage by reference;
+    # only Arrow/Ray boundaries need the pickled bytes.
+    pickle_packed_rows: bool = True
 
     def __init__(
         self,
@@ -146,7 +149,7 @@ class StatefulStageUDF:
                 for row in rows:
                     row.pop(key, None)
 
-        output[self.DATA_COLUMN] = [pickle.dumps(row) for row in rows]
+        output[self.DATA_COLUMN] = [pickle.dumps(row) for row in rows] if self.pickle_packed_rows else rows
         return output
 
     def _flatten_rows_to_output(self, rows: list[dict[str, Any]]) -> dict[str, Any]:

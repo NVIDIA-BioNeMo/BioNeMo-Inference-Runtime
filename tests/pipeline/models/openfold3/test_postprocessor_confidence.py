@@ -39,6 +39,8 @@ import torch
 from bionemo_ir.pipeline.models.openfold3.postprocessor import (
     _bin_centers,
     _compute_iptm,
+    _compute_pae,
+    _compute_pae_scores,
     _compute_plddt,
     _compute_ptm,
     _frame_mask,
@@ -160,6 +162,24 @@ def test_iptm_scores_only_inter_chain_pairs_and_is_nan_for_one_chain():
     # Absent PAE head: no logits, so no scores.
     assert np.isnan(_compute_ptm(None, n_tokens))
     assert np.isnan(_compute_iptm(None, n_tokens, chain_indices=chains_two))
+
+
+@pytest.mark.parametrize("chains", [[0, 0, 0, 1, 1, 2], [0, 0, 0, 0, 0, 0]])
+@pytest.mark.parametrize("with_frames", [False, True])
+def test_shared_pae_scores_match_separate_reductions(chains: list[int], with_frames: bool):
+    """One softmax feeds pTM, ipTM and PAE without changing any of them."""
+    n_tokens = len(chains)
+    logits = torch.randn(n_tokens, n_tokens, N_PAE_BINS, generator=torch.Generator().manual_seed(0))
+    chain_indices = np.array(chains, dtype=np.int64)
+    has_frame = torch.tensor([True, False, True, True, False, True]) if with_frames else None
+
+    ptm, iptm, pae = _compute_pae_scores(logits, n_tokens, chain_indices, has_frame=has_frame)
+
+    assert ptm == _compute_ptm(logits, n_tokens, has_frame=has_frame)
+    expected_iptm = _compute_iptm(logits, n_tokens, chain_indices, has_frame=has_frame)
+    assert iptm == expected_iptm or (np.isnan(iptm) and np.isnan(expected_iptm))
+    np.testing.assert_array_equal(pae, _compute_pae(logits))
+    assert _compute_pae_scores(None, n_tokens, chain_indices)[2] is None
 
 
 def test_frame_mask_reader_handles_sample_axis_padding_and_dtype():

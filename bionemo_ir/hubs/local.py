@@ -17,6 +17,7 @@ import io
 import logging
 import os
 import pickle
+import zipfile
 from collections import OrderedDict, defaultdict, namedtuple
 from pathlib import Path
 
@@ -221,7 +222,9 @@ def _load_of3_state_dict(local_checkpoint: str):
         dict,
     ]
     with torch.serialization.safe_globals(unsafe_globals):
-        state_dict = torch.load(local_checkpoint, map_location="cpu", weights_only=True)
+        # Mapping skips one full weight copy.
+        mmap = zipfile.is_zipfile(local_checkpoint)
+        state_dict = torch.load(local_checkpoint, map_location="cpu", weights_only=True, mmap=mmap)
         if "ema" in state_dict:
             if "params" in state_dict["ema"]:
                 state_dict = state_dict["ema"]["params"]

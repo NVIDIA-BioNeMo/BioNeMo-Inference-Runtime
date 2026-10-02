@@ -15,10 +15,11 @@
 """OpenFold3 shared utilities: one-hot encoding, atom name encoding, etc."""
 
 import math
+from collections.abc import Sequence
 
 import torch
 
-from bionemo_ir._torch.layers.random_augmentation import centre_random_augmentation as _centre_random_augmentation
+from bionemo_ir._torch.layers.random_augmentation import _quaternion_components_to_matrix
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars as _encode_atom_name_chars
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot as _encode_atom_name_chars_one_hot
 
@@ -98,26 +99,37 @@ def compute_deletion_value(deletion_matrix: torch.Tensor) -> torch.Tensor:
     return (torch.atan(deletion_matrix.float() / 3.0) * (8.0 / math.pi)).to(torch.float32)
 
 
-def centre_random_augmentation(pos: torch.Tensor, mask: torch.Tensor, scale_trans: float = 1.0) -> torch.Tensor:
-    """Centre, randomly rotate and translate conformer coordinates.
+def centre_random_augmentation_blocks(pos: torch.Tensor, block_sizes: Sequence[int]) -> torch.Tensor:
+    """Centre, randomly rotate and translate consecutive atom blocks in one pass.
 
-    Matches OSS centre_random_augmentation() (AF3 Algorithm 19).
+    Matches OSS centre_random_augmentation() (AF3 Algorithm 19) applied to
+    each block in order, up to float32 rounding: each block draws the same rotation and
+    translation from the global ``torch`` RNG, but the centering and rotation
+    reductions run batched.
 
     Args:
-        pos: [*, N_atoms, 3] atom positions.
-        mask: [*, N_atoms] validity mask (1=valid, 0=padding).
-        scale_trans: Translation scaling factor.
+        pos: [N_atoms, 3] CPU float32 positions; block ``b`` owns the next
+            ``block_sizes[b]`` rows.
+        block_sizes: Positive atom count of each block, summing to ``N_atoms``.
 
     Returns:
-        [*, N_atoms, 3] augmented positions.
+        [N_atoms, 3] augmented positions.
     """
-    return _centre_random_augmentation(
-        pos,
-        mask,
-        s_trans=scale_trans,
-        normalize_quaternions_first=True,
-        mask_denominator_min=1.0,
-    )
+    if not block_sizes:
+        return pos.clone()
+    # Per block, randn(7) yields the values of randn((1, 4)) then randn(3); one
+    # randn((n_blocks, 7)) would take a different vectorized sampling path.
+    noise = torch.stack([torch.randn(7, dtype=pos.dtype) for _ in block_sizes])
+    quaternions = noise[:, :4] / noise[:, :4].norm(dim=-1, keepdim=True)
+    rotations = _quaternion_components_to_matrix(*quaternions.unbind(-1), 2.0)
+    translations = noise[:, 4:]
+
+    sizes = torch.tensor(block_sizes)
+    block_of_atom = torch.repeat_interleave(torch.arange(len(block_sizes)), sizes)
+    centres = torch.zeros(len(block_sizes), 3, dtype=pos.dtype).index_add_(0, block_of_atom, pos)
+    centres = centres / sizes.to(pos.dtype)[:, None]
+    centred = pos - centres[block_of_atom]
+    return torch.einsum("ai,aji->aj", centred, rotations[block_of_atom]) + translations[block_of_atom]
 
 
 # ---------------------------------------------------------------------------

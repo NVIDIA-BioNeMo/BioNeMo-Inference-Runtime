@@ -29,6 +29,29 @@ _EXT_MAP = {"pdb": ".pdb", "cif": ".cif"}
 _SCORE_PRECISION = 4
 
 
+def _encode_float_array(values: np.ndarray) -> str:
+    """Return ``json.dumps(values.tolist())`` for a float64 array.
+
+    Rounded scores repeat few distinct values: an ``N x N`` PAE matrix rounded
+    to 0.001 within ``[0, 32)`` has at most 32,000. Each distinct value is
+    encoded once and the text is joined from that table, which avoids encoding
+    every element separately.
+    """
+    if values.size == 0:
+        return json.dumps(values.tolist())
+    # Bit patterns keep -0.0 distinct from 0.0, which ``json`` encodes differently.
+    bits, inverse = np.unique(np.ascontiguousarray(values).view(np.int64), return_inverse=True)
+    # One encoder call for the whole table; a float token never contains ", ".
+    table = np.array(json.dumps(bits.view(np.float64).tolist())[1:-1].split(", "), dtype=object)
+    return _join_json_tokens(table[inverse.reshape(values.shape)])
+
+
+def _join_json_tokens(tokens: np.ndarray) -> str:
+    if tokens.ndim == 1:
+        return "[" + ", ".join(tokens.tolist()) + "]"
+    return "[" + ", ".join(_join_json_tokens(row) for row in tokens) + "]"
+
+
 class WriterUDF(StatefulStageUDF):
     """Terminal pipeline stage that writes predicted structures to disk.
 
@@ -107,18 +130,20 @@ class WriterUDF(StatefulStageUDF):
         in float64 (a 24-bit significand times 625 fits in 34 bits), and both
         ``np.round`` and Python ``round`` break ties to even and divide with
         correct rounding, so the result is bit-identical to :meth:`round_floats`
-        without the per-element Python loop. Every other value keeps
-        :meth:`round_floats`.
+        without the per-element Python loop. :func:`_encode_float_array` then
+        encodes those arrays without converting them to lists. Every other value
+        keeps :meth:`round_floats`.
         """
-        scores: dict[str, Any] = {}
+        fields = []
         for key, value in record.get_score_values().items():
             if isinstance(value, np.ndarray) and value.dtype == np.float32:
-                scores[key] = np.round(value.astype(np.float64), _SCORE_PRECISION).tolist()
+                encoded = _encode_float_array(np.round(value.astype(np.float64), _SCORE_PRECISION))
             elif isinstance(value, np.ndarray):
-                scores[key] = self.round_floats(value.tolist())
+                encoded = json.dumps(self.round_floats(value.tolist()))
             else:
-                scores[key] = self.round_floats(value)
-        return json.dumps(scores)
+                encoded = json.dumps(self.round_floats(value))
+            fields.append(f"{json.dumps(key)}: {encoded}")
+        return "{" + ", ".join(fields) + "}"
 
     def _create_writer(self, fmt: str):
         res_type_mapping = self.mappings.get("res_type_mapping", None)

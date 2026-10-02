@@ -32,7 +32,12 @@ import torch.nn.functional as F
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
 from bionemo_ir.pipeline.utils.msa import a3m_columns, code_points, map_code_points, ragged_mask, truncate_rows
 
-from .common import centre_random_augmentation, compute_deletion_value, encode_atom_name_chars_one_hot, encode_one_hot
+from .common import (
+    centre_random_augmentation_blocks,
+    compute_deletion_value,
+    encode_atom_name_chars_one_hot,
+    encode_one_hot,
+)
 from .const import (
     DEFAULT_N_TEMPLATES,
     GAP_IDX,
@@ -307,6 +312,7 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         ref_mask = torch.ones(n_atoms, dtype=torch.int32)
 
         atom_offset = 0
+        block_sizes: list[int] = []
         for tok_idx in range(n_tokens):
             n_at = atoms_per_token[tok_idx]
             if n_at == 0:
@@ -315,27 +321,23 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
             mol = residue_mols[tok_idx] if tok_idx < len(residue_mols) else None
             crop_mask = residue_crop_masks[tok_idx] if tok_idx < len(residue_crop_masks) else None
             tok_pos = ref_pos[atom_offset : atom_offset + n_at]
-            tok_mask = ref_mask[atom_offset : atom_offset + n_at]
 
             if mol is not None and mol.GetNumConformers() > 0:
-                conf = mol.GetConformer()
-                # Extract coords only for atoms in crop mask (skip OXT)
-                out_idx = 0
-                for ai in range(mol.GetNumAtoms()):
-                    if crop_mask is not None and ai < len(crop_mask):
-                        if not crop_mask[ai]:
-                            continue
-                    if out_idx >= n_at:
-                        break
-                    pt = conf.GetAtomPosition(ai)
-                    tok_pos[out_idx] = torch.tensor([pt.x, pt.y, pt.z], dtype=torch.float32)
-                    out_idx += 1
-
-            # Apply random centering + rotation + translation
-            # (matching OSS centre_random_augmentation / AF3 Algorithm 19)
-            augmented = centre_random_augmentation(tok_pos, tok_mask.float())
-            ref_pos[atom_offset : atom_offset + n_at] = augmented
+                # Coords only for atoms in crop mask (skip OXT); atoms past the mask are kept
+                coords = mol.GetConformer().GetPositions()
+                if crop_mask is not None:
+                    keep = np.ones(len(coords), dtype=bool)
+                    n_masked = min(len(crop_mask), len(coords))
+                    keep[:n_masked] = np.asarray(crop_mask[:n_masked], dtype=bool)
+                    coords = coords[keep]
+                coords = coords[:n_at]
+                tok_pos[: len(coords)] = torch.from_numpy(coords.astype(np.float32))
+            block_sizes.append(n_at)
             atom_offset += n_at
+
+        # Random centering + rotation + translation per residue
+        # (matching OSS centre_random_augmentation / AF3 Algorithm 19)
+        ref_pos[:atom_offset] = centre_random_augmentation_blocks(ref_pos[:atom_offset], block_sizes)
 
         feats["ref_pos"] = ref_pos
         feats["ref_mask"] = ref_mask

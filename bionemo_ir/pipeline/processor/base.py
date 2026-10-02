@@ -223,7 +223,10 @@ class SerialProcessor(_ProcessorBase):
             ctor_kwargs["drop_keys"] = stage.drop_keys
             ctor_kwargs["expected_input_keys"] = list(stage.get_required_input_keys().keys())
             ctor_kwargs["update_row"] = stage.update_row
-            self._udf_instances[name] = stage.fn(**ctor_kwargs)
+            udf = stage.fn(**ctor_kwargs)
+            # Rows stay in this process, so the next stage takes ownership without a pickle copy.
+            udf.pickle_packed_rows = False
+            self._udf_instances[name] = udf
         return self._udf_instances[name]
 
     def __call__(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
